@@ -150,6 +150,8 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
 /// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
+    // Escape control characters so message text (a project's `format` field, say) cannot start a fake record.
+    let message: String = message.chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect();
     format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
 }
 
@@ -441,8 +443,9 @@ mod tests {
             format_line("2026-10-08T07:59:17.728Z", log::Level::Warn, "main", "filmcraft_ui_egui", "audio output unavailable: no output device"),
             "2026-10-08T07:59:17.728Z WARN  [main] filmcraft_ui_egui: audio output unavailable: no output device\n"
         );
-        // A multi-line message keeps its lines; the record still ends in exactly one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        // Control characters are escaped, so a multi-line message stays one record ending in exactly one newline.
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\\nb\n"));
+        assert_eq!(format_line("t", log::Level::Error, "w", "x", "a\r\n2026 INFO fake").matches('\n').count(), 1);
     }
 
     #[test]

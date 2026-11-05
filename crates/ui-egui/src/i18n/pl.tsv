@@ -1,0 +1,3623 @@
+# Polish (pl) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+#
+# Clean-room: every entry was written from the plain meaning of the English label using ordinary
+# Polish video-editing vocabulary. No proprietary localisation resource, string table or product UI
+# was consulted or copied; add entries the same way. Drafted with AI assistance; not yet reviewed by
+# a native speaker. Commands use the imperative ("Otwórz projekt…"), menus and panels are nouns.
+# Product, format and feature names (FilmCraft, ArtCraft, Lumetri, ProRes, EDL, AAF…) keep their
+# spelling. Counts are written count-neutral ("Klipy: {n}") so every Polish number reads right.
+#
+# Terms: track = ścieżka, bin = kosz, marker = znacznik, playhead = głowica, In/Out = punkt
+# wejścia/wyjścia, transition = przejście, frame hold = stopklatka, clip = klip, sequence =
+# sekwencja, panel = panel, workspace = obszar roboczy, keyframe = klatka kluczowa, caption = napis,
+# preferences = preferencje. Edit types keep their established names (ripple, roll, slip, slide).
+
+	About FilmCraft	O programie FilmCraft
+	Add Audio Submix Track	Dodaj ścieżkę submiksu audio
+	Add Caption at Playhead	Dodaj napis w miejscu głowicy
+	Add Chapter Marker…	Dodaj znacznik rozdziału…
+	Add Edit	Dodaj cięcie
+	Add Edit to All Tracks	Dodaj cięcie na wszystkich ścieżkach
+	Add Flash Cue Marker…	Dodaj znacznik Flash Cue…
+	Add Frame Hold	Dodaj stopklatkę
+	Add Guide…	Dodaj linię pomocniczą…
+	Add Marker	Dodaj znacznik
+	Add New Caption Track…	Dodaj nową ścieżkę napisów…
+	Add Range Marker	Dodaj znacznik zakresu
+	Add Range Marker to In and Out	Dodaj znacznik zakresu od punktu wejścia do wyjścia
+	Add Tracks…	Dodaj ścieżki…
+	Adjustment Layer…	Warstwa korekcyjna…
+	Align to Selection	Wyrównaj do zaznaczenia
+	Align to Video Frame	Wyrównaj do klatki wideo
+	Align to Video Frame as Group	Wyrównaj do klatki wideo jako grupę
+	All Panels	Wszystkie panele
+	Alpha	Alfa
+	Appearance	Wygląd
+	Appearance…	Wygląd…
+	Apply Audio Transition	Zastosuj przejście audio
+	Apply Default Transitions to Selection	Zastosuj domyślne przejścia do zaznaczenia
+	Apply Video Transition	Zastosuj przejście wideo
+	Arrange	Rozmieść
+	ArtCraft Website	Strona ArtCraft
+	Assembly	Montaż wstępny
+	Attach Proxies…	Dołącz proxy…
+	Audio Channels…	Kanały audio…
+	Audio Clip Mixer	Mikser klipu audio
+	Audio Gain…	Wzmocnienie audio…
+	Audio Hardware…	Sprzęt audio…
+	Audio In	Wejście audio
+	Audio Meters	Mierniki audio
+	Audio Options	Opcje audio
+	Audio Out	Wyjście audio
+	Audio Track Mixer	Mikser ścieżek audio
+	Audio Waveform	Przebieg audio
+	Auto Save…	Automatyczny zapis…
+	Automate to Sequence…	Automatyzuj do sekwencji…
+	Bars and Tone…	Pasy i ton…
+	Bin	Kosz
+	Bin From Selection	Kosz z zaznaczenia
+	Black Video…	Czarne wideo…
+	Blue	Niebieski
+	Bottom	Dół
+	Breakout to Mono	Rozdziel na mono
+	Bring Forward	Przesuń do przodu
+	Bring to Front	Przenieś na wierzch
+	Brown	Brązowy
+	Captions	Napisy
+	Captions and Graphics	Napisy i grafika
+	Captions…	Napisy…
+	Caribbean	Karaibski
+	Center Horizontally	Wyśrodkuj w poziomie
+	Center Vertically	Wyśrodkuj w pionie
+	Cerulean	Lazurowy
+	Clear	Wyczyść
+	Clear Guides	Wyczyść linie pomocnicze
+	Clear In	Wyczyść punkt wejścia
+	Clear In and Out	Wyczyść punkty wejścia i wyjścia
+	Clear Markers	Wyczyść znaczniki
+	Clear Out	Wyczyść punkt wyjścia
+	Clear Selected Marker	Wyczyść zaznaczony znacznik
+	Close	Zamknij
+	Close All Other Projects	Zamknij wszystkie inne projekty
+	Close All Projects	Zamknij wszystkie projekty
+	Close Gap	Zamknij lukę
+	Close Project	Zamknij projekt
+	Color Management…	Zarządzanie kolorem…
+	Color Matte…	Plansza koloru…
+	Comparison View	Widok porównania
+	Composite Video	Wideo kompozytowe
+	Consolidate Duplicates	Scal duplikaty
+	Copy	Kopiuj
+	Copy Paste Includes Sequence Markers	Kopiowanie i wklejanie obejmuje znaczniki sekwencji
+	Create Captions from Transcript…	Utwórz napisy z transkrypcji…
+	Create Multi-Camera Source Sequence…	Utwórz sekwencję źródłową z wielu kamer…
+	Create Proxies…	Utwórz proxy…
+	Cut	Wytnij
+	Darkest	Najciemniejsze
+	Delete Render Files	Usuń pliki renderowania
+	Delete Render Files In to Out	Usuń pliki renderowania od wejścia do wyjścia
+	Delete Tracks…	Usuń ścieżki…
+	Delete Transcript	Usuń transkrypcję
+	Demo Footage	Materiał demonstracyjny
+	Demo Project	Projekt demonstracyjny
+	Deselect All	Usuń zaznaczenie wszystkiego
+	Detach Proxies	Odłącz proxy
+	Display Mode	Tryb wyświetlania
+	Distribute	Rozmieść
+	Distribute Horizontally	Rozmieść w poziomie
+	Distribute Space Horizontally	Rozmieść odstępy w poziomie
+	Distribute Space Vertically	Rozmieść odstępy w pionie
+	Distribute Vertically	Rozmieść w pionie
+	Duplicate	Powiel
+	Dynamic Audio Waveforms	Dynamiczne przebiegi audio
+	Edit	Edycja
+	Edit Offline…	Edytuj offline…
+	Edit Original	Edytuj oryginał
+	Edit Subclip…	Edytuj podklip…
+	Editing	Montaż
+	Effect Controls	Elementy sterujące efektu
+	Effects	Efekty
+	Ellipse	Elipsa
+	Enable	Włącz
+	Enable Remix	Włącz remiks
+	Essential Graphics	Podstawowa grafika
+	Essential Sound	Podstawowy dźwięk
+	Events	Zdarzenia
+	Export	Eksportuj
+	Export As Motion Graphics Template…	Eksportuj jako szablon grafiki ruchomej…
+	Extract	Wyodrębnij
+	Extract Audio	Wyodrębnij audio
+	Field Options…	Opcje pól…
+	File	Plik
+	File…	Plik…
+	Fill frame	Wypełnij klatkę
+	FilmCraft Help…	Pomoc FilmCraft…
+	FilmCraft on GitHub	FilmCraft w serwisie GitHub
+	FilmCraft on getartcraft.com	FilmCraft w getartcraft.com
+	Find Next	Znajdź następny
+	Find…	Znajdź…
+	Fit	Dopasuj
+	Fit to frame	Dopasuj do klatki
+	Flatten	Spłaszcz
+	Forest	Leśny
+	Frame Blending	Mieszanie klatek
+	Frame Hold Options…	Opcje stopklatki…
+	Frame Sampling	Próbkowanie klatek
+	From Bin	Z kosza
+	From Source Monitor	Z monitora źródła
+	From Source Monitor, Match Frame	Z monitora źródła, dopasuj klatkę
+	From file…	Z pliku…
+	Full	Pełna
+	Generate Audio Waveform	Generuj przebieg audio
+	Get Media File Properties for	Pobierz właściwości pliku multimedialnego dla
+	Go to Gap	Przejdź do luki
+	Go to In	Przejdź do punktu wejścia
+	Go to Next Caption Segment	Przejdź do następnego segmentu napisów
+	Go to Next Marker	Przejdź do następnego znacznika
+	Go to Out	Przejdź do punktu wyjścia
+	Go to Previous Caption Segment	Przejdź do poprzedniego segmentu napisów
+	Go to Previous Marker	Przejdź do poprzedniego znacznika
+	Go to Split	Przejdź do podziału
+	Graphics and Titles	Grafika i tytuły
+	Graphics…	Grafika…
+	Green	Zielony
+	Group	Grupuj
+	Guide Templates	Szablony linii pomocniczych
+	Help	Pomoc
+	Hide All Caption Tracks	Ukryj wszystkie ścieżki napisów
+	High Quality Playback	Odtwarzanie w wysokiej jakości
+	History	Historia
+	Import From	Importuj z
+	Import Image Sequence…	Importuj sekwencję obrazów…
+	Import from Media Browser	Importuj z przeglądarki multimediów
+	Import…	Importuj…
+	Info	Informacje
+	Ingest Settings…	Ustawienia pozyskiwania…
+	Insert	Wstaw
+	Insert Frame Hold Segment	Wstaw segment stopklatki
+	Install Motion Graphics Template…	Zainstaluj szablon grafiki ruchomej…
+	Interpret Footage…	Interpretuj materiał…
+	Join the ArtCraft Discord…	Dołącz do Discorda ArtCraft…
+	Keyboard Shortcuts…	Skróty klawiaturowe…
+	Label	Etykieta
+	Labels…	Etykiety…
+	Language	Język
+	Lavender	Lawendowy
+	Learning	Nauka
+	Left	Lewo
+	Libraries	Biblioteki
+	Lift	Podnieś
+	Light	Jasny
+	Link	Połącz
+	Link Media…	Połącz multimedia…
+	Refresh Changed Media	Odśwież zmienione multimedia
+	Linked Selection	Połączone zaznaczanie
+	Lock Guides	Zablokuj linie pomocnicze
+	Lumetri Color	Kolor Lumetri
+	Lumetri Scopes	Wykresy Lumetri
+	Magnification	Powiększenie
+	Make Offline…	Ustaw jako offline…
+	Make Subclip…	Utwórz podklip…
+	Make Subsequence	Utwórz podsekwencję
+	Manage Guides…	Zarządzaj liniami pomocniczymi…
+	Mark Clip	Oznacz klip
+	Mark In	Oznacz punkt wejścia
+	Mark Out	Oznacz punkt wyjścia
+	Mark Selection	Oznacz zaznaczenie
+	Mark Split	Oznacz podział
+	Markers	Znaczniki
+	Match Frame	Dopasuj klatkę
+	Media Analysis & Transcription…	Analiza multimediów i transkrypcja…
+	Media Browser	Przeglądarka multimediów
+	Media Cache…	Pamięć podręczna multimediów…
+	Media…	Multimedia…
+	Medium	Średnia
+	Memory…	Pamięć…
+	Merge Clips…	Scal klipy…
+	Metadata	Metadane
+	Modify	Modyfikuj
+	Motion Graphics Template…	Szablon grafiki ruchomej…
+	Multi-Camera	Wiele kamer
+	Multi-Camera View	Widok wielu kamer
+	Nest…	Zagnieźdź…
+	New	Nowy
+	New Layer	Nowa warstwa
+	New Project Panel	Nowy panel projektu
+	Next in Sequence	Następny w sekwencji
+	Next in Track	Następny na ścieżce
+	Normalize Mix Track…	Normalizuj ścieżkę miksu…
+	Offline File…	Plik offline…
+	Open Project…	Otwórz projekt…
+	Open Recent	Otwórz ostatnie
+	Clear Recent Files	Wyczyść listę ostatnich plików
+	Recent	Ostatnie
+	Optical Flow	Przepływ optyczny
+	Overwrite	Nadpisz
+	Paste	Wklej
+	Paste Attributes…	Wklej atrybuty…
+	Paste Insert	Wklej z wstawieniem
+	Paused Resolution	Rozdzielczość po pauzie
+	Playback Resolution	Rozdzielczość odtwarzania
+	Playback…	Odtwarzanie…
+	Plugins…	Wtyczki…
+	Polygon	Wielokąt
+	Preferences	Preferencje
+	Previous in Sequence	Poprzedni w sekwencji
+	Previous in Track	Poprzedni na ścieżce
+	Program	Program
+	Progress	Postęp
+	Project	Projekt
+	Project Manager…	Menedżer projektu…
+	Project Settings	Ustawienia projektu
+	Project…	Projekt…
+	Properties	Właściwości
+	Purple	Fioletowy
+	Reconnect Full Resolution Media…	Połącz ponownie multimedia w pełnej rozdzielczości…
+	Recover Unsaved Changes…	Odzyskaj niezapisane zmiany…
+	Rectangle	Prostokąt
+	Red	Czerwony
+	Redo	Ponów
+	Reference Monitor	Monitor odniesienia
+	Remix	Remiks
+	Remix Properties…	Właściwości remiksu…
+	Remove Attributes…	Usuń atrybuty…
+	Remove Filler Words	Usuń słowa wypełniacze
+	Remove Pauses	Usuń pauzy
+	Remove Unused	Usuń nieużywane
+	Rename…	Zmień nazwę…
+	Render Audio	Renderuj audio
+	Render Effects In to Out	Renderuj efekty od wejścia do wyjścia
+	Render In to Out	Renderuj od wejścia do wyjścia
+	Render Selection	Renderuj zaznaczenie
+	Replace Fonts in Projects…	Zastąp czcionki w projektach…
+	Replace With Clip	Zastąp klipem
+	Report an Issue…	Zgłoś problem…
+	Reset All Parameters	Resetuj wszystkie parametry
+	Reset Duration	Resetuj czas trwania
+	Reset to Saved Layout	Przywróć zapisany układ
+	Restore Captions from Source Clip	Przywróć napisy z klipu źródłowego
+	Reveal Log Files…	Pokaż pliki dziennika…
+	Reverse Match Frame	Odwrotne dopasowanie klatki
+	Revert	Przywróć
+	Revert Remix	Cofnij remiks
+	Review	Recenzja
+	Right	Prawo
+	Ripple Delete	Usuń z zamknięciem luki
+	Ripple Delete Head Frame	Usuń klatki początkowe z zamknięciem luki
+	Ripple Sequence Markers	Przesuwaj znaczniki sekwencji
+	Rose	Różany
+	Safe Margins	Marginesy bezpieczne
+	Save	Zapisz
+	Save All	Zapisz wszystko
+	Save As…	Zapisz jako…
+	Save Guides as Template…	Zapisz linie pomocnicze jako szablon…
+	Save a Copy…	Zapisz kopię…
+	Save as Template…	Zapisz jako szablon…
+	Scale to Frame Size	Skaluj do rozmiaru klatki
+	Scene Edit Detection…	Wykrywanie zmian scen…
+	Scratch Disks…	Dyski robocze…
+	Search Bin	Szukaj w koszu
+	Select	Zaznacz
+	Select All	Zaznacz wszystko
+	Select All Matching	Zaznacz wszystkie pasujące
+	Select Label Group	Zaznacz grupę etykiety
+	Select Next Graphic	Zaznacz następną grafikę
+	Select Next Layer	Zaznacz następną warstwę
+	Select Previous Graphic	Zaznacz poprzednią grafikę
+	Select Previous Layer	Zaznacz poprzednią warstwę
+	Selection Follows Playhead	Zaznaczenie podąża za głowicą
+	Selection as FilmCraft Project…	Zaznaczenie jako projekt FilmCraft…
+	Selection…	Zaznaczenie…
+	Send Backward	Przesuń do tyłu
+	Send to Back	Przenieś pod spód
+	Sequence	Sekwencja
+	Sequence From Clip	Sekwencja z klipu
+	Sequence Settings…	Ustawienia sekwencji…
+	Sequence…	Sekwencja…
+	Show Active Caption Tracks Only	Pokaż tylko aktywne ścieżki napisów
+	Show All Caption Tracks	Pokaż wszystkie ścieżki napisów
+	Show All Marker Colors	Pokaż wszystkie kolory znaczników
+	Show Guides	Pokaż linie pomocnicze
+	Show Rulers	Pokaż linijki
+	Show Through Edits	Pokaż cięcia ciągłe
+	Simplify Sequence…	Uprość sekwencję…
+	Snap in Program Monitor	Przyciągaj w monitorze programu
+	Snap in Timeline	Przyciągaj na osi czasu
+	Source	Źródło
+	Source Settings…	Ustawienia źródła…
+	Speed/Duration…	Szybkość/czas trwania…
+	Synchronize…	Synchronizuj…
+	System Compatibility Report…	Raport zgodności systemu…
+	Tan	Jasnobrązowy
+	Teal	Morski
+	Text	Tekst
+	Time Interpolation	Interpolacja czasu
+	Timecode	Kod czasowy
+	Timecode…	Kod czasowy…
+	Timeline	Oś czasu
+	Timeline…	Oś czasu…
+	Toggle Proxies	Przełącz proxy
+	Tools	Narzędzia
+	Top	Góra
+	Transcribe Sequence…	Transkrybuj sekwencję…
+	Transcribe…	Transkrybuj…
+	Transcript	Transkrypcja
+	Transparent Video…	Przezroczyste wideo…
+	Trim Edit	Edycja przycinania
+	Trim…	Przytnij…
+	Undo	Cofnij
+	Ungroup	Rozgrupuj
+	Universal Counting Leader…	Uniwersalne odliczanie…
+	Update Metadata…	Aktualizuj metadane…
+	Upgrade Caption to Graphic	Przekształć napis w grafikę
+	Upgrade to Source Graphic	Przekształć w grafikę źródłową
+	Vertical Text	Tekst pionowy
+	Video In	Wejście wideo
+	Video Options	Opcje wideo
+	Video Out	Wyjście wideo
+	Video and Audio Waveform Split	Wideo i przebieg audio osobno
+	View	Widok
+	Violet	Fiołkowy
+	Window	Okno
+	Workspaces	Obszary robocze
+	Yellow	Żółty
+	Zoom In	Powiększ
+	Zoom Out	Pomniejsz
+	Zoom to Sequence	Powiększ do sekwencji
+	Home	Strona główna
+	Import	Importuj
+	{name} - Edited	{name} – edytowany
+	Full screen	Pełny ekran
+	Volume	Głośność
+	Master volume: use the Audio Track Mixer	Głośność główna: użyj miksera ścieżek audio
+	Search	Szukaj
+	Quick Export	Szybki eksport
+	Join the ArtCraft Discord (discord.gg/artcraft)	Dołącz do Discorda ArtCraft (discord.gg/artcraft)
+	Cancel	Anuluj
+	OK	OK
+	Interpret Footage	Interpretuj materiał
+	Color Management · {n} item	Zarządzanie kolorem · elementy: {n}
+	Color Management · {n} items	Zarządzanie kolorem · elementy: {n}
+	Media colour space (from file metadata): {detected}	Przestrzeń kolorów multimediów (z metadanych pliku): {detected}
+	Override media colour space:	Zastąp przestrzeń kolorów multimediów:
+	Use file metadata	Użyj metadanych pliku
+	Sequence Color Management	Zarządzanie kolorem sekwencji
+	Working Color Space	Robocza przestrzeń kolorów
+	Wide gamut color (composite in BT.2020)	Szeroki gamut (kompozycja w BT.2020)
+	Auto tone map media (HDR and log into SDR)	Automatyczne mapowanie tonów (HDR i log do SDR)
+	Audio Gain	Wzmocnienie audio
+	Set Gain to:	Ustaw wzmocnienie na:
+	Adjust Gain by:	Zmień wzmocnienie o:
+	Normalize Max Peak to:	Normalizuj maksymalny szczyt do:
+	Normalize All Peaks to:	Normalizuj wszystkie szczyty do:
+	Peak Amplitude: {peak}	Amplituda szczytowa: {peak}
+	Standard	Standardowa
+	Adaptive	Adaptacyjna
+	Mono	Mono
+	Stereo	Stereo
+	Add Tracks	Dodaj ścieżki
+	Amount	Liczba
+	Placement	Umieszczenie
+	Track type	Typ ścieżki
+	Add video tracks	Dodaj ścieżki wideo
+	Add audio tracks	Dodaj ścieżki audio
+	Add audio submix tracks	Dodaj ścieżki submiksu audio
+	After {name}	Po {name}
+	Before First Track	Przed pierwszą ścieżką
+	Delete Tracks	Usuń ścieżki
+	Video Tracks	Ścieżki wideo
+	Audio Tracks	Ścieżki audio
+	Delete Video Tracks	Usuń ścieżki wideo
+	Delete Audio Tracks	Usuń ścieżki audio
+	All Empty Tracks	Wszystkie puste ścieżki
+	Caption Tracks	Ścieżki napisów
+	Delete Caption Tracks	Usuń ścieżki napisów
+	Delete Caption Track	Usuń ścieżkę napisów
+	Delete Empty Caption Tracks	Usuń puste ścieżki napisów
+	Version {version}	Wersja {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Niezależnie stworzony nieliniowy edytor wideo w czystym Ruście. Część rodziny ArtCraft.
+	Join the ArtCraft Discord	Dołącz do Discorda ArtCraft
+	Source code on GitHub	Kod źródłowy w serwisie GitHub
+	Report an issue	Zgłoś problem
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT LUB Apache-2.0. Czcionki: Inter, Noto Serif i JetBrains Mono (SIL OFL 1.1).
+	just now	przed chwilą
+	{n} s ago	{n} s temu
+	{n} min ago	{n} min temu
+	{n} h ago	{n} godz. temu
+	All Events	Wszystkie zdarzenia
+	Warnings and Errors	Ostrzeżenia i błędy
+	Errors Only	Tylko błędy
+	Clear All	Wyczyść wszystko
+	No events.	Brak zdarzeń.
+	Show finished jobs	Pokaż zakończone zadania
+	Cancelled	Anulowano
+	Failed: {e}	Niepowodzenie: {e}
+	Done	Gotowe
+	No background jobs.	Brak zadań w tle.
+	Recover Unsaved Changes	Odzyskaj niezapisane zmiany
+	Untitled	Bez tytułu
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft został zamknięty, gdy „{name}” miał niezapisane zmiany.
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft nieoczekiwanie zakończył działanie, gdy „{name}” miał niezapisane zmiany.
+	Recover unsaved changes from {when}?	Odzyskać niezapisane zmiany z {when}?
+	The project had not been saved yet.	Projekt nie był jeszcze zapisany.
+	{n} sessions have unsaved changes:	Sesje z niezapisanymi zmianami: {n}
+	Discard	Odrzuć
+	Recover	Odzyskaj
+	Not Now	Nie teraz
+	Are you sure you want to discard your changes to '{file}'?	Czy na pewno odrzucić zmiany w „{file}”?
+	Yes	Tak
+	No	Nie
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodaj multimedia do projektu. Upuść pliki w dowolnym miejscu okna lub wybierz źródło poniżej.
+	Browse files…	Przeglądaj pliki…
+	Movies, audio and stills from disk	Filmy, audio i zdjęcia z dysku
+	Demo footage	Materiał demonstracyjny
+	Six procedural 1080p clips with sound	Sześć proceduralnych klipów 1080p z dźwiękiem
+	Demo project	Projekt demonstracyjny
+	A cut sequence with transitions, effects and music	Zmontowana sekwencja z przejściami, efektami i muzyką
+	Bars and Tone	Pasy i ton
+	SMPTE HD bars with 1 kHz reference tone	Pasy SMPTE HD z tonem odniesienia 1 kHz
+	Community	Społeczność
+	Join us on Discord	Dołącz do nas na Discordzie
+	OMF Export Settings	Ustawienia eksportu OMF
+	AAF Export Settings	Ustawienia eksportu AAF
+	OMF Title:	Tytuł OMF:
+	Mixdown video	Zmiksuj wideo
+	Audio:	Audio:
+	Encapsulate	Osadź w pliku
+	Separate Audio	Osobne audio
+	Embed	Osadź
+	Separate Files	Osobne pliki
+	Link to Media	Połącz z multimediami
+	Audio File Format:	Format pliku audio:
+	Sample Rate:	Częstotliwość próbkowania:
+	Bits per Sample:	Bity na próbkę:
+	Rendering:	Renderowanie:
+	Trim audio files	Przytnij pliki audio
+	Handle Frames:	Klatki zapasu:
+	Render audio clip effects	Renderuj efekty klipów audio
+	Breakout to mono	Rozdziel na mono
+	Exported {path}	Wyeksportowano {path}
+	Select a clip to view its metadata.	Zaznacz klip, aby zobaczyć jego metadane.
+	Clip: {name}	Klip: {name}
+	Open	Otwórz
+	(no sequence)	(brak sekwencji)
+	Show or hide {color} markers	Pokaż lub ukryj znaczniki w kolorze {color}
+	Marker	Znacznik
+	{tc}  Chapter	{tc}  Rozdział
+	No markers. Press M to add one.	Brak znaczników. Naciśnij M, aby dodać.
+	All markers are hidden by the colour filter.	Wszystkie znaczniki są ukryte przez filtr kolorów.
+	Type:	Typ:
+	Video:	Wideo:
+	Codec:	Kodek:
+	Duration:	Czas trwania:
+	Settings:	Ustawienia:
+	Playhead:	Głowica:
+	Video {n}:	Wideo {n}:
+	Audio {n}:	Audio {n}:
+	UI:	Interfejs:
+	{fps} fps · {n} frames queued	{fps} kl./s · klatki w kolejce: {n}
+	{panel} — coming in a later milestone	{panel} — w jednym z kolejnych etapów
+	Close Panel	Zamknij panel
+	Close Other Timeline Panels	Zamknij pozostałe panele osi czasu
+	Close All	Zamknij wszystko
+	Maximize Frame	Maksymalizuj ramkę
+	Restore Frame	Przywróć ramkę
+	Restore Workspace	Przywróć obszar roboczy
+	Reveal Sequence in Project	Pokaż sekwencję w projekcie
+	Video Thumbnails	Miniatury wideo
+	Audio Waveforms	Przebiegi audio
+	Delete Preset	Usuń ustawienie
+	Export Preset…	Eksportuj ustawienie…
+	Import Presets…	Importuj ustawienia…
+	Effect presets	Ustawienia efektów
+	Save Preset	Zapisz ustawienie
+	Name:	Nazwa:
+	Type	Typ
+	Scale	Skaluj
+	Anchor to In Point	Zakotwicz do punktu wejścia
+	Anchor to Out Point	Zakotwicz do punktu wyjścia
+	Without keyframes	Bez klatek kluczowych
+	Description:	Opis:
+	Saved preset “{name}”	Zapisano ustawienie „{name}”
+	Current duration {seconds} s	Bieżący czas trwania {seconds} s
+	Remix Properties	Właściwości remiksu
+	Target Duration:	Docelowy czas trwania:
+	Segments:	Segmenty:
+	Fewer · More	Mniej · więcej
+	Variations:	Warianty:
+	Remixed to {seconds} s	Zremiksowano do {seconds} s
+	{mode} · no clip	{mode} · brak klipu
+	{mode} · no sequence	{mode} · brak sekwencji
+	Remove Row	Usuń wiersz
+	Add a timecode row	Dodaj wiersz kodu czasowego
+	Panner	Panoramowanie
+	Mute	Wycisz
+	Send {n} Level	Poziom wysyłki {n}
+	Show Keyframes	Pokaż klatki kluczowe
+	Clip Keyframes	Klatki kluczowe klipu
+	Track Keyframes	Klatki kluczowe ścieżki
+	Delete	Usuń
+	Untitled Workspace	Obszar roboczy bez tytułu
+	New Workspace	Nowy obszar roboczy
+	Edit Workspaces	Edytuj obszary robocze
+	Rename	Zmień nazwę
+	Restore Original	Przywróć oryginał
+	Search effects	Szukaj efektów
+	Apply to Selected Clips	Zastosuj do zaznaczonych klipów
+	Metadata Display	Wyświetlanie metadanych
+	Save As New View Preset	Zapisz jako nowe ustawienie widoku
+	Manage Saved View Presets	Zarządzaj zapisanymi ustawieniami widoku
+	Freeform View Options	Opcje widoku swobodnego
+	Save Arrangement	Zapisz układ
+	Saves the view, columns, sort, thumbnail and font size.	Zapisuje widok, kolumny, sortowanie, miniatury i rozmiar czcionki.
+	Grid spacing:	Odstęp siatki:
+	Default clip size:	Domyślny rozmiar klipu:
+	Snap to grid	Przyciągaj do siatki
+	Show clip names	Pokaż nazwy klipów
+	Show durations	Pokaż czasy trwania
+	Show:	Pokaż:
+	Search fields	Pola wyszukiwania
+	Project Metadata	Metadane projektu
+	Add Property…	Dodaj właściwość…
+	Column order	Kolejność kolumn
+	{n}. (empty)	{n}. (puste)
+	Restore	Przywróć
+	Overwrite with Current View	Nadpisz bieżącym widokiem
+	Graphics text search arrives with M10.1–M10.2	Wyszukiwanie tekstu w grafice pojawi się w M10.1–M10.2
+	Open a sequence to work with captions	Otwórz sekwencję, aby pracować z napisami
+	Add captions	Dodaj napisy
+	Create a caption track or import a caption file.	Utwórz ścieżkę napisów lub zaimportuj plik napisów.
+	Create new caption track	Utwórz nową ścieżkę napisów
+	Import captions file…	Importuj plik napisów…
+	New {format} track	Nowa ścieżka {format}
+	Add caption at playhead	Dodaj napis w miejscu głowicy
+	Split caption at playhead	Podziel napis w miejscu głowicy
+	Merge selected captions	Scal zaznaczone napisy
+	Delete selected captions	Usuń zaznaczone napisy
+	No captions on this track. Press + to add one at the playhead.	Brak napisów na tej ścieżce. Naciśnij +, aby dodać napis w miejscu głowicy.
+	No matching captions.	Brak pasujących napisów.
+	Open a sequence to see its transcript	Otwórz sekwencję, aby zobaczyć jej transkrypcję
+	Transcribe sequence	Transkrybuj sekwencję
+	Speech-to-text turns the dialogue into editable text.	Zamiana mowy na tekst przekształca dialogi w edytowalny tekst.
+	This build has no speech-to-text; import a transcript with transcript.set.	Ta wersja nie ma zamiany mowy na tekst; zaimportuj transkrypcję przez transcript.set.
+	Transcribe	Transkrybuj
+	Extract selected text	Wyodrębnij zaznaczony tekst
+	Lift selected text	Podnieś zaznaczony tekst
+	Remove filler words	Usuń słowa wypełniacze
+	Create captions	Utwórz napisy
+	Speaker	Mówca
+	Box	Ramka
+	Align	Wyrównanie
+	Align left	Wyrównaj do lewej
+	Align center	Wyrównaj do środka
+	Align right	Wyrównaj do prawej
+	Position	Położenie
+	Position: top	Położenie: góra
+	Position: middle	Położenie: środek
+	Position: bottom	Położenie: dół
+	(gap)	(luka)
+	Out: {name}	Wyjście: {name}
+	In: {name}	Wejście: {name}
+	Play Around Edit (Space loops, Shift+K once)	Odtwórz wokół cięcia (Spacja zapętla, Shift+K raz)
+	Trim Backward Many	Przytnij wstecz o wiele
+	Trim Backward	Przytnij wstecz
+	Apply Default Transitions	Zastosuj domyślne przejścia
+	Apply Default Transitions to Selection (Shift+D)	Zastosuj domyślne przejścia do zaznaczenia (Shift+D)
+	Trim Forward	Przytnij do przodu
+	Trim Forward Many	Przytnij do przodu o wiele
+	Exit Trim Mode	Wyjdź z trybu przycinania
+	Voice-over record (right-click: Voice-Over Record Settings…)	Nagrywanie lektora (prawy przycisk: Ustawienia nagrywania lektora…)
+	Voice-Over Record Settings…	Ustawienia nagrywania lektora…
+	Recording voice-over…	Nagrywanie lektora…
+	Voice-over recorded: {p}	Nagrano lektora: {p}
+	Voice-over recording stopped (nothing recorded)	Zatrzymano nagrywanie lektora (nic nie nagrano)
+	Post-roll	Post-roll
+	● Recording	● Nagrywanie
+	Voice-Over Record Settings	Ustawienia nagrywania lektora
+	Source:	Źródło:
+	Default Input	Domyślne wejście
+	Input:	Wejście:
+	Channel {n}	Kanał {n}
+	Countdown Sound Cues	Sygnały dźwiękowe odliczania
+	Pre-roll:	Pre-roll:
+	 seconds	 s
+	Post-roll:	Post-roll:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Odtwarzanie zaczyna pre-roll przed głowicą (lub punktem wejścia); przy oznaczonych punktach wejścia i wyjścia nagrywanie włącza się i wyłącza właśnie tam.
+	Effect	Efekt
+	Clip Fx Editor	Edytor efektów klipu
+	Track Fx Editor	Edytor efektów ścieżki
+	Master Gain	Wzmocnienie główne
+	Reset	Resetuj
+	Band {n}	Pasmo {n}
+	Solo	Solo
+	Bypass	Pomiń
+	Thr	Próg
+	Ratio	Stosunek
+	Att	Atak
+	Rel	Zwoln.
+	Gain	Wzmocnienie
+	Output Gain	Wzmocnienie wyjściowe
+	Limiter	Limiter
+	Link Channels	Połącz kanały
+	Limiter Threshold	Próg limitera
+	Limiter Release	Zwolnienie limitera
+	Auto Gate	Automatyczna bramka
+	Threshold	Próg
+	Attack	Atak
+	Release	Zwolnienie
+	Hold	Przytrzymanie
+	Compressor	Kompresor
+	Auto Makeup	Automatyczne wyrównanie
+	Makeup	Wyrównanie
+	Expander	Ekspander
+	Soft Clip	Miękkie obcinanie
+	(no sequences)	(brak sekwencji)
+	(no clips)	(brak klipów)
+	Show Transport Controls	Pokaż elementy sterujące odtwarzaniem
+	Loop	Zapętl
+	Multi-Camera Audio Follows Video	Audio z wielu kamer podąża za wideo
+	Multi-Camera Record	Nagrywanie z wielu kamer
+	Multi-Camera Selection Top Down	Zaznaczanie wielu kamer od góry do dołu
+	Show Multi-Camera Preview Monitor	Pokaż monitor podglądu wielu kamer
+	Auto-Adjust Multi-Camera Playback Quality	Automatycznie dostosuj jakość odtwarzania wielu kamer
+	Transmit Multi-Camera View	Przesyłaj widok wielu kamer
+	Multi-Camera Layout	Układ wielu kamer
+	Automatic	Automatycznie
+	Edit Cameras…	Edytuj kamery…
+	Add Marker (M)	Dodaj znacznik (M)
+	Mark In (I)	Oznacz punkt wejścia (I)
+	Mark Out (O)	Oznacz punkt wyjścia (O)
+	Go to In (Shift+I)	Przejdź do punktu wejścia (Shift+I)
+	Step Back 1 Frame (Left)	Cofnij o 1 klatkę (Lewo)
+	Play-Stop Toggle (Space)	Odtwórz/zatrzymaj (Spacja)
+	Step Forward 1 Frame (Right)	Do przodu o 1 klatkę (Prawo)
+	Go to Out (Shift+O)	Przejdź do punktu wyjścia (Shift+O)
+	Insert (,)	Wstaw (,)
+	Overwrite (.)	Nadpisz (.)
+	Export Frame (Shift+E)	Eksportuj klatkę (Shift+E)
+	Lift (;)	Podnieś (;)
+	Extract (')	Wyodrębnij (')
+	Export Frame: use Export mode (M6)	Eksportuj klatkę: użyj trybu Eksport (M6)
+	Button Editor	Edytor przycisków
+	More transport controls	Więcej elementów sterujących odtwarzaniem
+	Multi-Camera Record on	Nagrywanie z wielu kamer wł.
+	Multi-Camera Record off	Nagrywanie z wielu kamer wył.
+	{first} - Merged	{first} – scalony
+	{first} Multicam	{first} wielokamerowy
+	In Points	Punkty wejścia
+	Out Points	Punkty wyjścia
+	Clip Marker	Znacznik klipu
+	Audio	Audio
+	Merge Clips	Scal klipy
+	Create Multi-Camera Source Sequence	Utwórz sekwencję źródłową z wielu kamer
+	Synchronize Clips	Synchronizuj klipy
+	Clip Name:	Nazwa klipu:
+	Sequence Name:	Nazwa sekwencji:
+	{n} clip(s): {names}	Klipy ({n}): {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	Zaznaczone klipy: {n}; klip na ścieżce odniesienia pozostaje na miejscu.
+	Synchronize Point	Punkt synchronizacji
+	Ignore Hours	Ignoruj godziny
+	first marker	pierwszy znacznik
+	Offset Audio by:	Przesuń audio o:
+	Offset:	Przesunięcie:
+	 frames	 klatek
+	Reference track:	Ścieżka odniesienia:
+	lowest (V1…)	najniższa (V1…)
+	Remove Audio from AV Clip	Usuń audio z klipu AV
+	Camera 1	Kamera 1
+	All Cameras	Wszystkie kamery
+	Switch Audio	Przełączaj audio
+	Camera Names	Nazwy kamer
+	Clip Names	Nazwy klipów
+	Enumerate Cameras	Numeruj kamery
+	Camera Angle Metadata	Metadane kąta kamery
+	Move source clips to Processed Clips bin	Przenieś klipy źródłowe do kosza „Przetworzone klipy”
+	Synchronized {n} clip group(s)	Zsynchronizowano grupy klipów: {n}
+	Merged clip created	Utworzono scalony klip
+	Multi-camera source sequence with {n} camera(s)	Sekwencja źródłowa z wielu kamer, kamery: {n}
+	No multi-camera clip at the playhead	Brak klipu wielokamerowego w miejscu głowicy
+	Camera {n} — {name}	Kamera {n} — {name}
+	Page {page} of {pages}	Strona {page} z {pages}
+	Previous page	Poprzednia strona
+	Next page	Następna strona
+	Multi-Camera Record On/Off (0)	Nagrywanie z wielu kamer wł./wył. (0)
+	Record	Nagrywaj
+	Edit Cameras	Edytuj kamery
+	Cameras shown in the Multi-Camera view (uncheck to hide).	Kamery pokazywane w widoku wielu kamer (odznacz, aby ukryć).
+	Recorded {n} multi-camera cut(s)	Nagrano cięcia wielokamerowe: {n}
+	Clamp Signal	Ogranicz sygnał
+	Presets	Ustawienia
+	Parade ({kind})	Parada ({kind})
+	Waveform ({kind})	Przebieg ({kind})
+	Parade Type	Typ parady
+	Waveform Type	Typ przebiegu
+	Vectorscope Targets	Cele wektoroskopu
+	Colour Space	Przestrzeń kolorów
+	Brightness	Jasność
+	Signal Scale	Skala sygnału
+	Histogram	Histogram
+	Paste Attributes	Wklej atrybuty
+	Remove Attributes	Usuń atrybuty
+	New Offline File	Nowy plik offline
+	Nested Sequence Name	Nazwa zagnieżdżonej sekwencji
+	Make Subclip	Utwórz podklip
+	Edit Subclip	Edytuj podklip
+	Modify Clip: Audio Channels	Modyfikuj klip: kanały audio
+	Modify Clip: Timecode	Modyfikuj klip: kod czasowy
+	Frame Hold Options	Opcje stopklatki
+	Field Options	Opcje pól
+	Save Project	Zapisz projekt
+	Motion	Ruch
+	Opacity	Krycie
+	Time Remapping	Remapowanie czasu
+	Channel Volume	Głośność kanału
+	In Point	Punkt wejścia
+	Out Point	Punkt wyjścia
+	Playhead	Głowica
+	Source Timecode	Kod czasowy źródła
+	Sequence Time	Czas sekwencji
+	Video Attributes	Atrybuty wideo
+	Audio Attributes	Atrybuty audio
+	No effects	Brak efektów
+	Scale Attribute Times	Skaluj czasy atrybutów
+	File Name:	Nazwa pliku:
+	Tape Name:	Nazwa taśmy:
+	Contains:	Zawiera:
+	Video	Wideo
+	Width:	Szerokość:
+	Height:	Wysokość:
+	Frame Rate:	Liczba klatek/s:
+	Media Start:	Początek multimediów:
+	Subclip: {name}	Podklip: {name}
+	Start:	Początek:
+	End:	Koniec:
+	Restrict Trims To Subclip Boundaries	Ogranicz przycinanie do granic podklipu
+	Convert to Master Clip	Konwertuj na klip główny
+	Clip Channel Format:	Format kanałów klipu:
+	Number of Audio Clips:	Liczba klipów audio:
+	Media Source Channels	Kanały źródła multimediów
+	Ch. {n}	Kan. {n}
+	Clip {n}	Klip {n}
+	Source channels the selected audio clips play:	Kanały źródłowe odtwarzane przez zaznaczone klipy audio:
+	Set Timecode:	Ustaw kod czasowy:
+	Use the file's timecode	Użyj kodu czasowego pliku
+	Hold On	Zatrzymaj na
+	Timecode:	Kod czasowy:
+	Hold Filters	Zatrzymaj filtry
+	Reverse Field Dominance	Odwróć dominację pól
+	Processing Options	Opcje przetwarzania
+	None	Brak
+	Always Deinterlace	Zawsze usuwaj przeplot
+	Flicker Removal	Usuwanie migotania
+	Save changes to “{project_name}” before closing?	Zapisać zmiany w „{project_name}” przed zamknięciem?
+	Don't Save	Nie zapisuj
+	All media is online.	Wszystkie multimedia są online.
+	{name} (copy)	{name} (kopia)
+	Offline	Offline
+	Missing	Brak
+	Link Media	Połącz multimedia
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	Klipy bez multimediów: {n}. Znajdź je, przeszukaj folder lub pozostaw offline.
+	Clip Name	Nazwa klipu
+	File Name	Nazwa pliku
+	File Path	Ścieżka pliku
+	Status	Stan
+	Match file properties:	Dopasuj właściwości pliku:
+	File Extension	Rozszerzenie pliku
+	Clip ID (fingerprint)	Identyfikator klipu (odcisk)
+	Duration	Czas trwania
+	Media Start	Początek multimediów
+	Frame Size / Rate	Rozmiar / szybkość klatek
+	Align Timecode	Wyrównaj kod czasowy
+	Relink others automatically	Automatycznie połącz ponownie pozostałe
+	Search in:	Szukaj w:
+	Browse…	Przeglądaj…
+	A file dialog is already open	Okno wyboru pliku jest już otwarte
+	Exact name matches only	Tylko dokładne dopasowania nazw
+	No candidates yet — Search a folder or Locate the file.	Brak kandydatów — przeszukaj folder lub znajdź plik.
+	✔ same file	✔ ten sam plik
+	✔ matches	✔ pasuje
+	✖ different file	✖ inny plik
+	Preview	Podgląd
+	Offline All	Wszystkie offline
+	Locate…	Znajdź…
+	Linked {n} clip(s)	Połączono klipy: {n}
+	Nothing found with that name.	Nie znaleziono niczego o tej nazwie.
+	Make Offline	Ustaw jako offline
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Ustaw zaznaczone klipy ({n}) jako offline. Będą pokazywać planszę offline, dopóki ich ponownie nie połączysz.
+	Media files remain on disk	Pliki multimediów pozostają na dysku
+	Media files are deleted	Pliki multimediów są usuwane
+	Create Proxies	Utwórz proxy
+	{n} clip(s) selected.	Zaznaczone klipy: {n}.
+	Format and size	Format i rozmiar
+	Destination	Miejsce docelowe
+	Next to the original media, in a Proxies folder	Obok oryginalnych multimediów, w folderze Proxies
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	Proxy są tworzone w tle i dołączane po zakończeniu. Eksport zawsze używa multimediów w pełnej rozdzielczości.
+	Creating {n} proxy file(s)…	Tworzenie plików proxy: {n}…
+	Project Manager	Menedżer projektu
+	Sequences	Sekwencje
+	Resulting Project	Wynikowy projekt
+	Collect Files and Copy to New Location	Zbierz pliki i skopiuj do nowego miejsca
+	Consolidate and Transcode	Scal i transkoduj
+	Options	Opcje
+	Exclude Unused Clips	Wyklucz nieużywane klipy
+	Include Handles:	Uwzględnij zapasy:
+	Include Proxies	Uwzględnij proxy
+	Include Preview Files	Uwzględnij pliki podglądu
+	Destination Path	Ścieżka docelowa
+	Disk space: original {original} · resulting {result} ({n} files)	Miejsce na dysku: oryginał {original} · wynik {result} (pliki: {n})
+	Disk space: —	Miejsce na dysku: —
+	Calculate	Oblicz
+	Project Manager: writing {path}	Menedżer projektu: zapisywanie {path}
+	Timeline: (no sequences)	Oś czasu: (brak sekwencji)
+	Browse	Przeglądaj
+	Select audio clips, then click a preset to apply it.	Zaznacz klipy audio, a następnie kliknij ustawienie, aby je zastosować.
+	{name} (user)	{name} (użytkownika)
+	Select audio clips to edit them here	Zaznacz klipy audio, aby je tu edytować
+	Multiple Clips Selected	Zaznaczono wiele klipów
+	The selected clips have different audio types. Assign one type to edit them together.	Zaznaczone klipy mają różne typy audio. Przypisz jeden typ, aby edytować je razem.
+	Assign an audio type to the selection:	Przypisz typ audio do zaznaczenia:
+	Clear Audio Type	Wyczyść typ audio
+	Preset:	Ustawienie:
+	(Custom)	(Niestandardowe)
+	Preset name	Nazwa ustawienia
+	Reduce Noise	Redukcja szumu
+	Reduce Rumble	Redukcja dudnienia
+	DeHum	Usuwanie przydźwięku
+	DeEss	Usuwanie sybilantów
+	Reduce Reverb	Redukcja pogłosu
+	Dynamics	Dynamika
+	EQ	Korektor
+	Enhance Speech	Poprawa mowy
+	Low Tone	Niskie tony
+	High Tone	Wysokie tony
+	Mix	Miks
+	Reverb	Pogłos
+	Stereo Width	Szerokość stereo
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Remiksowanie muzyki do docelowego czasu trwania nie jest jeszcze dostępne. Zamiast tego przytnij klip i dodaj przenikanie.
+	Pan	Panoramowanie
+	Auto-Match	Automatyczne dopasowanie
+	Not matched yet	Jeszcze nie dopasowano
+	Matches each of the {n} clips on its own.	Dopasowuje każdy z klipów ({n}) osobno.
+	Duck against:	Wyciszaj względem:
+	Untagged	Bez typu
+	Sensitivity	Czułość
+	Reduce By	Zmniejsz o
+	Fades	Wyciszenia
+	Generate Keyframes	Generuj klatki kluczowe
+	Clip Volume	Głośność klipu
+	(no clip selected)	(nie zaznaczono klipu)
+	Master · {name}	Główny · {name}
+	Add Lumetri Color to clip	Dodaj Kolor Lumetri do klipu
+	Input LUT	Wejściowy LUT
+	Color	Kolor
+	Temperature	Temperatura
+	Tint	Odcień
+	Saturation	Nasycenie
+	Exposure	Ekspozycja
+	Contrast	Kontrast
+	Highlights	Światła
+	Shadows	Cienie
+	Whites	Biele
+	Blacks	Czernie
+	HDR	HDR
+	HDR White	Biel HDR
+	HDR Specular	Odblaski HDR
+	Look	Wygląd
+	Look LUT	LUT wyglądu
+	Intensity	Natężenie
+	Adjustments	Korekty
+	Faded Film	Wyblakły film
+	Sharpen	Wyostrzanie
+	Vibrance	Jaskrawość
+	RGB Curves	Krzywe RGB
+	HDR Range	Zakres HDR
+	Hue Saturation Curves	Krzywe barwy i nasycenia
+	Hue vs Sat	Barwa a nasycenie
+	Hue vs Hue	Barwa a barwa
+	Hue vs Luma	Barwa a luma
+	Luma vs Sat	Luma a nasycenie
+	Sat vs Sat	Nasycenie a nasycenie
+	Midtones	Półtony
+	Key	Klucz
+	Hue	Barwa
+	Hue Range	Zakres barwy
+	Saturation Min	Minimalne nasycenie
+	Luma Min	Minimalna luma
+	Luma Max	Maksymalna luma
+	Soften	Zmiękczenie
+	Show Mask	Pokaż maskę
+	Off	Wył.
+	Color/Gray	Kolor/szary
+	Color/Black	Kolor/czarny
+	White/Black	Biały/czarny
+	Refine	Doprecyzuj
+	Denoise	Odszumianie
+	Blur	Rozmycie
+	Correction	Korekta
+	Hue Shift	Przesunięcie barwy
+	Midpoint	Punkt środkowy
+	Roundness	Okrągłość
+	Feather	Wtapianie
+	LUT	LUT
+	Color Match	Dopasowanie koloru
+	Reference	Odniesienie
+	Face Detection (protect skin tones)	Wykrywanie twarzy (chroń odcienie skóry)
+	Apply Match	Zastosuj dopasowanie
+	Create ellipse mask	Utwórz maskę eliptyczną
+	Create 4-point polygon mask	Utwórz 4-punktową maskę wielokątną
+	Free draw bezier	Swobodne rysowanie krzywej Béziera
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Klikaj w monitorze programu, aby umieszczać punkty maski (przeciągnij, aby uzyskać krzywe); kliknij pierwszy punkt lub naciśnij Enter, aby zamknąć
+	Delete Mask	Usuń maskę
+	Inverted	Odwrócona
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Przeciągnij: przesuń · Alt-klik: gładki/narożny · Cmd-klik: usuń
+	Track selected mask backward	Śledź zaznaczoną maskę wstecz
+	Track selected mask backward 1 frame	Śledź zaznaczoną maskę wstecz o 1 klatkę
+	Track selected mask forward 1 frame	Śledź zaznaczoną maskę do przodu o 1 klatkę
+	Track selected mask forward	Śledź zaznaczoną maskę do przodu
+	Stop tracking	Zatrzymaj śledzenie
+	Tracking method: {method}	Metoda śledzenia: {method}
+	Composite	Kompozyt
+	Comparison	Porównanie
+	Video and Waveform	Wideo i przebieg
+	System Default	Domyślne systemowe
+	Default location	Domyślna lokalizacja
+	Font family	Rodzina czcionek
+	Label Colors	Kolory etykiet
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Zdekodowane klatki dla monitorów i miniatur: {used} z {budget}.
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft pozostawia resztę pamięci RAM wolną dla innych aplikacji.
+	not available in this session	niedostępne w tej sesji
+	Currently: {loc} — {files} file(s), {size}	Obecnie: {loc} — pliki: {files}, {size}
+	 ({ch} output channels)	 (kanały wyjściowe: {ch})
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Lewy kanał programu → wyjście urządzenia {l}, prawy → wyjście urządzenia {r}{dev}. Wyjścia poza kanałami urządzenia wracają do 1 i 2.
+	Auto-saves go to: {dir}	Automatyczne zapisy trafiają do: {dir}
+	Recovery copy: {dir}	Kopia odzyskiwania: {dir}
+	Last auto-save {a} · last recovery copy {j}	Ostatni automatyczny zapis {a} · ostatnia kopia odzyskiwania {j}
+	Last auto-save {a}	Ostatni automatyczny zapis {a}
+	Last recovery copy {j}	Ostatnia kopia odzyskiwania {j}
+	Remove Media Cache Files	Usuń pliki pamięci podręcznej multimediów
+	Deleted {n} file(s), {size}.	Usunięto pliki: {n}, {size}.
+	Reset…	Resetuj…
+	Source · {name}	Źródło · {name}
+	Reset Effect	Resetuj efekt
+	Reset Parameter	Resetuj parametr
+	Save Preset…	Zapisz ustawienie…
+	Custom Setup	Konfiguracja niestandardowa
+	Edit…	Edytuj…
+	Show graphs	Pokaż wykresy
+	Toggle animation	Przełącz animację
+	Eyedropper (pick a color from the Program monitor)	Kroplomierz (pobierz kolor z monitora programu)
+	Eyedropper: no picture to sample	Kroplomierz: brak obrazu do pobrania próbki
+	Add/Remove Keyframe	Dodaj/usuń klatkę kluczową
+	Temporal Interpolation	Interpolacja czasowa
+	Linear	Liniowa
+	Bezier	Bézier
+	Auto Bezier	Auto Bézier
+	Continuous Bezier	Ciągły Bézier
+	Ease In	Łagodne wejście
+	Ease Out	Łagodne wyjście
+	Select a clip to grade	Zaznacz klip do gradacji
+	Select a clip to see its properties	Zaznacz klip, aby zobaczyć jego właściwości
+	Anchor point	Punkt zakotwiczenia
+	Rotation	Obrót
+	Level	Poziom
+	Speed {n}%	Szybkość {n}%
+	Value	Wartość
+	Velocity	Prędkość
+	Default	Domyślna
+	Custom ({n} points)	Niestandardowa (punkty: {n})
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	Zaznacz klip graficzny lub użyj narzędzia Tekst (T) w monitorze programu
+	Create new graphic	Utwórz nową grafikę
+	New Text Layer	Nowa warstwa tekstowa
+	New Text	Nowy tekst
+	New Rectangle	Nowy prostokąt
+	New Ellipse	Nowa elipsa
+	Delete Layer	Usuń warstwę
+	Select a layer to edit its properties.	Zaznacz warstwę, aby edytować jej właściwości.
+	Align Left	Wyrównaj do lewej
+	Align Center Horizontally	Wyśrodkuj w poziomie
+	Align Right	Wyrównaj do prawej
+	Align Top	Wyrównaj do góry
+	Align Center Vertically	Wyśrodkuj w pionie
+	Align Bottom	Wyrównaj do dołu
+	Font	Czcionka
+	Font Style	Styl czcionki
+	Font Size	Rozmiar czcionki
+	Alignment	Wyrównanie
+	Left Align Text	Wyrównaj tekst do lewej
+	Center Align Text	Wyśrodkuj tekst
+	Right Align Text	Wyrównaj tekst do prawej
+	Justify	Justuj
+	Tracking	Światło
+	Leading	Interlinia
+	Baseline Shift	Przesunięcie linii bazowej
+	Text Box Width	Szerokość pola tekstowego
+	Style	Styl
+	Faux Bold	Sztuczne pogrubienie
+	Faux Italic	Sztuczna kursywa
+	All Caps	Wersaliki
+	Small Caps	Kapitaliki
+	Underline	Podkreślenie
+	OpenType	OpenType
+	Kerning	Kerning
+	Ligatures	Ligatury
+	Shape	Kształt
+	Size	Rozmiar
+	Corner Radius	Promień narożnika
+	Polygon Sides	Boki wielokąta
+	Fill	Wypełnienie
+	Stroke	Obrys
+	Stroke 2	Obrys 2
+	Background	Tło
+	   Opacity	   Krycie
+	   Size	   Rozmiar
+	   Corner Radius	   Promień narożnika
+	Shadow	Cień
+	   Angle	   Kąt
+	   Distance	   Odległość
+	   Blur	   Rozmycie
+	Search templates	Szukaj szablonów
+	All Categories	Wszystkie kategorie
+	Install…	Zainstaluj…
+	Install Motion Graphics Template (.fcgt)	Zainstaluj szablon grafiki ruchomej (.fcgt)
+	No templates match.	Żaden szablon nie pasuje.
+	{category} · My Template	{category} · Mój szablon
+	Apply	Zastosuj
+	Remove	Usuń
+	{n} editable properties	Edytowalne właściwości: {n}
+	   Template: {name}	   Szablon: {name}
+	Intro Duration	Czas trwania wejścia
+	Outro Duration	Czas trwania wyjścia
+	Roll	Przewijanie
+	Start Off Screen	Zacznij poza ekranem
+	End Off Screen	Zakończ poza ekranem
+	Preroll	Preroll
+	Postroll	Postroll
+	Video Frame	Klatka wideo
+	Pin To	Przypnij do
+	Pinned Edges	Przypięte krawędzie
+	FilmCraft Graphics Template	Szablon grafiki FilmCraft
+	{n} Font	{n} — czcionka
+	{n} Size	{n} — rozmiar
+	{n} Color	{n} — kolor
+	{n} Position	{n} — położenie
+	Show {n}	Pokaż {n}
+	My Templates	Moje szablony
+	Export As Motion Graphics Template	Eksportuj jako szablon grafiki ruchomej
+	Category:	Kategoria:
+	Editable properties:	Edytowalne właściwości:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Zapisano jako szablon grafiki FilmCraft (.fcgt) w folderze szablonów.
+	Exported graphics template to {path}	Wyeksportowano szablon grafiki do {path}
+	Replace Fonts in Projects	Zastąp czcionki w projektach
+	Fonts used in the project:	Czcionki użyte w projekcie:
+	{f} (missing)	{f} (brak)
+	Replace:	Zastąp:
+	Replaced {n} font uses	Zastąpiono użycia czcionek: {n}
+	Show/Hide Effects and Sends	Pokaż/ukryj efekty i wysyłki
+	Audio Track Mixer menu	Menu miksera ścieżek audio
+	Show/Hide Tracks…	Pokaż/ukryj ścieżki…
+	Meter Input(s) Only	Mierz tylko wejścia
+	Show/Hide Tracks	Pokaż/ukryj ścieżki
+	Show All	Pokaż wszystko
+	Post-Fader	Za suwakiem
+	Remove Effect	Usuń efekt
+	Fill the slots above first	Najpierw wypełnij powyższe gniazda
+	pre 	przed 
+	Pre-Fader	Przed suwakiem
+	Mute Send	Wycisz wysyłkę
+	Remove Send	Usuń wysyłkę
+	New Submix	Nowy submiks
+	Pan / balance (drag; double-click: centre)	Panorama / balans (przeciągnij; kliknij dwukrotnie: środek)
+	Solo safe	Bezpieczne solo
+	Enable track for recording	Włącz ścieżkę do nagrywania
+	Volume (drag; double-click: 0 dB)	Głośność (przeciągnij; kliknij dwukrotnie: 0 dB)
+	5.1 panner (drag the puck; double-click: front centre)	Panoramowanie 5.1 (przeciągnij punkt; kliknij dwukrotnie: przód środek)
+	Center	Środek
+	Go to In Point	Przejdź do punktu wejścia
+	Go to Out Point	Przejdź do punktu wyjścia
+	Play In to Out	Odtwórz od wejścia do wyjścia
+	Record (voice-over on the record-enabled track)	Nagrywaj (lektor na ścieżce z włączonym nagrywaniem)
+	Write keyframes	Zapisuj klatki kluczowe
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Podczas rysowania okna coś poszło nie tak. Projekt jest nadal otwarty; dla bezpieczeństwa go zapisz.
+	Continue	Kontynuuj
+	Go Back	Wstecz
+	Go Forward	Dalej
+	Up One Level	Poziom wyżej
+	File Types Displayed	Wyświetlane typy plików
+	List View	Widok listy
+	Thumbnail View	Widok miniatur
+	Ingest	Pozyskaj
+	Open Ingest Settings	Otwórz ustawienia pozyskiwania
+	Import as Image Sequence	Importuj jako sekwencję obrazów
+	{sel} of {total} items selected	Zaznaczone elementy: {sel} z {total}
+	{total} items	Elementy: {total}
+	Cannot open {dir}: {e}	Nie można otworzyć {dir}: {e}
+	Favorites	Ulubione
+	Local Drives	Dyski lokalne
+	Network	Sieć
+	Recent Directories	Ostatnie katalogi
+	  (none)	  (brak)
+	Remove from Favorites	Usuń z ulubionych
+	Add to Favorites	Dodaj do ulubionych
+	Clear Recent Directories	Wyczyść ostatnie katalogi
+	Open In Source Monitor	Otwórz w monitorze źródła
+	Reveal in Finder	Pokaż w Finderze
+	Edit Columns…	Edytuj kolumny…
+	Hover Scrub	Przewijanie po najechaniu
+	New Media Browser Panel	Nowy panel przeglądarki multimediów
+	Create Folder For Imported Projects	Utwórz folder dla importowanych projektów
+	Allow Duplicate Media During Project Import	Zezwalaj na duplikaty multimediów przy imporcie projektu
+	Refresh	Odśwież
+	Edit Columns	Edytuj kolumny
+	Guides	Linie pomocnicze
+	(no audio)	(brak audio)
+	Generating waveform…	Generowanie przebiegu…
+	Reference  {tc}	Odniesienie  {tc}
+	Set	Ustaw
+	Set the reference to the playhead	Ustaw odniesienie w miejscu głowicy
+	Reference: next frame	Odniesienie: następna klatka
+	Reference: previous frame	Odniesienie: poprzednia klatka
+	RGBA Channels	Kanały RGBA
+	Add Guide	Dodaj linię pomocniczą
+	Save Guides as Template	Zapisz linie pomocnicze jako szablon
+	Manage Guides	Zarządzaj liniami pomocniczymi
+	Orientation:	Orientacja:
+	Vertical	Pionowa
+	Horizontal	Pozioma
+	Position:	Położenie:
+	No saved guide templates.	Brak zapisanych szablonów linii pomocniczych.
+	Project: {name}	Projekt: {name}
+	Bin: {name}	Kosz: {name}
+	Up one level	Poziom wyżej
+	Video Usage: {vu}  Audio Usage: {au}	Użycie wideo: {vu}  Użycie audio: {au}
+	Icon View	Widok ikon
+	Freeform View	Widok swobodny
+	Sort Icons	Sortuj ikony
+	Clear (Delete)	Wyczyść (Delete)
+	New Item	Nowy element
+	New Bin	Nowy kosz
+	Find	Znajdź
+	Automate to Sequence	Automatyzuj do sekwencji
+	Select items to clear	Zaznacz elementy do wyczyszczenia
+	User Order	Kolejność użytkownika
+	Descending	Malejąco
+	Refresh Project	Odśwież projekt
+	Reveal Project in Finder…	Pokaż projekt w Finderze…
+	New Bin From Selection	Nowy kosz z zaznaczenia
+	New Search Bin	Nowy kosz wyszukiwania
+	New Project Shortcut	Nowy skrót projektu
+	List	Lista
+	Icon	Ikony
+	Freeform	Swobodny
+	Preview Area	Obszar podglądu
+	Thumbnails	Miniatury
+	Thumbnails show effects applied	Miniatury pokazują zastosowane efekty
+	Thumbnail controls for all pointing devices	Elementy sterujące miniatur dla wszystkich urządzeń wskazujących
+	Refresh Sort Order	Odśwież kolejność sortowania
+	Metadata Display…	Wyświetlanie metadanych…
+	Save Current View Preset	Zapisz bieżące ustawienie widoku
+	Restore View Preset	Przywróć ustawienie widoku
+	Project View Preset {n}	Ustawienie widoku projektu {n}
+	Freeform View Options…	Opcje widoku swobodnego…
+	Media missing	Brak multimediów
+	Unreadable	Nieczytelne
+	Open in Source Monitor	Otwórz w monitorze źródła
+	Open in Timeline	Otwórz na osi czasu
+	New Sequence From Clip	Nowa sekwencja z klipu
+	Set Poster Frame	Ustaw klatkę plakatu
+	Proxy	Proxy
+	Open in Place	Otwórz w miejscu
+	Open in New Tab	Otwórz w nowej karcie
+	Open in New Window	Otwórz w nowym oknie
+	{n} items	Elementy: {n}
+	Stack	Stos
+	Unstack	Rozdziel stos
+	Clip Size	Rozmiar klipu
+	Larger	Większy
+	Smaller	Mniejszy
+	Align to Grid	Wyrównaj do siatki
+	Reset to Grid	Resetuj do siatki
+	Save Arrangement…	Zapisz układ…
+	Restore Arrangement	Przywróć układ
+	Delete Arrangement	Usuń układ
+	Drop media here to create sequence.	Upuść tutaj multimedia, aby utworzyć sekwencję.
+	Double-click a sequence in the Project panel to open it here.	Kliknij dwukrotnie sekwencję w panelu Projekt, aby ją tu otworzyć.
+	Open Demo Project	Otwórz projekt demonstracyjny
+	Insert and overwrite sequences as nests or individual clips	Wstawiaj i nadpisuj sekwencje jako zagnieżdżenia lub pojedyncze klipy
+	Snap in Timeline (S)	Przyciągaj na osi czasu (S)
+	Caption track options	Opcje ścieżki napisów
+	Timeline Display Settings	Ustawienia wyświetlania osi czasu
+	Show Video Thumbnails	Pokaż miniatury wideo
+	Head	Początek
+	Head and Tail	Początek i koniec
+	Continuous	Ciągłe
+	Show Audio Waveform	Pokaż przebieg audio
+	Expand All Tracks	Rozwiń wszystkie ścieżki
+	Minimize All Tracks	Zminimalizuj wszystkie ścieżki
+	Unrendered: should play back in real time	Niewyrenderowane: powinno odtwarzać się w czasie rzeczywistym
+	Unrendered: render to play back in real time	Niewyrenderowane: wyrenderuj, aby odtwarzać w czasie rzeczywistym
+	Rendered preview	Wyrenderowany podgląd
+	✓ Enable	✓ Włącz
+	Unlink	Rozłącz
+	(Default)	(Domyślne)
+	(RGB) Gamma	(RGB) Gamma
+	(RGB) Input Black Level	(RGB) Poziom czerni wejścia
+	(RGB) Input White Level	(RGB) Poziom bieli wejścia
+	(RGB) Output Black Level	(RGB) Poziom czerni wyjścia
+	(RGB) Output White Level	(RGB) Poziom bieli wyjścia
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	Punkt czerni 10-bit
+	10 Bit White Point	Punkt bieli 10-bit
+	105mm Prime	Stałoogniskowy 105 mm
+	29.97 fps Drop-Frame	29,97 kl./s z pomijaniem klatek
+	29.97 fps Non Drop-Frame	29,97 kl./s bez pomijania klatek
+	35mm Prime	Stałoogniskowy 35 mm
+	3D Roll	Przewrót 3D
+	3D Rotate	Obrót 3D
+	3D Spin	Wirowanie 3D
+	3D Spinback	Wirowanie wsteczne 3D
+	4-Color Gradient	Gradient 4-kolorowy
+	5.1 Media	Multimedia 5.1
+	5.1 Mixdown Type	Typ miksu 5.1
+	50-300mm Zoom	Zoom 50–300 mm
+	59.94 fps Drop-Frame	59,94 kl./s z pomijaniem klatek
+	59.94 fps Non Drop-Frame	59,94 kl./s bez pomijania klatek
+	ASC CDL	ASC CDL
+	Accessible color contrast	Dostępny kontrast kolorów
+	Action-Safe Margin	Margines bezpieczny akcji
+	Active Monitor	Aktywny monitor
+	Add	Dodaj
+	Add tracks automatically when editing source clips onto the Timeline	Automatycznie dodawaj ścieżki podczas umieszczania klipów źródłowych na osi czasu
+	Place files dropped onto the Timeline directly on the Timeline	Umieszczaj pliki upuszczone na oś czasu bezpośrednio na osi czasu
+	1 file	1 plik
+	{n} files	Pliki: {n}
+	Additional Scale	Dodatkowa skala
+	Additive Dissolve	Przenikanie addytywne
+	Additive Dissolve (Legacy)	Przenikanie addytywne (starsze)
+	Adjust	Dostosuj
+	Advanced	Zaawansowane
+	Aggressive	Agresywne
+	Align and Transform	Wyrównanie i przekształcenie
+	All lines	Wszystkie wiersze
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Pozwól narzędziu Zaznaczanie wybierać przycinanie Roll i Ripple bez klawisza modyfikatora
+	Allow current tool to change trim type of previously selected edit point	Pozwól bieżącemu narzędziu zmieniać typ przycinania wcześniej zaznaczonego punktu cięcia
+	Allow duplicate media during project import	Zezwalaj na duplikaty multimediów przy imporcie projektu
+	Alpha Adjust	Korekta alfy
+	Alpha Blurriness	Rozmycie alfy
+	Alpha Channel	Kanał alfa
+	Alpha Glow	Poświata alfy
+	Always import embedded CEA-708 closed captions with wide aspect.	Zawsze importuj osadzone napisy CEA-708 w szerokim formacie.
+	Always override audio tags	Zawsze zastępuj znaczniki audio
+	Ambience	Atmosfera
+	Ambience Intensity	Natężenie atmosfery
+	Ambience Light Color	Kolor światła atmosfery
+	Amount of Noise	Ilość szumu
+	Amount to Decolor	Stopień odbarwienia
+	Amount to Tint	Stopień zabarwienia
+	Amplifier	Wzmacniacz
+	Amplify	Wzmocnij
+	Amplitude	Amplituda
+	Amplitude and Compression	Amplituda i kompresja
+	Analog	Analogowe
+	Analog Delay	Opóźnienie analogowe
+	Analyze all imported media to search for visuals or audio	Analizuj wszystkie importowane multimedia pod kątem wyszukiwania obrazu lub dźwięku
+	Anamorphic	Anamorficzny
+	Anchor	Kotwica
+	Anchor Point	Punkt zakotwiczenia
+	Angle	Kąt
+	Animation	Animacja
+	Anti-aliasing Quality	Jakość wygładzania
+	Anti-flicker Filter	Filtr przeciwmigotaniowy
+	Antialiasing for Best Quality	Wygładzanie dla najlepszej jakości
+	Asymmetry	Asymetria
+	At Startup	Przy uruchomieniu
+	At playback end, return to beginning when restarting playback	Po zakończeniu odtwarzania wracaj na początek przy ponownym odtworzeniu
+	Attempt to force hardware to document sample rate	Próbuj wymusić na sprzęcie częstotliwość próbkowania dokumentu
+	Audio Codec	Kodek audio
+	Audio Duration	Czas trwania audio
+	Audio Effects	Efekty audio
+	Audio Hardware	Sprzęt audio
+	Audio In Point	Punkt wejścia audio
+	Audio Info	Informacje o audio
+	Audio Out Point	Punkt wyjścia audio
+	Audio Samples	Próbki audio
+	Audio Time Units	Jednostki czasu audio
+	Audio Transition Default Duration	Domyślny czas trwania przejścia audio
+	Audio Transitions	Przejścia audio
+	Audio Usage	Użycie audio
+	Auto	Auto
+	Auto Align	Automatyczne wyrównanie
+	Auto Reframe	Automatyczne przekadrowanie
+	Auto Save	Automatyczny zapis
+	Auto Save also saves the current project(s)	Automatyczny zapis zapisuje też bieżące projekty
+	Auto-tag audio types in the timeline	Automatycznie oznaczaj typy audio na osi czasu
+	Auto-transcribe all imported clips	Automatycznie transkrybuj wszystkie importowane klipy
+	Auto-transcribe only clips in sequences	Automatycznie transkrybuj tylko klipy w sekwencjach
+	Automatch Time	Czas automatycznego dopasowania
+	Automatic Click Remover	Automatyczne usuwanie trzasków
+	Automatically Hide Dependent Clips	Automatycznie ukrywaj klipy zależne
+	Automatically Save Every	Zapisuj automatycznie co
+	Automatically delete cache files older than	Automatycznie usuwaj pliki pamięci podręcznej starsze niż
+	Automatically delete oldest cache files when cache exceeds	Automatycznie usuwaj najstarsze pliki, gdy pamięć podręczna przekroczy
+	Automatically refresh growing files	Automatycznie odświeżaj rosnące pliki
+	Automatically resume playback for growing files in Source Monitor	Automatycznie wznawiaj odtwarzanie rosnących plików w monitorze źródła
+	Automatically save projects	Automatycznie zapisuj projekty
+	Automatically transcribe clips	Automatycznie transkrybuj klipy
+	Automation Keyframe Optimization	Optymalizacja klatek kluczowych automatyzacji
+	Background Color	Kolor tła
+	Background Corner Radius	Promień narożnika tła
+	Background Opacity	Krycie tła
+	Background Size	Rozmiar tła
+	Background fill	Wypełnienie tła
+	Balance	Balans
+	Balanced Voice	Zrównoważony głos
+	Band 1	Pasmo 1
+	Band 2	Pasmo 2
+	Band 3	Pasmo 3
+	Band 4	Pasmo 4
+	Band 5	Pasmo 5
+	Band Pass	Środkowoprzepustowy
+	Band Slide	Przesunięcie pasm
+	Band Stop	Środkowozaporowy
+	Bandpass	Środkowoprzepustowy
+	Barn Doors	Wrota
+	Basic	Podstawowe
+	Basic 3D	Podstawowe 3D
+	Basic Correction	Podstawowa korekta
+	Bass	Basy
+	Behind	Za
+	Bessel	Bessel
+	Bevel Alpha	Fazowanie alfy
+	Bevel join	Połączenie ścięte
+	Binauralizer - Ambisonics	Binauralizer – Ambisonics
+	Bins	Kosze
+	Black	Czarny
+	Black & White	Czarno-biały
+	Black Input Level	Poziom czerni wejścia
+	Black and white	Czarno-biały
+	Black and white with crushed blacks and strong contrast	Czarno-biały ze zgniecionymi czerniami i mocnym kontrastem
+	Bleach Bypass	Bleach Bypass
+	Bleach-bypass style: desaturated with hard contrast	Styl bleach bypass: odbarwiony z ostrym kontrastem
+	Blend	Mieszaj
+	Blend Mode	Tryb mieszania
+	Blend With Original	Mieszaj z oryginałem
+	Blending Mode	Tryb mieszania
+	Block Dissolve	Przenikanie blokowe
+	Block Height	Wysokość bloku
+	Block Motion	Ruch bloków
+	Block Size	Rozmiar bloku
+	Block Width	Szerokość bloku
+	Blocks	Bloki
+	Blue Blurriness	Rozmycie niebieskiego
+	Blue Curve	Krzywa niebieskiego
+	Blue Offset	Przesunięcie niebieskiego
+	Blue Power	Moc niebieskiego
+	Blue Slope	Nachylenie niebieskiego
+	Blue-Blue	Niebieski-niebieski
+	Blue-Const	Niebieski-stała
+	Blue-Green	Niebieski-zielony
+	Blue-Red	Niebieski-czerwony
+	Blur & Sharpen	Rozmycie i wyostrzanie
+	Blur Amount	Stopień rozmycia
+	Blur Angle	Kąt rozmycia
+	Blur Dimensions	Wymiary rozmycia
+	Blur Dissolve	Przenikanie z rozmyciem
+	Blur Layer	Warstwa rozmycia
+	Blur Length	Długość rozmycia
+	Blurriness	Rozmycie
+	Bokeh Blur	Rozmycie bokeh
+	Boost	Wzmocnienie
+	Border	Obramowanie
+	Border Color	Kolor obramowania
+	Border Width	Szerokość obramowania
+	Borders	Obramowania
+	Bottom Center	Dół środek
+	Bottom Left	Dół lewo
+	Bottom Right	Dół prawo
+	Bounce	Odbicie
+	Branching	Rozgałęzienia
+	Bright	Jasny
+	Bright Air	Jasne powietrze
+	Bright Studio	Jasne studio
+	Brightness & Contrast	Jasność i kontrast
+	British Stack	Brytyjski stos
+	Brush Hardness	Twardość pędzla
+	Brush Opacity	Krycie pędzla
+	Brush Position	Położenie pędzla
+	Brush Size	Rozmiar pędzla
+	Brush Spacing (secs)	Odstęp pędzla (s)
+	Brush Strokes	Pociągnięcia pędzla
+	Bubbles	Bąbelki
+	Bulge	Wybrzuszenie
+	Bulge Smoother	Wygładzanie wybrzuszenia
+	Bump Height	Wysokość wypukłości
+	Burn Alpha	Wypalenie alfy
+	Burn Chroma	Wypalenie chrominancji
+	Burn Color	Wypalenie koloru
+	Butt cap	Zakończenie płaskie
+	Butterworth	Butterworth
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	Zapisuj wyniki analizy w pamięci podręcznej do ponownego użycia
+	Camera Angle	Kąt kamery
+	Camera Blur	Rozmycie kamery
+	Camera Shake	Drgania kamery
+	Capitalisation	Wielkość liter
+	Cathedral	Katedra
+	Cell Pattern	Wzór komórek
+	Center Channel Pan	Panoramowanie kanału centralnego
+	Center Gradient	Gradient środkowy
+	Center Input	Wejście ze środka
+	Center Out	Wyjście ze środka
+	Center Point (Latitude)	Punkt środkowy (szerokość geogr.)
+	Center Point (Longitude)	Punkt środkowy (długość geogr.)
+	Center Split	Podział od środka
+	Center of Sphere	Środek kuli
+	Cents	Centy
+	Change to Color	Zmień na kolor
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Zmiany są kopiowane w tle chwilę po każdej edycji. Jeśli FilmCraft nieoczekiwanie się zamknie, zostaną zaproponowane przy następnym uruchomieniu.
+	Channel	Kanał
+	Channel Blur	Rozmycie kanałów
+	Channel Mix	Miks kanałów
+	Channel Mixer	Mikser kanałów
+	Chaos	Chaos
+	Chebyshev	Czebyszew
+	Checker Wipe	Szachownica — wymazanie
+	Checkerboard	Szachownica
+	Chinese	Chiński
+	Choke	Dławienie
+	Chorus	Chorus
+	Chorus/Flanger	Chorus/Flanger
+	Chroma	Chrominancja
+	Chroma Leak	Przeciek chrominancji
+	Chromatic Aberration (Blue)	Aberracja chromatyczna (niebieski)
+	Chromatic Aberration (Green)	Aberracja chromatyczna (zielony)
+	Chromatic Aberration (Red)	Aberracja chromatyczna (czerwony)
+	Cineon Converter	Konwerter Cineon
+	Circle	Okrąg
+	Clarity	Przejrzystość
+	Clean Combo	Czysty zestaw
+	Clean Up Noisy Dialogue	Oczyść zaszumiony dialog
+	Clear Muddiness	Usuń zamulenie
+	Client	Klient
+	Clip	Klip
+	Clip Level	Poziom klipu
+	Clipping	Przesterowanie
+	Clock Wipe	Wymazanie zegarowe
+	Clock Wipe (Legacy)	Wymazanie zegarowe (starsze)
+	Clockwise	Zgodnie z ruchem wskazówek
+	Clone	Klonuj
+	Closed Captions	Napisy kodowane
+	Color & Alpha	Kolor i alfa
+	Color 1	Kolor 1
+	Color 2	Kolor 2
+	Color 3	Kolor 3
+	Color 4	Kolor 4
+	Color Balance	Balans kolorów
+	Color Burn	Ściemnianie koloru
+	Color Channel	Kanał koloru
+	Color Correction	Korekcja koloru
+	Color Distortion	Zniekształcenie koloru
+	Color Dodge	Rozjaśnianie koloru
+	Color Emboss	Kolorowe wytłoczenie
+	Color Key	Klucz koloru
+	Color Pass	Przepuszczanie koloru
+	Color Replace	Zastępowanie koloru
+	Color Space	Przestrzeń kolorów
+	Color Theme	Motyw kolorów
+	Color To Leave	Kolor do zachowania
+	Color Tolerance	Tolerancja koloru
+	Color Wheels & Match	Koła kolorów i dopasowanie
+	Colorize	Koloryzuj
+	Columns	Kolumny
+	Comment	Komentarz
+	Complexity	Złożoność
+	Composite In Back	Kompozytuj z tyłu
+	Composite In Front	Kompozytuj z przodu
+	Composite Using	Kompozytuj przy użyciu
+	Composite on Original	Kompozytuj na oryginale
+	Compound Blur	Rozmycie złożone
+	Compression Before Clipping	Kompresja przed obcięciem
+	Constant Gain	Stałe wzmocnienie
+	Constant Power	Stała moc
+	Conversion Type	Typ konwersji
+	Convolution Reverb	Pogłos splotowy
+	Cool Blue	Chłodny błękit
+	Cool, desaturated and punchy	Chłodny, odbarwiony i wyrazisty
+	Core Width	Szerokość rdzenia
+	Corner	Narożnik
+	Corner Pin	Przypięcie narożników
+	Count	Liczba
+	Counter-clockwise	Przeciwnie do ruchu wskazówek
+	Crash Recovery	Odzyskiwanie po awarii
+	Crawl Left	Przesuw w lewo
+	Crawl Right	Przesuw w prawo
+	Create folder for imported projects	Twórz folder dla importowanych projektów
+	Creative	Kreatywne
+	Crop	Kadruj
+	Crop Less <-> Smooth More	Mniej kadrowania <-> więcej wygładzania
+	Cross Displacement	Przemieszczenie krzyżowe
+	Cross Dissolve	Przenikanie krzyżowe
+	Cross Dissolve (Legacy)	Przenikanie krzyżowe (starsze)
+	Cross Zoom	Zoom krzyżowy
+	Cross Zoom (Legacy)	Zoom krzyżowy (starszy)
+	Crossfade	Przenikanie
+	Crossovers	Zwrotnice
+	Crystallize	Krystalizacja
+	Crystals	Kryształy
+	Cube Spin	Obrót sześcianu
+	Curl Radius	Promień zawinięcia
+	Current Time	Bieżący czas
+	Cursor	Kursor
+	Curvature	Krzywizna
+	Curve	Krzywa
+	Curves	Krzywe
+	Custom	Niestandardowe
+	Custom Color	Kolor niestandardowy
+	Cutoff	Odcięcie
+	Cyan-teal shadows and warm highlights with a little more contrast	Cyjanowo-morskie cienie i ciepłe światła z nieco większym kontrastem
+	Cycle (in Revolutions)	Cykl (w obrotach)
+	Cycle Evolution	Cykliczna ewolucja
+	Damping	Tłumienie
+	Damping HF	Tłumienie wysokich
+	Damping LF	Tłumienie niskich
+	Dark	Ciemny
+	Darken	Przyciemnij
+	Darker Color	Ciemniejszy kolor
+	Date Created	Data utworzenia
+	Date Modified	Data modyfikacji
+	Day for night: darker, cooler and less saturated	Dzień za noc: ciemniej, chłodniej i mniej nasycone
+	DeEsser	Usuwanie sybilantów
+	DeHummer	Usuwanie przydźwięku
+	DeNoise	Odszumianie
+	DeReverb	Usuwanie pogłosu
+	Decay	Zanikanie
+	Decay Time (RT60)	Czas zanikania (RT60)
+	Default Audio Tracks	Domyślne ścieżki audio
+	Default Emoji font	Domyślna czcionka emoji
+	Default Media Scaling	Domyślne skalowanie multimediów
+	Default Output	Domyślne wyjście
+	Default closed caption font	Domyślna czcionka napisów kodowanych
+	Default language	Język domyślny
+	Default paragraph direction	Domyślny kierunek akapitu
+	Default subtitle and text font	Domyślna czcionka napisów i tekstu
+	Delay	Opóźnienie
+	Delay 1	Opóźnienie 1
+	Delay 2	Opóźnienie 2
+	Delay 3	Opóźnienie 3
+	Delay 4	Opóźnienie 4
+	Delay and Echo	Opóźnienie i echo
+	Delete files older than	Usuwaj pliki starsze niż
+	Delete oldest files when the cache exceeds	Usuwaj najstarsze pliki, gdy pamięć podręczna przekroczy
+	Delete…	Usuń…
+	Depth	Głębia
+	Desaturate	Odbarw
+	Description	Opis
+	Detail Amplitude	Amplituda szczegółów
+	Detail Level	Poziom szczegółów
+	Detailed Analysis	Szczegółowa analiza
+	Device Class	Klasa urządzenia
+	Dialogue	Dialog
+	Diamond	Romb
+	Difference	Różnica
+	Dimensions	Wymiary
+	Dimmed	Przyciemnione
+	Dip to Black	Przejście przez czerń
+	Dip to Black (Legacy)	Przejście przez czerń (starsze)
+	Dip to Color	Przejście przez kolor
+	Dip to White	Przejście przez biel
+	Dip to White (Legacy)	Przejście przez biel (starsze)
+	Direction	Kierunek
+	Directional	Kierunkowe
+	Directional Blur	Rozmycie kierunkowe
+	Directional Blur (Legacy)	Rozmycie kierunkowe (starsze)
+	Disable video output when in the background	Wyłącz wyjście wideo w tle
+	Disperse	Rozproszenie
+	Displacement	Przemieszczenie
+	Display Color Management	Zarządzanie kolorem ekranu
+	Display Color Settings	Ustawienia koloru ekranu
+	Display out of sync indicators for unlinked clips	Pokazuj wskaźniki braku synchronizacji dla rozłączonych klipów
+	Dissolve	Przenikanie
+	Dissolve Blocks	Przenikanie bloków
+	Distance	Odległość
+	Distance to Image	Odległość od obrazu
+	Distort	Zniekształcenie
+	Distortion	Zniekształcenie
+	Distortion Complexity	Złożoność zniekształcenia
+	Distortion Rate	Szybkość zniekształcenia
+	Distortion Type	Typ zniekształcenia
+	Divide	Podziel
+	Do not delete cache files automatically	Nie usuwaj automatycznie plików pamięci podręcznej
+	Don't label speakers	Nie oznaczaj mówców
+	Double-click	Dwukrotne kliknięcie
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Dekodowanie robocze przy obniżonej rozdzielczości odtwarzania (H.264: szybsze, niektóre klatki mniej filtrowane)
+	Drive	Przesterowanie
+	Drop Shadow	Cień
+	Dry	Sucho
+	Dry Out	Wyjście suche
+	Dry Up a Roomy Voice	Osusz głos z pogłosem pomieszczenia
+	Duck Deep Under Dialogue	Mocno wyciszaj pod dialogiem
+	Duck Under Dialogue	Wyciszaj pod dialogiem
+	Duck Under Voice and Effects	Wyciszaj pod głosem i efektami
+	Ducking	Wyciszanie
+	Dutch	Niderlandzki
+	Dynamic Link	Dynamic Link
+	Dynamics Processing	Przetwarzanie dynamiki
+	Early Reflections	Wczesne odbicia
+	Earthquake	Trzęsienie ziemi
+	Ease In and Out	Łagodne wejście i wyjście
+	Easing	Łagodzenie
+	Echo	Echo
+	Echo Glow	Poświata echa
+	Echo Operator	Operator echa
+	Echo Time (seconds)	Czas echa (s)
+	Echoes	Echa
+	Edge Color	Kolor krawędzi
+	Edge Feather	Wtapianie krawędzi
+	Edge Glow	Poświata krawędzi
+	Edge Sharpness	Ostrość krawędzi
+	Edge Softness	Miękkość krawędzi
+	Edge Thickness	Grubość krawędzi
+	Edge Thin	Cienka krawędź
+	Edge Threshold	Próg krawędzi
+	Edge Type	Typ krawędzi
+	Edge Width	Szerokość krawędzi
+	Elliptical	Eliptyczne
+	Emboss	Wytłoczenie
+	Enable HSL Secondary	Włącz drugorzędne HSL
+	Enable Mercury Transmit	Włącz Mercury Transmit
+	Enable ProRes hardware accelerated encoding, if available	Włącz sprzętowe kodowanie ProRes, jeśli jest dostępne
+	Enable clip and XMP metadata linking	Włącz łączenie metadanych klipu i XMP
+	Enable developer mode	Włącz tryb deweloperski
+	Enable hardware accelerated decoding (requires restart)	Włącz sprzętowe dekodowanie (wymaga ponownego uruchomienia)
+	Enable language auto-detection	Włącz automatyczne wykrywanie języka
+	Enable proxies	Włącz proxy
+	End Color	Kolor końcowy
+	End Point	Punkt końcowy
+	End of Ramp	Koniec rampy
+	Error	Błąd
+	Evolution	Ewolucja
+	Evolution Options	Opcje ewolucji
+	Exciter Amount	Siła ekscytera
+	Exciter Mode	Tryb ekscytera
+	Exclusion	Wykluczenie
+	Exponential Fade	Zanikanie wykładnicze
+	Extended Dynamic Range Monitoring	Monitorowanie rozszerzonego zakresu dynamiki
+	FFT Filter	Filtr FFT
+	Fade	Zanikanie
+	Fade Out	Wyciszenie
+	Faded Matte	Wyblakły mat
+	Falloff	Spadek
+	Far Away	Daleko
+	Fast	Szybko
+	Faster Motion	Szybszy ruch
+	Feedback	Sprzężenie zwrotne
+	Feedback 1	Sprzężenie zwrotne 1
+	Feedback 2	Sprzężenie zwrotne 2
+	Feedback 3	Sprzężenie zwrotne 3
+	Feedback 4	Sprzężenie zwrotne 4
+	Feet + Frames 16mm	Stopy + klatki 16 mm
+	Feet + Frames 35mm	Stopy + klatki 35 mm
+	Female	Kobieta
+	File Size	Rozmiar pliku
+	Fill Background	Wypełnij tło
+	Fill Color	Kolor wypełnienia
+	Fill Left with Right	Wypełnij lewy prawym
+	Fill Point	Punkt wypełnienia
+	Fill Right with Left	Wypełnij prawy lewym
+	Fill Selector	Selektor wypełnienia
+	Film Dissolve	Przenikanie filmowe
+	Film Dissolve (Legacy)	Przenikanie filmowe (starsze)
+	Film Roll	Zwój filmu
+	Filter	Filtr
+	Filter Frequency	Częstotliwość filtra
+	Filter Resonance	Rezonans filtra
+	Filter and EQ	Filtr i korektor
+	Final Delay	Opóźnienie końcowe
+	Find Edges	Znajdź krawędzie
+	Flanger	Flanger
+	Flare	Rozbłysk
+	Flare Brightness	Jasność rozbłysku
+	Flare Center	Środek rozbłysku
+	Flare Color	Kolor rozbłysku
+	Flash	Błysk
+	Flicker	Migotanie
+	Flickers	Migotania
+	Flip Motion	Ruch odwracania
+	Flip Over	Przewrót
+	Float	Liczba zmiennoprzecinkowa
+	Focus	Ostrość
+	Focus Blur	Rozmycie ostrości
+	Focus Point	Punkt ostrości
+	Focus Shape	Kształt ostrości
+	Focus Size	Rozmiar ostrości
+	Fold Motion	Ruch składania
+	Foldback	Odsłuch
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Parametry zarządzania kolorem znajdziesz na karcie Ustawienia w panelu Kolor Lumetri.
+	Format	Format
+	Four Scopes (RGB, 8 bit)	Cztery wykresy (RGB, 8 bit)
+	Four Scopes (YUV, float, no clamp)	Cztery wykresy (YUV, float, bez ograniczania)
+	Fractal Influence	Wpływ fraktala
+	Fractal Type	Typ fraktala
+	Frame	Klatka
+	Frame Color	Kolor ramki
+	Frame Count	Liczba klatek
+	Frame Layout	Układ klatek
+	Frame Rate	Liczba klatek/s
+	Frame Width	Szerokość ramki
+	Frame cache for monitors and thumbnails	Pamięć podręczna klatek dla monitorów i miniatur
+	Frames	Klatki
+	Framing	Kadrowanie
+	French	Francuski
+	Frequency	Częstotliwość
+	From	Z
+	From East	Ze wschodu
+	From North	Z północy
+	From South	Z południa
+	From West	Z zachodu
+	From the Left	Z lewej
+	From the Right	Z prawej
+	Front + LFE	Przód + LFE
+	Front + Rear	Przód + tył
+	Front + Rear + LFE	Przód + tył + LFE
+	Front Only	Tylko przód
+	Fuzz	Puszystość
+	GB	GB
+	Gamma	Gamma
+	Gamma Correction	Korekcja gamma
+	Gamut Warning	Ostrzeżenie o gamucie
+	Gamut Warning Color	Kolor ostrzeżenia o gamucie
+	Gap	Luka
+	Gap Color	Kolor luki
+	Gaussian Blur	Rozmycie gaussowskie
+	Gaussian Blur (Legacy)	Rozmycie gaussowskie (starsze)
+	General	Ogólne
+	Generate	Generuj
+	Generate Timecode	Generuj kod czasowy
+	Generate waveforms and conform audio using multithreading	Generuj przebiegi i dopasowuj audio wielowątkowo
+	Generate waveforms automatically during import	Automatycznie generuj przebiegi podczas importu
+	German	Niemiecki
+	Ghosts	Duchy
+	Glass	Szkło
+	Glint	Błysk
+	Glitch	Glitch
+	Glow	Poświata
+	Glow Brightness	Jasność poświaty
+	Glow Color	Kolor poświaty
+	Glow Only	Tylko poświata
+	Glow Radius	Promień poświaty
+	Glow Saturation	Nasycenie poświaty
+	Glow Width	Szerokość poświaty
+	Golden Hour	Złota godzina
+	Good	Dobra
+	Gradient	Gradient
+	Gradient End	Koniec gradientu
+	Gradient Layer	Warstwa gradientu
+	Gradient Placement	Umieszczenie gradientu
+	Gradient Scatter	Rozproszenie gradientu
+	Gradient Shape	Kształt gradientu
+	Gradient Start	Początek gradientu
+	Gradient Wipe	Wymazanie gradientowe
+	Gradient Wipe (Legacy)	Wymazanie gradientowe (starsze)
+	Grain Size	Rozmiar ziarna
+	Graphic Equalizer (10 Bands)	Korektor graficzny (10 pasm)
+	Graphic Equalizer (20 Bands)	Korektor graficzny (20 pasm)
+	Graphic Equalizer (30 Bands)	Korektor graficzny (30 pasm)
+	Graphics	Grafika
+	Green Blurriness	Rozmycie zielonego
+	Green Curve	Krzywa zielonego
+	Green Offset	Przesunięcie zielonego
+	Green Power	Moc zielonego
+	Green Slope	Nachylenie zielonego
+	Green-Blue	Zielony-niebieski
+	Green-Const	Zielony-stała
+	Green-Green	Zielony-zielony
+	Green-Red	Zielony-czerwony
+	Grid	Siatka
+	Grow	Rozrost
+	Growing Files	Rosnące pliki
+	Grunge	Grunge
+	Grunge & Distort	Grunge i zniekształcenie
+	GuitarSuite	GuitarSuite
+	HDR Graphics White (Nits)	Biel grafiki HDR (nity)
+	HLS Vectorscope + Histogram	Wektoroskop HLS + histogram
+	HSL Secondary	Drugorzędne HSL
+	Hard	Twarde
+	Hard Clip	Twarde obcinanie
+	Hard Light	Ostre światło
+	Hard Limiter	Twardy limiter
+	Hard Mix	Twarde mieszanie
+	Hardware decoding	Dekodowanie sprzętowe
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekodowanie sprzętowe: Auto używa systemowego dekodera wideo (VideoToolbox w macOS, Media Foundation w Windows, VA-API lub NVDEC dla H.264 i HEVC w Linuksie) dla obsługiwanych strumieni, a własnego dekodera FilmCraft dla pozostałych lub gdy sprzęt zawiedzie. Już otwarte multimedia zachowują swój dekoder do ponownego otwarcia.
+	Head Size	Rozmiar głowy
+	Heart	Serce
+	Height	Wysokość
+	Hexagon	Sześciokąt
+	Hide Back Face	Ukryj tylną ścianę
+	High	Wysoka
+	High Cutoff	Odcięcie wysokich
+	High Frequency Cut	Odcięcie wysokich częstotliwości
+	High Frequency Damping	Tłumienie wysokich częstotliwości
+	High Pass	Górnoprzepustowy
+	High Shelf	Półka wysokich
+	High Shelf Gain	Wzmocnienie półki wysokich
+	High contrast with held highlights and deep shadows	Wysoki kontrast z zachowanymi światłami i głębokimi cieniami
+	Highlight	Światło
+	Highlight Blue Balance	Balans niebieskiego w światłach
+	Highlight Brightness	Jasność świateł
+	Highlight Color	Kolor świateł
+	Highlight Green Balance	Balans zielonego w światłach
+	Highlight Red Balance	Balans czerwonego w światłach
+	Highlight Rolloff	Łagodzenie świateł
+	Highlight Threshold	Próg świateł
+	Highlight Tint	Odcień świateł
+	Highlights Lightness	Jasność świateł
+	Highpass	Górnoprzepustowy
+	Hindi	Hindi
+	Hindi digits	Cyfry hindi
+	Horizontal 16:9	Poziomo 16:9
+	Horizontal Alignment	Wyrównanie poziome
+	Horizontal Blocks	Bloki poziome
+	Horizontal Decentering	Decentracja pozioma
+	Horizontal Displacement	Przemieszczenie poziome
+	Horizontal Flip	Odbicie w poziomie
+	Horizontal Margin	Margines poziomy
+	Horizontal and Vertical	Poziomo i pionowo
+	Hue Center	Środek barwy
+	Hue Tolerance	Tolerancja barwy
+	I/O Buffer Size	Rozmiar bufora we/wy
+	Ignore Alpha	Ignoruj alfę
+	Image Control	Kontrola obrazu
+	Immersive Video	Wideo immersyjne
+	Import numbered stills as image sequences	Importuj numerowane zdjęcia jako sekwencje obrazów
+	Impulse	Impuls
+	In a Room	W pomieszczeniu
+	In the Media Cache	W pamięci podręcznej multimediów
+	In the project	W projekcie
+	In/Out Duration	Czas od wejścia do wyjścia
+	Include captions on import	Uwzględniaj napisy przy imporcie
+	Incoming	Przychodzący
+	Indeterminate Media Timebase	Nieokreślona podstawa czasu multimediów
+	Initial Delay	Opóźnienie początkowe
+	Inner	Wewnętrzny
+	Inner Radius	Promień wewnętrzny
+	Input Boost	Wzmocnienie wejścia
+	Inset	Wcięcie
+	Inside	Wewnątrz
+	Inside Color	Kolor wnętrza
+	Inter	Inter
+	Interior Room Tone	Tło akustyczne pomieszczenia
+	Internal Black Point	Wewnętrzny punkt czerni
+	Internal White Point	Wewnętrzny punkt bieli
+	Interpolation	Interpolacja
+	Intersect	Przetnij
+	Inverse Falloff	Odwrotny spadek
+	Invert	Odwróć
+	Invert Alpha	Odwróć alfę
+	Invert Blur	Odwróć rozmycie
+	Invert Fill	Odwróć wypełnienie
+	Invert Gradient	Odwróć gradient
+	Invert Left	Odwróć lewy
+	Invert Right	Odwróć prawy
+	Iris	Przysłona
+	Iris Box	Przysłona prostokątna
+	Iris Cross	Przysłona krzyżowa
+	Iris Diamond	Przysłona rombowa
+	Iris Radius	Promień przysłony
+	Iris Rotation	Obrót przysłony
+	Iris Round	Przysłona okrągła
+	Iris Shape	Kształt przysłony
+	Italian	Włoski
+	Japanese	Japoński
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	Połącz cięcia ciągłe
+	Ripple Trim In	Przycinanie ripple wejścia
+	Ripple Trim Out	Przycinanie ripple wyjścia
+	Roll Edit	Edycja roll
+	Trim In	Przytnij wejście
+	Trim Out	Przytnij wyjście
+	Kaleidoscope	Kalejdoskop
+	Keep a recovery copy of unsaved changes	Zachowuj kopię odzyskiwania niezapisanych zmian
+	Key Color	Kolor klucza
+	Keying	Kluczowanie
+	Korean	Koreański
+	Label Defaults	Domyślne etykiety
+	Label speakers	Oznaczaj mówców
+	Labels	Etykiety
+	Large Hall	Duża sala
+	Large Trim Offset	Duże przesunięcie przycinania
+	Large Volume Adjustment	Duża zmiana głośności
+	Latch	Zatrzask
+	Layer Name	Nazwa warstwy
+	Layers	Warstwy
+	Leave Color	Zachowaj kolor
+	Left - Left	Lewy - lewy
+	Left - Right	Lewy - prawy
+	Left channel to device output	Lewy kanał do wyjścia urządzenia
+	Left to Right	Od lewej do prawej
+	Left to right	Od lewej do prawej
+	Legacy	Starsze
+	Length	Długość
+	Lens Blur	Rozmycie obiektywu
+	Lens Distortion	Dystorsja obiektywu
+	Lens Flare	Odblask obiektywu
+	Lens Type	Typ obiektywu
+	Level 1	Poziom 1
+	Level 2	Poziom 2
+	Level 3	Poziom 3
+	Level 4	Poziom 4
+	Levels	Poziomy
+	Lifted blacks, softer contrast, muted colour	Podniesione czernie, łagodniejszy kontrast, stonowane kolory
+	Light 1	Światło 1
+	Light 2	Światło 2
+	Light 3	Światło 3
+	Light 4	Światło 4
+	Light 5	Światło 5
+	Light Angle	Kąt światła
+	Light Color	Kolor światła
+	Light Intensity	Natężenie światła
+	Light Leak	Przeciek światła
+	Light Leaks	Przecieki światła
+	Light Sweep	Przemiatanie światła
+	Light Type	Typ światła
+	Lighten	Rozjaśnij
+	Lighter Color	Jaśniejszy kolor
+	Lighting Effects	Efekty oświetlenia
+	Lightning	Błyskawica
+	Lights & Blurs	Światła i rozmycia
+	Lights & Glows	Światła i poświaty
+	Line Thickness	Grubość linii
+	Linear Burn	Ściemnianie liniowe
+	Linear Dodge (Add)	Rozjaśnianie liniowe (dodaj)
+	Linear Light	Światło liniowe
+	Linear Ramp	Rampa liniowa
+	Linear Wipe	Wymazanie liniowe
+	Linear Wipe (Legacy)	Wymazanie liniowe (starsze)
+	Linear keyframe thinning	Liniowe przerzedzanie klatek kluczowych
+	Linear to Log	Liniowy do logarytmicznego
+	Liquid Distortion	Zniekształcenie płynne
+	Local Projects	Projekty lokalne
+	Location	Lokalizacja
+	Log Note	Notatka do dziennika
+	Log to Linear	Logarytmiczny do liniowego
+	Log to Log	Logarytmiczny do logarytmicznego
+	Logo Cutout	Wycięcie logo
+	Long Shadow	Długi cień
+	Look-Ahead Time	Czas wyprzedzenia
+	Loudness	Głośność
+	Loudness Maximizer	Maksymalizator głośności
+	Loudness Meter	Miernik głośności
+	Louver	Żaluzja
+	Low	Niska
+	Low Frequency Cut	Odcięcie niskich częstotliwości
+	Low Pass	Dolnoprzepustowy
+	Low Shelf	Półka niskich
+	Low Shelf Gain	Wzmocnienie półki niskich
+	Lower Left	Lewy dolny
+	Lower Right	Prawy dolny
+	Lowpass	Dolnoprzepustowy
+	Luma	Luma
+	Luma Curve	Krzywa lumy
+	Luma Fade	Zanikanie lumy
+	Luma Key	Klucz lumy
+	Luma Source	Źródło lumy
+	Luma and Chroma	Luma i chrominancja
+	Lumetri Presets	Ustawienia Lumetri
+	Luminance	Luminancja
+	Luminance Threshold	Próg luminancji
+	Luminosity	Jasność
+	MB	MB
+	Magenta	Magenta
+	Magnify	Lupa
+	Magnify (Legacy)	Lupa (starsza)
+	Maintain pitch while shuttling	Zachowuj wysokość dźwięku podczas przewijania
+	Major Radius	Promień większy
+	Male	Mężczyzna
+	Mango	Mango
+	Map Black To	Mapuj czerń na
+	Map White To	Mapuj biel na
+	Maps full-range levels into 16–235 (video range) with a luma curve	Mapuje poziomy pełnego zakresu do 16–235 (zakres wideo) krzywą lumy
+	Mask Only	Tylko maska
+	Master Amplitude	Amplituda główna
+	Mastering	Mastering
+	Match frame sets in point	Dopasowanie klatki ustawia punkt wejścia
+	Matte	Maska
+	Matte Alpha	Alfa maski
+	Matte Cleanup	Czyszczenie maski
+	Matte Generation	Generowanie maski
+	Matte Luma	Luma maski
+	Maximum	Maksimum
+	Maximum Amplitude	Maksymalna amplituda
+	Maximum Block Size	Maksymalny rozmiar bloku
+	Maximum Blur	Maksymalne rozmycie
+	Maximum Project Versions	Maksymalna liczba wersji projektu
+	Maximum Reduction	Maksymalna redukcja
+	Maximum Scale	Maksymalna skala
+	Media	Multimedia
+	Media Analysis	Analiza multimediów
+	Media Analysis & Transcription	Analiza multimediów i transkrypcja
+	Media Cache	Pamięć podręczna multimediów
+	Media Cache Database	Baza danych pamięci podręcznej multimediów
+	Media Cache Files	Pliki pamięci podręcznej multimediów
+	Media Cache Management	Zarządzanie pamięcią podręczną multimediów
+	Media Duration	Czas trwania multimediów
+	Media End	Koniec multimediów
+	Media Time	Czas multimediów
+	Media Timecode	Kod czasowy multimediów
+	Media Type	Typ multimediów
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Analizy i transkrypcje multimediów będą przechowywane w folderze pamięci podręcznej multimediów. Ponowna analiza nie będzie potrzebna, jeśli multimedia zostaną zaimportowane do innego projektu na tym komputerze.
+	Median	Mediana
+	Medium Room	Średnie pomieszczenie
+	Memory	Pamięć
+	Metadata & Timecode Burn-in	Wypalanie metadanych i kodu czasowego
+	Method	Metoda
+	Metrics Kerning	Kerning metryczny
+	Mid	Średnie
+	Mid Point	Punkt środkowy
+	Midtone Blue Balance	Balans niebieskiego w półtonach
+	Midtone Green Balance	Balans zielonego w półtonach
+	Midtone Red Balance	Balans czerwonego w półtonach
+	Midtones Lightness	Jasność półtonów
+	Minimum	Minimum
+	Minimum time	Minimalny czas
+	Minimum time interval thinning	Przerzedzanie według minimalnego odstępu czasu
+	Minor Radius	Promień mniejszy
+	Mirror	Lustro
+	Mirror Alternate	Lustro naprzemienne
+	Missing font replacement	Zastępowanie brakujących czcionek
+	Miter join	Połączenie ostre
+	Miter limit	Limit ostrych połączeń
+	Mixed Crystals	Mieszane kryształy
+	Mode	Tryb
+	Modern High Gain	Nowoczesne wysokie wzmocnienie
+	Modulation	Modulacja
+	Modulation Rate	Szybkość modulacji
+	Mono Media	Multimedia mono
+	Monochrome	Monochromatyczny
+	Monochrome toned cyan-blue	Monochromatyczny tonowany na cyjanowo-niebiesko
+	Monochrome toned warm brown	Monochromatyczny tonowany na ciepły brąz
+	Monoscopic	Monoskopowe
+	Monospace only	Tylko o stałej szerokości
+	More colour in the less saturated areas	Więcej koloru w mniej nasyconych obszarach
+	Morph Cut	Morph Cut
+	Mosaic	Mozaika
+	Mosaic (Legacy)	Mozaika (starsza)
+	Motion Blur	Rozmycie ruchu
+	Motion Camera	Kamera w ruchu
+	Motion Preset	Ustawienie ruchu
+	Motion Tween	Interpolacja ruchu
+	Move	Przesuń
+	Movie	Film
+	Movie (audio and video)	Film (audio i wideo)
+	Multiband Compressor	Kompresor wielopasmowy
+	Multichannel Mono Media	Wielokanałowe multimedia mono
+	Multiply	Mnożenie
+	Multitap Delay	Opóźnienie wieloodczepowe
+	Music	Muzyka
+	Mute input during timeline recording	Wyciszaj wejście podczas nagrywania na osi czasu
+	Name	Nazwa
+	Narrow	Wąskie
+	Neon Color	Kolor neonu
+	Neon Wipe	Wymazanie neonowe
+	Next to original media files	Obok oryginalnych plików multimediów
+	Night	Noc
+	No Motion	Bez ruchu
+	No Scroll	Bez przewijania
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Brak zainstalowanych wtyczek. Zmiany zaczną działać przy następnym uruchomieniu FilmCraft.
+	Noise	Szum
+	Noise & Grain	Szum i ziarno
+	Noise (Legacy)	Szum (starszy)
+	Noise Level	Poziom szumu
+	Noise Reduction/Restoration	Redukcja szumu/rekonstrukcja
+	Noise Type	Typ szumu
+	Non-Additive Dissolve	Przenikanie nieaddytywne
+	Normal	Normalny
+	Notch 1	Wycięcie 1
+	Notch 2	Wycięcie 2
+	Notch 3	Wycięcie 3
+	Notch 4	Wycięcie 4
+	Notch 5	Wycięcie 5
+	Notch 6	Wycięcie 6
+	Notch Filter	Filtr wycinający
+	Notch Width	Szerokość wycięcia
+	Number Of Echoes	Liczba ech
+	Number of Harmonics	Liczba harmonicznych
+	Obsolete	Przestarzałe
+	Octagon	Ośmiokąt
+	Offset	Przesunięcie
+	Offset (Turbulence)	Przesunięcie (turbulencja)
+	Offset From	Przesunięcie od
+	Offset To	Przesunięcie do
+	Omni	Dookólny
+	On	Wł.
+	On Original Image	Na oryginalnym obrazie
+	On Transparent	Na przezroczystym
+	Open Air	Otwarta przestrzeń
+	Open Most Recent	Otwórz najnowszy
+	Open in new window	Otwórz w nowym oknie
+	Open in place	Otwórz w miejscu
+	Open new tab	Otwórz nową kartę
+	Opens up the shadows	Rozjaśnia cienie
+	Order	Kolejność
+	Orientation	Orientacja
+	Outer	Zewnętrzny
+	Outgoing	Wychodzący
+	Output	Wyjście
+	Output Mapping	Mapowanie wyjść
+	Outside	Na zewnątrz
+	Outside Color	Kolor zewnętrzny
+	Overflow	Przepełnienie
+	Overlay	Nakładka
+	Overshoot	Przeregulowanie
+	Page Peel	Odklejanie strony
+	Page Scroll	Przewijanie strony
+	Page Turn	Przewracanie strony
+	Paint Bucket	Wiadro farby
+	Paint On Black	Maluj na czarnym
+	Paint On Original Image	Maluj na oryginalnym obrazie
+	Paint On Transparent	Maluj na przezroczystym
+	Paint On White	Maluj na białym
+	Paint Style	Styl malowania
+	Paint Surface	Powierzchnia malowania
+	Pan (Y Axis)	Panoramowanie (oś Y)
+	Panel Wipe	Wymazanie panelowe
+	Panels	Panele
+	Panner - Ambisonics	Panoramowanie – Ambisonics
+	Parade	Parada
+	Parade (RGB)	Parada (RGB)
+	Parametric Equalizer	Korektor parametryczny
+	Passband Ripple	Falowanie pasma przepustowego
+	Path	Ścieżka
+	Path Points	Punkty ścieżki
+	Pause Media Encoder queue during playback	Wstrzymuj kolejkę Media Encoder podczas odtwarzania
+	Peak Frequency	Częstotliwość szczytowa
+	Peak Gain	Wzmocnienie szczytowe
+	Pedestal	Postument
+	Pentagon	Pięciokąt
+	Per line	Na wiersz
+	Percent Blur	Procent rozmycia
+	Perspective	Perspektywa
+	Phase Difference	Różnica faz
+	Phaser	Phaser
+	Phone Call	Rozmowa telefoniczna
+	Phosphor	Luminofor
+	Phosphor Color	Kolor luminoforu
+	Photocopy	Fotokopia
+	Photocopy Color	Kolor fotokopii
+	Pillow	Poduszka
+	Pin All	Przypnij wszystko
+	Pin Horizontal	Przypnij w poziomie
+	Pin Light	Światło punktowe
+	Pin Vertical	Przypnij w pionie
+	Pinning	Przypinanie
+	Pitch Shifter	Zmiana wysokości dźwięku
+	Plate	Plansza
+	Plateau Wipe	Wymazanie płaskowyżowe
+	Plateaus	Płaskowyże
+	Plates	Plansze
+	Play after rendering previews	Odtwarzaj po wyrenderowaniu podglądów
+	Play audio while scrubbing in Source and Program Monitors	Odtwarzaj dźwięk podczas przewijania w monitorach źródła i programu
+	Playback	Odtwarzanie
+	Playhead position determines trim monitor loop playback	Położenie głowicy określa zapętlone odtwarzanie monitora przycinania
+	Plugins	Wtyczki
+	Podcast Voice	Głos podcastu
+	Point 1	Punkt 1
+	Point 1 Color	Kolor punktu 1
+	Point 1 Latitude	Szerokość geogr. punktu 1
+	Point 1 Longitude	Długość geogr. punktu 1
+	Point 2	Punkt 2
+	Point 2 Color	Kolor punktu 2
+	Point 2 Latitude	Szerokość geogr. punktu 2
+	Point 2 Longitude	Długość geogr. punktu 2
+	Point 3	Punkt 3
+	Point 3 Color	Kolor punktu 3
+	Point 3 Latitude	Szerokość geogr. punktu 3
+	Point 3 Longitude	Długość geogr. punktu 3
+	Point 4	Punkt 4
+	Point 5	Punkt 5
+	Point 6	Punkt 6
+	Point 7	Punkt 7
+	Point 8	Punkt 8
+	Points	Punkty
+	Policy	Zasady
+	Pop Motion	Ruch wyskakujący
+	Portuguese	Portugalski
+	Position & Rotation	Położenie i obrót
+	Position Amount	Stopień przesunięcia
+	Position, Scale & Rotation	Położenie, skala i obrót
+	Position, Scale, Rotation	Położenie, skala, obrót
+	Posterize	Posteryzacja
+	Posterize Time	Posteryzacja czasu
+	Pre-Delay	Opóźnienie wstępne
+	Prefix	Przedrostek
+	Presence Lift	Podbicie prezencji
+	Preserve Luminosity	Zachowaj jasność
+	Preserve Scale	Zachowaj skalę
+	ProcAmp	ProcAmp
+	Projecting cap	Zakończenie wystające
+	Projects	Projekty
+	Pull Motion	Ruch przyciągania
+	Pulls highlights and whites down	Obniża światła i biele
+	Push	Wypchnięcie
+	Push (Legacy)	Wypchnięcie (starsze)
+	Q	Q
+	RAM reserved for other applications	Pamięć RAM zarezerwowana dla innych aplikacji
+	RGB	RGB
+	RGB Split	Rozdzielenie RGB
+	RGB-White	RGB-biały
+	Radial	Promieniste
+	Radial Blur	Rozmycie promieniste
+	Radial Ramp	Rampa promienista
+	Radial Wipe	Wymazanie promieniste
+	Radial Wipe (Legacy)	Wymazanie promieniste (starsze)
+	Radio Announcer	Spiker radiowy
+	Radio Voice	Głos radiowy
+	Radius	Promień
+	Ramp	Rampa
+	Ramp Shape	Kształt rampy
+	Random	Losowo
+	Random Seed	Ziarno losowania
+	Range	Zakres
+	Ray	Promień
+	Ray Color	Kolor promienia
+	Ray Length	Długość promienia
+	Rays	Promienie
+	Rays Only	Tylko promienie
+	Read	Odczyt
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	Rozmycie czerwonego
+	Red Curve	Krzywa czerwonego
+	Red Offset	Przesunięcie czerwonego
+	Red Power	Moc czerwonego
+	Red Slope	Nachylenie czerwonego
+	Red-Blue	Czerwony-niebieski
+	Red-Const	Czerwony-stała
+	Red-Green	Czerwony-zielony
+	Red-Red	Czerwony-czerwony
+	Reduce Axis	Redukuj oś
+	Reduce Interlace Flicker	Redukuj migotanie przeplotu
+	Reflected	Odbite
+	Reflection Angle	Kąt odbicia
+	Reflection Center	Środek odbicia
+	Refraction	Refrakcja
+	Reframe Offset	Przesunięcie przekadrowania
+	Reframe Zoom	Zoom przekadrowania
+	Refresh growing Files Every	Odświeżaj rosnące pliki co
+	Relaxed	Swobodne
+	Release Time	Czas zwolnienia
+	Relief	Płaskorzeźba
+	Remaining	Pozostało
+	Remove Fringe	Usuń obwódki
+	Render Edit in Audition files to:	Renderuj pliki Edytuj w Audition do:
+	Render audio when rendering video	Renderuj audio podczas renderowania wideo
+	Repair	Naprawa
+	Repeat Edge Pixels	Powtarzaj piksele krawędzi
+	Replace Color	Zastąp kolor
+	Replace With Clip From Source Monitor	Zastąp klipem z monitora źródła
+	Replicate	Powielenie
+	Responsive Design - Position	Projekt responsywny – położenie
+	Responsive Design - Time	Projekt responsywny – czas
+	Restore open sequences when opening projects	Przywracaj otwarte sekwencje przy otwieraniu projektów
+	Result	Wynik
+	Retro	Retro
+	Reveal Nested Sequence	Pokaż zagnieżdżoną sekwencję
+	Reveal Original Image	Odsłoń oryginalny obraz
+	Reveal in Project	Pokaż w projekcie
+	Reverb Amount	Ilość pogłosu
+	Reverse	Odwróć
+	Right - Left	Prawy - lewy
+	Right - Right	Prawy - prawy
+	Right channel to device output	Prawy kanał do wyjścia urządzenia
+	Right to left	Od prawej do lewej
+	Ripple trim adds edits to keep both sides of trim in sync	Przycinanie ripple dodaje cięcia, aby obie strony przycinania pozostały zsynchronizowane
+	Roll (Z Axis)	Przechylenie (oś Z)
+	Room Size	Rozmiar pomieszczenia
+	Rotation Amount	Stopień obrotu
+	Roughen	Chropowacenie
+	Roughen Color	Kolor chropowacenia
+	Roughen Edges	Chropowacenie krawędzi
+	Round cap	Zakończenie zaokrąglone
+	Round join	Połączenie zaokrąglone
+	Rounded Crop	Zaokrąglone kadrowanie
+	Rows	Wiersze
+	Russian	Rosyjski
+	Rusty	Rdza
+	Rusty Color	Kolor rdzy
+	SFX	Efekty dźwiękowe
+	Sample Rate	Częstotliwość próbkowania
+	Saturation at 50 %	Nasycenie przy 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	Zapisuj pliki pamięci podręcznej .cfa i .pek obok oryginalnych plików multimediów, gdy to możliwe
+	Scale (Degrees)	Skala (stopnie)
+	Scale Amount	Stopień skalowania
+	Scale From	Skaluj od
+	Scale Height	Skaluj wysokość
+	Scale Match	Dopasowanie skali
+	Scale To	Skaluj do
+	Scale Width	Skaluj szerokość
+	Scale to frame size	Skaluj do rozmiaru klatki
+	Scan Lines	Linie skanowania
+	Scene	Scena
+	Scientific Filter	Filtr naukowy
+	Scratch disk location for Captured Audio	Lokalizacja dysku roboczego dla przechwyconego audio
+	Screen	Mnożenie odwrotne
+	Seconds	Sekundy
+	Segments	Segmenty
+	Semi-tones	Półtony
+	Sequence Name	Nazwa sekwencji
+	Sequence Timecode	Kod czasowy sekwencji
+	Set focus on the Timeline when performing Insert/Overwrite edits	Ustawiaj fokus na osi czasu podczas edycji Wstaw/Nadpisz
+	Set to frame size	Ustaw na rozmiar klatki
+	Setting	Ustawienie
+	Shadow Angle	Kąt cienia
+	Shadow Blue Balance	Balans niebieskiego w cieniach
+	Shadow Blur	Rozmycie cienia
+	Shadow Color	Kolor cienia
+	Shadow Distance	Odległość cienia
+	Shadow Green Balance	Balans zielonego w cieniach
+	Shadow Only	Tylko cień
+	Shadow Opacity	Krycie cienia
+	Shadow Red Balance	Balans czerwonego w cieniach
+	Shadow Size	Rozmiar cienia
+	Shadow Tint	Odcień cieni
+	Shadows Lightness	Jasność cieni
+	Shake	Wstrząs
+	Shape Dissolve	Przenikanie kształtem
+	Shape Flow	Przepływ kształtu
+	Shape Size	Rozmiar kształtu
+	Shapes	Kształty
+	Shard Size	Rozmiar odłamków
+	Sharp Colors	Ostre kolory
+	Sharpen Amount	Siła wyostrzania
+	Shift Center To	Przesuń środek do
+	Shift clips that overlap trim point during ripple trimming	Przesuwaj klipy nakładające się na punkt przycinania podczas przycinania ripple
+	Shot	Ujęcie
+	Show "Project:" and "Bin:" in Project panel tab	Pokazuj „Projekt:” i „Kosz:” na karcie panelu Projekt
+	Show Clip Mismatch Warning dialog	Pokazuj okno ostrzeżenia o niezgodności klipu
+	Show Event Indicator	Pokaż wskaźnik zdarzeń
+	Show Focus Area	Pokaż obszar ostrości
+	Show Home	Pokaż stronę główną
+	Show Mask Tracker Preview	Pokaż podgląd śledzenia maski
+	Show Only Noise	Pokaż tylko szum
+	Show Open Dialog	Pokaż okno otwierania
+	Show Project Load Error Dialog	Pokazuj okno błędu wczytywania projektu
+	Show Rich Tool Tips	Pokazuj rozbudowane podpowiedzi
+	Show Tool Tips	Pokazuj podpowiedzi
+	Show Workspace Reset Warning dialog on double click	Pokazuj ostrzeżenie o resecie obszaru roboczego po dwukrotnym kliknięciu
+	Show system compatibility issues at startup	Pokazuj problemy ze zgodnością systemu przy uruchomieniu
+	Shrink	Kurczenie
+	Shutter Angle	Kąt migawki
+	Similarity	Podobieństwo
+	Simple Notch Filter	Prosty filtr wycinający
+	Simple Parametric EQ	Prosty korektor parametryczny
+	Simple Text	Prosty tekst
+	Single-band Compressor	Kompresor jednopasmowy
+	Sinusoidal	Sinusoidalne
+	Skew	Pochylenie
+	Skew Axis	Oś pochylenia
+	Slats	Listwy
+	Slice	Plaster
+	Slices	Plastry
+	Slide	Przesunięcie
+	Slide (Legacy)	Przesunięcie (starsze)
+	Slope	Nachylenie
+	Slow	Wolno
+	Slower Motion	Wolniejszy ruch
+	Small Room	Małe pomieszczenie
+	Smart Limit	Inteligentny limit
+	Smart Tools	Inteligentne narzędzia
+	Smart quotes	Inteligentne cudzysłowy
+	Smooth	Gładkie
+	Smooth Motion	Płynny ruch
+	Smooth Scroll	Płynne przewijanie
+	Smoothness	Gładkość
+	Snap playhead in Timeline when Snap is enabled	Przyciągaj głowicę na osi czasu, gdy przyciąganie jest włączone
+	Soft	Miękkie
+	Soft Clamp	Miękkie ograniczanie
+	Soft Edges (Best Quality)	Miękkie krawędzie (najlepsza jakość)
+	Soft Light	Łagodne światło
+	Soft Wipe	Miękkie wymazanie
+	Soften Harshness	Złagodź ostrość brzmienia
+	Softness	Miękkość
+	Solarize	Solaryzacja
+	Solid Colors	Jednolite kolory
+	Source Point	Punkt źródłowy
+	Source Text	Tekst źródłowy
+	Spacer	Odstęp
+	Spanish	Hiszpański
+	Speaker Angle	Kąt głośnika
+	Speaker Labeling	Oznaczanie mówców
+	Special	Specjalne
+	Special Effects	Efekty specjalne
+	Speech model	Model mowy
+	Speed	Szybkość
+	Spherize	Sferyzacja
+	Spiky	Kolczaste
+	Spill	Rozlanie
+	Spill Suppression	Tłumienie rozlania
+	Spin	Obrót
+	Spin Direction	Kierunek obrotu
+	Spin Motion	Ruch obrotowy
+	Split	Podział
+	Split (Legacy)	Podział (starszy)
+	Spotlight	Reflektor
+	Spread	Rozproszenie
+	Spring Motion	Ruch sprężynowy
+	Square	Kwadrat
+	Square (Width Only)	Kwadrat (tylko szerokość)
+	Square 1:1	Kwadrat 1:1
+	Stabilization	Stabilizacja
+	Stabilize Only	Tylko stabilizuj
+	Stabilize, Crop	Stabilizuj, kadruj
+	Stabilize, Crop, Auto-scale	Stabilizuj, kadruj, autoskalowanie
+	Stabilize, Synthesize Edges	Stabilizuj, syntetyzuj krawędzie
+	Stages	Stopnie
+	Star	Gwiazda
+	Star Wipe	Wymazanie gwiaździste
+	Start Angle	Kąt początkowy
+	Start Color	Kolor początkowy
+	Start Point	Punkt początkowy
+	Start at 0	Zacznij od 0
+	Start at 1	Zacznij od 1
+	Start of Ramp	Początek rampy
+	Start with an Empty Project	Zacznij od pustego projektu
+	Starting Intensity	Natężenie początkowe
+	Static Plates	Statyczne plansze
+	Step forward/back many	Krok do przodu/wstecz o wiele
+	Stereo Expand	Rozszerzenie stereo
+	Stereo Expander	Ekspander stereo
+	Stereo Imagery	Obraz stereo
+	Stereo Media	Multimedia stereo
+	Stereo Phasing	Fazowanie stereo
+	Stereoscopic - Over/Under	Stereoskopowe – góra/dół
+	Stereoscopic - Side by Side	Stereoskopowe – obok siebie
+	Still	Zdjęcie
+	Still Image Default Duration	Domyślny czas trwania zdjęcia
+	Stone Church	Kamienny kościół
+	Stopband Attenuation	Tłumienie pasma zaporowego
+	Straight Color	Kolor prosty
+	Strength	Siła
+	Stretch	Rozciągnij
+	Stretch Gradient to Fit	Rozciągnij gradient, aby dopasować
+	Stretch Map to Fit	Rozciągnij mapę, aby dopasować
+	Stretch Width or Height	Rozciągnij szerokość lub wysokość
+	Stretch Wipe	Wymazanie rozciągające
+	Stretch to Fit Frame	Rozciągnij do klatki
+	Stripe	Pas
+	Stripes	Pasy
+	Strobe Color	Kolor stroboskopu
+	Strobe Duration (secs)	Czas trwania stroboskopu (s)
+	Strobe Light	Stroboskop
+	Strobe Period (secs)	Okres stroboskopu (s)
+	Stroke 2 Color	Kolor obrysu 2
+	Stroke 2 Type	Typ obrysu 2
+	Stroke 2 Width	Szerokość obrysu 2
+	Stroke Angle	Kąt pociągnięcia
+	Stroke Color	Kolor obrysu
+	Stroke Density	Gęstość pociągnięć
+	Stroke Length	Długość pociągnięcia
+	Stroke Length (secs)	Długość pociągnięcia (s)
+	Stroke Only	Tylko obrys
+	Stroke Randomness	Losowość pociągnięć
+	Stroke Type	Typ obrysu
+	Stroke Width	Szerokość obrysu
+	Stroke line cap	Zakończenie linii obrysu
+	Stroke line join	Połączenie linii obrysu
+	Studio Reverb	Pogłos studyjny
+	Stylize	Stylizacja
+	Subclip End	Koniec podklipu
+	Subclip Start	Początek podklipu
+	Subspace Warp	Wypaczenie podprzestrzeni
+	Subtitle	Podtytuł
+	Subtract	Odejmij
+	Sum multichannel outputs to mono in Source Monitor	Sumuj wyjścia wielokanałowe do mono w monitorze źródła
+	Super Narrow	Bardzo wąskie
+	Surface Gloss	Połysk powierzchni
+	Surface Material	Materiał powierzchni
+	Surround Reverb	Pogłos przestrzenny
+	Swap	Zamień
+	Swap Channels	Zamień kanały
+	Swivel	Obrót osiowy
+	Synthetic	Syntetyczny
+	TV Power	Wyłączenie TV
+	Tape	Taśma
+	Tape Name	Nazwa taśmy
+	Tape/Tube	Taśma/lampa
+	Target Aspect	Docelowe proporcje
+	Target Color	Kolor docelowy
+	Target Field of View	Docelowe pole widzenia
+	Target Loudness	Docelowa głośność
+	Teal & Orange	Morski i pomarańcz
+	Telephone	Telefon
+	Teletext	Telegazeta
+	Template Properties	Właściwości szablonu
+	Text Animator	Animator tekstu
+	Text Color	Kolor tekstu
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Pamięć podręczna multimediów zawiera podglądy renderowania niezapisanych projektów i inne pliki, które FilmCraft może odtworzyć. Ich usunięcie jest zawsze bezpieczne; FilmCraft odbuduje je w razie potrzeby.
+	Thickness	Grubość
+	Tile Gradient	Kafelkowy gradient
+	Tilt	Pochylenie
+	Tilt (X Axis)	Pochylenie (oś X)
+	Time	Czas
+	Time and Pitch	Czas i wysokość dźwięku
+	Timecode Conversion	Konwersja kodu czasowego
+	Timeline Mouse Scrolling	Przewijanie osi czasu myszą
+	Timeline Playback Auto-Scrolling	Automatyczne przewijanie osi czasu podczas odtwarzania
+	Tint Color	Kolor zabarwienia
+	To	Do
+	Tolerance	Tolerancja
+	Tone	Ton
+	Top Center	Góra środek
+	Top Left	Góra lewo
+	Top Right	Góra prawo
+	Touch	Dotyk
+	Track Matte Key	Klucz maski ścieżki
+	Transcription	Transkrypcja
+	Transcription preferences	Preferencje transkrypcji
+	Transform	Przekształć
+	Transformers	Transformatory
+	Transience	Stany przejściowe
+	Transition Completion	Ukończenie przejścia
+	Transition Softness	Miękkość przejścia
+	Transparency	Przezroczystość
+	Trash	Kosz
+	Travel Motion	Ruch podróży
+	Treble	Soprany
+	Triangle	Trójkąt
+	Trim	Przytnij
+	Tube	Lampa
+	Tube-modeled Compressor	Kompresor modelowany lampowo
+	Tubular	Rurowy
+	Turbulent	Turbulentne
+	Turbulent Displace	Przemieszczenie turbulentne
+	Turbulent Sharp	Turbulentne ostre
+	Turbulent Smooth	Turbulentne gładkie
+	Turbulent Smoother	Turbulentne gładsze
+	Tweed	Tweed
+	Twirl	Wir
+	Twirl (Legacy)	Wir (starszy)
+	Twirl Center	Środek wiru
+	Twirl Radius	Promień wiru
+	Twist	Skręcenie
+	Twist Smoother	Gładsze skręcenie
+	Typewriter	Maszyna do pisania
+	Ultra Key	Ultra Key
+	Uniform Scale	Skala jednolita
+	Uniform Spacing	Jednolite odstępy
+	Unsharp Mask	Maska wyostrzająca
+	Update it at least every	Aktualizuj co najmniej co
+	Update timeline dynamically during ripple edits.	Aktualizuj oś czasu dynamicznie podczas edycji ripple.
+	Upper Frequency	Górna częstotliwość
+	Upper Left	Lewy górny
+	Upper Right	Prawy górny
+	Use Color Noise	Użyj szumu kolorowego
+	Use End Color	Użyj koloru końcowego
+	Use File	Użyj pliku
+	Use Glow Color	Użyj koloru poświaty
+	Use Media Source	Użyj źródła multimediów
+	Use Tint Color	Użyj koloru zabarwienia
+	Utility	Narzędzia
+	VHS Damage	Uszkodzenia VHS
+	VR Blur	Rozmycie VR
+	VR Chroma Leaks	Przecieki chrominancji VR
+	VR Chromatic Aberrations	Aberracje chromatyczne VR
+	VR Color Gradients	Gradienty kolorów VR
+	VR De-Noise	Odszumianie VR
+	VR Digital Glitch	Cyfrowy glitch VR
+	VR Fractal Noise	Szum fraktalny VR
+	VR Glow	Poświata VR
+	VR Gradient Wipe	Wymazanie gradientowe VR
+	VR Iris Wipe	Wymazanie przysłoną VR
+	VR Light Leaks	Przecieki światła VR
+	VR Light Rays	Promienie światła VR
+	VR Mobius Zoom	Zoom Möbiusa VR
+	VR Plane to Sphere	Płaszczyzna na sferę VR
+	VR Projection	Rzutowanie VR
+	VR Random Blocks	Losowe bloki VR
+	VR Rotate Sphere	Obrót sfery VR
+	VR Sharpen	Wyostrzanie VR
+	VR Spherical Blur	Rozmycie sferyczne VR
+	Validate Content Credentials on import	Sprawdzaj poświadczenia zawartości przy imporcie
+	Vectorscope (YUV)	Wektoroskop (YUV)
+	Vectorscope + Waveform YC	Wektoroskop + przebieg YC
+	Vectorscope HLS	Wektoroskop HLS
+	Vectorscope YUV	Wektoroskop YUV
+	Venetian Blinds	Żaluzje weneckie
+	Vertical 4:5	Pionowo 4:5
+	Vertical 9:16	Pionowo 9:16
+	Vertical Alignment	Wyrównanie pionowe
+	Vertical Blocks	Bloki pionowe
+	Vertical Decentering	Decentracja pionowa
+	Vertical Displacement	Przemieszczenie pionowe
+	Vertical Flip	Odbicie w pionie
+	Vertical Margin	Margines pionowy
+	Very Narrow	Bardzo wąskie
+	Video 1	Wideo 1
+	Video 2	Wideo 2
+	Video 3	Wideo 3
+	Video 4	Wideo 4
+	Video 5	Wideo 5
+	Video 6	Wideo 6
+	Video 7	Wideo 7
+	Video 8	Wideo 8
+	Video Codec	Kodek wideo
+	Video Duration	Czas trwania wideo
+	Video Effects	Efekty wideo
+	Video In Point	Punkt wejścia wideo
+	Video Info	Informacje o wideo
+	Video Limiter	Limiter wideo
+	Video Out Point	Punkt wyjścia wideo
+	Video Transition Default Duration	Domyślny czas trwania przejścia wideo
+	Video Transitions	Przejścia wideo
+	Video Usage	Użycie wideo
+	Vignette	Winieta
+	Vivid Light	Jaskrawe światło
+	Vocal Booth	Kabina wokalna
+	Vocal Enhancer	Wzmacniacz wokalu
+	Voice	Głos
+	Voice in a Hall	Głos w sali
+	Volumetric Rays	Promienie wolumetryczne
+	Warm Film	Ciepły film
+	Warm Room	Ciepłe pomieszczenie
+	Warm Voice	Ciepły głos
+	Warm print stock with gentle roll-off	Ciepła taśma kopiowa z łagodnym spadkiem
+	Warm, soft late-afternoon light	Ciepłe, miękkie światło późnego popołudnia
+	Warning	Ostrzeżenie
+	Warp Stabilizer	Stabilizator Warp
+	Wave	Fala
+	Wave Height	Wysokość fali
+	Wave Speed	Szybkość fali
+	Wave Warp	Wypaczenie falowe
+	Wave Width	Szerokość fali
+	Waveform	Przebieg
+	Waveform (Luma)	Przebieg (luma)
+	Waveform (RGB)	Przebieg (RGB)
+	Wavelength	Długość fali
+	Wet	Mokro
+	Wet Out	Wyjście mokre
+	When Opening a Project	Przy otwieraniu projektu
+	Whip	Bicz
+	Whip (Legacy)	Bicz (starszy)
+	Whisper base (balanced)	Whisper base (zrównoważony)
+	Whisper small (most accurate)	Whisper small (najdokładniejszy)
+	Whisper tiny (fastest)	Whisper tiny (najszybszy)
+	White	Biały
+	White Input Level	Poziom bieli wejścia
+	White Is High	Biel jest wysoka
+	Wide Outdoor	Szeroki plener
+	Widener	Poszerzacz
+	Width	Szerokość
+	Wiggle	Wahanie
+	Wipe	Wymazanie
+	Wipe Angle	Kąt wymazania
+	Wonder Glow	Cudowna poświata
+	Wrap Back	Zawinięcie
+	Write	Zapis
+	Write XMP ID to files on import	Zapisuj identyfikator XMP w plikach przy imporcie
+	Write clip markers to XMP	Zapisuj znaczniki klipów do XMP
+	Write-on	Wpisywanie
+	X Rotation	Obrót X
+	Y Rotation	Obrót Y
+	YC	YC
+	YC no Chroma	YC bez chrominancji
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Żółtozielone światła i podniesione niebieskie cienie ze skrzyżowanych krzywych kanałów
+	Z Position	Położenie Z
+	Z Rotation	Obrót Z
+	Zoom	Powiększenie
+	Zoom Amount	Stopień powiększenia
+	Zoom Blur	Rozmycie zoomu
+	Zoom Strength	Siła zoomu
+	days	dni
+	frames	klatki
+	milliseconds	milisekundy
+	minute(s)	min
+	second(s)	s
+	seconds	s
+	AAF…	AAF…
+	Audio…	Audio…
+	Avid Log Exchange…	Avid Log Exchange…
+	Color…	Kolor…
+	EDL…	EDL…
+	Edit Workspaces…	Edytuj obszary robocze…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	Final Cut Pro XML…
+	General…	Ogólne…
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO…
+	Save Changes to this Workspace	Zapisz zmiany w tym obszarze roboczym
+	Save as New Workspace…	Zapisz jako nowy obszar roboczy…
+	Create Search Bin	Utwórz kosz wyszukiwania
+	Edit Offline File	Edytuj plik offline
+	Source Settings	Ustawienia źródła
+	Update Metadata	Aktualizuj metadane
+	Automate To Sequence	Automatyzuj do sekwencji
+	Scene Edit Detection	Wykrywanie zmian scen
+	Analyze	Analizuj
+	Normalize Mix Track	Normalizuj ścieżkę miksu
+	Simplify Sequence	Uprość sekwencję
+	Simplify	Uprość
+	Transcribe Sequence	Transkrybuj sekwencję
+	Save as Template	Zapisz jako szablon
+	Flash Cue Marker	Znacznik Flash Cue
+	System Compatibility Report	Raport zgodności systemu
+	no GPU adapter: the CPU compositor is used	brak adaptera GPU: używany jest kompozytor CPU
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	Projekt FilmCraft
+	{name} Selection.fcproj	{name} — zaznaczenie.fcproj
+	{name} (Simplified)	{name} (uproszczona)
+	Find in:	Znajdź w:
+	Find:	Znajdź:
+	Search:	Szukaj:
+	Clip Names and Markers	Nazwy klipów i znaczniki
+	Match:	Dopasuj:
+	All	Wszystkie
+	Any	Dowolne
+	Case Sensitive	Uwzględniaj wielkość liter
+	Scratch Disks	Dyski robocze
+	Ingest Settings	Ustawienia pozyskiwania
+	Captured and Generated:	Przechwycone i wygenerowane:
+	Video Previews:	Podglądy wideo:
+	Audio Previews:	Podglądy audio:
+	Project Auto Save:	Automatyczny zapis projektu:
+	Same as Project	Jak projekt
+	Path: {path}	Ścieżka: {path}
+	Transcode	Transkoduj
+	Copy and Create Proxies	Kopiuj i utwórz proxy
+	Action:	Akcja:
+	Destination:	Miejsce docelowe:
+	Next to the media	Obok multimediów
+	Video Rendering and Playback	Renderowanie i odtwarzanie wideo
+	Renderer:	Silnik renderowania:
+	Display Format:	Format wyświetlania:
+	Milliseconds	Milisekundy
+	Capture	Przechwytywanie
+	Capture Format:	Format przechwytywania:
+	Action and Title Safe Areas	Obszary bezpieczne akcji i tytułów
+	Title Safe Area	Obszar bezpieczny tytułów
+	Action Safe Area	Obszar bezpieczny akcji
+	Total Duration	Całkowity czas trwania
+	Average Data Rate	Średnia przepływność
+	Colour	Kolor
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · kanały: {n}
+	Media Name:	Nazwa multimediów:
+	Scene:	Scena:
+	Shot/Take:	Ujęcie/dubel:
+	Log Note:	Notatka do dziennika:
+	Codec: {codec}	Kodek: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Zapisać metadane zaznaczonych klipów ({n}) do plików XMP obok ich multimediów?
+	Existing XMP files written by other applications are left unchanged.	Istniejące pliki XMP zapisane przez inne aplikacje pozostają bez zmian.
+	To {name}	Do {name}
+	Ordering:	Kolejność:
+	Sort Order	Kolejność sortowania
+	Selection Order	Kolejność zaznaczenia
+	Placement:	Umieszczenie:
+	Sequentially	Po kolei
+	At Unnumbered Markers	Przy nienumerowanych znacznikach
+	Method:	Metoda:
+	Insert Edit	Edycja wstawiania
+	Overwrite Edit	Edycja nadpisywania
+	Clip Overlap:	Nakładanie klipów:
+	Frames per Still:	Klatki na zdjęcie:
+	Transitions	Przejścia
+	Apply Default Audio Transition	Zastosuj domyślne przejście audio
+	Apply Default Video Transition	Zastosuj domyślne przejście wideo
+	Ignore Options	Opcje pomijania
+	Ignore Audio	Ignoruj audio
+	Ignore Video	Ignoruj wideo
+	Apply a cut at each detected cut point	Wstaw cięcie w każdym wykrytym punkcie cięcia
+	Create a bin of subclips from each detected cut point	Utwórz kosz podklipów z każdego wykrytego punktu cięcia
+	Create a clip marker at each detected cut point	Utwórz znacznik klipu w każdym wykrytym punkcie cięcia
+	Sensitivity:	Czułość:
+	Normalize Mix Track to:	Normalizuj ścieżkę miksu do:
+	Disabled clips	Wyłączone klipy
+	Empty tracks	Puste ścieżki
+	Gaps	Luki
+	Video effects	Efekty wideo
+	Audio effects	Efekty audio
+	Text (graphics and captions)	Tekst (grafika i napisy)
+	Clips	Klipy
+	Move clips to the lowest track possible	Przenieś klipy na najniższą możliwą ścieżkę
+	Keep:	Zachowaj:
+	Video and Audio	Wideo i audio
+	Video Only	Tylko wideo
+	Audio Only	Tylko audio
+	Language:	Język:
+	Audio on track {t}	Audio na ścieżce {t}
+	Audio analysis:	Analiza audio:
+	Recognize when different speakers are talking	Rozpoznawaj, kiedy mówią różne osoby
+	Template Name:	Nazwa szablonu:
+	Comments:	Komentarze:
+	 (unavailable)	 (niedostępne)
+	Decoders	Dekodery
+	Containers	Kontenery
+	Export formats	Formaty eksportu
+	Match {n} of {total}	Dopasowanie {n} z {total}
+	Saved template {path}	Zapisano szablon {path}
+	Scene Edit Detection: analysing in the background (see Progress)	Wykrywanie zmian scen: analiza w tle (zobacz Postęp)
+	Delete Search Bin	Usuń kosz wyszukiwania
+	 (removed from {list})	 (usunięto z {list})
+	{key} can't be used as a shortcut	{key} nie może być skrótem
+	Keyboard Shortcuts	Skróty klawiaturowe
+	{active} (modified)	{active} (zmodyfikowany)
+	Loaded “{name}”	Wczytano „{name}”
+	My Shortcuts	Moje skróty
+	Deleted preset “{active}”	Usunięto ustawienie „{active}”
+	Export…	Eksportuj…
+	Exported to {path}	Wyeksportowano do {path}
+	Export: no file chosen (agents: shortcuts.export {path})	Eksport: nie wybrano pliku (agenci: shortcuts.export {path})
+	Imported “{name}”	Zaimportowano „{name}”
+	Import: no file chosen (agents: shortcuts.import {path})	Import: nie wybrano pliku (agenci: shortcuts.import {path})
+	Keyboard: US (macOS)	Klawiatura: US (macOS)
+	Keyboard: US	Klawiatura: US
+	Save preset as:	Zapisz ustawienie jako:
+	Commands:	Polecenia:
+	{panel} Panel	Panel {panel}
+	Application shortcuts work whatever panel has focus	Skróty aplikacji działają niezależnie od panelu z fokusem
+	Panel shortcuts override application shortcuts while that panel has focus	Skróty panelu mają pierwszeństwo przed skrótami aplikacji, gdy ten panel ma fokus
+	Modifier held / selected	Przytrzymany / zaznaczony modyfikator
+	Search commands or keys	Szukaj poleceń lub klawiszy
+	Selected: {command}	Zaznaczone: {command}
+	Command	Polecenie
+	Shortcut	Skrót
+	Type a shortcut… (Esc cancels)	Wpisz skrót… (Esc anuluje)
+	Add another shortcut	Dodaj kolejny skrót
+	No matching commands	Brak pasujących poleceń
+	Key:	Klawisz:
+	Modifiers	Modyfikatory
+	Nothing is assigned to this key	Do tego klawisza nic nie przypisano
+	Click a key on the keyboard to see its shortcuts	Kliknij klawisz na klawiaturze, aby zobaczyć jego skróty
+	Assign {key} to {command}	Przypisz {key} do {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	Konflikt: {key} jest przypisany do {commands} ({ctx})
+	 and 	 i 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Kliknij komórkę Skrót polecenia i naciśnij klawisze, aby go przypisać; + dodaje kolejny skrót.
+	Cleared {n} shortcut(s) of {command}	Wyczyszczono skróty polecenia {command}: {n}
+	No export preset named `{name}`	Brak ustawienia eksportu o nazwie `{name}`
+	Open a sequence to export	Otwórz sekwencję do eksportu
+	Destinations	Miejsca docelowe
+	Media File	Plik multimedialny
+	Queue ({n})	Kolejka ({n})
+	Send exports here with Send to Queue, then start the queue.	Wysyłaj tu eksporty przez Wyślij do kolejki, a potem uruchom kolejkę.
+	Ready	Gotowe
+	Encoding {n}%	Kodowanie {n}%
+	Start Queue	Uruchom kolejkę
+	Stop	Zatrzymaj
+	Clear Finished	Wyczyść zakończone
+	Not supported by FilmCraft's encoders yet	Jeszcze nieobsługiwane przez kodery FilmCraft
+	Sequence name	Nazwa sekwencji
+	Folder	Folder
+	Preset	Ustawienie
+	More presets…	Więcej ustawień…
+	Multiplexer	Multiplekser
+	The sequence has no caption track.	Sekwencja nie ma ścieżki napisów.
+	Export Options	Opcje eksportu
+	Burn Captions Into Video	Wypal napisy w wideo
+	Create Sidecar File	Utwórz plik towarzyszący
+	File Format	Format pliku
+	SubRip Subtitle (.srt)	Napisy SubRip (.srt)
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Title	Tytuł
+	Creator	Twórca
+	Copyright	Prawa autorskie
+	Image	Obraz
+	Frame Size	Rozmiar klatki
+	Match Source	Jak źródło
+	Field Order	Kolejność pól
+	Aspect	Proporcje
+	Profile	Profil
+	Bitrate Encoding	Kodowanie przepływności
+	Target Bitrate	Docelowa przepływność
+	Adaptive ({bpp} bits per pixel)	Adaptacyjna ({bpp} bitów na piksel)
+	Maximum Bitrate	Maksymalna przepływność
+	Quality (CRF)	Jakość (CRF)
+	Key Frame Distance	Odstęp klatek kluczowych
+	Quality	Jakość
+	Render at Maximum Depth	Renderuj z maksymalną głębią
+	Use Maximum Render Quality	Używaj maksymalnej jakości renderowania
+	Export Audio	Eksportuj audio
+	Audio Format	Format audio
+	Uncompressed (PCM)	Nieskompresowany (PCM)
+	Match Source ({seq_sr} Hz)	Jak źródło ({seq_sr} Hz)
+	Channels	Kanały
+	Audio Bitrate	Przepływność audio
+	Sample Size	Rozmiar próbki
+	16 bit	16 bitów
+	24 bit	24 bity
+	32 bit	32 bity
+	32 bit float	32 bity zmiennoprzecinkowe
+	FLAC stores whole-number samples only	FLAC przechowuje tylko próbki całkowite
+	MXF export writes integer PCM only	Eksport MXF zapisuje tylko całkowitoliczbowy PCM
+	Size / Opacity	Rozmiar / krycie
+	Image Overlay	Nakładka obrazu
+	PNG or JPEG file	Plik PNG lub JPEG
+	Name Overlay	Nakładka nazwy
+	Timecode Overlay	Nakładka kodu czasowego
+	Luma Min / Max	Minimum / maksimum lumy
+	Loudness Normalization	Normalizacja głośności
+	True Peak Limit	Limit szczytu rzeczywistego
+	Audio only	Tylko audio
+	Scaling	Skalowanie
+	Scale To Fit	Skaluj, aby zmieścić
+	Scale To Fill	Skaluj, aby wypełnić
+	Stretch To Fill	Rozciągnij, aby wypełnić
+	Summary	Podsumowanie
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sekwencja, {w}x{h}, {fps} kl./s, {rate} Hz
+	Estimated file size: {size}	Szacowany rozmiar pliku: {size}
+	Send to Queue	Wyślij do kolejki
+	Exporting {path}	Eksportowanie {path}
+	Added to the export queue	Dodano do kolejki eksportu
+	Preset Manager	Menedżer ustawień
+	Search presets	Szukaj ustawień
+	Favorites only	Tylko ulubione
+	Show in the Preset menu	Pokaż w menu Ustawienie
+	User	Użytkownika
+	Save current settings as:	Zapisz bieżące ustawienia jako:
+	Export presets	Ustawienia eksportu
+	Import: no file chosen (agents: export.presets.import {path})	Import: nie wybrano pliku (agenci: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	Eksport: nie wybrano pliku (agenci: export.presets.export {path, names})
+	Quick Export: open a sequence first	Szybki eksport: najpierw otwórz sekwencję
+	File Name & Location	Nazwa i lokalizacja pliku
+	Quick Export: {path}	Szybki eksport: {path}
+	Graphics problem: switched to software compositing	Problem z grafiką: przełączono na kompozycję programową
+	GPU acceleration is unavailable; preview renders on the CPU	Akceleracja GPU jest niedostępna; podgląd renderuje się na CPU
+	Exporting	Eksportowanie
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Kliknij, aby zaznaczyć, lub kliknij w pustym miejscu i przeciągnij, aby zaznaczyć ramką. Shift, Opt i Cmd dają inne opcje.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	Kliknij, aby zaznaczyć wszystkie klipy po prawej na wszystkich ścieżkach. Shift-klik: jedna ścieżka.
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	Kliknij, aby zaznaczyć wszystkie klipy po lewej na wszystkich ścieżkach. Shift-klik: jedna ścieżka.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Przeciągnij punkt cięcia, aby przyciąć ripple; późniejsze klipy przesuną się, zamykając lukę.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Przeciągnij punkt cięcia, aby go przetoczyć: wyjście jednego klipu i wejście następnego przesuwają się razem.
+	Drag an edge to change the clip's speed so it fills the new duration.	Przeciągnij krawędź, aby zmienić szybkość klipu tak, by wypełnił nowy czas trwania.
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Przeciągnij krawędź klipu muzycznego, aby zremiksować go do nowego czasu trwania na pasujących uderzeniach.
+	Click to split a clip. Shift-click to split all tracks.	Kliknij, aby podzielić klip. Shift-klik dzieli wszystkie ścieżki.
+	Drag a clip to slip its source in/out without moving it.	Przeciągnij klip, aby przesunąć jego wejście/wyjście źródła bez przesuwania klipu.
+	Drag a clip to slide it between its neighbours.	Przeciągnij klip, aby przesunąć go między sąsiadami.
+	Drag to scroll the timeline.	Przeciągnij, aby przewinąć oś czasu.
+	Click to zoom in; Opt-click to zoom out.	Kliknij, aby powiększyć; Opt-klik, aby pomniejszyć.
+	FilmCraft hit an error	FilmCraft napotkał błąd
+	Details: {path}	Szczegóły: {path}
+	Opened {url}	Otwarto {url}
+	(empty)	(puste)
+	Step Back 1 Frame	Cofnij o 1 klatkę
+	Step Forward 1 Frame	Do przodu o 1 klatkę
+	Match Playhead	Dopasuj głowicę
+	Gang to Program	Połącz z programem
+	AAC Audio	Audio AAC
+	AAC Audio 48 kHz 320 kbps	Audio AAC 48 kHz 320 kb/s
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), stereo 48 kHz AAC-LC 320 kb/s
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, stereo 48 kHz 16-bit PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24-bit
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stereo 48 kHz 24-bit, bezstratny
+	FLAC (lossless)	FLAC (bezstratny)
+	Compression Level	Poziom kompresji
+	0 fastest, 8 smallest	0 najszybszy, 8 najmniejszy
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	Anamorficzne 2:1 (2,0)
+	Animated GIF	Animowany GIF
+	Animated GIF 640×360	Animowany GIF 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 z alfą
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Application	Aplikacja
+	Apply Guide Template	Zastosuj szablon linii pomocniczych
+	Auto Save Now	Zapisz automatycznie teraz
+	Auto-Match Loudness	Automatyczne dopasowanie głośności
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom w stylu Avid: plik obrazu DNxHR HQ oraz jeden plik PCM 24-bit 48 kHz na kanał (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	Sekwencja BMP
+	Baseline	Baseline
+	Begin Text Editing for a Graphic Layer	Rozpocznij edycję tekstu warstwy graficznej
+	Begins With	Zaczyna się od
+	Blur In	Wejście z rozmyciem
+	Blur Out	Wyjście z rozmyciem
+	Brightens inside a feathered circular mask	Rozjaśnia wnętrze wtapianej okrągłej maski
+	Broadcast	Emisja
+	CBR	CBR
+	Cancel Dynamic Trim	Anuluj dynamiczne przycinanie
+	Cancel Queued Export	Anuluj eksport w kolejce
+	Center Left	Środek lewo
+	Center Right	Środek prawo
+	Center align text	Wyśrodkuj tekst
+	Change Mask	Zmień maskę
+	Clear All Events	Wyczyść wszystkie zdarzenia
+	Clear Edit Point Selection	Wyczyść zaznaczenie punktów cięcia
+	Clear Finished Exports	Wyczyść zakończone eksporty
+	Clear Poster Frame	Wyczyść klatkę plakatu
+	Close Bin	Zamknij kosz
+	Close Sequence	Zamknij sekwencję
+	Contains	Zawiera
+	Cut to Camera 1	Tnij na kamerę 1
+	Cut to Camera 2	Tnij na kamerę 2
+	Cut to Camera 3	Tnij na kamerę 3
+	Cut to Camera 4	Tnij na kamerę 4
+	Cut to Camera 5	Tnij na kamerę 5
+	Cut to Camera 6	Tnij na kamerę 6
+	Cut to Camera 7	Tnij na kamerę 7
+	Cut to Camera 8	Tnij na kamerę 8
+	Cut to Camera 9	Tnij na kamerę 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0,9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1,0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1,5)
+	Darkens outside a feathered oval mask	Przyciemnia zewnętrze wtapianej owalnej maski
+	Decrease Audio Tracks Height	Zmniejsz wysokość ścieżek audio
+	Decrease Clip Volume	Zmniejsz głośność klipu
+	Decrease Clip Volume Many	Zmniejsz głośność klipu o wiele
+	Decrease Font Size by Five Units	Zmniejsz rozmiar czcionki o pięć jednostek
+	Decrease Font Size by One Unit	Zmniejsz rozmiar czcionki o jedną jednostkę
+	Decrease Leading by Five Units	Zmniejsz interlinię o pięć jednostek
+	Decrease Leading by One Unit	Zmniejsz interlinię o jedną jednostkę
+	Decrease Video Tracks Height	Zmniejsz wysokość ścieżek wideo
+	Delete Captions	Usuń napisy
+	Delete Graphic Layer	Usuń warstwę graficzną
+	Delete Guide Template	Usuń szablon linii pomocniczych
+	Delete Media Cache Files	Usuń pliki pamięci podręcznej multimediów
+	Discard Unsaved Changes	Odrzuć niezapisane zmiany
+	Does Not Contain	Nie zawiera
+	Download Speech Model	Pobierz model mowy
+	Dynamic Trim Stop	Zatrzymaj dynamiczne przycinanie
+	Edit Caption Text	Edytuj tekst napisu
+	Ellipse Tool	Narzędzie Elipsa
+	Ends With	Kończy się na
+	Entire Source	Całe źródło
+	EssentialSound	EssentialSound
+	Export Frame	Eksportuj klatkę
+	Extend Next Edit To Playhead	Rozciągnij następne cięcie do głowicy
+	Extend Previous Edit To Playhead	Rozciągnij poprzednie cięcie do głowicy
+	Extend Selected Edit to Playhead	Rozciągnij zaznaczone cięcie do głowicy
+	Extend Selection Down	Rozszerz zaznaczenie w dół
+	Extend Selection Left	Rozszerz zaznaczenie w lewo
+	Extend Selection Right	Rozszerz zaznaczenie w prawo
+	Extend Selection Up	Rozszerz zaznaczenie w górę
+	Fade In	Pojawienie
+	Gaussian Blur from 0 to 60 over the last second	Rozmycie gaussowskie od 0 do 60 w ostatniej sekundzie
+	Gaussian Blur from 60 to 0 over the first second	Rozmycie gaussowskie od 60 do 0 w pierwszej sekundzie
+	Generate Ducking Keyframes	Generuj klatki kluczowe wyciszania
+	Go to Next Edit Point	Przejdź do następnego punktu cięcia
+	Go to Next Edit Point on Any Track	Przejdź do następnego punktu cięcia na dowolnej ścieżce
+	Go to Previous Edit Point	Przejdź do poprzedniego punktu cięcia
+	Go to Previous Edit Point on Any Track	Przejdź do poprzedniego punktu cięcia na dowolnej ścieżce
+	Go to Selected Clip End	Przejdź do końca zaznaczonego klipu
+	Go to Selected Clip Start	Przejdź do początku zaznaczonego klipu
+	Go to Sequence End	Przejdź do końca sekwencji
+	Go to Sequence Start	Przejdź do początku sekwencji
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 dla serwisów wideo, VBR 1 przebieg, 16 Mb/s
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 przebieg, docelowo 20 Mb/s, AAC 320 kb/s
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 przebiegi, 18 Mb/s
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 dla serwisów wideo, VBR 1 przebieg, 45 Mb/s
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 przebieg, docelowo 60 Mb/s, AAC 320 kb/s
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 przebiegi, 50 Mb/s
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 pionowo dla krótkich filmów społecznościowych, skalowane z wypełnieniem, 12 Mb/s
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 z rozmiarem i liczbą klatek sekwencji; 0,05 bitu na piksel
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 z rozmiarem i liczbą klatek sekwencji; 0,1 bitu na piksel
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 z rozmiarem i liczbą klatek sekwencji; przepływność dopasowana do rozmiaru klatki (0,2 bitu na piksel)
+	HD Anamorphic 1080 (1.333)	HD anamorficzne 1080 (1,333)
+	Hand Tool	Narzędzie Rączka
+	High Quality 1080p HD	Wysoka jakość 1080p HD
+	High Quality 2160p 4K	Wysoka jakość 2160p 4K
+	Image Sequence	Sekwencja obrazów
+	Increase Audio Tracks Height	Zwiększ wysokość ścieżek audio
+	Increase Clip Volume	Zwiększ głośność klipu
+	Increase Clip Volume Many	Zwiększ głośność klipu o wiele
+	Increase Font Size by Five Units	Zwiększ rozmiar czcionki o pięć jednostek
+	Increase Font Size by One Unit	Zwiększ rozmiar czcionki o jedną jednostkę
+	Increase Leading by Five Units	Zwiększ interlinię o pięć jednostek
+	Increase Leading by One Unit	Zwiększ interlinię o jedną jednostkę
+	Increase Video Tracks Height	Zwiększ wysokość ścieżek wideo
+	Large blocks resolving to the picture over the first second	Duże bloki przechodzące w obraz w pierwszej sekundzie
+	Left align text	Wyrównaj tekst do lewej
+	Looping GIF, 640×360 at 15 fps	Zapętlony GIF, 640×360 przy 15 kl./s
+	Lower First	Najpierw dolne
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8-bit 4:2:2), PCM 24-bit 48 kHz, początkowy kod czasowy
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High long GOP (0,3 bitu na piksel), PCM 24-bit 48 kHz
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, PCM 24-bit 48 kHz, początkowy kod czasowy
+	Main	Main
+	Mark In (Hover Scrub)	Oznacz punkt wejścia (przewijanie po najechaniu)
+	Mark Out (Hover Scrub)	Oznacz punkt wyjścia (przewijanie po najechaniu)
+	Masks	Maski
+	Match Source – Adaptive High Bitrate	Jak źródło – adaptacyjna wysoka przepływność
+	Match Source – Adaptive Low Bitrate	Jak źródło – adaptacyjna niska przepływność
+	Match Source – Adaptive Medium Bitrate	Jak źródło – adaptacyjna średnia przepływność
+	Matches	Dopasowania
+	Maximize or Restore Active Frame	Maksymalizuj lub przywróć aktywną ramkę
+	Maximize or Restore Frame Under Cursor	Maksymalizuj lub przywróć ramkę pod kursorem
+	Media Browser Settings	Ustawienia przeglądarki multimediów
+	MediaBrowser	MediaBrowser
+	MediaCache	MediaCache
+	Merge Captions	Scal napisy
+	Mixer	Mikser
+	Mosaic In	Wejście mozaiką
+	Move All Audio Targets Down	Przesuń wszystkie cele audio w dół
+	Move All Audio Targets Up	Przesuń wszystkie cele audio w górę
+	Move All Video Targets Down	Przesuń wszystkie cele wideo w dół
+	Move All Video Targets Up	Przesuń wszystkie cele wideo w górę
+	Move Selection Down	Przesuń zaznaczenie w dół
+	Move Selection End	Przesuń zaznaczenie na koniec
+	Move Selection Home	Przesuń zaznaczenie na początek
+	Move Selection Left	Przesuń zaznaczenie w lewo
+	Move Selection Page Down	Przesuń zaznaczenie o stronę w dół
+	Move Selection Page Up	Przesuń zaznaczenie o stronę w górę
+	Move Selection Right	Przesuń zaznaczenie w prawo
+	Move Selection Up	Przesuń zaznaczenie w górę
+	Multi-Camera Record On/Off Toggle	Przełącz nagrywanie z wielu kamer
+	Multicam	Wielokamerowe
+	Navigate to End of Segment	Przejdź do końca segmentu
+	Navigate to Next Line	Przejdź do następnego wiersza
+	Navigate to Next Word	Przejdź do następnego słowa
+	Navigate to Previous Line	Przejdź do poprzedniego wiersza
+	Navigate to Previous Word	Przejdź do poprzedniego słowa
+	Navigate to Start of Segment	Przejdź do początku segmentu
+	Navigation	Nawigacja
+	Next Multi-Camera Page	Następna strona wielu kamer
+	Nudge Clip Selection Down	Przesuń zaznaczone klipy w dół
+	Nudge Clip Selection Left Five Frames	Przesuń zaznaczone klipy w lewo o pięć klatek
+	Nudge Clip Selection Left One Frame	Przesuń zaznaczone klipy w lewo o jedną klatkę
+	Nudge Clip Selection Right Five Frames	Przesuń zaznaczone klipy w prawo o pięć klatek
+	Nudge Clip Selection Right One Frame	Przesuń zaznaczone klipy w prawo o jedną klatkę
+	Nudge Clip Selection Up	Przesuń zaznaczone klipy w górę
+	Nudge Selected Object down by five	Przesuń zaznaczony obiekt w dół o pięć
+	Nudge Selected Object down by one	Przesuń zaznaczony obiekt w dół o jeden
+	Nudge Selected Object to left by five	Przesuń zaznaczony obiekt w lewo o pięć
+	Nudge Selected Object to left by one	Przesuń zaznaczony obiekt w lewo o jeden
+	Nudge Selected Object to right by five	Przesuń zaznaczony obiekt w prawo o pięć
+	Nudge Selected Object to right by one	Przesuń zaznaczony obiekt w prawo o jeden
+	Nudge Selected Object up by five	Przesuń zaznaczony obiekt w górę o pięć
+	Nudge Selected Object up by one	Przesuń zaznaczony obiekt w górę o jeden
+	Nudge Volume +1dB	Głośność +1 dB
+	Nudge Volume +3dB	Głośność +3 dB
+	Nudge Volume -1dB	Głośność -1 dB
+	Nudge Volume -3dB	Głośność -3 dB
+	Numbered BMP stills (24-bit)	Numerowane zdjęcia BMP (24-bit)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	Sekwencja JPEG
+	Targa Sequence	Sekwencja Targa
+	DPX Sequence	Sekwencja DPX
+	Numbered JPEG stills (quality 90)	Numerowane zdjęcia JPEG (jakość 90)
+	Numbered Targa stills (24-bit, uncompressed)	Numerowane zdjęcia Targa (24-bit, bez kompresji)
+	Numbered DPX stills (10-bit RGB)	Numerowane zdjęcia DPX (10-bit RGB)
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	Sekwencja OpenEXR
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Numerowane zdjęcia OpenEXR (half float, liniowe, bez kompresji)
+	Numbered PNG stills at the sequence's frame size	Numerowane zdjęcia PNG w rozmiarze klatki sekwencji
+	Numbered TIFF stills (RGB, 8-bit)	Numerowane zdjęcia TIFF (RGB, 8-bit)
+	Opacity 0 → 100 % over the first second	Krycie 0 → 100 % w pierwszej sekundzie
+	Opacity 100 → 0 % over the last second	Krycie 100 → 0 % w ostatniej sekundzie
+	Open Bin	Otwórz kosz
+	Open Search	Otwórz wyszukiwanie
+	PNG	PNG
+	PNG Sequence	Sekwencja PNG
+	Panel	Panel
+	Pen Tool	Narzędzie Pióro
+	PiP 35% Upper Right	Obraz w obrazie 35% prawy górny
+	Picture-in-picture: 35 % scale in the upper right	Obraz w obrazie: skala 35 % w prawym górnym rogu
+	Play Around	Odtwórz wokół
+	Play In to Out with Preroll/Postroll	Odtwórz od wejścia do wyjścia z preroll/postroll
+	Play from Playhead to Out Point	Odtwórz od głowicy do punktu wyjścia
+	Play/Stop	Odtwórz/zatrzymaj
+	Previous Multi-Camera Page	Poprzednia strona wielu kamer
+	Progressive	Progresywne
+	ProjectPanel	ProjectPanel
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) z kanałem alfa, PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24-bit 48 kHz
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24-bit 48 kHz
+	Quit FilmCraft	Zakończ FilmCraft
+	Rate Stretch Tool	Narzędzie Rozciąganie szybkości
+	Razor Tool	Narzędzie Żyletka
+	Rectangle Tool	Narzędzie Prostokąt
+	Remix Tool	Narzędzie Remiks
+	Right align text	Wyrównaj tekst do prawej
+	Ripple Edit Tool	Narzędzie Edycja ripple
+	Ripple Trim Next Edit to Playhead	Przytnij ripple następne cięcie do głowicy
+	Ripple Trim Previous Edit to Playhead	Przytnij ripple poprzednie cięcie do głowicy
+	Rolling Edit Tool	Narzędzie Edycja roll
+	Select Camera 1	Wybierz kamerę 1
+	Select Camera 2	Wybierz kamerę 2
+	Select Camera 3	Wybierz kamerę 3
+	Select Camera 4	Wybierz kamerę 4
+	Select Camera 5	Wybierz kamerę 5
+	Select Camera 6	Wybierz kamerę 6
+	Select Camera 7	Wybierz kamerę 7
+	Select Camera 8	Wybierz kamerę 8
+	Select Camera 9	Wybierz kamerę 9
+	Select Clip at Playhead	Zaznacz klip w miejscu głowicy
+	Select Find Box	Zaznacz pole wyszukiwania
+	Select Next Clip	Zaznacz następny klip
+	Select Next Panel	Zaznacz następny panel
+	Select Previous Clip	Zaznacz poprzedni klip
+	Select Previous Panel	Zaznacz poprzedni panel
+	Select to Next Line	Zaznacz do następnego wiersza
+	Select to Next Word	Zaznacz do następnego słowa
+	Select to Previous Line	Zaznacz do poprzedniego wiersza
+	Select to Previous Word	Zaznacz do poprzedniego słowa
+	Select to Segment End	Zaznacz do końca segmentu
+	Select to Segment Start	Zaznacz do początku segmentu
+	Selection Tool	Narzędzie Zaznaczanie
+	Set Comparison Reference	Ustaw odniesienie porównania
+	Set Creative Look	Ustaw kreatywny wygląd
+	Set Input LUT	Ustaw wejściowy LUT
+	Set Project Panel View	Ustaw widok panelu Projekt
+	Show Next Screen	Pokaż następny ekran
+	Show Previous Screen	Pokaż poprzedni ekran
+	Show Program Transcript	Pokaż transkrypcję programu
+	Shuttle Left	Przewijanie w lewo
+	Shuttle Right	Przewijanie w prawo
+	Shuttle Slow Left	Wolne przewijanie w lewo
+	Shuttle Slow Right	Wolne przewijanie w prawo
+	Shuttle Stop	Zatrzymaj przewijanie
+	Slide Clip Selection Left Five Frames	Przesuń (slide) zaznaczone klipy w lewo o pięć klatek
+	Slide Clip Selection Left One Frame	Przesuń (slide) zaznaczone klipy w lewo o jedną klatkę
+	Slide Clip Selection Right Five Frames	Przesuń (slide) zaznaczone klipy w prawo o pięć klatek
+	Slide Clip Selection Right One Frame	Przesuń (slide) zaznaczone klipy w prawo o jedną klatkę
+	Slide Tool	Narzędzie Slide
+	Slip Clip Selection Left Five Frames	Przesuń źródło (slip) zaznaczonych klipów w lewo o pięć klatek
+	Slip Clip Selection Left One Frame	Przesuń źródło (slip) zaznaczonych klipów w lewo o jedną klatkę
+	Slip Clip Selection Right Five Frames	Przesuń źródło (slip) zaznaczonych klipów w prawo o pięć klatek
+	Slip Clip Selection Right One Frame	Przesuń źródło (slip) zaznaczonych klipów w prawo o jedną klatkę
+	Slip Tool	Narzędzie Slip
+	Social Vertical 1080×1920	Pionowy społecznościowy 1080×1920
+	Soft Vignette	Miękka winieta
+	Source In/Out	Wejście/wyjście źródła
+	Split Caption	Podziel napis
+	Square Pixels (1.0)	Piksele kwadratowe (1,0)
+	Stack Clips	Ułóż klipy w stos
+	Start Export Queue	Uruchom kolejkę eksportu
+	Start Voice-over Recording	Rozpocznij nagrywanie lektora
+	Step Back Five Frames	Cofnij o pięć klatek
+	Step Back One Frame	Cofnij o jedną klatkę
+	Step Forward Five Frames	Do przodu o pięć klatek
+	Step Forward One Frame	Do przodu o jedną klatkę
+	Stop Export Queue	Zatrzymaj kolejkę eksportu
+	Stop Multi-Camera Recording	Zatrzymaj nagrywanie z wielu kamer
+	Stop Voice-over Recording	Zatrzymaj nagrywanie lektora
+	Sync Voice-over Capture	Synchronizuj nagrywanie lektora
+	TIFF	TIFF
+	TIFF Sequence	Sekwencja TIFF
+	TextPanel	TextPanel
+	Thumbnail Size Next	Następny rozmiar miniatur
+	Thumbnail Size Previous	Poprzedni rozmiar miniatur
+	Toggle All Audio Targets	Przełącz wszystkie cele audio
+	Toggle All Source Audio	Przełącz całe audio źródła
+	Toggle All Source Video	Przełącz całe wideo źródła
+	Toggle All Video Targets	Przełącz wszystkie cele wideo
+	Toggle Audio During Scrubbing	Przełącz dźwięk podczas przewijania
+	Toggle Full Screen	Przełącz pełny ekran
+	Toggle Mute for All Targeted Audio Tracks	Przełącz wyciszenie wszystkich docelowych ścieżek audio
+	Toggle Solo for All Targeted Audio Tracks	Przełącz solo wszystkich docelowych ścieżek audio
+	Toggle Source/Program Monitor Focus	Przełącz fokus monitora źródła/programu
+	Toggle Target Audio 1	Przełącz cel audio 1
+	Toggle Target Audio 2	Przełącz cel audio 2
+	Toggle Target Audio 3	Przełącz cel audio 3
+	Toggle Target Audio 4	Przełącz cel audio 4
+	Toggle Target Audio 5	Przełącz cel audio 5
+	Toggle Target Audio 6	Przełącz cel audio 6
+	Toggle Target Audio 7	Przełącz cel audio 7
+	Toggle Target Audio 8	Przełącz cel audio 8
+	Toggle Target Video 1	Przełącz cel wideo 1
+	Toggle Target Video 2	Przełącz cel wideo 2
+	Toggle Target Video 3	Przełącz cel wideo 3
+	Toggle Target Video 4	Przełącz cel wideo 4
+	Toggle Target Video 5	Przełącz cel wideo 5
+	Toggle Target Video 6	Przełącz cel wideo 6
+	Toggle Target Video 7	Przełącz cel wideo 7
+	Toggle Target Video 8	Przełącz cel wideo 8
+	Toggle Track Output for All Targeted Video Tracks	Przełącz wyjście wszystkich docelowych ścieżek wideo
+	Toggle Trim Type	Przełącz typ przycinania
+	Toggle View	Przełącz widok
+	Track Select Backward Tool	Narzędzie Zaznaczanie ścieżki wstecz
+	Track Select Forward Tool	Narzędzie Zaznaczanie ścieżki do przodu
+	Track Selected Mask	Śledź zaznaczoną maskę
+	Trim Next Edit to Playhead	Przytnij następne cięcie do głowicy
+	Trim Previous Edit to Playhead	Przytnij poprzednie cięcie do głowicy
+	Trimming	Przycinanie
+	Type Tool	Narzędzie Tekst
+	Unstack Clips	Rozdziel stos klipów
+	Upper First	Najpierw górne
+	VBR, 1 pass	VBR, 1 przebieg
+	VBR, 2 pass	VBR, 2 przebiegi
+	CRF (constant quality)	CRF (stała jakość)
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Voice-over Record	Nagrywanie lektora
+	Voiceover	Lektor
+	WAV, stereo 48 kHz 16-bit PCM	WAV, stereo 48 kHz 16-bit PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV, stereo 48 kHz 24-bit PCM
+	Warm Tint	Ciepłe zabarwienie
+	Warm highlights, brown shadows	Ciepłe światła, brązowe cienie
+	Waveform Audio	Audio Waveform
+	Waveform Audio 48 kHz 16-bit	Audio Waveform 48 kHz 16-bit
+	Waveform Audio 48 kHz 24-bit	Audio Waveform 48 kHz 24-bit
+	Web & Social	Sieć i media społecznościowe
+	Work Area	Obszar roboczy
+	Write Automation	Zapisz automatyzację
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Zoom Program Monitor to 100%	Powiększ monitor programu do 100%
+	Zoom Program Monitor to Fit	Dopasuj monitor programu
+	Zoom Source Monitor to 100%	Powiększ monitor źródła do 100%
+	Zoom Source Monitor to Fit	Dopasuj monitor źródła
+	Zoom Tool	Narzędzie Lupka
+	with:	z:
+	Interface Language	Język interfejsu
+	System Language	Język systemu
+	Cinematic	Kinowy
+	Film Emulation	Emulacja filmu
+	Technical	Techniczne
+	Teal Shadows, Warm Skin	Morskie cienie, ciepła skóra
+	Night Exterior	Nocny plener
+	Golden Dusk	Złoty zmierzch
+	Steel Blue	Stalowy błękit
+	Hard Sun	Ostre słońce
+	Faded Print	Wyblakła odbitka
+	Silver Retention	Retencja srebra
+	Cross Processed	Proces krzyżowy
+	Warm Negative	Ciepły negatyw
+	Neutral Mono	Neutralne mono
+	Hard Mono	Ostre mono
+	Sepia Tone	Ton sepii
+	Cold Mono	Zimne mono
+	Lift Shadows	Podnieś cienie
+	Protect Highlights	Chroń światła
+	Half Saturation	Połowa nasycenia
+	Boost Vibrance	Zwiększ jaskrawość
+	Legal Range Squeeze	Ściśnięcie do zakresu legalnego
+	A boxed label with a round pointer; move the label and the pointer follows.	Etykieta w ramce z okrągłym wskaźnikiem; przesuń etykietę, a wskaźnik podąży za nią.
+	A rounded tag that fits its text, with a status dot.	Zaokrąglona etykieta dopasowana do tekstu, z kropką stanu.
+	A title on a rounded card with a soft shadow.	Tytuł na zaokrąglonej karcie z miękkim cieniem.
+	Accent Color	Kolor akcentu
+	Bar Color	Kolor paska
+	Box Color	Kolor ramki
+	Box Opacity	Krycie ramki
+	Callout – Pointer	Dymek – wskaźnik
+	Callout – Tag	Dymek – etykieta
+	Callouts	Dymki
+	Credits	Napisy końcowe
+	Dot Color	Kolor kropki
+	Heading	Nagłówek
+	Large centred title, accent rule and subtitle.	Duży wyśrodkowany tytuł, linia akcentu i podtytuł.
+	Lower Third – Rule	Belka dolna – linia
+	Lower Third – Slab	Belka dolna – płyta
+	Lower Thirds	Belki dolne
+	Name Color	Kolor nazwiska
+	Name Size	Rozmiar nazwiska
+	Name and role on a coloured slab that widens with the name.	Imię i funkcja na kolorowej płycie, która poszerza się wraz z imieniem.
+	Name over a thin rule that always matches the name's width.	Imię nad cienką linią, która zawsze ma szerokość imienia.
+	Pointer Color	Kolor wskaźnika
+	Role	Funkcja
+	Rule Color	Kolor linii
+	Show Dot	Pokaż kropkę
+	Show Role	Pokaż funkcję
+	Slab Color	Kolor płyty
+	Tag Color	Kolor etykiety
+	Title Color	Kolor tytułu
+	Title Size	Rozmiar tytułu
+	Title – Boxed	Tytuł – w ramce
+	Title – Centered	Tytuł – wyśrodkowany
+	Titles	Tytuły
+	Select an item to preview it	Zaznacz element, aby go podejrzeć
+	End Credits	Napisy końcowe
+	End Credits – Roll	Napisy końcowe – przewijane
+	Ticker – Crawl	Pasek informacyjny – przesuw
+	Centred credits that roll up from below the frame and leave at the top.	Wyśrodkowane napisy, które przewijają się w górę spod kadru i znikają u góry.
+	A news-style line that crawls in from the right and leaves at the left.	Wiersz w stylu wiadomości, który wsuwa się z prawej i znika z lewej.
+	out	wyjście
+	in	wejście
+	The language changed but could not be saved: {e}	Język został zmieniony, ale nie udało się go zapisać: {e}
+	no Chinese font is installed on this system; the interface stays in English	w systemie nie ma zainstalowanej czcionki chińskiej; interfejs pozostaje po angielsku
+	no Korean font is installed on this system; the interface stays in English	w systemie nie ma zainstalowanej czcionki koreańskiej; interfejs pozostaje po angielsku
+	no Japanese font is installed on this system; the interface stays in English	w systemie nie ma zainstalowanej czcionki japońskiej; interfejs pozostaje po angielsku
+	Show	Pokaż
+	Sort	Sortuj
+	Reverse the order	Odwróć kolejność
+	Grab bag	Mieszanka
+	Table	Tabela
+	No contributor data was built into this copy.	Ta kopia nie zawiera danych o współtwórcach.
+	No model credits were built into this copy.	Ta kopia nie zawiera informacji o modelach.
+	Company	Firma
+	Model	Model
+	Version	Wersja
+	Commits	Commity
+	% of all commits	% wszystkich commitów
+	Lines +/−	Wiersze +/−
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Wyjście audio nie działa: odtwarzanie bez dźwięku (sprawdź Ustawienia > Sprzęt audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Wyjście audio nie odpowiada: odtwarzanie bez dźwięku (sprawdź Ustawienia > Sprzęt audio)
+	Clip Speed / Duration	Szybkość / czas trwania klipu
+	Speed:	Szybkość:
+	Reverse Speed	Odwróć kierunek
+	Ripple Edit, Shifting Trailing Clips	Edycja ripple, przesuwanie kolejnych klipów
+	About	Informacje
+	Contributors	Współtwórcy
+	Models	Modele
+	Main (8-bit)	Main (8-bit)
+	Main 10 (10-bit, HDR)	Main 10 (10-bit, HDR)
+	Main (8-bit; Main 10 for HDR sequences)	Main (8-bit; Main 10 dla sekwencji HDR)
+	Encoder	Koder
+	Hardware (H.265 has no software encoder)	Sprzętowy (H.265 nie ma kodera programowego)
+	Hardware (AV1 has no software encoder)	Sprzętowy (AV1 nie ma kodera programowego)
+	Text Properties	Właściwości tekstu
+	Text Box Height	Wysokość pola tekstowego
+	Paragraph Text	Tekst akapitowy
+	Point Text	Tekst punktowy
+	Text Layer Type	Typ warstwy tekstowej
+	Text Styling	Stylizacja tekstu
+	New Color Matte	Nowa plansza koloru
+	Color Matte Color	Kolor planszy
+	Color:	Kolor:
+	 · {time} left	 · pozostało {time}
+	Discard take	Odrzuć dubel
+	Voice-over take discarded	Odrzucono dubel lektora
+	Binary assets added	Dodane zasoby binarne
+	Binary assets removed	Usunięte zasoby binarne
+	Deselect All Project Items	Usuń zaznaczenie wszystkich elementów projektu
+	Display name	Nazwa wyświetlana
+	First commit	Pierwszy commit
+	H.265 (HEVC)	H.265 (HEVC)
+	Last commit	Ostatni commit
+	Line delta	Różnica wierszy
+	Lines added	Dodane wiersze
+	Lines deleted	Usunięte wiersze
+	Merged PRs	Scalone PR
+	Name (A–Z)	Nazwa (A–Z)
+	Real name	Prawdziwe imię i nazwisko
+	Select All Project Items	Zaznacz wszystkie elementy projektu
+	Username	Nazwa użytkownika
+	Vertical Type Tool	Narzędzie Tekst pionowy
+	Go to previous keyframe	Przejdź do poprzedniej klatki kluczowej
+	Go to next keyframe	Przejdź do następnej klatki kluczowej
+	Add keyframe	Dodaj klatkę kluczową
+	Remove keyframe	Usuń klatkę kluczową
+	Turn on animation and add keyframe	Włącz animację i dodaj klatkę kluczową
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Kliknij, aby zaznaczyć, lub kliknij w pustym miejscu i przeciągnij, aby zaznaczyć ramką. Shift, Alt i Ctrl dają inne opcje.
+	Click to zoom in; Alt-click to zoom out.	Kliknij, aby powiększyć; Alt-klik, aby pomniejszyć.
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Przeciągnij: przesuń · Alt-klik: gładki/narożny · Ctrl-klik: usuń
+	Drag inward to round the corners	Przeciągnij do środka, aby zaokrąglić narożniki
+	Include Alpha Channel	Uwzględnij kanał alfa
+	Sequence Settings	Ustawienia sekwencji
+	Color Management	Zarządzanie kolorem
+	VR Properties	Właściwości VR
+	Editing Mode:	Tryb edycji:
+	Timebase:	Podstawa czasu:
+	Frame Size:	Rozmiar klatki:
+	Pixel Aspect Ratio:	Proporcje piksela:
+	Fields:	Pola:
+	Channel Format:	Format kanałów:
+	Number of Channels:	Liczba kanałów:
+	Preview File Format:	Format pliku podglądu:
+	Working Color Space:	Robocza przestrzeń kolorów:
+	Projection:	Rzutowanie:
+	Layout:	Układ:
+	Captured View:	Przechwycony widok:
+	Video Previews	Podglądy wideo
+	No Fields (Progressive Scan)	Bez pól (skanowanie progresywne)
+	Custom ({ratio})	Niestandardowe ({ratio})
+	{rate} frames/second	{rate} kl./s
+	{rate} fps Drop-Frame Timecode	{rate} kl./s, kod czasowy z pomijaniem klatek
+	{rate} fps Non Drop-Frame Timecode	{rate} kl./s, kod czasowy bez pomijania klatek
+	{rate} fps Timecode	{rate} kl./s, kod czasowy
+	horizontal	poziomo
+	vertical	pionowo
+	Scale motion effects proportionally when changing frame size	Skaluj efekty ruchu proporcjonalnie przy zmianie rozmiaru klatki
+	Maximum Bit Depth	Maksymalna głębia bitowa
+	Maximum Render Quality	Maksymalna jakość renderowania
+	Composite in Linear Color	Kompozytuj w kolorze liniowym
+	Auto Tone Map Media (HDR and log into SDR)	Automatyczne mapowanie tonów multimediów (HDR i log do SDR)
+	Configure…	Konfiguruj…
+	Not supported in FilmCraft yet	Jeszcze nieobsługiwane w FilmCraft
+	FilmCraft always composites in linear light	FilmCraft zawsze kompozytuje w świetle liniowym
+	Loop marked range	Zapętl oznaczony zakres
+	Play Source	Odtwórz źródło
+	Source Play/Stop	Odtwórz/zatrzymaj źródło
+	Stop Source	Zatrzymaj źródło
+	New Sequence	Nowa sekwencja
+	Tracks	Ścieżki
+	tracks	ścieżki
+	Clear Transition	Wyczyść przejście
+	Set Transition Duration	Ustaw czas trwania przejścia
+	Active	Aktywne
+	Appearance Mode	Tryb wyglądu
+	Dark Theme	Ciemny motyw
+	Light Theme	Jasny motyw
+	Next Appearance Mode	Następny tryb wyglądu
+	Sync with system	Zgodnie z systemem
+	UI Scale	Skala interfejsu
+	Auto (system)	Auto (systemowa)
+	In	Wejście
+	Out	Wyjście
+	Export Markers as CSV…	Eksportuj znaczniki jako CSV…
+	Fill Type	Typ wypełnienia
+	Gradient Angle	Kąt gradientu
+	Linear Gradient	Gradient liniowy
+	Solid	Jednolite
+	GPU Rendering	Renderowanie GPU
+	Composite on the GPU when available	Kompozytuj na GPU, gdy to możliwe
+	Text to Speech	Zamiana tekstu na mowę
+	Edit Narration	Edytuj narrację
+	Dock Panel	Zadokuj panel
+	Undock Panel	Odepnij panel
+	Docking Action	Operacja dokowania
+	Resize floating panel	Zmień rozmiar pływającego panelu
+	Project Notes	Notatki projektu
+	Get Project Notes	Pobierz notatki projektu
+	Edit Project Notes	Edytuj notatki projektu
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notatki do tego projektu: zadania, instrukcje, numery klatek… Zapisywane z projektem.
+	Use Effect Shutter Angle	Używaj kąta migawki efektu
+	Appearance Settings…	Ustawienia wyglądu…
+	Add to favorites	Dodaj do ulubionych
+	Remove from favorites	Usuń z ulubionych
+	Compression	Kompresja
+	ZIP (1 scan line)	ZIP (1 linia skanowania)
+	ZIP (16 scan lines)	ZIP (16 linii skanowania)
+	Safe graphics mode: {mode}	Bezpieczny tryb grafiki: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Wcześniejsze uruchomienie z domyślną grafiką nie powiodło się. Zwykle pomaga aktualizacja sterownika karty graficznej.
+	Use Default Graphics	Użyj domyślnej grafiki
+	The default graphics are used from the next start.	Domyślna grafika będzie używana od następnego uruchomienia.
+	DirectX 12 only	Tylko DirectX 12
+	software rendering	renderowanie programowe
+	Label Color Presets	Ustawienia kolorów etykiet
+	{name} (Modified)	{name} (zmodyfikowane)
+	Revert to the preset's colors and names	Przywróć kolory i nazwy z ustawienia
+	Import a preset file…	Importuj plik ustawienia…
+	Export the labels to a preset file…	Eksportuj etykiety do pliku ustawienia…
+	Show the presets folder	Pokaż folder ustawień
+	Delete this preset	Usuń to ustawienie
+	Opens in your web browser: {url}	Otwiera w przeglądarce: {url}
+	Saves this session's log and shows it in your file manager.	Zapisuje dziennik tej sesji i pokazuje go w menedżerze plików.
+	Shows a report on this computer.	Pokazuje raport o tym komputerze.
+	Shows the version, community links and credits in a FilmCraft window.	Pokazuje wersję, linki społeczności i współtwórców w oknie FilmCraft.
+	Couldn't open your web browser	Nie udało się otworzyć przeglądarki
+	Open this address in your browser yourself:	Otwórz ten adres w przeglądarce samodzielnie:
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekodowanie sprzętowe: Auto używa systemowego dekodera wideo (VideoToolbox w macOS, Media Foundation w Windows, VA-API dla H.264 i HEVC w Linuksie) dla obsługiwanych strumieni, a własnego dekodera FilmCraft dla pozostałych lub gdy sprzęt zawiedzie. Już otwarte multimedia zachowują swój dekoder do ponownego otwarcia.
+	Settings	Ustawienia
+	Hide FilmCraft	Ukryj FilmCraft
+	Hide Others	Ukryj pozostałe
+# Added 2026-10-29: strings main gained since the catalog was written.
+	Delete Redoable Actions	Usuń akcje do ponowienia
+	Clear History	Wyczyść historię
+	Delete the dimmed actions after the current state? They cannot be redone.	Usunąć wyszarzone akcje po bieżącym stanie? Nie będzie można ich ponowić.
+	Show Duplicate Frame Markers	Pokaż znaczniki zduplikowanych klatek
+	Transparency Grid	Siatka przezroczystości
+	Work Area Bar	Pasek obszaru roboczego
+	Start: {tc}	Początek: {tc}
+	End: {tc}	Koniec: {tc}
+	Duration: {tc}	Czas trwania: {tc}
+	Animate zoom, scrolling and menus	Animuj powiększanie, przewijanie i menu
+	Reset Interface Zoom	Resetuj powiększenie interfejsu
+	Track Color	Kolor ścieżki
+	Open a sequence to search its graphics	Otwórz sekwencję, aby przeszukać jej grafiki
+	No text graphics in this sequence. Add text with the Type tool.	Ta sekwencja nie zawiera grafik z tekstem. Dodaj tekst narzędziem Tekst.
+	No matching text.	Brak pasującego tekstu.
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.

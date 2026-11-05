@@ -1,6 +1,6 @@
 //! CAVLC residual block parsing (9.2).
 
-use crate::cavlc_tables::*;
+use crate::cavlc_tables::{COEFF_TOKEN, RUN_BEFORE, TOTAL_ZEROS_2X2, TOTAL_ZEROS_2X4, TOTAL_ZEROS_4X4};
 use crate::error::{Result, ensure};
 use filmcraft_bitstream::BitReader;
 use std::sync::OnceLock;

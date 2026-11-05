@@ -1,0 +1,3617 @@
+# Bosnian (bs) catalog, Latin script, Ijekavian. Columns separated by TAB: context <TAB> source <TAB> translation
+# Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing …
+# Original clean-room translations from the meaning of FilmCraft's English labels, using standard
+# Bosnian video-editing vocabulary (sekvenca, glava za reprodukciju, radno područje). No proprietary
+# localization resources were used. AI-assisted (Claude Code), not yet reviewed by a native speaker;
+# the wording is shared with storytold/craft-i18n (locales/bs/filmcraft.tsv and common.tsv).
+
+	About FilmCraft	O FilmCraftu
+	Add Audio Submix Track	Dodaj audio podmiks traku
+	Add Caption at Playhead	Dodaj titl na glavu za reprodukciju
+	Add Chapter Marker…	Dodaj marker poglavlja…
+	Add Edit	Dodaj rez
+	Add Edit to All Tracks	Dodaj rez na sve trake
+	Add Flash Cue Marker…	Dodaj marker Flash znaka…
+	Add Frame Hold	Dodaj zadržavanje sličice
+	Add Guide…	Dodaj vodilicu…
+	Add Marker	Dodaj marker
+	Add New Caption Track…	Dodaj novu traku titlova…
+	Add Range Marker	Dodaj marker raspona
+	Add Range Marker to In and Out	Dodaj marker raspona na ulaz i izlaz
+	Add Tracks…	Dodaj trake…
+	Adjustment Layer…	Sloj podešavanja…
+	Align to Selection	Poravnaj prema odabiru
+	Align to Video Frame	Poravnaj s video sličicom
+	Align to Video Frame as Group	Poravnaj s video sličicom kao grupu
+	All Panels	Svi paneli
+	Alpha	Alfa
+	Appearance	Izgled
+	Appearance…	Izgled…
+	Apply Audio Transition	Primijeni audio prijelaz
+	Apply Default Transitions to Selection	Primijeni zadane prijelaze na odabir
+	Apply Video Transition	Primijeni video prijelaz
+	Arrange	Rasporedi
+	ArtCraft Website	Web stranica ArtCrafta
+	Assembly	Sklapanje
+	Attach Proxies…	Priloži proksije…
+	Audio	Zvuk
+	Audio Channels…	Audio kanali…
+	Audio Clip Mixer	Mikser audio klipova
+	Audio Gain…	Audio pojačanje…
+	Audio Hardware…	Audio hardver…
+	Audio In	Audio ulaz
+	Audio Meters	Audio mjerači
+	Audio Options	Audio opcije
+	Audio Out	Audio izlaz
+	Audio Track Mixer	Mikser audio traka
+	Audio Waveform	Audio talasni oblik
+	Auto Save…	Automatsko čuvanje…
+	Automate to Sequence…	Automatiziraj u sekvencu…
+	Bars and Tone…	Trake i ton…
+	Bin	Korpa
+	Bin From Selection	Korpa iz odabira
+	Black Video…	Crni video…
+	Blue	Plava
+	Bottom	Dno
+	Breakout to Mono	Razdvoji u mono
+	Bring Forward	Pomakni naprijed
+	Bring to Front	Postavi na vrh
+	Brown	Smeđa
+	Captions	Titlovi
+	Captions and Graphics	Titlovi i grafika
+	Captions…	Titlovi…
+	Caribbean	Karipski
+	Center Horizontally	Centriraj vodoravno
+	Center Vertically	Centriraj okomito
+	Cerulean	Cerulean
+	Clear	Očisti
+	Clear Guides	Očisti vodilice
+	Clear In	Očisti ulaz
+	Clear In and Out	Očisti ulaz i izlaz
+	Clear Markers	Očisti markere
+	Clear Out	Očisti izlaz
+	Clear Selected Marker	Očisti odabrani marker
+	Clip	Klip
+	Close	Zatvori
+	Close All Other Projects	Zatvori sve ostale projekte
+	Close All Projects	Zatvori sve projekte
+	Close Gap	Zatvori prazninu
+	Close Project	Zatvori projekat
+	Color Management…	Upravljanje bojama…
+	Color Matte…	Podloga u boji…
+	Comparison View	Prikaz poređenja
+	Composite Video	Kompozitni video
+	Consolidate Duplicates	Objedini duplikate
+	Copy	Kopiraj
+	Copy Paste Includes Sequence Markers	Kopiranje i lijepljenje uključuje markere sekvence
+	Create Captions from Transcript…	Kreiraj titlove iz transkripta…
+	Create Multi-Camera Source Sequence…	Kreiraj izvornu sekvencu s više kamera…
+	Create Proxies…	Kreiraj proksije…
+	Cut	Izreži
+	Dark	Tamno
+	Darkest	Najtamnije
+	Delete Render Files	Izbriši datoteke iscrtavanja
+	Delete Render Files In to Out	Izbriši datoteke iscrtavanja od ulaza do izlaza
+	Delete Tracks…	Izbriši trake…
+	Delete Transcript	Izbriši transkript
+	Demo Footage	Demo snimak
+	Demo Project	Demo projekat
+	Deselect All	Poništi sav odabir
+	Detach Proxies	Odvoji proksije
+	Display Mode	Način prikaza
+	Distribute	Rasporedi ravnomjerno
+	Distribute Horizontally	Rasporedi vodoravno
+	Distribute Space Horizontally	Rasporedi razmak vodoravno
+	Distribute Space Vertically	Rasporedi razmak okomito
+	Distribute Vertically	Rasporedi okomito
+	Duplicate	Dupliciraj
+	Dynamic Audio Waveforms	Dinamički audio talasni oblici
+	Edit	Uredi
+	Edit Offline…	Uredi nedostupno…
+	Edit Original	Uredi original
+	Edit Subclip…	Uredi podklip…
+	Editing	Uređivanje
+	Effect Controls	Kontrole efekata
+	Effects	Efekti
+	Ellipse	Elipsa
+	Enable	Omogući
+	Enable Remix	Omogući remiks
+	Essential Graphics	Osnovna grafika
+	Essential Sound	Osnovni zvuk
+	Events	Događaji
+	Export	Izvezi
+	Export As Motion Graphics Template…	Izvezi kao predložak animirane grafike…
+	Extract	Izdvoji
+	Extract Audio	Izdvoji zvuk
+	Field Options…	Opcije poluslika…
+	File	Datoteka
+	File…	Datoteka…
+	Fill frame	Ispuni kadar
+	FilmCraft Help…	Pomoć za FilmCraft…
+	FilmCraft on GitHub	FilmCraft na GitHubu
+	FilmCraft on getartcraft.com	FilmCraft na getartcraft.com
+	Find Next	Pronađi sljedeće
+	Find…	Pronađi…
+	Fit	Uklopi
+	Fit to frame	Uklopi u kadar
+	Flatten	Spljošti
+	Forest	Šuma
+	Frame Blending	Stapanje sličica
+	Frame Hold Options…	Opcije zadržavanja sličice…
+	Frame Sampling	Uzorkovanje sličica
+	From Bin	Iz korpe
+	From Source Monitor	Iz izvornog monitora
+	From Source Monitor, Match Frame	Iz izvornog monitora, uskladi sličicu
+	From file…	Iz datoteke…
+	Full	Puno
+	Generate Audio Waveform	Generiši audio talasni oblik
+	Get Media File Properties for	Preuzmi svojstva medijske datoteke za
+	Go to Gap	Idi na prazninu
+	Go to In	Idi na ulaz
+	Go to Next Caption Segment	Idi na sljedeći segment titla
+	Go to Next Marker	Idi na sljedeći marker
+	Go to Out	Idi na izlaz
+	Go to Previous Caption Segment	Idi na prethodni segment titla
+	Go to Previous Marker	Idi na prethodni marker
+	Go to Split	Idi na podjelu
+	Graphics and Titles	Grafika i naslovi
+	Graphics…	Grafika…
+	Green	Zelena
+	Group	Grupiši
+	Guide Templates	Predlošci vodilica
+	Help	Pomoć
+	Hide All Caption Tracks	Sakrij sve trake titlova
+	High Quality Playback	Reprodukcija visokog kvaliteta
+	History	Historija
+	Import From	Uvezi iz
+	Import Image Sequence…	Uvezi sekvencu slika…
+	Import from Media Browser	Uvezi iz preglednika medija
+	Import…	Uvezi…
+	Info	Informacije
+	Ingest Settings…	Postavke unosa…
+	Insert	Umetni
+	Insert Frame Hold Segment	Umetni segment zadržavanja sličice
+	Install Motion Graphics Template…	Instaliraj predložak animirane grafike…
+	Interpret Footage…	Interpretiraj snimak…
+	Join the ArtCraft Discord…	Pridružite se ArtCraft Discordu…
+	Keyboard Shortcuts…	Prečice na tastaturi…
+	Label	Oznaka
+	Labels…	Oznake…
+	Language	Jezik
+	Lavender	Lavanda
+	Learning	Učenje
+	Left	Lijevo
+	Libraries	Biblioteke
+	Lift	Podizanje
+	Light	Svijetlo
+	Link	Veza
+	Link Media…	Poveži medije…
+	Linked Selection	Povezani odabir
+	Lock Guides	Zaključaj vodilice
+	Lumetri Color	Lumetri boja
+	Lumetri Scopes	Lumetri skopovi
+	Magnification	Uvećanje
+	Make Offline…	Učini nedostupnim…
+	Make Subclip…	Napravi podklip…
+	Make Subsequence	Napravi podsekvencu
+	Manage Guides…	Upravljaj vodilicama…
+	Mark Clip	Označi klip
+	Mark In	Označi ulaz
+	Mark Out	Označi izlaz
+	Mark Selection	Označi odabir
+	Mark Split	Označi podjelu
+	Markers	Markeri
+	Match Frame	Uskladi sličicu
+	Media Analysis & Transcription…	Analiza medija i transkripcija…
+	Media Browser	Preglednik medija
+	Media Cache…	Keš medija…
+	Media…	Mediji…
+	Memory…	Memorija…
+	Merge Clips…	Spoji klipove…
+	Metadata	Metapodaci
+	Modify	Izmijeni
+	Motion Graphics Template…	Predložak animirane grafike…
+	Multi-Camera	Više kamera
+	Multi-Camera View	Prikaz više kamera
+	Nest…	Ugnijezdi…
+	New	Novo
+	New Layer	Novi sloj
+	New Project Panel	Novi panel projekta
+	Next in Sequence	Sljedeće u sekvenci
+	Next in Track	Sljedeće na traci
+	Normalize Mix Track…	Normaliziraj traku miksa…
+	Offline File…	Nedostupna datoteka…
+	Open Project…	Otvori projekat…
+	Open Recent	Otvori nedavno
+	Clear Recent Files	Očisti nedavne datoteke
+	Optical Flow	Optički tok
+	Overwrite	Prepiši
+	Paste	Zalijepi
+	Paste Attributes…	Zalijepi atribute…
+	Paste Insert	Zalijepi umetanjem
+	Paused Resolution	Rezolucija pri pauzi
+	Playback Resolution	Rezolucija reprodukcije
+	Playback…	Reprodukcija…
+	Plugins…	Dodaci…
+	Polygon	Mnogougao
+	Preferences	Postavke
+	Previous in Sequence	Prethodno u sekvenci
+	Previous in Track	Prethodno na traci
+	Program	Program
+	Progress	Napredak
+	Project	Projekat
+	Project Manager…	Upravitelj projekta…
+	Project Settings	Postavke projekta
+	Project…	Projekat…
+	Properties	Svojstva
+	Purple	Ljubičasta
+	Reconnect Full Resolution Media…	Ponovo poveži medije pune rezolucije…
+	Recover Unsaved Changes…	Oporavi nesačuvane promjene…
+	Rectangle	Pravougaonik
+	Red	Crvena
+	Redo	Ponovi
+	Reference Monitor	Referentni monitor
+	Remix	Remiks
+	Remix Properties…	Svojstva remiksa…
+	Remove Attributes…	Ukloni atribute…
+	Remove Filler Words	Ukloni poštapalice
+	Remove Pauses	Ukloni pauze
+	Remove Unused	Ukloni nekorišteno
+	Rename…	Preimenuj…
+	Render Audio	Iscrtaj zvuk
+	Render Effects In to Out	Iscrtaj efekte od ulaza do izlaza
+	Render In to Out	Iscrtaj od ulaza do izlaza
+	Render Selection	Iscrtaj odabir
+	Replace Fonts in Projects…	Zamijeni fontove u projektima…
+	Replace With Clip	Zamijeni klipom
+	Report an Issue…	Prijavi problem…
+	Reset All Parameters	Vrati sve parametre na početno
+	Reset Duration	Vrati trajanje na početno
+	Reset to Saved Layout	Vrati na sačuvani raspored
+	Restore Captions from Source Clip	Vrati titlove iz izvornog klipa
+	Reveal Log Files…	Prikaži datoteke zapisnika…
+	Reverse Match Frame	Obrnuto usklađivanje sličice
+	Revert	Vrati na sačuvano
+	Revert Remix	Vrati remiks
+	Review	Pregled izmjena
+	Right	Desno
+	Ripple Delete	Ripple brisanje
+	Ripple Delete Head Frame	Ripple brisanje početne sličice
+	Ripple Sequence Markers	Ripple markeri sekvence
+	Rose	Ruža
+	Safe Margins	Sigurne margine
+	Save	Sačuvaj
+	Save All	Sačuvaj sve
+	Save As…	Sačuvaj kao…
+	Save Guides as Template…	Sačuvaj vodilice kao predložak…
+	Save a Copy…	Sačuvaj kopiju…
+	Save as Template…	Sačuvaj kao predložak…
+	Scale to Frame Size	Skaliraj na veličinu kadra
+	Scene Edit Detection…	Otkrivanje rezova scena…
+	Scratch Disks…	Radni diskovi…
+	Search Bin	Korpa pretrage
+	Select	Odaberi
+	Select All	Odaberi sve
+	Select All Matching	Odaberi sve odgovarajuće
+	Select Label Group	Odaberi grupu oznaka
+	Select Next Graphic	Odaberi sljedeću grafiku
+	Select Next Layer	Odaberi sljedeći sloj
+	Select Previous Graphic	Odaberi prethodnu grafiku
+	Select Previous Layer	Odaberi prethodni sloj
+	Selection Follows Playhead	Odabir prati glavu za reprodukciju
+	Selection as FilmCraft Project…	Odabir kao FilmCraft projekat…
+	Selection…	Odabir…
+	Send Backward	Pomakni nazad
+	Send to Back	Postavi na dno
+	Sequence	Sekvenca
+	Sequence From Clip	Sekvenca iz klipa
+	Sequence Settings…	Postavke sekvence…
+	Sequence…	Sekvenca…
+	Settings	Postavke
+	Show Active Caption Tracks Only	Prikaži samo aktivne trake titlova
+	Show All Caption Tracks	Prikaži sve trake titlova
+	Show All Marker Colors	Prikaži sve boje markera
+	Show Duplicate Frame Markers	Prikaži oznake dupliranih kadrova
+	Show Guides	Prikaži vodilice
+	Show Rulers	Prikaži ravnala
+	Show Through Edits	Prikaži prolazne rezove
+	Simplify Sequence…	Pojednostavi sekvencu…
+	Snap in Program Monitor	Hvatanje u programskom monitoru
+	Snap in Timeline	Hvatanje na vremenskoj liniji
+	Source	Izvor
+	Source Settings…	Postavke izvora…
+	Speed/Duration…	Brzina/trajanje…
+	Synchronize…	Sinhronizuj…
+	System Compatibility Report…	Izvještaj o kompatibilnosti sistema…
+	Tan	Žutosmeđa
+	Teal	Tirkizna
+	Text	Tekst
+	Time Interpolation	Vremenska interpolacija
+	Timecode	Vremenski kod
+	Timecode…	Vremenski kod…
+	Timeline	Vremenska linija
+	Timeline…	Vremenska linija…
+	Toggle Proxies	Uključi/isključi proksije
+	Tools	Alati
+	Top	Vrh
+	Transcribe Sequence…	Transkribuj sekvencu…
+	Transcribe…	Transkribuj…
+	Transcript	Transkript
+	Transparent Video…	Prozirni video…
+	Trim Edit	Rez skraćivanjem
+	Trim…	Skrati…
+	Undo	Poništi
+	Ungroup	Razgrupiši
+	Universal Counting Leader…	Univerzalni uvodnik s odbrojavanjem…
+	Update Metadata…	Ažuriraj metapodatke…
+	Upgrade Caption to Graphic	Nadogradi titl u grafiku
+	Upgrade to Source Graphic	Nadogradi u izvornu grafiku
+	Vertical Text	Okomiti tekst
+	Video In	Video ulaz
+	Video Options	Video opcije
+	Video Out	Video izlaz
+	Video and Audio Waveform Split	Podjela videa i audio talasnog oblika
+	View	Prikaz
+	Violet	Ljubičasta
+	Window	Prozor
+	Workspaces	Radni prostori
+	Yellow	Žuta
+	Zoom In	Uvećaj
+	Zoom Out	Umanji
+	Zoom to Sequence	Zumiraj na sekvencu
+	Next Appearance Mode	Sljedeći način izgleda
+	Project Notes	Bilješke projekta
+	AAF…	AAF…
+	Audio…	Zvuk…
+	Avid Log Exchange…	Avid Log Exchange…
+	Color	Boja
+	Color…	Boja…
+	EDL…	EDL…
+	Edit Workspaces…	Uredi radne prostore…
+	Export Markers as CSV…	Izvezi markere kao CSV…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	Final Cut Pro XML…
+	General…	Općenito…
+	Hide FilmCraft	Sakrij FilmCraft
+	Hide Others	Sakrij ostale
+	Iris	Iris
+	Magenta	Magenta
+	Mango	Mango
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO…
+	Proxy	Proksi
+	Quit FilmCraft	Zatvori FilmCraft
+	Save Changes to this Workspace	Sačuvaj promjene u ovom radnom prostoru
+	Save as New Workspace…	Sačuvaj kao novi radni prostor…
+	Refresh Changed Media	Osvježi promijenjene medije
+	Medium	Srednje
+	Recent	Nedavno
+	Home	Početna
+	Import	Uvezi
+	{name} - Edited	{name} - uređeno
+	Full screen	Cijeli ekran
+	Volume	Jačina zvuka
+	Master volume: use the Audio Track Mixer	Glavna jačina: koristite mikser audio traka
+	Search	Pretraga
+	Quick Export	Brzi izvoz
+	Join the ArtCraft Discord (discord.gg/artcraft)	Pridružite se ArtCraft Discordu (discord.gg/artcraft)
+	Cancel	Otkaži
+	OK	U redu
+	Interpret Footage	Interpretiraj snimak
+	Color Management · {n} item	Upravljanje bojama · stavki: {n}
+	Color Management · {n} items	Upravljanje bojama · stavki: {n}
+	Media colour space (from file metadata): {detected}	Prostor boja medija (iz metapodataka datoteke): {detected}
+	Override media colour space:	Zamijeni prostor boja medija:
+	Use file metadata	Koristi metapodatke datoteke
+	Sequence Color Management	Upravljanje bojama sekvence
+	Working Color Space	Radni prostor boja
+	Wide gamut color (composite in BT.2020)	Boja širokog gamuta (kompozit u BT.2020)
+	Auto tone map media (HDR and log into SDR)	Automatsko tonsko mapiranje medija (HDR i log u SDR)
+	Audio Gain	Audio pojačanje
+	Set Gain to:	Postavi pojačanje na:
+	Adjust Gain by:	Podesi pojačanje za:
+	Normalize Max Peak to:	Normaliziraj maksimalni vrh na:
+	Normalize All Peaks to:	Normaliziraj sve vrhove na:
+	Peak Amplitude: {peak}	Vršna amplituda: {peak}
+	Standard	Standardno
+	Adaptive	Prilagodljivo
+	Mono	Mono
+	Stereo	Stereo
+	Add Tracks	Dodaj trake
+	Amount	Količina
+	Placement	Postavljanje
+	Track type	Vrsta trake
+	Add video tracks	Dodaj video trake
+	Add audio tracks	Dodaj audio trake
+	Add audio submix tracks	Dodaj audio podmiks trake
+	After {name}	Nakon {name}
+	Before First Track	Prije prve trake
+	Delete Tracks	Izbriši trake
+	Video Tracks	Video trake
+	Audio Tracks	Audio trake
+	Delete Video Tracks	Izbriši video trake
+	Delete Audio Tracks	Izbriši audio trake
+	All Empty Tracks	Sve prazne trake
+	Caption Tracks	Trake titlova
+	Delete Caption Tracks	Izbriši trake titlova
+	Delete Caption Track	Izbriši traku titlova
+	Delete Empty Caption Tracks	Izbriši prazne trake titlova
+	Version {version}	Verzija {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Nelinearni video uređivač u čistom Rustu, napisan od nule. Dio porodice ArtCraft.
+	Join the ArtCraft Discord	Pridružite se ArtCraft Discordu
+	Source code on GitHub	Izvorni kod na GitHubu
+	Report an issue	Prijavi problem
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Fontovi: Inter, Noto Serif i JetBrains Mono (SIL OFL 1.1).
+	just now	upravo sada
+	{n} s ago	prije {n} s
+	{n} min ago	prije {n} min
+	{n} h ago	prije {n} h
+	All Events	Svi događaji
+	Warnings and Errors	Upozorenja i greške
+	Errors Only	Samo greške
+	Clear All	Očisti sve
+	No events.	Nema događaja.
+	Show finished jobs	Prikaži završene zadatke
+	Cancelled	Otkazano
+	Failed: {e}	Nije uspjelo: {e}
+	Done	Gotovo
+	No background jobs.	Nema pozadinskih zadataka.
+	Recover Unsaved Changes	Oporavi nesačuvane promjene
+	Untitled	Bez naslova
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft je zatvoren dok je „{name}” imao nesačuvane promjene.
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft se neočekivano zatvorio dok je „{name}” imao nesačuvane promjene.
+	Recover unsaved changes from {when}?	Oporaviti nesačuvane promjene od {when}?
+	The project had not been saved yet.	Projekat još nije bio sačuvan.
+	{n} sessions have unsaved changes:	Sesije s nesačuvanim promjenama: {n}
+	Discard	Odbaci
+	Recover	Oporavi
+	Not Now	Ne sada
+	Are you sure you want to discard your changes to '{file}'?	Jeste li sigurni da želite odbaciti promjene u '{file}'?
+	Yes	Da
+	No	Ne
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke bilo gdje u prozoru ili odaberite izvor ispod.
+	Browse files…	Pregledaj datoteke…
+	Movies, audio and stills from disk	Filmovi, zvuk i fotografije s diska
+	Demo footage	Demo snimak
+	Six procedural 1080p clips with sound	Šest proceduralnih 1080p klipova sa zvukom
+	Demo project	Demo projekat
+	A cut sequence with transitions, effects and music	Montirana sekvenca s prijelazima, efektima i muzikom
+	Bars and Tone	Trake i ton
+	SMPTE HD bars with 1 kHz reference tone	SMPTE HD trake s referentnim tonom 1 kHz
+	Community	Zajednica
+	Join us on Discord	Pridružite nam se na Discordu
+	OMF Export Settings	Postavke izvoza OMF
+	AAF Export Settings	Postavke izvoza AAF
+	OMF Title:	OMF naslov:
+	Mixdown video	Video miksa
+	Audio:	Zvuk:
+	Encapsulate	Enkapsuliraj
+	Separate Audio	Zaseban zvuk
+	Embed	Ugradi
+	Separate Files	Zasebne datoteke
+	Link to Media	Poveži s medijima
+	Audio File Format:	Format audio datoteke:
+	Sample Rate:	Brzina uzorkovanja:
+	Bits per Sample:	Bita po uzorku:
+	Rendering:	Iscrtavanje:
+	Trim audio files	Skrati audio datoteke
+	Handle Frames:	Rezervne sličice:
+	Render audio clip effects	Iscrtaj efekte audio klipova
+	Breakout to mono	Razdvoji u mono
+	Exported {path}	Izvezeno: {path}
+	Select a clip to view its metadata.	Odaberite klip da vidite njegove metapodatke.
+	Clip: {name}	Klip: {name}
+	Open	Otvori
+	(no sequence)	(nema sekvence)
+	Show or hide {color} markers	Prikaži ili sakrij {color} markere
+	Marker	Marker
+	{tc}  Chapter	{tc}  Poglavlje
+	No markers. Press M to add one.	Nema markera. Pritisnite M da dodate jedan.
+	All markers are hidden by the colour filter.	Svi markeri su skriveni filterom boja.
+	Type:	Vrsta:
+	Video:	Video:
+	Codec:	Kodek:
+	Duration:	Trajanje:
+	Settings:	Postavke:
+	Playhead:	Glava za reprodukciju:
+	Video {n}:	Video {n}:
+	Audio {n}:	Zvuk {n}:
+	UI:	Interfejs:
+	{fps} fps · {n} frames queued	{fps} fps · sličica u redu: {n}
+	{panel} — coming in a later milestone	{panel} — stiže u kasnijoj fazi
+	Close Panel	Zatvori panel
+	Close Other Timeline Panels	Zatvori ostale panele vremenske linije
+	Close All	Zatvori sve
+	Maximize Frame	Maksimiziraj okvir
+	Restore Frame	Vrati okvir
+	Restore Workspace	Vrati radni prostor
+	Reveal Sequence in Project	Prikaži sekvencu u projektu
+	Video Thumbnails	Video sličice
+	Audio Waveforms	Audio talasni oblici
+	Delete Preset	Izbriši predložak
+	Export Preset…	Predložak izvoza…
+	Import Presets…	Uvezi predloške…
+	Effect presets	Predlošci efekata
+	Save Preset	Sačuvaj predložak
+	Name:	Naziv:
+	Type	Vrsta
+	Scale	Skaliraj
+	Anchor to In Point	Usidri na ulaznu tačku
+	Anchor to Out Point	Usidri na izlaznu tačku
+	Without keyframes	Bez ključnih sličica
+	Description:	Opis:
+	Saved preset “{name}”	Sačuvan predložak „{name}”
+	Current duration {seconds} s	Trenutno trajanje {seconds} s
+	Remix Properties	Svojstva remiksa
+	Target Duration:	Ciljno trajanje:
+	Segments:	Segmenti:
+	Fewer · More	Manje · više
+	Variations:	Varijacije:
+	Remixed to {seconds} s	Remiksovano na {seconds} s
+	{mode} · no clip	{mode} · nema klipa
+	{mode} · no sequence	{mode} · nema sekvence
+	Remove Row	Ukloni red
+	Add a timecode row	Dodaj red vremenskog koda
+	Panner	Paner
+	Mute	Utišaj
+	Send {n} Level	Nivo slanja {n}
+	Show Keyframes	Prikaži ključne sličice
+	Clip Keyframes	Ključne sličice klipa
+	Track Keyframes	Ključne sličice trake
+	Delete	Izbriši
+	Untitled Workspace	Radni prostor bez naslova
+	New Workspace	Novi radni prostor
+	Edit Workspaces	Uredi radne prostore
+	Rename	Preimenuj
+	Restore Original	Vrati original
+	Search effects	Pretraži efekte
+	Apply to Selected Clips	Primijeni na odabrane klipove
+	Metadata Display	Prikaz metapodataka
+	Save As New View Preset	Sačuvaj kao novi predložak prikaza
+	Manage Saved View Presets	Upravljaj sačuvanim predlošcima prikaza
+	Freeform View Options	Opcije prikaza slobodnog oblika
+	Save Arrangement	Sačuvaj raspored
+	Saves the view, columns, sort, thumbnail and font size.	Čuva prikaz, kolone, sortiranje, sličicu i veličinu fonta.
+	Grid spacing:	Razmak mreže:
+	Default clip size:	Zadana veličina klipa:
+	Snap to grid	Prilijepi uz mrežu
+	Show clip names	Prikaži nazive klipova
+	Show durations	Prikaži trajanja
+	Show:	Prikaži:
+	Search fields	Pretraži polja
+	Project Metadata	Metapodaci projekta
+	Add Property…	Dodaj svojstvo…
+	Column order	Redoslijed kolona
+	{n}. (empty)	{n}. (prazno)
+	Restore	Vrati
+	Overwrite with Current View	Prepiši trenutnim prikazom
+	Graphics text search arrives with M10.1–M10.2	Pretraga teksta u grafici stiže s M10.1–M10.2
+	Open a sequence to work with captions	Otvorite sekvencu da radite s titlovima
+	Add captions	Dodaj titlove
+	Create a caption track or import a caption file.	Kreirajte traku titlova ili uvezite datoteku titlova.
+	Create new caption track	Kreiraj novu traku titlova
+	Import captions file…	Uvezi datoteku titlova…
+	New {format} track	Nova {format} traka
+	Add caption at playhead	Dodaj titl na glavu za reprodukciju
+	Split caption at playhead	Razdvoji titl na glavi za reprodukciju
+	Merge selected captions	Spoji odabrane titlove
+	Delete selected captions	Izbriši odabrane titlove
+	No captions on this track. Press + to add one at the playhead.	Na ovoj traci nema titlova. Pritisnite + da dodate jedan na glavu za reprodukciju.
+	No matching captions.	Nema odgovarajućih titlova.
+	Open a sequence to see its transcript	Otvorite sekvencu da vidite njen transkript
+	Transcribe sequence	Transkribuj sekvencu
+	Speech-to-text turns the dialogue into editable text.	Pretvaranje govora u tekst pretvara dijalog u tekst koji se može uređivati.
+	This build has no speech-to-text; import a transcript with transcript.set.	Ova verzija nema pretvaranje govora u tekst; uvezite transkript pomoću transcript.set.
+	Transcribe	Transkribuj
+	Extract selected text	Izdvoji odabrani tekst
+	Lift selected text	Podigni odabrani tekst
+	Remove filler words	Ukloni poštapalice
+	Create captions	Kreiraj titlove
+	Speaker	Govornik
+	Box	Okvir
+	Align	Poravnaj
+	Align left	Poravnaj lijevo
+	Align center	Poravnaj po sredini
+	Align right	Poravnaj desno
+	Position	Položaj
+	Position: top	Položaj: vrh
+	Position: middle	Položaj: sredina
+	Position: bottom	Položaj: dno
+	(gap)	(praznina)
+	Out: {name}	Izlaz: {name}
+	In: {name}	Ulaz: {name}
+	Play Around Edit (Space loops, Shift+K once)	Reprodukuj oko reza (Razmak ponavlja, Shift+K jednom)
+	Trim Backward Many	Skrati unazad za više
+	Trim Backward	Skrati unazad
+	Apply Default Transitions	Primijeni zadane prijelaze
+	Apply Default Transitions to Selection (Shift+D)	Primijeni zadane prijelaze na odabir (Shift+D)
+	Trim Forward	Skrati unaprijed
+	Trim Forward Many	Skrati unaprijed za više
+	Exit Trim Mode	Izađi iz načina skraćivanja
+	Voice-over record (right-click: Voice-Over Record Settings…)	Snimanje naracije (desni klik: Postavke snimanja naracije…)
+	Voice-Over Record Settings…	Postavke snimanja naracije…
+	Recording voice-over…	Snimanje naracije…
+	Voice-over recorded: {p}	Naracija snimljena: {p}
+	Voice-over recording stopped (nothing recorded)	Snimanje naracije zaustavljeno (ništa nije snimljeno)
+	Post-roll	Postrol
+	● Recording	● Snimanje
+	Voice-Over Record Settings	Postavke snimanja naracije
+	Source:	Izvor:
+	Default Input	Zadani ulaz
+	Input:	Ulaz:
+	Channel {n}	Kanal {n}
+	Countdown Sound Cues	Zvučni znakovi odbrojavanja
+	Pre-roll:	Predrol:
+	 seconds	 sekundi
+	Post-roll:	Postrol:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Reprodukcija počinje predrolom prije glave za reprodukciju (ili ulazne tačke); s označenim ulazom/izlazom, snimanje se tamo uključuje i isključuje.
+	Effect	Efekat
+	Clip Fx Editor	Uređivač efekata klipa
+	Track Fx Editor	Uređivač efekata trake
+	Master Gain	Glavno pojačanje
+	Reset	Vrati na početno
+	Band {n}	Opseg {n}
+	Solo	Solo
+	Bypass	Zaobiđi
+	Thr	Prag
+	Ratio	Omjer
+	Att	Slab.
+	Rel	Otp.
+	Gain	Pojačanje
+	Output Gain	Izlazno pojačanje
+	Limiter	Limiter
+	Link Channels	Poveži kanale
+	Limiter Threshold	Prag limitera
+	Limiter Release	Otpuštanje limitera
+	Auto Gate	Automatska kapija
+	Threshold	Prag
+	Attack	Napad
+	Release	Otpuštanje
+	Hold	Zadrži
+	Compressor	Kompresor
+	Auto Makeup	Automatsko nadoknađivanje
+	Makeup	Nadoknada
+	Expander	Ekspander
+	Soft Clip	Meko odsijecanje
+	(no sequences)	(nema sekvenci)
+	(no clips)	(nema klipova)
+	Show Transport Controls	Prikaži kontrole reprodukcije
+	Loop	Petlja
+	Multi-Camera Audio Follows Video	Zvuk više kamera prati video
+	Multi-Camera Record	Snimanje više kamera
+	Multi-Camera Selection Top Down	Odabir više kamera odozgo prema dolje
+	Show Multi-Camera Preview Monitor	Prikaži monitor pregleda više kamera
+	Auto-Adjust Multi-Camera Playback Quality	Automatski podešavaj kvalitet reprodukcije više kamera
+	Transmit Multi-Camera View	Prenesi prikaz više kamera
+	Multi-Camera Layout	Raspored više kamera
+	Automatic	Automatski
+	Edit Cameras…	Uredi kamere…
+	Add Marker (M)	Dodaj marker (M)
+	Mark In (I)	Označi ulaz (I)
+	Mark Out (O)	Označi izlaz (O)
+	Go to In (Shift+I)	Idi na ulaz (Shift+I)
+	Step Back 1 Frame (Left)	Korak unazad 1 sličica (lijevo)
+	Play-Stop Toggle (Space)	Prekidač reprodukcije i zaustavljanja (Razmak)
+	Step Forward 1 Frame (Right)	Korak naprijed 1 sličica (desno)
+	Go to Out (Shift+O)	Idi na izlaz (Shift+O)
+	Insert (,)	Umetni (,)
+	Overwrite (.)	Prepiši (.)
+	Export Frame (Shift+E)	Izvezi sličicu (Shift+E)
+	Lift (;)	Podigni (;)
+	Extract (')	Izdvoji (')
+	Export Frame: use Export mode (M6)	Izvezi sličicu: koristite način izvoza (M6)
+	Button Editor	Uređivač dugmadi
+	More transport controls	Više kontrola reprodukcije
+	Multi-Camera Record on	Snimanje više kamera uključeno
+	Multi-Camera Record off	Snimanje više kamera isključeno
+	{first} - Merged	{first} - spojeno
+	{first} Multicam	{first} više kamera
+	In Points	Ulazne tačke
+	Out Points	Izlazne tačke
+	Clip Marker	Marker klipa
+	Merge Clips	Spoji klipove
+	Create Multi-Camera Source Sequence	Kreiraj izvornu sekvencu s više kamera
+	Synchronize Clips	Sinhronizuj klipove
+	Clip Name:	Naziv klipa:
+	Sequence Name:	Naziv sekvence:
+	{n} clip(s): {names}	Klipovi ({n}): {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	Odabrano klipova: {n}; klip na referentnoj traci ostaje na mjestu.
+	Synchronize Point	Tačka sinhronizacije
+	Ignore Hours	Zanemari sate
+	first marker	prvi marker
+	Offset Audio by:	Pomakni zvuk za:
+	Offset:	Pomak:
+	 frames	 sličica
+	Reference track:	Referentna traka:
+	lowest (V1…)	najniža (V1…)
+	Remove Audio from AV Clip	Ukloni zvuk iz AV klipa
+	Camera 1	Kamera 1
+	All Cameras	Sve kamere
+	Switch Audio	Promijeni zvuk
+	Camera Names	Nazivi kamera
+	Clip Names	Nazivi klipova
+	Enumerate Cameras	Nabroji kamere
+	Camera Angle Metadata	Metapodaci ugla kamere
+	Move source clips to Processed Clips bin	Premjesti izvorne klipove u korpu Obrađeni klipovi
+	Synchronized {n} clip group(s)	Sinhronizovano grupa klipova: {n}
+	Merged clip created	Spojeni klip je kreiran
+	Multi-camera source sequence with {n} camera(s)	Izvorna sekvenca s više kamera s kamerama: {n}
+	No multi-camera clip at the playhead	Nema klipa s više kamera na glavi za reprodukciju
+	Camera {n} — {name}	Kamera {n} — {name}
+	Page {page} of {pages}	Stranica {page} od {pages}
+	Previous page	Prethodna stranica
+	Next page	Sljedeća stranica
+	Multi-Camera Record On/Off (0)	Uključi/isključi snimanje više kamera (0)
+	Record	Snimi
+	Edit Cameras	Uredi kamere
+	Cameras shown in the Multi-Camera view (uncheck to hide).	Kamere prikazane u prikazu više kamera (poništite oznaku da sakrijete).
+	Recorded {n} multi-camera cut(s)	Snimljeno rezova više kamera: {n}
+	Clamp Signal	Ograniči signal
+	Presets	Unaprijed postavljene vrijednosti
+	Parade ({kind})	Parada ({kind})
+	Waveform ({kind})	Talasni oblik ({kind})
+	Parade Type	Vrsta parade
+	Waveform Type	Vrsta talasnog oblika
+	Vectorscope Targets	Ciljevi vektorskopa
+	Colour Space	Prostor boja
+	Brightness	Svjetlina
+	Signal Scale	Skala signala
+	Histogram	Histogram
+	Paste Attributes	Zalijepi atribute
+	Remove Attributes	Ukloni atribute
+	New Offline File	Nova nedostupna datoteka
+	Nested Sequence Name	Naziv ugniježđene sekvence
+	Make Subclip	Napravi podklip
+	Edit Subclip	Uredi podklip
+	Modify Clip: Audio Channels	Izmijeni klip: audio kanali
+	Modify Clip: Timecode	Izmijeni klip: vremenski kod
+	Frame Hold Options	Opcije zadržavanja sličice
+	Field Options	Opcije poluslika
+	Save Project	Sačuvaj projekat
+	Motion	Pokret
+	Opacity	Neprozirnost
+	Time Remapping	Remapiranje vremena
+	Channel Volume	Jačina kanala
+	In Point	Ulazna tačka
+	Out Point	Izlazna tačka
+	Playhead	Glava za reprodukciju
+	Source Timecode	Izvorni vremenski kod
+	Sequence Time	Vrijeme sekvence
+	Video Attributes	Video atributi
+	Audio Attributes	Audio atributi
+	No effects	Nema efekata
+	Scale Attribute Times	Skaliraj vremena atributa
+	File Name:	Naziv datoteke:
+	Tape Name:	Naziv trake:
+	Contains:	Sadrži:
+	Video	Video
+	Width:	Širina:
+	Height:	Visina:
+	Frame Rate:	Brzina sličica:
+	Media Start:	Početak medija:
+	Subclip: {name}	Podklip: {name}
+	Start:	Početak:
+	End:	Kraj:
+	Restrict Trims To Subclip Boundaries	Ograniči skraćivanja na granice podklipa
+	Convert to Master Clip	Pretvori u glavni klip
+	Clip Channel Format:	Format kanala klipa:
+	Number of Audio Clips:	Broj audio klipova:
+	Media Source Channels	Izvorni kanali medija
+	Ch. {n}	Kan. {n}
+	Clip {n}	Klip {n}
+	Source channels the selected audio clips play:	Izvorni kanali koje reprodukuju odabrani audio klipovi:
+	Set Timecode:	Postavi vremenski kod:
+	Use the file's timecode	Koristi vremenski kod datoteke
+	Hold On	Zadrži uključeno
+	Timecode:	Vremenski kod:
+	Hold Filters	Zadrži filtere
+	Reverse Field Dominance	Obrni dominaciju poluslika
+	Processing Options	Opcije obrade
+	None	Ništa
+	Always Deinterlace	Uvijek ukloni preplitanje
+	Flicker Removal	Uklanjanje treperenja
+	Save changes to “{project_name}” before closing?	Sačuvati promjene u „{project_name}” prije zatvaranja?
+	Don't Save	Nemoj sačuvati
+	All media is online.	Svi mediji su dostupni.
+	{name} (copy)	{name} (kopija)
+	Offline	Van mreže
+	Missing	Nedostaje
+	Link Media	Poveži medije
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	Klipovi koji ne mogu pronaći svoje medije: {n}. Pronađite ih, pretražite folder ili ih ostavite nedostupnim.
+	Clip Name	Naziv klipa
+	File Name	Naziv datoteke
+	File Path	Putanja datoteke
+	Status	Status
+	Match file properties:	Uskladi svojstva datoteke:
+	File Extension	Ekstenzija datoteke
+	Clip ID (fingerprint)	ID klipa (otisak)
+	Duration	Trajanje
+	Media Start	Početak medija
+	Frame Size / Rate	Veličina kadra / brzina
+	Align Timecode	Poravnaj vremenski kod
+	Relink others automatically	Automatski ponovo poveži ostale
+	Search in:	Pretraži u:
+	Browse…	Pregledaj…
+	A file dialog is already open	Dijalog za datoteke je već otvoren
+	Exact name matches only	Samo tačna podudaranja naziva
+	No candidates yet — Search a folder or Locate the file.	Još nema kandidata — pretražite folder ili pronađite datoteku.
+	✔ same file	✔ ista datoteka
+	✔ matches	✔ podudara se
+	✖ different file	✖ različita datoteka
+	Preview	Pregled
+	Offline All	Sve nedostupno
+	Locate…	Pronađi…
+	Linked {n} clip(s)	Povezano klipova: {n}
+	Nothing found with that name.	Ništa nije pronađeno s tim nazivom.
+	Make Offline	Učini nedostupnim
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Učinite odabrane klipove nedostupnim ({n}). Njihovi klipovi prikazuju ploču nedostupnosti dok ih ponovo ne povežete.
+	Media files remain on disk	Medijske datoteke ostaju na disku
+	Media files are deleted	Medijske datoteke se brišu
+	Create Proxies	Kreiraj proksije
+	{n} clip(s) selected.	Odabrano klipova: {n}.
+	Format and size	Format i veličina
+	Destination	Odredište
+	Next to the original media, in a Proxies folder	Pored originalnih medija, u folderu Proxies
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	Proksiji se prave u pozadini i prilažu kad su gotovi. Izvoz uvijek koristi medije pune rezolucije.
+	Creating {n} proxy file(s)…	Kreiranje proksi datoteka: {n}…
+	Project Manager	Upravitelj projekta
+	Sequences	Sekvence
+	Resulting Project	Rezultirajući projekat
+	Collect Files and Copy to New Location	Prikupi datoteke i kopiraj na novu lokaciju
+	Consolidate and Transcode	Objedini i transkodiraj
+	Options	Opcije
+	Exclude Unused Clips	Isključi nekorištene klipove
+	Include Handles:	Uključi rezervne sličice:
+	Include Proxies	Uključi proksije
+	Include Preview Files	Uključi datoteke pregleda
+	Destination Path	Odredišna putanja
+	Disk space: original {original} · resulting {result} ({n} files)	Prostor na disku: originalno {original} · rezultat {result} ({n} datoteka)
+	Disk space: —	Prostor na disku: —
+	Calculate	Izračunaj
+	Project Manager: writing {path}	Upravitelj projekta: zapisivanje {path}
+	Timeline: (no sequences)	Vremenska linija: (nema sekvenci)
+	Browse	Pregledaj
+	Select audio clips, then click a preset to apply it.	Odaberite audio klipove, zatim kliknite predložak da ga primijenite.
+	{name} (user)	{name} (korisnički)
+	Select audio clips to edit them here	Odaberite audio klipove da ih uredite ovdje
+	Multiple Clips Selected	Odabrano više klipova
+	The selected clips have different audio types. Assign one type to edit them together.	Odabrani klipovi imaju različite vrste zvuka. Dodijelite jednu vrstu da ih uređujete zajedno.
+	Assign an audio type to the selection:	Dodijelite vrstu zvuka odabiru:
+	Clear Audio Type	Očisti vrstu zvuka
+	Preset:	Unaprijed postavljeno:
+	(Custom)	(Prilagođeno)
+	Preset name	Naziv predloška
+	Reduce Noise	Smanji šum
+	Reduce Rumble	Smanji tutnjavu
+	DeHum	Uklanjanje brujanja
+	DeEss	Uklanjanje sibilanata
+	Reduce Reverb	Smanji reverb
+	Dynamics	Dinamika
+	EQ	EQ
+	Enhance Speech	Poboljšaj govor
+	Low Tone	Niski ton
+	High Tone	Visoki ton
+	Mix	Miješanje
+	Reverb	Reverb
+	Stereo Width	Stereo širina
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Remiks muzike na ciljno trajanje još nije dostupan. Umjesto toga skratite klip i dodajte unakrsno utišavanje.
+	Pan	Panorama
+	Auto-Match	Automatsko usklađivanje
+	Not matched yet	Još nije upareno
+	Matches each of the {n} clips on its own.	Usklađuje svaki od {n} klipova zasebno.
+	Duck against:	Utišavaj prema:
+	Untagged	Bez oznake
+	Sensitivity	Osjetljivost
+	Reduce By	Smanji za
+	Fades	Utišavanja
+	Generate Keyframes	Generiši ključne sličice
+	Clip Volume	Jačina klipa
+	(no clip selected)	(nije odabran klip)
+	Master · {name}	Glavno · {name}
+	Add Lumetri Color to clip	Dodaj Lumetri boju na klip
+	Input LUT	Ulazni LUT
+	Temperature	Temperatura
+	Tint	Preliv
+	Saturation	Zasićenje
+	Exposure	Ekspozicija
+	Contrast	Kontrast
+	Highlights	Svijetli tonovi
+	Shadows	Sjene
+	Whites	Bijele
+	Blacks	Crne
+	HDR	HDR
+	HDR White	HDR bijela
+	HDR Specular	HDR spekularno
+	Look	Izgled
+	Look LUT	LUT izgleda
+	Intensity	Intenzitet
+	Adjustments	Podešavanja
+	Faded Film	Izblijedjeli film
+	Sharpen	Izoštri
+	Vibrance	Živost
+	RGB Curves	RGB krive
+	HDR Range	HDR raspon
+	Hue Saturation Curves	Krive nijanse i zasićenja
+	Hue vs Sat	Nijansa prema zasićenju
+	Hue vs Hue	Nijansa prema nijansi
+	Hue vs Luma	Nijansa prema lumi
+	Luma vs Sat	Luma prema zasićenju
+	Sat vs Sat	Zasićenje prema zasićenju
+	Midtones	Srednji tonovi
+	Key	Ključ
+	Hue	Nijansa
+	Hue Range	Raspon nijanse
+	Saturation Min	Minimalno zasićenje
+	Luma Min	Luma min.
+	Luma Max	Luma maks.
+	Soften	Omekšaj
+	Show Mask	Prikaži masku
+	Off	Isključeno
+	Color/Gray	Boja/siva
+	Color/Black	Boja/crna
+	White/Black	Bijelo/crno
+	Refine	Doradi
+	Denoise	Uklanjanje šuma
+	Blur	Zamućenje
+	Correction	Korekcija
+	Hue Shift	Pomak nijanse
+	Midpoint	Srednja tačka
+	Roundness	Zaobljenost
+	Feather	Omekšaj ivice
+	LUT	LUT
+	Color Match	Usklađivanje boja
+	Reference	Referenca
+	Face Detection (protect skin tones)	Otkrivanje lica (zaštita tonova kože)
+	Apply Match	Primijeni podudaranje
+	Create ellipse mask	Kreiraj eliptičnu masku
+	Create 4-point polygon mask	Kreiraj masku mnogougla s 4 tačke
+	Free draw bezier	Slobodno crtanje Bezier krive
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Kliknite u programski monitor da postavite tačke maske (prevucite za krive); kliknite prvu tačku ili pritisnite Enter za zatvaranje
+	Delete Mask	Izbriši masku
+	Inverted	Obrnuto
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Prevlačenje: pomjeri · Alt-klik: glatko/ugao · Cmd-klik: izbriši
+	Track selected mask backward	Prati odabranu masku unazad
+	Track selected mask backward 1 frame	Prati odabranu masku unazad 1 sličicu
+	Track selected mask forward 1 frame	Prati odabranu masku unaprijed 1 sličicu
+	Track selected mask forward	Prati odabranu masku unaprijed
+	Stop tracking	Zaustavi praćenje
+	Tracking method: {method}	Metoda praćenja: {method}
+	Composite	Kompozit
+	Comparison	Poređenje
+	Video and Waveform	Video i talasni oblik
+	System Default	Zadano sistemom
+	Default location	Zadana lokacija
+	Font family	Porodica fonta
+	Label Colors	Boje oznaka
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Dekodirane sličice zadržane za monitore i sličice: {used} od {budget}.
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft ostavlja ostatak RAM-a slobodnim za druge aplikacije.
+	not available in this session	nije dostupno u ovoj sesiji
+	Currently: {loc} — {files} file(s), {size}	Trenutno: {loc} — datoteka: {files}, {size}
+	 ({ch} output channels)	 ({ch} izlaznih kanala)
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Lijevi kanal programa → izlaz uređaja {l}, desni → izlaz uređaja {r}{dev}. Izlazi iznad broja kanala uređaja vraćaju se na 1 i 2.
+	Auto-saves go to: {dir}	Automatska čuvanja idu u: {dir}
+	Recovery copy: {dir}	Kopija za oporavak: {dir}
+	Last auto-save {a} · last recovery copy {j}	Posljednje automatsko čuvanje {a} · posljednja kopija za oporavak {j}
+	Last auto-save {a}	Posljednje automatsko čuvanje {a}
+	Last recovery copy {j}	Posljednja kopija za oporavak {j}
+	Remove Media Cache Files	Ukloni keš datoteke medija
+	Deleted {n} file(s), {size}.	Izbrisano datoteka: {n}, {size}.
+	Reset…	Vrati na početno…
+	Source · {name}	Izvor · {name}
+	Reset Effect	Vrati efekat na početno
+	Reset Parameter	Vrati parametar na početno
+	Save Preset…	Sačuvaj postavku…
+	Custom Setup	Prilagođeno podešavanje
+	Edit…	Uredi…
+	Show graphs	Prikaži grafikone
+	Toggle animation	Uključi/isključi animaciju
+	Eyedropper (pick a color from the Program monitor)	Kapaljka (uzmite boju iz programskog monitora)
+	Eyedropper: no picture to sample	Kapaljka: nema slike za uzorkovanje
+	Add/Remove Keyframe	Dodaj/ukloni ključnu sličicu
+	Temporal Interpolation	Vremenska interpolacija
+	Linear	Linearno
+	Bezier	Bezier
+	Auto Bezier	Automatski Bezier
+	Continuous Bezier	Neprekidni Bezier
+	Ease In	Ublaži ulaz
+	Ease Out	Ublaži izlaz
+	Select a clip to grade	Odaberite klip za gradiranje
+	Select a clip to see its properties	Odaberite klip da vidite njegova svojstva
+	Anchor point	Sidrena tačka
+	Rotation	Rotacija
+	Level	Nivo
+	Speed {n}%	Brzina {n}%
+	Value	Vrijednost
+	Velocity	Brzina
+	Default	Zadano
+	Custom ({n} points)	Prilagođeno ({n} tačaka)
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	Odaberite grafički klip ili koristite alat za tekst (T) na programskom monitoru
+	Create new graphic	Kreiraj novu grafiku
+	New Text Layer	Novi tekstualni sloj
+	New Text	Novi tekst
+	New Rectangle	Novi pravougaonik
+	New Ellipse	Nova elipsa
+	Delete Layer	Izbriši sloj
+	Select a layer to edit its properties.	Odaberite sloj da uredite njegova svojstva.
+	Align Left	Poravnaj lijevo
+	Align Center Horizontally	Poravnaj vodoravno po sredini
+	Align Right	Poravnaj desno
+	Align Top	Poravnaj vrh
+	Align Center Vertically	Poravnaj okomito po sredini
+	Align Bottom	Poravnaj dno
+	Font	Font
+	Font Style	Stil fonta
+	Font Size	Veličina fonta
+	Alignment	Poravnanje
+	Left Align Text	Poravnaj tekst lijevo
+	Center Align Text	Centriraj tekst
+	Right Align Text	Poravnaj tekst desno
+	Justify	Poravnaj obostrano
+	Tracking	Razmak slova
+	Leading	Prored
+	Baseline Shift	Pomak osnovne linije
+	Text Box Width	Širina okvira za tekst
+	Style	Stil
+	Faux Bold	Lažno podebljano
+	Faux Italic	Lažni kurziv
+	All Caps	Sva velika slova
+	Small Caps	Mala velika slova
+	Underline	Podvučeno
+	Strikethrough	Precrtano
+	OpenType	OpenType
+	Kerning	Podrezivanje
+	Ligatures	Ligature
+	Shape	Oblik
+	Size	Veličina
+	Corner Radius	Poluprečnik ugla
+	Polygon Sides	Stranice mnogougla
+	Fill	Ispuna
+	Stroke	Potez
+	Stroke 2	Potez 2
+	Background	Pozadina
+	   Opacity	   Neprozirnost
+	   Size	   Veličina
+	   Corner Radius	   Poluprečnik ugla
+	Shadow	Sjena
+	   Angle	   Ugao
+	   Distance	   Udaljenost
+	   Blur	   Zamućenje
+	Search templates	Pretraži predloške
+	All Categories	Sve kategorije
+	Install…	Instaliraj…
+	Install Motion Graphics Template (.fcgt)	Instaliraj predložak animirane grafike (.fcgt)
+	No templates match.	Nijedan predložak ne odgovara.
+	{category} · My Template	{category} · Moj predložak
+	Apply	Primijeni
+	Remove	Ukloni
+	{n} editable properties	Svojstava koja se mogu uređivati: {n}
+	   Template: {name}	   Predložak: {name}
+	Intro Duration	Trajanje uvoda
+	Outro Duration	Trajanje odjave
+	Roll	Kotrljanje
+	Start Off Screen	Počni van ekrana
+	End Off Screen	Završi van ekrana
+	Preroll	Predrol
+	Postroll	Postrol
+	Video Frame	Video sličica
+	Pin To	Prikvači uz
+	Pinned Edges	Prikvačene ivice
+	FilmCraft Graphics Template	Grafički predložak FilmCrafta
+	{n} Font	{n} font
+	{n} Size	{n} veličina
+	{n} Color	{n} boja
+	{n} Position	{n} položaj
+	Show {n}	Prikaži {n}
+	My Templates	Moji predlošci
+	Export As Motion Graphics Template	Izvezi kao predložak animirane grafike
+	Category:	Kategorija:
+	Editable properties:	Svojstva koja se mogu uređivati:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Sačuvano kao grafički predložak FilmCrafta (.fcgt) u vašem folderu predložaka.
+	Exported graphics template to {path}	Grafički predložak izvezen u {path}
+	Replace Fonts in Projects	Zamijeni fontove u projektima
+	Fonts used in the project:	Fontovi korišteni u projektu:
+	{f} (missing)	{f} (nedostaje)
+	Replace:	Zamijeni:
+	Replaced {n} font uses	Zamijenjeno upotreba fonta: {n}
+	Show/Hide Effects and Sends	Prikaži/sakrij efekte i slanja
+	Audio Track Mixer menu	Meni miksera audio traka
+	Show/Hide Tracks…	Prikaži/sakrij trake…
+	Meter Input(s) Only	Mjeri samo ulaze
+	Show/Hide Tracks	Prikaži/sakrij trake
+	Show All	Prikaži sve
+	Post-Fader	Nakon fadera
+	Remove Effect	Ukloni efekat
+	Fill the slots above first	Prvo popunite mjesta iznad
+	pre 	pre 
+	Pre-Fader	Prije fadera
+	Mute Send	Utišaj slanje
+	Remove Send	Ukloni slanje
+	New Submix	Novi podmiks
+	Pan / balance (drag; double-click: centre)	Panorama / balans (prevucite; dvostruki klik: centar)
+	Solo safe	Zaštićeno od sola
+	Enable track for recording	Omogući traku za snimanje
+	Volume (drag; double-click: 0 dB)	Jačina zvuka (prevucite; dvostruki klik: 0 dB)
+	5.1 panner (drag the puck; double-click: front centre)	5.1 paner (prevucite pak; dvostruki klik: prednji centar)
+	Center	Sredina
+	Go to In Point	Idi na ulaznu tačku
+	Go to Out Point	Idi na izlaznu tačku
+	Play In to Out	Reprodukuj od ulaza do izlaza
+	Record (voice-over on the record-enabled track)	Snimi (naraciju na traci omogućenoj za snimanje)
+	Write keyframes	Zapiši ključne sličice
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Nešto je pošlo po zlu pri crtanju prozora. Vaš projekat je i dalje otvoren; sačuvajte ga za svaki slučaj.
+	Continue	Nastavi
+	Go Back	Idi nazad
+	Go Forward	Idi naprijed
+	Up One Level	Jedan nivo gore
+	File Types Displayed	Prikazane vrste datoteka
+	List View	Prikaz liste
+	Thumbnail View	Prikaz sličica
+	Ingest	Unos
+	Open Ingest Settings	Otvori postavke unosa
+	Import as Image Sequence	Uvezi kao sekvencu slika
+	{sel} of {total} items selected	Odabrano {sel} od {total} stavki
+	{total} items	Stavki: {total}
+	Cannot open {dir}: {e}	Nije moguće otvoriti {dir}: {e}
+	Favorites	Omiljeno
+	Local Drives	Lokalni diskovi
+	Network	Mreža
+	Recent Directories	Nedavni direktoriji
+	  (none)	  (nijedno)
+	Remove from Favorites	Ukloni iz omiljenih
+	Add to Favorites	Dodaj u omiljene
+	Clear Recent Directories	Očisti nedavne direktorije
+	Open In Source Monitor	Otvori u izvornom monitoru
+	Reveal in Finder	Prikaži u Finderu
+	Edit Columns…	Uredi kolone…
+	Hover Scrub	Pregled pri prelasku
+	New Media Browser Panel	Novi panel preglednika medija
+	Create Folder For Imported Projects	Kreiraj folder za uvezene projekte
+	Allow Duplicate Media During Project Import	Dozvoli duple medije pri uvozu projekta
+	Refresh	Osvježi
+	Edit Columns	Uredi kolone
+	Guides	Vodilice
+	(no audio)	(bez zvuka)
+	Generating waveform…	Generisanje talasnog oblika…
+	Reference  {tc}	Referenca  {tc}
+	Set	Postavi
+	Set the reference to the playhead	Postavi referencu na glavu za reprodukciju
+	Reference: next frame	Referenca: sljedeća sličica
+	Reference: previous frame	Referenca: prethodna sličica
+	RGBA Channels	RGBA kanali
+	Add Guide	Dodaj vodilicu
+	Save Guides as Template	Sačuvaj vodilice kao predložak
+	Manage Guides	Upravljaj vodilicama
+	Orientation:	Orijentacija:
+	Vertical	Okomito
+	Horizontal	Vodoravno
+	Position:	Položaj:
+	No saved guide templates.	Nema sačuvanih predložaka vodilica.
+	Project: {name}	Projekat: {name}
+	Bin: {name}	Korpa: {name}
+	Up one level	Jedan nivo gore
+	Video Usage: {vu}  Audio Usage: {au}	Upotreba videa: {vu}  Upotreba zvuka: {au}
+	Icon View	Prikaz ikona
+	Freeform View	Prikaz slobodnog oblika
+	Sort Icons	Sortiraj ikone
+	Clear (Delete)	Očisti (Delete)
+	New Item	Nova stavka
+	New Bin	Nova korpa
+	Find	Pronađi
+	Automate to Sequence	Automatiziraj u sekvencu
+	Select items to clear	Odaberite stavke za brisanje
+	User Order	Korisnički redoslijed
+	Descending	Silazno
+	Refresh Project	Osvježi projekat
+	Reveal Project in Finder…	Prikaži projekat u Finderu…
+	New Bin From Selection	Nova korpa iz odabira
+	New Search Bin	Nova korpa pretrage
+	New Project Shortcut	Nova prečica projekta
+	List	Lista
+	Icon	Ikona
+	Freeform	Slobodni oblik
+	Preview Area	Područje pregleda
+	Thumbnails	Sličice
+	Thumbnails show effects applied	Sličice prikazuju primijenjene efekte
+	Thumbnail controls for all pointing devices	Kontrole sličica za sve pokazivačke uređaje
+	Refresh Sort Order	Osvježi redoslijed sortiranja
+	Metadata Display…	Prikaz metapodataka…
+	Save Current View Preset	Sačuvaj trenutni predložak prikaza
+	Restore View Preset	Vrati predložak prikaza
+	Project View Preset {n}	Predložak prikaza projekta {n}
+	Freeform View Options…	Opcije prikaza slobodnog oblika…
+	Media missing	Nedostaju mediji
+	Unreadable	Nečitljivo
+	Open in Source Monitor	Otvori u izvornom monitoru
+	Open in Timeline	Otvori na vremenskoj liniji
+	New Sequence From Clip	Nova sekvenca iz klipa
+	Set Poster Frame	Postavi sličicu postera
+	Open in Place	Otvori na mjestu
+	Open in New Tab	Otvori u novoj kartici
+	Open in New Window	Otvori u novom prozoru
+	{n} items	Stavki: {n}
+	Stack	Slaganje
+	Unstack	Rasloži
+	Clip Size	Veličina klipa
+	Larger	Veće
+	Smaller	Manje
+	Align to Grid	Poravnaj s mrežom
+	Reset to Grid	Vrati na mrežu
+	Save Arrangement…	Sačuvaj raspored…
+	Restore Arrangement	Vrati raspored
+	Delete Arrangement	Izbriši raspored
+	Drop media here to create sequence.	Ispustite medije ovdje da kreirate sekvencu.
+	Double-click a sequence in the Project panel to open it here.	Dvostruki klik na sekvencu u panelu Projekat da je otvorite ovdje.
+	Open Demo Project	Otvori demo projekat
+	Insert and overwrite sequences as nests or individual clips	Umetaj i prepisuj sekvence kao ugniježđene ili pojedinačne klipove
+	Snap in Timeline (S)	Hvatanje na vremenskoj liniji (S)
+	Caption track options	Opcije trake titlova
+	Timeline Display Settings	Postavke prikaza vremenske linije
+	Show Video Thumbnails	Prikaži video sličice
+	Head	Glava
+	Head and Tail	Glava i rep
+	Continuous	Neprekidno
+	Show Audio Waveform	Prikaži audio talasni oblik
+	Expand All Tracks	Proširi sve trake
+	Minimize All Tracks	Minimiziraj sve trake
+	Unrendered: should play back in real time	Neiscrtano: trebalo bi se reprodukovati u stvarnom vremenu
+	Unrendered: render to play back in real time	Neiscrtano: iscrtajte za reprodukciju u stvarnom vremenu
+	Rendered preview	Iscrtani pregled
+	✓ Enable	✓ Omogući
+	Unlink	Prekini vezu
+	(Default)	(zadano)
+	(RGB) Gamma	(RGB) gama
+	(RGB) Input Black Level	(RGB) ulazni nivo crne
+	(RGB) Input White Level	(RGB) ulazni nivo bijele
+	(RGB) Output Black Level	(RGB) izlazni nivo crne
+	(RGB) Output White Level	(RGB) izlazni nivo bijele
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	10-bitna crna tačka
+	10 Bit White Point	10-bitna bijela tačka
+	105mm Prime	105 mm prime
+	29.97 fps Drop-Frame	29,97 fps s preskakanjem sličica
+	29.97 fps Non Drop-Frame	29,97 fps bez preskakanja sličica
+	35mm Prime	35 mm prime
+	3D Roll	3D kotrljanje
+	3D Rotate	3D rotacija
+	3D Spin	3D okretanje
+	3D Spinback	3D okretanje unazad
+	4-Color Gradient	Gradijent u 4 boje
+	5.1 Media	5.1 mediji
+	5.1 Mixdown Type	Vrsta miksa 5.1
+	50-300mm Zoom	50-300 mm zum
+	59.94 fps Drop-Frame	59,94 fps s preskakanjem sličica
+	59.94 fps Non Drop-Frame	59,94 fps bez preskakanja sličica
+	ASC CDL	ASC CDL
+	Accessible color contrast	Pristupačan kontrast boja
+	Action-Safe Margin	Sigurna margina za akciju
+	Active Monitor	Aktivni monitor
+	Add	Dodaj
+	Add tracks automatically when editing source clips onto the Timeline	Automatski dodaj trake pri montiranju izvornih klipova na vremensku liniju
+	Place files dropped onto the Timeline directly on the Timeline	Postavi datoteke ispuštene na vremensku liniju direktno na vremensku liniju
+	1 file	1 datoteka
+	{n} files	{n} datoteka
+	Additional Scale	Dodatna skala
+	Additive Dissolve	Aditivno pretapanje
+	Additive Dissolve (Legacy)	Aditivno pretapanje (naslijeđeno)
+	Adjust	Podesi
+	Advanced	Napredno
+	Aggressive	Agresivno
+	Align and Transform	Poravnanje i transformacija
+	All lines	Sve linije
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Dozvoli alatu za odabir da bira skraćivanja Roll i Ripple bez modifikatorske tipke
+	Allow current tool to change trim type of previously selected edit point	Dozvoli trenutnom alatu da promijeni vrstu skraćivanja prethodno odabrane tačke reza
+	Allow duplicate media during project import	Dozvoli duple medije pri uvozu projekta
+	Alpha Adjust	Podešavanje alfe
+	Alpha Blurriness	Zamućenost alfe
+	Alpha Channel	Alfa kanal
+	Alpha Glow	Alfa sjaj
+	Always import embedded CEA-708 closed captions with wide aspect.	Uvijek uvozi ugrađene CEA-708 titlove sa širokim omjerom.
+	Always override audio tags	Uvijek zamijeni audio oznake
+	Ambience	Ambijent
+	Ambience Intensity	Intenzitet ambijenta
+	Ambience Light Color	Boja ambijentalnog svjetla
+	Amount of Noise	Količina šuma
+	Amount to Decolor	Količina uklanjanja boje
+	Amount to Tint	Količina preliva
+	Amplifier	Pojačalo
+	Amplify	Pojačaj
+	Amplitude	Amplituda
+	Amplitude and Compression	Amplituda i kompresija
+	Analog	Analogno
+	Analog Delay	Analogno kašnjenje
+	Analyze all imported media to search for visuals or audio	Analiziraj sve uvezene medije radi pretrage slike ili zvuka
+	Anamorphic	Anamorfno
+	Anchor	Sidro
+	Anchor Point	Sidrena tačka
+	Angle	Ugao
+	Animation	Animacija
+	Anti-aliasing Quality	Kvalitet zaglađivanja ivica
+	Anti-flicker Filter	Filter protiv treperenja
+	Antialiasing for Best Quality	Zaglađivanje ivica za najbolji kvalitet
+	Asymmetry	Asimetrija
+	At Startup	Pri pokretanju
+	At playback end, return to beginning when restarting playback	Na kraju reprodukcije, vrati na početak pri ponovnom pokretanju
+	Attempt to force hardware to document sample rate	Pokušaj prisiliti hardver na brzinu uzorkovanja dokumenta
+	Audio Codec	Audio kodek
+	Audio Duration	Trajanje zvuka
+	Audio Effects	Audio efekti
+	Audio Hardware	Audio hardver
+	Audio In Point	Audio ulazna tačka
+	Audio Info	Audio informacije
+	Audio Out Point	Audio izlazna tačka
+	Audio Samples	Audio uzorci
+	Audio Time Units	Audio vremenske jedinice
+	Audio Transition Default Duration	Zadano trajanje audio prijelaza
+	Audio Transitions	Audio prijelazi
+	Audio Usage	Upotreba zvuka
+	Auto	Automatski
+	Auto Align	Automatsko poravnanje
+	Auto Reframe	Automatsko preoblikovanje kadra
+	Auto Save	Automatsko čuvanje
+	Auto Save also saves the current project(s)	Automatsko čuvanje čuva i trenutne projekte
+	Auto-tag audio types in the timeline	Automatski označavaj vrste zvuka na vremenskoj liniji
+	Auto-transcribe all imported clips	Automatski transkribuj sve uvezene klipove
+	Auto-transcribe only clips in sequences	Automatski transkribuj samo klipove u sekvencama
+	Automatch Time	Vrijeme automatskog usklađivanja
+	Automatic Click Remover	Automatsko uklanjanje klikova
+	Automatically Hide Dependent Clips	Automatski sakrij zavisne klipove
+	Automatically Save Every	Automatski sačuvaj svakih
+	Automatically delete cache files older than	Automatski briši keš datoteke starije od
+	Automatically delete oldest cache files when cache exceeds	Automatski briši najstarije keš datoteke kad keš premaši
+	Automatically refresh growing files	Automatski osvježavaj datoteke koje rastu
+	Automatically resume playback for growing files in Source Monitor	Automatski nastavi reprodukciju datoteka koje rastu u izvornom monitoru
+	Automatically save projects	Automatski čuvaj projekte
+	Automatically transcribe clips	Automatski transkribuj klipove
+	Automation Keyframe Optimization	Optimizacija ključnih sličica automatizacije
+	Background Color	Boja pozadine
+	Background Corner Radius	Poluprečnik ugla pozadine
+	Background Opacity	Neprozirnost pozadine
+	Background Size	Veličina pozadine
+	Background fill	Ispuna pozadine
+	Balance	Balans
+	Balanced Voice	Uravnotežen glas
+	Band 1	Opseg 1
+	Band 2	Opseg 2
+	Band 3	Opseg 3
+	Band 4	Opseg 4
+	Band 5	Opseg 5
+	Band Pass	Propusnik opsega
+	Band Slide	Klizanje traka
+	Band Stop	Nepropusnik opsega
+	Bandpass	Propusnik opsega
+	Barn Doors	Krilca reflektora
+	Basic	Osnovno
+	Basic 3D	Osnovni 3D
+	Basic Correction	Osnovna korekcija
+	Bass	Bas
+	Behind	Iza
+	Bessel	Bessel
+	Bevel Alpha	Zakošenje alfe
+	Bevel join	Zakošeni spoj
+	Binauralizer - Ambisonics	Binauralizator - Ambisonics
+	Bins	Korpe
+	Black	Crna
+	Black & White	Crno-bijelo
+	Black Input Level	Ulazni nivo crne
+	Black and white	Crno-bijelo
+	Black and white with crushed blacks and strong contrast	Crno-bijelo sa zgnječenim crnim tonovima i jakim kontrastom
+	Bleach Bypass	Preskakanje izbjeljivanja
+	Bleach-bypass style: desaturated with hard contrast	Stil preskakanja izbjeljivanja: smanjeno zasićenje s jakim kontrastom
+	Blend	Stopi
+	Blend Mode	Način stapanja
+	Blend With Original	Stopi s originalom
+	Blending Mode	Način stapanja
+	Block Dissolve	Pretapanje blokovima
+	Block Height	Visina bloka
+	Block Motion	Kretanje blokova
+	Block Size	Veličina bloka
+	Block Width	Širina bloka
+	Blocks	Blokovi
+	Blue Blurriness	Zamućenost plave
+	Blue Curve	Plava kriva
+	Blue Offset	Pomak plave
+	Blue Power	Snaga plave
+	Blue Slope	Nagib plave
+	Blue-Blue	Plava-plava
+	Blue-Const	Plava-konst.
+	Blue-Green	Plava-zelena
+	Blue-Red	Plava-crvena
+	Blur & Sharpen	Zamućenje i izoštravanje
+	Blur Amount	Količina zamućenja
+	Blur Angle	Ugao zamućenja
+	Blur Dimensions	Dimenzije zamućenja
+	Blur Dissolve	Pretapanje zamućenjem
+	Blur Layer	Sloj zamućenja
+	Blur Length	Dužina zamućenja
+	Blurriness	Zamućenost
+	Bokeh Blur	Bokeh zamućenje
+	Boost	Pojačanje
+	Border	Okvir
+	Border Color	Boja okvira
+	Border Width	Širina okvira
+	Borders	Okviri
+	Bottom Center	Dolje po sredini
+	Bottom Left	Dolje lijevo
+	Bottom Right	Dolje desno
+	Bounce	Odskakivanje
+	Branching	Grananje
+	Bright	Svijetlo
+	Bright Air	Svijetli zrak
+	Bright Studio	Svijetli studio
+	Brightness & Contrast	Svjetlina i kontrast
+	British Stack	Britanski raspored
+	Brush Hardness	Tvrdoća četkice
+	Brush Opacity	Neprozirnost četkice
+	Brush Position	Položaj četkice
+	Brush Size	Veličina četkice
+	Brush Spacing (secs)	Razmak četkice (sek.)
+	Brush Strokes	Potezi četkicom
+	Bubbles	Mjehurići
+	Bulge	Ispupčenje
+	Bulge Smoother	Zaglađivač ispupčenja
+	Bump Height	Visina izbočine
+	Burn Alpha	Prži alfu
+	Burn Chroma	Prži hromu
+	Burn Color	Prži boju
+	Butt cap	Ravni završetak
+	Butterworth	Butterworth
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	Keširaj rezultate analize za ponovnu upotrebu
+	Camera Angle	Ugao kamere
+	Camera Blur	Zamućenje kamere
+	Camera Shake	Drhtanje kamere
+	Capitalisation	Velika slova
+	Cathedral	Katedrala
+	Cell Pattern	Ćelijski uzorak
+	Center Channel Pan	Panorama središnjeg kanala
+	Center Gradient	Središnji gradijent
+	Center Input	Središnji ulaz
+	Center Out	Iz središta prema van
+	Center Point (Latitude)	Središnja tačka (geografska širina)
+	Center Point (Longitude)	Središnja tačka (geografska dužina)
+	Center Split	Podjela po sredini
+	Center of Sphere	Središte sfere
+	Cents	Centi
+	Change to Color	Promijeni u boju
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Promjene se kopiraju u pozadini trenutak nakon svake izmjene. Ako se FilmCraft neočekivano zatvori, nude se pri sljedećem pokretanju.
+	Channel	Kanal
+	Channel Blur	Zamućenje kanala
+	Channel Mix	Miks kanala
+	Channel Mixer	Mikser kanala
+	Chaos	Haos
+	Chebyshev	Chebyshev
+	Checker Wipe	Šahovski brisač
+	Checkerboard	Šahovsko polje
+	Chinese	Kineski
+	Choke	Sužavanje
+	Chorus	Hor
+	Chorus/Flanger	Hor/flanger
+	Chroma	Hroma
+	Chroma Leak	Curenje hrome
+	Chromatic Aberration (Blue)	Hromatska aberacija (plava)
+	Chromatic Aberration (Green)	Hromatska aberacija (zelena)
+	Chromatic Aberration (Red)	Hromatska aberacija (crvena)
+	Cineon Converter	Cineon pretvarač
+	Circle	Krug
+	Clarity	Jasnoća
+	Clean Combo	Čisti kombo
+	Clean Up Noisy Dialogue	Očisti bučan dijalog
+	Clear Muddiness	Očisti mutnoću
+	Client	Klijent
+	Clip Level	Nivo klipa
+	Clipping	Odsijecanje
+	Clock Wipe	Satni brisač
+	Clock Wipe (Legacy)	Satni brisač (naslijeđeno)
+	Clockwise	U smjeru kazaljke na satu
+	Clone	Kloniraj
+	Closed Captions	Titlovi za gluhe
+	Color & Alpha	Boja i alfa
+	Color 1	Boja 1
+	Color 2	Boja 2
+	Color 3	Boja 3
+	Color 4	Boja 4
+	Color Balance	Balans boja
+	Color Burn	Tamnjenje boje
+	Color Channel	Kanal boje
+	Color Correction	Korekcija boja
+	Color Distortion	Izobličenje boja
+	Color Dodge	Posvjetljivanje boje
+	Color Emboss	Reljef u boji
+	Color Key	Ključ boje
+	Color Pass	Propuštanje boje
+	Color Replace	Zamjena boje
+	Color Space	Prostor boja
+	Color Theme	Tema boja
+	Color To Leave	Boja koja ostaje
+	Color Tolerance	Tolerancija boje
+	Color Wheels & Match	Točkovi boja i usklađivanje
+	Colorize	Oboji
+	Columns	Kolone
+	Comment	Komentar
+	Complexity	Složenost
+	Composite In Back	Kompozit iza
+	Composite In Front	Kompozit ispred
+	Composite Using	Kompozitiraj pomoću
+	Composite on Original	Kompozit na originalu
+	Compound Blur	Složeno zamućenje
+	Compression Before Clipping	Kompresija prije odsijecanja
+	Constant Gain	Konstantno pojačanje
+	Constant Power	Konstantna snaga
+	Conversion Type	Vrsta pretvorbe
+	Convolution Reverb	Konvolucijski reverb
+	Cool Blue	Hladna plava
+	Cool, desaturated and punchy	Hladno, smanjenog zasićenja i snažno
+	Core Width	Širina jezgra
+	Corner	Ugao
+	Corner Pin	Pribadače uglova
+	Count	Broj
+	Counter-clockwise	Suprotno od kazaljke na satu
+	Crash Recovery	Oporavak nakon pada
+	Crawl Left	Puzanje ulijevo
+	Crawl Right	Puzanje udesno
+	Create folder for imported projects	Kreiraj folder za uvezene projekte
+	Creative	Kreativno
+	Crop	Izreži okvir
+	Crop Less <-> Smooth More	Manje izrezivanja <-> više zaglađivanja
+	Cross Displacement	Unakrsni pomak
+	Cross Dissolve	Unakrsno pretapanje
+	Cross Dissolve (Legacy)	Unakrsno pretapanje (naslijeđeno)
+	Cross Zoom	Unakrsno zumiranje
+	Cross Zoom (Legacy)	Unakrsno zumiranje (naslijeđeno)
+	Crossfade	Unakrsno utišavanje
+	Crossovers	Skretnice
+	Crystallize	Kristalizuj
+	Crystals	Kristali
+	Cube Spin	Okretanje kocke
+	Curl Radius	Poluprečnik uvijanja
+	Current Time	Trenutno vrijeme
+	Cursor	Kursor
+	Curvature	Zakrivljenost
+	Curve	Kriva
+	Curves	Krive
+	Custom	Prilagođeno
+	Custom Color	Prilagođena boja
+	Cutoff	Granična frekvencija
+	Cyan-teal shadows and warm highlights with a little more contrast	Cijan-tirkizne sjene i topli svijetli tonovi s malo više kontrasta
+	Cycle (in Revolutions)	Ciklus (u obrtajima)
+	Cycle Evolution	Ciklična evolucija
+	Damping	Prigušenje
+	Damping HF	Prigušenje VF
+	Damping LF	Prigušenje NF
+	Darken	Potamni
+	Darker Color	Tamnija boja
+	Date Created	Datum kreiranja
+	Date Modified	Datum izmjene
+	Day for night: darker, cooler and less saturated	Dan za noć: tamnije, hladnije i manje zasićeno
+	DeEsser	Uklanjač sibilanata
+	DeHummer	Uklanjač brujanja
+	DeNoise	Uklanjanje šuma
+	DeReverb	Uklanjanje odjeka
+	Decay	Opadanje
+	Decay Time (RT60)	Vrijeme opadanja (RT60)
+	Default Audio Tracks	Zadane audio trake
+	Default Emoji font	Zadani font za emoji
+	Default Media Scaling	Zadano skaliranje medija
+	Default Output	Zadani izlaz
+	Default closed caption font	Zadani font titlova za gluhe
+	Default language	Zadani jezik
+	Default paragraph direction	Zadani smjer pasusa
+	Default subtitle and text font	Zadani font titlova i teksta
+	Delay	Kašnjenje
+	Delay 1	Kašnjenje 1
+	Delay 2	Kašnjenje 2
+	Delay 3	Kašnjenje 3
+	Delay 4	Kašnjenje 4
+	Delay and Echo	Kašnjenje i eho
+	Delete files older than	Briši datoteke starije od
+	Delete oldest files when the cache exceeds	Briši najstarije datoteke kad keš premaši
+	Delete…	Izbriši…
+	Depth	Dubina
+	Desaturate	Ukloni zasićenje
+	Description	Opis
+	Detail Amplitude	Amplituda detalja
+	Detail Level	Nivo detalja
+	Detailed Analysis	Detaljna analiza
+	Device Class	Klasa uređaja
+	Dialogue	Dijalog
+	Diamond	Romb
+	Difference	Razlika
+	Dimensions	Dimenzije
+	Dimmed	Zatamnjeno
+	Dip to Black	Utapanje u crno
+	Dip to Black (Legacy)	Utapanje u crno (naslijeđeno)
+	Dip to Color	Utapanje u boju
+	Dip to White	Utapanje u bijelo
+	Dip to White (Legacy)	Utapanje u bijelo (naslijeđeno)
+	Direction	Smjer
+	Directional	Usmjereno
+	Directional Blur	Usmjereno zamućenje
+	Directional Blur (Legacy)	Usmjereno zamućenje (naslijeđeno)
+	Disable video output when in the background	Onemogući video izlaz kad je u pozadini
+	Disperse	Rasprši
+	Displacement	Pomak
+	Display Color Management	Upravljanje bojama ekrana
+	Display Color Settings	Postavke boja ekrana
+	Display out of sync indicators for unlinked clips	Prikaži indikatore nesinhronizovanosti za nepovezane klipove
+	Dissolve	Pretapanje
+	Dissolve Blocks	Pretapanje blokovima
+	Distance	Udaljenost
+	Distance to Image	Udaljenost do slike
+	Distort	Izobliči
+	Distortion	Izobličenje
+	Distortion Complexity	Složenost izobličenja
+	Distortion Rate	Brzina izobličenja
+	Distortion Type	Vrsta izobličenja
+	Divide	Podijeli
+	Do not delete cache files automatically	Ne briši keš datoteke automatski
+	Don't label speakers	Ne označavaj govornike
+	Double-click	Dvostruki klik
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Probno dekodiranje pri smanjenoj rezoluciji reprodukcije (H.264: brže, neke sličice manje filtrirane)
+	Drive	Disk
+	Drop Shadow	Sjena
+	Dry	Suho
+	Dry Out	Suhi izlaz
+	Dry Up a Roomy Voice	Osuši glas iz prostrane sobe
+	Duck Deep Under Dialogue	Duboko utišavanje ispod dijaloga
+	Duck Under Dialogue	Utišavanje ispod dijaloga
+	Duck Under Voice and Effects	Utišavanje ispod glasa i efekata
+	Ducking	Utišavanje
+	Dutch	Holandski
+	Dynamic Link	Dinamička veza
+	Dynamics Processing	Obrada dinamike
+	Early Reflections	Rane refleksije
+	Earthquake	Zemljotres
+	Ease In and Out	Ublaži ulaz i izlaz
+	Easing	Ublažavanje
+	Echo	Eho
+	Echo Glow	Sjaj eha
+	Echo Operator	Operator eha
+	Echo Time (seconds)	Vrijeme eha (sekunde)
+	Echoes	Odjeci
+	Edge Color	Boja ivice
+	Edge Feather	Omekšavanje ivice
+	Edge Glow	Sjaj ivice
+	Edge Sharpness	Oštrina ivice
+	Edge Softness	Mekoća ivice
+	Edge Thickness	Debljina ivica
+	Edge Thin	Tanka ivica
+	Edge Threshold	Prag ivice
+	Edge Type	Vrsta ivice
+	Edge Width	Širina ivica
+	Elliptical	Eliptično
+	Emboss	Reljef
+	Enable HSL Secondary	Omogući HSL sekundarno
+	Enable Mercury Transmit	Omogući Mercury Transmit
+	Enable ProRes hardware accelerated encoding, if available	Omogući hardverski ubrzano ProRes kodiranje, ako je dostupno
+	Enable clip and XMP metadata linking	Omogući povezivanje metapodataka klipa i XMP-a
+	Enable developer mode	Omogući razvojni način
+	Enable hardware accelerated decoding (requires restart)	Omogući hardverski ubrzano dekodiranje (zahtijeva ponovno pokretanje)
+	Enable language auto-detection	Omogući automatsko otkrivanje jezika
+	Enable proxies	Omogući proksije
+	End Color	Krajnja boja
+	End Point	Krajnja tačka
+	End of Ramp	Kraj rampe
+	Error	Greška
+	Evolution	Evolucija
+	Evolution Options	Opcije evolucije
+	Exciter Amount	Količina pobuđivača
+	Exciter Mode	Način pobuđivača
+	Exclusion	Isključivanje
+	Exponential Fade	Eksponencijalno utišavanje
+	Extended Dynamic Range Monitoring	Praćenje proširenog dinamičkog raspona
+	FFT Filter	FFT filter
+	Fade	Utišavanje
+	Fade Out	Postepeno nestajanje
+	Faded Matte	Izblijedjela podloga
+	Falloff	Opadanje
+	Far Away	Daleko
+	Fast	Brzo
+	Faster Motion	Brže kretanje
+	Feedback	Povratna sprega
+	Feedback 1	Povratna sprega 1
+	Feedback 2	Povratna sprega 2
+	Feedback 3	Povratna sprega 3
+	Feedback 4	Povratna sprega 4
+	Feet + Frames 16mm	Stope + sličice 16 mm
+	Feet + Frames 35mm	Stope + sličice 35 mm
+	Female	Ženski
+	File Size	Veličina datoteke
+	Fill Background	Ispuni pozadinu
+	Fill Color	Boja ispune
+	Fill Left with Right	Ispuni lijevo desnim
+	Fill Point	Tačka ispune
+	Fill Right with Left	Ispuni desno lijevim
+	Fill Selector	Birač ispune
+	Film Dissolve	Filmsko pretapanje
+	Film Dissolve (Legacy)	Filmsko pretapanje (naslijeđeno)
+	Film Roll	Filmska rolna
+	Filter	Filter
+	Filter Frequency	Frekvencija filtera
+	Filter Resonance	Rezonancija filtera
+	Filter and EQ	Filter i EQ
+	Final Delay	Konačno kašnjenje
+	Find Edges	Pronađi ivice
+	Flanger	Flanger
+	Flare	Odsjaj
+	Flare Brightness	Svjetlina odsjaja
+	Flare Center	Središte odsjaja
+	Flare Color	Boja odsjaja
+	Flash	Blic
+	Flicker	Treperenje
+	Flickers	Treperenja
+	Flip Motion	Pokret preokretanja
+	Flip Over	Prevrtanje
+	Float	Plutajuće
+	Focus	Fokus
+	Focus Blur	Zamućenje fokusa
+	Focus Point	Tačka fokusa
+	Focus Shape	Oblik fokusa
+	Focus Size	Veličina fokusa
+	Fold Motion	Pokret preklapanja
+	Foldback	Povratni monitoring
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Za parametre upravljanja bojama idite na karticu Postavke u panelu Lumetri boja.
+	Format	Format
+	Four Scopes (RGB, 8 bit)	Četiri skopa (RGB, 8-bitno)
+	Four Scopes (YUV, float, no clamp)	Četiri skopa (YUV, pokretni zarez, bez ograničenja)
+	Fractal Influence	Uticaj fraktala
+	Fractal Type	Vrsta fraktala
+	Frame	Okvir
+	Frame Color	Boja okvira
+	Frame Count	Broj sličica
+	Frame Layout	Raspored kadra
+	Frame Rate	Brzina sličica
+	Frame Width	Širina okvira
+	Frame cache for monitors and thumbnails	Keš sličica za monitore i sličice
+	Frames	Sličice
+	Framing	Kadriranje
+	French	Francuski
+	Frequency	Frekvencija
+	From	Od
+	From East	S istoka
+	From North	Sa sjevera
+	From South	S juga
+	From West	Sa zapada
+	From the Left	Slijeva
+	From the Right	Zdesna
+	Front + LFE	Prednji + LFE
+	Front + Rear	Prednji + zadnji
+	Front + Rear + LFE	Prednji + zadnji + LFE
+	Front Only	Samo prednji
+	Fuzz	Iskrivljenje
+	GB	GB
+	Gamma	Gama
+	Gamma Correction	Gama korekcija
+	Gamut Warning	Upozorenje o gamutu
+	Gamut Warning Color	Boja upozorenja o gamutu
+	Gap	Praznina
+	Gap Color	Boja praznine
+	Gaussian Blur	Gaussovo zamućenje
+	Gaussian Blur (Legacy)	Gaussovo zamućenje (naslijeđeno)
+	General	Općenito
+	Generate	Generiši
+	Generate Timecode	Generiši vremenski kod
+	Generate waveforms and conform audio using multithreading	Generiši talasne oblike i usklađuj zvuk koristeći više niti
+	Generate waveforms automatically during import	Generiši talasne oblike automatski tokom uvoza
+	German	Njemački
+	Ghosts	Duhovi
+	Glass	Staklo
+	Glint	Bljesak
+	Glitch	Greška
+	Glow	Sjaj
+	Glow Brightness	Svjetlina sjaja
+	Glow Color	Boja sjaja
+	Glow Only	Samo sjaj
+	Glow Radius	Poluprečnik sjaja
+	Glow Saturation	Zasićenje sjaja
+	Glow Width	Širina sjaja
+	Golden Hour	Zlatni sat
+	Good	Dobro
+	Gradient	Gradijent
+	Gradient End	Kraj gradijenta
+	Gradient Layer	Sloj gradijenta
+	Gradient Placement	Postavljanje gradijenta
+	Gradient Scatter	Raspršenje gradijenta
+	Gradient Shape	Oblik gradijenta
+	Gradient Start	Početak gradijenta
+	Gradient Wipe	Gradijentni brisač
+	Gradient Wipe (Legacy)	Gradijentni brisač (naslijeđeno)
+	Grain Size	Veličina zrna
+	Graphic Equalizer (10 Bands)	Grafički ekvilajzer (10 opsega)
+	Graphic Equalizer (20 Bands)	Grafički ekvilajzer (20 opsega)
+	Graphic Equalizer (30 Bands)	Grafički ekvilajzer (30 opsega)
+	Graphics	Grafika
+	Green Blurriness	Zamućenost zelene
+	Green Curve	Zelena kriva
+	Green Offset	Pomak zelene
+	Green Power	Snaga zelene
+	Green Slope	Nagib zelene
+	Green-Blue	Zelena-plava
+	Green-Const	Zelena-konst.
+	Green-Green	Zelena-zelena
+	Green-Red	Zelena-crvena
+	Grid	Mreža
+	Grow	Rast
+	Growing Files	Datoteke koje rastu
+	Grunge	Grunge
+	Grunge & Distort	Grunge i izobličenje
+	GuitarSuite	GuitarSuite
+	HDR Graphics White (Nits)	HDR bijela za grafiku (nita)
+	HLS Vectorscope + Histogram	HLS vektorskop + histogram
+	HSL Secondary	HSL sekundarno
+	Hard	Tvrdo
+	Hard Clip	Tvrdo odsijecanje
+	Hard Light	Jako svjetlo
+	Hard Limiter	Tvrdi limiter
+	Hard Mix	Tvrdo miješanje
+	Hardware decoding	Hardversko dekodiranje
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API ili NVDEC za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.
+	Head Size	Veličina glave
+	Heart	Srce
+	Height	Visina
+	Hexagon	Šesterougao
+	Hide Back Face	Sakrij stražnje lice
+	High	Visoko
+	High Cutoff	Visoka granična frekvencija
+	High Frequency Cut	Rez visokih frekvencija
+	High Frequency Damping	Prigušenje visokih frekvencija
+	High Pass	Visokopropusni filter
+	High Shelf	Visoka polica
+	High Shelf Gain	Pojačanje visoke police
+	High contrast with held highlights and deep shadows	Visok kontrast sa zadržanim svijetlim tonovima i dubokim sjenama
+	Highlight	Svijetli ton
+	Highlight Blue Balance	Balans plave u svijetlim tonovima
+	Highlight Brightness	Svjetlina svijetlih tonova
+	Highlight Color	Boja svijetlih tonova
+	Highlight Green Balance	Balans zelene u svijetlim tonovima
+	Highlight Red Balance	Balans crvene u svijetlim tonovima
+	Highlight Rolloff	Opadanje svijetlih tonova
+	Highlight Threshold	Prag svijetlih tonova
+	Highlight Tint	Preliv svijetlih tonova
+	Highlights Lightness	Svjetloća svijetlih tonova
+	Highpass	Visokopropusni
+	Hindi	Hindi
+	Hindi digits	Hindi cifre
+	Horizontal 16:9	Vodoravno 16:9
+	Horizontal Alignment	Vodoravno poravnanje
+	Horizontal Blocks	Vodoravni blokovi
+	Horizontal Decentering	Vodoravno decentriranje
+	Horizontal Displacement	Vodoravni pomak
+	Horizontal Flip	Vodoravno preokretanje
+	Horizontal Margin	Vodoravna margina
+	Horizontal and Vertical	Vodoravno i okomito
+	Hue Center	Središte nijanse
+	Hue Tolerance	Tolerancija nijanse
+	I/O Buffer Size	Veličina U/I bafera
+	Ignore Alpha	Zanemari alfu
+	Image Control	Kontrola slike
+	Immersive Video	Imerzivni video
+	Import numbered stills as image sequences	Uvozi numerisane fotografije kao sekvence slika
+	Impulse	Impuls
+	In a Room	U sobi
+	In the Media Cache	U kešu medija
+	In the project	U projektu
+	In/Out Duration	Trajanje ulaza/izlaza
+	Include captions on import	Uključi titlove pri uvozu
+	Incoming	Dolazni
+	Indeterminate Media Timebase	Neodređena vremenska baza medija
+	Initial Delay	Početno kašnjenje
+	Inner	Unutrašnje
+	Inner Radius	Unutrašnji poluprečnik
+	Input Boost	Pojačanje ulaza
+	Inset	Umetak
+	Inside	Unutra
+	Inside Color	Unutrašnja boja
+	Inter	Inter
+	Interior Room Tone	Ton unutrašnje prostorije
+	Internal Black Point	Unutrašnja crna tačka
+	Internal White Point	Unutrašnja bijela tačka
+	Interpolation	Interpolacija
+	Intersect	Presijeci
+	Inverse Falloff	Obrnuto opadanje
+	Invert	Obrni
+	Invert Alpha	Obrni alfu
+	Invert Blur	Obrni zamućenje
+	Invert Fill	Obrni ispunu
+	Invert Gradient	Obrni gradijent
+	Invert Left	Obrni lijevo
+	Invert Right	Obrni desno
+	Iris Box	Iris kutija
+	Iris Cross	Iris križ
+	Iris Diamond	Iris romb
+	Iris Radius	Poluprečnik irisa
+	Iris Rotation	Rotacija irisa
+	Iris Round	Okrugli iris
+	Iris Shape	Oblik irisa
+	Italian	Italijanski
+	Japanese	Japanski
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	Spoji prolazne rezove
+	Ripple Trim In	Ripple skraćivanje ulaza
+	Ripple Trim Out	Ripple skraćivanje izlaza
+	Roll Edit	Roll rez
+	Trim In	Skrati ulaz
+	Trim Out	Skrati izlaz
+	Kaleidoscope	Kaleidoskop
+	Keep a recovery copy of unsaved changes	Čuvaj kopiju za oporavak nesačuvanih promjena
+	Key Color	Boja ključa
+	Keying	Izdvajanje ključem
+	Korean	Korejski
+	Label Defaults	Zadane oznake
+	Label speakers	Označi govornike
+	Labels	Oznake
+	Large Hall	Velika dvorana
+	Large Trim Offset	Veliki pomak skraćivanja
+	Large Volume Adjustment	Veliko podešavanje jačine
+	Latch	Zadržavanje
+	Layer Name	Naziv sloja
+	Layers	Slojevi
+	Leave Color	Boja koja ostaje
+	Left - Left	Lijevo - lijevo
+	Left - Right	Lijevo - desno
+	Left channel to device output	Lijevi kanal na izlaz uređaja
+	Left to Right	S lijeva nadesno
+	Left to right	S lijeva nadesno
+	Legacy	Naslijeđeno
+	Length	Dužina
+	Lens Blur	Zamućenje objektiva
+	Lens Distortion	Izobličenje objektiva
+	Lens Flare	Odsjaj sočiva
+	Lens Type	Vrsta objektiva
+	Level 1	Nivo 1
+	Level 2	Nivo 2
+	Level 3	Nivo 3
+	Level 4	Nivo 4
+	Levels	Nivoi
+	Lifted blacks, softer contrast, muted colour	Podignute crne, mekši kontrast, prigušena boja
+	Light 1	Svjetlo 1
+	Light 2	Svjetlo 2
+	Light 3	Svjetlo 3
+	Light 4	Svjetlo 4
+	Light 5	Svjetlo 5
+	Light Angle	Ugao svjetla
+	Light Color	Boja svjetla
+	Light Intensity	Intenzitet svjetla
+	Light Leak	Curenje svjetla
+	Light Leaks	Curenja svjetla
+	Light Sweep	Prelazak svjetla
+	Light Type	Vrsta svjetla
+	Lighten	Posvijetli
+	Lighter Color	Svjetlija boja
+	Lighting Effects	Efekti osvjetljenja
+	Lightning	Munja
+	Lights & Blurs	Svjetla i zamućenja
+	Lights & Glows	Svjetla i sjajevi
+	Line Thickness	Debljina linije
+	Linear Burn	Linearno tamnjenje
+	Linear Dodge (Add)	Linearno posvjetljivanje (dodavanje)
+	Linear Light	Linearno svjetlo
+	Linear Ramp	Linearna rampa
+	Linear Wipe	Linearni brisač
+	Linear Wipe (Legacy)	Linearni brisač (naslijeđeno)
+	Linear keyframe thinning	Linearno prorjeđivanje ključnih sličica
+	Linear to Log	Linearno u log
+	Liquid Distortion	Tečno izobličenje
+	Local Projects	Lokalni projekti
+	Location	Lokacija
+	Log Note	Bilješka zapisnika
+	Log to Linear	Log u linearno
+	Log to Log	Log u log
+	Logo Cutout	Izrez logotipa
+	Long Shadow	Duga sjena
+	Look-Ahead Time	Vrijeme unaprijed
+	Loudness	Glasnoća
+	Loudness Maximizer	Maksimizator glasnoće
+	Loudness Meter	Mjerač glasnoće
+	Louver	Žaluzine
+	Low	Nisko
+	Low Frequency Cut	Rez niskih frekvencija
+	Low Pass	Niskopropusni
+	Low Shelf	Niska polica
+	Low Shelf Gain	Pojačanje niske police
+	Lower Left	Dolje lijevo
+	Lower Right	Dolje desno
+	Lowpass	Niskopropusni
+	Luma	Luma
+	Luma Curve	Luma kriva
+	Luma Fade	Luma utapanje
+	Luma Key	Luma ključ
+	Luma Source	Izvor lume
+	Luma and Chroma	Luma i hroma
+	Lumetri Presets	Lumetri predlošci
+	Luminance	Luminansa
+	Luminance Threshold	Prag luminanse
+	Luminosity	Osvijetljenost
+	MB	MB
+	Magnify	Uvećaj
+	Magnify (Legacy)	Uvećaj (naslijeđeno)
+	Maintain pitch while shuttling	Zadrži visinu tona pri premotavanju
+	Major Radius	Veliki poluprečnik
+	Male	Muški
+	Map Black To	Mapiraj crnu na
+	Map White To	Mapiraj bijelu na
+	Maps full-range levels into 16–235 (video range) with a luma curve	Mapira nivoe punog raspona u 16–235 (video raspon) pomoću luma krive
+	Mask Only	Samo maska
+	Master Amplitude	Glavna amplituda
+	Mastering	Mastering
+	Match frame sets in point	Usklađivanje sličice postavlja ulaznu tačku
+	Matte	Mat
+	Matte Alpha	Alfa podloge
+	Matte Cleanup	Čišćenje podloge
+	Matte Generation	Generisanje podloge
+	Matte Luma	Luma podloge
+	Maximum	Maksimum
+	Maximum Amplitude	Maksimalna amplituda
+	Maximum Block Size	Maksimalna veličina bloka
+	Maximum Blur	Maksimalno zamućenje
+	Maximum Project Versions	Maksimalan broj verzija projekta
+	Maximum Reduction	Maksimalno smanjenje
+	Maximum Scale	Maksimalna skala
+	Media	Mediji
+	Media Analysis	Analiza medija
+	Media Analysis & Transcription	Analiza medija i transkripcija
+	Media Cache	Keš medija
+	Media Cache Database	Baza podataka keša medija
+	Media Cache Files	Keš datoteke medija
+	Media Cache Management	Upravljanje kešom medija
+	Media Duration	Trajanje medija
+	Media End	Kraj medija
+	Media Time	Vrijeme medija
+	Media Timecode	Vremenski kod medija
+	Media Type	Vrsta medija
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Analiza medija i transkripcije bit će keširane u folderu Keš medija. Ponovna analiza neće biti potrebna ako se mediji uvezu u drugi projekat na ovom računaru.
+	Median	Medijan
+	Medium Room	Srednja soba
+	Memory	Memorija
+	Metadata & Timecode Burn-in	Utiskivanje metapodataka i vremenskog koda
+	Method	Metoda
+	Metrics Kerning	Podrezivanje po metrici
+	Mid	Sredina
+	Mid Point	Srednja tačka
+	Midtone Blue Balance	Balans plave u srednjim tonovima
+	Midtone Green Balance	Balans zelene u srednjim tonovima
+	Midtone Red Balance	Balans crvene u srednjim tonovima
+	Midtones Lightness	Svjetloća srednjih tonova
+	Minimum	Minimum
+	Minimum time	Minimalno vrijeme
+	Minimum time interval thinning	Prorjeđivanje po minimalnom vremenskom intervalu
+	Minor Radius	Mali poluprečnik
+	Mirror	Zrcali
+	Mirror Alternate	Naizmjenično zrcaljenje
+	Missing font replacement	Zamjena nedostajućeg fonta
+	Miter join	Šiljasti spoj
+	Miter limit	Ograničenje šiljastog spoja
+	Mixed Crystals	Mješoviti kristali
+	Mode	Način
+	Modern High Gain	Moderno visoko pojačanje
+	Modulation	Modulacija
+	Modulation Rate	Brzina modulacije
+	Mono Media	Mono mediji
+	Monochrome	Jednobojno
+	Monochrome toned cyan-blue	Jednobojno toniranje cijan-plavo
+	Monochrome toned warm brown	Jednobojno toniranje toplo smeđe
+	Monoscopic	Monoskopsko
+	Monospace only	Samo neproporcionalni
+	More colour in the less saturated areas	Više boje u manje zasićenim područjima
+	Morph Cut	Morph rez
+	Mosaic	Mozaik
+	Mosaic (Legacy)	Mozaik (naslijeđeno)
+	Motion Blur	Zamućenje pokreta
+	Motion Camera	Kamera u pokretu
+	Motion Preset	Predložak pokreta
+	Motion Tween	Interpolacija pokreta
+	Move	Pomakni
+	Movie	Film
+	Movie (audio and video)	Film (zvuk i video)
+	Multiband Compressor	Višeopsežni kompresor
+	Multichannel Mono Media	Višekanalni mono mediji
+	Multiply	Množenje
+	Multitap Delay	Višestruko kašnjenje
+	Music	Muzika
+	Mute input during timeline recording	Utišaj ulaz tokom snimanja na vremensku liniju
+	Name	Naziv
+	Narrow	Usko
+	Neon Color	Neonska boja
+	Neon Wipe	Neonski brisač
+	Next to original media files	Pored originalnih medijskih datoteka
+	Night	Noć
+	No Motion	Bez pokreta
+	No Scroll	Bez pomjeranja
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Nema instaliranih dodataka. Promjene će stupiti na snagu pri sljedećem pokretanju FilmCrafta.
+	Noise	Šum
+	Noise & Grain	Šum i zrno
+	Noise (Legacy)	Šum (naslijeđeno)
+	Noise Level	Nivo šuma
+	Noise Reduction/Restoration	Smanjenje šuma/restauracija
+	Noise Type	Vrsta šuma
+	Non-Additive Dissolve	Neaditivno pretapanje
+	Normal	Normalno
+	Notch 1	Zarez 1
+	Notch 2	Zarez 2
+	Notch 3	Zarez 3
+	Notch 4	Zarez 4
+	Notch 5	Zarez 5
+	Notch 6	Zarez 6
+	Notch Filter	Zarezni filter
+	Notch Width	Širina zareza
+	Number Of Echoes	Broj odjeka
+	Number of Harmonics	Broj harmonika
+	Obsolete	Zastarjelo
+	Octagon	Osmougao
+	Offset	Pomak
+	Offset (Turbulence)	Pomak (turbulencija)
+	Offset From	Pomak od
+	Offset To	Pomak do
+	Omni	Svesmjerno
+	On	Uključeno
+	On Original Image	Na originalnoj slici
+	On Transparent	Na prozirnom
+	Open Air	Otvoreni prostor
+	Open Most Recent	Otvori najnovije
+	Open in new window	Otvori u novom prozoru
+	Open in place	Otvori na mjestu
+	Open new tab	Otvori novu karticu
+	Opens up the shadows	Otvara sjene
+	Order	Redoslijed
+	Orientation	Orijentacija
+	Outer	Vanjsko
+	Outgoing	Odlazni
+	Output	Izlaz
+	Output Mapping	Mapiranje izlaza
+	Outside	Vani
+	Outside Color	Vanjska boja
+	Overflow	Prelijevanje
+	Overlay	Prekrivanje
+	Overshoot	Prebačaj
+	Page Peel	Ljuštenje stranice
+	Page Scroll	Pomjeranje stranice
+	Page Turn	Okretanje stranice
+	Paint Bucket	Kanta za boju
+	Paint On Black	Slikaj na crnom
+	Paint On Original Image	Slikaj na originalnoj slici
+	Paint On Transparent	Slikaj na prozirnom
+	Paint On White	Slikaj na bijelom
+	Paint Style	Stil slikanja
+	Paint Surface	Površina za slikanje
+	Pan (Y Axis)	Panorama (Y osa)
+	Panel Wipe	Panelni brisač
+	Panels	Paneli
+	Panner - Ambisonics	Paner - Ambisonics
+	Parade	Parada
+	Parade (RGB)	Parada (RGB)
+	Parametric Equalizer	Parametarski ekvilajzer
+	Passband Ripple	Talasanje u propusnom opsegu
+	Path	Putanja
+	Path Points	Tačke putanje
+	Pause Media Encoder queue during playback	Pauziraj red Media Encodera tokom reprodukcije
+	Peak Frequency	Vršna frekvencija
+	Peak Gain	Vršno pojačanje
+	Pedestal	Postolje
+	Pentagon	Peterougao
+	Per line	Po redu
+	Percent Blur	Postotak zamućenja
+	Perspective	Perspektiva
+	Phase Difference	Fazna razlika
+	Phaser	Fejzer
+	Phone Call	Telefonski poziv
+	Phosphor	Fosfor
+	Phosphor Color	Boja fosfora
+	Photocopy	Fotokopija
+	Photocopy Color	Fotokopija u boji
+	Pillow	Jastuk
+	Pin All	Prikvači sve
+	Pin Horizontal	Prikvači vodoravno
+	Pin Light	Tačkasto svjetlo
+	Pin Vertical	Prikvači okomito
+	Pinning	Prikvačivanje
+	Pitch Shifter	Pomjerač visine tona
+	Plate	Ploča
+	Plateau Wipe	Plato brisač
+	Plateaus	Platoi
+	Plates	Ploče
+	Play after rendering previews	Reprodukuj nakon iscrtavanja pregleda
+	Play audio while scrubbing in Source and Program Monitors	Reprodukuj zvuk pri prelasku u izvornom i programskom monitoru
+	Playback	Reprodukcija
+	Playhead position determines trim monitor loop playback	Položaj glave za reprodukciju određuje reprodukciju u petlji na monitoru skraćivanja
+	Plugins	Dodaci
+	Podcast Voice	Glas za podcast
+	Point 1	Tačka 1
+	Point 1 Color	Boja tačke 1
+	Point 1 Latitude	Geografska širina tačke 1
+	Point 1 Longitude	Geografska dužina tačke 1
+	Point 2	Tačka 2
+	Point 2 Color	Boja tačke 2
+	Point 2 Latitude	Geografska širina tačke 2
+	Point 2 Longitude	Geografska dužina tačke 2
+	Point 3	Tačka 3
+	Point 3 Color	Boja tačke 3
+	Point 3 Latitude	Geografska širina tačke 3
+	Point 3 Longitude	Geografska dužina tačke 3
+	Point 4	Tačka 4
+	Point 5	Tačka 5
+	Point 6	Tačka 6
+	Point 7	Tačka 7
+	Point 8	Tačka 8
+	Points	Tačke
+	Policy	Pravilo
+	Pop Motion	Iskočni pokret
+	Portuguese	Portugalski
+	Position & Rotation	Položaj i rotacija
+	Position Amount	Količina položaja
+	Position, Scale & Rotation	Položaj, skala i rotacija
+	Position, Scale, Rotation	Položaj, skala, rotacija
+	Posterize	Posterizuj
+	Posterize Time	Posterizuj vrijeme
+	Pre-Delay	Predkašnjenje
+	Prefix	Prefiks
+	Presence Lift	Podizanje prisutnosti
+	Preserve Luminosity	Očuvaj osvijetljenost
+	Preserve Scale	Očuvaj skalu
+	ProcAmp	ProcAmp
+	Projecting cap	Isturen završetak
+	Projects	Projekti
+	Pull Motion	Pokret povlačenja
+	Pulls highlights and whites down	Spušta svijetle tonove i bijele
+	Push	Guranje
+	Push (Legacy)	Guranje (naslijeđeno)
+	Q	Q
+	RAM reserved for other applications	RAM rezervisan za druge aplikacije
+	RGB	RGB
+	RGB Split	RGB podjela
+	RGB-White	RGB-bijela
+	Radial	Radijalno
+	Radial Blur	Radijalno zamućenje
+	Radial Ramp	Radijalna rampa
+	Radial Wipe	Radijalni brisač
+	Radial Wipe (Legacy)	Radijalni brisač (naslijeđeno)
+	Radio Announcer	Radijski spiker
+	Radio Voice	Radijski glas
+	Radius	Poluprečnik
+	Ramp	Rampa
+	Ramp Shape	Oblik rampe
+	Random	Nasumično
+	Random Seed	Nasumično sjeme
+	Range	Raspon
+	Ray	Zraka
+	Ray Color	Boja zraka
+	Ray Length	Dužina zraka
+	Rays	Zrake
+	Rays Only	Samo zrake
+	Read	Čitaj
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	Zamućenost crvene
+	Red Curve	Crvena kriva
+	Red Offset	Pomak crvene
+	Red Power	Snaga crvene
+	Red Slope	Nagib crvene
+	Red-Blue	Crvena-plava
+	Red-Const	Crvena-konst.
+	Red-Green	Crvena-zelena
+	Red-Red	Crvena-crvena
+	Reduce Axis	Smanji osu
+	Reduce Interlace Flicker	Smanji treperenje preplitanja
+	Reflected	Reflektovano
+	Reflection Angle	Ugao refleksije
+	Reflection Center	Središte refleksije
+	Refraction	Refrakcija
+	Reframe Offset	Pomak preoblikovanja kadra
+	Reframe Zoom	Zumiranje preoblikovanja kadra
+	Refresh growing Files Every	Osvježavaj datoteke koje rastu svakih
+	Relaxed	Opušteno
+	Release Time	Vrijeme otpuštanja
+	Relief	Reljef
+	Remaining	Preostalo
+	Remove Fringe	Ukloni rub
+	Render Edit in Audition files to:	Iscrtaj datoteke Uredi u Auditionu u:
+	Render audio when rendering video	Iscrtaj zvuk pri iscrtavanju videa
+	Repair	Popravi
+	Repeat Edge Pixels	Ponavljaj piksele ivica
+	Replace Color	Zamijeni boju
+	Replace With Clip From Source Monitor	Zamijeni klipom iz izvornog monitora
+	Replicate	Repliciraj
+	Responsive Design - Position	Responzivni dizajn - položaj
+	Responsive Design - Time	Responzivni dizajn - vrijeme
+	Restore open sequences when opening projects	Vrati otvorene sekvence pri otvaranju projekata
+	Result	Rezultat
+	Retro	Retro
+	Reveal Nested Sequence	Prikaži ugniježđenu sekvencu
+	Reveal Original Image	Otkrij originalnu sliku
+	Reveal in Project	Prikaži u projektu
+	Reverb Amount	Količina reverba
+	Reverse	Obrnuto
+	Right - Left	Desno - lijevo
+	Right - Right	Desno - desno
+	Right channel to device output	Desni kanal na izlaz uređaja
+	Right to left	S desna nalijevo
+	Ripple trim adds edits to keep both sides of trim in sync	Ripple skraćivanje dodaje rezove da obje strane skraćivanja ostanu usklađene
+	Roll (Z Axis)	Kotrljanje (Z osa)
+	Room Size	Veličina prostorije
+	Rotation Amount	Količina rotacije
+	Roughen	Ohrapavi
+	Roughen Color	Boja ohrapavljenja
+	Roughen Edges	Ohrapavi ivice
+	Round cap	Okrugli završetak
+	Round join	Okrugli spoj
+	Rounded Crop	Zaobljeno izrezivanje
+	Rows	Redovi
+	Russian	Ruski
+	Rusty	Zahrđalo
+	Rusty Color	Boja hrđe
+	SFX	SFX
+	Sample Rate	Brzina uzorkovanja
+	Saturation at 50 %	Zasićenje na 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	Čuvaj .cfa i .pek keš datoteke medija pored originalnih medijskih datoteka kad je moguće
+	Scale (Degrees)	Skala (stepeni)
+	Scale Amount	Količina skale
+	Scale From	Skaliraj od
+	Scale Height	Skaliraj visinu
+	Scale Match	Usklađivanje skale
+	Scale To	Skaliraj na
+	Scale Width	Skaliraj širinu
+	Scale to frame size	Skaliraj na veličinu kadra
+	Scan Lines	Linije skeniranja
+	Scene	Scena
+	Scientific Filter	Naučni filter
+	Scratch disk location for Captured Audio	Lokacija radnog diska za snimljeni zvuk
+	Screen	Ekran
+	Seconds	Sekunde
+	Segments	Segmenti
+	Semi-tones	Polutonovi
+	Sequence Name	Naziv sekvence
+	Sequence Timecode	Vremenski kod sekvence
+	Set focus on the Timeline when performing Insert/Overwrite edits	Postavi fokus na vremensku liniju pri montaži umetanjem/prepisivanjem
+	Set to frame size	Postavi na veličinu kadra
+	Setting	Postavka
+	Shadow Angle	Ugao sjene
+	Shadow Blue Balance	Balans plave u sjenama
+	Shadow Blur	Zamućenje sjene
+	Shadow Color	Boja sjene
+	Shadow Distance	Udaljenost sjene
+	Shadow Green Balance	Balans zelene u sjenama
+	Shadow Only	Samo sjena
+	Shadow Opacity	Neprozirnost sjene
+	Shadow Red Balance	Balans crvene u sjenama
+	Shadow Size	Veličina sjene
+	Shadow Tint	Preliv sjena
+	Shadows Lightness	Svjetloća sjena
+	Shake	Drhtanje
+	Shape Dissolve	Pretapanje oblikom
+	Shape Flow	Tok oblika
+	Shape Size	Veličina oblika
+	Shapes	Oblici
+	Shard Size	Veličina krhotina
+	Sharp Colors	Oštre boje
+	Sharpen Amount	Količina izoštravanja
+	Shift Center To	Pomakni središte na
+	Shift clips that overlap trim point during ripple trimming	Pomjeraj klipove koji preklapaju tačku skraćivanja tokom ripple skraćivanja
+	Shot	Kadar
+	Show "Project:" and "Bin:" in Project panel tab	Prikaži "Projekat:" i "Korpa:" na kartici panela projekta
+	Show Clip Mismatch Warning dialog	Prikaži dijalog upozorenja o neusklađenosti klipa
+	Show Event Indicator	Prikaži indikator događaja
+	Show Focus Area	Prikaži područje fokusa
+	Show Home	Prikaži početnu
+	Show Mask Tracker Preview	Prikaži pregled praćenja maske
+	Show Only Noise	Prikaži samo šum
+	Show Open Dialog	Prikaži dijalog za otvaranje
+	Show Project Load Error Dialog	Prikaži dijalog greške učitavanja projekta
+	Show Rich Tool Tips	Prikaži bogate opise alata
+	Show Tool Tips	Prikaži opise alata
+	Show Workspace Reset Warning dialog on double click	Prikaži dijalog upozorenja o vraćanju radnog prostora pri dvostrukom kliku
+	Show system compatibility issues at startup	Prikaži probleme kompatibilnosti sistema pri pokretanju
+	Shrink	Skupi
+	Shutter Angle	Ugao zatvarača
+	Similarity	Sličnost
+	Simple Notch Filter	Jednostavni zarezni filter
+	Simple Parametric EQ	Jednostavni parametarski EQ
+	Simple Text	Jednostavan tekst
+	Single-band Compressor	Jednoopsežni kompresor
+	Sinusoidal	Sinusoidno
+	Skew	Iskosi
+	Skew Axis	Osa iskošenja
+	Slats	Letvice
+	Slice	Isječak
+	Slices	Isječci
+	Slide	Klizanje
+	Slide (Legacy)	Klizanje (naslijeđeno)
+	Slope	Nagib
+	Slow	Sporo
+	Slower Motion	Sporije kretanje
+	Small Room	Mala soba
+	Smart Limit	Pametno ograničenje
+	Smart Tools	Pametni alati
+	Smart quotes	Pametni navodnici
+	Smooth	Glatko
+	Smooth Motion	Glatko kretanje
+	Smooth Scroll	Glatko pomjeranje
+	Smoothness	Glatkoća
+	Snap playhead in Timeline when Snap is enabled	Hvataj glavu za reprodukciju na vremenskoj liniji kad je hvatanje omogućeno
+	Soft	Meko
+	Soft Clamp	Meko ograničavanje
+	Soft Edges (Best Quality)	Meke ivice (najbolji kvalitet)
+	Soft Light	Meko svjetlo
+	Soft Wipe	Meki brisač
+	Soften Harshness	Ublaži oštrinu
+	Softness	Mekoća
+	Solarize	Solarizuj
+	Solid Colors	Pune boje
+	Source Point	Izvorna tačka
+	Source Text	Izvorni tekst
+	Spacer	Razmaknica
+	Spanish	Španski
+	Speaker Angle	Ugao zvučnika
+	Speaker Labeling	Označavanje govornika
+	Special	Posebno
+	Special Effects	Specijalni efekti
+	Speech model	Model govora
+	Speed	Brzina
+	Spherize	Sferiziraj
+	Spiky	Šiljato
+	Spill	Prelijevanje boje
+	Spill Suppression	Suzbijanje prelijevanja boje
+	Spin	Okretanje
+	Spin Direction	Smjer okretanja
+	Spin Motion	Pokret okretanja
+	Split	Razdvoji
+	Split (Legacy)	Podjela (naslijeđeno)
+	Spotlight	Reflektor
+	Spread	Širenje
+	Spring Motion	Opružni pokret
+	Square	Kvadrat
+	Square (Width Only)	Kvadrat (samo širina)
+	Square 1:1	Kvadrat 1:1
+	Stabilization	Stabilizacija
+	Stabilize Only	Samo stabiliziraj
+	Stabilize, Crop	Stabiliziraj, izreži
+	Stabilize, Crop, Auto-scale	Stabiliziraj, izreži, automatski skaliraj
+	Stabilize, Synthesize Edges	Stabiliziraj, sintetiziraj ivice
+	Stages	Faze
+	Star	Zvijezda
+	Star Wipe	Zvjezdasti brisač
+	Start Angle	Početni ugao
+	Start Color	Početna boja
+	Start Point	Početna tačka
+	Start at 0	Počni od 0
+	Start at 1	Počni od 1
+	Start of Ramp	Početak rampe
+	Start with an Empty Project	Počni s praznim projektom
+	Starting Intensity	Početni intenzitet
+	Static Plates	Statične ploče
+	Step forward/back many	Korak naprijed/nazad za više
+	Stereo Expand	Stereo proširenje
+	Stereo Expander	Stereo proširivač
+	Stereo Imagery	Stereo slika
+	Stereo Media	Stereo mediji
+	Stereo Phasing	Stereo fazno pomjeranje
+	Stereoscopic - Over/Under	Stereoskopsko - gore/dolje
+	Stereoscopic - Side by Side	Stereoskopsko - jedno pored drugog
+	Still	Fotografija
+	Still Image Default Duration	Zadano trajanje fotografije
+	Stone Church	Kamena crkva
+	Stopband Attenuation	Prigušenje u nepropusnom opsegu
+	Straight Color	Ravna boja
+	Strength	Jačina
+	Stretch	Razvuci
+	Stretch Gradient to Fit	Razvuci gradijent da stane
+	Stretch Map to Fit	Razvuci mapu da stane
+	Stretch Width or Height	Razvuci širinu ili visinu
+	Stretch Wipe	Razvlačeći brisač
+	Stretch to Fit Frame	Razvuci da stane u kadar
+	Stripe	Pruga
+	Stripes	Pruge
+	Strobe Color	Boja stroboskopa
+	Strobe Duration (secs)	Trajanje stroboskopa (sek.)
+	Strobe Light	Stroboskopsko svjetlo
+	Strobe Period (secs)	Period stroboskopa (sek.)
+	Stroke 2 Color	Boja poteza 2
+	Stroke 2 Type	Vrsta poteza 2
+	Stroke 2 Width	Širina poteza 2
+	Stroke Angle	Ugao poteza
+	Stroke Color	Boja poteza
+	Stroke Density	Gustoća poteza
+	Stroke Length	Dužina poteza
+	Stroke Length (secs)	Dužina poteza (sek.)
+	Stroke Only	Samo potez
+	Stroke Randomness	Nasumičnost poteza
+	Stroke Type	Vrsta poteza
+	Stroke Width	Širina poteza
+	Stroke line cap	Završetak linije poteza
+	Stroke line join	Spoj linije poteza
+	Studio Reverb	Studijski reverb
+	Stylize	Stilizuj
+	Subclip End	Kraj podklipa
+	Subclip Start	Početak podklipa
+	Subspace Warp	Iskrivljenje podprostora
+	Subtitle	Podnaslov
+	Subtract	Oduzmi
+	Sum multichannel outputs to mono in Source Monitor	Saberi višekanalne izlaze u mono u izvornom monitoru
+	Super Narrow	Veoma usko
+	Surface Gloss	Sjaj površine
+	Surface Material	Materijal površine
+	Surround Reverb	Surround reverb
+	Swap	Zamijeni
+	Swap Channels	Zamijeni kanale
+	Swivel	Okretni pokret
+	Synthetic	Sintetičko
+	TV Power	TV snaga
+	Tape	Traka
+	Tape Name	Naziv trake
+	Tape/Tube	Traka/cijev
+	Target Aspect	Ciljni omjer
+	Target Color	Ciljna boja
+	Target Field of View	Ciljno vidno polje
+	Target Loudness	Ciljna glasnoća
+	Teal & Orange	Tirkizno i narandžasto
+	Telephone	Telefon
+	Teletext	Teletekst
+	Template Properties	Svojstva predloška
+	Text Animator	Animator teksta
+	Text Color	Boja teksta
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Keš medija sadrži preglede iscrtavanja nesačuvanih projekata i druge datoteke koje FilmCraft može ponovo kreirati. Njihovo brisanje je uvijek sigurno; FilmCraft ih ponovo gradi po potrebi.
+	Thickness	Debljina
+	Tile Gradient	Popločaj gradijent
+	Tilt	Nagib
+	Tilt (X Axis)	Nagib (X osa)
+	Time	Vrijeme
+	Time and Pitch	Vrijeme i visina tona
+	Timecode Conversion	Pretvaranje vremenskog koda
+	Timeline Mouse Scrolling	Pomjeranje vremenske linije mišem
+	Timeline Playback Auto-Scrolling	Automatsko pomjeranje vremenske linije pri reprodukciji
+	Tint Color	Boja preliva
+	To	Do
+	Tolerance	Tolerancija
+	Tone	Ton
+	Top Center	Gore po sredini
+	Top Left	Gore lijevo
+	Top Right	Gore desno
+	Touch	Dodir
+	Track Matte Key	Ključ matte trake
+	Transcription	Transkripcija
+	Transcription preferences	Postavke transkripcije
+	Transform	Transformiši
+	Transformers	Transformeri
+	Transience	Prolaznost
+	Transition Completion	Dovršenost prijelaza
+	Transition Softness	Mekoća prijelaza
+	Transparency	Prozirnost
+	Trash	Smeće
+	Travel Motion	Putujući pokret
+	Treble	Visoki tonovi
+	Triangle	Trougao
+	Trim	Skraćivanje
+	Tube	Cijev
+	Tube-modeled Compressor	Kompresor po modelu cijevi
+	Tubular	Cjevasto
+	Turbulent	Turbulentno
+	Turbulent Displace	Turbulentni pomak
+	Turbulent Sharp	Turbulentno oštro
+	Turbulent Smooth	Turbulentno glatko
+	Turbulent Smoother	Turbulentno glađe
+	Tweed	Tvid
+	Twirl	Kovitlac
+	Twirl (Legacy)	Kovitlac (naslijeđeno)
+	Twirl Center	Središte kovitlaca
+	Twirl Radius	Poluprečnik kovitlaca
+	Twist	Uvrtanje
+	Twist Smoother	Zaglađivač uvrtanja
+	Typewriter	Pisaća mašina
+	Ultra Key	Ultra ključ
+	Uniform Scale	Ujednačena skala
+	Uniform Spacing	Ujednačen razmak
+	Unsharp Mask	Maska izoštravanja
+	Update it at least every	Ažuriraj ga barem svakih
+	Update timeline dynamically during ripple edits.	Dinamički ažuriraj vremensku liniju tokom ripple montaže.
+	Upper Frequency	Gornja frekvencija
+	Upper Left	Gore lijevo
+	Upper Right	Gore desno
+	Use Color Noise	Koristi šum u boji
+	Use End Color	Koristi krajnju boju
+	Use File	Koristi datoteku
+	Use Glow Color	Koristi boju sjaja
+	Use Media Source	Koristi izvor medija
+	Use Tint Color	Koristi boju preliva
+	Utility	Uslužno
+	VHS Damage	VHS oštećenje
+	VR Blur	VR zamućenje
+	VR Chroma Leaks	VR curenje hrome
+	VR Chromatic Aberrations	VR hromatske aberacije
+	VR Color Gradients	VR gradijenti boja
+	VR De-Noise	VR uklanjanje šuma
+	VR Digital Glitch	VR digitalna greška
+	VR Fractal Noise	VR fraktalni šum
+	VR Glow	VR sjaj
+	VR Gradient Wipe	VR gradijentni brisač
+	VR Iris Wipe	VR iris brisač
+	VR Light Leaks	VR curenja svjetla
+	VR Light Rays	VR zrake svjetla
+	VR Mobius Zoom	VR Möbiusovo zumiranje
+	VR Plane to Sphere	VR ravan u sferu
+	VR Projection	VR projekcija
+	VR Random Blocks	VR nasumični blokovi
+	VR Rotate Sphere	VR rotacija sfere
+	VR Sharpen	VR izoštravanje
+	VR Spherical Blur	VR sferno zamućenje
+	Validate Content Credentials on import	Provjeri Content Credentials pri uvozu
+	Vectorscope (YUV)	Vektorskop (YUV)
+	Vectorscope + Waveform YC	Vektorskop + talasni oblik YC
+	Vectorscope HLS	Vektorskop HLS
+	Vectorscope YUV	Vektorskop YUV
+	Venetian Blinds	Venecijanske roletne
+	Vertical 4:5	Okomito 4:5
+	Vertical 9:16	Okomito 9:16
+	Vertical Alignment	Okomito poravnanje
+	Vertical Blocks	Okomiti blokovi
+	Vertical Decentering	Okomito decentriranje
+	Vertical Displacement	Okomiti pomak
+	Vertical Flip	Okomito preokretanje
+	Vertical Margin	Okomita margina
+	Very Narrow	Vrlo usko
+	Video 1	Video 1
+	Video 2	Video 2
+	Video 3	Video 3
+	Video 4	Video 4
+	Video 5	Video 5
+	Video 6	Video 6
+	Video 7	Video 7
+	Video 8	Video 8
+	Video Codec	Video kodek
+	Video Duration	Trajanje videa
+	Video Effects	Video efekti
+	Video In Point	Video ulazna tačka
+	Video Info	Video informacije
+	Video Limiter	Video limiter
+	Video Out Point	Video izlazna tačka
+	Video Transition Default Duration	Zadano trajanje video prijelaza
+	Video Transitions	Video prijelazi
+	Video Usage	Upotreba videa
+	Vignette	Vinjeta
+	Vivid Light	Živo svjetlo
+	Vocal Booth	Vokalna kabina
+	Vocal Enhancer	Poboljšivač vokala
+	Voice	Glas
+	Voice in a Hall	Glas u dvorani
+	Volumetric Rays	Volumetrijske zrake
+	Warm Film	Topli film
+	Warm Room	Topla soba
+	Warm Voice	Topli glas
+	Warm print stock with gentle roll-off	Topla filmska traka s blagim opadanjem
+	Warm, soft late-afternoon light	Toplo, meko svjetlo kasnog popodneva
+	Warning	Upozorenje
+	Warp Stabilizer	Warp stabilizator
+	Wave	Talas
+	Wave Height	Visina talasa
+	Wave Speed	Brzina talasa
+	Wave Warp	Talasno iskrivljenje
+	Wave Width	Širina talasa
+	Waveform	Talasni oblik
+	Waveform (Luma)	Talasni oblik (luma)
+	Waveform (RGB)	Talasni oblik (RGB)
+	Wavelength	Talasna dužina
+	Wet	Mokro
+	Wet Out	Mokri izlaz
+	When Opening a Project	Pri otvaranju projekta
+	Whip	Šibanje
+	Whip (Legacy)	Šibanje (naslijeđeno)
+	Whisper base (balanced)	Whisper base (uravnoteženo)
+	Whisper small (most accurate)	Whisper small (najtačnije)
+	Whisper tiny (fastest)	Whisper tiny (najbrže)
+	White	Bijela
+	White Input Level	Ulazni nivo bijele
+	White Is High	Bijelo je visoko
+	Wide Outdoor	Široko na otvorenom
+	Widener	Proširivač
+	Width	Širina
+	Wiggle	Vrckanje
+	Wipe	Brisač
+	Wipe Angle	Ugao brisača
+	Wonder Glow	Čudesni sjaj
+	Wrap Back	Omotavanje unazad
+	Write	Piši
+	Write XMP ID to files on import	Zapiši XMP ID u datoteke pri uvozu
+	Write clip markers to XMP	Zapiši markere klipa u XMP
+	Write-on	Ispisivanje
+	X Rotation	Rotacija X
+	Y Rotation	Rotacija Y
+	YC	YC
+	YC no Chroma	YC bez hrome
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Žuto-zeleni svijetli tonovi i plavo podignute sjene iz ukrštenih krivih kanala
+	Z Position	Položaj Z
+	Z Rotation	Rotacija Z
+	Zoom	Zumiranje
+	Zoom Amount	Količina zumiranja
+	Zoom Blur	Zamućenje zumiranjem
+	Zoom Strength	Jačina zumiranja
+	days	dana
+	frames	sličice
+	milliseconds	milisekundi
+	minute(s)	min.
+	second(s)	sek.
+	seconds	sekundi
+	Create Search Bin	Kreiraj korpu pretrage
+	Edit Offline File	Uredi nedostupnu datoteku
+	Source Settings	Postavke izvora
+	Update Metadata	Ažuriraj metapodatke
+	Automate To Sequence	Automatiziraj u sekvencu
+	Scene Edit Detection	Otkrivanje rezova scena
+	Analyze	Analiziraj
+	Normalize Mix Track	Normaliziraj traku miksa
+	Simplify Sequence	Pojednostavi sekvencu
+	Simplify	Pojednostavi
+	Transcribe Sequence	Transkribuj sekvencu
+	Save as Template	Sačuvaj kao predložak
+	Flash Cue Marker	Marker Flash znaka
+	System Compatibility Report	Izvještaj o kompatibilnosti sistema
+	no GPU adapter: the CPU compositor is used	nema GPU adaptera: koristi se CPU kompozitor
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	FilmCraft projekat
+	{name} Selection.fcproj	{name} odabir.fcproj
+	{name} (Simplified)	{name} (pojednostavljeno)
+	Find in:	Pronađi u:
+	Find:	Pronađi:
+	Search:	Pretraga:
+	Clip Names and Markers	Nazivi klipova i markeri
+	Match:	Podudaranje:
+	All	Sve
+	Any	Bilo koje
+	Case Sensitive	Razlikuj velika i mala slova
+	Scratch Disks	Radni diskovi
+	Ingest Settings	Postavke unosa
+	Captured and Generated:	Snimljeno i generisano:
+	Video Previews:	Video pregledi:
+	Audio Previews:	Audio pregledi:
+	Project Auto Save:	Automatsko čuvanje projekta:
+	Same as Project	Isto kao projekat
+	Path: {path}	Putanja: {path}
+	Transcode	Transkodiraj
+	Copy and Create Proxies	Kopiraj i kreiraj proksije
+	Action:	Akcija:
+	Destination:	Odredište:
+	Next to the media	Pored medija
+	Video Rendering and Playback	Iscrtavanje i reprodukcija videa
+	Renderer:	Iscrtavač:
+	Display Format:	Format prikaza:
+	Milliseconds	Milisekunde
+	Capture	Snimanje
+	Capture Format:	Format snimanja:
+	Action and Title Safe Areas	Sigurna područja za akciju i naslove
+	Title Safe Area	Sigurno područje za naslove
+	Action Safe Area	Sigurno područje za akciju
+	Total Duration	Ukupno trajanje
+	Average Data Rate	Prosječna brzina podataka
+	Colour	Boja
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · kanala: {n}
+	Media Name:	Naziv medija:
+	Scene:	Scena:
+	Shot/Take:	Kadar/snimak:
+	Log Note:	Bilješka zapisnika:
+	Codec: {codec}	Kodek: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Zapisati metapodatke odabranih klipova ({n}) u XMP datoteke pored njihovih medija?
+	Existing XMP files written by other applications are left unchanged.	Postojeće XMP datoteke koje su zapisale druge aplikacije ostaju nepromijenjene.
+	To {name}	U {name}
+	Ordering:	Redoslijed:
+	Sort Order	Redoslijed sortiranja
+	Selection Order	Redoslijed odabira
+	Placement:	Postavljanje:
+	Sequentially	Uzastopno
+	At Unnumbered Markers	Na nenumerisanim markerima
+	Method:	Metoda:
+	Insert Edit	Umetni rez
+	Overwrite Edit	Rez prepisivanjem
+	Clip Overlap:	Preklapanje klipova:
+	Frames per Still:	Sličica po fotografiji:
+	Transitions	Prijelazi
+	Apply Default Audio Transition	Primijeni zadani audio prijelaz
+	Apply Default Video Transition	Primijeni zadani video prijelaz
+	Ignore Options	Opcije zanemarivanja
+	Ignore Audio	Zanemari zvuk
+	Ignore Video	Zanemari video
+	Apply a cut at each detected cut point	Primijeni rez na svakoj otkrivenoj tački reza
+	Create a bin of subclips from each detected cut point	Kreiraj korpu podklipova iz svake otkrivene tačke reza
+	Create a clip marker at each detected cut point	Kreiraj marker klipa na svakoj otkrivenoj tački reza
+	Sensitivity:	Osjetljivost:
+	Normalize Mix Track to:	Normaliziraj traku miksa na:
+	Disabled clips	Onemogućeni klipovi
+	Empty tracks	Prazne trake
+	Gaps	Praznine
+	Video effects	Video efekti
+	Audio effects	Audio efekti
+	Text (graphics and captions)	Tekst (grafika i titlovi)
+	Clips	Klipovi
+	Move clips to the lowest track possible	Pomjeri klipove na najnižu moguću traku
+	Keep:	Zadrži:
+	Video and Audio	Video i zvuk
+	Video Only	Samo video
+	Audio Only	Samo zvuk
+	Language:	Jezik:
+	Audio on track {t}	Zvuk na traci {t}
+	Audio analysis:	Analiza zvuka:
+	Recognize when different speakers are talking	Prepoznaj kad govore različiti govornici
+	Template Name:	Naziv predloška:
+	Comments:	Komentari:
+	 (unavailable)	 (nedostupno)
+	Decoders	Dekoderi
+	Containers	Kontejneri
+	Export formats	Formati izvoza
+	Match {n} of {total}	Podudaranje {n} od {total}
+	Saved template {path}	Sačuvan predložak {path}
+	Scene Edit Detection: analysing in the background (see Progress)	Otkrivanje rezova scena: analiza u pozadini (pogledajte Napredak)
+	Delete Search Bin	Izbriši korpu pretrage
+	 (removed from {list})	 (uklonjeno iz {list})
+	{key} can't be used as a shortcut	{key} se ne može koristiti kao prečica
+	Keyboard Shortcuts	Prečice na tastaturi
+	{active} (modified)	{active} (izmijenjeno)
+	Loaded “{name}”	Učitano „{name}”
+	My Shortcuts	Moje prečice
+	Deleted preset “{active}”	Izbrisan predložak „{active}”
+	Export…	Izvezi…
+	Exported to {path}	Izvezeno u {path}
+	Export: no file chosen (agents: shortcuts.export {path})	Izvoz: nije odabrana datoteka (agenti: shortcuts.export {path})
+	Imported “{name}”	Uvezeno „{name}”
+	Import: no file chosen (agents: shortcuts.import {path})	Uvoz: nije odabrana datoteka (agenti: shortcuts.import {path})
+	Keyboard: US (macOS)	Tastatura: US (macOS)
+	Keyboard: US	Tastatura: US
+	Save preset as:	Sačuvaj predložak kao:
+	Commands:	Naredbe:
+	{panel} Panel	Panel {panel}
+	Application shortcuts work whatever panel has focus	Prečice aplikacije rade bez obzira na to koji panel ima fokus
+	Panel shortcuts override application shortcuts while that panel has focus	Prečice panela imaju prednost nad prečicama aplikacije dok taj panel ima fokus
+	Modifier held / selected	Modifikator držan / odabran
+	Search commands or keys	Pretraži naredbe ili tipke
+	Selected: {command}	Odabrano: {command}
+	Command	Naredba
+	Shortcut	Prečica
+	Type a shortcut… (Esc cancels)	Upišite prečicu… (Esc otkazuje)
+	Add another shortcut	Dodaj još jednu prečicu
+	No matching commands	Nema odgovarajućih naredbi
+	Key:	Ključ:
+	Modifiers	Modifikatori
+	Nothing is assigned to this key	Ovoj tipki ništa nije dodijeljeno
+	Click a key on the keyboard to see its shortcuts	Kliknite tipku na tastaturi da vidite njene prečice
+	Assign {key} to {command}	Dodijeli {key} naredbi {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	Konflikt: {key} je dodijeljena naredbama {commands} ({ctx})
+	 and 	 i 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Kliknite ćeliju Prečica naredbe i pritisnite tipke da je dodijelite; + dodaje još jednu prečicu.
+	Cleared {n} shortcut(s) of {command}	Očišćeno prečica naredbe {command}: {n}
+	No export preset named `{name}`	Nema predloška izvoza pod nazivom `{name}`
+	Open a sequence to export	Otvorite sekvencu za izvoz
+	Destinations	Odredišta
+	Media File	Medijska datoteka
+	Queue ({n})	Red ({n})
+	Send exports here with Send to Queue, then start the queue.	Pošaljite izvoze ovdje pomoću Pošalji u red, zatim pokrenite red.
+	Ready	Spremno
+	Encoding {n}%	Kodiranje {n}%
+	Start Queue	Pokreni red
+	Stop	Zaustavi
+	Clear Finished	Očisti završene
+	Not supported by FilmCraft's encoders yet	FilmCraftovi koderi to još ne podržavaju
+	Sequence name	Naziv sekvence
+	Folder	Folder
+	Preset	Unaprijed postavljeno
+	More presets…	Više predložaka…
+	Multiplexer	Multiplekser
+	The sequence has no caption track.	Sekvenca nema traku titlova.
+	Export Options	Opcije izvoza
+	Burn Captions Into Video	Utisni titlove u video
+	Create Sidecar File	Kreiraj prateću datoteku
+	File Format	Format datoteke
+	SubRip Subtitle (.srt)	SubRip titlovi (.srt)
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Title	Naslov
+	Creator	Kreator
+	Copyright	Autorska prava
+	Image	Slika
+	Frame Size	Veličina kadra
+	Match Source	Uskladi s izvorom
+	Field Order	Redoslijed poluslika
+	Aspect	Omjer
+	Profile	Profil
+	Bitrate Encoding	Kodiranje brzine prijenosa
+	Target Bitrate	Ciljna brzina prijenosa
+	Adaptive ({bpp} bits per pixel)	Prilagodljivo ({bpp} bita po pikselu)
+	Maximum Bitrate	Maksimalna brzina prijenosa
+	Quality (CRF)	Kvalitet (CRF)
+	Key Frame Distance	Udaljenost ključnih sličica
+	Quality	Kvalitet
+	Render at Maximum Depth	Iscrtaj u maksimalnoj dubini
+	Use Maximum Render Quality	Koristi maksimalni kvalitet iscrtavanja
+	Export Audio	Izvezi zvuk
+	Audio Format	Audio format
+	Uncompressed (PCM)	Nekomprimirano (PCM)
+	Match Source ({seq_sr} Hz)	Uskladi s izvorom ({seq_sr} Hz)
+	Channels	Kanali
+	Audio Bitrate	Audio brzina prijenosa
+	Sample Size	Veličina uzorka
+	16 bit	16-bitno
+	24 bit	24-bitno
+	32 bit	32-bitno
+	32 bit float	32-bitni pokretni zarez
+	FLAC stores whole-number samples only	FLAC čuva samo cjelobrojne uzorke
+	MXF export writes integer PCM only	MXF izvoz zapisuje samo cjelobrojni PCM
+	Size / Opacity	Veličina / neprozirnost
+	Image Overlay	Preklop slike
+	PNG or JPEG file	PNG ili JPEG datoteka
+	Name Overlay	Preklop imena
+	Timecode Overlay	Preklop vremenskog koda
+	Luma Min / Max	Luma min. / maks.
+	Loudness Normalization	Normalizacija glasnoće
+	True Peak Limit	Ograničenje stvarnog vrha
+	Audio only	Samo zvuk
+	Scaling	Skaliranje
+	Scale To Fit	Skaliraj da stane
+	Scale To Fill	Skaliraj da ispuni
+	Stretch To Fill	Razvuci da ispuni
+	Summary	Sažetak
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sekvenca, {w}x{h}, {fps} fps, {rate} Hz
+	Estimated file size: {size}	Procijenjena veličina datoteke: {size}
+	Send to Queue	Pošalji u red
+	Exporting {path}	Izvoz {path}
+	Added to the export queue	Dodano u red izvoza
+	Preset Manager	Upravitelj predložaka postavki
+	Search presets	Pretraži predloške
+	Favorites only	Samo omiljeni
+	Show in the Preset menu	Prikaži u meniju predložaka
+	User	Korisnik
+	Save current settings as:	Sačuvaj trenutne postavke kao:
+	Export presets	Predlošci izvoza
+	Import: no file chosen (agents: export.presets.import {path})	Uvoz: nije odabrana datoteka (agenti: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	Izvoz: nije odabrana datoteka (agenti: export.presets.export {path, names})
+	Quick Export: open a sequence first	Brzi izvoz: prvo otvorite sekvencu
+	File Name & Location	Naziv i lokacija datoteke
+	Quick Export: {path}	Brzi izvoz: {path}
+	Graphics problem: switched to software compositing	Problem s grafikom: prebačeno na softversko kompozitiranje
+	GPU acceleration is unavailable; preview renders on the CPU	GPU ubrzanje nije dostupno; pregled se iscrtava na CPU
+	Exporting	Izvoz
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Kliknite za odabir ili kliknite u prazan prostor i prevucite za odabir okvirom. Koristite Shift, Opt i Cmd za ostale opcije.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	Kliknite da odaberete sve klipove desno na svim trakama. Shift-klik za jednu traku.
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	Kliknite da odaberete sve klipove lijevo na svim trakama. Shift-klik za jednu traku.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Prevucite tačku reza za ripple skraćivanje; kasniji klipovi se pomjeraju da praznina ostane zatvorena.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Prevucite tačku reza za roll: izlaz jednog klipa i ulaz sljedećeg pomjeraju se zajedno.
+	Drag an edge to change the clip's speed so it fills the new duration.	Prevucite ivicu da promijenite brzinu klipa tako da ispuni novo trajanje.
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Prevucite ivicu muzičkog klipa da ga remiksujete na novo trajanje na muzički odgovarajućim taktovima.
+	Click to split a clip. Shift-click to split all tracks.	Kliknite da razdvojite klip. Shift-klik da razdvojite sve trake.
+	Drag a clip to slip its source in/out without moving it.	Prevucite klip da pomjerite njegov izvorni ulaz/izlaz bez pomjeranja klipa.
+	Drag a clip to slide it between its neighbours.	Prevucite klip da ga kližete između susjednih.
+	Drag to scroll the timeline.	Prevucite za pomjeranje vremenske linije.
+	Click to zoom in; Opt-click to zoom out.	Kliknite za uvećanje; Opt-klik za umanjenje.
+	FilmCraft hit an error	FilmCraft je naišao na grešku
+	Details: {path}	Detalji: {path}
+	Opened {url}	Otvoreno: {url}
+	(empty)	(prazno)
+	Step Back 1 Frame	Korak unazad 1 sličica
+	Step Forward 1 Frame	Korak naprijed 1 sličica
+	Match Playhead	Uskladi glavu za reprodukciju
+	Gang to Program	Poveži s programom
+	AAC Audio	AAC zvuk
+	AAC Audio 48 kHz 320 kbps	AAC zvuk 48 kHz 320 kbps
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	MPEG-4 zvuk (.m4a), stereo 48 kHz AAC-LC pri 320 kbps
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, stereo 48 kHz 16-bit PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24-bit
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stereo 48 kHz 24-bit, bez gubitaka
+	FLAC (lossless)	FLAC (bez gubitaka)
+	Compression Level	Nivo kompresije
+	0 fastest, 8 smallest	0 najbrže, 8 najmanje
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	Anamorfno 2:1 (2,0)
+	Animated GIF	Animirani GIF
+	Animated GIF 640×360	Animirani GIF 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 s alfom
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Application	Aplikacija
+	Apply Guide Template	Primijeni predložak vodilica
+	Auto Save Now	Automatski sačuvaj sada
+	Auto-Match Loudness	Automatski uskladi glasnoću
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom u Avid stilu: DNxHR HQ datoteka slike plus jedna 24-bitna 48 kHz PCM datoteka po kanalu (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	BMP sekvenca
+	Baseline	Osnovna linija
+	Begin Text Editing for a Graphic Layer	Započni uređivanje teksta za grafički sloj
+	Begins With	Počinje sa
+	Blur In	Zamućenje na ulazu
+	Blur Out	Zamućenje na izlazu
+	Brightens inside a feathered circular mask	Posvjetljuje unutar omekšane kružne maske
+	Broadcast	Emitovanje
+	CBR	CBR
+	Cancel Dynamic Trim	Otkaži dinamičko skraćivanje
+	Cancel Queued Export	Otkaži izvoz u redu
+	Center Left	Sredina lijevo
+	Center Right	Sredina desno
+	Center align text	Centriraj tekst
+	Change Mask	Promijeni masku
+	Clear All Events	Očisti sve događaje
+	Clear Edit Point Selection	Očisti odabir tačke reza
+	Clear Finished Exports	Očisti završene izvoze
+	Clear Poster Frame	Očisti sličicu postera
+	Close Bin	Zatvori korpu
+	Close Sequence	Zatvori sekvencu
+	Contains	Sadrži
+	Cut to Camera 1	Prebaci na kameru 1
+	Cut to Camera 2	Prebaci na kameru 2
+	Cut to Camera 3	Prebaci na kameru 3
+	Cut to Camera 4	Prebaci na kameru 4
+	Cut to Camera 5	Prebaci na kameru 5
+	Cut to Camera 6	Prebaci na kameru 6
+	Cut to Camera 7	Prebaci na kameru 7
+	Cut to Camera 8	Prebaci na kameru 8
+	Cut to Camera 9	Prebaci na kameru 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0,9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1,0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1,5)
+	Darkens outside a feathered oval mask	Zatamnjuje izvan omekšane ovalne maske
+	Decrease Audio Tracks Height	Smanji visinu audio traka
+	Decrease Clip Volume	Smanji jačinu klipa
+	Decrease Clip Volume Many	Znatno smanji jačinu klipa
+	Decrease Font Size by Five Units	Smanji veličinu fonta za pet jedinica
+	Decrease Font Size by One Unit	Smanji veličinu fonta za jednu jedinicu
+	Decrease Leading by Five Units	Smanji prored za pet jedinica
+	Decrease Leading by One Unit	Smanji prored za jednu jedinicu
+	Decrease Video Tracks Height	Smanji visinu video traka
+	Delete Captions	Izbriši titlove
+	Delete Graphic Layer	Izbriši grafički sloj
+	Delete Guide Template	Izbriši predložak vodilica
+	Delete Media Cache Files	Izbriši keš datoteke medija
+	Discard Unsaved Changes	Odbaci nesačuvane promjene
+	Does Not Contain	Ne sadrži
+	Download Speech Model	Preuzmi model govora
+	Dynamic Trim Stop	Zaustavljanje dinamičkog skraćivanja
+	Edit Caption Text	Uredi tekst titla
+	Ellipse Tool	Alat za elipsu
+	Ends With	Završava sa
+	Entire Source	Cijeli izvor
+	EssentialSound	Osnovni zvuk
+	Export Frame	Izvezi sličicu
+	Extend Next Edit To Playhead	Produži sljedeći rez do glave za reprodukciju
+	Extend Previous Edit To Playhead	Produži prethodni rez do glave za reprodukciju
+	Extend Selected Edit to Playhead	Produži odabrani rez do glave za reprodukciju
+	Extend Selection Down	Proširi odabir nadolje
+	Extend Selection Left	Proširi odabir ulijevo
+	Extend Selection Right	Proširi odabir udesno
+	Extend Selection Up	Proširi odabir nagore
+	Fade In	Postepeno pojavljivanje
+	Gaussian Blur from 0 to 60 over the last second	Gaussovo zamućenje od 0 do 60 tokom posljednje sekunde
+	Gaussian Blur from 60 to 0 over the first second	Gaussovo zamućenje od 60 do 0 tokom prve sekunde
+	Generate Ducking Keyframes	Generiši ključne sličice utišavanja
+	Go to Next Edit Point	Idi na sljedeću tačku reza
+	Go to Next Edit Point on Any Track	Idi na sljedeću tačku reza na bilo kojoj traci
+	Go to Previous Edit Point	Idi na prethodnu tačku reza
+	Go to Previous Edit Point on Any Track	Idi na prethodnu tačku reza na bilo kojoj traci
+	Go to Selected Clip End	Idi na kraj odabranog klipa
+	Go to Selected Clip Start	Idi na početak odabranog klipa
+	Go to Sequence End	Idi na kraj sekvence
+	Go to Sequence Start	Idi na početak sekvence
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 za sajtove za dijeljenje videa, VBR 1 prolaz, 16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 prolaz, cilj 20 Mbps, AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 prolaza, 18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 za sajtove za dijeljenje videa, VBR 1 prolaz, 45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 prolaz, cilj 60 Mbps, AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 prolaza, 50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 uspravno za kratke video snimke na društvenim mrežama, skalirano da ispuni, 12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 u veličini i brzini sličica sekvence; 0,05 bita po pikselu
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 u veličini i brzini sličica sekvence; 0,1 bita po pikselu
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 u veličini i brzini sličica sekvence; brzina prijenosa se prilagođava veličini kadra (0,2 bita po pikselu)
+	HD Anamorphic 1080 (1.333)	HD anamorfno 1080 (1,333)
+	Hand Tool	Alat ruka
+	High Quality 1080p HD	Visok kvalitet 1080p HD
+	High Quality 2160p 4K	Visok kvalitet 2160p 4K
+	Image Sequence	Sekvenca slika
+	Increase Audio Tracks Height	Povećaj visinu audio traka
+	Increase Clip Volume	Povećaj jačinu klipa
+	Increase Clip Volume Many	Znatno povećaj jačinu klipa
+	Increase Font Size by Five Units	Povećaj veličinu fonta za pet jedinica
+	Increase Font Size by One Unit	Povećaj veličinu fonta za jednu jedinicu
+	Increase Leading by Five Units	Povećaj prored za pet jedinica
+	Increase Leading by One Unit	Povećaj prored za jednu jedinicu
+	Increase Video Tracks Height	Povećaj visinu video traka
+	Large blocks resolving to the picture over the first second	Veliki blokovi koji prelaze u sliku tokom prve sekunde
+	Left align text	Poravnaj tekst lijevo
+	Looping GIF, 640×360 at 15 fps	GIF u petlji, 640×360 pri 15 fps
+	Lower First	Prvo donje
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8-bitno 4:2:2), 24-bit 48 kHz PCM, početni vremenski kod
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High dugi GOP (0,3 bita po pikselu), 24-bit 48 kHz PCM
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, početni vremenski kod
+	Main	Glavno
+	Mark In (Hover Scrub)	Označi ulaz (pregled pri prelasku)
+	Mark Out (Hover Scrub)	Označi izlaz (pregled pri prelasku)
+	Masks	Maske
+	Match Source – Adaptive High Bitrate	Uskladi s izvorom – prilagodljiva visoka brzina prijenosa
+	Match Source – Adaptive Low Bitrate	Uskladi s izvorom – prilagodljiva niska brzina prijenosa
+	Match Source – Adaptive Medium Bitrate	Uskladi s izvorom – prilagodljiva srednja brzina prijenosa
+	Matches	Podudaranja
+	Maximize or Restore Active Frame	Maksimiziraj ili vrati aktivni okvir
+	Maximize or Restore Frame Under Cursor	Maksimiziraj ili vrati okvir ispod kursora
+	Media Browser Settings	Postavke preglednika medija
+	MediaBrowser	Preglednik medija
+	MediaCache	Keš medija
+	Merge Captions	Spoji titlove
+	Mixer	Mikser
+	Mosaic In	Mozaik na ulazu
+	Move All Audio Targets Down	Pomakni sve audio ciljeve dolje
+	Move All Audio Targets Up	Pomakni sve audio ciljeve gore
+	Move All Video Targets Down	Pomakni sve video ciljeve dolje
+	Move All Video Targets Up	Pomakni sve video ciljeve gore
+	Move Selection Down	Pomakni odabir dolje
+	Move Selection End	Pomakni odabir na kraj
+	Move Selection Home	Pomakni odabir na početak
+	Move Selection Left	Pomakni odabir lijevo
+	Move Selection Page Down	Pomakni odabir stranicu dolje
+	Move Selection Page Up	Pomakni odabir stranicu gore
+	Move Selection Right	Pomakni odabir desno
+	Move Selection Up	Pomakni odabir gore
+	Multi-Camera Record On/Off Toggle	Prekidač snimanja više kamera
+	Multicam	Više kamera
+	Navigate to End of Segment	Idi na kraj segmenta
+	Navigate to Next Line	Idi na sljedeći red
+	Navigate to Next Word	Idi na sljedeću riječ
+	Navigate to Previous Line	Idi na prethodni red
+	Navigate to Previous Word	Idi na prethodnu riječ
+	Navigate to Start of Segment	Idi na početak segmenta
+	Navigation	Navigacija
+	Next Multi-Camera Page	Sljedeća stranica više kamera
+	Nudge Clip Selection Down	Pomakni odabir klipova dolje
+	Nudge Clip Selection Left Five Frames	Pomakni odabir klipova lijevo za pet sličica
+	Nudge Clip Selection Left One Frame	Pomakni odabir klipova lijevo za jednu sličicu
+	Nudge Clip Selection Right Five Frames	Pomakni odabir klipova desno za pet sličica
+	Nudge Clip Selection Right One Frame	Pomakni odabir klipova desno za jednu sličicu
+	Nudge Clip Selection Up	Pomakni odabir klipova gore
+	Nudge Selected Object down by five	Pomakni odabrani objekat dolje za pet
+	Nudge Selected Object down by one	Pomakni odabrani objekat dolje za jedan
+	Nudge Selected Object to left by five	Pomakni odabrani objekat lijevo za pet
+	Nudge Selected Object to left by one	Pomakni odabrani objekat lijevo za jedan
+	Nudge Selected Object to right by five	Pomakni odabrani objekat desno za pet
+	Nudge Selected Object to right by one	Pomakni odabrani objekat desno za jedan
+	Nudge Selected Object up by five	Pomakni odabrani objekat gore za pet
+	Nudge Selected Object up by one	Pomakni odabrani objekat gore za jedan
+	Nudge Volume +1dB	Pomakni jačinu +1 dB
+	Nudge Volume +3dB	Pomakni jačinu +3 dB
+	Nudge Volume -1dB	Pomakni jačinu -1 dB
+	Nudge Volume -3dB	Pomakni jačinu -3 dB
+	Numbered BMP stills (24-bit)	Numerisane BMP fotografije (24-bitne)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	JPEG sekvenca
+	Targa Sequence	Targa sekvenca
+	DPX Sequence	DPX sekvenca
+	Numbered JPEG stills (quality 90)	Numerisane JPEG fotografije (kvalitet 90)
+	Numbered Targa stills (24-bit, uncompressed)	Numerisane Targa fotografije (24-bitne, nekomprimirane)
+	Numbered DPX stills (10-bit RGB)	Numerisane DPX fotografije (10-bitni RGB)
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	OpenEXR sekvenca
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Numerisane OpenEXR fotografije (half float, linearne, nekomprimirane)
+	Numbered PNG stills at the sequence's frame size	Numerisane PNG fotografije u veličini kadra sekvence
+	Numbered TIFF stills (RGB, 8-bit)	Numerisane TIFF fotografije (RGB, 8-bitne)
+	Opacity 0 → 100 % over the first second	Neprozirnost 0 → 100 % tokom prve sekunde
+	Opacity 100 → 0 % over the last second	Neprozirnost 100 → 0 % tokom posljednje sekunde
+	Open Bin	Otvori korpu
+	Open Search	Otvori pretragu
+	PNG	PNG
+	PNG Sequence	PNG sekvenca
+	Panel	Panel
+	Pen Tool	Alat pero
+	PiP 35% Upper Right	Slika u slici 35% gore desno
+	Picture-in-picture: 35 % scale in the upper right	Slika u slici: skala 35 % gore desno
+	Play Around	Reprodukuj okolo
+	Play In to Out with Preroll/Postroll	Reprodukuj od ulaza do izlaza s predrolom/postrolom
+	Play from Playhead to Out Point	Reprodukuj od glave za reprodukciju do izlazne tačke
+	Play/Stop	Reprodukuj/zaustavi
+	Previous Multi-Camera Page	Prethodna stranica više kamera
+	Progressive	Progresivno
+	ProjectPanel	Panel projekta
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10-bitno 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12-bitno 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8-bitno 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8-bitno 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8-bitno 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) s alfa kanalom, 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, 24-bit 48 kHz PCM
+	Rate Stretch Tool	Alat za rastezanje brzine
+	Razor Tool	Alat žilet
+	Rectangle Tool	Alat pravougaonik
+	Remix Tool	Alat za remiks
+	Right align text	Poravnaj tekst desno
+	Ripple Edit Tool	Alat za ripple montažu
+	Ripple Trim Next Edit to Playhead	Ripple skraćivanje sljedećeg reza do glave za reprodukciju
+	Ripple Trim Previous Edit to Playhead	Ripple skraćivanje prethodnog reza do glave za reprodukciju
+	Rolling Edit Tool	Alat za roll montažu
+	Select Camera 1	Odaberi kameru 1
+	Select Camera 2	Odaberi kameru 2
+	Select Camera 3	Odaberi kameru 3
+	Select Camera 4	Odaberi kameru 4
+	Select Camera 5	Odaberi kameru 5
+	Select Camera 6	Odaberi kameru 6
+	Select Camera 7	Odaberi kameru 7
+	Select Camera 8	Odaberi kameru 8
+	Select Camera 9	Odaberi kameru 9
+	Select Clip at Playhead	Odaberi klip na glavi za reprodukciju
+	Select Find Box	Odaberi polje za pretragu
+	Select Next Clip	Odaberi sljedeći klip
+	Select Next Panel	Odaberi sljedeći panel
+	Select Previous Clip	Odaberi prethodni klip
+	Select Previous Panel	Odaberi prethodni panel
+	Select to Next Line	Odaberi do sljedećeg reda
+	Select to Next Word	Odaberi do sljedeće riječi
+	Select to Previous Line	Odaberi do prethodnog reda
+	Select to Previous Word	Odaberi do prethodne riječi
+	Select to Segment End	Odaberi do kraja segmenta
+	Select to Segment Start	Odaberi do početka segmenta
+	Selection Tool	Alat za odabir
+	Set Comparison Reference	Postavi referencu za poređenje
+	Set Creative Look	Postavi kreativni izgled
+	Set Input LUT	Postavi ulazni LUT
+	Set Project Panel View	Postavi prikaz panela projekta
+	Show Next Screen	Prikaži sljedeći ekran
+	Show Previous Screen	Prikaži prethodni ekran
+	Show Program Transcript	Prikaži transkript programa
+	Shuttle Left	Premotavanje ulijevo
+	Shuttle Right	Premotavanje udesno
+	Shuttle Slow Left	Sporo premotavanje ulijevo
+	Shuttle Slow Right	Sporo premotavanje udesno
+	Shuttle Stop	Zaustavi premotavanje
+	Slide Clip Selection Left Five Frames	Klizni odabir klipova lijevo za pet sličica
+	Slide Clip Selection Left One Frame	Klizni odabir klipova lijevo za jednu sličicu
+	Slide Clip Selection Right Five Frames	Klizni odabir klipova desno za pet sličica
+	Slide Clip Selection Right One Frame	Klizni odabir klipova desno za jednu sličicu
+	Slide Tool	Alat za klizanje
+	Slip Clip Selection Left Five Frames	Pomjeri sadržaj odabira klipova lijevo za pet sličica
+	Slip Clip Selection Left One Frame	Pomjeri sadržaj odabira klipova lijevo za jednu sličicu
+	Slip Clip Selection Right Five Frames	Pomjeri sadržaj odabira klipova desno za pet sličica
+	Slip Clip Selection Right One Frame	Pomjeri sadržaj odabira klipova desno za jednu sličicu
+	Slip Tool	Alat za pomjeranje sadržaja
+	Social Vertical 1080×1920	Okomito za društvene mreže 1080×1920
+	Soft Vignette	Meka vinjeta
+	Source In/Out	Izvorni ulaz/izlaz
+	Split Caption	Razdvoji titl
+	Square Pixels (1.0)	Kvadratni pikseli (1,0)
+	Stack Clips	Složi klipove
+	Start Export Queue	Pokreni red izvoza
+	Start Voice-over Recording	Pokreni snimanje naracije
+	Step Back Five Frames	Korak unazad pet sličica
+	Step Back One Frame	Korak unazad jedna sličica
+	Step Forward Five Frames	Korak naprijed pet sličica
+	Step Forward One Frame	Korak naprijed jedna sličica
+	Stop Export Queue	Zaustavi red izvoza
+	Stop Multi-Camera Recording	Zaustavi snimanje više kamera
+	Stop Voice-over Recording	Zaustavi snimanje naracije
+	Sync Voice-over Capture	Sinhronizuj snimanje naracije
+	TIFF	TIFF
+	TIFF Sequence	TIFF sekvenca
+	TextPanel	Panel teksta
+	Thumbnail Size Next	Sljedeća veličina sličica
+	Thumbnail Size Previous	Prethodna veličina sličica
+	Toggle All Audio Targets	Uključi/isključi sve audio ciljeve
+	Toggle All Source Audio	Uključi/isključi sav izvorni zvuk
+	Toggle All Source Video	Uključi/isključi sav izvorni video
+	Toggle All Video Targets	Uključi/isključi sve video ciljeve
+	Toggle Audio During Scrubbing	Uključi/isključi zvuk pri prelasku
+	Toggle Full Screen	Uključi/isključi cijeli ekran
+	Toggle Mute for All Targeted Audio Tracks	Uključi/isključi utišavanje za sve ciljane audio trake
+	Toggle Solo for All Targeted Audio Tracks	Uključi/isključi solo za sve ciljane audio trake
+	Toggle Source/Program Monitor Focus	Prebaci fokus izvornog/programskog monitora
+	Toggle Target Audio 1	Uključi/isključi ciljni zvuk 1
+	Toggle Target Audio 2	Uključi/isključi ciljni zvuk 2
+	Toggle Target Audio 3	Uključi/isključi ciljni zvuk 3
+	Toggle Target Audio 4	Uključi/isključi ciljni zvuk 4
+	Toggle Target Audio 5	Uključi/isključi ciljni zvuk 5
+	Toggle Target Audio 6	Uključi/isključi ciljni zvuk 6
+	Toggle Target Audio 7	Uključi/isključi ciljni zvuk 7
+	Toggle Target Audio 8	Uključi/isključi ciljni zvuk 8
+	Toggle Target Video 1	Uključi/isključi ciljni video 1
+	Toggle Target Video 2	Uključi/isključi ciljni video 2
+	Toggle Target Video 3	Uključi/isključi ciljni video 3
+	Toggle Target Video 4	Uključi/isključi ciljni video 4
+	Toggle Target Video 5	Uključi/isključi ciljni video 5
+	Toggle Target Video 6	Uključi/isključi ciljni video 6
+	Toggle Target Video 7	Uključi/isključi ciljni video 7
+	Toggle Target Video 8	Uključi/isključi ciljni video 8
+	Toggle Track Output for All Targeted Video Tracks	Uključi/isključi izlaz traka za sve ciljane video trake
+	Toggle Trim Type	Promijeni vrstu skraćivanja
+	Toggle View	Promijeni prikaz
+	Track Select Backward Tool	Alat za odabir traka unazad
+	Track Select Forward Tool	Alat za odabir traka unaprijed
+	Track Selected Mask	Prati odabranu masku
+	Trim Next Edit to Playhead	Skrati sljedeći rez do glave za reprodukciju
+	Trim Previous Edit to Playhead	Skrati prethodni rez do glave za reprodukciju
+	Trimming	Skraćivanje
+	Type Tool	Alat za tekst
+	Unstack Clips	Rasloži klipove
+	Upper First	Prvo gornje
+	VBR, 1 pass	VBR, 1 prolaz
+	VBR, 2 pass	VBR, 2 prolaza
+	CRF (constant quality)	CRF (konstantan kvalitet)
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Voice-over Record	Snimanje naracije
+	Voiceover	Naracija
+	WAV, stereo 48 kHz 16-bit PCM	WAV, stereo 48 kHz 16-bit PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV, stereo 48 kHz 24-bit PCM
+	Warm Tint	Topli preliv
+	Warm highlights, brown shadows	Topli svijetli tonovi, smeđe sjene
+	Waveform Audio	Waveform Audio
+	Waveform Audio 48 kHz 16-bit	Waveform Audio 48 kHz 16-bit
+	Waveform Audio 48 kHz 24-bit	Waveform Audio 48 kHz 24-bit
+	Web & Social	Web i društvene mreže
+	Work Area	Radno područje
+	Write Automation	Zapiši automatizaciju
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Zoom Program Monitor to 100%	Zumiraj programski monitor na 100%
+	Zoom Program Monitor to Fit	Uklopi programski monitor
+	Zoom Source Monitor to 100%	Zumiraj izvorni monitor na 100%
+	Zoom Source Monitor to Fit	Uklopi izvorni monitor
+	Zoom Tool	Alat za zumiranje
+	with:	sa:
+	Interface Language	Jezik interfejsa
+	System Language	Jezik sistema
+	Cinematic	Filmski
+	Film Emulation	Emulacija filma
+	Technical	Tehničko
+	Teal Shadows, Warm Skin	Tirkizne sjene, topla koža
+	Night Exterior	Noćni eksterijer
+	Golden Dusk	Zlatni sumrak
+	Steel Blue	Čelično plava
+	Hard Sun	Jako sunce
+	Faded Print	Izblijedjela kopija
+	Silver Retention	Zadržavanje srebra
+	Cross Processed	Unakrsno obrađeno
+	Warm Negative	Topli negativ
+	Neutral Mono	Neutralni mono
+	Hard Mono	Tvrdi mono
+	Sepia Tone	Sepija ton
+	Cold Mono	Hladni mono
+	Lift Shadows	Podigni sjene
+	Protect Highlights	Zaštiti svijetle tonove
+	Half Saturation	Pola zasićenja
+	Boost Vibrance	Pojačaj živost
+	Legal Range Squeeze	Sabijanje u zakonski raspon
+	A boxed label with a round pointer; move the label and the pointer follows.	Uokvirena oznaka s okruglim pokazivačem; pomjerite oznaku i pokazivač je slijedi.
+	A rounded tag that fits its text, with a status dot.	Zaobljena oznaka koja se prilagođava tekstu, s tačkom statusa.
+	A title on a rounded card with a soft shadow.	Naslov na zaobljenoj kartici s mekom sjenom.
+	Accent Color	Boja naglaska
+	Bar Color	Boja trake
+	Box Color	Boja okvira
+	Box Opacity	Neprozirnost okvira
+	Callout – Pointer	Oblačić – pokazivač
+	Callout – Tag	Oblačić – oznaka
+	Callouts	Oblačići
+	Credits	Zasluge
+	Dot Color	Boja tačke
+	Heading	Smjer
+	Large centred title, accent rule and subtitle.	Veliki centrirani naslov, linija naglaska i podnaslov.
+	Lower Third – Rule	Donja trećina – linija
+	Lower Third – Slab	Donja trećina – ploča
+	Lower Thirds	Donje trećine
+	Name Color	Boja imena
+	Name Size	Veličina imena
+	Name and role on a coloured slab that widens with the name.	Ime i uloga na obojenoj ploči koja se širi s imenom.
+	Name over a thin rule that always matches the name's width.	Ime iznad tanke linije koja uvijek odgovara širini imena.
+	Pointer Color	Boja pokazivača
+	Role	Uloga
+	Rule Color	Boja linije
+	Show Dot	Prikaži tačku
+	Show Role	Prikaži ulogu
+	Slab Color	Boja ploče
+	Tag Color	Boja oznake
+	Title Color	Boja naslova
+	Title Size	Veličina naslova
+	Title – Boxed	Naslov – uokviren
+	Title – Centered	Naslov – centriran
+	Titles	Naslovi
+	Select an item to preview it	Odaberite stavku za pregled
+	End Credits	Odjavna špica
+	End Credits – Roll	Odjavna špica – kretanje
+	Ticker – Crawl	Traka vijesti – puzanje
+	Centred credits that roll up from below the frame and leave at the top.	Centrirane zasluge koje se kreću odozdo iz kadra i izlaze na vrhu.
+	A news-style line that crawls in from the right and leaves at the left.	Linija u stilu vijesti koja ulazi zdesna i izlazi lijevo.
+	out	izlaz
+	in	ulaz
+	The language changed but could not be saved: {e}	Jezik je promijenjen, ali nije ga moguće sačuvati: {e}
+	no Chinese font is installed on this system; the interface stays in English	na ovom sistemu nije instaliran kineski font; interfejs ostaje na engleskom
+	no Korean font is installed on this system; the interface stays in English	na ovom sistemu nije instaliran korejski font; interfejs ostaje na engleskom
+	no Japanese font is installed on this system; the interface stays in English	na ovom sistemu nije instaliran japanski font; interfejs ostaje na engleskom
+	Show	Prikaži
+	Sort	Sortiraj
+	Reverse the order	Obrni redoslijed
+	Grab bag	Svaštara
+	Table	Tabela
+	No contributor data was built into this copy.	U ovu kopiju nisu ugrađeni podaci o saradnicima.
+	No model credits were built into this copy.	U ovu kopiju nisu ugrađene zasluge za modele.
+	Company	Firma
+	Model	Model
+	Version	Verzija
+	Commits	Commitovi
+	% of all commits	% svih commitova
+	Lines +/−	Linije +/−
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Audio izlaz nije uspio: reprodukcija bez zvuka (provjerite Postavke > Audio hardver)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Audio izlaz ne odgovara: reprodukcija bez zvuka (provjerite Postavke > Audio hardver)
+	Clip Speed / Duration	Brzina / trajanje klipa
+	Speed:	Brzina:
+	Reverse Speed	Obrnuta brzina
+	Ripple Edit, Shifting Trailing Clips	Ripple montaža, pomjeranje narednih klipova
+	About	O programu
+	Contributors	Saradnici
+	Models	Modeli
+	Main (8-bit)	Main (8-bitno)
+	Main 10 (10-bit, HDR)	Main 10 (10-bitno, HDR)
+	Main (8-bit; Main 10 for HDR sequences)	Main (8-bitno; Main 10 za HDR sekvence)
+	Encoder	Koder
+	Hardware (H.265 has no software encoder)	Hardver (H.265 nema softverski koder)
+	Hardware (AV1 has no software encoder)	Hardver (AV1 nema softverski koder)
+	Text Properties	Svojstva teksta
+	Text Box Height	Visina okvira za tekst
+	Paragraph Text	Tekst pasusa
+	Point Text	Tačkasti tekst
+	Text Layer Type	Vrsta tekstualnog sloja
+	Text Styling	Stilizovanje teksta
+	New Color Matte	Nova podloga u boji
+	Color Matte Color	Boja podloge u boji
+	Color:	Boja:
+	 · {time} left	 · preostalo {time}
+	Discard take	Odbaci snimak
+	Voice-over take discarded	Snimak naracije odbačen
+	Binary assets added	Dodani binarni resursi
+	Binary assets removed	Uklonjeni binarni resursi
+	Deselect All Project Items	Poništi odabir svih stavki projekta
+	Display name	Ime za prikaz
+	First commit	Prvi commit
+	H.265 (HEVC)	H.265 (HEVC)
+	Last commit	Posljednji commit
+	Line delta	Razlika u linijama
+	Lines added	Dodane linije
+	Lines deleted	Izbrisane linije
+	Merged PRs	Spojeni PR-ovi
+	Name (A–Z)	Naziv (A–Z)
+	Real name	Pravo ime
+	Select All Project Items	Odaberi sve stavke projekta
+	Username	Korisničko ime
+	Vertical Type Tool	Alat za okomiti tekst
+	Go to previous keyframe	Idi na prethodnu ključnu sličicu
+	Go to next keyframe	Idi na sljedeću ključnu sličicu
+	Add keyframe	Dodaj ključnu sličicu
+	Remove keyframe	Ukloni ključnu sličicu
+	Turn on animation and add keyframe	Uključi animaciju i dodaj ključnu sličicu
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Kliknite za odabir ili kliknite u prazan prostor i prevucite za odabir okvirom. Koristite Shift, Alt i Ctrl za ostale opcije.
+	Click to zoom in; Alt-click to zoom out.	Kliknite za uvećanje; Alt-klik za umanjenje.
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Prevlačenje: pomjeri · Alt-klik: glatko/ugao · Ctrl-klik: izbriši
+	Drag inward to round the corners	Prevucite prema unutra da zaoblite uglove
+	Include Alpha Channel	Uključi alfa kanal
+	Sequence Settings	Postavke sekvence
+	Color Management	Upravljanje bojama
+	VR Properties	VR svojstva
+	Editing Mode:	Način montaže:
+	Timebase:	Vremenska baza:
+	Frame Size:	Veličina kadra:
+	Pixel Aspect Ratio:	Omjer stranica piksela:
+	Fields:	Polja:
+	Channel Format:	Format kanala:
+	Number of Channels:	Broj kanala:
+	Preview File Format:	Format datoteke pregleda:
+	Working Color Space:	Radni prostor boja:
+	Projection:	Projekcija:
+	Layout:	Raspored:
+	Captured View:	Snimljeni prikaz:
+	Video Previews	Video pregledi
+	No Fields (Progressive Scan)	Bez poluslika (progresivno skeniranje)
+	Custom ({ratio})	Prilagođeno ({ratio})
+	{rate} frames/second	{rate} sličica/sekundi
+	{rate} fps Drop-Frame Timecode	Vremenski kod {rate} fps s preskakanjem sličica
+	{rate} fps Non Drop-Frame Timecode	Vremenski kod {rate} fps bez preskakanja sličica
+	{rate} fps Timecode	Vremenski kod {rate} fps
+	horizontal	vodoravno
+	vertical	okomito
+	Scale motion effects proportionally when changing frame size	Skaliraj efekte pokreta proporcionalno pri promjeni veličine kadra
+	Maximum Bit Depth	Maksimalna dubina bita
+	Maximum Render Quality	Maksimalni kvalitet iscrtavanja
+	Composite in Linear Color	Kompozit u linearnoj boji
+	Auto Tone Map Media (HDR and log into SDR)	Automatsko tonsko mapiranje medija (HDR i log u SDR)
+	Configure…	Podesi…
+	Not supported in FilmCraft yet	Još nije podržano u FilmCraftu
+	FilmCraft always composites in linear light	FilmCraft uvijek kompozitira u linearnom svjetlu
+	Loop marked range	Ponavljaj označeni raspon
+	Play Source	Reprodukuj izvor
+	Source Play/Stop	Reprodukuj/zaustavi izvor
+	Stop Source	Zaustavi izvor
+	New Sequence	Nova sekvenca
+	Tracks	Trake
+	tracks	trake
+	Clear Transition	Očisti prijelaz
+	Set Transition Duration	Postavi trajanje prijelaza
+	Active	Aktivno
+	Appearance Mode	Način izgleda
+	Dark Theme	Tamna tema
+	Light Theme	Svijetla tema
+	Sync with system	Usklađeno sa sistemom
+	UI Scale	Skala interfejsa
+	Auto (system)	Automatski (sistem)
+	In	Ulaz
+	Out	Izlaz
+	Fill Type	Vrsta ispune
+	Gradient Angle	Ugao gradijenta
+	Linear Gradient	Linearni gradijent
+	Solid	Puno
+	GPU Rendering	GPU iscrtavanje
+	Composite on the GPU when available	Kompozitiraj na GPU kad je dostupan
+	Text to Speech	Tekst u govor
+	Edit Narration	Uredi naraciju
+	Dock Panel	Usidri panel
+	Undock Panel	Odvoji panel
+	Docking Action	Akcija sidrenja
+	Resize floating panel	Promijeni veličinu plutajućeg panela
+	Get Project Notes	Preuzmi bilješke projekta
+	Edit Project Notes	Uredi bilješke projekta
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Bilješke za ovaj projekat: zadaci, uputstva, brojevi sličica… Čuvaju se s projektom.
+	Use Effect Shutter Angle	Koristi ugao zatvarača efekta
+	Appearance Settings…	Postavke izgleda…
+	Add to favorites	Dodaj u omiljene
+	Remove from favorites	Ukloni iz omiljenih
+	Compression	Kompresija
+	ZIP (1 scan line)	ZIP (1 linija skeniranja)
+	ZIP (16 scan lines)	ZIP (16 linija skeniranja)
+	Safe graphics mode: {mode}	Sigurni grafički način: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Raniji pokušaj pokretanja nije uspio sa zadanom grafikom. Ažuriranje upravljačkog programa za grafiku to obično popravlja.
+	Use Default Graphics	Koristi zadanu grafiku
+	The default graphics are used from the next start.	Zadana grafika koristi se od sljedećeg pokretanja.
+	DirectX 12 only	Samo DirectX 12
+	software rendering	softversko iscrtavanje
+	Label Color Presets	Predlošci boja oznaka
+	{name} (Modified)	{name} (izmijenjeno)
+	Revert to the preset's colors and names	Vrati na boje i nazive predloška
+	Import a preset file…	Uvezi datoteku predloška…
+	Export the labels to a preset file…	Izvezi oznake u datoteku predloška…
+	Show the presets folder	Prikaži folder predložaka
+	Delete this preset	Izbriši ovaj predložak
+	Opens in your web browser: {url}	Otvara se u vašem web pregledniku: {url}
+	Saves this session's log and shows it in your file manager.	Čuva zapisnik ove sesije i prikazuje ga u upravitelju datoteka.
+	Shows a report on this computer.	Prikazuje izvještaj o ovom računaru.
+	Shows the version, community links and credits in a FilmCraft window.	Prikazuje verziju, veze zajednice i zasluge u FilmCraft prozoru.
+	Couldn't open your web browser	Nije moguće otvoriti vaš web preglednik
+	Open this address in your browser yourself:	Sami otvorite ovu adresu u svom pregledniku:
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Kontrolni server je onemogućen: FILMCRAFT_CONTROL_TOKEN mora sadržavati 64 nasumična heksadecimalna znaka (pogledajte docs/control-protocol.md)
+	Delete Redoable Actions	Izbriši radnje koje se mogu ponoviti
+	Clear History	Očisti historiju
+	Delete the dimmed actions after the current state? They cannot be redone.	Izbrisati zatamnjene radnje nakon trenutnog stanja? Neće se moći ponoviti.
+	Transparency Grid	Mreža prozirnosti
+	Work Area Bar	Traka radnog područja
+	Start: {tc}	Početak: {tc}
+	End: {tc}	Kraj: {tc}
+	Duration: {tc}	Trajanje: {tc}
+	Animate zoom, scrolling and menus	Animiraj zumiranje, pomicanje i menije
+	Reset Interface Zoom	Vrati zumiranje interfejsa
+	Track Color	Boja trake
+	Open a sequence to search its graphics	Otvorite sekvencu da pretražite njene grafike
+	No text graphics in this sequence. Add text with the Type tool.	U ovoj sekvenci nema tekstualnih grafika. Dodajte tekst alatom za tekst.
+	No matching text.	Nema odgovarajućeg teksta.
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) zahtijeva hardverski enkoder (NVENC na NVIDIA GPU-ovima, VideoToolbox na macOS-u); na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski H.265 enkoder. Umjesto toga odaberite H.264 ili ProRes.
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 zahtijeva hardverski enkoder; na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski AV1 enkoder.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.

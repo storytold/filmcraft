@@ -8,8 +8,9 @@ use common::*;
 use filmcraft_media::FrameRequest;
 use filmcraft_media::cancel::with_draft;
 
-#[test]
-fn draft_playback_never_reaches_exports() {
+/// Verify H.264 default, draft and export decoding against ffmpeg.
+/// Called by the shared draft-codec test because GOP statistics are process-wide.
+pub(super) fn check() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     // B-pyramid: references and non-reference B pictures (the ones draft mode leaves unfiltered)
     let Some(file) = fixture(

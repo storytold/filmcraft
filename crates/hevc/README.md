@@ -1,7 +1,7 @@
 # filmcraft-hevc
 
 Clean-room, pure-Rust (no `unsafe`) H.265 / HEVC decoder, implemented from the public ITU-T
-Rec. H.265 (ISO/IEC 23008-2) specification. It is an L0 crate: it depends only on
+Rec. H.265 (08/2021, ISO/IEC 23008-2) specification. It is an L0 crate: it depends only on
 `filmcraft-bitstream`, `thiserror`, and optionally `rayon` (default feature `threads`), and builds
 for `wasm32-unknown-unknown`.
 
@@ -68,6 +68,11 @@ row on exactly the reference rows it reads. Samples are stored as `u8` for 8-bit
 the memory traffic in prediction reads, in-loop filters and output) and as `u16` above 8 bits: the
 slice decoder and the filters are generic over the sample type (`picture::Sample`), monomorphised
 once per type.
+
+Unavailable references keep distinct frame IDs and POCs while sharing one immutable gray backing
+for the active picture format. This backing is created only when a reference is missing, replaced
+on geometry or plane-depth changes, and released on flush. Jobs still reading an older format keep
+its rows alive. Each backing retains the full coded picture dimensions.
 
 Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
 decoding while the Program monitor plays at 1/2 or 1/4): sub-layer non-reference pictures
