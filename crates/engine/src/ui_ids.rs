@@ -154,6 +154,7 @@ pub const UI_COMMAND_IDS: &[&str] = &[
     "window.maximizeFrame",
     "window.maximizeFrameUnderCursor",
     "window.toggleFullScreen",
+    "view.fullScreenProgram",
     "window.nextPanel",
     "window.prevPanel",
     "window.toggleMonitorFocus",
