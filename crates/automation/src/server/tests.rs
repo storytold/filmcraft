@@ -716,21 +716,21 @@ async fn a_confined_session_can_queue_and_start_inside_the_write_root() {
     let _ = std::fs::remove_dir_all(base);
 }
 
-/// The app's queue can hold its user's exports to anywhere: a confined client can add to it, but
-/// not set it going. The refusal comes before any connection to the app.
+/// The app's queue can hold its user's exports to anywhere, so a confined client keeps out of it.
+/// The refusal comes before any connection to the app.
 #[tokio::test]
-async fn the_bridge_refuses_to_start_the_apps_export_queue() {
+async fn the_bridge_refuses_the_apps_export_queue() {
     let (base, roots) = roots_base("bridge-queue");
     let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots));
     let q = base.join("out/q.mp4");
-    for (id, p) in
-        [("export.queue.start", json!({})), ("export.queue.retry", json!({"id": 1})), ("export.queue.add", json!({"path": q.to_string_lossy(), "start": true}))]
-    {
-        let e = m.run(id, p).await.unwrap_err().to_string();
-        assert!(e.contains("the queue can hold exports to anywhere"), "{id}: {e}");
+    let queue: Vec<_> = filmcraft_engine::command_specs().iter().map(|c| c.id).filter(|id| id.starts_with("export.queue.")).collect();
+    assert!(queue.len() >= 9, "{queue:?}");
+    for id in queue {
+        let e = m.run(id, json!({"id": 1, "path": q.to_string_lossy()})).await.unwrap_err().to_string();
+        assert!(e.contains("the app's export queue can hold exports to anywhere"), "{id}: {e}");
     }
-    // Adding without starting gets past the checks, and fails only on reaching the app.
-    let e = m.run("export.queue.add", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
+    // A direct export gets past the checks, and fails only on reaching the app.
+    let e = m.run("file.exportMedia", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
     assert!(!e.contains("confined"), "{e}");
     let _ = std::fs::remove_dir_all(base);
 }

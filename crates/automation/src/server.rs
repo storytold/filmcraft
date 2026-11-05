@@ -320,10 +320,10 @@ impl FilmcraftMcp {
     /// parameters are checked first: one outside them is an error the agent can act on.
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
         if let Some(roots) = &self.roots {
-            roots.check_command(id, &params).map_err(AutomationError::BadRequest)?;
             if matches!(&*self.backend, Backend::Bridge(_)) {
-                AutomationRoots::check_bridge_command(id, &params).map_err(AutomationError::BadRequest)?;
+                AutomationRoots::check_bridge_command(id).map_err(AutomationError::BadRequest)?;
             }
+            roots.check_command(id, &params).map_err(AutomationError::BadRequest)?;
         }
         match &*self.backend {
             Backend::Headless(s) => {
