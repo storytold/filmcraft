@@ -6,6 +6,7 @@ mod caption_list_follow_ui;
 mod caption_option_drag_ui;
 mod caption_properties_ui;
 mod caption_razor_ui;
+mod caption_wrap_drag_ui;
 mod captions_font_ui;
 mod chrome_ui;
 mod clip_audio_ui;
