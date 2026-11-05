@@ -97,14 +97,14 @@ fn reveal_in_project_shows_the_clips_item_in_the_project_panel() {
         };
         let bin = d.app().session.project.root.parent_of(item).expect("the demo keeps its footage in a bin").0;
         // the Project panel is closed, its bins are collapsed and a search hides everything
-        d.app().ui.dock.close(PanelKind::Project);
+        d.app().ui.dock.apply(craft_ui::docking::Action::Close { panel: PanelKind::Project }).unwrap();
         d.app().ui.expanded_bins.clear();
         d.app().ui.project_search = "no such thing".into();
         d.frames(2);
         assert!(!d.has(&format!("project.item.{}", item.0)));
         d.exec("clip.revealInProject", json!({"clip": clip}));
         d.frames(3);
-        assert!(d.app().ui.dock.is_visible(PanelKind::Project), "{mode:?}");
+        assert!(filmcraft_ui_egui::dock::LayoutExt::is_visible(&d.app().ui.dock, PanelKind::Project), "{mode:?}");
         assert!(d.app().ui.project_search.is_empty());
         assert_eq!(d.app().session.state.project_selection, vec![item]);
         if mode == ViewMode::List {

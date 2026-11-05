@@ -77,9 +77,10 @@ impl Driver {
         self.ui()["ui"]["tts"].clone()
     }
 
-    /// Let a background synthesis job finish.
+    /// Let a background synthesis job finish, for at most two minutes of wall-clock time.
     fn settle(&mut self) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.draft()["pending"].is_null() {
                 return;
             }
@@ -156,6 +157,9 @@ fn write_add_click_to_edit_and_save_in_place() {
     d.click("tts.text");
     d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Something else");
+    // the new narration track can sit below the audio pane's visible rows: scroll to the end
+    d.harness.state_mut().ui.timeline.a_scroll = f32::MAX;
+    d.frames(3);
     let at = d.ok("ui.timeline.locate", json!({"clip": clip}));
     d.ok("ui.click", json!({"x": at["x"], "y": at["y"]}));
     d.frames(4);

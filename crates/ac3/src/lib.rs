@@ -791,7 +791,7 @@ impl Decoder {
         let mut pcm: Vec<Vec<f32>> = vec![Vec::with_capacity(256 * nblocks); nout];
         for blk in 0..nblocks {
             let mut coefs = [[0f32; 256]; 6];
-            self.audio_block(r, f, acmod, lfeon, blk, &mut coefs, x.as_deref_mut())?;
+            self.audio_block(r, f, BlockPos { acmod, lfeon, blk }, &mut coefs, x.as_deref_mut())?;
             if r.overrun() {
                 return Err(Error::Invalid("audio block runs past the frame"));
             }
@@ -811,439 +811,40 @@ impl Decoder {
         Ok(pcm)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn audio_block(
-        &mut self,
-        r: &mut Bits,
-        f: &mut Frame,
-        acmod: usize,
-        lfeon: bool,
-        blk: usize,
-        coefs: &mut [[f32; 256]; 6],
-        mut x: Option<&mut eac3::FrameInfo>,
-    ) -> Result<()> {
+    /// Decode one audio block's side information, exponents and mantissas into `coefs`.
+    fn audio_block(&mut self, r: &mut Bits, f: &mut Frame, pos: BlockPos, coefs: &mut [[f32; 256]; 6], mut x: Option<&mut eac3::FrameInfo>) -> Result<()> {
+        let BlockPos { acmod, lfeon, blk } = pos;
         let nf = f.nfchans;
-        let eac3 = x.is_some();
-        match x.as_deref() {
-            Some(e) if !e.blkswe => f.blksw = [false; 5],
-            _ => (0..nf).for_each(|ch| f.blksw[ch] = r.bit()),
-        }
-        match x.as_deref() {
-            // dither on when the flags are not sent (§E2.2.4)
-            Some(e) if !e.dithflage => f.dithflag = [true; 5],
-            _ => (0..nf).for_each(|ch| f.dithflag[ch] = r.bit()),
-        }
-        for k in 0..if acmod == 0 { 2 } else { 1 } {
-            if r.bit() {
-                f.dynrng[k] = dynrng_gain(r.read(8));
-            } else if blk == 0 {
-                f.dynrng[k] = 1.0;
-            }
-        }
+        read_block_flags(r, f, x.as_deref());
+        read_dynrng(r, f, pos);
         // E-AC-3 spectral extension strategy and coordinates
         if let Some(e) = x.as_deref_mut() {
             e.spx.read(r, blk, acmod, nf)?;
         }
-        let spx = x.as_deref().map(|e| &e.spx).filter(|s| s.inu);
-        let spxbegf = spx.map(|s| s.begf);
-        let spx_begin = spx.map(|s| s.begin_bin());
-        let spx_chans = spx.map(|s| s.chinspx).unwrap_or([false; 5]);
-        // coupling strategy
-        let strategy = match x.as_deref() {
-            Some(e) => e.cplstre[blk].then_some(e.cplinu[blk]),
-            None => r.bit().then(|| r.bit()),
-        };
-        if let Some(inu) = strategy {
-            f.cplinu = inu;
-            if f.cplinu {
-                if eac3 && r.bit() {
-                    return Err(Error::Unsupported("E-AC-3 enhanced coupling".into()));
-                }
-                if eac3 && acmod == 2 {
-                    f.chincpl = [true, true, false, false, false];
-                } else {
-                    for ch in 0..nf {
-                        f.chincpl[ch] = r.bit();
-                    }
-                }
-                if acmod == 2 {
-                    f.phsflginu = r.bit();
-                }
-                f.cplbegf = r.read(4) as usize;
-                f.cplend = match spxbegf {
-                    // the coupling region ends where spectral extension begins (§E2.2.4)
-                    Some(b) if b < 6 => b + 1,
-                    Some(b) => 2 * b - 4,
-                    None => r.read(4) as usize + 3,
-                };
-                if f.cplend <= f.cplbegf {
-                    return Err(Error::Invalid("coupling end below start"));
-                }
-                // coupling band structure, by absolute sub-band
-                let mut strc = [false; 18];
-                match x.as_deref_mut() {
-                    Some(e) => {
-                        if r.bit() {
-                            for s in f.cplbegf + 1..f.cplend {
-                                e.cplbndstrc[s] = r.bit();
-                            }
-                        }
-                        strc = e.cplbndstrc;
-                    }
-                    None => (f.cplbegf + 1..f.cplend).for_each(|s| strc[s] = r.bit()),
-                }
-                let mut band = 0;
-                f.sub_to_band[0] = 0;
-                for s in 1..f.cplend - f.cplbegf {
-                    if !strc[f.cplbegf + s] {
-                        band += 1;
-                    }
-                    f.sub_to_band[s] = band;
-                }
-                f.ncplbnd = band + 1;
-            } else {
-                f.chincpl = [false; 5];
-                if let Some(e) = x.as_deref_mut() {
-                    e.firstcplcos = [true; 5];
-                    e.firstcplleak = true;
-                    f.phsflginu = false;
-                }
-            }
-        } else if blk == 0 && !eac3 {
-            return Err(Error::Invalid("no coupling strategy in block 0"));
-        }
-        // coupling coordinates
-        if f.cplinu {
-            let mut any = false;
-            for ch in 0..nf {
-                if !f.chincpl[ch] {
-                    if let Some(e) = x.as_deref_mut() {
-                        e.firstcplcos[ch] = true;
-                    }
-                    continue;
-                }
-                let coe = match x.as_deref_mut() {
-                    Some(e) if e.firstcplcos[ch] => {
-                        e.firstcplcos[ch] = false;
-                        true
-                    }
-                    _ => r.bit(),
-                };
-                if coe {
-                    any = true;
-                    let mstr = r.read(2) as i32;
-                    for bnd in 0..f.ncplbnd {
-                        let e = r.read(4) as i32;
-                        let m = r.read(4) as f32;
-                        let v = if e == 15 { m / 16.0 } else { (m + 16.0) / 32.0 };
-                        let co = v * 2f32.powi(-(e + 3 * mstr));
-                        for s in 0..(f.cplend - f.cplbegf) {
-                            if f.sub_to_band[s] == bnd {
-                                f.cplco[ch][s] = co;
-                            }
-                        }
-                    }
-                }
-            }
-            if acmod == 2 && f.phsflginu && any {
-                for bnd in 0..f.ncplbnd {
-                    let flag = r.bit();
-                    for s in 0..(f.cplend - f.cplbegf) {
-                        if f.sub_to_band[s] == bnd {
-                            f.phsflg[s] = flag;
-                        }
-                    }
-                }
-            }
-        }
-        // rematrixing (E-AC-3 always sends the flags in block 0)
-        if acmod == 2 && ((eac3 && blk == 0) || r.bit()) {
-            let n = if f.cplinu {
-                match f.cplbegf {
-                    0 => 2,
-                    1 | 2 => 3,
-                    _ => 4,
-                }
-            } else {
-                match spxbegf {
-                    Some(b) if b < 2 => 3,
-                    _ => 4,
-                }
-            };
-            f.rematflg = [false; 4];
-            for k in 0..n {
-                f.rematflg[k] = r.bit();
-            }
-        }
-        // exponent strategies (E-AC-3: from the audio frame)
+        let spx = SpxBands::of(x.as_deref());
+        read_coupling_strategy(r, f, x.as_deref_mut(), pos, spx.begf)?;
+        read_coupling_coords(r, f, x.as_deref_mut(), acmod);
+        read_rematrix_flags(r, f, x.is_some(), pos, spx.begf);
+        read_exp_strategies(r, f, x.as_deref(), pos);
+        read_channel_bandwidths(r, f, &spx)?;
+        read_exponents(r, f, lfeon)?;
+        read_bit_alloc_params(r, f, x.as_deref(), pos)?;
         match x.as_deref() {
-            Some(e) => {
-                if f.cplinu {
-                    f.expstr[CPL] = e.cplexpstr[blk];
-                }
-                f.expstr[..nf].copy_from_slice(&e.chexpstr[blk][..nf]);
-                if lfeon {
-                    f.expstr[LFE] = e.lfeexpstr[blk];
-                }
-            }
-            None => {
-                if f.cplinu {
-                    f.expstr[CPL] = r.read(2) as u8;
-                }
-                for ch in 0..nf {
-                    f.expstr[ch] = r.read(2) as u8;
-                }
-                if lfeon {
-                    f.expstr[LFE] = r.read(1) as u8;
-                }
-            }
+            Some(e) => read_eac3_snr_offsets(r, f, e, pos),
+            None => read_ac3_snr_offsets(r, f, pos)?,
         }
-        for ch in 0..nf {
-            if f.expstr[ch] != 0 {
-                if f.chincpl[ch] && f.cplinu {
-                    f.endmant[ch] = f.cplstrtmant();
-                } else if let (true, Some(begin)) = (spx_chans[ch], spx_begin) {
-                    // §E3.3.3: the channel ends where spectral extension begins
-                    f.endmant[ch] = begin;
-                } else {
-                    let bw = r.read(6) as usize;
-                    if bw > 60 {
-                        return Err(Error::Invalid("chbwcod > 60"));
-                    }
-                    f.endmant[ch] = (bw + 12) * 3 + 37;
-                }
-            }
-        }
-        // exponents
-        if f.cplinu && f.expstr[CPL] != 0 {
-            let abs = (r.read(4) as i32) << 1;
-            let grpsize = 1 << (f.expstr[CPL] - 1);
-            let ngrps = (f.cplendmant() - f.cplstrtmant()) / (3 * grpsize);
-            let first = f.cplstrtmant();
-            decode_exponents(r, abs, ngrps, grpsize, &mut f.exps[CPL], first, true)?;
-        }
-        for ch in 0..nf {
-            if f.expstr[ch] != 0 {
-                let abs = r.read(4) as i32;
-                let grpsize = 1usize << (f.expstr[ch] - 1);
-                let ngrps = (f.endmant[ch] - 1 + 3 * grpsize - 3) / (3 * grpsize);
-                decode_exponents(r, abs, ngrps, grpsize, &mut f.exps[ch], 0, false)?;
-                r.skip(2); // gainrng
-            }
-        }
-        if lfeon && f.expstr[LFE] != 0 {
-            let abs = r.read(4) as i32;
-            decode_exponents(r, abs, 2, 1, &mut f.exps[LFE], 0, false)?;
-        }
-        // bit allocation parametric information
-        match x.as_deref() {
-            Some(e) if !e.bamode => {
-                // §E2.2.4 defaults
-                (f.g.sdcycod, f.g.fdcycod, f.g.sgaincod, f.g.dbpbcod, f.g.floorcod) = (2, 1, 1, 2, 7);
-            }
-            _ => {
-                if r.bit() {
-                    f.g.sdcycod = r.read(2) as usize;
-                    f.g.fdcycod = r.read(2) as usize;
-                    f.g.sgaincod = r.read(2) as usize;
-                    f.g.dbpbcod = r.read(2) as usize;
-                    f.g.floorcod = r.read(3) as usize;
-                } else if blk == 0 && !eac3 {
-                    return Err(Error::Invalid("no bit allocation information in block 0"));
-                }
-            }
-        }
-        match x.as_deref() {
-            Some(e) => {
-                // SNR offset strategies (Table E2.9), fast gain codes
-                let sets = [CPL, 0, 1, 2, 3, 4, LFE];
-                match e.snroffststr {
-                    0 => {
-                        f.csnroffst = e.frmcsnroffst;
-                        sets.iter().for_each(|&c| f.fsnroffst[c] = e.frmfsnroffst);
-                    }
-                    s if blk == 0 || r.bit() => {
-                        f.csnroffst = r.read(6) as i32;
-                        if s == 1 {
-                            let v = r.read(4) as i32;
-                            sets.iter().for_each(|&c| f.fsnroffst[c] = v);
-                        } else {
-                            if f.cplinu {
-                                f.fsnroffst[CPL] = r.read(4) as i32;
-                            }
-                            for ch in 0..nf {
-                                f.fsnroffst[ch] = r.read(4) as i32;
-                            }
-                            if lfeon {
-                                f.fsnroffst[LFE] = r.read(4) as i32;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                if e.frmfgaincode && r.bit() {
-                    if f.cplinu {
-                        f.fgaincod[CPL] = r.read(3) as usize;
-                    }
-                    for ch in 0..nf {
-                        f.fgaincod[ch] = r.read(3) as usize;
-                    }
-                    if lfeon {
-                        f.fgaincod[LFE] = r.read(3) as usize;
-                    }
-                } else {
-                    f.fgaincod = [4; 7];
-                }
-                if e.strmtyp == 0 && r.bit() {
-                    r.skip(10); // convsnroffst
-                }
-            }
-            None => {
-                if r.bit() {
-                    f.csnroffst = r.read(6) as i32;
-                    if f.cplinu {
-                        f.fsnroffst[CPL] = r.read(4) as i32;
-                        f.fgaincod[CPL] = r.read(3) as usize;
-                    }
-                    for ch in 0..nf {
-                        f.fsnroffst[ch] = r.read(4) as i32;
-                        f.fgaincod[ch] = r.read(3) as usize;
-                    }
-                    if lfeon {
-                        f.fsnroffst[LFE] = r.read(4) as i32;
-                        f.fgaincod[LFE] = r.read(3) as usize;
-                    }
-                } else if blk == 0 {
-                    return Err(Error::Invalid("no SNR offsets in block 0"));
-                }
-            }
-        }
-        if f.cplinu {
-            let leak = match x.as_deref_mut() {
-                Some(e) if e.firstcplleak => {
-                    e.firstcplleak = false;
-                    true
-                }
-                _ => r.bit(),
-            };
-            if leak {
-                f.cplleak = (((r.read(3) as i32) << 8) + 768, ((r.read(3) as i32) << 8) + 768);
-            }
-        }
-        // delta bit allocation
-        if blk == 0 {
-            f.deltbae = [2; 7];
-        }
-        if x.as_deref().is_none_or(|e| e.dbaflde) && r.bit() {
-            if f.cplinu {
-                f.deltbae[CPL] = r.read(2) as u8;
-            }
-            for ch in 0..nf {
-                f.deltbae[ch] = r.read(2) as u8;
-            }
-            let order: Vec<usize> = f.cplinu.then_some(CPL).into_iter().chain(0..nf).collect();
-            for ch in order {
-                if f.deltbae[ch] == 1 {
-                    let n = r.read(3) as usize + 1;
-                    f.deltsegs[ch] = (0..n).map(|_| (r.read(5) as u8, r.read(4) as u8, r.read(3) as u8)).collect();
-                } else if f.deltbae[ch] == 3 {
-                    return Err(Error::Invalid("reserved delta bit allocation state"));
-                }
-            }
-        }
+        read_coupling_leak(r, f, x.as_deref_mut());
+        read_delta_bit_alloc(r, f, x.as_deref(), blk)?;
         // skip field
         if x.as_deref().is_none_or(|e| e.skipflde) && r.bit() {
             let l = r.read(9) as usize;
             r.skip(l * 8);
         }
-        // bit allocation for every exponent set
-        let all_zero = f.csnroffst == 0 && (0..7).all(|c| f.fsnroffst[c] == 0);
-        let snr = |fine: i32| (((f.csnroffst - 15) << 4) + fine) << 2;
-        let mut sets: Vec<(usize, AllocParams)> = Vec::new();
-        for ch in 0..nf {
-            let dba = (f.deltbae[ch] <= 1).then(|| f.deltsegs[ch].clone());
-            sets.push((ch, AllocParams { start: 0, end: f.endmant[ch], fgain: FASTGAIN[f.fgaincod[ch]], snroffset: snr(f.fsnroffst[ch]), leak: None, dba }));
-        }
-        if f.cplinu {
-            let dba = (f.deltbae[CPL] <= 1).then(|| f.deltsegs[CPL].clone());
-            sets.push((
-                CPL,
-                AllocParams {
-                    start: f.cplstrtmant(),
-                    end: f.cplendmant(),
-                    fgain: FASTGAIN[f.fgaincod[CPL]],
-                    snroffset: snr(f.fsnroffst[CPL]),
-                    leak: Some(f.cplleak),
-                    dba,
-                },
-            ));
-        }
-        if lfeon {
-            sets.push((LFE, AllocParams { start: 0, end: 7, fgain: FASTGAIN[f.fgaincod[LFE]], snroffset: snr(f.fsnroffst[LFE]), leak: None, dba: None }));
-        }
-        for (ch, p) in &sets {
-            f.bap[*ch] = [0; 256];
-            if !all_zero {
-                let exps = f.exps[*ch];
-                bit_allocation(&exps, p, &f.g, &mut f.bap[*ch]);
-            }
-        }
-        // mantissas
-        let mut gr = Groups::default();
-        let mut cpl = [0f32; 256];
-        let mut got_cpl = false;
-        for ch in 0..nf {
-            for bin in 0..f.endmant[ch] {
-                let b = f.bap[ch][bin];
-                let m = if b == 0 { if f.dithflag[ch] { self.dither() } else { 0.0 } } else { mantissa(r, b, &mut gr) };
-                coefs[ch][bin] = m * 2f32.powi(-(f.exps[ch][bin] as i32));
-            }
-            if f.cplinu && f.chincpl[ch] && !got_cpl {
-                got_cpl = true;
-                for bin in f.cplstrtmant()..f.cplendmant() {
-                    let b = f.bap[CPL][bin];
-                    // zero-bit coupling mantissas are dithered per channel when decoupling
-                    cpl[bin] = if b == 0 { f32::NAN } else { mantissa(r, b, &mut gr) };
-                }
-            }
-        }
-        if lfeon {
-            for bin in 0..7 {
-                let b = f.bap[LFE][bin];
-                let m = if b == 0 { 0.0 } else { mantissa(r, b, &mut gr) };
-                coefs[LFE][bin] = m * 2f32.powi(-(f.exps[LFE][bin] as i32));
-            }
-        }
-        // decoupling
-        if f.cplinu {
-            for ch in 0..nf {
-                if !f.chincpl[ch] {
-                    continue;
-                }
-                for bin in f.cplstrtmant()..f.cplendmant() {
-                    let s = (bin - 37) / 12 - f.cplbegf;
-                    let m = if cpl[bin].is_nan() { if f.dithflag[ch] { self.dither() } else { 0.0 } } else { cpl[bin] };
-                    let mut v = m * 2f32.powi(-(f.exps[CPL][bin] as i32)) * f.cplco[ch][s] * 8.0;
-                    if acmod == 2 && ch == 1 && f.phsflginu && f.phsflg[s] {
-                        v = -v;
-                    }
-                    coefs[ch][bin] = v;
-                }
-            }
-        }
-        // rematrixing
+        allocate_bits(f, lfeon);
+        let cpl = self.read_mantissas(r, f, lfeon, coefs);
+        self.decouple(f, acmod, &cpl, coefs);
         if acmod == 2 {
-            let end = if f.cplinu { f.cplstrtmant() } else { f.endmant[0].min(f.endmant[1]) };
-            const B: [usize; 5] = [13, 25, 37, 61, 253];
-            for k in 0..4 {
-                if f.rematflg[k] {
-                    for bin in B[k]..B[k + 1].min(end) {
-                        let (l, rr) = (coefs[0][bin], coefs[1][bin]);
-                        coefs[0][bin] = l + rr;
-                        coefs[1][bin] = l - rr;
-                    }
-                }
-            }
+            rematrix(f, coefs);
         }
         // spectral extension: synthesize the high band of each channel from its low band
         if let Some(e) = x.as_deref()
@@ -1255,17 +856,528 @@ impl Decoder {
                 }
             }
         }
-        // dynamic range
-        for ch in 0..nf {
-            let g = if acmod == 0 && ch == 1 { f.dynrng[1] } else { f.dynrng[0] };
-            if g != 1.0 {
-                coefs[ch].iter_mut().for_each(|c| *c *= g);
+        apply_dynrng(f, pos, coefs);
+        Ok(())
+    }
+
+    /// Read the mantissas of every channel (and the shared coupling channel) into `coefs`, and
+    /// return the coupling channel's mantissas (NaN where a zero-bit mantissa is dithered per
+    /// channel when decoupling).
+    fn read_mantissas(&mut self, r: &mut Bits, f: &Frame, lfeon: bool, coefs: &mut [[f32; 256]; 6]) -> [f32; 256] {
+        let mut gr = Groups::default();
+        let mut cpl = [0f32; 256];
+        let mut got_cpl = false;
+        for ch in 0..f.nfchans {
+            for bin in 0..f.endmant[ch] {
+                let b = f.bap[ch][bin];
+                let m = if b == 0 { if f.dithflag[ch] { self.dither() } else { 0.0 } } else { mantissa(r, b, &mut gr) };
+                coefs[ch][bin] = m * 2f32.powi(-(f.exps[ch][bin] as i32));
+            }
+            if f.cplinu && f.chincpl[ch] && !got_cpl {
+                got_cpl = true;
+                for bin in f.cplstrtmant()..f.cplendmant() {
+                    let b = f.bap[CPL][bin];
+                    cpl[bin] = if b == 0 { f32::NAN } else { mantissa(r, b, &mut gr) };
+                }
             }
         }
-        if lfeon && f.dynrng[0] != 1.0 {
-            coefs[LFE].iter_mut().for_each(|c| *c *= f.dynrng[0]);
+        if lfeon {
+            for bin in 0..7 {
+                let b = f.bap[LFE][bin];
+                let m = if b == 0 { 0.0 } else { mantissa(r, b, &mut gr) };
+                coefs[LFE][bin] = m * 2f32.powi(-(f.exps[LFE][bin] as i32));
+            }
         }
-        Ok(())
+        cpl
+    }
+
+    /// Scale the shared coupling channel's mantissas into each coupled channel.
+    fn decouple(&mut self, f: &Frame, acmod: usize, cpl: &[f32; 256], coefs: &mut [[f32; 256]; 6]) {
+        if !f.cplinu {
+            return;
+        }
+        for ch in 0..f.nfchans {
+            if !f.chincpl[ch] {
+                continue;
+            }
+            for bin in f.cplstrtmant()..f.cplendmant() {
+                let s = (bin - 37) / 12 - f.cplbegf;
+                let m = if cpl[bin].is_nan() { if f.dithflag[ch] { self.dither() } else { 0.0 } } else { cpl[bin] };
+                let mut v = m * 2f32.powi(-(f.exps[CPL][bin] as i32)) * f.cplco[ch][s] * 8.0;
+                if acmod == 2 && ch == 1 && f.phsflginu && f.phsflg[s] {
+                    v = -v;
+                }
+                coefs[ch][bin] = v;
+            }
+        }
+    }
+}
+
+/// Where an audio block sits in its frame: channel mode, LFE presence and block index.
+#[derive(Clone, Copy)]
+struct BlockPos {
+    acmod: usize,
+    lfeon: bool,
+    blk: usize,
+}
+
+/// Spectral extension as the later block fields see it.
+struct SpxBands {
+    /// Sub-band where extension begins, when it is in use.
+    begf: Option<usize>,
+    /// First extended bin.
+    begin: Option<usize>,
+    chans: [bool; 5],
+}
+
+impl SpxBands {
+    fn of(x: Option<&eac3::FrameInfo>) -> SpxBands {
+        let spx = x.map(|e| &e.spx).filter(|s| s.inu);
+        SpxBands { begf: spx.map(|s| s.begf), begin: spx.map(|s| s.begin_bin()), chans: spx.map(|s| s.chinspx).unwrap_or([false; 5]) }
+    }
+}
+
+/// Block switch and dither flags (E-AC-3 may omit them, §E2.2.4).
+fn read_block_flags(r: &mut Bits, f: &mut Frame, x: Option<&eac3::FrameInfo>) {
+    let nf = f.nfchans;
+    match x {
+        Some(e) if !e.blkswe => f.blksw = [false; 5],
+        _ => (0..nf).for_each(|ch| f.blksw[ch] = r.bit()),
+    }
+    match x {
+        // dither on when the flags are not sent (§E2.2.4)
+        Some(e) if !e.dithflage => f.dithflag = [true; 5],
+        _ => (0..nf).for_each(|ch| f.dithflag[ch] = r.bit()),
+    }
+}
+
+fn read_dynrng(r: &mut Bits, f: &mut Frame, pos: BlockPos) {
+    for k in 0..if pos.acmod == 0 { 2 } else { 1 } {
+        if r.bit() {
+            f.dynrng[k] = dynrng_gain(r.read(8));
+        } else if pos.blk == 0 {
+            f.dynrng[k] = 1.0;
+        }
+    }
+}
+
+/// Coupling strategy, channels in coupling, bounds and band structure.
+fn read_coupling_strategy(r: &mut Bits, f: &mut Frame, x: Option<&mut eac3::FrameInfo>, pos: BlockPos, spxbegf: Option<usize>) -> Result<()> {
+    let BlockPos { acmod, blk, .. } = pos;
+    let eac3 = x.is_some();
+    let strategy = match x.as_deref() {
+        Some(e) => e.cplstre[blk].then_some(e.cplinu[blk]),
+        None => r.bit().then(|| r.bit()),
+    };
+    let Some(inu) = strategy else {
+        if blk == 0 && !eac3 {
+            return Err(Error::Invalid("no coupling strategy in block 0"));
+        }
+        return Ok(());
+    };
+    f.cplinu = inu;
+    if !f.cplinu {
+        f.chincpl = [false; 5];
+        if let Some(e) = x {
+            e.firstcplcos = [true; 5];
+            e.firstcplleak = true;
+            f.phsflginu = false;
+        }
+        return Ok(());
+    }
+    if eac3 && r.bit() {
+        return Err(Error::Unsupported("E-AC-3 enhanced coupling".into()));
+    }
+    if eac3 && acmod == 2 {
+        f.chincpl = [true, true, false, false, false];
+    } else {
+        for ch in 0..f.nfchans {
+            f.chincpl[ch] = r.bit();
+        }
+    }
+    if acmod == 2 {
+        f.phsflginu = r.bit();
+    }
+    f.cplbegf = r.read(4) as usize;
+    f.cplend = match spxbegf {
+        // the coupling region ends where spectral extension begins (§E2.2.4)
+        Some(b) if b < 6 => b + 1,
+        Some(b) => 2 * b - 4,
+        None => r.read(4) as usize + 3,
+    };
+    if f.cplend <= f.cplbegf {
+        return Err(Error::Invalid("coupling end below start"));
+    }
+    read_coupling_bands(r, f, x);
+    Ok(())
+}
+
+/// Coupling band structure, by absolute sub-band; fills `sub_to_band` and `ncplbnd`.
+fn read_coupling_bands(r: &mut Bits, f: &mut Frame, x: Option<&mut eac3::FrameInfo>) {
+    let mut strc = [false; 18];
+    match x {
+        Some(e) => {
+            if r.bit() {
+                for s in f.cplbegf + 1..f.cplend {
+                    e.cplbndstrc[s] = r.bit();
+                }
+            }
+            strc = e.cplbndstrc;
+        }
+        None => (f.cplbegf + 1..f.cplend).for_each(|s| strc[s] = r.bit()),
+    }
+    let mut band = 0;
+    f.sub_to_band[0] = 0;
+    for s in 1..f.cplend - f.cplbegf {
+        if !strc[f.cplbegf + s] {
+            band += 1;
+        }
+        f.sub_to_band[s] = band;
+    }
+    f.ncplbnd = band + 1;
+}
+
+/// Coupling coordinates and phase flags.
+fn read_coupling_coords(r: &mut Bits, f: &mut Frame, mut x: Option<&mut eac3::FrameInfo>, acmod: usize) {
+    if !f.cplinu {
+        return;
+    }
+    let mut any = false;
+    for ch in 0..f.nfchans {
+        if !f.chincpl[ch] {
+            if let Some(e) = x.as_deref_mut() {
+                e.firstcplcos[ch] = true;
+            }
+            continue;
+        }
+        let coe = match x.as_deref_mut() {
+            Some(e) if e.firstcplcos[ch] => {
+                e.firstcplcos[ch] = false;
+                true
+            }
+            _ => r.bit(),
+        };
+        if coe {
+            any = true;
+            read_channel_coupling_coords(r, f, ch);
+        }
+    }
+    if acmod == 2 && f.phsflginu && any {
+        for bnd in 0..f.ncplbnd {
+            let flag = r.bit();
+            for s in 0..(f.cplend - f.cplbegf) {
+                if f.sub_to_band[s] == bnd {
+                    f.phsflg[s] = flag;
+                }
+            }
+        }
+    }
+}
+
+fn read_channel_coupling_coords(r: &mut Bits, f: &mut Frame, ch: usize) {
+    let mstr = r.read(2) as i32;
+    for bnd in 0..f.ncplbnd {
+        let e = r.read(4) as i32;
+        let m = r.read(4) as f32;
+        let v = if e == 15 { m / 16.0 } else { (m + 16.0) / 32.0 };
+        let co = v * 2f32.powi(-(e + 3 * mstr));
+        for s in 0..(f.cplend - f.cplbegf) {
+            if f.sub_to_band[s] == bnd {
+                f.cplco[ch][s] = co;
+            }
+        }
+    }
+}
+
+/// Rematrixing flags (E-AC-3 always sends them in block 0).
+fn read_rematrix_flags(r: &mut Bits, f: &mut Frame, eac3: bool, pos: BlockPos, spxbegf: Option<usize>) {
+    if pos.acmod == 2 && ((eac3 && pos.blk == 0) || r.bit()) {
+        let n = if f.cplinu {
+            match f.cplbegf {
+                0 => 2,
+                1 | 2 => 3,
+                _ => 4,
+            }
+        } else {
+            match spxbegf {
+                Some(b) if b < 2 => 3,
+                _ => 4,
+            }
+        };
+        f.rematflg = [false; 4];
+        for k in 0..n {
+            f.rematflg[k] = r.bit();
+        }
+    }
+}
+
+/// Exponent strategies (E-AC-3: from the audio frame).
+fn read_exp_strategies(r: &mut Bits, f: &mut Frame, x: Option<&eac3::FrameInfo>, pos: BlockPos) {
+    let nf = f.nfchans;
+    match x {
+        Some(e) => {
+            if f.cplinu {
+                f.expstr[CPL] = e.cplexpstr[pos.blk];
+            }
+            f.expstr[..nf].copy_from_slice(&e.chexpstr[pos.blk][..nf]);
+            if pos.lfeon {
+                f.expstr[LFE] = e.lfeexpstr[pos.blk];
+            }
+        }
+        None => {
+            if f.cplinu {
+                f.expstr[CPL] = r.read(2) as u8;
+            }
+            for ch in 0..nf {
+                f.expstr[ch] = r.read(2) as u8;
+            }
+            if pos.lfeon {
+                f.expstr[LFE] = r.read(1) as u8;
+            }
+        }
+    }
+}
+
+/// End bin of each channel whose exponents are sent.
+fn read_channel_bandwidths(r: &mut Bits, f: &mut Frame, spx: &SpxBands) -> Result<()> {
+    for ch in 0..f.nfchans {
+        if f.expstr[ch] == 0 {
+            continue;
+        }
+        if f.chincpl[ch] && f.cplinu {
+            f.endmant[ch] = f.cplstrtmant();
+        } else if let (true, Some(begin)) = (spx.chans[ch], spx.begin) {
+            // §E3.3.3: the channel ends where spectral extension begins
+            f.endmant[ch] = begin;
+        } else {
+            let bw = r.read(6) as usize;
+            if bw > 60 {
+                return Err(Error::Invalid("chbwcod > 60"));
+            }
+            f.endmant[ch] = (bw + 12) * 3 + 37;
+        }
+    }
+    Ok(())
+}
+
+/// Coupling, full-bandwidth and LFE exponents.
+fn read_exponents(r: &mut Bits, f: &mut Frame, lfeon: bool) -> Result<()> {
+    if f.cplinu && f.expstr[CPL] != 0 {
+        let abs = (r.read(4) as i32) << 1;
+        let grpsize = 1 << (f.expstr[CPL] - 1);
+        let ngrps = (f.cplendmant() - f.cplstrtmant()) / (3 * grpsize);
+        let first = f.cplstrtmant();
+        decode_exponents(r, abs, ngrps, grpsize, &mut f.exps[CPL], first, true)?;
+    }
+    for ch in 0..f.nfchans {
+        if f.expstr[ch] != 0 {
+            let abs = r.read(4) as i32;
+            let grpsize = 1usize << (f.expstr[ch] - 1);
+            let ngrps = (f.endmant[ch] - 1 + 3 * grpsize - 3) / (3 * grpsize);
+            decode_exponents(r, abs, ngrps, grpsize, &mut f.exps[ch], 0, false)?;
+            r.skip(2); // gainrng
+        }
+    }
+    if lfeon && f.expstr[LFE] != 0 {
+        let abs = r.read(4) as i32;
+        decode_exponents(r, abs, 2, 1, &mut f.exps[LFE], 0, false)?;
+    }
+    Ok(())
+}
+
+/// Bit allocation parametric information.
+fn read_bit_alloc_params(r: &mut Bits, f: &mut Frame, x: Option<&eac3::FrameInfo>, pos: BlockPos) -> Result<()> {
+    match x {
+        Some(e) if !e.bamode => {
+            // §E2.2.4 defaults
+            (f.g.sdcycod, f.g.fdcycod, f.g.sgaincod, f.g.dbpbcod, f.g.floorcod) = (2, 1, 1, 2, 7);
+        }
+        _ => {
+            if r.bit() {
+                f.g.sdcycod = r.read(2) as usize;
+                f.g.fdcycod = r.read(2) as usize;
+                f.g.sgaincod = r.read(2) as usize;
+                f.g.dbpbcod = r.read(2) as usize;
+                f.g.floorcod = r.read(3) as usize;
+            } else if pos.blk == 0 && x.is_none() {
+                return Err(Error::Invalid("no bit allocation information in block 0"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// E-AC-3 SNR offset strategies (Table E2.9) and fast gain codes.
+fn read_eac3_snr_offsets(r: &mut Bits, f: &mut Frame, e: &eac3::FrameInfo, pos: BlockPos) {
+    let nf = f.nfchans;
+    let sets = [CPL, 0, 1, 2, 3, 4, LFE];
+    match e.snroffststr {
+        0 => {
+            f.csnroffst = e.frmcsnroffst;
+            sets.iter().for_each(|&c| f.fsnroffst[c] = e.frmfsnroffst);
+        }
+        s if pos.blk == 0 || r.bit() => {
+            f.csnroffst = r.read(6) as i32;
+            if s == 1 {
+                let v = r.read(4) as i32;
+                sets.iter().for_each(|&c| f.fsnroffst[c] = v);
+            } else {
+                if f.cplinu {
+                    f.fsnroffst[CPL] = r.read(4) as i32;
+                }
+                for ch in 0..nf {
+                    f.fsnroffst[ch] = r.read(4) as i32;
+                }
+                if pos.lfeon {
+                    f.fsnroffst[LFE] = r.read(4) as i32;
+                }
+            }
+        }
+        _ => {}
+    }
+    if e.frmfgaincode && r.bit() {
+        if f.cplinu {
+            f.fgaincod[CPL] = r.read(3) as usize;
+        }
+        for ch in 0..nf {
+            f.fgaincod[ch] = r.read(3) as usize;
+        }
+        if pos.lfeon {
+            f.fgaincod[LFE] = r.read(3) as usize;
+        }
+    } else {
+        f.fgaincod = [4; 7];
+    }
+    if e.strmtyp == 0 && r.bit() {
+        r.skip(10); // convsnroffst
+    }
+}
+
+/// AC-3 SNR offsets and fast gain codes.
+fn read_ac3_snr_offsets(r: &mut Bits, f: &mut Frame, pos: BlockPos) -> Result<()> {
+    if r.bit() {
+        f.csnroffst = r.read(6) as i32;
+        if f.cplinu {
+            f.fsnroffst[CPL] = r.read(4) as i32;
+            f.fgaincod[CPL] = r.read(3) as usize;
+        }
+        for ch in 0..f.nfchans {
+            f.fsnroffst[ch] = r.read(4) as i32;
+            f.fgaincod[ch] = r.read(3) as usize;
+        }
+        if pos.lfeon {
+            f.fsnroffst[LFE] = r.read(4) as i32;
+            f.fgaincod[LFE] = r.read(3) as usize;
+        }
+    } else if pos.blk == 0 {
+        return Err(Error::Invalid("no SNR offsets in block 0"));
+    }
+    Ok(())
+}
+
+/// Coupling leak initialisation (E-AC-3 sends it only on the first use).
+fn read_coupling_leak(r: &mut Bits, f: &mut Frame, x: Option<&mut eac3::FrameInfo>) {
+    if !f.cplinu {
+        return;
+    }
+    let leak = match x {
+        Some(e) if e.firstcplleak => {
+            e.firstcplleak = false;
+            true
+        }
+        _ => r.bit(),
+    };
+    if leak {
+        f.cplleak = (((r.read(3) as i32) << 8) + 768, ((r.read(3) as i32) << 8) + 768);
+    }
+}
+
+/// Delta bit allocation.
+fn read_delta_bit_alloc(r: &mut Bits, f: &mut Frame, x: Option<&eac3::FrameInfo>, blk: usize) -> Result<()> {
+    let nf = f.nfchans;
+    if blk == 0 {
+        f.deltbae = [2; 7];
+    }
+    if x.is_none_or(|e| e.dbaflde) && r.bit() {
+        if f.cplinu {
+            f.deltbae[CPL] = r.read(2) as u8;
+        }
+        for ch in 0..nf {
+            f.deltbae[ch] = r.read(2) as u8;
+        }
+        let order: Vec<usize> = f.cplinu.then_some(CPL).into_iter().chain(0..nf).collect();
+        for ch in order {
+            if f.deltbae[ch] == 1 {
+                let n = r.read(3) as usize + 1;
+                f.deltsegs[ch] = (0..n).map(|_| (r.read(5) as u8, r.read(4) as u8, r.read(3) as u8)).collect();
+            } else if f.deltbae[ch] == 3 {
+                return Err(Error::Invalid("reserved delta bit allocation state"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bit allocation (bap) for every exponent set.
+fn allocate_bits(f: &mut Frame, lfeon: bool) {
+    let all_zero = f.csnroffst == 0 && (0..7).all(|c| f.fsnroffst[c] == 0);
+    let snr = |fine: i32| (((f.csnroffst - 15) << 4) + fine) << 2;
+    let mut sets: Vec<(usize, AllocParams)> = Vec::new();
+    for ch in 0..f.nfchans {
+        let dba = (f.deltbae[ch] <= 1).then(|| f.deltsegs[ch].clone());
+        sets.push((ch, AllocParams { start: 0, end: f.endmant[ch], fgain: FASTGAIN[f.fgaincod[ch]], snroffset: snr(f.fsnroffst[ch]), leak: None, dba }));
+    }
+    if f.cplinu {
+        let dba = (f.deltbae[CPL] <= 1).then(|| f.deltsegs[CPL].clone());
+        sets.push((
+            CPL,
+            AllocParams {
+                start: f.cplstrtmant(),
+                end: f.cplendmant(),
+                fgain: FASTGAIN[f.fgaincod[CPL]],
+                snroffset: snr(f.fsnroffst[CPL]),
+                leak: Some(f.cplleak),
+                dba,
+            },
+        ));
+    }
+    if lfeon {
+        sets.push((LFE, AllocParams { start: 0, end: 7, fgain: FASTGAIN[f.fgaincod[LFE]], snroffset: snr(f.fsnroffst[LFE]), leak: None, dba: None }));
+    }
+    for (ch, p) in &sets {
+        f.bap[*ch] = [0; 256];
+        if !all_zero {
+            let exps = f.exps[*ch];
+            bit_allocation(&exps, p, &f.g, &mut f.bap[*ch]);
+        }
+    }
+}
+
+/// Undo the stereo rematrixing of the flagged bands.
+fn rematrix(f: &Frame, coefs: &mut [[f32; 256]; 6]) {
+    let end = if f.cplinu { f.cplstrtmant() } else { f.endmant[0].min(f.endmant[1]) };
+    const B: [usize; 5] = [13, 25, 37, 61, 253];
+    for k in 0..4 {
+        if f.rematflg[k] {
+            for bin in B[k]..B[k + 1].min(end) {
+                let (l, rr) = (coefs[0][bin], coefs[1][bin]);
+                coefs[0][bin] = l + rr;
+                coefs[1][bin] = l - rr;
+            }
+        }
+    }
+}
+
+/// Apply the dynamic range gain.
+fn apply_dynrng(f: &Frame, pos: BlockPos, coefs: &mut [[f32; 256]; 6]) {
+    for ch in 0..f.nfchans {
+        let g = if pos.acmod == 0 && ch == 1 { f.dynrng[1] } else { f.dynrng[0] };
+        if g != 1.0 {
+            coefs[ch].iter_mut().for_each(|c| *c *= g);
+        }
+    }
+    if pos.lfeon && f.dynrng[0] != 1.0 {
+        coefs[LFE].iter_mut().for_each(|c| *c *= f.dynrng[0]);
     }
 }
 

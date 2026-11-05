@@ -180,6 +180,7 @@ impl AnimatedSource {
                 has_alpha,
                 bitrate: None,
                 hdr: None,
+                color_assumed: None,
             }),
             audio_streams: Vec::new(),
             container: format.codec().into(),
@@ -253,5 +254,4 @@ impl MediaSource for AnimatedSource {
 }
 
 #[cfg(test)]
-#[path = "animated_tests.rs"]
 mod tests;

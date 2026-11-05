@@ -7,7 +7,7 @@ const BT2020: (f32, f32) = (0.2627, 0.0593);
 
 fn convert(rgb: &[f32], w: usize, h: usize) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    rgbf_to_yuv420_10(rgb, w, h, BT2020.0, BT2020.1, &mut y, &mut u, &mut v).unwrap();
+    rgbf_to_yuv420_10(rgb, w, h, Matrix::new(BT2020.0, BT2020.1), &mut y, &mut u, &mut v).unwrap();
     (y, u, v)
 }
 
@@ -87,7 +87,7 @@ fn a_ramp_has_every_code_a_10_bit_picture_can_have() {
 #[test]
 fn hostile_input_is_an_error_not_a_panic() {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, 0.2627, 0.0593, &mut y, &mut u, &mut v);
+    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, Matrix::new(0.2627, 0.0593), &mut y, &mut u, &mut v);
     assert!(run(&[], 0, 0).is_err());
     assert!(run(&[0.0; 3], 0, 1).is_err());
     assert!(run(&[0.0; 3], 1, 0).is_err());

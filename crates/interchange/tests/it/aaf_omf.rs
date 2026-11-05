@@ -23,6 +23,9 @@ fn sample(rate: FrameRate, df: bool) -> (Project, ItemId) {
     if let Some(mm) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
         mm.info.start_timecode = Some(rate.timecode_base() * 3600 + 12);
         mm.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(9000),
             start: rate.tick_of(40),
             duration: Tick::ZERO,
@@ -33,18 +36,18 @@ fn sample(rate: FrameRate, df: bool) -> (Project, ItemId) {
         });
     }
     let s = sequence(&mut p, "Edit 1", rate, df);
-    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0, 100, 20);
-    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 100, 80, 50);
-    let v3 = clip(&mut p, s, TrackKind::Video, 0, a, 220, 60, 300);
-    clip(&mut p, s, TrackKind::Video, 1, b, 30, 40, 0);
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", None, Some(v1), 0, 12, TransitionAlign::StartAtCut);
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", Some(v1), Some(v2), 90, 20, TransitionAlign::CenterAtCut);
-    transition(&mut p, s, TrackKind::Video, 0, "dip_to_black", Some(v3), None, 266, 14, TransitionAlign::EndAtCut);
-    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 100, 20);
-    let a2 = clip(&mut p, s, TrackKind::Audio, 0, b, 100, 80, 50);
-    let a3 = clip(&mut p, s, TrackKind::Audio, 0, a, 220, 60, 300);
-    transition(&mut p, s, TrackKind::Audio, 0, "constant_gain", Some(a1), Some(a2), 95, 10, TransitionAlign::CenterAtCut);
-    let mu = clip(&mut p, s, TrackKind::Audio, 1, m, 10, 200, 0);
+    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0..100, 20);
+    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 100..100 + (80), 50);
+    let v3 = clip(&mut p, s, TrackKind::Video, 0, a, 220..220 + (60), 300);
+    clip(&mut p, s, TrackKind::Video, 1, b, 30..30 + (40), 0);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (None, Some(v1)), 0..12, TransitionAlign::StartAtCut);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (Some(v1), Some(v2)), 90..90 + (20), TransitionAlign::CenterAtCut);
+    transition(&mut p, s, (TrackKind::Video, 0), "dip_to_black", (Some(v3), None), 266..266 + (14), TransitionAlign::EndAtCut);
+    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0..100, 20);
+    let a2 = clip(&mut p, s, TrackKind::Audio, 0, b, 100..100 + (80), 50);
+    let a3 = clip(&mut p, s, TrackKind::Audio, 0, a, 220..220 + (60), 300);
+    transition(&mut p, s, (TrackKind::Audio, 0), "constant_gain", (Some(a1), Some(a2)), 95..95 + (10), TransitionAlign::CenterAtCut);
+    let mu = clip(&mut p, s, TrackKind::Audio, 1, m, 10..10 + (200), 0);
     link(&mut p, s, &[v1, a1]);
     link(&mut p, s, &[v2, a2]);
     link(&mut p, s, &[v3, a3]);
@@ -52,6 +55,9 @@ fn sample(rate: FrameRate, df: bool) -> (Project, ItemId) {
         let q = p.sequence_mut(s).unwrap();
         q.start_timecode = rate.timecode_base() * 3600;
         q.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(9001),
             start: rate.tick_of(50),
             duration: rate.tick_of(10),
@@ -378,6 +384,19 @@ fn omf_separate_files_and_breakout() {
     }
 }
 
+/// OMF holds audio only: the report says the video tracks were left out, when there is video.
+#[test]
+fn omf_report_says_when_video_is_left_out() {
+    let (mut p, s) = sample(FrameRate::FPS_25, false);
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(rep.mentions("video tracks are not written to OMF"), "{rep}");
+    for t in &mut p.sequence_mut(s).unwrap().video_tracks {
+        t.items.clear();
+    }
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(!rep.mentions("video"), "an audio-only sequence: {rep}");
+}
+
 #[test]
 fn empty_and_damaged_documents() {
     let mut p = Project::new("e");
@@ -438,8 +457,8 @@ fn unsupported_clips_become_gaps_with_a_report() {
     let s = sequence(&mut p, "S", FrameRate::FPS_25, false);
     let g = generator(&mut p, "Bars", filmcraft_media::Generator::BarsAndTone);
     let a = media(&mut p, "/m/a.mov", true, true, FrameRate::FPS_25);
-    clip(&mut p, s, TrackKind::Video, 0, g, 0, 25, 0);
-    clip(&mut p, s, TrackKind::Video, 0, a, 25, 25, 0);
+    clip(&mut p, s, TrackKind::Video, 0, g, 0..25, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 25..25 + (25), 0);
     let (bytes, rep) = aaf::export(&p, s, &AafOptions::default()).unwrap();
     assert!(rep.mentions("synthetic"), "{rep}");
     let (imp, _, _) = aaf::import(&bytes, &ImportOptions::default()).unwrap();
@@ -464,21 +483,21 @@ fn nested(rate: FrameRate) -> (Project, [ItemId; 3]) {
     let b = media(&mut p, "/media/B002.mov", true, true, rate);
     let m = media(&mut p, "/media/music.wav", false, true, rate);
     let deep = sequence(&mut p, "Deep", rate, false);
-    clip(&mut p, deep, TrackKind::Video, 0, b, 0, 50, 200);
+    clip(&mut p, deep, TrackKind::Video, 0, b, 0..50, 200);
     let inner = sequence(&mut p, "Inner", rate, false);
-    let i1 = clip(&mut p, inner, TrackKind::Video, 0, a, 0, 60, 10);
-    let i2 = clip(&mut p, inner, TrackKind::Video, 0, b, 60, 60, 100);
-    transition(&mut p, inner, TrackKind::Video, 0, "cross_dissolve", Some(i1), Some(i2), 54, 12, TransitionAlign::CenterAtCut);
-    clip(&mut p, inner, TrackKind::Video, 1, deep, 20, 30, 5);
-    let ia = clip(&mut p, inner, TrackKind::Audio, 0, a, 0, 60, 10);
-    clip(&mut p, inner, TrackKind::Audio, 1, m, 0, 120, 0);
+    let i1 = clip(&mut p, inner, TrackKind::Video, 0, a, 0..60, 10);
+    let i2 = clip(&mut p, inner, TrackKind::Video, 0, b, 60..60 + (60), 100);
+    transition(&mut p, inner, (TrackKind::Video, 0), "cross_dissolve", (Some(i1), Some(i2)), 54..54 + (12), TransitionAlign::CenterAtCut);
+    clip(&mut p, inner, TrackKind::Video, 1, deep, 20..20 + (30), 5);
+    let ia = clip(&mut p, inner, TrackKind::Audio, 0, a, 0..60, 10);
+    clip(&mut p, inner, TrackKind::Audio, 1, m, 0..120, 0);
     link(&mut p, inner, &[i1, ia]);
     let outer = sequence(&mut p, "Outer", rate, false);
-    let v0 = clip(&mut p, outer, TrackKind::Video, 0, a, 0, 40, 0);
-    let a0 = clip(&mut p, outer, TrackKind::Audio, 0, a, 0, 40, 0);
-    let v1 = clip(&mut p, outer, TrackKind::Video, 0, inner, 40, 70, 15);
-    let a1 = clip(&mut p, outer, TrackKind::Audio, 0, inner, 40, 70, 15);
-    let v2 = clip(&mut p, outer, TrackKind::Video, 1, inner, 150, 30, 0);
+    let v0 = clip(&mut p, outer, TrackKind::Video, 0, a, 0..40, 0);
+    let a0 = clip(&mut p, outer, TrackKind::Audio, 0, a, 0..40, 0);
+    let v1 = clip(&mut p, outer, TrackKind::Video, 0, inner, 40..40 + (70), 15);
+    let a1 = clip(&mut p, outer, TrackKind::Audio, 0, inner, 40..40 + (70), 15);
+    let v2 = clip(&mut p, outer, TrackKind::Video, 1, inner, 150..150 + (30), 0);
     link(&mut p, outer, &[v0, a0]);
     link(&mut p, outer, &[v1, a1]);
     let (_, c) = p.sequence_mut(outer).unwrap().find_item_mut(a1).unwrap();
@@ -581,9 +600,9 @@ fn aaf_nested_sequence_of_another_rate_and_broken_out_to_mono() {
 fn a_sequence_inside_itself_exports_as_a_gap() {
     let rate = FrameRate::FPS_25;
     let (mut p, [outer, inner, deep]) = nested(rate);
-    clip(&mut p, deep, TrackKind::Video, 1, outer, 0, 20, 0);
-    clip(&mut p, deep, TrackKind::Audio, 0, outer, 0, 20, 0);
-    clip(&mut p, inner, TrackKind::Audio, 2, inner, 0, 20, 0);
+    clip(&mut p, deep, TrackKind::Video, 1, outer, 0..20, 0);
+    clip(&mut p, deep, TrackKind::Audio, 0, outer, 0..20, 0);
+    clip(&mut p, inner, TrackKind::Audio, 2, inner, 0..20, 0);
     let (bytes, rep) = aaf::export(&p, outer, &AafOptions::default()).unwrap();
     assert!(rep.mentions("inside itself"), "{rep}");
     let (imp, _, _) = aaf::import(&bytes, &ImportOptions::default()).unwrap();
@@ -675,4 +694,38 @@ fn omf_carries_the_rendered_sound_of_a_nested_sequence() {
     assert!(rep.mentions("\"Inner\" was not rendered"), "{rep}");
     let (imp, _, _) = omf::import(&bytes, &ImportOptions::default()).unwrap();
     assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().audio_tracks[0].items.len(), 1);
+}
+
+/// Media with an absurd channel count and sample rate (a hand-edited or hostile project file)
+/// overflowed the PCM descriptor's block align and average-bytes fields.
+#[test]
+fn absurd_audio_stream_values_export_without_overflow() {
+    let rate = FrameRate::FPS_25;
+    let mut p = Project::new("p");
+    let a = media(&mut p, "/media/A.wav", false, true, rate);
+    if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
+        m.info.audio_streams[0].channels = u32::MAX;
+        m.info.audio_streams[0].sample_rate = u32::MAX;
+    }
+    let s = sequence(&mut p, "S", rate, false);
+    clip(&mut p, s, TrackKind::Audio, 0, a, 0..25, 0);
+    assert!(aaf::export(&p, s, &AafOptions::default()).is_ok());
+}
+
+/// The OMF writer had the same overflow, and cut the channel count to u16 with `as` (65 536
+/// channels became 0).
+#[test]
+fn absurd_audio_stream_values_export_to_omf_without_overflow() {
+    let rate = FrameRate::FPS_25;
+    for channels in [u32::MAX, 65_536, 65_535] {
+        let mut p = Project::new("p");
+        let a = media(&mut p, "/media/A.wav", false, true, rate);
+        if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
+            m.info.audio_streams[0].channels = channels;
+            m.info.audio_streams[0].sample_rate = u32::MAX;
+        }
+        let s = sequence(&mut p, "S", rate, false);
+        clip(&mut p, s, TrackKind::Audio, 0, a, 0..25, 0);
+        assert!(omf::export(&p, s, &OmfOptions::default()).is_ok(), "{channels} channels");
+    }
 }

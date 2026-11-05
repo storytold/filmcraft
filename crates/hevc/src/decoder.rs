@@ -16,6 +16,10 @@ use filmcraft_bitstream::{annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// Most pictures one `decode` call may start: a chunk is an access unit, or a few in a transport
+/// stream packet. Each picture is a full frame, and small slices make them cheap to ask for.
+const MAX_PICTURES_PER_CALL: usize = 64;
+
 /// A picture whose slices are being collected.
 struct PendingPic {
     frame: FrameRef,
@@ -80,6 +84,8 @@ pub struct Decoder {
     /// One lazily allocated gray backing for unavailable references in the active format.
     gray_reference: Option<Frame>,
     first_picture: bool,
+    /// Pictures started by the current `decode` call (see [`MAX_PICTURES_PER_CALL`]).
+    call_pictures: usize,
     after_eos: bool,
     /// RASL pictures associated with the last IRAP are skipped (it had NoRaslOutputFlag = 1).
     skip_rasl: bool,
@@ -136,6 +142,7 @@ impl Decoder {
             active_sps: None,
             gray_reference: None,
             first_picture: true,
+            call_pictures: 0,
             after_eos: false,
             skip_rasl: false,
             layout_cache: Vec::new(),
@@ -193,6 +200,7 @@ impl Decoder {
             Some(n) => length_prefixed_nals(data, n)?,
             None => annexb_nals(data),
         };
+        self.call_pictures = 0;
         let mut result = Ok(());
         for nal in nals {
             if let Err(e) = self.handle_nal(nal, pts) {
@@ -381,6 +389,8 @@ impl Decoder {
 
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pps: &Arc<Pps>, pts: i64) -> Result<()> {
         ensure!(sh.first_slice_segment_in_pic && !sh.dependent, "invalid first slice segment");
+        self.call_pictures += 1;
+        ensure!(self.call_pictures <= MAX_PICTURES_PER_CALL, "too many pictures in one chunk");
         let hdr = sh.nal;
         let changed = match &self.active_sps {
             None => true,
@@ -484,24 +494,14 @@ impl Decoder {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
         let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
+        self.dispatch(PicJob { frame: frame.clone(), sps, pps, layout, scaling, slices, draft: meta.draft });
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
         self.out_queue.extend(outs);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch(
-        &mut self,
-        frame: FrameRef,
-        sps: Arc<Sps>,
-        pps: Arc<Pps>,
-        layout: Arc<Layout>,
-        scaling: Option<Arc<Vec<Vec<u8>>>>,
-        slices: Vec<SliceJob>,
-        draft: bool,
-    ) {
+    fn dispatch(&mut self, job: PicJob) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
@@ -511,44 +511,32 @@ impl Decoder {
                     f.wait_complete();
                 }
             }
-            self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, &shared));
+            self.in_flight.push_back(job.frame.clone());
+            pool.spawn_fifo(move || run_job(job, &shared));
             return;
         }
-        run_job(frame, sps, pps, layout, scaling, slices, draft, &shared);
+        run_job(job, &shared);
     }
+}
+
+/// Everything needed to decode one picture on a worker.
+struct PicJob {
+    frame: FrameRef,
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    layout: Arc<Layout>,
+    scaling: Option<Arc<Vec<Vec<u8>>>>,
+    slices: Vec<SliceJob>,
+    draft: bool,
 }
 
 /// Decode all slices of one picture and publish its rows, in the picture's sample type.
-#[allow(clippy::too_many_arguments)]
-fn run_job(
-    frame: FrameRef,
-    sps: Arc<Sps>,
-    pps: Arc<Pps>,
-    layout: Arc<Layout>,
-    scaling: Option<Arc<Vec<Vec<u8>>>>,
-    slices: Vec<SliceJob>,
-    draft: bool,
-    shared: &Shared,
-) {
-    if stores_u8(frame.bit_depth, frame.bit_depth_c) {
-        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, shared)
-    } else {
-        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, shared)
-    }
+fn run_job(job: PicJob, shared: &Shared) {
+    if stores_u8(job.frame.bit_depth, job.frame.bit_depth_c) { run_job_as::<u8>(job, shared) } else { run_job_as::<u16>(job, shared) }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_job_as<S: Sample>(
-    frame: FrameRef,
-    sps: Arc<Sps>,
-    pps: Arc<Pps>,
-    layout: Arc<Layout>,
-    scaling: Option<Arc<Vec<Vec<u8>>>>,
-    slices: Vec<SliceJob>,
-    draft: bool,
-    shared: &Shared,
-) {
+fn run_job_as<S: Sample>(job: PicJob, shared: &Shared) {
+    let PicJob { frame, sps, pps, layout, scaling, slices, draft } = job;
     let mut pic = PicState::<S>::new(frame.clone(), sps, pps, layout, scaling);
     pic.draft = draft;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -643,6 +631,18 @@ fn make_picture(o: &Output<FrameRef>) -> Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// A chunk may start only so many pictures, however cheap each one is to ask for.
+    fn a_chunk_with_too_many_pictures_is_refused() {
+        let one = crate::synth_tests::missing_reference_picture(0, &[]);
+        let mut decoder = Decoder::new();
+        let ok: Vec<u8> = (0..MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&ok, 0).is_ok());
+        let mut decoder = Decoder::new();
+        let too_many: Vec<u8> = (0..=MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&too_many, 0).is_err());
+    }
 
     fn missing_refs(decoder: &mut Decoder, poc: u32, deltas: &[i32]) -> Vec<FrameRef> {
         let stream = crate::synth_tests::missing_reference_picture(poc, deltas);
