@@ -266,7 +266,12 @@ fn tabs_that_do_not_fit_scroll_with_the_arrows_without_changing_the_shown_sequen
     let last = *seqs.last().unwrap();
     assert_eq!(d.open().len(), 13, "no limit on open sequences");
     let strip = d.rect("panel.Timeline").unwrap();
-    let inside = |r: [f64; 4]| r[0] >= strip[0] && r[0] + r[2] <= strip[0] + strip[2];
+    // the tabs show between the scroll arrows, which sit inside the strip
+    let left = d.rect("timeline.tabs.scrollLeft").unwrap();
+    let right = d.rect("timeline.tabs.scrollRight").unwrap();
+    let (view_min, view_max) = (left[0] + left[2], right[0]);
+    assert!(view_min >= strip[0] && view_max <= strip[0] + strip[2]);
+    let inside = |r: [f64; 4]| r[0] >= view_min && r[0] + r[2] <= view_max;
     // the shown tab is at the far end: only the left arrow works
     assert!(d.has(&format!("timeline.tab.{last}")) && !d.has(&format!("timeline.tab.{main}")));
     let before: Vec<u64> = seqs.iter().copied().filter(|s| d.has(&format!("timeline.tab.{s}"))).collect();
