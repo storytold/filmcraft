@@ -274,11 +274,15 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             let _ = session.execute("file.import", json!({"paths": media}));
         }
         let before_recovery = session.document_epoch;
+        let mut recovery_error = None;
         if recover == Some(true) && !session.recovery_candidates().is_empty() {
             let id = session.recovery_candidates()[0].id.clone();
             match session.execute("file.recover", json!({"id": id})) {
                 Ok(r) => log::info!("recovered {r}"),
-                Err(e) => log::error!("recovery failed: {e}"),
+                Err(e) => {
+                    log::error!("recovery failed: {e}");
+                    recovery_error = Some(e.to_string());
+                }
             }
         }
         // a project the recovery installed, also when it then failed to confirm its new copy or
@@ -286,6 +290,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         let recovered = session.document_epoch != before_recovery;
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
+        // shown, not only logged: a recovery can open the project and still fail to confirm its
+        // new copy, and the message says the original copy was kept, before anyone discards it
+        if let Some(e) = recovery_error {
+            app.ui.status = e;
+        }
         // Home only when `--recover` did not bring a project back, saved to a file or not
         if home && !recovered {
             app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
