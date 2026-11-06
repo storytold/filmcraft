@@ -204,6 +204,8 @@ fn spread(img: &Image, x0: usize) -> f32 {
     (v.iter().map(|q| (q - m) * (q - m)).sum::<f32>() / v.len() as f32).sqrt()
 }
 
+/// [`textured_red_blue`] through Lumetri with HSL Secondary keying the red half (hard key) and
+/// these float parameters.
 fn hsl_correct(params: &[(&str, f64)]) -> Image {
     let mut img = textured_red_blue();
     let mut p = vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0))];
@@ -266,5 +268,31 @@ fn hsl_contrast_and_sharpen_survive_hostile_values() {
             let img = hsl_correct(&[(k, v)]);
             assert!(img.px.iter().all(|q| q.is_finite()), "{k}={v}");
         }
+    }
+}
+
+/// HDR: Contrast leaves keyed values that Temperature lifted above 1 where they are (as Basic
+/// Correction leaves highlights above HDR White), instead of clipping them to 1.
+#[test]
+fn hsl_contrast_keeps_values_above_one() {
+    let red = |contrast: f64| {
+        let mut img = Image::new(1, 1);
+        // a bright red highlight, about 400 cd/m², at the top of its pixel's normalised signal
+        img.px.copy_from_slice(&[2.0, 0.9, 0.8, 1.0]);
+        let e = lumetri(&[
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", F(0.0)),
+            ("hsl_hue_range", F(40.0)),
+            ("hsl_soft", F(0.0)),
+            ("hsl_temp", F(100.0)),
+            ("hsl_contrast", F(contrast)),
+        ]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+        img.px[0]
+    };
+    let warm = red(0.0);
+    assert!(warm > 2.0 * 1.05, "Temperature warms the red highlight: {warm}");
+    for c in [50.0, -50.0, 100.0] {
+        assert!((red(c) - warm).abs() <= warm * 1e-4, "contrast {c}: {} vs {warm}", red(c));
     }
 }

@@ -29,6 +29,9 @@ fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)
     })
 }
 
+/// The Lumetri Color panel for the selected clip's Lumetri instance: one collapsible section per
+/// Lumetri section (Basic Correction, Creative, Curves, Color Wheels, HSL Secondary, Vignette),
+/// each slider registered as `lumetri.param.<id>` where agents drive it.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected(app) else {

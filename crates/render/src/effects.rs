@@ -1524,11 +1524,15 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 c2[0] *= 1.0 + 0.25 * htemp;
                 c2[2] *= 1.0 - 0.25 * htemp;
                 c2[1] *= 1.0 - 0.2 * htint;
-                // contrast: Basic Correction's S-curve around mid grey
+                // contrast: Basic Correction's S-curve around mid grey; values Temperature lifted
+                // above 1 pass through (the curve meets them at 1), as HDR highlights do there
                 if contrast.abs() > 1e-4 {
                     let k = 1.0 + contrast;
                     c2 = c2.map(|q| {
-                        let q = q.clamp(0.0, 1.0);
+                        if q > 1.0 {
+                            return q;
+                        }
+                        let q = q.max(0.0);
                         let s = q * q * (3.0 - 2.0 * q);
                         if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
                     });
@@ -1541,7 +1545,7 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         gs.decode(out)
     });
     // Sharpen: Creative ▸ Sharpen's unsharp mask, mixed in by the key
-    if show_mask == 0 && sharpen.abs() > 1e-3 {
+    if show_mask == 0 && sharpen.abs() > 1e-3 && mask.par_iter().any(|&m| m > 0.0) {
         let mut sharp = img.clone();
         unsharp(&mut sharp, 1.2 * cx.px_scale.max(0.35), sharpen, 0.0);
         img.px.par_chunks_mut(4).zip(sharp.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, s), &m)| {
