@@ -87,6 +87,9 @@ pub struct Checkpoint {
     journal_len: usize,
     /// The project was clean (saved) when the scope began.
     clean: bool,
+    /// `Session::saved_revision` when the scope began. A command such as `file.newProject` moves it,
+    /// and a dirty document must come back dirty.
+    saved_revision: u64,
     /// `Session::revision` after the scope's last command. A rollback from another thread only runs
     /// when this still holds, so it never undoes work that is not the plug-in's.
     last_revision: u64,
@@ -103,6 +106,7 @@ impl Checkpoint {
             path: s.path.clone(),
             journal_len: s.journal.len(),
             clean: !s.is_dirty(),
+            saved_revision: s.saved_revision,
             last_revision: s.revision,
         }
     }
@@ -120,9 +124,9 @@ impl Checkpoint {
             s.history.merge_key = self.merge_key;
             s.journal.truncate(self.journal_len);
             s.bump_view();
-            if self.clean {
-                s.saved_revision = s.revision;
-            }
+            // The revision went up, so a clean document is clean at the new one. A dirty document
+            // returns to the revision it was saved at, which `bump_view` may have replaced.
+            s.saved_revision = if self.clean { s.revision } else { self.saved_revision };
         });
         if path_moved {
             // The previews follow the path, as they do when the document is saved elsewhere.

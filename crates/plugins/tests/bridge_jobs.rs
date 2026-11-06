@@ -40,6 +40,30 @@ fn a_rollback_restores_the_path_the_document_saves_to() {
     assert_eq!(session.path.as_deref(), Some(saved_at.as_str()), "the document saves where it did before");
 }
 
+/// A document with unsaved edits stays unsaved after a rollback, even when the faulted call ran a
+/// command that marks the document clean. A clean report would let autosave drop the recovery
+/// journal of work the user has not saved.
+#[test]
+fn a_rollback_keeps_a_dirty_document_dirty_after_the_call_made_it_clean() {
+    let mut session = demo_session();
+    session.execute("file.newBin", json!({"name": "unsaved"})).unwrap();
+    assert!(session.is_dirty());
+    let saved_before = session.saved_revision;
+    let bridge = Bridge::new(Duration::from_secs(1));
+
+    let (clean_during, outcome) = bridge.scoped(&mut session, || {
+        let scope = bridge.begin();
+        bridge.execute("file.newProject", &json!({"name": "Replaced"})).expect("file.newProject");
+        let during = bridge.with_session(|s| !s.is_dirty()).expect("session");
+        (during, bridge.end(scope, true))
+    });
+
+    assert!(clean_during, "the command marked the document clean, so the test checks a real change");
+    assert_eq!(outcome, None, "the rollback ran");
+    assert!(session.is_dirty(), "the unsaved edit is still unsaved");
+    assert_eq!(session.saved_revision, saved_before, "the document is dirty against the revision it was saved at");
+}
+
 /// The caller's wait ends while the session thread runs the job. The job still edits the document,
 /// so the caller must get its answer, not a timeout that reads as "nothing happened".
 #[test]
