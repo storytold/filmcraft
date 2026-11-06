@@ -95,6 +95,11 @@ fn pkt(i: usize, len: usize) -> Vec<u8> {
 
 /// Header pages, then pages of 3 packets each; the last page's granule trims `trim` samples.
 fn opus_file(npk: usize, pre_skip: u16, trim: i64) -> Vec<u8> {
+    opus_file_with(npk, pre_skip, |done, last| done as i64 * 960 - if last { trim } else { 0 })
+}
+
+/// Like `opus_file`, with the granule of each data page chosen by `granule(packets_done, is_last_page)`.
+fn opus_file_with(npk: usize, pre_skip: u16, granule: impl Fn(usize, bool) -> i64) -> Vec<u8> {
     let mut f = Vec::new();
     let head = opus_head(pre_skip);
     let (l, b) = lace(&[&head], false);
@@ -107,10 +112,7 @@ fn opus_file(npk: usize, pre_skip: u16, trim: i64) -> Vec<u8> {
     for (seq, chunk) in (2..).zip(pkts.chunks(3)) {
         done += chunk.len();
         let last = done == npk;
-        let mut g = done as i64 * 960;
-        if last {
-            g -= trim;
-        }
+        let g = granule(done, last);
         let refs: Vec<&[u8]> = chunk.iter().map(Vec::as_slice).collect();
         let (l, b) = lace(&refs, false);
         page(&mut f, if last { 0x04 } else { 0 }, g, 9, seq, &l, &b);
@@ -217,6 +219,58 @@ fn opus_toc_durations() {
     assert_eq!(opus_packet_samples([0x80 | 3, 6], 10), Some(720)); // CELT 2.5 ms × 6
     assert_eq!(opus_packet_samples([0xF8 | 3, 7], 10), None); // 140 ms: invalid
     assert_eq!(opus_packet_samples([0xF8, 0], 0), None);
+}
+
+/// The timing must be defined, bounded and panic-free for any granule a file can carry.
+fn assert_sane_timing(t: &OpusTiming, npk: usize) {
+    assert_eq!(t.starts.len(), npk);
+    // treated as unknown granules: the packets simply follow one another from the start
+    for (k, s) in t.starts.iter().enumerate() {
+        assert_eq!(*s, k as i64 * 960 - 312, "packet {k}");
+    }
+    // as for a truncated file with no usable granule, the total stays 0: it never exceeds what the packets add up to
+    assert!((0..=npk as i64 * 960).contains(&t.total), "total {}", t.total);
+}
+
+#[test]
+fn opus_timing_ignores_a_granule_near_i64_max() {
+    // panicked with "attempt to add with overflow" in debug builds, wrapped in release
+    let f = opus_file_with(10, 312, |done, _| i64::MAX - 10 + done as i64 / 3);
+    let o = open(&f).unwrap();
+    assert_sane_timing(&OpusTiming::of(&o.streams[0], 312), 10);
+}
+
+#[test]
+fn opus_timing_ignores_a_granule_of_i64_min() {
+    // panicked with "attempt to subtract with overflow" in debug builds
+    for g in [i64::MIN, i64::MIN + 1, -2] {
+        let f = opus_file_with(10, 312, |_, _| g);
+        let o = open(&f).unwrap();
+        assert_sane_timing(&OpusTiming::of(&o.streams[0], 312), 10);
+    }
+}
+
+#[test]
+fn opus_timing_with_a_bad_granule_on_one_page_recovers_on_the_next() {
+    // pages of 3 packets: the second page's granule is absurd, the others are right
+    let f = opus_file_with(9, 0, |done, _| if done == 6 { i64::MAX } else { done as i64 * 960 });
+    let o = open(&f).unwrap();
+    let t = OpusTiming::of(&o.streams[0], 0);
+    let expect: Vec<i64> = (0..9).map(|k| k * 960).collect();
+    assert_eq!(t.starts, expect);
+    assert_eq!(t.total, 9 * 960);
+}
+
+#[test]
+fn largest_trusted_granule_with_a_huge_pre_skip_stays_in_range() {
+    let f = opus_file_with(6, 0, |done, _| MAX_OPUS_GRANULE - 6 * 960 + done as i64 * 960);
+    let o = open(&f).unwrap();
+    let t = OpusTiming::of(&o.streams[0], u32::MAX);
+    // shift = base (the first raw start, 2^62 - 5760) + u32::MAX; every start is relative to it
+    let expect: Vec<i64> = (0..6).map(|k| k * 960 - u32::MAX as i64).collect();
+    assert_eq!(t.starts, expect);
+    // the end (2^62) lies before the shift, so nothing is playable
+    assert_eq!(t.total, 0);
 }
 
 /// Opus headers, then `pages` pages of 255 zero-length packets each (a 255-byte lacing table of zeros).

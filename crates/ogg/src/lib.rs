@@ -452,8 +452,16 @@ pub struct OpusTiming {
     pub total: i64,
 }
 
+/// Largest granule position [`OpusTiming::of`] trusts: 2^62 samples at 48 kHz is about 3 million years.
+pub const MAX_OPUS_GRANULE: i64 = 1 << 62;
+
 impl OpusTiming {
     /// Timing of the Opus stream `s` (`pre_skip` from its `OpusHead`).
+    ///
+    /// A granule position outside `0..=MAX_OPUS_GRANULE` (a negative value other than -1, or an
+    /// absurdly large one) is treated like a missing granule: the page's packets continue from the
+    /// previous position instead of jumping to a nonsense one. All arithmetic saturates, so no
+    /// file can overflow it. Files with sane granules get the same timing as before.
     pub fn of(stream: &Stream, pre_skip: u32) -> OpusTiming {
         let durations: Vec<u32> = stream.packets.iter().map(|p| opus_packet_samples(p.prefix, p.size).unwrap_or(0)).collect();
         let n = durations.len();
@@ -461,24 +469,25 @@ impl OpusTiming {
         let mut i = 0;
         let mut cursor: Option<i64> = None;
         let mut trimmed_end: Option<i64> = None;
+        let granule_of = |k: usize| stream.packets.get(k).and_then(|p| p.granule).filter(|g| (0..=MAX_OPUS_GRANULE).contains(g));
         while i < n {
             // packets completing on the same page: i..j, the last carries the page granule
             let mut j = i;
-            while j < n && stream.packets[j].granule.is_none() {
+            while j < n && granule_of(j).is_none() {
                 j += 1;
             }
             if j == n {
                 // trailing packets without a granule (truncated file): continue from the cursor
                 let mut c = cursor.unwrap_or(0);
                 for k in i..n {
-                    c += durations[k] as i64;
+                    c = c.saturating_add(durations[k] as i64);
                     ends[k] = Some(c);
                 }
                 break;
             }
-            let Some(g) = stream.packets[j].granule else { break };
-            let sum: i64 = durations[i..=j].iter().map(|&d| d as i64).sum();
-            let forward = cursor.map(|c| c + sum);
+            let Some(g) = granule_of(j) else { break };
+            let sum: i64 = durations[i..=j].iter().fold(0i64, |a, &d| a.saturating_add(d as i64));
+            let forward = cursor.map(|c| c.saturating_add(sum));
             let end = match forward {
                 // end trimming on the last page (RFC 7845 §4.5): keep the forward positions
                 Some(f) if stream.packets[j].eos && g < f => {
@@ -492,17 +501,17 @@ impl OpusTiming {
             let mut e = end;
             for k in (i..=j).rev() {
                 ends[k] = Some(e);
-                e -= durations[k] as i64;
+                e = e.saturating_sub(durations[k] as i64);
             }
             cursor = Some(end);
             i = j + 1;
         }
-        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0) - d as i64).collect();
+        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0).saturating_sub(d as i64)).collect();
         let base = raw_starts.first().copied().unwrap_or(0).max(0);
-        let shift = base + pre_skip as i64;
-        let starts: Vec<i64> = raw_starts.iter().map(|s| s - shift).collect();
+        let shift = base.saturating_add(pre_skip as i64);
+        let starts: Vec<i64> = raw_starts.iter().map(|s| s.saturating_sub(shift)).collect();
         let end_all = trimmed_end.or(cursor).unwrap_or(0);
-        let total = (end_all - shift).max(0);
+        let total = end_all.saturating_sub(shift).max(0);
         OpusTiming { pre_skip, starts, durations, total }
     }
 }
