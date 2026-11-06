@@ -192,8 +192,7 @@ mod tests {
                     slice.map_async(wgpu::MapMode::Read, move |result| {
                         let _ = tx.send(result);
                     });
-                    assert!(crate::wait_mapped(device).is_some());
-                    rx.recv_timeout(crate::MAP_TIMEOUT).unwrap().unwrap();
+                    assert!(crate::wait_mapped(device, &rx).is_some());
                     let data = slice.get_mapped_range().unwrap();
                     let gpu: Vec<u8> = data.chunks_exact(row as usize).flat_map(|line| line[..(w * 4) as usize].iter().copied()).collect();
                     drop(data);

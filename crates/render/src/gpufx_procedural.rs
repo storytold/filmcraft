@@ -61,7 +61,8 @@ pub enum ProceduralOp {
         colors: [[f32; 3]; 4],
         blend_exp: f32,
         opacity: f32,
-        size: [f32; 2],
+        /// Points 1–4 in working-image pixels.
+        points: [[f32; 2]; 4],
     },
     CellPattern {
         pattern: u32,
@@ -197,7 +198,12 @@ impl ProceduralOp {
                 }),
                 blend_exp: 1.0 + fv(e, "blend", cx) / 100.0,
                 opacity: fv(e, "opacity", cx) / 100.0,
-                size: [w as f32, h as f32],
+                // a point left at its NaN default sits a quarter in from its corner of the frame
+                points: [("p1", 0.25, 0.25), ("p2", 0.75, 0.25), ("p3", 0.25, 0.75), ("p4", 0.75, 0.75)].map(|(id, fx, fy)| {
+                    let v = e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or(filmcraft_geom::Vec2::new(f64::NAN, f64::NAN));
+                    let px = |v: f64, frac: f32, size: f32| if v.is_finite() { v as f32 * cx.px_scale } else { frac * size };
+                    [px(v.x, fx, w as f32), px(v.y, fy, h as f32)]
+                }),
             },
             "cell_pattern" => Self::CellPattern {
                 pattern: chv(e, "pattern"),
@@ -284,7 +290,9 @@ impl ProceduralOp {
             Self::Gradient { start, end, start_color, end_color, scatter, gamma, blend, .. } => {
                 fin(start) && fin(end) && fin(start_color) && fin(end_color) && fin(&[*scatter, *gamma, *blend])
             }
-            Self::FourColorGradient { colors, blend_exp, opacity, size } => colors.iter().all(|c| fin(c)) && fin(&[*blend_exp, *opacity]) && fin(size),
+            Self::FourColorGradient { colors, blend_exp, opacity, points } => {
+                colors.iter().all(|c| fin(c)) && fin(&[*blend_exp, *opacity]) && points.iter().all(|p| fin(p))
+            }
             Self::CellPattern { disperse, size, offset, evolution, .. } => fin(&[*disperse, *size, *evolution]) && fin(offset) && *size >= 1.0,
             Self::Emboss { direction, relief, contrast, blend, .. } => fin(direction) && fin(&[*relief, *contrast, *blend]),
             Self::FindEdges { blend, .. } => blend.is_finite(),
@@ -357,13 +365,15 @@ impl ProceduralOp {
                 put!(14, *blend);
                 101
             }
-            Self::FourColorGradient { colors, blend_exp, opacity, size } => {
+            Self::FourColorGradient { colors, blend_exp, opacity, points } => {
                 for (n, c) in colors.iter().enumerate() {
                     p[n * 3..n * 3 + 3].copy_from_slice(c);
                 }
                 put!(12, *blend_exp);
                 put!(13, *opacity);
-                p[14..16].copy_from_slice(size);
+                for (n, pt) in points.iter().enumerate() {
+                    p[14 + n * 2..16 + n * 2].copy_from_slice(pt);
+                }
                 102
             }
             Self::CellPattern { pattern, invert, contrast, overflow, disperse, size, offset, evolution, seed } => {
@@ -500,13 +510,7 @@ impl ProceduralOp {
                         let b = *blend;
                         [0, 1, 2, 3].map(|i| q[i] + (p[i] - q[i]) * b)
                     }
-                    Self::FourColorGradient { colors, blend_exp, opacity, size } => {
-                        let pts = [
-                            [0.25 * size[0], 0.25 * size[1]],
-                            [0.75 * size[0], 0.25 * size[1]],
-                            [0.25 * size[0], 0.75 * size[1]],
-                            [0.75 * size[0], 0.75 * size[1]],
-                        ];
+                    Self::FourColorGradient { colors, blend_exp, opacity, points: pts } => {
                         let mut acc = [0.0; 3];
                         let mut sum = 0.0;
                         for j in 0..4 {
@@ -687,7 +691,11 @@ mod tests {
                 "gradient",
                 101,
             ),
-            (P::FourColorGradient { colors: [[1.0; 3]; 4], blend_exp: 2.0, opacity: 1.0, size: [4.0, 4.0] }, "four_color_gradient", 102),
+            (
+                P::FourColorGradient { colors: [[1.0; 3]; 4], blend_exp: 2.0, opacity: 1.0, points: [[1.0, 1.0], [3.0, 1.0], [1.0, 3.0], [3.0, 3.0]] },
+                "four_color_gradient",
+                102,
+            ),
             (
                 P::CellPattern { pattern: 0, invert: false, contrast: 1.0, overflow: 0, disperse: 1.0, size: 4.0, offset: [0.0; 2], evolution: 0.0, seed: 7 },
                 "cell_pattern",

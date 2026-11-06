@@ -210,7 +210,7 @@ fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &
             n += 1;
             continue;
         }
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
             Ok(file) => {
                 return Ok(ReservedOutput { path, file: Some(Arc::new(file)), keep: false });
             }
@@ -274,7 +274,21 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
     let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
+    // Media jobs run one after another, in the order they were started (#1831); the browser has no
+    // threads to wait on, and runs each job where it is started.
+    #[cfg(not(target_arch = "wasm32"))]
+    let ticket = {
+        let ahead = crate::media_queue::MEDIA_JOBS.ahead();
+        if ahead > 0 {
+            *job.progress.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Waiting for {ahead} earlier job{}", if ahead == 1 { "" } else { "s" });
+        }
+        crate::media_queue::MEDIA_JOBS.ticket()
+    };
+    let (pool, project, services) = (s.media.clone(), s.project.clone(), s.services.clone());
     let run = move || {
+        // a job cancelled while it waits raises the same flag the loop below checks
+        #[cfg(not(target_arch = "wasm32"))]
+        ticket.wait(&prog.cancel);
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
@@ -286,6 +300,9 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{name} ({} of {n})", k + 1);
             let out = output.path().to_string_lossy().into_owned();
+            // its own copy of the file, opened here rather than on the main thread, so the
+            // monitors keep their decoder
+            let src = pool.own_source(&project, item, &*services).unwrap_or(src);
             match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
@@ -586,7 +603,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Create Proxies…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
-            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half","destination":str?,"attach":bool=true,"wait":bool=false}"#,
+            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half"?,"destination":str?,"attach":bool=true,"wait":bool=false}"#,
             enabled: has_file_media,
             run: create,
             journal: true,

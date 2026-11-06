@@ -156,8 +156,12 @@ pub struct Stream {
 impl Stream {
     /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters.
     fn number(id: &[u8; 4]) -> Option<usize> {
-        let d = |b: u8| (b as char).to_digit(16).map(|v| v as usize);
-        Some(d(id[0])? * 16 + d(id[1])?)
+        // ffmpeg-style writers number streams in decimal ("10dc" = 10), Video for Windows in hex
+        // ("0adc" = 10): a hex letter means hex, two decimal digits mean decimal
+        let [a, b, ..] = *id;
+        let radix = if [a, b].iter().any(|c| matches!(c, b'a'..=b'f' | b'A'..=b'F')) { 16 } else { 10 };
+        let d = |c: u8| (c as char).to_digit(radix).map(|v| v as usize);
+        Some(d(a)? * radix as usize + d(b)?)
     }
 }
 
@@ -227,12 +231,15 @@ fn header_at<S: ByteSource + ?Sized>(src: &S, at: u64) -> Result<([u8; 4], u64, 
 }
 
 /// Iterate the chunks of `[from, to)`: (id, size, data offset). Stops at the first unreadable
-/// header; every step moves forward, so it ends.
+/// header; every step moves forward, so it ends. A child's size is clamped to its parent's end,
+/// so lists never reach past their container: overlapping `movi` or `rec ` lists would otherwise
+/// each scan (and record) the same physical chunks again.
 fn children<S: ByteSource + ?Sized>(src: &S, from: u64, to: u64) -> Vec<([u8; 4], u64, u64)> {
     let mut out = Vec::new();
     let mut at = from;
     while at.checked_add(8).is_some_and(|e| e <= to) {
         let Ok((id, size, data)) = header_at(src, at) else { break };
+        let size = size.min(to.saturating_sub(data));
         out.push((id, size, data));
         // chunks are padded to an even size
         let Some(next) = data.checked_add(size).and_then(|e| e.checked_add(size & 1)) else { break };
@@ -297,15 +304,36 @@ pub fn open_with<S: ByteSource + ?Sized>(src: &S, opts: OpenOptions) -> Result<A
     } else if let (false, Some((at, size)), Some(first)) = (opts.ignore_idx1, idx1, movis.first()) {
         clear(&mut streams);
         read_idx1(src, &mut streams, at, size, first.0);
-        // idx1 only covers the first RIFF: the AVIX extensions are scanned
-        for &(_, from, to) in movis.iter().skip(1) {
-            scan(src, &mut streams, from, to, 0);
+        if streams.iter().all(|s| s.chunks.is_empty()) {
+            scan_all(src, &mut streams, &movis)
+        } else {
+            scan_missing(src, &mut streams, first);
+            // idx1 only covers the first RIFF: the AVIX extensions are scanned
+            for &(_, from, to) in movis.iter().skip(1) {
+                scan(src, &mut streams, &|_| true, from, to, 0);
+            }
+            IndexSource::Idx1
         }
-        if streams.iter().all(|s| s.chunks.is_empty()) { scan_all(src, &mut streams, &movis) } else { IndexSource::Idx1 }
     } else {
         scan_all(src, &mut streams, &movis)
     };
     Ok(AviFile { header, streams, index })
+}
+
+/// A stream that declares data (`length`) but that `idx1` left without a single chunk while
+/// others have theirs (its entries damaged or missing) gets its chunks from a scan of the first
+/// `movi` list (the one `idx1` covers), as a file without an index does, before the AVIX
+/// extensions add theirs; its key frames are then unknown. The indexed streams keep their
+/// tables, and a stream that declares no data is not looked for.
+fn scan_missing<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], &(_, from, to): &(u64, u64, u64)) {
+    let missing: Vec<bool> = streams.iter().map(|s| s.chunks.is_empty() && s.length > 0).collect();
+    if !missing.contains(&true) {
+        return;
+    }
+    scan(src, streams, &|n| missing.get(n) == Some(&true), from, to, 0);
+    for (s, _) in streams.iter_mut().zip(&missing).filter(|(_, m)| **m) {
+        s.keyframes_known = false;
+    }
 }
 
 fn clear(streams: &mut [Stream]) {
@@ -318,7 +346,7 @@ fn clear(streams: &mut [Stream]) {
 fn scan_all<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], movis: &[(u64, u64, u64)]) -> IndexSource {
     clear(streams);
     for &(_, from, to) in movis {
-        scan(src, streams, from, to, 0);
+        scan(src, streams, &|_| true, from, to, 0);
     }
     for s in streams.iter_mut() {
         s.keyframes_known = false;
@@ -535,22 +563,23 @@ fn read_idx1<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], at: u64, s
     }
 }
 
-/// Append the data chunks of a `movi` list (`[from, to)`) to the streams' tables, in file order.
-fn scan<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], from: u64, to: u64, depth: u32) {
+/// Append the data chunks of a `movi` list (`[from, to)`) to the tables of the streams `want`
+/// picks, in file order.
+fn scan<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], want: &dyn Fn(usize) -> bool, from: u64, to: u64, depth: u32) {
     if depth >= MAX_DEPTH {
         return;
     }
     for (id, size, data) in children(src, from, to) {
         if id == *b"LIST" {
             if size >= 4 {
-                scan(src, streams, data + 4, data + size, depth + 1);
+                scan(src, streams, want, data + 4, data + size, depth + 1);
             }
             continue;
         }
         if &id[..2] == b"ix" || &id[2..] == b"pc" {
             continue;
         }
-        if let Some(s) = Stream::number(&id).and_then(|n| streams.get_mut(n)) {
+        if let Some(s) = Stream::number(&id).filter(|&n| want(n)).and_then(|n| streams.get_mut(n)) {
             s.chunks.push(Chunk { offset: data, size: u32::try_from(size).unwrap_or(u32::MAX), key: true });
         }
     }
@@ -561,5 +590,16 @@ impl AviFile {
     pub fn read_chunk<S: ByteSource + ?Sized>(&self, src: &S, stream: usize, i: usize) -> Result<Vec<u8>> {
         let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
         read(src, c.offset, u64::from(c.size))
+    }
+
+    /// `len` bytes of chunk `i` of stream `stream`, from `off` bytes into it (only those bytes are read).
+    pub fn read_chunk_range<S: ByteSource + ?Sized>(&self, src: &S, stream: usize, i: usize, off: usize, len: usize) -> Result<Vec<u8>> {
+        let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
+        let end = off
+            .checked_add(len)
+            .filter(|&e| e as u64 <= u64::from(c.size))
+            .ok_or_else(|| Error::Invalid(format!("range outside chunk {i} of stream {stream}")))?;
+        let at = c.offset.checked_add(off as u64).ok_or_else(|| Error::Invalid(format!("chunk {i} offset overflows")))?;
+        read(src, at, (end - off) as u64)
     }
 }

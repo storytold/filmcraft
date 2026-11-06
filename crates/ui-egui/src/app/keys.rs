@@ -15,7 +15,7 @@ impl FilmcraftApp {
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
-        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) {
+        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -24,12 +24,14 @@ impl FilmcraftApp {
         // out, so it still reports the previous pass, and it is true for any focused widget, which
         // would leave the editor without its single-key tool shortcuts while a slider has focus.
         let text_focused = ctx.text_edit_focused();
+        // read before `input_mut`: the plugin lock must not be taken inside the input lock
+        let label_selected = ctx.with_plugin(|s: &mut egui::text_selection::LabelSelectionState| s.has_selection()).unwrap_or(false);
         // Esc cancels a dynamic trim in progress
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused));
+        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -47,7 +49,7 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        let fire = self.match_shortcuts(&mut input, false, false);
+        let fire = self.match_shortcuts(&mut input, false, false, false);
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -65,11 +67,13 @@ impl FilmcraftApp {
     }
 
     /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool) -> Vec<String> {
+    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool, label_selected: bool) -> Vec<String> {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
-        // egui ignores extra Shift and Alt when matching, so the most specific chords go first
-        // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
-        // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
+        // A chord fires only with exactly its modifiers held (`menus::chord_held`), except that a
+        // punctuation or digit key may carry the Shift or Alt a layout needs to type it, so the
+        // most specific chords still go first across both scopes (the sort is stable, so the
+        // panel still wins a tie). Before matching was exact, the Timeline's `Delete` (Clear)
+        // swallowed the app-wide `Shift+Delete` (Ripple Delete) this way (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         let modifiers = i.modifiers;
@@ -105,7 +109,7 @@ impl FilmcraftApp {
                 modifiers: m | egui::Modifiers::COMMAND,
             });
         }
-        clipboard_events_as_keys(&mut i.events, modifiers);
+        clipboard_events_as_keys(&mut i.events, modifiers, label_selected);
         let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
         let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
         let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
@@ -118,11 +122,11 @@ impl FilmcraftApp {
             if lets_text_field_keep(*m, text_focused) {
                 continue;
             }
-            // The focused divider consumes the arrows itself (egui matches them with any Shift/Alt).
+            // The focused divider consumes the arrows itself, with or without Shift/Alt.
             if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
                 continue;
             }
-            if i.consume_key(*m, *k) {
+            if consume_chord(i, *m, *k, repeats_when_held(id)) {
                 fire.push(id.clone());
             }
         }
@@ -131,19 +135,7 @@ impl FilmcraftApp {
 
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
-        for mut id in fire {
-            // Select All / Deselect All act on the Project panel's items when it has focus (#168).
-            // Select All takes only what the shown bin lists, not the whole project (#456).
-            if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
-                let (cmd, params) = panels::project::select_all_command(self);
-                if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
-                    self.ui.status = e;
-                }
-                continue;
-            }
-            if self.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
-                id = "project.deselectAll".into();
-            }
+        for id in fire {
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;
@@ -181,12 +173,15 @@ impl FilmcraftApp {
 ///
 /// Add the key press each event stands for, with the modifiers held, so the bindings see it. The
 /// original event stays for anything else that reads it. Only called when no text field has
-/// keyboard focus; text fields keep handling the clipboard themselves.
-fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modifiers) {
+/// keyboard focus; text fields keep handling the clipboard themselves. Selected label text (a
+/// status bar message, #2295) keeps Copy and Cut the same way: Ctrl+C copies the text, not the
+/// selected clips.
+fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modifiers, label_selected: bool) {
     use egui::{Event, Key};
     let keys: Vec<Key> = events
         .iter()
         .filter_map(|e| match e {
+            Event::Copy | Event::Cut if label_selected => None,
             Event::Copy if modifiers.command => Some(Key::C),
             Event::Copy => Some(Key::Copy),
             Event::Cut if modifiers.command => Some(Key::X),
@@ -199,6 +194,30 @@ fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modi
         })
         .collect();
     events.extend(keys.into_iter().map(|key| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }));
+}
+
+/// Whether holding a shortcut's key repeats the command. Transport commands start, stop or
+/// toggle playback, so the OS key repeats of a held Space would flip Play/Stop many times a
+/// second; they run once per press. Stepping, nudging and the rest keep repeating.
+fn repeats_when_held(id: &str) -> bool {
+    !(id.starts_with("playback.") || id.starts_with("source.playback."))
+}
+
+/// Like `InputState::consume_key`, but the held modifiers must be exactly the chord's
+/// (`menus::chord_held`): egui's `consume_key` ignores extra modifiers, so Ctrl+Alt+Cmd+N ran
+/// File ▸ New ▸ Project (Cmd+Alt+N). Every press of the chord is consumed; it fires on key repeats
+/// too when `repeats`, else only on a fresh press, and the repeats are still consumed so they
+/// can't reach a less specific binding.
+fn consume_chord(i: &mut egui::InputState, modifiers: egui::Modifiers, key: egui::Key, repeats: bool) -> bool {
+    let mut fires = false;
+    i.events.retain(|e| match e {
+        egui::Event::Key { key: k, modifiers: m, pressed: true, repeat, .. } if *k == key && menus::chord_held(*m, *k, modifiers) => {
+            fires |= repeats || !repeat;
+            false
+        }
+        _ => true,
+    });
+    fires
 }
 
 /// Whether a shortcut chord must be left alone because a text field is focused.
@@ -217,7 +236,7 @@ mod clipboard_key_tests {
 
     fn keys(events: Vec<Event>, m: Modifiers) -> Vec<(Key, Modifiers)> {
         let mut events = events;
-        super::clipboard_events_as_keys(&mut events, m);
+        super::clipboard_events_as_keys(&mut events, m, false);
         events.into_iter().filter_map(|e| if let Event::Key { key, modifiers, pressed: true, .. } = e { Some((key, modifiers)) } else { None }).collect()
     }
 
@@ -253,10 +272,20 @@ mod clipboard_key_tests {
     #[test]
     fn other_events_are_left_alone() {
         let mut events = vec![Event::Text("a".into()), Event::Copy];
-        super::clipboard_events_as_keys(&mut events, Modifiers::COMMAND);
+        super::clipboard_events_as_keys(&mut events, Modifiers::COMMAND, false);
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], Event::Text(_)));
         assert!(matches!(events[1], Event::Copy));
+    }
+
+    #[test]
+    fn selected_label_text_keeps_copy_and_cut() {
+        let c = Modifiers::COMMAND;
+        let mut events = vec![Event::Copy, Event::Cut, Event::Paste("x".into())];
+        super::clipboard_events_as_keys(&mut events, c, true);
+        let keys: Vec<Key> = events.iter().filter_map(|e| if let Event::Key { key, .. } = e { Some(*key) } else { None }).collect();
+        assert_eq!(keys, vec![Key::V], "only Paste becomes a key press");
+        assert!(matches!(events[0], Event::Copy), "the selection still gets the Copy event");
     }
 }
 
@@ -317,5 +346,112 @@ mod text_focus_shortcut_tests {
         for key in [Key::A, Key::R, Key::J, Key::Z, Key::C, Key::T] {
             assert!(lets_text_field_keep(Modifiers::NONE, true), "{key:?} is a Telex key the tools stole");
         }
+    }
+}
+
+#[cfg(test)]
+mod key_repeat_tests {
+    use egui::{Event, Key, Modifiers};
+
+    fn space(repeat: bool, modifiers: Modifiers) -> Event {
+        Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: true, repeat, modifiers }
+    }
+
+    fn fired(events: Vec<Event>) -> Vec<String> {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let mut input = egui::InputState::default();
+        input.events = events;
+        app.match_shortcuts(&mut input, false, false, false)
+    }
+
+    /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per
+    /// repeat, or playback flickers between playing and paused.
+    #[test]
+    fn held_space_toggles_playback_once() {
+        assert_eq!(fired(vec![space(false, Modifiers::NONE), space(true, Modifiers::NONE), space(true, Modifiers::NONE)]), ["playback.toggle"]);
+        assert!(fired(vec![space(true, Modifiers::NONE), space(true, Modifiers::NONE)]).is_empty(), "repeats alone start nothing");
+    }
+
+    /// A repeat of Shift+Space is swallowed, not handed down to the plain Space binding.
+    #[test]
+    fn held_shift_space_does_not_fall_through_to_play_stop() {
+        assert!(fired(vec![space(true, Modifiers::SHIFT)]).is_empty());
+    }
+
+    /// Frame stepping is meant to be held: its repeats keep firing.
+    #[test]
+    fn held_arrow_keeps_stepping() {
+        let right = |repeat| Event::Key { key: Key::ArrowRight, physical_key: Some(Key::ArrowRight), pressed: true, repeat, modifiers: Modifiers::NONE };
+        assert_eq!(fired(vec![right(false), right(true)]).len(), 1, "one pass consumes every press of the chord");
+        assert_eq!(fired(vec![right(true)]), ["playhead.stepForward"]);
+    }
+}
+
+#[cfg(test)]
+mod exact_modifier_tests {
+    use crate::dock::PanelKind;
+    use egui::{Event, Key, Modifiers};
+
+    /// What the window reports for Cmd: `mac_cmd` too on a Mac; off a Mac the Ctrl key, which
+    /// carries `ctrl` as well (#245).
+    fn cmd() -> Modifiers {
+        if cfg!(target_os = "macos") { Modifiers::MAC_CMD | Modifiers::COMMAND } else { Modifiers::CTRL | Modifiers::COMMAND }
+    }
+
+    /// The binding ids one fresh press of `key` with `modifiers` fires, `panel` focused.
+    fn fired(panel: PanelKind, key: Key, modifiers: Modifiers) -> Vec<String> {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = panel;
+        let mut input = egui::InputState::default();
+        input.modifiers = modifiers;
+        input.events = vec![Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }];
+        app.match_shortcuts(&mut input, false, false, false)
+    }
+
+    /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N) and its "discard
+    /// the open project" path, because egui ignores an extra Control when matching a Cmd chord.
+    /// The native menu bar matches key equivalents exactly, so the press reached these bindings.
+    #[test]
+    fn ctrl_alt_cmd_n_does_not_run_new_project() {
+        if cfg!(target_os = "macos") {
+            assert!(fired(PanelKind::Timeline, Key::N, cmd() | Modifiers::ALT | Modifiers::CTRL).is_empty());
+        }
+        assert!(fired(PanelKind::Timeline, Key::N, cmd() | Modifiers::ALT | Modifiers::SHIFT).is_empty(), "nor Cmd+Alt+Shift+N");
+    }
+
+    #[test]
+    fn cmd_alt_n_still_runs_new_project() {
+        assert_eq!(fired(PanelKind::Timeline, Key::N, cmd() | Modifiers::ALT), ["file.newProject"]);
+        assert_eq!(fired(PanelKind::Timeline, Key::N, cmd()), ["file.newSequence"]);
+    }
+
+    /// An unbound chord with an extra modifier runs nothing instead of a shorter binding.
+    #[test]
+    fn an_extra_modifier_does_not_fall_through_to_a_shorter_chord() {
+        assert!(fired(PanelKind::Timeline, Key::N, cmd() | Modifiers::SHIFT).is_empty(), "Cmd+Shift+N is not New Sequence");
+        assert!(fired(PanelKind::Timeline, Key::Space, Modifiers::ALT).is_empty(), "Alt+Space is not Play/Stop");
+    }
+
+    /// Chords that name more modifiers still win over the shorter ones on the same key.
+    #[test]
+    fn specific_chords_still_win() {
+        assert_eq!(fired(PanelKind::Timeline, Key::Delete, Modifiers::SHIFT), ["edit.rippleDelete"], "not the Timeline's Clear (#680)");
+        assert_eq!(fired(PanelKind::Timeline, Key::Delete, Modifiers::NONE), ["edit.clear"]);
+        assert_eq!(fired(PanelKind::Timeline, Key::L, Modifiers::SHIFT), ["playback.slowForward"], "Shift+L shuttles slowly");
+        assert_eq!(fired(PanelKind::Timeline, Key::Space, Modifiers::SHIFT), ["playback.inToOutPreroll"]);
+    }
+
+    /// Shifted punctuation keeps working: Shift+; arrives as `:`, and Cmd+Shift+= (the `+` key on
+    /// US layouts) does what Cmd+= does (#2253).
+    #[test]
+    fn shifted_punctuation_still_matches() {
+        assert_eq!(fired(PanelKind::Timeline, Key::Colon, Modifiers::SHIFT), ["sequence.goToNextGap"]);
+        let equals = fired(PanelKind::Timeline, Key::Equals, cmd());
+        assert_eq!(equals, ["timeline.increaseVideoHeight"]);
+        assert_eq!(fired(PanelKind::Timeline, Key::Plus, cmd() | Modifiers::SHIFT), equals);
+        assert_eq!(fired(PanelKind::Timeline, Key::Plus, cmd()), equals);
     }
 }

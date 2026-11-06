@@ -8,8 +8,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 13,
-  "generator": "FilmCraft 0.1.0",
+  "schema_version": 17,
+  "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
 }
@@ -53,6 +53,10 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
 | 13 | Multi-stream audio | `MediaInfo::audio_streams` and `TrackItem::audio_stream`; older `audio` objects load as stream zero, missing clip indices default to zero; no-op step |
+| 14 | Narrations | Text-to-Speech narration data; existing projects need no changes; no-op step |
+| 15 | Project notes | Project notes default empty; no-op step |
+| 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
+| 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
 
 ### Migrations
 
@@ -97,6 +101,10 @@ Every write of a project file, auto-save, recovery snapshot or preferences file 
 
 A crash, `kill -9` or power cut at any point leaves either the complete old file or the complete new
 one. If a step fails, the temp file is removed and the old file is untouched.
+
+Atomic writes keep the file whole, but they don't merge: of two sessions that opened the same project,
+the one that saves last replaces what the other saved. `filmcraft-cli --save` runs take turns on a lock
+to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't.
 
 ## Commands
 
@@ -158,9 +166,19 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   never touched.
 - If discarding a recovery session fails, FilmCraft reports the error and keeps that session and
   the remaining candidates in the recovery list for retry. Sessions already deleted stay removed.
+- If the auto-save worker stops unexpectedly, FilmCraft reports the failure once in the Events
+  panel and an error notification; `file.autoSaveStatus` reports `running: false`. Edits remain in
+  the open project. Use **File ▸ Save** or **Save As** to save them; the worker is not restarted
+  automatically. Ordinary write errors are reported without treating a live worker as stopped.
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
   over the original file. The recovered state goes into the new session's own journal before the old
-  journal is deleted.
+  journal is deleted. Both the replacement snapshot and its metadata must be successfully written
+  for that recovered revision. If journaling is disabled, writing fails, or the worker cannot
+  confirm the write, recovery reports an error and retains the original candidate. The recovered
+  project remains open and unsaved; use Save or Save As to keep it.
+- If removing the old recovery folder fails after the replacement is confirmed, the recovered project
+  stays open and the candidate stays listed. The old folder may have been partly removed. Save or use
+  Save As before retrying: if the old snapshot remains intact, another recovery can overwrite unsaved edits.
 - A normal quit with nothing unsaved removes the session directory. Quitting with unsaved changes
   (Quit, Cmd+Q or the window's close button) first asks *"Save changes to 'X' before closing?"*
   with **Cancel**, **Don't Save** and **Save** (Save on a never-saved project opens the Save dialog);
@@ -240,7 +258,7 @@ opens the dialog on a page.
 | Memory | frame cache budget of the monitors and thumbnails |
 | Playback | preroll / postroll (Play Around, trim loop), Step forward/back many |
 | Plugins | stub (no plugins) |
-| Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews |
+| Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews, Show Clip Mismatch Warning dialog (the first clip put into an empty sequence it doesn't match asks whether the sequence takes the clip's settings) |
 | Trim | Large Trim Offset, Selection tool picks roll (on the cut) / ripple (on the edge) without a modifier, playhead determines trim loop |
 
 The remaining fields are kept for parity and shown, but have no effect yet (`wired: false`).
@@ -307,7 +325,10 @@ file just linked, by dropping the common trailing path components (`/Volumes/A/s
 files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
 work. **Align Timecode** keeps clips on the same timecode when the new file starts at a different
 timecode: the clips' source in-points, keyframes, marks and markers move with it
-(`Project::shift_media_time`). One relink, together with the files it pulls along, is one undo step.
+(`Project::shift_media_time`). Media an EDL names starts at timecode 00:00:00:00 until its file is
+linked, because the list's source times are timecodes; relink it with Align Timecode to land on the
+same frames as importing the EDL next to its media. One relink, together with the files it pulls
+along, is one undo step.
 
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
@@ -315,8 +336,9 @@ Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
-broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
-badge (`project.item.<id>.proxy`).
+broken-link badge (`project.item.<id>.offline` in Icon and List view), and items with a proxy get
+a **P** badge (`project.item.<id>.proxy`). Hovering an Unreadable badge shows why the file cannot
+be read, such as "no decoder for Apple Intermediate Codec video".
 
 ### Proxies
 
@@ -434,3 +456,10 @@ frame-size ratio. Intrinsic effects (Motion, Opacity…) replace the clip's own 
 effects are added. Applying is one undo step; saving, renaming, deleting and importing change the
 library, not the project, and are not undoable. Files with another `format`, a newer `version` or
 unknown effect ids are refused.
+
+## Marker web addresses (schema v17)
+
+Markers may store an optional `url` independently of their name and notes. Older files
+load with an empty URL. Schema v17 prevents older builds from silently dropping links
+on save. Changing marker type retains the address. Project loading never opens it; the
+Edit Marker dialog offers explicit HTTP(S) browser opening for Web Link markers.

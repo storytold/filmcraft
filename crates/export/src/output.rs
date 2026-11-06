@@ -58,10 +58,12 @@ impl Out {
         }
         let destination = std::path::PathBuf::from(path);
         let dir = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        // fast-start MP4 is written by reading the file back (upstream #3470), so it opens for read too
+        let read = settings.format.is_mp4_with(settings.multiplexer);
         for _ in 0..32 {
             let id = NEXT_OUTPUT_TEMP.fetch_add(1, Ordering::Relaxed);
             let temp = dir.join(format!(".filmcraft-export-{}-{id}.tmp", std::process::id()));
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            match std::fs::OpenOptions::new().read(read).write(true).create_new(true).open(&temp) {
                 Ok(file) => return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: Some(TempOutput { path: temp, destination }) }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(ExportError::Io(format!("{path}: {e}"))),
@@ -127,6 +129,20 @@ impl std::io::Seek for Out {
         match self {
             Out::File { writer, .. } => writer.seek(pos),
             Out::Mem(w) => w.seek(pos),
+        }
+    }
+}
+
+impl std::io::Read for Out {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Out::File { writer, .. } => {
+                // Fast-start muxing reads media back to shift it in place. Commit buffered
+                // writes before reading through the same file handle and cursor.
+                writer.flush()?;
+                std::io::Read::read(writer.get_mut(), buf)
+            }
+            Out::Mem(w) => std::io::Read::read(w, buf),
         }
     }
 }

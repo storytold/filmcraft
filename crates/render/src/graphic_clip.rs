@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, ShapeProps, TextProps, eval_layer};
+use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
 use filmcraft_project::graphic_design::{GraphicMeta, PinNode, remap_time, resolve_pins, roll_offset};
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_text::raster::{Xform, apply, fill_into, xform_scale};
@@ -49,6 +49,7 @@ pub fn text_styles(t: &TextProps) -> (TextStyle, ParagraphStyle) {
             faux_italic: t.faux_italic,
             caps: caps_of(t.caps),
             underline: t.underline,
+            strikethrough: t.strikethrough,
         },
         ParagraphStyle {
             align: match t.align {
@@ -91,6 +92,7 @@ pub fn text_runs(t: &TextProps, base: &TextStyle) -> Vec<StyleRun> {
                 faux_italic: c.faux_italic.unwrap_or(base.faux_italic),
                 caps: c.caps.map_or(base.caps, caps_of),
                 underline: c.underline.unwrap_or(base.underline),
+                strikethrough: c.strikethrough.unwrap_or(base.strikethrough),
                 ..base.clone()
             },
         })
@@ -235,26 +237,102 @@ fn over_linear_gradient(px: &mut [f32], msk: &Mask, grad: &LinearGradient, lb: [
     });
 }
 
+/// Group text runs by their effective colour, including unstyled text (run 0).
+fn color_groups(color: [f32; 4], overrides: &[Option<[f32; 4]>]) -> Vec<([f32; 4], Vec<u16>)> {
+    let mut groups: Vec<([f32; 4], Vec<u16>)> = Vec::new();
+    for (r, col) in std::iter::once(color).chain(overrides.iter().map(|c| c.unwrap_or(color))).enumerate() {
+        let Ok(run) = u16::try_from(r) else { break };
+        match groups.iter_mut().find(|g| g.0 == col) {
+            Some(g) => g.1.push(run),
+            None => groups.push((col, vec![run])),
+        }
+    }
+    groups
+}
+
 /// Solid fill, one mask per distinct colour when text runs carry their own.
 fn paint_solid(px: &mut [f32], cover: &Mask, color: [f32; 4], text: Option<&Layout>, m: &Xform, run_fills: &[Option<[f32; 4]>], origin: (i32, i32)) {
     let Some(layout) = text.filter(|_| run_fills.iter().any(Option::is_some)) else {
         over_mask(px, cover, premul_linear(color));
         return;
     };
-    let mut groups: Vec<([f32; 4], Vec<u16>)> = Vec::new();
-    for r in 0..=run_fills.len() {
-        let col = if r == 0 { color } else { run_fills[r - 1].unwrap_or(color) };
-        match groups.iter_mut().find(|g| g.0 == col) {
-            Some(g) => g.1.push(r as u16),
-            None => groups.push((col, vec![r as u16])),
-        }
-    }
-    for (col, runs) in groups {
+    for (col, runs) in color_groups(color, run_fills) {
         let mut m_run = Mask::new(cover.w, cover.h);
         for r in runs {
             render::draw_run(layout, m, &mut m_run, origin, Some(r));
         }
         over_mask(px, &m_run, premul_linear(col));
+    }
+}
+
+/// Shared coverage and coordinates for both strokes. Colour groups are rasterised one at a time,
+/// keeping memory bounded even when every character has a distinct stroke colour.
+struct StrokeCoverage<'a> {
+    cover: &'a Mask,
+    text: Option<&'a Layout>,
+    transform: &'a Xform,
+    origin: (i32, i32),
+    scale: f32,
+    filled: bool,
+}
+
+struct StrokeGroup {
+    style: StrokeStyle,
+    runs: Vec<u16>,
+}
+
+struct StrokePlan {
+    groups: Vec<StrokeGroup>,
+    /// A uniform layer keeps the existing one-mask fast path.
+    whole: Option<Mask>,
+}
+
+impl StrokeCoverage<'_> {
+    fn mask(&self, source: &Mask, stroke: &StrokeStyle) -> Mask {
+        let mut sm = mask::stroke(source, stroke.width * self.scale, stroke_kind(stroke.kind));
+        // Outer coverage includes the glyph for a seamless fill. With Fill off, retain only
+        // the ring outside all glyphs, including neighbours with another stroke colour.
+        if !self.filled && stroke.kind != 1 && stroke.kind != 2 {
+            sm.a.iter_mut().zip(&self.cover.a).for_each(|(v, c)| *v = v.min(1.0 - c));
+        }
+        sm
+    }
+
+    fn prepare(&self, stroke: &Stroke) -> StrokePlan {
+        if self.text.is_none() || stroke.runs.iter().all(|s| *s == stroke.style) {
+            return StrokePlan { groups: vec![StrokeGroup { style: stroke.style, runs: Vec::new() }], whole: Some(self.mask(self.cover, &stroke.style)) };
+        }
+        let mut groups: Vec<StrokeGroup> = Vec::new();
+        for (r, style) in std::iter::once(stroke.style).chain(stroke.runs.iter().copied()).enumerate() {
+            let Ok(run) = u16::try_from(r) else { break };
+            if !style.active() {
+                continue;
+            }
+            match groups.iter_mut().find(|g| g.style == style) {
+                Some(g) => g.runs.push(run),
+                None => groups.push(StrokeGroup { style, runs: vec![run] }),
+            }
+        }
+        StrokePlan { groups, whole: None }
+    }
+
+    /// Visit one coverage mask at a time, grouping independently of unrelated fill/font runs.
+    fn visit(&self, plan: &StrokePlan, keep: impl Fn(u32) -> bool, mut paint: impl FnMut(&Mask, StrokeStyle)) {
+        for group in &plan.groups {
+            if !group.style.active() || !keep(group.style.kind) {
+                continue;
+            }
+            if let Some(whole) = &plan.whole {
+                paint(whole, group.style);
+                continue;
+            }
+            let Some(layout) = self.text else { continue };
+            let mut coverage = Mask::new(self.cover.w, self.cover.h);
+            for &run in &group.runs {
+                render::draw_run(layout, self.transform, &mut coverage, self.origin, Some(run));
+            }
+            paint(&self.mask(&coverage, &group.style), group.style);
+        }
     }
 }
 
@@ -325,13 +403,15 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     let stroke_out = ap
         .strokes
         .iter()
-        .map(|(_, w, k)| {
-            if *k == 2 {
+        .flat_map(|stroke| std::iter::once(stroke.style).chain(stroke.runs.iter().copied()))
+        .filter(StrokeStyle::active)
+        .map(|stroke| {
+            if stroke.kind == 2 {
                 0.0
-            } else if *k == 1 {
-                w / 2.0
+            } else if stroke.kind == 1 {
+                stroke.width / 2.0
             } else {
-                *w
+                stroke.width
             }
         })
         .fold(0.0f32, f32::max);
@@ -367,17 +447,9 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     if let Some(p) = &shape {
         fill_into(p, &mut cover, -x0 as f32, -y0 as f32);
     }
-    let mut strokes: Vec<(Mask, [f32; 4])> = ap.strokes.iter().map(|(c, sw, k)| (mask::stroke(&cover, sw * s, stroke_kind(*k)), *c)).collect();
+    let stroke_cover = StrokeCoverage { cover: &cover, text: text.as_deref(), transform: m, origin: (x0, y0), scale: s, filled: ap.fill.is_some() };
+    let strokes: Vec<_> = ap.strokes.iter().map(|stroke| stroke_cover.prepare(stroke)).collect();
     let outer = |k: u32| k != 1 && k != 2;
-    // an outer stroke mask includes the shape so the fill sits on it without a seam; with the
-    // fill off only the ring outside the edge shows (as in Premiere)
-    if ap.fill.is_none() {
-        for ((sm, _), (_, _, k)) in strokes.iter_mut().zip(&ap.strokes) {
-            if outer(*k) {
-                sm.a.iter_mut().zip(&cover.a).for_each(|(v, c)| *v = v.min(1.0 - c));
-            }
-        }
-    }
     let bg = ap.background.map(|(c, pad, r)| {
         let p = filmcraft_text::Path::round_rect(lb[0] - pad, lb[1] - pad, lb[2] + pad, lb[3] + pad, r).transformed(m);
         let mut bm = Mask::new(w, h);
@@ -387,8 +459,8 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     let mut px = vec![0.0f32; w * h * 4];
     if let Some(sh) = &ap.shadow {
         let mut u = if ap.fill.is_some() { cover.clone() } else { Mask::new(w, h) };
-        for (sm, _) in &strokes {
-            u.max_with(sm);
+        for stroke in &strokes {
+            stroke_cover.visit(stroke, |_| true, |sm, _| u.max_with(sm));
         }
         if let Some((bm, _)) = &bg {
             u.max_with(bm);
@@ -404,10 +476,8 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
         over_mask(&mut px, bm, premul_linear(*c));
     }
     // outer strokes sit under the fill; centre and inner strokes are drawn over it
-    for ((sm, c), (_, _, k)) in strokes.iter().zip(&ap.strokes).rev() {
-        if outer(*k) {
-            over_mask(&mut px, sm, premul_linear(*c));
-        }
+    for stroke in strokes.iter().rev() {
+        stroke_cover.visit(stroke, outer, |sm, style| over_mask(&mut px, sm, premul_linear(style.color)));
     }
     let run_fills: Vec<Option<[f32; 4]>> = match &spec.content {
         LayerContent::Text(t) => t.runs.iter().map(|(_, s)| s.fill).collect(),
@@ -436,10 +506,8 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     } else if let Some(c) = ap.fill {
         paint_solid(&mut px, &cover, c, text.as_deref(), m, &run_fills, (x0, y0));
     }
-    for ((sm, c), (_, _, k)) in strokes.iter().zip(&ap.strokes).rev() {
-        if !outer(*k) {
-            over_mask(&mut px, sm, premul_linear(*c));
-        }
+    for stroke in strokes.iter().rev() {
+        stroke_cover.visit(stroke, |k| !outer(k), |sm, style| over_mask(&mut px, sm, premul_linear(style.color)));
     }
     let op = spec.transform.opacity;
     if op < 1.0 {

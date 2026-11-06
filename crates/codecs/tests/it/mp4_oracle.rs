@@ -54,6 +54,42 @@ fn bframe_mp4_duration_is_the_decoded_frame_count() {
     assert_eq!(src.info().duration, filmcraft_time::FrameRate::FPS_30.tick_of(n as i64));
 }
 
+/// ffmpeg writes the edit list in milliseconds, so a clip that is not a whole number of them
+/// (25 frames at 24 fps: 1041.67 ms, written as 1041) read one frame short and its last picture
+/// could not be reached. Every rate and length lasts exactly the frames ffmpeg decodes, and the
+/// last one is ffmpeg's last picture.
+#[test]
+fn bframe_mp4_with_a_rounded_edit_keeps_the_last_frame() {
+    use filmcraft_time::FrameRate;
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let (w, h) = (64usize, 48usize);
+    let cases = [
+        ("24", FrameRate::FPS_24, 25),
+        ("24", FrameRate::FPS_24, 320),
+        ("30", FrameRate::FPS_30, 31),
+        ("24000/1001", FrameRate::FPS_23_976, 25),
+        ("60000/1001", FrameRate::FPS_59_94, 7),
+    ];
+    for (rate, fr, frames) in cases {
+        let name = format!("rounded_edit_{}_{frames}.mp4", fr.num);
+        let lavfi = format!("testsrc2=size={w}x{h}:rate={rate}");
+        let args = ["-f", "lavfi", "-i", &lavfi, "-frames:v", &frames.to_string(), "-c:v", "libx264", "-bf", "2", "-pix_fmt", "yuv420p"];
+        let Some(f) = fixture(&ff, &name, &args) else {
+            eprintln!("SKIPPED: ffmpeg without libx264");
+            return;
+        };
+        let yuv = ffmpeg_frames(&ff, &f, "yuv420p");
+        let pic = w * h * 3 / 2;
+        let n = yuv.len() / pic;
+        assert_eq!(n, frames, "{name}: ffmpeg decodes every frame");
+        let src = filmcraft_codecs::open_bytes(&name, bytes(&f)).unwrap();
+        assert_eq!(src.info().duration, fr.tick_of(n as i64), "{name}");
+        assert_eq!(fr.frame_at(src.info().duration), n as i64, "{name}");
+        let last = src.video_frame(filmcraft_media::FrameRequest::full(fr.tick_of(n as i64 - 1))).unwrap();
+        assert_eq!(last.luma8(), yuv[(n - 1) * pic..][..w * h], "{name}: the last picture is ffmpeg's last");
+    }
+}
+
 /// `mp4` (moov after mdat, as ffmpeg writes it) with a clean aperture (`clap`) of `w`×`h` moved by
 /// (`dx`, `dy`) from the centre, inserted at the end of the first video sample entry.
 fn with_clap(mp4: &[u8], (w, h, dx, dy): (u32, u32, i32, i32)) -> Vec<u8> {

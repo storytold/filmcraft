@@ -583,7 +583,7 @@ fn preflight_item(
     } else {
         raw_source_time
     };
-    if crate::interpolation_blend(item, t, media.info.frame_rate()).is_some() {
+    if crate::interpolation_blend(item, t, media.info.frame_rate(), seq.settings.frame_rate).is_some() {
         return Err(structure(item.item, FrameRequirement::InterpolatedMedia));
     }
     let size =
@@ -1329,11 +1329,11 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
         // media and other pipelines are converted on the CPU (below), and so are blended
-        // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
+        // in-between frames (Frame Blending / Optical Flow on speed-changed or rate-conformed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
-        let plain =
-            (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
+            && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none();
         if plain && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
@@ -1499,6 +1499,7 @@ mod tests {
                         codec: "h264".into(),
                         pixel_format: "nv12".into(),
                         color: filmcraft_color::ColorInfo::REC709,
+                        color_assumed: None,
                         has_alpha: false,
                         bitrate: None,
                         hdr: None,

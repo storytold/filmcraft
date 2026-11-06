@@ -88,7 +88,7 @@ fn procedural_apply(p: vec2<i32>) -> vec4<f32> {
         t=pow(clamp(t,0.0,1.0),u.p3.y); let c=dec(mix(u.p1.xyz,u.p2.xyz,t)); let a=mix(u.p1.w,u.p2.w,t);let k=u.p3.z;let g=vec4(c*a,a);return mix(g,o,k);
     }
     if op==102u {
-        let pts=array<vec2<f32>,4>(vec2(0.25*u.p3.z,0.25*u.p3.w),vec2(0.75*u.p3.z,0.25*u.p3.w),vec2(0.25*u.p3.z,0.75*u.p3.w),vec2(0.75*u.p3.z,0.75*u.p3.w));
+        let pts=array<vec2<f32>,4>(u.p3.zw,u.p4.xy,u.p4.zw,u.p5.xy);
         let cols=array<vec3<f32>,4>(u.p0.xyz,vec3(u.p0.w,u.p1.xy),vec3(u.p1.z,u.p1.w,u.p2.x),u.p2.yzw);
         var acc=vec3(0.0);var sum=0.0;for(var i=0u;i<4u;i++){let w=1.0/pow(max(distance(vec2(x,y),pts[i]),1.0),u.p3.x);acc+=cols[i]*w;sum+=w;}
         let c=dec(acc/sum);let a=u.p3.y;return procedural_over(o,vec4(c*a,a));

@@ -296,7 +296,8 @@ pub struct ExportSettings {
     pub sdr: bool,
     /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ
     /// QuickTime movies (straight alpha, Premiere's "Include Alpha Channel"; OpenEXR stores it
-    /// premultiplied, as the format defines). Off, every frame is flattened over black (#160).
+    /// premultiplied, as the format defines). GIF keeps binary transparency: RGBA8 alpha below
+    /// 128 becomes transparent, otherwise opaque. Off, every frame is flattened over black (#160).
     /// Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,
@@ -360,6 +361,7 @@ pub struct ExportSettings {
     pub sink: Option<OutputSink>,
     /// An already-created primary output file. Internal callers use this to retain an exclusive
     /// reservation made while choosing an output name, rather than reopening that path later.
+    /// MP4 video outputs require read and write access for fast-start finalization.
     #[serde(skip)]
     pub output_file: Option<Arc<std::fs::File>>,
 }

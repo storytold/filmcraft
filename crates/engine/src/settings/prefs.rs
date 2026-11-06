@@ -8,7 +8,7 @@ use super::{Deserialize, FrameRate, Serialize, Tick};
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
     /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, `uk`,
-    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, or `system` (the default: the operating system's preferred language when the
+    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, `ko`, `cs`, `pl`, `sv`, `tr`, or `system` (the default: the operating system's preferred language when the
     /// interface has it, otherwise English).
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
@@ -368,6 +368,9 @@ pub struct TimelinePrefs {
     pub drop_import_to_timeline: bool,
     /// Backend for Render Effects In to Out (Enter): `cpu` | `gpu`. Set from the status bar.
     pub render_backend: String,
+    /// Sequence ▸ Selection Follows Playhead: moving the playhead selects the clips under it on
+    /// targeted tracks (#3089: persisted, so it survives a restart like the sibling toggles).
+    pub selection_follows_playhead: bool,
 }
 
 impl Default for TimelinePrefs {
@@ -396,6 +399,7 @@ impl Default for TimelinePrefs {
             add_tracks_automatically: true,
             render_backend: "cpu".into(),
             drop_import_to_timeline: true,
+            selection_follows_playhead: false,
         }
     }
 }
