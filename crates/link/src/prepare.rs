@@ -169,6 +169,8 @@ fn content_key(project: &Project, clip: &TrackItem, start: Tick, len: Tick, rate
         "size": [size.0, size.1],
         "graphic": clip.graphic,
         "layers": layers,
+        // `start` reads the shared layers and settings of a source graphic when the clip has none of its own.
+        "source_graphic": project.source_graphics.get(&clip.item).map(|shared| json!({"layers": shared.layers, "meta": shared.meta})),
         "sources": sources,
     });
     content_id(recipe.to_string().as_bytes())
@@ -573,6 +575,22 @@ mod tests {
             media.media = MediaRef::Generator(Generator::BarsAndTone);
         }
         assert_ne!(needs(&session.project, seq)[0].key, before, "another source needs another movie");
+    }
+
+    #[test]
+    fn the_key_follows_the_shared_layers_of_a_source_graphic() {
+        use filmcraft_engine::project::{SourceGraphic, Vec2};
+
+        let (mut session, seq, _) = generator_nest(64, 36, 48);
+        let item = session.project.sequence(seq).unwrap().video_tracks[0].items[0].item;
+        let text = |words: &str| SourceGraphic { layers: vec![graphic::new_text_layer(words, Vec2::default(), 40.0)], meta: None };
+        session.project_mut().source_graphics.insert(item, text("before"));
+        let before = needs(&session.project, seq)[0].key.clone();
+        // The clip keeps its own effects: only the shared layers changed.
+        session.project_mut().source_graphics.insert(item, text("after"));
+        assert_ne!(needs(&session.project, seq)[0].key, before, "edited text needs a new movie");
+        session.project_mut().source_graphics.insert(item, text("before"));
+        assert_eq!(needs(&session.project, seq)[0].key, before, "the same layers find the same movie");
     }
 
     #[test]
