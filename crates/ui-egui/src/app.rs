@@ -84,7 +84,7 @@ impl FilmcraftApp {
             value_press: None,
             escape_cancel: false,
             loudness: None,
-            status_seen: (String::new(), 0.0),
+            status_seen: (String::new(), 0, 0.0),
             shots: capture::Shots::default(),
             capture_geometry: None,
             capture_epoch: 0,
@@ -303,7 +303,8 @@ impl FilmcraftApp {
                     self.show_panel(PanelKind::Source);
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.status(message),
+                filmcraft_engine::Event::Toast { message, error: true } => self.ui.fail(message),
+                filmcraft_engine::Event::Toast { message, error: false } => self.status(message),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }

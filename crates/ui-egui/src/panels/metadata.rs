@@ -113,7 +113,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((field, value)) = commit
         && let Err(e) = app.session.execute("metadata.set", json!({"item": item.0, "field": field, "value": value}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 

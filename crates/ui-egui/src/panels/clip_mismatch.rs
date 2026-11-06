@@ -95,7 +95,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             p.insert("matchSequence".into(), json!(change));
         }
         if let Err(e) = app.session.execute(&command, params) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         return false;
     }

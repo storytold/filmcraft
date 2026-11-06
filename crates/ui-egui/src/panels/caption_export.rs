@@ -99,11 +99,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Ok(_) => {
                             let name = std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
-                            app.ui.status = tlf!("{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.", name);
+                            app.ui.fail(tlf!("{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.", name));
                             return;
                         }
                         Err(e) => {
-                            app.ui.status = format!("Cannot check export destination: {e}");
+                            app.ui.fail(format!("Cannot check export destination: {e}"));
                             return;
                         }
                     }
@@ -120,11 +120,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             tlf!("Exported {path} as {format}, from its file extension", path, format = format.name())
                         };
                     }
-                    Err(e) => app.ui.status = e.to_string(),
+                    Err(e) => app.ui.fail(e.to_string()),
                 }
             });
         } else {
-            app.ui.status = "no save dialog available: run the command with a `path`".into();
+            app.ui.fail("no save dialog available: run the command with a `path`");
         }
     }
     ctx.data_mut(|m| m.insert_temp(draft_id(), if close { None } else { Some(d) }));
