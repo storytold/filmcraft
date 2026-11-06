@@ -145,8 +145,8 @@ fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<Panel
     Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 10] =
-    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 11] =
+    ["Beginner", "Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -433,6 +433,17 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
         )
     };
     match name {
+        // Beginner: keep the four things a first-time editor needs in view — media, preview,
+        // simple clip properties and the timeline. Advanced panels stay available from Window.
+        "Beginner" => vsplit(
+            Ratio(0.62),
+            hsplit(
+                Ratio(0.24),
+                tabs(&[Project, MediaBrowser], 0),
+                hsplit(Ratio(0.78), tabs(&[Program], 0), tabs(&[Properties, EssentialGraphics], 0)),
+            ),
+            tabs(&[Timeline], 0),
+        ),
         "Assembly" => vsplit(
             Ratio(0.52),
             hsplit(
@@ -832,6 +843,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn beginner_workspace_shows_only_the_essential_panels() {
+        let layout = workspace("Beginner");
+        layout.validate().unwrap();
+        for panel in [PanelKind::Project, PanelKind::MediaBrowser, PanelKind::Program, PanelKind::Properties, PanelKind::Timeline] {
+            assert!(layout.contains(&panel), "missing {panel:?}");
+        }
+        for panel in [PanelKind::Source, PanelKind::EffectControls, PanelKind::Tools, PanelKind::Effects, PanelKind::AudioMeters] {
+            assert!(!layout.contains(&panel), "unexpected advanced panel {panel:?}");
+        }
+    }
+
     /// The fixed sizes of a tree's splits, depth first.
     fn fixed_splits(node: &Node<PanelKind>) -> Vec<SplitSize> {
         match node {
@@ -850,6 +873,9 @@ mod tests {
     #[test]
     fn workspaces_fix_only_tools_and_meters() {
         for w in WORKSPACES {
+            if w == "Beginner" {
+                continue;
+            }
             let layout = workspace(w);
             let fixed = layout.root.as_ref().map(fixed_splits).unwrap_or_default();
             assert_eq!(fixed, vec![SplitSize::FixedFirst(TOOLS_WIDTH), SplitSize::FixedSecond(METERS_WIDTH)], "{w}");
