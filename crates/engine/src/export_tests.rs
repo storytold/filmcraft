@@ -228,6 +228,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+/// The flat `h264Profile` / `h264IntraOnly` parameters (and the same keys in `settings`) choose
+/// High 10 and all-intra; a profile that does not exist is an error (#1221).
+#[test]
+fn h264_profile_and_intra_parameters() {
+    let mut s = demo();
+    let r = s.execute("export.resolve", json!({"format": "h264", "h264Profile": "high10", "h264IntraOnly": true})).unwrap();
+    assert_eq!((r["settings"]["h264Profile"].as_str(), r["settings"]["h264IntraOnly"].as_bool()), (Some("high10"), Some(true)));
+    let r = s.execute("export.resolve", json!({"format": "h264", "settings": {"h264Profile": "high10"}})).unwrap();
+    assert_eq!(r["settings"]["h264Profile"], "high10");
+    assert_eq!(r["settings"]["h264IntraOnly"], false);
+    for bad in [json!({"h264Profile": "high12"}), json!({"settings": {"h264Profile": "high444"}})] {
+        assert!(s.execute("export.resolve", bad.clone()).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn wav_resolve_honours_explicit_sample_rates() {
     let mut s = demo();
@@ -464,7 +479,7 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     let video_bitrate = num(&video["bit_rate"]) / 1e6;
     let pixel_rate = (width * height) as f64 / (1920.0 * 1080.0) * (24000.0 / 1001.0) / 29.97;
     match format {
-        "h264" => verify_h264_preset(name, format_name, video, audio),
+        "h264" => verify_h264_preset(name, format_name, settings, video, audio),
         "prores" => verify_prores_preset(name, settings, video, audio, video_bitrate, pixel_rate, format_name),
         "dnxhr" => verify_dnx_preset(name, settings, video, audio, video_bitrate, pixel_rate),
         "apv" => verify_apv_preset(name, settings, video, audio, format_name),
@@ -473,10 +488,16 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     }
 }
 
-fn verify_h264_preset(name: &str, format_name: &str, video: &Value, audio: &Value) {
+fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
     assert!(format_name.contains("mp4"), "{name}: {format_name}");
     assert_eq!(video["codec_name"], "h264", "{name}");
-    assert_eq!(video["profile"], "High", "{name}");
+    let (profile, pix) = match (settings["h264Profile"].as_str(), settings["h264IntraOnly"].as_bool().unwrap_or(false)) {
+        (Some("high10"), true) => ("High 10 Intra", "yuv420p10le"),
+        (Some("high10"), false) => ("High 10", "yuv420p10le"),
+        _ => ("High", "yuv420p"),
+    };
+    assert_eq!(video["profile"], profile, "{name}");
+    assert_eq!(video["pix_fmt"], pix, "{name}");
     assert_eq!(audio["codec_name"], "aac", "{name}");
     assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
 }
@@ -792,7 +813,7 @@ fn hardware_export_is_explicit_and_legacy_auto_is_gpu_required() {
     let s = demo();
     let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| (st.hardware_encoding, st.gpu_rendering));
     let off = (HardwareEncoding::Off, GpuRendering::Off);
-    let amd = (HardwareEncoding::AmdRequired, GpuRendering::AmdRequired);
+    let amd = (HardwareEncoding::AmdRequired, GpuRendering::Auto);
     let gpu_encoder = (HardwareEncoding::GpuRequired, GpuRendering::Off);
     assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), off);
     assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto"})).unwrap(), gpu_encoder);
@@ -819,7 +840,7 @@ fn hardware_export_is_explicit_and_legacy_auto_is_gpu_required() {
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "nvencRequired"}})).unwrap(), nvenc);
     let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "nvencRequired", "hardwareExport": false})).unwrap_err().to_string();
     assert!(e.contains("does not combine with hardwareExport"), "{e}");
-    let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "nvencRequired", "gpuRendering": "amdRequired"})).unwrap_err().to_string();
+    let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "nvencRequired", "gpuRendering": "auto"})).unwrap_err().to_string();
     assert!(e.contains("gpuRendering off"), "{e}");
 }
 
@@ -1155,12 +1176,8 @@ fn export_amd_required_admission_precedes_side_effects() {
     let dir = Scratch::new("amd-admission");
     for format in [Format::H264, Format::Hevc] {
         let output = dir.0.join(format!("absent-{}", format.id()));
-        let mut settings = ExportSettings {
-            format,
-            path: output.join("x.mp4").to_string_lossy().into_owned(),
-            gpu_rendering: GpuRendering::AmdRequired,
-            ..Default::default()
-        };
+        let mut settings =
+            ExportSettings { format, path: output.join("x.mp4").to_string_lossy().into_owned(), gpu_rendering: GpuRendering::Auto, ..Default::default() };
         let calls = Arc::new(AtomicUsize::new(0));
         s.amd_export_provider = Some(Arc::new(Reject(format, calls.clone())));
         settings.scale = 0.0;
@@ -1207,8 +1224,13 @@ fn export_amd_required_owned_admission_reaches_sync_and_background_setup() {
     let dir = Scratch::new("amd-owned");
     for format in [Format::H264, Format::Hevc] {
         for wait in [true, false] {
-            let settings =
-                ExportSettings { format, path: dir.path(&format!("{}.mp4", format.id())), gpu_rendering: GpuRendering::AmdRequired, ..Default::default() };
+            let settings = ExportSettings {
+                format,
+                path: dir.path(&format!("{}.mp4", format.id())),
+                gpu_rendering: GpuRendering::Auto,
+                hardware_encoding: filmcraft_export::HardwareEncoding::AmdRequired,
+                ..Default::default()
+            };
             let project = s.project.clone();
             let id = crate::export_tools::spawn_export(&mut s, project, seq, settings, "x".into(), wait).unwrap();
             let job = s.jobs.iter().find(|j| j.id == id).unwrap();

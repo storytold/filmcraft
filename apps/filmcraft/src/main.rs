@@ -450,18 +450,11 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
-        self.0.render_cpu_compatible(project, seq, t, opts, sources)
+        self.0.render(project, seq, t, opts, sources)
     }
 
-    fn render_required(
-        &mut self,
-        project: &filmcraft_project::Project,
-        seq: filmcraft_project::ItemId,
-        t: filmcraft_time::Tick,
-        opts: filmcraft_render::RenderOptions,
-        sources: &dyn filmcraft_render::SourceProvider,
-    ) -> Result<filmcraft_render::Image, String> {
-        self.0.render_required_pixels(project, seq, t, opts, sources).map_err(|e| e.to_string())
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 

@@ -81,6 +81,8 @@ pub(crate) struct FxStage {
     used: HashSet<(u32, u32)>,
     /// One runner per routed effect: its pipelines, and the slots it reuses across layers.
     multipass: HashMap<&'static str, MultipassRunner>,
+    /// Working textures created so far (a steady stream of frames creates none).
+    created: u64,
 }
 
 /// One compute pass of a job.
@@ -516,7 +518,7 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), multipass: HashMap::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), multipass: HashMap::new(), created: 0 }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -534,6 +536,11 @@ impl FxStage {
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool {
         self.pool.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn created(&self) -> u64 {
+        self.created
     }
 
     fn targets(&mut self, device: &wgpu::Device, size: (u32, u32), n: usize) -> Vec<Target> {
@@ -555,6 +562,7 @@ impl FxStage {
             });
             let view = t.create_view(&Default::default());
             v.push((t, view));
+            self.created = self.created.saturating_add(1);
         }
         v.iter().take(n).cloned().collect()
     }

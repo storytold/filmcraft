@@ -49,6 +49,10 @@ pub enum H264Profile {
     Main,
     #[default]
     High,
+    /// High 10: 10-bit 4:2:0 encoding. HDR exports keep their 10-bit precision; SDR exports are
+    /// rendered at 8 bits first, so this adds no banding of its own but cannot remove it.
+    #[serde(rename = "high10")]
+    High10,
 }
 
 impl H264Profile {
@@ -57,7 +61,13 @@ impl H264Profile {
             H264Profile::Baseline => "Baseline",
             H264Profile::Main => "Main",
             H264Profile::High => "High",
+            H264Profile::High10 => "High 10",
         }
+    }
+
+    /// Bits per sample of the coded pictures.
+    pub fn bit_depth(self) -> u8 {
+        if self == H264Profile::High10 { 10 } else { 8 }
     }
 }
 
@@ -91,11 +101,9 @@ pub enum HardwareEncoding {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GpuRendering {
+    /// GPU frames on any wgpu adapter (Vulkan, Metal, D3D12). Fails closed: a frame the GPU
+    /// cannot draw, or a missing adapter, fails the export. Never renders on the CPU silently.
     Auto,
-    AmdRequired,
-    /// Frames come from the GPU's strict required path (no CPU composite, no silent fallback);
-    /// the encoder stays the software one. A refused frame fails the export.
-    GpuRequired,
     #[default]
     Off,
 }
@@ -510,7 +518,7 @@ pub struct Resolved {
 impl ExportSettings {
     /// Keep the user-facing hardware-export choice mapped to the existing strict AMD renderer and encoder modes.
     pub fn set_hardware_export(&mut self, enabled: bool) {
-        self.gpu_rendering = if enabled { GpuRendering::AmdRequired } else { GpuRendering::Off };
+        self.gpu_rendering = if enabled { GpuRendering::Auto } else { GpuRendering::Off };
         self.hardware_encoding = if enabled { HardwareEncoding::AmdRequired } else { HardwareEncoding::Off };
     }
 
@@ -696,8 +704,10 @@ impl ExportSettings {
             match self.video_format() {
                 Format::H264 => {
                     v += &format!(
-                        ", {} {}, {}",
+                        ", {}{} ({}-bit) {}, {}",
                         self.h264_profile.label(),
+                        if self.h264_intra_only { " Intra" } else { "" },
+                        self.h264_profile.bit_depth(),
                         self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into()),
                         self.bitrate_mode.label()
                     );
@@ -706,7 +716,7 @@ impl ExportSettings {
                         BitrateMode::Crf => format!(" {}", self.crf),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
-                    v += &format!(", keyframe every {} frames", r.keyint);
+                    v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
                 }
                 Format::Hevc => {
                     // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit

@@ -319,7 +319,7 @@ fn cpu_export_checkbox_picks_the_export_route() {
         let s: ExportSettings = serde_json::from_value(export_params(d.app())["settings"].clone()).unwrap();
         (s.gpu_rendering, s.hardware_encoding)
     };
-    let gpu = (GpuRendering::AmdRequired, HardwareEncoding::AmdRequired);
+    let gpu = (GpuRendering::Auto, HardwareEncoding::AmdRequired);
     let cpu = (GpuRendering::Off, HardwareEncoding::Off);
     // unchecked (the default): H.264 exports on the GPU
     assert_eq!(d.app().ui.export.settings.format, Format::H264);

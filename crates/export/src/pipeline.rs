@@ -13,7 +13,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_frame};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -66,6 +66,8 @@ impl Geometry {
 struct RendererPool {
     /// Initial capacity, also the maximum number of frame tasks admitted at once.
     capacity: usize,
+    /// What every renderer of the pool runs: a frame is planned for whichever one it gets.
+    caps: filmcraft_render::plan::DeviceCaps,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
@@ -75,8 +77,10 @@ struct RendererPool {
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
-        (!renderers.is_empty()).then(|| Self {
+        let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+        Some(Self {
             capacity: renderers.len(),
+            caps: filmcraft_render::plan::DeviceCaps { adjust_side },
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
@@ -129,9 +133,6 @@ pub(crate) struct Pipeline {
     /// The registered frame renderers (GPU compositors) when the setting allows and factories
     /// provide them; pooled because `frame` runs on several export threads at once.
     renderer: Option<RendererPool>,
-    required_gpu: bool,
-    /// `GpuRequired`: frames come from [`FrameRenderer::render_required`].
-    gpu_required_frames: bool,
     pub seq: ItemId,
     /// Output frame rate (frame `f` is at `rate.tick_of(f)`).
     pub rate: FrameRate,
@@ -187,17 +188,6 @@ impl Pipeline {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         q.settings.validate().map_err(ExportError::Unsupported)?;
         settings.validate()?;
-        if settings.gpu_rendering == GpuRendering::Auto {
-            return Err(ExportError::Unsupported(
-                "GPU export is unavailable until a GPU-resident renderer and VA-API encoder path are connected; choose Off for the explicit CPU reference mode"
-                    .into(),
-            ));
-        }
-        if settings.gpu_rendering == GpuRendering::AmdRequired {
-            return Err(ExportError::Unsupported(
-                "AMD GPU-resident export is unavailable until VA-API/Vulkan frame sharing is connected to the export encoder".into(),
-            ));
-        }
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         filmcraft_project::validate_frame_size(r.width, r.height).map_err(ExportError::Unsupported)?;
         let geom = Geometry::new(settings, q.settings.width, q.settings.height, r.width, r.height);
@@ -235,14 +225,11 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
-        let required_gpu = matches!(settings.gpu_rendering, GpuRendering::AmdRequired | GpuRendering::GpuRequired);
-        if required_gpu && renderer.is_none() {
-            return Err(ExportError::Unsupported("AMD GPU frame renderer is unavailable".into()));
+        if settings.gpu_rendering == GpuRendering::Auto && renderer.is_none() {
+            return Err(ExportError::Unsupported("GPU rendering is on but no GPU adapter is available. Turn GPU Rendering off to export on the CPU.".into()));
         }
         Ok(Pipeline {
             renderer,
-            required_gpu,
-            gpu_required_frames: settings.gpu_rendering == GpuRendering::GpuRequired,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -266,50 +253,28 @@ impl Pipeline {
     /// R'G'B' floats (3 per pixel). `Off` uses CPU reference renderer. GPU-selected modes fail closed.
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
         let t = self.rate.tick_of(f);
-        let required = self.required_gpu;
-        let cpu_frame = filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t);
-        if required && cpu_frame {
-            return Err(ExportError::Unsupported("AMD GPU rendering does not support this frame plan".into()));
-        }
-        let pool = self.renderer.as_ref().filter(|_| !cpu_frame);
-        let gpu = match pool {
-            Some(pool) if self.gpu_required_frames => {
+        // GPU mode fails closed: a frame the GPU can't draw is an error, never a silent CPU frame.
+        // Off renders on the CPU reference renderer only.
+        let img = match self.renderer.as_ref() {
+            None => filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources),
+            Some(pool) => {
+                if filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps) {
+                    return Err(ExportError::Unsupported(format!(
+                        "GPU rendering cannot draw frame {f} (an effect or transition has no GPU path). Nothing was rendered on the CPU."
+                    )));
+                }
                 let asked = web_time::Instant::now();
                 let res = pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render_required(&self.project, self.seq, t, self.opts, sources)
-                });
-                match res {
-                    Some(Ok(img)) => Some(img),
-                    Some(Err(reason)) => {
-                        return Err(ExportError::Unsupported(format!("GPU render refused frame {f}: {reason}. Nothing was rendered on the CPU.")));
-                    }
-                    None => None,
-                }
-            }
-            Some(pool) => {
-                let asked = web_time::Instant::now();
-                pool.with(|r| {
-                    crate::note_lock_wait(asked.elapsed());
                     r.render(&self.project, self.seq, t, self.opts, sources)
-                })
-                .flatten()
-            }
-            None => None,
-        };
-        let img = match gpu {
-            Some(img) => {
-                note_gpu_frame();
-                img
-            }
-            None => {
-                if required {
-                    return Err(ExportError::Unsupported("AMD GPU frame renderer failed".into()));
+                });
+                match res.flatten() {
+                    Some(img) => {
+                        note_gpu_frame();
+                        img
+                    }
+                    None => return Err(ExportError::Unsupported(format!("GPU render refused frame {f}. Nothing was rendered on the CPU."))),
                 }
-                if self.renderer.is_some() {
-                    note_gpu_fallback();
-                }
-                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
         let mut img = self.place(img);

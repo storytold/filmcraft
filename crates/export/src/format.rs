@@ -314,6 +314,10 @@ pub struct ExportSettings {
     pub pixel_aspect: Option<(u32, u32)>,
     pub field_order: FieldOrder,
     pub h264_profile: H264Profile,
+    /// H.264 all-intra: every frame is a keyframe (IDR), for edit-friendly intermediates; High 10
+    /// becomes High 10 Intra. The keyframe distance is ignored.
+    #[serde(default)]
+    pub h264_intra_only: bool,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
@@ -442,6 +446,7 @@ impl Default for ExportSettings {
             pixel_aspect: None,
             field_order: FieldOrder::Progressive,
             h264_profile: H264Profile::High,
+            h264_intra_only: false,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,
@@ -511,9 +516,6 @@ impl ExportSettings {
 
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
-        if self.gpu_rendering == GpuRendering::AmdRequired && !matches!(self.video_format(), Format::H264 | Format::Hevc) {
-            return Err(ExportError::Unsupported("AMD required mode supports VA-API H.264 or HEVC exports only".into()));
-        }
         // GPU-required encoding has no software encoder to fall back to, so only the VA-API formats can run.
         if self.hardware_encoding == HardwareEncoding::GpuRequired && !matches!(self.video_format(), Format::H264 | Format::Hevc) {
             return Err(ExportError::Unsupported("GPU-required encoding supports VA-API H.264 or HEVC exports only".into()));

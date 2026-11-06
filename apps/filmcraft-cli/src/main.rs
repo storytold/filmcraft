@@ -361,7 +361,11 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
-        self.0.render_cpu_compatible(project, seq, t, opts, sources)
+        self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 

@@ -752,7 +752,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             let first = t.seg.first_frame.saturating_add(t.off);
             let settings = filmcraft_export::ExportSettings {
                 // GPU route: frames come from the GPU only; a refused frame fails the part.
-                gpu_rendering: if gpu { filmcraft_export::GpuRendering::GpuRequired } else { filmcraft_export::GpuRendering::Off },
+                gpu_rendering: if gpu { filmcraft_export::GpuRendering::Auto } else { filmcraft_export::GpuRendering::Off },
                 format: filmcraft_export::Format::ProRes,
                 path: part.to_string_lossy().to_string(),
                 range: Some(TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)))),

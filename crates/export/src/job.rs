@@ -339,7 +339,7 @@ impl Exporter {
         // HDR sequences export HDR (H.264 / ProRes / DNxHR / APV, and H.265 where a registered encoder
         // writes Main 10) unless SDR is asked for; elsewhere H.265 is tone-mapped 8-bit SDR
         let pipe = q.settings.color;
-        let hdr_out = if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+        let hdr_out = if settings.hardware_encoding == crate::HardwareEncoding::AmdRequired {
             pipe.working.is_hdr() && !settings.sdr
         } else {
             hdr_output(pipe.working.is_hdr(), settings.sdr, settings.video_format(), crate::hdr_available)
@@ -357,7 +357,7 @@ impl Exporter {
         settings.keyframe_distance = Some(r.keyint);
         settings.adaptive_bitrate = None;
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
-        if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+        if settings.hardware_encoding == crate::HardwareEncoding::AmdRequired {
             let admission = admission.as_ref().ok_or_else(|| ExportError::Unsupported("AMD required export needs host adapter admission".into()))?;
             admission.validate_settings(&settings, &r)?;
             if settings.burn_captions || settings.effects.any_video() {
@@ -372,7 +372,7 @@ impl Exporter {
         }
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
-        let video = if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+        let video = if settings.hardware_encoding == crate::HardwareEncoding::AmdRequired {
             let admission = admission.as_ref().ok_or_else(|| ExportError::Unsupported("AMD required export needs host adapter admission".into()))?;
             let session = admission.create_session(project.clone(), seq, &settings, &r)?;
             VideoPath::Resident { session, width: r.width, height: r.height, rate: r.rate, hdr_out }

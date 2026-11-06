@@ -310,6 +310,12 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "h264Profile") {
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+    }
+    if let Some(v) = bool_p(p, "h264IntraOnly") {
+        settings.h264_intra_only = v;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }
@@ -358,7 +364,7 @@ fn parse_gpu_rendering(value: &Value, cmd: &str) -> Result<GpuRendering> {
     match value {
         Value::Bool(true) => Ok(GpuRendering::Auto),
         Value::Bool(false) => Ok(GpuRendering::Off),
-        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto | amdRequired")),
+        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto")),
     }
 }
 
@@ -524,7 +530,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     filmcraft_export::check_runtime_ram_ceiling().map_err(|e| EngineError::Other(e.to_string()))?;
     settings.validate().map_err(|e| EngineError::Other(e.to_string()))?;
     let format = settings.format;
-    let admission = if settings.gpu_rendering == GpuRendering::AmdRequired {
+    let admission = if settings.gpu_rendering == GpuRendering::Auto {
         Some(
             s.amd_export_provider
                 .as_ref()

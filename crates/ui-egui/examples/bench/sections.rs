@@ -27,7 +27,11 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
             opts: filmcraft_render::RenderOptions,
             sources: &dyn filmcraft_render::SourceProvider,
         ) -> Option<filmcraft_render::Image> {
-            self.0.render_cpu_compatible(project, seq, t, opts, sources)
+            self.0.render(project, seq, t, opts, sources)
+        }
+
+        fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+            self.0.caps()
         }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)

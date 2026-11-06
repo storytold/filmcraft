@@ -118,19 +118,10 @@ pub trait FrameRenderer: Send {
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
 
-    /// The strict GPU path for [`GpuRendering::GpuRequired`]: the frame, or the reason the GPU
-    /// refused it. The default has no such path, so it refuses every frame.
-    fn render_required(
-        &mut self,
-        project: &Project,
-        seq: ItemId,
-        t: Tick,
-        opts: filmcraft_render::RenderOptions,
-        sources: &dyn SourceProvider,
-    ) -> std::result::Result<filmcraft_render::Image, String> {
-        let _ = (project, seq, t, opts, sources);
-        Err("this frame renderer has no required GPU path".into())
-    }
+    /// What the renderer's device runs. The export plans with it before taking a renderer
+    /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
+    /// on the export's own thread instead of on the CPU inside the renderer.
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

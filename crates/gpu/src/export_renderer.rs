@@ -10,8 +10,8 @@
 use crate::{GpuCompositor, prepare, resident::ResidentNv12Binding, yuv_output::Nv12Layout};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{
-    DeviceRequirement, EligibilityFailure, FramePlan, GpuPlanError, PlannedGpuOp, RequiredFramePlan, ResidentRequiredFramePlan, TextureFormatRequirement,
-    materialize_frame_required, plan_frame, preflight_frame_required,
+    DeviceCaps, DeviceRequirement, EligibilityFailure, FramePlan, GpuPlanError, PlannedGpuOp, RequiredFramePlan, ResidentRequiredFramePlan,
+    TextureFormatRequirement, materialize_frame_required, plan_frame, preflight_frame_required,
 };
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
@@ -450,11 +450,17 @@ impl ExportRenderer {
 
     /// CPU-compatible parity helper. May return a CPU-planned image or `None` after GPU failure.
     /// Never use from GPU-selected or required export; use [`Self::render_required`].
-    pub fn render_cpu_compatible(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+    /// What this renderer's device runs: frames are planned with it, here and by the export
+    /// before it takes this renderer.
+    pub fn caps(&self) -> DeviceCaps {
+        self.compositor.caps()
+    }
+
+    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
         if self.admission.is_some() {
             return None;
         }
-        let plan = plan_frame(project, seq, t, opts, sources);
+        let plan = plan_frame(project, seq, t, opts, self.caps(), sources);
         match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
@@ -712,7 +718,7 @@ mod tests {
         let (p, seq, m) = project(false);
         let t = Tick::ZERO;
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render_cpu_compatible(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
         assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "solid fixture must contain a visible picture");
         // The linear premultiplied accumulator should be very close to the CPU float image.
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h));
@@ -773,16 +779,16 @@ mod tests {
             }];
             for f in [20, 24, 27] {
                 let t = rate.tick_of(f);
-                assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t), "{id} takes a GPU renderer");
+                assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, RenderOptions::default(), r.caps()), "{id} takes a GPU renderer");
                 let before = r.compositor.gpu_transitions;
-                let gpu = r.render_cpu_compatible(&p, seq, t, opts, &m).expect("GPU transition frame");
+                let gpu = r.render(&p, seq, t, opts, &m).expect("GPU transition frame");
                 assert_eq!(r.compositor.gpu_transitions, before + 1, "{id}: drawn on the GPU");
                 assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
             }
         }
         // Film Dissolve has no GPU stage: the whole frame stays a CPU image
         p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0].effect = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
-        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
+        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, rate.tick_of(24), RenderOptions::default(), DeviceCaps::ALL));
     }
 
     #[test]
@@ -794,7 +800,7 @@ mod tests {
         let (p, seq, m) = project(true);
         let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render_cpu_compatible(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
         assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "transformed fixture must contain a visible picture");
         assert_parity(&cpu, &gpu, "transformed");
     }
@@ -836,7 +842,7 @@ mod tests {
                     let opts = RenderOptions { scale, ..Default::default() };
                     let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources);
                     assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "fixture must contain a visible picture");
-                    let gpu = renderer.render_cpu_compatible(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
+                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
                     assert_parity(&cpu, &gpu, "transformed nest");
                 }
             }
@@ -849,7 +855,11 @@ mod tests {
         struct R(ExportRenderer);
         impl FrameRenderer for R {
             fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-                self.0.render_cpu_compatible(project, seq, t, opts, sources)
+                self.0.render(project, seq, t, opts, sources)
+            }
+
+            fn caps(&self) -> DeviceCaps {
+                self.0.caps()
             }
         }
         let Some(r) = ExportRenderer::new() else {

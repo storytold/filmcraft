@@ -57,7 +57,8 @@ fn va_profile(p: H264Profile) -> ffi::VAProfile {
     match p {
         H264Profile::Baseline => ffi::VAProfileH264ConstrainedBaseline,
         H264Profile::Main => ffi::VAProfileH264Main,
-        H264Profile::High => ffi::VAProfileH264High,
+        // High 10 is refused in `config`, before any profile is asked for.
+        H264Profile::High | H264Profile::High10 => ffi::VAProfileH264High,
     }
 }
 
@@ -100,8 +101,12 @@ pub(crate) fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &Export
     let kbps = s.bitrate_kbps.clamp(100, 4_000_000);
     let keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32).min(10_000);
     let max_kbps = if cbr { kbps } else { s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps.saturating_mul(3) / 2) };
+    if s.h264_profile == H264Profile::High10 {
+        return Err("the VA-API H.264 path does not encode High 10 yet; use the software encoder".into());
+    }
     let high = s.h264_profile == H264Profile::High;
-    let auto = filmcraft_h264enc::nal::pick_level(w.div_ceil(16), h.div_ceil(16), fps, 1, Some(max_kbps), high);
+    // br_factor as the software encoder's levels take it: 1000 for Main, 1250 for High
+    let auto = filmcraft_h264enc::nal::pick_level(w.div_ceil(16), h.div_ceil(16), fps, 1, Some(max_kbps), if high { 1250 } else { 1000 });
     let level = s.h264_level.map_or(auto, |l| filmcraft_h264enc::nal::level_at_least(l, auto));
     let sar = s.pixel_aspect.map_or((1, 1), |(n, d)| (n.clamp(1, 65535) as u16, d.clamp(1, 65535) as u16));
     Ok(Config { width: w, height: h, fps: (num, den), kbps, max_kbps, cbr, keyint, profile: s.h264_profile, signal: s.signal, level, sar })
@@ -263,12 +268,14 @@ fn parameter_sets(cfg: &Config, coded_w: u32, coded_h: u32) -> (Vec<u8>, Vec<u8>
         H264Profile::Baseline => (66u8, 0xC0u8),
         H264Profile::Main => (77, 0x40),
         H264Profile::High => (100, 0x00),
+        H264Profile::High10 => (110, 0x00),
     };
     let color = filmcraft_h264enc::ColorConfig { primaries: cfg.signal.primaries, transfer: cfg.signal.transfer, matrix: cfg.signal.matrix, full_range: false };
     let sps = nal::Sps {
         profile_idc,
         constraint_flags: constraint,
         level_idc: cfg.level,
+        bit_depth: 8,
         width_mbs: coded_w / 16,
         height_mbs: coded_h / 16,
         crop_right: coded_w.saturating_sub(cfg.width),

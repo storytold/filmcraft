@@ -37,7 +37,7 @@ use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::{
-    EligibilityFailure, FramePlan, GpuPlanError, PixelOrigin, PlanLayer, PlanStep, RequiredFramePlan, RequiredStep, ResidentRequiredFramePlan,
+    DeviceCaps, EligibilityFailure, FramePlan, GpuPlanError, PixelOrigin, PlanLayer, PlanStep, RequiredFramePlan, RequiredStep, ResidentRequiredFramePlan,
     ResidentRequiredStep,
 };
 
@@ -297,6 +297,10 @@ pub struct GpuCompositor {
     transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
     pub gpu_transitions: u64,
     pub cpu_transitions: u64,
+    /// Adjustment layers ([`PlanStep::Adjust`]) run by the effect stage, and frames with one that
+    /// went to the CPU.
+    pub gpu_adjustments: u64,
+    pub cpu_adjustments: u64,
     /// Total bytes uploaded (stats).
     pub uploaded_bytes: u64,
 }
@@ -469,6 +473,7 @@ pub fn prepare(plan: &FramePlan) -> PreparedPlan {
                 .flat_map(|s| match s {
                     PlanStep::Layers(layers) => vec![prepare_layers(layers)],
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| prepare_layers(ls)).collect(),
+                    PlanStep::Adjust { .. } => Vec::new(),
                 })
                 .collect(),
             ..Default::default()
@@ -662,6 +667,8 @@ impl GpuCompositor {
             transition_inputs: [None, None],
             gpu_transitions: 0,
             cpu_transitions: 0,
+            gpu_adjustments: 0,
+            cpu_adjustments: 0,
             uploaded_bytes: 0,
         }
     }
@@ -1676,6 +1683,11 @@ impl GpuCompositor {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, clear, resolve);
         }
+        // one frame for the effect stage's pool: the adjustment steps' working textures stay
+        // pooled with those of the layers between them
+        if let Some(f) = self.fx.as_mut() {
+            f.begin_frame();
+        }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
         let (canvas, dims) = self.render_plan(&empty, None, clear, false)?;
         let mut children = prep.map(|p| p.children.iter());
@@ -1707,9 +1719,87 @@ impl GpuCompositor {
                     }
                     self.gpu_transitions += 1;
                 }
+                PlanStep::Adjust { ops } => {
+                    if self.adjust(&canvas, dims, ops).is_none() {
+                        self.cpu_adjustments += 1;
+                        return Err(GpuPlanError {
+                            item_id: None,
+                            id: None,
+                            reason: EligibilityFailure::UnsupportedOperation { id: "adjustment layer".into() },
+                        });
+                    }
+                    self.gpu_adjustments += 1;
+                }
             }
         }
-        self.render_plan(&empty, None, false, resolve)
+        let out = self.render_plan(&empty, None, false, resolve);
+        if let Some(f) = self.fx.as_mut() {
+            f.end_frame();
+        }
+        out
+    }
+
+    /// What this device runs, for planning its frames ([`filmcraft_render::plan::plan_frame`]):
+    /// adjustment layers up to its texture limit when it has an effect stage.
+    pub fn caps(&self) -> DeviceCaps {
+        DeviceCaps { adjust_side: if self.fx.is_some() { self.device.limits().max_texture_dimension_2d } else { 0 } }
+    }
+
+    /// The adjustment layer `ops` on the accumulator (`canvas`, of size `w`×`h`): drawn into the
+    /// effect stage's working image, the effects run there, and the result replaces the
+    /// accumulator. None when the stage can't run them (nothing is drawn then).
+    fn adjust(&mut self, canvas: &wgpu::TextureView, (w, h): (u32, u32), ops: &[filmcraft_render::gpufx::FxOp]) -> Option<()> {
+        let rgba = SrcInfo {
+            kind: 1,
+            code_scale: 1.0,
+            code_levels: 1.0,
+            alpha: 0.0,
+            chroma: (w, h),
+            size: (w, h),
+            color: filmcraft_color::ColorInfo::SRGB_FULL,
+            input: None,
+        };
+        let identity = filmcraft_geom::Affine::IDENTITY;
+        let mut su = Self::uniforms(&rgba, &identity, 1.0, Blend::Normal, (w, h));
+        // (the effect source draw's integer decimation: the canvas is the working image)
+        su[26] = 1.0;
+        let sbuf = self.uniform_buffer(&su);
+        let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("adjust-source"),
+            layout: &self.layer_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(canvas) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+            ],
+        });
+        let lfx = filmcraft_render::plan::LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.to_vec() };
+        let job = self.fx.as_mut()?.job(&self.device, &self.queue, &lfx, sbg, &self.dummy)?;
+        let buf = self.uniform_buffer(&Self::uniforms(&rgba, &identity, 1.0, Blend::Normal, (w, h)));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("adjust-result"),
+            layout: &self.layer_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&job.result) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-adjust") });
+        self.fx.as_ref()?.record(&mut enc, &job);
+        {
+            // cleared, then drawn "over" nothing: the adjusted picture replaces the canvas
+            let mut pass = accum_pass(&mut enc, canvas, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_pipeline(&self.layer_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        Some(())
     }
 
     /// Export rendering: `plan` composited into the linear float accumulator and read back as
@@ -2065,10 +2155,10 @@ mod routed_guard_tests {
         let mut e = filmcraft_project::find_effect("vr_blur").expect("vr_blur").instance();
         e.params.get_mut("blurriness").expect("blurriness").value = filmcraft_project::ParamValue::Float(4.0);
         let op = multipass_op(&e, &multipass_cx(), 67, 41).expect("route");
-        let routed = LayerFx { size: (67, 41), decimation: 1, ops: vec![FxOp::Multipass(op)] };
+        let routed = LayerFx { size: (67, 41), decimation: 1, turns: 0, ops: vec![FxOp::Multipass(op)] };
         assert!(job_failure_is_fatal(false, &routed));
         assert!(job_failure_is_fatal(true, &routed));
-        let plain = LayerFx { size: (67, 41), decimation: 1, ops: vec![FxOp::BlackWhite] };
+        let plain = LayerFx { size: (67, 41), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] };
         assert!(!job_failure_is_fatal(false, &plain));
         assert!(job_failure_is_fatal(true, &plain));
     }
