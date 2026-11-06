@@ -31,6 +31,10 @@ fn pes(stream_id: u8, pts: Option<i64>, dts: Option<i64>, payload: &[u8], bounde
     v
 }
 
+fn ps_pack() -> [u8; 14] {
+    [0, 0, 1, 0xBA, 0x44, 0, 4, 0, 4, 1, 1, 0x89, 0xC3, 0xF8]
+}
+
 /// A tiny TS muxer: PAT, PMT and PES packets cut into 188-byte packets (192 with `m2ts`).
 struct TsMux {
     out: Vec<u8>,
@@ -76,17 +80,39 @@ impl TsMux {
         self.packet(pid, true, &payload);
     }
     fn psi(&mut self, streams: &[(u8, u16)]) {
+        self.psi_pcr(streams, 0x100);
+    }
+    /// PAT and PMT; the PMT names `pcr_pid` as the PCR PID. The streams' ES info is empty.
+    fn psi_pcr(&mut self, streams: &[(u8, u16)], pcr_pid: u16) {
+        let descs: Vec<(u8, u16, Vec<u8>)> = streams.iter().map(|&(st, pid)| (st, pid, Vec::new())).collect();
+        self.psi_full(&descs, pcr_pid);
+    }
+    /// PAT and PMT with ES descriptors per stream.
+    fn psi_full(&mut self, streams: &[(u8, u16, Vec<u8>)], pcr_pid: u16) {
         // PAT: program 1 → PMT PID 0x100
         let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
         self.section(0, &pat);
-        let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC1, 0, 0, 0xE1, 0x00, 0xF0, 0];
-        for &(st, pid) in streams {
-            pmt.extend([st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0]);
+        let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC1, 0, 0, 0xE0 | (pcr_pid >> 8) as u8, pcr_pid as u8, 0xF0, 0];
+        for (st, pid, desc) in streams {
+            pmt.extend([*st, 0xE0 | (*pid >> 8) as u8, *pid as u8, 0xF0 | (desc.len() >> 8) as u8, desc.len() as u8]);
+            pmt.extend_from_slice(desc);
         }
         let len = pmt.len() - 3 + 4;
         pmt[1] = 0xB0 | (len >> 8) as u8;
         pmt[2] = len as u8;
         self.section(0x100, &pmt);
+    }
+    /// An adaptation-field-only packet carrying a PCR with the given 33-bit base.
+    fn pcr(&mut self, pid: u16, base: i64) {
+        let cc = self.cc.entry(pid).or_insert(0);
+        let b = base & ((1 << 33) - 1);
+        let mut p = vec![0x47, (pid >> 8) as u8, pid as u8, 0x20 | *cc, 183, 0x10];
+        p.extend([(b >> 25) as u8, (b >> 17) as u8, (b >> 9) as u8, (b >> 1) as u8, ((b & 1) as u8) << 7 | 0x7E, 0]);
+        p.resize(188, 0xFF);
+        if self.m2ts {
+            self.out.extend_from_slice(&[0, 0, 0, 0]);
+        }
+        self.out.extend(p);
     }
     fn pes(&mut self, pid: u16, data: &[u8]) {
         let mut rest = data;
@@ -331,6 +357,273 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
 }
 
+#[test]
+fn pcr_range_follows_the_pmt_pcr_pid() {
+    // two PIDs carry PCRs on unrelated time bases; only the PMT's PCR_PID counts
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x101);
+    for k in 0..3i64 {
+        mux.pcr(0x101, 1000 + 40_500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 40_500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, (1000 + 81_000) * 300)));
+    // the other PID is the clock reference instead
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x102);
+    for k in 0..3i64 {
+        mux.pcr(0x101, 1000 + 40_500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 40_500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((((1 << 32) + 5000) * 300, ((1 << 32) + 5000 + 81_000) * 300)));
+}
+
+#[test]
+fn pcr_range_without_a_usable_pcr_pid() {
+    // the PMT says "no PCR" (0x1FFF) or names a PID that never carries one
+    for pcr_pid in [0x1FFF, 0x150] {
+        let mut mux = TsMux::new(false);
+        mux.psi_pcr(&[(0x02, 0x101)], pcr_pid);
+        for base in [1000, 2000, 3000, 4000] {
+            mux.pcr(0x101, base);
+        }
+        assert_eq!(open(&mux.out).unwrap().pcr_range, None, "pcr_pid {pcr_pid:#x}");
+    }
+    // no PMT at all: the first PID seen with a PCR stands in
+    let mut mux = TsMux::new(false);
+    for k in 0..6i64 {
+        mux.pcr(0x101, 1000 + 500 * k);
+        mux.pcr(0x102, (1 << 32) + 5000 + 500 * k);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, 3500 * 300)));
+}
+
+#[test]
+fn pcr_range_unwraps_the_33_bit_base() {
+    let mut mux = TsMux::new(false);
+    mux.psi_pcr(&[(0x02, 0x101)], 0x101);
+    let near = (1i64 << 33) - 1000;
+    for base in [near, near + 500, 2000, 2500] {
+        mux.pcr(0x101, base);
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 2500) * 300)));
+}
+
+#[test]
+fn pcr_range_continues_when_a_later_pmt_changes_the_pcr_pid() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    mux.section(0x100, &pmt_section_for(1, 0, true, 0x101, &[(0x03, 0x1100)]));
+    let near = (1i64 << 33) - 1000;
+    mux.pcr(0x101, near);
+    mux.section(0x100, &pmt_section_for(1, 1, true, 0x102, &[(0x03, 0x1100)]));
+    mux.pcr(0x101, near + 500); // no longer active
+    mux.pcr(0x102, 500);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 500) * 300)));
+}
+
+#[test]
+fn pcr_before_the_pmt_is_kept_when_the_pmt_confirms_its_pid() {
+    let mut mux = TsMux::new(false);
+    mux.pcr(0x101, 1000);
+    mux.psi_pcr(&[(0x03, 0x1100)], 0x101);
+    mux.pcr(0x101, 2000);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, 2000 * 300)));
+}
+
+#[test]
+fn streams_sharing_a_clock_stay_in_step_across_the_33_bit_wrap() {
+    // video's first PTS is just before the wrap, audio's just after: one clock, so audio is
+    // 2^33 + 500, not 500 (26.5 hours apart)
+    let w = 1i64 << 33;
+    for audio_first in [false, true] {
+        let mut mux = TsMux::new(false);
+        mux.psi(&[(0x03, 0x1100), (0x03, 0x1101)]);
+        let (v0, a0) = (w - 1000, 500);
+        let video = |mux: &mut TsMux, k: u8| mux.pes(0x1101, &pes(0xC0, Some((v0 + 2160 * k as i64) % w), None, &mp2_frame(k), true));
+        let audio = |mux: &mut TsMux, k: u8| mux.pes(0x1100, &pes(0xC0, Some(a0 + 2160 * k as i64), None, &mp2_frame(k), true));
+        for k in 0..3u8 {
+            if audio_first {
+                audio(&mut mux, k);
+                video(&mut mux, k);
+            } else {
+                video(&mut mux, k);
+                audio(&mut mux, k);
+            }
+        }
+        let f = open(&mux.out).unwrap();
+        let pts = |s: usize| f.streams[s].units.iter().map(|u| u.pts.unwrap()).collect::<Vec<_>>();
+        // one timeline: audio starts 1500 ticks after video (-1000 and 500 around the wrap), whichever
+        // stream the unwrapper saw first, and video steps by 2160
+        let (a, v) = (pts(0), pts(1));
+        assert_eq!(a[0] - v[0], 1500, "audio_first {audio_first}: audio {a:?} video {v:?}");
+        assert_eq!(v[1] - v[0], 2160, "video {v:?}");
+    }
+}
+
+#[test]
+fn a_late_pre_wrap_timestamp_first_after_the_wrap_goes_below_zero() {
+    let mut u = Unwrap::default();
+    assert_eq!(u.unwrap(5), 5);
+    // a B picture from just before the wrap, arriving after the wrapped one
+    assert_eq!(u.unwrap((1 << 33) - 3), -3);
+    assert_eq!(u.unwrap(10), 10, "the late one did not shift the timeline");
+}
+
+#[test]
+fn a_forward_jump_from_a_small_first_timestamp_is_followed() {
+    // spliced capture: new time base far above the first value, no wrap involved
+    let mut u = Unwrap::default();
+    let a = u.unwrap(90_000);
+    let b = u.unwrap(0x1_8000_0000);
+    let c = u.unwrap(0x1_8000_0000 + 3_000);
+    assert_eq!((a, b, c), (90_000, 0x1_8000_0000, 0x1_8000_0000 + 3_000));
+}
+
+#[test]
+fn a_forward_jump_after_a_wrap_stays_in_the_current_epoch() {
+    let wrap = 1i64 << 33;
+    let mut u = Unwrap::default();
+    assert_eq!(u.unwrap(wrap - 1000), wrap - 1000);
+    assert_eq!(u.unwrap(500), wrap + 500);
+    let jump = 0x1_8000_0000;
+    assert_eq!(u.unwrap(jump), wrap + jump);
+    assert_eq!(u.unwrap(jump + 3000), wrap + jump + 3000);
+}
+
+#[test]
+fn program_streams_share_their_initial_wrap_epoch() {
+    let wrap = 1i64 << 33;
+    for audio_first in [false, true] {
+        let video = pes(0xE0, Some(wrap - 1000), None, &mpeg2_frame(1, 0, false, 100), true);
+        let audio = pes(0xC0, Some(500), None, &mp2_frame(0), true);
+        let mut out = ps_pack().to_vec();
+        if audio_first {
+            out.extend(audio);
+            out.extend(video);
+        } else {
+            out.extend(video);
+            out.extend(audio);
+        }
+        out.extend([0, 0, 1, 0xB9]);
+        let f = open(&out).unwrap();
+        let pts =
+            |id| f.streams.iter().find(|s| s.id == (StreamId::Ps { stream_id: id, sub_id: None })).and_then(|s| s.units.first()).and_then(|u| u.pts).unwrap();
+        assert_eq!(pts(0xC0) - pts(0xE0), 1500, "audio_first {audio_first}");
+    }
+}
+
+#[test]
+fn a_program_stream_first_seen_after_a_wrap_joins_the_current_epoch() {
+    let wrap = 1i64 << 33;
+    let mut out = ps_pack().to_vec();
+    out.extend(pes(0xC0, Some(wrap - 1000), None, &mp2_frame(0), true));
+    out.extend(pes(0xC0, Some(500), None, &mp2_frame(1), true));
+    out.extend(pes(0xC1, Some(600), None, &mp2_frame(2), true));
+    out.extend([0, 0, 1, 0xB9]);
+    let f = open(&out).unwrap();
+    let pts = |id| f.streams.iter().find(|s| s.id == (StreamId::Ps { stream_id: id, sub_id: None })).and_then(|s| s.units.first()).and_then(|u| u.pts).unwrap();
+    assert_eq!(pts(0xC1), wrap + 600);
+}
+
+#[test]
+fn program_stream_scr_is_unwrapped_and_ordered() {
+    // two packs, the SCR wraps between them: the range is first..last, not a 2^33 jump backwards
+    fn scr_pack(base: i64) -> Vec<u8> {
+        let b = base & ((1 << 33) - 1);
+        let mut v = vec![0, 0, 1, 0xBA];
+        v.extend([
+            0x44 | (((b >> 30) & 7) as u8) << 3 | ((b >> 28) & 3) as u8,
+            (b >> 20) as u8,
+            0x04 | (((b >> 15) & 0x1F) as u8) << 3 | ((b >> 13) & 3) as u8,
+            (b >> 5) as u8,
+            0x04 | ((b & 0x1F) as u8) << 3,
+            1,
+            1,
+            0x89,
+            0xC3,
+            0xF8,
+        ]);
+        v
+    }
+    let near = (1i64 << 33) - 1000;
+    let mut out = scr_pack(near);
+    out.extend(pes(0xE0, Some(0), None, &mpeg2_frame(1, 0, false, 100), true));
+    out.extend(scr_pack(2000));
+    out.extend(pes(0xE0, Some(3600), None, &mpeg2_frame(2, 1, false, 100), true));
+    out.extend([0, 0, 1, 0xB9]);
+    let f = open(&out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 2000) * 300)));
+}
+
+#[test]
+fn language_descriptor_accepts_only_three_letters() {
+    let cases: [([u8; 3], Option<&str>); 5] = [(*b"ger", Some("ger")), (*b"ENG", Some("eng")), ([0, 0, 0], None), (*b"e\0g", None), (*b"d e", None)];
+    for (code, want) in cases {
+        let mut desc = vec![0x0A, 4];
+        desc.extend(code);
+        desc.push(0);
+        let mut mux = TsMux::new(false);
+        mux.psi_full(&[(0x03, 0x1100, desc)], 0x100);
+        mux.pes(0x1100, &pes(0xC0, Some(0), None, &mp2_frame(0), true));
+        let f = open(&mux.out).unwrap();
+        assert_eq!(f.streams[0].language.as_deref(), want, "{code:?}");
+    }
+}
+
+/// Audio-only TS: `n` PES packets of two MPEG-1 layer II frames each (7 transport packets apiece).
+fn audio_ts(n: u8) -> Vec<u8> {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    for k in 0..n {
+        let a: Vec<u8> = [mp2_frame(2 * k), mp2_frame(2 * k + 1)].concat();
+        mux.pes(0x1100, &pes(0xC0, Some(90_000 + 4320 * k as i64), None, &a, true));
+    }
+    mux.out
+}
+
+/// Byte offset of the `n`-th (0-based) packet of `pid` that has no unit start.
+fn nth_continuation(data: &[u8], pid: u16, n: usize) -> usize {
+    (0..data.len() / 188)
+        .map(|i| i * 188)
+        .filter(|&o| data[o] == 0x47 && (((data[o + 1] & 0x1F) as u16) << 8 | data[o + 2] as u16) == pid && data[o + 1] & 0x40 == 0)
+        .nth(n)
+        .expect("packet exists")
+}
+
+fn audio_bytes(f: &File, data: &[u8]) -> Vec<Vec<u8>> {
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    (0..f.streams[a].units.len()).map(|i| f.read_unit(data, a, i).unwrap()).collect()
+}
+
+#[test]
+fn packet_with_transport_error_indicator_is_dropped() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    assert!(base.warnings.is_empty(), "{:?}", base.warnings);
+    let mut data = clean.clone();
+    let o = nth_continuation(&data, 0x1100, 10);
+    data[o + 1] |= 0x80;
+    // a corrupted payload must not reach the splitter either
+    data[o + 20] ^= 0xFF;
+    let f = open(&data).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 packet(s) with the transport error indicator")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) < total(&base), "the 184 payload bytes of the flagged packet are gone");
+    for unit in audio_bytes(&f, &data) {
+        assert!(!unit.is_empty());
+    }
+}
+
 /// An Annex B NAL unit: start code, header bytes and `n` bytes of payload (no zero runs).
 fn nal(header: &[u8], body: &[u8]) -> Vec<u8> {
     let mut v = vec![0, 0, 0, 1];
@@ -452,6 +745,165 @@ fn h264_one_access_unit_per_pes_is_unchanged() {
         assert_eq!(s.units[i].key, i % 3 == 0);
         assert!(!s.units[i].disposable);
     }
+}
+
+#[test]
+fn scrambled_packet_is_skipped_with_a_warning() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    let mut data = clean.clone();
+    let o = nth_continuation(&data, 0x1100, 10);
+    data[o + 3] |= 0x80; // transport_scrambling_control = 2 (even key)
+    let f = open(&data).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 scrambled packet(s) skipped")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("continuity")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) < total(&base));
+}
+
+#[test]
+fn duplicate_packet_is_dropped_but_a_different_payload_with_the_same_counter_is_kept() {
+    let clean = audio_ts(6);
+    let base = open(&clean).unwrap();
+    let expect = audio_bytes(&base, &clean);
+    let o = nth_continuation(&clean, 0x1100, 10);
+    // exact duplicate right behind the original
+    let mut dup = clean.clone();
+    let copy = dup[o..o + 188].to_vec();
+    dup.splice(o + 188..o + 188, copy);
+    let f = open(&dup).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("1 duplicate packet(s) dropped")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("continuity")), "{:?}", f.warnings);
+    assert_eq!(audio_bytes(&f, &dup), expect, "the repeated payload is not fed twice");
+    // same counter but other content: not a duplicate, kept
+    let mut other = clean.clone();
+    let mut copy = other[o..o + 188].to_vec();
+    copy[187] ^= 0x55;
+    other.splice(o + 188..o + 188, copy);
+    let f = open(&other).unwrap();
+    assert!(!f.warnings.iter().any(|w| w.contains("duplicate")), "{:?}", f.warnings);
+    let a = f.find(Kind::Audio, |_| true).unwrap();
+    let total = |f: &File| f.streams[a].units.iter().map(|u| u.size as u64).sum::<u64>();
+    assert!(total(&f) > total(&base), "the differing packet's payload is kept");
+}
+
+/// A PMT section with the given program, version, applicability, PCR PID and streams (valid CRC).
+fn pmt_section_for(program: u16, version: u8, current_next: bool, pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
+    let mut pmt = vec![
+        0x02,
+        0xB0,
+        0,
+        (program >> 8) as u8,
+        program as u8,
+        0xC0 | (version << 1) | current_next as u8,
+        0,
+        0,
+        0xE0 | (pcr_pid >> 8) as u8,
+        pcr_pid as u8,
+        0xF0,
+        0,
+    ];
+    for &(st, pid) in streams {
+        pmt.extend([st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0]);
+    }
+    let len = pmt.len() - 3 + 4;
+    pmt[1] = 0xB0 | (len >> 8) as u8;
+    pmt[2] = len as u8;
+    pmt
+}
+
+/// A PMT section for program 1 with the given version / current_next / streams (valid CRC).
+fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8> {
+    pmt_section_for(1, version, current_next, 0x100, streams)
+}
+
+#[test]
+fn later_pmt_adds_streams_but_never_changes_or_removes_known_ones() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let audio = |mux: &mut TsMux, k: u8| {
+        let a: Vec<u8> = [mp2_frame(2 * k), mp2_frame(2 * k + 1)].concat();
+        mux.pes(0x1100, &pes(0xC0, Some(90_000 + 4320 * k as i64), None, &a, true));
+    };
+    audio(&mut mux, 0);
+    // version 1: the PID becomes AAC and a second stream appears; version 2: PID removed
+    mux.section(0x100, &pmt_section(1, true, &[(0x0F, 0x1100), (0x03, 0x1200)]));
+    audio(&mut mux, 1);
+    mux.section(0x100, &pmt_section(2, true, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section(2, true, &[(0x03, 0x1200)]));
+    audio(&mut mux, 2);
+    let f = open(&mux.out).unwrap();
+    assert!(f.streams.iter().any(|s| s.id == StreamId::Pid(0x1200)), "the PID added by a later PMT is read");
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert_eq!(f.streams[0].codec, Codec::MpegAudio);
+    assert_eq!(f.streams[0].units.len(), 6, "audio kept flowing through the first PMT's splitter");
+    assert_eq!(f.warnings.iter().filter(|w| w.contains("program map table changed")).count(), 1, "{:?}", f.warnings);
+}
+
+#[test]
+fn audio_pid_announced_in_a_later_pmt_is_read_without_warning() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let a: Vec<u8> = [mp2_frame(0), mp2_frame(1)].concat();
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &a, true));
+    // version 1 keeps 0x1100 as it was and announces a second audio PID
+    mux.section(0x100, &pmt_section(1, true, &[(0x03, 0x1100), (0x03, 0x1200)]));
+    let b: Vec<u8> = [mp2_frame(2), mp2_frame(3)].concat();
+    mux.pes(0x1200, &pes(0xC0, Some(90_000 + 8640), None, &b, true));
+    let f = open(&mux.out).unwrap();
+    let late = f.streams.iter().find(|s| s.id == StreamId::Pid(0x1200)).expect("late audio PID");
+    assert!(!late.units.is_empty(), "the late stream has units");
+    assert!(f.warnings.iter().all(|w| !w.contains("program map table")), "{:?}", f.warnings);
+}
+
+#[test]
+fn pmt_not_yet_applicable_is_ignored() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    // current_next_indicator 0: describes a future table, must not be used
+    mux.section(0x100, &pmt_section(3, false, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section(0, true, &[(0x03, 0x1100)]));
+    let a: Vec<u8> = [mp2_frame(0), mp2_frame(1)].concat();
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &a, true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.streams.len(), 1);
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+}
+
+#[test]
+fn a_bad_crc_on_the_current_pmt_version_is_reported() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    mux.section(0x100, &pmt_section(0, true, &[(0x03, 0x1100)]));
+    // A short PSI section is placed at the end of its stuffed packet, so the final byte is CRC.
+    if let Some(last) = mux.out.last_mut() {
+        *last ^= 1;
+    }
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert!(f.warnings.iter().any(|w| w == "1 PSI section(s) with bad CRC"), "{:?}", f.warnings);
+}
+
+#[test]
+fn a_pmt_for_another_program_on_the_same_pid_is_ignored() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    // The other program deliberately has the same PMT version and arrives first.
+    mux.section(0x100, &pmt_section_for(2, 0, true, 0x102, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section_for(1, 0, true, 0x101, &[(0x03, 0x1100)]));
+    mux.pcr(0x101, 1000);
+    mux.pcr(0x101, 2000);
+    mux.pcr(0x102, 50_000);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.program, Some(1));
+    assert_eq!(f.streams.len(), 1);
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert_eq!(f.pcr_range, Some((1000 * 300, 2000 * 300)));
 }
 
 #[test]
