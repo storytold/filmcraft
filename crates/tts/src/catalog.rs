@@ -242,11 +242,7 @@ pub static KOKORO_RU_VOICES: &[NeuralVoice] = &[
 ];
 
 pub fn find(id: &str) -> Option<&'static NeuralVoice> {
-    VOICES
-        .iter()
-        .chain(KOKORO_RU_VOICES.iter())
-        .chain(PIPER_RU_VOICES.iter())
-        .find(|v| v.info.id == id)
+    VOICES.iter().chain(KOKORO_RU_VOICES.iter()).chain(PIPER_RU_VOICES.iter()).find(|v| v.info.id == id)
 }
 
 pub fn package_for_voice(voice_id: &str) -> Option<&'static str> {
@@ -352,7 +348,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("filmcraft-tts-cat-{}", std::process::id()));
         assert!(!installed(&dir));
         assert_eq!(missing_bytes(&dir), size());
+    }
 
+    #[test]
+    fn kokoro_ru_files_are_pinned_and_voices_resolve() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-tts-cat-kokoro-{}", std::process::id()));
         for f in KOKORO_RU_FILES {
             assert_eq!(f.sha256.len(), 64, "{}", f.name);
             assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
@@ -366,7 +366,11 @@ mod tests {
         assert!(kokoro_ru_size() > 328_000_000 && kokoro_ru_size() < 330_000_000, "{}", kokoro_ru_size());
         assert!(!kokoro_ru_installed(&dir));
         assert_eq!(kokoro_ru_missing_bytes(&dir), kokoro_ru_size());
+    }
 
+    #[test]
+    fn piper_ru_files_are_pinned_and_voices_resolve() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-tts-cat-piper-{}", std::process::id()));
         for f in PIPER_RU_FILES {
             assert_eq!(f.sha256.len(), 64, "{}", f.name);
             assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));

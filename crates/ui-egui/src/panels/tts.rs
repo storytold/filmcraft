@@ -76,9 +76,43 @@ impl Default for TtsDraft {
 }
 
 impl TtsDraft {
+    pub fn from_prefs(prefs: &filmcraft_engine::autosave::TtsPrefs) -> Self {
+        let lang = if prefs.last_language.is_empty() { "en-US".to_string() } else { prefs.last_language.clone() };
+        let models = filmcraft_engine::transcript::models_dir();
+        let voices = filmcraft_tts::voices_in(models.as_deref());
+        let (voice, pitch, pace) = if let Some(lp) = prefs.languages.get(&lang) {
+            let voice = if voices.iter().any(|v| v.id == lp.voice && v.language == lang) { lp.voice.clone() } else { default_voice_for_lang(&lang, &voices) };
+            (voice, lp.pitch, lp.pace)
+        } else {
+            (default_voice_for_lang(&lang, &voices), VocalPitch::Default, 1.0)
+        };
+        TtsDraft {
+            text: filmcraft_tts::sample_sentence_for_language(&lang).into(),
+            language: lang,
+            voice,
+            pitch,
+            pace,
+            advanced_open: prefs.advanced_open,
+            ..Default::default()
+        }
+    }
+
     fn params(&self) -> serde_json::Value {
         json!({"text": self.text, "voice": self.voice, "pitch": self.pitch.id(), "pace": self.pace})
     }
+}
+
+pub fn default_voice_for_lang(language: &str, voices: &[filmcraft_tts::VoiceInfo]) -> String {
+    if language == "en-US" && natural_installed() {
+        return "kokoro-heart".into();
+    }
+    if let Some(v) = voices.iter().find(|v| v.language == language && v.installed) {
+        return v.id.to_string();
+    }
+    if let Some(v) = voices.iter().find(|v| v.language == language) {
+        return v.id.to_string();
+    }
+    filmcraft_tts::default_voice_id().into()
 }
 
 /// The natural voice package is downloaded and usable in this build.
@@ -213,6 +247,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     painter.rect_filled(rect, 0.0, t.panel_bg);
     let models = filmcraft_engine::transcript::models_dir();
     let voices = filmcraft_tts::voices_in(models.as_deref());
+    let tts_prefs = app.session.prefs.tts.clone();
     let is_voice_installed = voices.iter().find(|v| v.id == app.ui.tts.voice).is_some_and(|v| v.installed);
     let busy = app.ui.tts.pending.is_some();
     let download = app
@@ -257,10 +292,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if should_replace {
                         d.text = filmcraft_tts::sample_sentence_for_language(&d.language).to_string();
                     }
-                    if let Some(first) = voices.iter().find(|v| v.language == d.language) {
-                        d.voice = first.id.to_string();
-                        d.download_error = None;
+                    if let Some(lp) = tts_prefs.languages.get(*id) {
+                        d.voice =
+                            if voices.iter().any(|v| v.id == lp.voice && v.language == *id) { lp.voice.clone() } else { default_voice_for_lang(id, &voices) };
+                        d.pitch = lp.pitch;
+                        d.pace = lp.pace;
+                    } else {
+                        d.voice = default_voice_for_lang(id, &voices);
+                        d.pitch = VocalPitch::Default;
+                        d.pace = 1.0;
                     }
+                    d.download_error = None;
                 }
             }
         });
@@ -299,12 +341,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     filmcraft_tts::catalog::KOKORO_RU_SOURCE,
                     filmcraft_tts::catalog::KOKORO_RU_LICENSE,
                 ),
-                _ => (
-                    filmcraft_tts::catalog::PACKAGE_NAME,
-                    filmcraft_tts::catalog::size(),
-                    filmcraft_tts::catalog::SOURCE,
-                    filmcraft_tts::catalog::LICENSE,
-                ),
+                _ => (filmcraft_tts::catalog::PACKAGE_NAME, filmcraft_tts::catalog::size(), filmcraft_tts::catalog::SOURCE, filmcraft_tts::catalog::LICENSE),
             };
             ui.add_space(6.0);
             egui::Frame::new().fill(t.field_bg).stroke(egui::Stroke::new(1.0, t.field_border)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
@@ -446,14 +483,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     auto.add("tts.save", sr, "Save");
 
+    let sync_prefs = d.loaded_from.is_none();
+    let current_tts = (d.language.clone(), d.voice.clone(), d.pitch, d.pace, d.advanced_open);
+
     for a in actions {
         match a {
             Action::New => {
-                let keep = (app.ui.tts.language.clone(), app.ui.tts.voice.clone(), app.ui.tts.pitch, app.ui.tts.pace);
                 app.session.state.selection.clear();
                 let dl = app.ui.tts.download_job;
-                let text = filmcraft_tts::sample_sentence_for_language(&keep.0).to_string();
-                app.ui.tts = TtsDraft { text, language: keep.0, voice: keep.1, pitch: keep.2, pace: keep.3, download_job: dl, ..Default::default() };
+                app.ui.tts = TtsDraft::from_prefs(&app.session.prefs.tts);
+                app.ui.tts.download_job = dl;
             }
             Action::Run(cmd, p, play) => start(app, cmd, p, play),
             Action::Download => {
@@ -477,6 +516,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        }
+    }
+
+    if sync_prefs {
+        let (lang, voice, pitch, pace, adv) = current_tts;
+        let p = &app.session.prefs.tts;
+        let needs_save = p.last_language != lang
+            || p.advanced_open != adv
+            || p.languages.get(&lang).is_none_or(|lp| lp.voice != voice || lp.pitch != pitch || (lp.pace - pace).abs() > 1e-4);
+        if needs_save {
+            let mut prefs = app.session.prefs.clone();
+            prefs.tts.last_language = lang.clone();
+            prefs.tts.advanced_open = adv;
+            prefs.tts.languages.insert(lang, filmcraft_engine::autosave::TtsLanguagePrefs { voice, pitch, pace });
+            let _ = app.session.set_prefs(prefs);
         }
     }
 }
