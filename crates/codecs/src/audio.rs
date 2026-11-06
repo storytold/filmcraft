@@ -388,6 +388,14 @@ pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a
     Some(core)
 }
 
+/// The channels an `AudioSpecificConfig` lays out, a program config element's included (ISO/IEC
+/// 14496-3 §4.4.1.1), when there are 1 to [`filmcraft_media::MAX_AUDIO_CHANNELS`]: what our
+/// decoder returns. `None` if `asc` is not one it reads.
+pub fn aac_config_channels(asc: &[u8]) -> Option<u32> {
+    let n = filmcraft_aac::AudioSpecificConfig::parse(asc).ok()?.channels();
+    u32::try_from(n).ok().filter(|n| (1..=filmcraft_media::MAX_AUDIO_CHANNELS).contains(n))
+}
+
 /// Whether [`PacketDecoder::aac`] upsamples a decoded AAC core at `core` Hz to `rate` (HE-AAC).
 fn upsamples_core(core: u32, rate: u32) -> bool {
     core.checked_mul(2) == Some(rate)
@@ -1197,6 +1205,40 @@ mod he_aac_tests {
     const LC_22K: [u8; 2] = [0x13, 0x90];
     /// An access unit holding only a fill element with SBR data (ID_FIL, EXT_SBR_DATA, ID_END).
     const SBR_FILL: [u8; 3] = [0b1100_0011, 0b1010_0001, 0b1100_0000];
+
+    /// An AAC-LC 48 kHz config whose program config element has `cpes` channel pairs and an LFE in
+    /// front, side and back alike.
+    fn pce_config(cpes: usize) -> Vec<u8> {
+        let mut asc = filmcraft_aac::AudioSpecificConfig::lc(3, 0);
+        let pairs = (0..cpes).map(|t| (true, t as u8)).collect::<Vec<_>>();
+        asc.pce =
+            Some(filmcraft_aac::ProgramConfig { sf_index: 3, front: pairs.clone(), side: pairs.clone(), back: pairs, lfe: vec![0], ..Default::default() });
+        asc.to_bytes()
+    }
+
+    #[test]
+    fn config_channels_count_a_program_config_element() {
+        // numbered configurations: the count Table 1.19 gives
+        assert_eq!(aac_config_channels(&filmcraft_aac::AudioSpecificConfig::lc(3, 2).to_bytes()), Some(2));
+        assert_eq!(aac_config_channels(&filmcraft_aac::AudioSpecificConfig::lc(3, 6).to_bytes()), Some(6));
+        // configuration 0: what the PCE lays out, 1 (an LFE) up to the 64-channel cap
+        assert_eq!(aac_config_channels(&pce_config(0)), Some(1));
+        assert_eq!(aac_config_channels(&pce_config(1)), Some(7));
+        assert_eq!(aac_config_channels(&pce_config(10)), Some(61));
+        // a PCE past the cap (15 pairs in each place: 91 channels) is not believed
+        assert_eq!(aac_config_channels(&pce_config(15)), None);
+        // configuration 0 with no PCE, nothing, a reserved rate index (13) or an explicit rate cut
+        // short: not a config our decoder reads
+        assert_eq!(aac_config_channels(&[0x11, 0x80]), None);
+        assert_eq!(aac_config_channels(&[]), None);
+        assert_eq!(aac_config_channels(&[0x16, 0x90]), None);
+        assert_eq!(aac_config_channels(&[0x17, 0x80]), None);
+        // every truncation of a PCE config fails cleanly or still counts within the cap
+        let whole = pce_config(3);
+        for len in 0..whole.len() {
+            assert!(aac_config_channels(&whole[..len]).is_none_or(|n| (1..=64).contains(&n)), "{len} bytes");
+        }
+    }
 
     #[test]
     fn output_rate_doubles_for_he_aac() {
