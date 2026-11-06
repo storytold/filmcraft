@@ -117,7 +117,7 @@ const BIN_OPEN: &[(&str, &str)] = &[("openInPlace", "Open in place"), ("openNewT
 
 const PROJECT_OPEN: &[(&str, &str)] = &[("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 
-const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("light", "Light")];
+const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("oled", "OLED"), ("light", "Light")];
 
 pub const APPEARANCE_MODES: &[(&str, &str)] = &[("auto", "Sync with system"), ("dark", "Dark"), ("light", "Light")];
 
@@ -133,7 +133,7 @@ pub const UI_SCALES: &[(&str, &str)] = &[
     ("300", "300%"),
 ];
 
-pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark")];
+pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("oled", "OLED")];
 
 pub const LIGHT_THEMES: &[(&str, &str)] = &[("light", "Light")];
 

@@ -22,7 +22,7 @@ fn frames(h: &mut Harness<'_, FilmcraftApp>, count: usize) {
 fn snapshots(h: &mut Harness<'_, FilmcraftApp>, directory: Option<&std::path::Path>, phase: &str) {
     let Some(directory) = directory else { return };
     std::fs::create_dir_all(directory).unwrap();
-    for (name, theme) in [("dark", ThemeKind::Dark), ("medium", ThemeKind::Medium), ("light", ThemeKind::Light)] {
+    for (name, theme) in [("dark", ThemeKind::Dark), ("medium", ThemeKind::Medium), ("oled", ThemeKind::Oled), ("light", ThemeKind::Light)] {
         let ctx = h.ctx.clone();
         h.state_mut().set_theme(&ctx, theme);
         frames(h, 3);
