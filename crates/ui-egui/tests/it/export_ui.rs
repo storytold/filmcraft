@@ -1,6 +1,6 @@
 //! Headless UI tests of Export mode (M6.5): the settings column and summary, the Preset Manager
 //! (search, favourites, save, apply), the export queue panel (send, reorder, cancel, start, retry),
-//! the Export button and the header's Quick Export popup.
+//! the Export button, the header's Quick Export popup and the YouTube destination.
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
 //! `export-*.png` there; without it no GPU is needed.
@@ -29,6 +29,7 @@ impl Driver {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.export_presets.set_dir(&dir.join("data"));
+        s.publish.set_dir(dir.join("data").join("publish"));
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
@@ -631,4 +632,151 @@ fn the_export_range_follows_the_sequence_marks() {
     d.exec("markers.markOut", json!({"seconds": 3.0}));
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
+}
+
+const CLIENT_ID: &str = "123-test.apps.googleusercontent.com";
+
+/// A *Desktop app* OAuth client file like the one Google Cloud downloads.
+fn client_file(d: &Driver) -> String {
+    let path = d.path("client.json");
+    let client = json!({"installed": {
+        "client_id": CLIENT_ID, "client_secret": "GOCSPX-test",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": ["http://localhost"],
+    }});
+    std::fs::write(&path, client.to_string()).unwrap();
+    path
+}
+
+/// storytold/filmcraft#2626: the YouTube destination shows its own settings, and Export with it
+/// ticked exports nothing until an account is signed in.
+#[test]
+fn the_youtube_destination_asks_for_an_account_before_exporting() {
+    let mut d = Driver::new("youtube");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    assert!(d.has("export.destination.youtube"));
+    assert!(d.has("export.fileName"), "Media File's settings first");
+    d.click("export.destination.youtube");
+    assert_eq!(d.app().ui.export.destination, "youtube");
+    assert!(d.has("export.youtube.client"), "asks for the client file first");
+    assert!(!d.has("export.fileName"));
+    assert_eq!(d.app().ui.export.youtube.privacy, "private");
+
+    d.click("export.destination.youtube.enabled");
+    assert!(d.app().ui.export.youtube.enabled);
+    d.click("export.button");
+    assert!(d.app().ui.status.starts_with("Sign in to YouTube first"), "{}", d.app().ui.status);
+    assert!(d.app().session.jobs.is_empty(), "nothing exported without an account");
+
+    let client = client_file(&d);
+    d.exec("publish.youtube.setClient", json!({"path": client}));
+    d.app().ui.export.youtube.status = None;
+    d.frames(2);
+    assert!(d.has("export.youtube.signIn"));
+    d.click("export.youtube.privacy");
+    d.click("export.youtube.privacy.option.1");
+    assert_eq!(d.app().ui.export.youtube.privacy, "unlisted");
+    d.snapshot("export-youtube");
+
+    d.click("export.destination.mediaFile");
+    assert!(d.has("export.fileName"));
+    assert!(d.app().ui.export.youtube.enabled, "the box stays ticked");
+}
+
+/// Export with YouTube ticked starts the upload as a job that waits for the file; the status bar
+/// shows the export meanwhile, and a cancelled export uploads nothing (no network in this test).
+#[test]
+fn a_cancelled_export_uploads_nothing() {
+    let mut d = Driver::new("youtube-chain");
+    let client = client_file(&d);
+    d.exec("publish.youtube.setClient", json!({"path": client}));
+    let account = json!({"clientId": CLIENT_ID, "refreshToken": "1//test"});
+    std::fs::write(d.dir.join("data").join("publish").join("youtube-account.json"), account.to_string()).unwrap();
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok(
+        "ui.set",
+        json!({"export": {"preset": "YouTube 1080p Full HD", "location": loc, "fileName": "chain", "range": "custom", "customStart": 0.0, "customEnd": 20.0,
+            "destination": "youtube", "youtube": {"enabled": true, "title": "Chain test", "tags": "crete, summer"}}}),
+    );
+    d.frames(2);
+    assert!(d.has("export.youtube.signOut"), "signed in");
+    // details YouTube would refuse stop Export before it writes a file
+    d.app().ui.export.youtube.description = "1 > 0".into();
+    d.click("export.button");
+    assert!(d.app().ui.status.contains("can't contain"), "{}", d.app().ui.status);
+    assert!(d.app().session.jobs.is_empty());
+    d.app().ui.export.youtube.description = "Crete".into();
+    d.click("export.button");
+    let jobs: Vec<Value> = d.app().session.jobs.iter().map(|j| j.to_json()).collect();
+    assert_eq!(jobs.len(), 2, "{jobs:?}");
+    assert!(jobs[0]["label"].as_str().unwrap().starts_with("Export"), "{jobs:?}");
+    assert_eq!(jobs[1]["label"], "Uploading “Chain test” to YouTube");
+    assert_eq!(jobs[1]["status"], filmcraft_engine::publish::WAITING_FOR_EXPORT);
+    d.frames(2);
+    let label = d.ok("ui.elements", json!({"prefix": "status.job.cancel"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(label.starts_with("Cancel Export"), "the status bar shows the export: {label}");
+
+    d.click("export.button"); // Cancel
+    let upload = jobs[1]["id"].as_u64().unwrap();
+    d.wait_until("the upload to give up", |d| d.app().session.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
+    let j = d.app().session.jobs.iter().find(|j| j.id == upload).unwrap().to_json();
+    assert_eq!(j["result"]["error"], "the export was cancelled, so nothing was uploaded", "{j}");
+    d.frames(2);
+    assert_eq!(d.app().ui.export.youtube.last_upload, "the export was cancelled, so nothing was uploaded");
+    assert!(d.has("export.youtube.lastUpload"));
+}
+
+/// Video or Short: the choice applies its export preset, the panel says what YouTube will make of
+/// the file, and Export refuses a "Short" YouTube would show as a video.
+#[test]
+fn a_youtube_short_gets_a_vertical_preset_and_at_most_three_minutes() {
+    let mut d = Driver::new("youtube-short");
+    let client = client_file(&d);
+    d.exec("publish.youtube.setClient", json!({"path": client}));
+    let account = json!({"clientId": CLIENT_ID, "refreshToken": "1//test"});
+    std::fs::write(d.dir.join("data").join("publish").join("youtube-account.json"), account.to_string()).unwrap();
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.ok("ui.set", json!({"export": {"destination": "youtube", "youtube": {"enabled": true}}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.youtube.kind, "video");
+    assert!(!d.has("export.youtube.kindNote"), "a 16:9 video needs no note");
+
+    d.click("export.youtube.kind");
+    d.click("export.youtube.kind.option.1");
+    assert_eq!(d.app().ui.export.youtube.kind, "short");
+    let preset = d.app().ui.export.preset.clone();
+    assert!(preset.ends_with("1080×1920"), "{preset}");
+    assert_eq!(d.app().ui.export.settings.frame_size, Some((1080, 1920)));
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(note.starts_with("YouTube shows a vertical"), "{note}");
+    d.snapshot("export-youtube-short");
+
+    // over three minutes: not a Short, so Export says why and exports nothing
+    d.ok("ui.set", json!({"export": {"range": "custom", "customStart": 0.0, "customEnd": 200.0}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert_eq!(note, "A Short can be at most 3 minutes long; this export is 3:20");
+    d.click("export.button");
+    assert_eq!(d.app().ui.status, "A Short can be at most 3 minutes long; this export is 3:20");
+    assert!(d.app().session.jobs.is_empty());
+
+    // a landscape preset isn't a Short either
+    d.ok("ui.set", json!({"export": {"range": "custom", "customStart": 0.0, "customEnd": 10.0}}));
+    d.ok("ui.set", json!({"export": {"preset": "YouTube 1080p Full HD"}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert_eq!(note, "A Short needs a vertical or square frame; this export is 1920×1080");
+
+    // Video applies YouTube's 16:9 preset; a vertical export of a "video" is still a Short to YouTube
+    d.click("export.youtube.kind");
+    d.click("export.youtube.kind.option.0");
+    assert_eq!(d.app().ui.export.youtube.kind, "video");
+    assert_eq!(d.app().ui.export.preset, "YouTube 1080p Full HD");
+    assert!(!d.has("export.youtube.kindNote"));
+    d.ok("ui.set", json!({"export": {"preset": "Social Vertical 1080×1920"}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(note.ends_with("so YouTube will show it as a Short."), "{note}");
 }

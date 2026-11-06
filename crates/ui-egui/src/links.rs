@@ -64,11 +64,26 @@ pub fn menu_hint(command: &str) -> Option<String> {
 /// host can't open a browser, a dialog shows the address until it is closed ([`show_failed`]),
 /// so the click is never silently lost: the clipboard can fail too, and egui only logs that.
 pub fn open(app: &mut crate::FilmcraftApp, ctx: &egui::Context, url: &str) {
+    open_logged(app, ctx, url, true);
+}
+
+/// [`open`] for an address that must stay out of the log: a sign-in page whose query carries the
+/// sign-in's state and PKCE challenge (#2626). A failure is logged without it; the dialog still
+/// shows it, so the user can copy it.
+pub fn open_private(app: &mut crate::FilmcraftApp, ctx: &egui::Context, url: &str) {
+    open_logged(app, ctx, url, false);
+}
+
+fn open_logged(app: &mut crate::FilmcraftApp, ctx: &egui::Context, url: &str, log_url: bool) {
     if let Some(f) = app.hooks.open_url.as_mut() {
         match f(url) {
             Ok(()) => return,
             Err(error) => {
-                log::warn!("can't open {url} in the browser: {error}");
+                if log_url {
+                    log::warn!("can't open {url} in the browser: {error}");
+                } else {
+                    log::warn!("can't open the sign-in page in the browser: {error}");
+                }
                 app.ui.failed_link = Some(FailedLink { url: url.to_string(), error });
             }
         }
