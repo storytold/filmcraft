@@ -147,6 +147,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         let ext = file.extension().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let transcode = consolidate && matches!(m.info.kind, MediaKind::Movie | MediaKind::AudioOnly) && ranges.contains_key(&id);
         let (out, range) = if transcode {
+            let stem = crate::export_tools::file_safe(&stem);
             let rate = m.frame_rate();
             let (lo, hi) = ranges[&id];
             let a = rate.snap((lo - fd_handles(rate)).max(Tick::ZERO));
