@@ -246,16 +246,12 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
             // Settings ▸ General ▸ At Startup ▸ Open Most Recent
-            let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
-            match recent {
-                Some(p) => {
-                    if let Err(e) = session.execute("file.open", json!({"path": p})) {
-                        log::error!("{e}");
-                    }
-                }
-                None => {
-                    let _ = session.execute("file.openDemoProject", json!({}));
-                }
+            // With no recent project left on disk, start with an empty project, not the example.
+            let recent = session.prefs.general.most_recent_project(|p| std::path::Path::new(p).exists()).map(str::to_string);
+            if let Some(p) = recent
+                && let Err(e) = session.execute("file.open", json!({"path": p}))
+            {
+                log::error!("{e}");
             }
         } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
         } else if demo {

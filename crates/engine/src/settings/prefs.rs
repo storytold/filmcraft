@@ -11,7 +11,7 @@ pub struct GeneralPrefs {
     /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, `ko`, `cs`, `pl`, `sv`, `tr`, or `system` (the default: the operating system's preferred language when the
     /// interface has it, otherwise English).
     pub interface_language: String,
-    /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
+    /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent` (the default; with no recent project that still exists, an empty project), `emptyProject`.
     pub at_startup: String,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
     pub when_opening_project: String,
@@ -34,11 +34,18 @@ pub struct GeneralPrefs {
     pub recent_projects: Vec<String>,
 }
 
+impl GeneralPrefs {
+    /// The project "Open Most Recent" reopens: the newest recent project for which `exists` holds.
+    pub fn most_recent_project(&self, exists: impl Fn(&str) -> bool) -> Option<&str> {
+        self.recent_projects.iter().map(String::as_str).find(|p| exists(p))
+    }
+}
+
 impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             interface_language: "system".into(),
-            at_startup: "showHome".into(),
+            at_startup: "openMostRecent".into(),
             when_opening_project: "showOpenDialog".into(),
             bins_double_click: "openInPlace".into(),
             bins_cmd_double_click: "openNewTab".into(),
@@ -439,5 +446,22 @@ pub fn timebase_rate(v: &str) -> FrameRate {
         "59.94" | "59.94df" => FrameRate::FPS_59_94,
         "60" => FrameRate::FPS_60,
         _ => FrameRate::FPS_29_97,
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::GeneralPrefs;
+
+    #[test]
+    fn default_at_startup_is_open_most_recent() {
+        assert_eq!(GeneralPrefs::default().at_startup, "openMostRecent");
+    }
+
+    #[test]
+    fn most_recent_project_is_the_newest_existing_one() {
+        let g = GeneralPrefs { recent_projects: vec!["/gone.fcproj".into(), "/new.fcproj".into(), "/old.fcproj".into()], ..GeneralPrefs::default() };
+        assert_eq!(g.most_recent_project(|p| p != "/gone.fcproj"), Some("/new.fcproj"));
+        assert_eq!(g.most_recent_project(|_| false), None);
     }
 }
