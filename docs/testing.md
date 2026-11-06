@@ -397,9 +397,38 @@ real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's pro
 ### Audio mixer throughput
 
 `perf_24_tracks_3_effects_realtime_factor` (24 tracks, 72 inserts and a compressed submix on one
-core) must run at least 4x realtime in release builds (1x in debug). On Unix it times the test
-thread's CPU time, so it runs with the rest of the suite. Hosts without a per-thread CPU clock
-(Windows) fall back to wall time, which depends on load, so there it is ignored by default; run it
-explicitly with
-`cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
-and record the machine with the result.
+core) requires **greater than** 4x realtime in release builds (greater than 1x in debug).
+It lives in the separate `mixer_perf` integration-test executable, not the library tests.
+On Unix it times the single Rayon worker's thread CPU time. Hosts without that clock
+(Windows) fall back to wall time and ignore it by default; append `--ignored` there.
+
+Run focused correctness checks and the gate serially, with no other build or test workload:
+
+```sh
+export CARGO_BUILD_JOBS=1
+cargo test -j1 -p filmcraft-audio-dsp --lib --locked --offline reverb -- --test-threads=1
+cargo test -j1 -p filmcraft-render --lib --locked --offline mixer_tests -- --test-threads=1
+cargo test -j1 -p filmcraft-render --lib --locked --offline lane_span_tests -- --test-threads=1
+cargo test -j1 --release -p filmcraft-render --test mixer_perf --locked --offline -- --exact perf_24_tracks_3_effects_realtime_factor --nocapture --test-threads=1
+```
+
+`cargo xtask ci` selects release Clippy and release tests; it does not itself override LTO or
+codegen units. The checked-in release profile is thin LTO with one codegen unit. To reproduce
+a pool run that overrides those settings, use the same gate command with explicit settings:
+
+```sh
+CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+  cargo test -j1 --release -p filmcraft-render --test mixer_perf --locked --offline -- --exact perf_24_tracks_3_effects_realtime_factor --nocapture --test-threads=1
+CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  cargo test -j1 --release -p filmcraft-render --test mixer_perf --locked --offline -- --exact perf_24_tracks_3_effects_realtime_factor --nocapture --test-threads=1
+```
+
+Record the exact commit, OS/CPU, toolchain, profile overrides, test counts and printed CPU
+seconds/realtime factor. Compare before and after in separate worktrees on the same machine
+and toolchain, repeating both profiles to assess variation; for the mixer optimization in
+#1978 the before revision is `9ed9650cad4c9b22cb8d32f4a9ba8050cde20a62`.
+An absolute throughput threshold depends on CPU and compiler as well as code: thread CPU time
+reduces scheduling noise but does not normalize hardware speed or thermal effects. A single
+4.3x result cannot establish a stable margin on another host or profile. Keep the existing
+threshold and correctness checks; report failed or marginal measurements and require native
+Linux evidence before claiming the Linux gate is qualified.
