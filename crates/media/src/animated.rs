@@ -96,11 +96,11 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
     let format = Format::sniff(bytes)?;
     let frames = match format {
         Format::Apng => {
-            let mut d = PngDecoder::new(Cursor::new(bytes)).ok()?;
+            // `new` reads the metadata (and inflates any ICC profile) under no limits at all
+            let d = PngDecoder::with_limits(Cursor::new(bytes), Limits::default()).ok()?;
             if !d.is_apng().ok()? {
                 return None;
             }
-            d.set_limits(Limits::default()).ok()?;
             d.apng().ok()?.into_frames()
         }
         Format::Gif => {
@@ -121,17 +121,18 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
             d.into_frames()
         }
     };
-    AnimatedSource::from_frames(name, format, frames, bytes.len() as u64).map(Ok)
+    AnimatedSource::from_frames(name, format, frames, bytes.len() as u64, MAX_DECODED_BYTES).map(Ok)
 }
 
 impl AnimatedSource {
     /// Build a clip from decoded full-canvas frames, merging consecutive identical pictures.
-    fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64) -> Option<Self> {
+    fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64, max_decoded: usize) -> Option<Self> {
         let mut pictures: Vec<(u32, u32, Vec<u8>)> = Vec::new();
         let mut durations: Vec<Tick> = Vec::new();
         let mut decoded_frames = 0usize;
         let mut decoded = 0usize;
         let mut has_alpha = false;
+        let mut truncated = false;
         for frame in frames.take(MAX_FRAMES) {
             // a damaged frame ends the animation at the frames before it
             let Ok(frame) = frame else { break };
@@ -140,6 +141,12 @@ impl AnimatedSource {
             let buffer = frame.into_buffer();
             let (w, h) = buffer.dimensions();
             let rgba = buffer.into_raw();
+            // every frame is a full canvas decode, repeated frames included
+            decoded = decoded.saturating_add(rgba.len());
+            if decoded > max_decoded {
+                truncated = true;
+                break;
+            }
             if let (Some(last), Some(d)) = (pictures.last(), durations.last_mut())
                 && (last.0, last.1) == (w, h)
                 && last.2 == rgba
@@ -147,15 +154,12 @@ impl AnimatedSource {
                 *d = Tick(d.0.saturating_add(ticks.0));
                 continue;
             }
-            decoded = decoded.saturating_add(rgba.len());
-            if decoded > MAX_DECODED_BYTES {
-                break;
-            }
             has_alpha = has_alpha || rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
             pictures.push((w, h, rgba));
             durations.push(ticks);
         }
-        if pictures.len() < 2 && !(format == Format::WebP && decoded_frames >= 2) {
+        // one picture is a still, unless the file holds more frames: merged WebP frames, or an animation cut short by the budget
+        if pictures.len() < 2 && !((format == Format::WebP || truncated) && decoded_frames >= 2) {
             return None;
         }
         let (width, height) = pictures.first().map(|p| (p.0, p.1))?;
