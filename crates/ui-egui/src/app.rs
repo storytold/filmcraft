@@ -307,6 +307,7 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+        panels::export_mode::note_settings(self);
     }
 
     /// Run one logic pass in order: retain the later UI clock, poll the native dialog, apply the

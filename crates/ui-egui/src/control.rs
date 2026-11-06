@@ -199,7 +199,12 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         let mut cur = serde_json::to_value(&app.ui.export).unwrap_or_default();
         merge(&mut cur, patch);
         match serde_json::from_value(cur) {
-            Ok(e) => app.ui.export = e,
+            Ok(e) => {
+                let epoch = app.ui.export.epoch;
+                app.ui.export = crate::panels::export_mode::ExportUi { epoch, ..e };
+                // so a `file.save` right after saves them
+                crate::panels::export_mode::store_settings(app);
+            }
             Err(e) => return err(format!("`export`: {e}")),
         }
     }

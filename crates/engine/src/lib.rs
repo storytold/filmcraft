@@ -338,6 +338,10 @@ pub struct EditorState {
     /// and takes a sequence's view from here when it becomes the active one.
     #[serde(default)]
     pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
+    /// The frontend's Export mode settings (preset, file name, folder, range), saved beside the
+    /// project ([`filmcraft_project::ProjectView::export`]) and given back when it is opened.
+    #[serde(default)]
+    pub export_ui: Option<serde_json::Value>,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -684,13 +688,16 @@ impl Session {
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
         let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
         let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
-        if p.last_sent.as_ref() == Some(&cur) {
+        if self.persistence.as_ref().is_none_or(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
+        // ponytail: the view is taken at the last edit; export settings changed after it reach the
+        // file at the next edit or manual save
+        let view = self.project_view();
+        let Some(p) = self.persistence.as_mut() else { return };
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            p.send_dirty(self.project.clone(), view, self.revision, self.path.clone());
         } else {
             p.send_clean();
         }
@@ -900,6 +907,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            export: self.state.export_ui.clone(),
         }
     }
 

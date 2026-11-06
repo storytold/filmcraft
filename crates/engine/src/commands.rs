@@ -5281,6 +5281,8 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
+    // export settings come back whether or not the open sequences do
+    s.state.export_ui = loaded.view.as_ref().and_then(|v| v.export.clone());
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }
