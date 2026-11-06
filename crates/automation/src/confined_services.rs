@@ -90,6 +90,7 @@ impl Services for ConfinedServices {
         }))
     }
 
+    /// Whether exports stay in memory and are written through [`Services::write_file`], which this wrapper checks.
     fn export_in_memory(&self) -> bool {
         self.inner.export_in_memory()
     }
@@ -107,6 +108,7 @@ impl Services for ConfinedServices {
         Vec::new()
     }
 
+    /// No home directory: reporting one would name a folder outside the roots.
     fn home_dir(&self) -> Option<String> {
         None
     }
