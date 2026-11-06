@@ -49,7 +49,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | Command | Menu / shortcut | Params |
 |---|---|---|
 | `captions.newTrack` | Sequence ▸ Captions ▸ Add New Caption Track… (⌥⌘A) | `format`, `name`, `language` |
-| `captions.add` | Sequence ▸ Captions ▸ Add Caption at Playhead (⌥⌘C) | `track`, `text`, `time`, `durationSeconds` (3) |
+| `captions.add` | Sequence ▸ Captions ▸ Add Caption at Playhead (⌥⌘C) | `track`, `text`, `time`, `durationSeconds` (3); the start and the end each snap to the nearest frame, as in `timeline.place`; a caption asked for before zero starts at zero and keeps its length |
 | `captions.next` / `captions.previous` | Sequence ▸ Captions ▸ Go to Next/Previous Caption Segment (⌥⌘↓/↑) | |
 | `captions.showAll` / `captions.hideAll` | Sequence ▸ Captions | |
 | `captions.split` | Text panel ✂; Razor tool on a caption (⇧: every caption track) | `caption`, `time` (default: every caption under the playhead) |
