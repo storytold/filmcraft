@@ -144,8 +144,15 @@ fn the_body_of_a_clip_still_opens_the_clip_menu() {
     d.frames(3);
     d.right_click(b, 0.5);
     assert!(d.has("timeline.clipMenu.edit.cut"), "the clip menu");
+    assert!(d.has("timeline.clipMenu.sequence.applyDefaultTransitionsToSelection"), "apply default transitions in clip menu");
     assert!(!d.has("timeline.editPointMenu.rippleIn"), "not the edit point menu");
     assert!(d.harness.state_mut().session.state.selection.contains(&b), "the clip is selected");
+
+    // Clicking Apply Default Transitions applies transitions to the clip
+    d.click("timeline.clipMenu.sequence.applyDefaultTransitionsToSelection");
+    let seq = d.seq();
+    let has_trans = seq.video_tracks[0].transitions.iter().any(|t| t.from == Some(b) || t.to == Some(b));
+    assert!(has_trans, "transition applied to right-clicked clip");
 }
 
 #[test]

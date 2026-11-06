@@ -578,6 +578,55 @@ fn properties_nav(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn lane_row_interact(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    r: Rect,
+    lane: &Rect,
+    clip: ClipId,
+    idx: usize,
+    eff_json: Value,
+    pd: &filmcraft_project::ParamDef,
+    e: &EffectInstance,
+    pkey: &str,
+    it: &TrackItem,
+    with_mask: impl Fn(Value) -> Value,
+    actions: &mut Vec<(String, Value)>,
+) {
+    if !pd.animatable {
+        return;
+    }
+    let lane_row = Rect::from_min_max(pos2(lane.min.x, r.min.y), pos2(lane.max.x, r.max.y));
+    let shown_lane = lane_row.intersect(ui.clip_rect());
+    if shown_lane.is_positive() {
+        app.auto.add(&format!("effectControls.{}.{idx}.{}.laneRow", e.effect, pkey), shown_lane, "lane row");
+    }
+    let lane_resp = ui.interact(shown_lane, egui::Id::unique(("lane-row", clip.0, idx, pkey)), Sense::click());
+    if lane_resp.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
+        app.ui.keyframe_selection.clear();
+    }
+    if lane_resp.double_clicked()
+        && let Some(pos) = lane_resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.interact_pos()))
+    {
+        let frac = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0);
+        let rate = app.session.sequence_rate();
+        let dur = it.duration.0.max(1) as f64;
+        let target_tl = rate.snap_nearest(it.start + Tick((frac as f64 * dur).round() as i64));
+        let target_tl = target_tl.clamp(it.start, it.end() - Tick(1));
+        actions.push(("playhead.set".into(), json!({"time": target_tl.0})));
+        actions.push((
+            "effects.addKeyframe".into(),
+            with_mask(json!({
+                "clip": clip.0,
+                "effect": eff_json,
+                "param": pd.id,
+                "time": target_tl.0,
+            })),
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn param_row(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
@@ -693,6 +742,8 @@ pub(crate) fn param_row(
             actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": eff_json, "param": pd.id})));
         }
     }
+    // double-clicking the parameter's lane row adds a keyframe at the clicked time and sets the playhead
+    lane_row_interact(app, ui, r, lane, clip, idx, eff_json, pd, e, pkey, it, with_mask, actions);
     // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
         let y = r.center().y;

@@ -264,6 +264,28 @@ fn effect_controls_double_clicking_a_property_name_resets_it() {
     assert_eq!(d.scale(&clip).1, 150.0, "one undo brings the value back");
 }
 
+/// Double-clicking an animatable parameter's lane row adds a keyframe and moves the playhead.
+#[test]
+fn effect_controls_double_clicking_lane_row_adds_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    d.frames(2);
+    let [x, y, w, h] = d.rect("effectControls.motion.0.scale.laneRow");
+    let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+    d.ok("ui.click", json!({"x": cx, "y": cy, "count": 2}));
+    d.frames(3);
+    let (keys, _) = d.scale(&clip);
+    assert_eq!(keys.len(), 1, "double click in lane added a scale keyframe: {keys:?}");
+    let (rate, it) = {
+        let s = &d.harness.state().session;
+        let it = s.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+        (s.sequence_rate(), it)
+    };
+    let expected_tl = rate.snap_nearest(it.start + Tick((0.5f64 * it.duration.0 as f64).round() as i64));
+    let expected_media = it.source_time_at(expected_tl);
+    assert_eq!(keys[0], expected_media.0);
+    assert_eq!(d.playhead(), expected_tl.0, "playhead moved to keyframe");
+}
+
 /// Crop is not on a clip until it is used: its diamond applies the effect, then adds the keyframe.
 #[test]
 fn properties_diamond_applies_crop_first() {
