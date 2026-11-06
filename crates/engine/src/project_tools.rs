@@ -1325,74 +1325,63 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
         }
         v
     };
-    let n0 = s.history.undo.len();
-    // insert: open room first (sync-locked / destination tracks ripple), then overwrite into it
-    if method == "insert" && placement == "sequentially" {
-        let first = starts[0];
-        let end = starts.iter().zip(&plan).map(|(a, (_, r))| *a + r.duration).max().unwrap_or(first);
-        let len = end - first;
-        let dests: Vec<_> = [vdest, adest].into_iter().flatten().collect();
-        s.edit_sequence("Automate to Sequence", |q, ctx, _| {
-            let mut links = std::collections::HashMap::new();
-            for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
-                if !t.locked && (t.sync_lock || dests.contains(&t.id)) {
-                    filmcraft_edit::insert_track_gap(t, first, len, ctx, &mut links);
+    // one undo step, and a failed placement takes back everything before it, however full the
+    // undo history is
+    let (placed, transitions) = s.edit_group("Automate to Sequence", |s| {
+        // insert: open room first (sync-locked / destination tracks ripple), then overwrite into it
+        if method == "insert" && placement == "sequentially" {
+            let first = starts[0];
+            let end = starts.iter().zip(&plan).map(|(a, (_, r))| *a + r.duration).max().unwrap_or(first);
+            let len = end - first;
+            let dests: Vec<_> = [vdest, adest].into_iter().flatten().collect();
+            s.edit_sequence("Automate to Sequence", |q, ctx, _| {
+                let mut links = std::collections::HashMap::new();
+                for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
+                    if !t.locked && (t.sync_lock || dests.contains(&t.id)) {
+                        filmcraft_edit::insert_track_gap(t, first, len, ctx, &mut links);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        let mut placed = Vec::new();
+        for (k, ((id, r), at)) in plan.iter().zip(&starts).enumerate() {
+            let insert = method == "insert" && placement == "unnumberedMarkers";
+            let ids = crate::commands::place_item(
+                s,
+                crate::commands::ItemPlacement { item: *id, range: *r, at: *at, vdest, adest, insert, label: "Automate to Sequence", audio_split: None },
+            )?;
+            placed.push((k, ids));
+        }
+        // default transitions over the overlaps (and at the cuts when there is no overlap)
+        let vt = bool_p(p, "videoTransition").unwrap_or(true);
+        let at = bool_p(p, "audioTransition").unwrap_or(true);
+        let mut transitions = 0;
+        if placement == "sequentially" && (vt || at) {
+            let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let default_frames = s.project.settings.default_transition_duration_frames;
+            let mut edges = Vec::new();
+            for ((_, ids), ov) in placed.iter().skip(1).zip(cut_overlap.iter().chain(std::iter::repeat(&overlap))) {
+                let frames = if *ov > Tick::ZERO { rate.frame_at(*ov) } else { default_frames };
+                for c in ids {
+                    let Some((tid, _)) = q.find_item(*c) else { continue };
+                    let kind = q.track(tid).map(|t| t.kind);
+                    let cmd = match kind {
+                        Some(TrackKind::Video) if vt => "sequence.applyVideoTransition",
+                        Some(TrackKind::Audio) if at => "sequence.applyAudioTransition",
+                        _ => continue,
+                    };
+                    edges.push((cmd, *c, frames));
                 }
             }
-            Ok(())
-        })?;
-    }
-    let mut placed = Vec::new();
-    let mut result: Result<()> = Ok(());
-    for (k, ((id, r), at)) in plan.iter().zip(&starts).enumerate() {
-        let insert = method == "insert" && placement == "unnumberedMarkers";
-        match crate::commands::place_item(
-            s,
-            crate::commands::ItemPlacement { item: *id, range: *r, at: *at, vdest, adest, insert, label: "Automate to Sequence", audio_split: None },
-        ) {
-            Ok(ids) => placed.push((k, ids)),
-            Err(e) => {
-                result = Err(e);
-                break;
+            for (cmd, c, frames) in edges {
+                if s.execute(cmd, json!({"clip": c.0, "edge": "in", "frames": frames})).is_ok() {
+                    transitions += 1;
+                }
             }
         }
-    }
-    if let Err(e) = result {
-        // undo everything this command did
-        while s.history.undo.len() > n0 {
-            s.undo();
-        }
-        s.history.redo.clear();
-        return Err(e);
-    }
-    // default transitions over the overlaps (and at the cuts when there is no overlap)
-    let vt = bool_p(p, "videoTransition").unwrap_or(true);
-    let at = bool_p(p, "audioTransition").unwrap_or(true);
-    let mut transitions = 0;
-    if placement == "sequentially" && (vt || at) {
-        let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-        let default_frames = s.project.settings.default_transition_duration_frames;
-        let mut edges = Vec::new();
-        for ((_, ids), ov) in placed.iter().skip(1).zip(cut_overlap.iter().chain(std::iter::repeat(&overlap))) {
-            let frames = if *ov > Tick::ZERO { rate.frame_at(*ov) } else { default_frames };
-            for c in ids {
-                let Some((tid, _)) = q.find_item(*c) else { continue };
-                let kind = q.track(tid).map(|t| t.kind);
-                let cmd = match kind {
-                    Some(TrackKind::Video) if vt => "sequence.applyVideoTransition",
-                    Some(TrackKind::Audio) if at => "sequence.applyAudioTransition",
-                    _ => continue,
-                };
-                edges.push((cmd, *c, frames));
-            }
-        }
-        for (cmd, c, frames) in edges {
-            if s.execute(cmd, json!({"clip": c.0, "edge": "in", "frames": frames})).is_ok() {
-                transitions += 1;
-            }
-        }
-    }
-    crate::clip_ops::collapse_history(s, n0, "Automate to Sequence");
+        Ok((placed, transitions))
+    })?;
     let clips: Vec<u64> = placed.iter().flat_map(|(_, ids)| ids.iter().map(|c| c.0)).collect();
     s.state.selection = clips.iter().map(|c| filmcraft_project::ClipId(*c)).collect();
     Ok(json!({"placed": placed.len(), "clips": clips, "transitions": transitions, "starts": starts.iter().map(|t| t.0).collect::<Vec<_>>()}))

@@ -454,6 +454,34 @@ fn an_imported_movie_with_only_undecodable_audio_is_refused_with_the_reason() {
     assert!(e.contains("can't decode") && e.contains("apac"), "{e}");
 }
 
+/// With the undo history full, each edit drops the oldest step, so its length can't tell what to
+/// undo: a failed Automate to Sequence must still take back the room it opened.
+#[test]
+fn automate_to_sequence_rolls_back_with_the_undo_history_full() {
+    let dir = filmcraft_testkit::fixtures_dir("engine/apac");
+    let path = dir.join("apac_only_automate.mov");
+    std::fs::write(&path, apac_first_mov(false)).unwrap();
+    let mut s = demo();
+    let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let undecodable = ItemId(r["items"][0].as_u64().unwrap_or_else(|| panic!("{r}")));
+    let good = s.active_sequence().unwrap().video_tracks[0].items[0].item;
+    s.execute("timeline.place", json!({"item": good.0, "time": 0})).unwrap();
+    s.history.limit = s.history.undo.len();
+    assert!(s.history.limit > 0, "the history holds something to lose");
+    let before = s.active_sequence().unwrap().clone();
+    let undo = s.history.undo.len();
+    let e =
+        s.execute("clip.automateToSequence", json!({"items": [good.0, undecodable.0], "ordering": "selection", "method": "insert"})).unwrap_err().to_string();
+    assert!(e.contains("can't decode"), "{e}");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.duration(), before.duration(), "the room for the clips is gone again");
+    for (a, b) in q.all_tracks().zip(before.all_tracks()) {
+        assert_eq!(a.items.len(), b.items.len());
+        assert!(a.items.iter().zip(&b.items).all(|(x, y)| x.id == y.id && x.start == y.start));
+    }
+    assert_eq!(s.history.undo.len(), undo, "the history is as it was");
+}
+
 #[test]
 fn new_sequence_from_clip_with_only_undecodable_audio_leaves_no_empty_sequence() {
     let dir = filmcraft_testkit::fixtures_dir("engine/apac");
