@@ -131,10 +131,15 @@ impl FilmcraftApp {
             self.ui.status = note;
         }
         if prev.is_none() && !self.workspace_restored {
-            // reopen the workspace in use when the app last closed
-            self.workspace_restored = true;
+            // reopen the workspace in use when the app last closed, with the layout it had then.
+            // When it names no workspace (a damaged or edited file) and a layout is remembered,
+            // nothing is remembered this session: the default layout must not replace it.
             if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
+                self.workspace_restored = true;
                 self.set_workspace(&w);
+                self.restore_remembered_layout(&w);
+            } else if self.workspaces.last.is_none() {
+                self.workspace_restored = true;
             }
         }
         self.applied_prefs = Some(p);
