@@ -4,7 +4,7 @@ use filmcraft_engine::Session;
 use serde_json::json;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 struct Device {
@@ -327,6 +327,130 @@ fn a_device_that_appears_mid_playback_starts_sounding() {
     assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is retried without pause/play");
     assert!(app.playback.audio_clock);
     app.stop();
+}
+
+/// Unlike a lost device, a stalled output still returns a valid but frozen frame counter.
+#[derive(Clone)]
+struct Stalling {
+    starts: Arc<AtomicUsize>,
+    frames: Arc<AtomicU64>,
+    opens: Arc<AtomicBool>,
+}
+
+impl AudioOut for Stalling {
+    fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        self.starts.fetch_add(1, Ordering::Relaxed);
+        self.frames.store(0, Ordering::Relaxed);
+        if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err("device unavailable".into()) }
+    }
+    fn stop(&mut self) {}
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn played_frames(&self) -> Option<u64> {
+        Some(self.frames.load(Ordering::Relaxed))
+    }
+}
+
+fn stalling_output() -> (FilmcraftApp, Stalling) {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    session.set_playhead(Tick::from_seconds_f64(2.0));
+    let mut app = FilmcraftApp::new(session);
+    let device = Stalling { starts: Arc::new(AtomicUsize::new(0)), frames: Arc::new(AtomicU64::new(0)), opens: Arc::new(AtomicBool::new(true)) };
+    app.audio = Some(Box::new(device.clone()));
+    (app, device)
+}
+
+fn advance_at(app: &mut FilmcraftApp, ctx: &egui::Context, now: f64) {
+    app.set_now_for_test(now);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(now), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+    output.textures_delta.clear();
+}
+
+#[test]
+fn a_stalled_output_retries_and_follows_the_new_device_clock() {
+    for speed in [1.0, 2.0] {
+        for consumed in [0, 48_000] {
+            let (mut app, device) = stalling_output();
+            let ctx = egui::Context::default();
+            app.play(speed);
+            app.end_preroll(0.0);
+            device.frames.store(consumed, Ordering::Relaxed);
+            advance_at(&mut app, &ctx, 0.25);
+            let heard_until = app.session.playhead();
+            let stalled_at = 0.25 + AUDIO_STALL_S;
+            advance_at(&mut app, &ctx, stalled_at);
+            assert!(!app.playback.audio_clock);
+            assert_eq!(app.session.playhead(), heard_until, "handover keeps the last audible position");
+            assert_eq!(app.playback.audio_retry_at, stalled_at + AUDIO_RETRY_S);
+            assert!(app.ui.status.contains("Audio output is not responding"));
+
+            advance_at(&mut app, &ctx, stalled_at + AUDIO_RETRY_S - 0.25);
+            let before_retry = app.session.playhead();
+            assert!(before_retry > heard_until, "the timeline keeps moving while waiting");
+            assert_eq!(device.starts.load(Ordering::Relaxed), 1, "no retry before the deadline");
+            let (anchor_tick, anchor_time) = (app.playback.anchor_tick, app.playback.anchor_time);
+            let retry_at = stalled_at + AUDIO_RETRY_S + 0.125; // a UI frame after the retry deadline
+            let retry_position = anchor_tick + Tick::from_seconds_f64((retry_at - anchor_time) * speed);
+            advance_at(&mut app, &ctx, retry_at);
+            assert_eq!(device.starts.load(Ordering::Relaxed), 2);
+            assert!(app.playback.audio_clock, "a fresh zero frame counter gets a new grace period");
+            assert_eq!(app.playback.audio_retry_at, 0.0);
+            assert_eq!(app.playback.anchor_tick, retry_position, "the new anchor retains the unsnapped wall-clock position");
+            assert_eq!(app.playback.anchor_time, retry_at);
+            assert_eq!(app.session.playhead(), app.session.sequence_rate().snap(retry_position), "reopening includes time since the last UI frame");
+
+            device.frames.store(12_000, Ordering::Relaxed);
+            advance_at(&mut app, &ctx, retry_at + 0.25);
+            let recovered = app.session.sequence_rate().snap(retry_position + Tick::from_seconds_f64(0.25 * speed));
+            assert_eq!(app.session.playhead(), recovered, "only the new stream's samples advance the clock");
+
+            // A later stall is recoverable too, with the same bounded retry interval.
+            let stalled_again = retry_at + 0.25 + AUDIO_STALL_S;
+            advance_at(&mut app, &ctx, stalled_again);
+            assert!(!app.playback.audio_clock);
+            assert_eq!(app.session.playhead(), recovered);
+            assert_eq!(app.playback.audio_retry_at, stalled_again + AUDIO_RETRY_S);
+            advance_at(&mut app, &ctx, stalled_again + AUDIO_RETRY_S);
+            assert_eq!(device.starts.load(Ordering::Relaxed), 3);
+            assert!(app.playback.audio_clock);
+            app.stop();
+        }
+    }
+}
+
+#[test]
+fn a_stalled_outputs_failed_reopen_is_retried_and_stop_cancels_it() {
+    let (mut app, device) = stalling_output();
+    let ctx = egui::Context::default();
+    app.play(1.0);
+    app.end_preroll(0.0);
+    advance_at(&mut app, &ctx, AUDIO_STALL_S);
+    device.opens.store(false, Ordering::Relaxed);
+    let retry_at = AUDIO_STALL_S + AUDIO_RETRY_S;
+    advance_at(&mut app, &ctx, retry_at);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 2);
+    assert!(!app.playback.audio_clock);
+    assert!(app.playback.playing);
+    assert_eq!(app.playback.audio_retry_at, retry_at + AUDIO_RETRY_S);
+    advance_at(&mut app, &ctx, retry_at + AUDIO_RETRY_S - 0.25);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 2, "failed reopens do not spin");
+    device.opens.store(true, Ordering::Relaxed);
+    advance_at(&mut app, &ctx, retry_at + AUDIO_RETRY_S);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 3);
+    assert!(app.playback.audio_clock);
+
+    advance_at(&mut app, &ctx, retry_at + AUDIO_RETRY_S + AUDIO_STALL_S);
+    assert!(!app.playback.audio_clock);
+    let pending = app.playback.audio_retry_at;
+    assert!(pending > 0.0);
+    app.stop();
+    let stopped = app.session.playhead();
+    advance_at(&mut app, &ctx, pending + 1.0);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 3, "Stop cancels the pending reopen");
+    assert_eq!(app.playback.audio_retry_at, 0.0);
+    assert_eq!(app.session.playhead(), stopped);
 }
 
 /// #2633: a press that only moves the playhead has nothing to stop, so it must not close the
