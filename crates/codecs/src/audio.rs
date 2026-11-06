@@ -126,7 +126,8 @@ fn vorbis_to_wav_order(channels: usize) -> Option<&'static [usize]> {
 /// surrounds, LFE): output channel → decoded channel, giving the WAV/SMPTE order (L R C LFE Ls Rs)
 /// used elsewhere, as the AC-3 decoder does and the AAC encoder's caller undoes on export. Only the
 /// unambiguous channel configurations 3–6, 11 (6.1: … LFE, back centre, sides) and 12 (7.1: … LFE,
-/// backs, sides); 1, 2, 7 and PCE layouts keep the decoded order.
+/// backs, sides); 1, 2 and 7 keep the decoded order, and PCE layouts unless [`aac_stream_order`]
+/// matches them to a configuration.
 fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
     Some(match channel_config {
         3 => &[1, 2, 0],
@@ -137,6 +138,22 @@ fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
         12 => &[1, 2, 0, 7, 5, 6, 3, 4],
         _ => return None,
     })
+}
+
+/// [`aac_to_wav_order`] for a stream. A program config element lists front, side, back and LFE
+/// elements in that order, so one that opens with a centre and a front pair and goes on with the
+/// elements of channel configuration 3–6 has its speakers (#4258). Any other list has no speaker
+/// order we can tell, and keeps the decoded order.
+fn aac_stream_order(asc: &filmcraft_aac::AudioSpecificConfig) -> Option<&'static [usize]> {
+    if asc.channel_config != 0 {
+        return aac_to_wav_order(asc.channel_config);
+    }
+    if !asc.pce.as_ref()?.front.iter().map(|e| e.0).eq([false, true]) {
+        return None;
+    }
+    let elements = asc.layout();
+    let same = |config: &u8| filmcraft_aac::config_layout(*config).is_some_and(|l| l.iter().map(|e| e.0).eq(elements.iter().map(|e| e.0)));
+    (3..=6).find(same).and_then(aac_to_wav_order)
 }
 
 /// `channels` reordered by `order` (output channel → decoded channel). A decode whose channel count
@@ -260,7 +277,7 @@ impl PacketDecoder {
                 if let Some(up) = up {
                     out = up.process(out);
                 }
-                let out = reorder(out, aac_to_wav_order(dec.config().channel_config));
+                let out = reorder(out, aac_stream_order(dec.config()));
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -386,6 +403,32 @@ pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a
         }
     }
     Some(core)
+}
+
+/// Channels of an AAC stream as its AudioSpecificConfig lays them out, a program config element
+/// included. `None` if `asc` is not one our decoder reads.
+pub fn aac_channels(asc: &[u8]) -> Option<u32> {
+    u32::try_from(filmcraft_aac::Decoder::new(asc).ok()?.channels()).ok()
+}
+
+/// Raw data blocks of an ADTS stream searched for its program config element, about five seconds.
+/// A stream may repeat the element in every frame or only now and then.
+const ADTS_PCE_SEARCH: usize = 256;
+
+/// The AudioSpecificConfig of an ADTS stream whose header says channel configuration 0, so that
+/// its layout is in a program config element inside the raw data blocks, which `units` lists from
+/// the start of the stream. `header` starts with any of its frames. `None` for another
+/// configuration, or when no block carries the element. The result starts with the two bytes
+/// [`adts_split`] gives such a frame.
+pub fn adts_pce_config(header: &[u8], units: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Option<Vec<u8>> {
+    let h = filmcraft_aac::AdtsHeader::parse(header).ok().filter(|h| h.channel_config == 0)?;
+    let mut dec = filmcraft_aac::Decoder::from_adts(&h).ok()?;
+    let asc = units.into_iter().take(ADTS_PCE_SEARCH).find_map(|au| {
+        // a damaged block can still have delivered the element, so only the layout counts
+        let _ = dec.decode(au.as_ref());
+        (dec.channels() > 0).then(|| dec.config().to_bytes())
+    })?;
+    aac_channels(&asc).map(|_| asc)
 }
 
 /// Whether [`PacketDecoder::aac`] upsamples a decoded AAC core at `core` Hz to `rate` (HE-AAC).
@@ -589,6 +632,22 @@ fn latm_value(r: &mut filmcraft_bitstream::BitReader) -> Option<u32> {
     r.read_bits(8 * n).ok()
 }
 
+/// The program config element `r` has reached inside a StreamMuxConfig's AudioSpecificConfig,
+/// leaving the reader after it. The element aligns its comment to a byte of the
+/// AudioSpecificConfig, which starts at any bit of a LATM frame, and it starts on such a byte
+/// itself: so the bits are lined up from here to read it.
+fn latm_program_config(r: &mut filmcraft_bitstream::BitReader) -> Option<filmcraft_aac::ProgramConfig> {
+    let mut rest = r.clone();
+    let mut lined_up = Vec::with_capacity(rest.bits_left() / 8);
+    while let Ok(b) = rest.read_bits(8) {
+        lined_up.push(b as u8);
+    }
+    let mut pce = filmcraft_bitstream::BitReader::new(&lined_up);
+    let config = filmcraft_aac::ProgramConfig::parse(&mut pce).ok()?;
+    r.skip(pce.position()).ok()?;
+    Some(config)
+}
+
 /// StreamMuxConfig after `audioMuxVersion`, leaving the reader after it.
 fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfig> {
     let version = r.read_bits(1).ok()?;
@@ -606,9 +665,8 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     if sub_frames != 0 || programs != 0 || layers != 0 {
         return None;
     }
-    if version == 1 {
-        latm_value(r)?; // ascLen
-    }
+    let asc_len = if version == 1 { Some(latm_value(r)? as usize) } else { None };
+    let asc_start = r.position();
     // AudioSpecificConfig
     let aot = r.read_bits(5).ok()?;
     let sf = r.read_bits(4).ok()?;
@@ -621,6 +679,19 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     let _extension = r.read_bits(1).ok()?;
     if frame_length_flag != 0 || depends_on_core != 0 {
         return None;
+    }
+    let sample_rate = *AAC_RATES.get(sf as usize)?;
+    let (asc, channels) = if ch == 0 {
+        let pce = latm_program_config(r)?;
+        let cfg = filmcraft_aac::AudioSpecificConfig { pce: Some(pce), ..filmcraft_aac::AudioSpecificConfig::lc(sf as u8, 0) };
+        let channels = u32::try_from(cfg.channels()).ok().filter(|&n| n > 0)?;
+        (cfg.to_bytes(), channels)
+    } else {
+        (asc_bytes(2, sf as u8, ch as u8), ch)
+    };
+    // what ascLen counts past the fields read here is fill
+    if let Some(len) = asc_len {
+        r.skip(len.saturating_sub(r.position() - asc_start)).ok()?;
     }
     let frame_length_type = r.read_bits(3).ok()?;
     if frame_length_type != 0 {
@@ -644,7 +715,7 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     if r.read_bits(1).ok()? == 1 {
         r.read_bits(8).ok()?; // crcCheckSum
     }
-    Some(LatmConfig { asc: asc_bytes(2, sf as u8, ch as u8), sample_rate: *AAC_RATES.get(sf as usize)?, channels: if ch == 0 { 2 } else { ch } })
+    Some(LatmConfig { asc, sample_rate, channels })
 }
 
 /// The configuration carried in a LOAS frame (`None` if it reuses an earlier one or is not
@@ -1036,24 +1107,28 @@ fn adts_frame_len(b: &[u8]) -> Option<usize> {
 /// rate. `Ok(None)` when no frame decodes.
 fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
     let mut frames: Vec<(Vec<u8>, &[u8])> = Vec::new();
+    let mut first = None;
     let mut p = id3v2_len(bytes);
     while let Some(rest) = bytes.get(p..).filter(|r| r.len() >= 7) {
         match adts_frame_len(rest).and_then(|len| Some((len, adts_split(rest.get(..len)?)?))) {
             Some((len, f)) => {
+                first.get_or_insert(rest);
                 frames.push(f);
                 p += len;
             }
             None => p += 1,
         }
     }
-    let Some(asc) = frames.first().map(|f| f.0.clone()) else { return Ok(None) };
+    let (Some(first), Some(asc)) = (first, frames.first().map(|f| f.0.clone())) else { return Ok(None) };
+    // frames of a stream with a program config element keep to its layout
+    let asc = adts_pce_config(first, frames.iter().map(|f| f.1)).unwrap_or(asc);
     let Some(rate) = aac_output_rate(&asc, frames.iter().take(8).map(|f| f.1)) else { return Ok(None) };
     let mut dec = PacketDecoder::aac(&asc, rate)?;
     let mut out: Vec<Vec<f32>> = Vec::new();
     let mut total = 0usize;
     let mut last = 0usize;
     for (cfg, payload) in frames {
-        if cfg != asc {
+        if !asc.starts_with(&cfg) {
             continue;
         }
         let decoded = dec.decode(payload, 0).ok().filter(|c| out.is_empty() || c.len() == out.len());
@@ -1276,6 +1351,22 @@ mod surround_order_tests {
                 assert!(own > 100.0 * p, "channel {ch}: {} Hz {own} vs {f} Hz (channel {other}) {p}", hz[ch]);
             }
         }
+    }
+
+    /// A program config element in the shape of a channel configuration has that configuration's
+    /// speakers, with the centre first. ffmpeg's 5.1(side) lists its pair first and already decodes
+    /// in WAV order, so it stays as it is.
+    #[test]
+    fn a_program_config_element_takes_the_order_of_a_configuration_it_matches() {
+        let with = |pce| filmcraft_aac::AudioSpecificConfig { pce: Some(pce), ..filmcraft_aac::AudioSpecificConfig::lc(3, 0) };
+        let centre_first = filmcraft_aac::ProgramConfig { front: vec![(false, 0), (true, 0)], back: vec![(true, 1)], lfe: vec![0], ..Default::default() };
+        assert_eq!(aac_stream_order(&with(centre_first)), aac_to_wav_order(6));
+        let ffmpeg = filmcraft_aac::ProgramConfig { front: vec![(true, 0), (false, 0)], side: vec![(false, 1)], back: vec![(true, 1)], ..Default::default() };
+        assert_eq!(aac_stream_order(&with(ffmpeg)), None);
+        // the same element types with no front pair: the side pair is not left and right
+        let no_front_pair =
+            filmcraft_aac::ProgramConfig { front: vec![(false, 0)], side: vec![(true, 0)], back: vec![(true, 1)], lfe: vec![0], ..Default::default() };
+        assert_eq!(aac_stream_order(&with(no_front_pair)), None);
     }
 
     #[test]

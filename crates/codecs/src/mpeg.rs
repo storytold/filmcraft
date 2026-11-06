@@ -92,6 +92,9 @@ struct AudioTrack {
     lens: Vec<u32>,
     /// LATM: the stream's configuration (frames may only reference it).
     latm: Option<crate::audio::LatmConfig>,
+    /// ADTS with channel configuration 0: the AudioSpecificConfig holding the stream's program
+    /// config element, which a seek can land past.
+    adts_pce: Option<Vec<u8>>,
     /// DVD LPCM: byte offset of each unit in the elementary stream (and the end).
     byte_starts: Vec<u64>,
     state: Mutex<AudioState>,
@@ -516,6 +519,7 @@ impl MpegSource {
             }
         };
         let mut latm = None;
+        let mut adts_pce = None;
         let (codec, rate, channels, per_frame, bits) = match &st.codec {
             Codec::MpegAudio | Codec::AacAdts | Codec::Ac3 | Codec::Eac3 => {
                 let Some(fi) = filmcraft_mpegts::frame_info(&st.codec, &first) else {
@@ -526,7 +530,16 @@ impl MpegSource {
                     Codec::AacAdts => ACodec::Adts,
                     _ => ACodec::Ac3,
                 };
-                (c, fi.sample_rate, fi.channels as usize, Some(fi.samples), None)
+                if matches!(c, ACodec::Adts) {
+                    let frames = (0..st.units.len()).map_while(|k| file.read_unit(&self.bytes, ai, k).ok());
+                    let units = frames.map(|f| crate::audio::adts_split(&f).map(|s| s.1.to_vec()).unwrap_or_default());
+                    adts_pce = crate::audio::adts_pce_config(&first, units);
+                    if adts_pce.is_none() && filmcraft_aac::AdtsHeader::parse(&first).is_ok_and(|h| h.channel_config == 0) {
+                        return self.audio_unsupported(&codec_name, format!("{codec_name}: no program config element lays out its channels"));
+                    }
+                }
+                let channels = adts_pce.as_deref().and_then(crate::audio::aac_channels).unwrap_or(fi.channels);
+                (c, fi.sample_rate, channels as usize, Some(fi.samples), None)
             }
             Codec::AacLatm => match crate::audio::latm_config(&first) {
                 Some(cfg) => {
@@ -624,6 +637,7 @@ impl MpegSource {
             starts,
             lens,
             latm,
+            adts_pce,
             byte_starts,
             state: Mutex::new(AudioState { dec: None, cache: HashMap::new(), order: VecDeque::new(), last: None }),
         })
@@ -638,7 +652,7 @@ impl MpegSource {
         let file = self.file.as_ref().ok_or_else(|| CodecError::Container("no stream file".into()))?;
         let read = |k: usize| file.read_unit(&self.bytes, a.stream, k).map_err(|e| CodecError::Container(e.to_string()));
         if st.dec.is_none() {
-            st.dec = Some(AudioDecoder::new(a.codec, a.rate, a.channels, a.latm.clone())?);
+            st.dec = Some(AudioDecoder::new(a.codec, a.rate, a.channels, a.latm.clone(), a.adts_pce.clone())?);
         }
         let dec = st.dec.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
         if st.last.is_none_or(|l| l + 1 != i) {
@@ -715,17 +729,17 @@ fn codec_is_ac3_unsupported(c: ACodec) -> bool {
 
 /// The audio decoders behind the TS/PS audio codecs.
 enum AudioDecoder {
-    Packet { dec: crate::audio::PacketDecoder, codec: ACodec, latm: Option<crate::audio::LatmConfig> },
+    Packet { dec: crate::audio::PacketDecoder, codec: ACodec, latm: Option<crate::audio::LatmConfig>, adts_pce: Option<Vec<u8>> },
     Pcm { codec: ACodec, channels: usize },
 }
 
 impl AudioDecoder {
-    fn new(codec: ACodec, rate: u32, channels: usize, latm: Option<crate::audio::LatmConfig>) -> crate::Result<Self> {
+    fn new(codec: ACodec, rate: u32, channels: usize, latm: Option<crate::audio::LatmConfig>, adts_pce: Option<Vec<u8>>) -> crate::Result<Self> {
         use crate::audio::PacketDecoder;
         Ok(match codec {
-            ACodec::Mpa(layer) => AudioDecoder::Packet { dec: PacketDecoder::mpeg_audio(layer, rate)?, codec, latm: None },
-            ACodec::Adts | ACodec::Latm => AudioDecoder::Packet { dec: PacketDecoder::lazy_aac(), codec, latm },
-            ACodec::Ac3 => AudioDecoder::Packet { dec: PacketDecoder::ac3()?, codec, latm: None },
+            ACodec::Mpa(layer) => AudioDecoder::Packet { dec: PacketDecoder::mpeg_audio(layer, rate)?, codec, latm: None, adts_pce: None },
+            ACodec::Adts | ACodec::Latm => AudioDecoder::Packet { dec: PacketDecoder::lazy_aac(), codec, latm, adts_pce },
+            ACodec::Ac3 => AudioDecoder::Packet { dec: PacketDecoder::ac3()?, codec, latm: None, adts_pce: None },
             ACodec::LpcmBluray | ACodec::LpcmDvd(_) => AudioDecoder::Pcm { codec, channels },
         })
     }
@@ -736,12 +750,12 @@ impl AudioDecoder {
     }
     fn decode(&mut self, data: &[u8]) -> crate::Result<Vec<Vec<f32>>> {
         match self {
-            AudioDecoder::Packet { dec, codec: ACodec::Adts, .. } => {
+            AudioDecoder::Packet { dec, codec: ACodec::Adts, adts_pce, .. } => {
                 let (asc, payload) = crate::audio::adts_split(data).ok_or_else(|| CodecError::Decode("bad ADTS frame".into()))?;
-                dec.ensure_aac(&asc)?;
+                dec.ensure_aac(adts_pce.as_deref().filter(|full| full.starts_with(&asc)).unwrap_or(&asc))?;
                 dec.decode(payload, 0)
             }
-            AudioDecoder::Packet { dec, codec: ACodec::Latm, latm } => {
+            AudioDecoder::Packet { dec, codec: ACodec::Latm, latm, .. } => {
                 let (asc, payload) = crate::audio::latm_split(data, latm).ok_or_else(|| CodecError::Decode("bad LATM frame".into()))?;
                 dec.ensure_aac(&asc)?;
                 dec.decode(&payload, 0)
@@ -1042,5 +1056,163 @@ mod tests {
         assert_eq!(pts[3_999], Some(39_990));
         assert_eq!(pts[4_001], Some(40_010));
         assert_eq!(pts[9_998], Some(99_980));
+    }
+
+    /// Two seconds of 5.1 at 48 kHz, a tone per speaker ([`PCE_TONES`]): its access units and the
+    /// program config element that lays them out.
+    fn pce_stream() -> (filmcraft_aac::ProgramConfig, Vec<Vec<u8>>) {
+        let tone = |f: f32| (0..96_000).map(|i| 0.25 * (std::f32::consts::TAU * f * i as f32 / 48_000.0).sin()).collect::<Vec<f32>>();
+        let wav: Vec<Vec<f32>> = PCE_TONES.iter().map(|&f| tone(f)).collect();
+        // AAC element order: C L R Ls Rs LFE
+        let coded: Vec<&[f32]> = [2usize, 0, 1, 4, 5, 3].iter().map(|&c| wav[c].as_slice()).collect();
+        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(48_000, 6, 384_000)).unwrap();
+        let mut aus = enc.encode(&coded);
+        aus.extend(enc.flush());
+        let pce = filmcraft_aac::ProgramConfig {
+            object_type: 1,
+            sf_index: 3,
+            front: vec![(false, 0), (true, 0)],
+            back: vec![(true, 1)],
+            lfe: vec![0],
+            ..Default::default()
+        };
+        (pce, aus)
+    }
+
+    /// [`pce_stream`] as ADTS frames saying channel configuration 0, with the program config
+    /// element in `every` frame or the first only.
+    fn pce_adts_frames(every: bool) -> Vec<Vec<u8>> {
+        let (pce, aus) = pce_stream();
+        // the element ends byte-aligned, so the access unit follows it as it is
+        let mut bw = filmcraft_bitstream::BitWriter::new();
+        bw.write_bits(5, 3);
+        pce.write(&mut bw);
+        let pce = bw.finish();
+        let block = |(k, au): (usize, &Vec<u8>)| {
+            let head: &[u8] = if every || k == 0 { &pce } else { &[] };
+            let mut f = filmcraft_aac::AdtsHeader::write(2, 3, 0, head.len() + au.len(), 0x7FF).to_vec();
+            f.extend_from_slice(head);
+            f.extend_from_slice(au);
+            f
+        };
+        aus.iter().enumerate().map(block).collect()
+    }
+
+    /// [`pce_stream`] as LOAS frames whose StreamMuxConfig (of `audioMuxVersion` 0 or 1) holds the
+    /// program config element, in `every` frame or the first only.
+    fn pce_latm_frames(version: u32, every: bool) -> Vec<Vec<u8>> {
+        let (pce, aus) = pce_stream();
+        let asc = filmcraft_aac::AudioSpecificConfig { pce: Some(pce), ..filmcraft_aac::AudioSpecificConfig::lc(3, 0) }.to_bytes();
+        let frame = |(k, au): (usize, &Vec<u8>)| {
+            let same = !every && k > 0;
+            let mut w = filmcraft_bitstream::BitWriter::new();
+            w.write_bits(same as u32, 1);
+            if !same {
+                w.write_bits(version, 1);
+                if version == 1 {
+                    w.write_bits(0, 1); // audioMuxVersionA
+                    w.write_bits(0, 10); // taraBufferFullness: one byte
+                }
+                w.write_bits(1, 1); // allStreamsSameTimeFraming
+                w.write_bits(0, 13); // one sub-frame, program and layer
+                if version == 1 {
+                    w.write_bits(0, 2); // ascLen: one byte
+                    w.write_bits(asc.len() as u32 * 8 + 5, 8); // counts the fill below
+                }
+                asc.iter().for_each(|&b| w.write_bits(b as u32, 8));
+                if version == 1 {
+                    w.write_bits(0b10101, 5); // fillBits
+                }
+                w.write_bits(0, 3); // frameLengthType
+                w.write_bits(0xFF, 8); // latmBufferFullness
+                w.write_bits(0, 2); // no other data, no CRC
+            }
+            for _ in 0..au.len() / 255 {
+                w.write_bits(255, 8);
+            }
+            w.write_bits((au.len() % 255) as u32, 8);
+            au.iter().for_each(|&b| w.write_bits(b as u32, 8));
+            let body = w.finish();
+            let mut f = vec![0x56, 0xE0 | (body.len() >> 8) as u8, body.len() as u8];
+            f.extend(body);
+            f
+        };
+        aus.iter().enumerate().map(frame).collect()
+    }
+
+    /// Hz per speaker, in WAV order: L, R, C, LFE, Ls, Rs.
+    const PCE_TONES: [f32; 6] = [300.0, 400.0, 500.0, 60.0, 700.0, 800.0];
+
+    /// Every speaker of `src` has its own tone, read from 0.1 s in: past the first frame, so a
+    /// stream that gives its program config element only there is decoded from a seek.
+    fn assert_pce_tones(src: &dyn MediaSource, what: &str) {
+        assert_eq!(src.info().audio().map(|a| a.channels), Some(6), "{what}");
+        let buf = src.audio(4800, 33_600, 48_000).unwrap();
+        assert_eq!(buf.channels.len(), 6, "{what}");
+        for (ch, x) in buf.channels.iter().enumerate() {
+            let crossings = x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32;
+            let expected = PCE_TONES[ch] * 0.7;
+            assert!((crossings - expected).abs() <= 3.0, "{what}, channel {ch}: {crossings} crossings, expected {expected}");
+        }
+    }
+
+    /// AAC 5.1 in MPEG-TS whose layout is only in the stream: the header's channel configuration
+    /// is 0 and a program config element leads the raw data blocks. It read as stereo, and no frame
+    /// decoded, because the configuration alone was handed to the decoder.
+    #[test]
+    fn adts_in_a_transport_stream_takes_its_layout_from_the_stream() {
+        for every in [true, false] {
+            let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
+            mux.psi(&[(0x0F, 0x1100)]);
+            for (k, f) in pce_adts_frames(every).iter().enumerate() {
+                mux.pes(0x1100, &pes(0xC0, Some(90_000 + 1920 * k as i64), f));
+            }
+            let src = MpegSource::open("pce.ts", mux.out.into()).unwrap();
+            assert_pce_tones(&src, if every { "TS, every frame" } else { "TS, first frame" });
+        }
+    }
+
+    /// AAC 5.1 in LATM, whose StreamMuxConfig carries the program config element in its
+    /// AudioSpecificConfig. The element went unread, so the rest of the config was misread and the
+    /// stream played as two silent channels. With `audioMuxVersion` 1 the AudioSpecificConfig does
+    /// not start on a byte of the frame, and the element aligns to its own bytes.
+    #[test]
+    fn latm_takes_its_layout_from_the_stream_mux_config() {
+        for (version, every) in [(0, true), (0, false), (1, true), (1, false)] {
+            let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
+            mux.psi(&[(0x11, 0x1100)]);
+            for (k, f) in pce_latm_frames(version, every).iter().enumerate() {
+                mux.pes(0x1100, &pes(0xC0, Some(90_000 + 1920 * k as i64), f));
+            }
+            let src = MpegSource::open("pce.ts", mux.out.into()).unwrap();
+            assert_pce_tones(&src, &format!("LATM version {version}, every frame: {every}"));
+        }
+    }
+
+    /// The same stream as a raw `.aac` file, which did not open at all.
+    #[test]
+    fn a_raw_adts_file_takes_its_layout_from_the_stream() {
+        for every in [true, false] {
+            let src = crate::open_bytes("pce.aac", pce_adts_frames(every).concat().into()).unwrap();
+            assert_pce_tones(&*src, if every { "ADTS, every frame" } else { "ADTS, first frame" });
+        }
+    }
+
+    /// Channel configuration 0 and no program config element anywhere: there is no layout to
+    /// find, so the file stays refused and nothing panics.
+    #[test]
+    fn adts_without_any_layout_is_refused() {
+        let frames = pce_adts_frames(false);
+        let bare: Vec<u8> = frames.iter().skip(1).flatten().copied().collect();
+        assert!(crate::open_bytes("bare.aac", bare.into()).is_err());
+        // in a transport stream the track says so, instead of reporting stereo that never decodes
+        let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
+        mux.psi(&[(0x0F, 0x1100)]);
+        for (k, f) in frames.iter().skip(1).enumerate() {
+            mux.pes(0x1100, &pes(0xC0, Some(90_000 + 1920 * k as i64), f));
+        }
+        let src = MpegSource::open("bare.ts", mux.out.into()).unwrap();
+        assert!(src.info().audio().unwrap().codec.ends_with("(unsupported)"));
+        assert!(src.audio(0, 4800, 48_000).is_err());
     }
 }

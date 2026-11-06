@@ -106,3 +106,36 @@ fn aac_channel_configurations_report_and_decode_every_channel() {
         assert_eq!((ch as usize, got.len()), (n, n), "{layout}");
     }
 }
+
+/// AAC 5.1 whose program config element is carried in the stream, in MPEG-TS and raw ADTS, where
+/// the ADTS header says channel configuration 0, and in LATM's StreamMuxConfig. ffmpeg 8 writes
+/// 5.1(side) that way; a later build that writes a plain configuration has nothing to test here.
+#[test]
+fn aac_program_config_element_in_the_stream_matches_ffmpeg() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let hz = [300, 400, 500, 60, 700, 800];
+    let tones: Vec<String> = hz.iter().map(|f| format!("0.25*sin(2*PI*{f}*t)")).collect();
+    let graph = format!("aevalsrc={}:s={RATE}:c=5.1(side):d=2", tones.join("|"));
+    let Some(m4a) = fixture(&ff, "aac_pce.m4a", &["-f", "lavfi", "-i", &graph, "-c:a", "aac", "-b:a", "384k"]) else {
+        eprintln!("SKIPPED: this ffmpeg can't encode 5.1(side) AAC");
+        return;
+    };
+    let input = m4a.to_str().unwrap();
+    let copy = |name, format| fixture(&ff, name, &["-i", input, "-c", "copy", "-f", format]).unwrap();
+    let adts = copy("aac_pce.aac", "adts");
+    if bytes(&adts).get(3).is_none_or(|b| b >> 6 != 0) {
+        eprintln!("SKIPPED: this ffmpeg writes 5.1(side) AAC with a channel configuration");
+        return;
+    }
+    let latm = fixture(&ff, "aac_pce_latm.ts", &["-i", input, "-c", "copy", "-f", "mpegts", "-mpegts_flags", "latm"]).unwrap();
+    for (path, name) in [(copy("aac_pce.ts", "mpegts"), "aac_pce.ts"), (adts, "aac_pce.aac"), (latm, "aac_pce_latm.ts")] {
+        let (ch, got) = ours(&path, name);
+        assert_eq!((ch, got.len()), (6, 6), "{name}");
+        let want = theirs(&ff, &path, 6);
+        for (c, (a, b)) in got.iter().zip(&want).enumerate() {
+            let d = diff(a, b);
+            println!("{name}, channel {c}: peak {:.3}, max |ours - ffmpeg| {d:.5}", peak(a));
+            assert!(peak(a) > 0.05 && d < 0.01, "{name}, channel {c}: off ffmpeg's decode by {d}");
+        }
+    }
+}
