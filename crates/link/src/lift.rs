@@ -29,9 +29,11 @@ pub type Lifted = Vec<String>;
 /// Where the effects go, when the shape is unambiguous.
 ///
 /// - One inner video clip at normal speed that spans the outer clip: its effects move, keyframes and all.
-/// - Several inner video clips that all carry the same effects, none animated and none masked: the
-///   same grade on every clip is one grade on the outer clip. A clip without it, a different grade, or
-///   a time-dependent one is ambiguous.
+/// - Several inner video clips that all carry the same effects, none animated and none masked, and
+///   no two on screen at once: the same grade on every clip is one grade on the outer clip. A clip
+///   without it, a different grade, or a time-dependent one is ambiguous. Clips that overlap are too:
+///   an effect that runs on each clip before the composite (a key, a blend) gives another picture
+///   than the same effect on the composite.
 fn plan(project: &Project, active: ItemId, nest: ItemId, outer: &[ClipId]) -> Option<ClipId> {
     let [outer_id] = outer else { return None };
     let inside = project.sequence(nest)?;
@@ -48,7 +50,14 @@ fn plan(project: &Project, active: ItemId, nest: ItemId, outer: &[ClipId]) -> Op
         return (movable(only) && clip.duration == only.duration).then_some(*outer_id);
     }
     let static_grade = wanted.iter().all(|e| !e.is_animated() && e.masks.is_empty());
-    (static_grade && inner.iter().all(|c| c.enabled && grade(c) == wanted)).then_some(*outer_id)
+    (static_grade && inner.iter().all(|c| c.enabled && grade(c) == wanted) && !overlap(&inner)).then_some(*outer_id)
+}
+
+/// True when two of `clips` cover a common stretch of the timeline.
+fn overlap(clips: &[&TrackItem]) -> bool {
+    let mut spans: Vec<_> = clips.iter().map(|c| (c.start, c.end())).collect();
+    spans.sort();
+    spans.windows(2).any(|pair| matches!(pair, [(_, end), (start, _)] if start < end))
 }
 
 /// A clip whose effect time is its timeline time. A speed change, a hold or a time remap moves it.

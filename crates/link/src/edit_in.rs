@@ -1330,6 +1330,36 @@ mod tests {
     }
 
     #[test]
+    fn a_grade_on_overlapping_clips_stays_inside_the_nest() {
+        // A grade that runs on each clip before the composite is not the same grade on the composite.
+        let saved = TempProject::new("lift-overlap");
+        let rate = FrameRate::FPS_24;
+        let a = clip(1, rate.tick_of(0), rate.tick_of(24));
+        let b = clip(2, rate.tick_of(12), rate.tick_of(24));
+        let mut session = session_with(rate, 2, &[(0, a), (1, b)]);
+        session.path = Some(saved.path.clone());
+        with_effects(&mut session, ClipId(1), &["lumetri"]);
+        with_effects(&mut session, ClipId(2), &["lumetri"]);
+        session.state.selection = vec![ClipId(1), ClipId(2)];
+        let mut peer = losing("import", "effect \"Lumetri Color\" is not imported");
+        let reply = run(&mut session, &mut peer).expect("edit in");
+        assert_eq!(reply["lifted_effects"], json!([]));
+        let nest = ItemId(reply["sequence"].as_u64().unwrap());
+        let kept = session
+            .project
+            .sequence(nest)
+            .unwrap()
+            .video_tracks
+            .iter()
+            .flat_map(|t| &t.items)
+            .filter(|c| c.effects.iter().any(|e| e.effect == "lumetri"))
+            .count();
+        assert_eq!(kept, 2, "both clips keep the grade");
+        let details = LinkNotice::from_reply(&reply).unwrap().details().join(" ");
+        assert!(details.starts_with("Unimportable FilmCraft effects: Lumetri Color"), "{details}");
+    }
+
+    #[test]
     fn a_grade_missing_from_one_clip_is_not_lifted_and_the_banner_says_it_is_lost() {
         let saved = TempProject::new("lift-partial");
         let mut session = two_clip_session(&saved, &["lumetri"], &[]);
