@@ -17,6 +17,7 @@ pub use blur::{KERNEL_REACH, bokeh_kernel};
 mod color;
 pub(crate) use color::cdl;
 mod distort;
+pub(crate) use distort::rounded_crop;
 mod immersive;
 mod lights;
 mod stylize;
@@ -490,7 +491,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "spacer" => distort::spacer(img, e, cx),
         "clone" => distort::clone_fx(img, e, cx),
         "auto_align" => distort::auto_align(img, e, cx),
-        "rounded_crop" => distort::rounded_crop(img, e, cx),
+        // ("rounded_crop" is an `FxOp`: `effects::apply` evaluates and runs it, see `gpufx`)
         "mosaic" | "mosaic_legacy" => distort::mosaic(img, e, cx),
         "twirl_legacy" => alias(img, "twirl"),
         // Lights & Glows

@@ -143,6 +143,31 @@ pub enum FxOp {
         y1: f32,
         feather: f32,
     },
+    /// Rounded Crop: alpha × the coverage of the rounded rectangle `x0..x1` × `y0..y1` (working
+    /// pixels) with corner radius `r`, faded over `feather` px inside it (0: half-pixel AA), after
+    /// a band of `border` px just inside the edge painted `border_color` (linear) over the picture.
+    RoundedCrop {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        r: f32,
+        feather: f32,
+        border: f32,
+        border_color: [f32; 3],
+    },
+    /// Drop Shadow: the picture moved by `shift` (`Image::transformed` by a translation), its
+    /// alpha × `opacity` painted `color` (linear), blurred with box radii `rx` / `ry` (transparent
+    /// edges, as `effects::gaussian` without repeat), then the picture composited Normal over it
+    /// (`only`: the shadow alone).
+    DropShadow {
+        shift: Resample,
+        color: [f32; 3],
+        opacity: f32,
+        rx: Vec<u32>,
+        ry: Vec<u32>,
+        only: bool,
+    },
     Resample(Resample),
     HFlip,
     VFlip,
@@ -247,6 +272,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "unsharp_mask",
     "crop",
     "edge_feather",
+    "rounded_crop",
+    "drop_shadow",
     "transform",
     "horizontal_flip",
     "vertical_flip",
@@ -270,6 +297,14 @@ fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     let x0 = (b.x.floor().max(0.0) as usize).min(w);
     let x1 = (b.right().ceil().max(0.0) as usize).min(w);
     Resample { inv: Some(inv), rect: [x0 as u32, x1 as u32, y0.min(y1) as u32, y1 as u32], opacity }
+}
+
+/// Whether the GPU's resample reproduces `r`: not the CPU's mip path, finite numbers, and an
+/// inverse map whose coefficients f32 still resolves.
+fn resample_ok(r: &Resample) -> bool {
+    r.rect[0] != u32::MAX
+        && r.opacity.is_finite()
+        && r.inv.as_ref().is_none_or(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite() && v.abs() < 1e7))
 }
 
 /// Whether `Image::transformed` would take its mip (downsample) path for `m` on a `w`×`h` image.
@@ -465,6 +500,40 @@ impl FxOp {
             "edge_feather" => {
                 let amt = f(e, "amount", cx) / 100.0 * (w.min(h) as f32) * 0.5;
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
+            }
+            "rounded_crop" => {
+                use crate::vfx::{cv, fv, lin};
+                let (w, h) = (w as f32, h as f32);
+                let (l, t, r, bt) =
+                    (fv(e, "left", cx) / 100.0 * w, fv(e, "top", cx) / 100.0 * h, w - fv(e, "right", cx) / 100.0 * w, h - fv(e, "bottom", cx) / 100.0 * h);
+                FxOp::RoundedCrop {
+                    x0: l,
+                    y0: t,
+                    x1: r,
+                    y1: bt,
+                    r: (fv(e, "radius", cx) * cx.px_scale).min(((r - l).min(bt - t) / 2.0).max(0.0)),
+                    feather: fv(e, "feather", cx) * cx.px_scale,
+                    border: fv(e, "border", cx) * cx.px_scale,
+                    border_color: lin(cv(e, "border_color", cx)),
+                }
+            }
+            "drop_shadow" => {
+                let c = color(e, "color", cx);
+                let dir = (f(e, "direction", cx) as f64).to_radians();
+                let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
+                let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
+                let (dx, dy) = (dir.sin() * dist, -dir.cos() * dist);
+                // (`gaussian_boxes` blurs nothing at a sigma of 0.3 or less, nor at a non-finite one)
+                let (rx, ry) = gaussian_boxes(w, h, soft, soft);
+                FxOp::DropShadow {
+                    // a translation never minifies: `Image::transformed`'s plain bilinear path
+                    shift: resample(w, h, &Affine::translate(dx, dy), 1.0),
+                    color: dec([c[0], c[1], c[2]]),
+                    opacity: f(e, "opacity", cx) / 100.0,
+                    rx,
+                    ry,
+                    only: b(e, "only"),
+                }
             }
             "transform" => {
                 // With its own shutter angle the CPU blurs the motion over seven samples
@@ -693,11 +762,13 @@ impl FxOp {
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
-            FxOp::Resample(r) => {
-                r.rect[0] != u32::MAX
-                    && r.opacity.is_finite()
-                    && r.inv.as_ref().is_none_or(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite() && v.abs() < 1e7))
+            // (the distance field is computed in f32 on both sides: coordinates far beyond any
+            // texture stay on the CPU, like a resample's)
+            FxOp::RoundedCrop { x0, y0, x1, y1, r, feather, border, border_color } => {
+                [*x0, *y0, *x1, *y1, *r, *feather, *border].iter().all(|v| v.is_finite() && v.abs() < 1e7) && fin(border_color)
             }
+            FxOp::DropShadow { shift, color, opacity, .. } => resample_ok(shift) && fin(color) && opacity.is_finite(),
+            FxOp::Resample(r) => resample_ok(r),
             FxOp::Mirror { cx, cy, nx, ny } => fin(&[*cx, *cy, *nx, *ny]),
             FxOp::Offset { dx, dy, blend } => fin(&[*dx, *dy, *blend]),
             FxOp::AscCdl { slope, offset, power, sat } => fin(slope) && fin(offset) && fin(power) && sat.is_finite(),
@@ -900,6 +971,30 @@ impl FxOp {
             }
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
+            FxOp::RoundedCrop { x0, y0, x1, y1, r, feather, border, border_color } => {
+                crate::vfx::rounded_crop(img, *x0, *y0, *x1, *y1, *r, *feather, *border, *border_color);
+            }
+            FxOp::DropShadow { shift, color: lc, opacity, rx, ry, only } => {
+                // `Image::transformed` by the translation (`resample` / `resample_cpu` are its
+                // plain bilinear path, bit for bit)
+                let mut sh = match &shift.inv {
+                    Some(inv) => resample_cpu(img, inv, shift.rect),
+                    None => Image::new(img.w, img.h),
+                };
+                let (lc, op) = (*lc, *opacity);
+                sh.px.par_chunks_mut(4).for_each(|p| {
+                    let a = p[3] * op;
+                    p[0] = lc[0] * a;
+                    p[1] = lc[1] * a;
+                    p[2] = lc[2] * a;
+                    p[3] = a;
+                });
+                crate::effects::box_blur(&mut sh, rx, ry, false);
+                if !*only {
+                    crate::blend::composite(&mut sh, img, 1.0, crate::blend::Blend::Normal);
+                }
+                *img = sh;
+            }
             FxOp::Resample(r) => {
                 let out = match (&r.inv, r.rect[0]) {
                     (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)
@@ -1264,6 +1359,200 @@ mod tests {
                     for (pixel, inside) in img.px.as_chunks::<4>().0.iter().zip([false, true, true, false]) {
                         let value = if inside != invert { alpha } else { 0.0 };
                         assert_eq!(*pixel, [value, value, value, alpha], "softness={softness}, invert={invert}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rounded Crop and Drop Shadow as they were rendered before they became `FxOp`s (verbatim:
+    /// `vfx::distort::rounded_crop` on the effect's parameters, and the `drop_shadow` arm of
+    /// `effects::apply`): the reference for
+    /// [`rounded_crop_and_drop_shadow_ops_render_the_same_bits_as_before`].
+    mod legacy {
+        use crate::effects::{FxCtx, b, color, dec, f, gaussian};
+        use crate::image::Image;
+        use crate::vfx::{cv, fv, lin, over};
+        use filmcraft_geom::Affine;
+        use filmcraft_project::EffectInstance;
+        use rayon::prelude::*;
+
+        fn round_rect_sdf(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32, r: f32) -> f32 {
+            let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            let (hx, hy) = ((x1 - x0) / 2.0 - r, (y1 - y0) / 2.0 - r);
+            let (qx, qy) = ((px - cx).abs() - hx, (py - cy).abs() - hy);
+            let outside = qx.max(0.0).hypot(qy.max(0.0));
+            outside + qx.max(qy).min(0.0) - r
+        }
+
+        pub fn rounded_crop(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+            let (w, h) = (img.w as f32, img.h as f32);
+            let (l, t, r, b) =
+                (fv(e, "left", cx) / 100.0 * w, fv(e, "top", cx) / 100.0 * h, w - fv(e, "right", cx) / 100.0 * w, h - fv(e, "bottom", cx) / 100.0 * h);
+            let rad = (fv(e, "radius", cx) * cx.px_scale).min(((r - l).min(b - t) / 2.0).max(0.0));
+            let fe = fv(e, "feather", cx) * cx.px_scale;
+            let border = fv(e, "border", cx) * cx.px_scale;
+            let bc = lin(cv(e, "border_color", cx));
+            let wi = img.w;
+            img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
+                for x in 0..wi {
+                    let d = round_rect_sdf(x as f32 + 0.5, y as f32 + 0.5, l, t, r, b, rad);
+                    let p = &mut row[x * 4..x * 4 + 4];
+                    if border > 0.0 {
+                        let k = (0.5 - d).clamp(0.0, 1.0) - (0.5 - d - border).clamp(0.0, 1.0);
+                        if k > 0.0 {
+                            over(p, [bc[0] * k, bc[1] * k, bc[2] * k, k]);
+                        }
+                    }
+                    let a = if fe > 0.0 { (-d / fe).clamp(0.0, 1.0) } else { (0.5 - d).clamp(0.0, 1.0) };
+                    if a < 1.0 {
+                        for v in p.iter_mut() {
+                            *v *= a;
+                        }
+                    }
+                }
+            });
+        }
+
+        pub fn drop_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+            let c = color(e, "color", cx);
+            let op = f(e, "opacity", cx) / 100.0;
+            let dir = (f(e, "direction", cx) as f64).to_radians();
+            let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
+            let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
+            let only = b(e, "only");
+            let (dx, dy) = (dir.sin() * dist, -dir.cos() * dist);
+            let lc = dec([c[0], c[1], c[2]]);
+            let mut sh = img.transformed(img.w, img.h, &Affine::translate(dx, dy));
+            sh.px.par_chunks_mut(4).for_each(|p| {
+                let a = p[3] * op;
+                p[0] = lc[0] * a;
+                p[1] = lc[1] * a;
+                p[2] = lc[2] * a;
+                p[3] = a;
+            });
+            if soft > 0.3 {
+                gaussian(&mut sh, soft, soft, false);
+            }
+            if !only {
+                crate::blend::composite(&mut sh, img, 1.0, crate::blend::Blend::Normal);
+            }
+            *img = sh;
+        }
+    }
+
+    /// Moving Rounded Crop and Drop Shadow onto `FxOp` (so the GPU can run them) leaves the CPU
+    /// render bit for bit as it was: alone and in a real project's chains, keyframed, at reduced
+    /// working scales, on odd sizes with alpha edges, and with hostile values.
+    #[test]
+    fn rounded_crop_and_drop_shadow_ops_render_the_same_bits_as_before() {
+        let ctx = |t: Tick, px_scale: f32| FxCtx {
+            t,
+            px_scale,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 30.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let effect = |id: &str, params: &[(&str, ParamValue)]| {
+            let mut e = find_effect(id).unwrap().instance();
+            for (k, v) in params {
+                e.params.get_mut(*k).unwrap_or_else(|| panic!("{id}.{k}")).value = v.clone();
+            }
+            e
+        };
+        let fl = ParamValue::Float;
+        let keyed = |mut e: EffectInstance, keys: &[(&str, f64, f64)]| {
+            for (k, v0, v1) in keys {
+                let p = e.params.get_mut(*k).unwrap();
+                p.put_keyframe(Tick::ZERO, fl(*v0));
+                p.put_keyframe(Tick::from_seconds_f64(1.0), fl(*v1));
+            }
+            e
+        };
+        let user_crop = [
+            ("border", fl(39.0)),
+            ("border_color", ParamValue::Color([1.0, 1.0, 1.0, 1.0])),
+            ("radius", fl(30.0)),
+            ("feather", fl(0.0)),
+            ("left", fl(0.7)),
+            ("right", fl(0.7)),
+        ];
+        let brown = ParamValue::Color([0.157, 0.118, 0.078, 1.0]);
+        let crops = [
+            effect("rounded_crop", &[]),
+            effect("rounded_crop", &user_crop),
+            keyed(effect("rounded_crop", &user_crop), &[("left", 0.7, 12.0), ("right", 0.7, 9.5), ("top", 0.0, 6.0), ("bottom", 0.0, 3.25)]),
+            effect(
+                "rounded_crop",
+                &[
+                    ("left", fl(10.0)),
+                    ("top", fl(8.0)),
+                    ("right", fl(15.0)),
+                    ("bottom", fl(5.0)),
+                    ("radius", fl(12.5)),
+                    ("feather", fl(6.0)),
+                    ("border", fl(4.5)),
+                ],
+            ),
+            effect(
+                "rounded_crop",
+                &[("left", fl(-20.0)), ("right", fl(70.0)), ("top", fl(60.0)), ("bottom", fl(60.0)), ("radius", fl(2000.0)), ("border", fl(500.0))],
+            ),
+            effect("rounded_crop", &[("radius", fl(f64::NAN)), ("border", fl(f64::INFINITY)), ("left", fl(f64::NAN)), ("feather", fl(-4.0))]),
+        ];
+        let shadows = [
+            effect("drop_shadow", &[]),
+            effect("drop_shadow", &[("color", brown.clone()), ("opacity", fl(55.0)), ("direction", fl(180.0)), ("distance", fl(12.0)), ("softness", fl(46.0))]),
+            keyed(
+                effect("drop_shadow", &[("color", brown.clone()), ("direction", fl(180.0))]),
+                &[("opacity", 12.0, 55.0), ("distance", 29.0, 12.0), ("softness", 98.0, 46.0)],
+            ),
+            effect(
+                "drop_shadow",
+                &[("opacity", fl(40.0)), ("direction", fl(135.0)), ("distance", fl(7.3)), ("softness", fl(5.0)), ("only", ParamValue::Bool(true))],
+            ),
+            effect("drop_shadow", &[("direction", fl(33.0)), ("distance", fl(3.7)), ("softness", fl(0.2))]),
+            effect("drop_shadow", &[("distance", fl(4000.0)), ("softness", fl(1000.0)), ("opacity", fl(250.0))]),
+            effect("drop_shadow", &[("distance", fl(f64::NAN)), ("softness", fl(f64::INFINITY)), ("color", ParamValue::Color([2.0, -1.0, f32::NAN, 1.0]))]),
+        ];
+        let bc = effect("brightness_contrast", &[("brightness", fl(8.0)), ("contrast", fl(6.0))]);
+        let tr = effect("transform", &[("scale_height", fl(75.0))]);
+        let legacy = |img: &mut Image, e: &EffectInstance, cx: &FxCtx| match e.effect.as_str() {
+            "rounded_crop" => legacy::rounded_crop(img, e, cx),
+            "drop_shadow" => legacy::drop_shadow(img, e, cx),
+            _ => crate::effects::apply(img, e, cx),
+        };
+        for (w, h) in [(67usize, 41usize), (130, 97), (1, 1), (9, 3)] {
+            // a transparent margin, partial alpha bands, super-whites
+            let mut src = Image::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let a = if x < 3 || y < 2 || x + 4 > w { 0.0 } else { [1.0, 0.5 + 0.4 * x as f32 / w as f32, 1.0, 0.25][y % 4] };
+                    let c = [(x % 13) as f32 / 8.0, y as f32 / h as f32, 0.3];
+                    src.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
+                }
+            }
+            for px_scale in [1.0f32, 0.5, 0.37] {
+                for t in [Tick::ZERO, Tick::from_seconds_f64(0.37), Tick::from_seconds_f64(1.0)] {
+                    let cx = ctx(t, px_scale);
+                    let mut chains: Vec<Vec<&EffectInstance>> = crops.iter().chain(&shadows).map(|e| vec![e]).collect();
+                    chains.extend([vec![&crops[2], &bc, &tr, &shadows[2]], vec![&crops[1], &tr, &shadows[1]], vec![&crops[2], &shadows[1]]]);
+                    for chain in chains {
+                        let (mut now, mut before) = (src.clone(), src.clone());
+                        for e in &chain {
+                            crate::effects::apply(&mut now, e, &cx);
+                            legacy(&mut before, e, &cx);
+                        }
+                        let bits = |i: &Image| i.px.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                        let ids: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
+                        assert!(
+                            (now.w, now.h) == (before.w, before.h) && bits(&now) == bits(&before),
+                            "{w}x{h} s{px_scale} t{t:?} {ids:?}: the CPU render changed"
+                        );
                     }
                 }
             }
