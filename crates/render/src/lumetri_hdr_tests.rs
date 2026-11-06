@@ -271,8 +271,9 @@ fn hsl_contrast_and_sharpen_survive_hostile_values() {
     }
 }
 
-/// HDR: Contrast leaves keyed values that Temperature lifted above 1 where they are (as Basic
-/// Correction leaves highlights above HDR White), instead of clipping them to 1.
+/// HDR: positive Contrast leaves keyed values that Temperature lifted above 1 where they are (as
+/// Basic Correction leaves highlights above HDR White) instead of clipping them to 1; negative
+/// Contrast lowers them with the top of its curve but keeps them above it.
 #[test]
 fn hsl_contrast_keeps_values_above_one() {
     let red = |contrast: f64| {
@@ -292,7 +293,63 @@ fn hsl_contrast_keeps_values_above_one() {
     };
     let warm = red(0.0);
     assert!(warm > 2.0 * 1.05, "Temperature warms the red highlight: {warm}");
-    for c in [50.0, -50.0, 100.0] {
+    for c in [50.0, 100.0] {
         assert!((red(c) - warm).abs() <= warm * 1e-4, "contrast {c}: {} vs {warm}", red(c));
+    }
+    // negative: lowered, but still above a keyed pixel that ends exactly at the curve's top
+    let (soft, top) = (red(-50.0), {
+        let mut img = Image::new(1, 1);
+        img.px.copy_from_slice(&[1.0, 0.45, 0.4, 1.0]);
+        let e =
+            lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0)), ("hsl_contrast", F(-50.0))]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+        img.px[0]
+    });
+    assert!(soft < warm && soft > top, "contrast -50: {soft}, between {top} and {warm}");
+}
+
+/// HDR: across a gradient that Temperature lifts through 1, negative Contrast stays continuous
+/// (no edge where values cross 1) and keeps the detail above it.
+#[test]
+fn hsl_negative_contrast_is_continuous_across_one() {
+    let n = 64;
+    let mut img = Image::new(n, 1);
+    for i in 0..n {
+        let r = 1.0 + 1.6 * i as f32 / (n - 1) as f32;
+        img.px[i * 4..i * 4 + 4].copy_from_slice(&[r, 0.45 * r, 0.4 * r, 1.0]);
+    }
+    let e = lumetri(&[
+        ("hsl_on", ParamValue::Bool(true)),
+        ("hsl_hue", F(0.0)),
+        ("hsl_hue_range", F(40.0)),
+        ("hsl_soft", F(0.0)),
+        ("hsl_temp", F(100.0)),
+        ("hsl_contrast", F(-100.0)),
+    ]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+    let red: Vec<f32> = (0..n).map(|i| img.px[i * 4]).collect();
+    let steps: Vec<f32> = red.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+    assert!(mean > 0.0, "the gradient keeps rising: {red:?}");
+    for (i, d) in steps.iter().enumerate() {
+        assert!(*d >= -1e-4 && *d <= 4.0 * mean, "step {i}: {d} (mean {mean}): {red:?}");
+    }
+}
+
+/// Sharpen leaves fully transparent pixels empty, even where Refine Blur spreads the key onto them.
+#[test]
+fn hsl_sharpen_leaves_transparent_pixels_empty() {
+    let mut img = textured_red_blue();
+    for y in 0..20 {
+        for x in 8..12 {
+            img.px[(y * 40 + x) * 4..][..4].copy_from_slice(&[0.0; 4]);
+        }
+    }
+    let e = lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_blur", F(100.0)), ("hsl_sharpen", F(-100.0))]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    for y in 0..20 {
+        for x in 8..12 {
+            assert_eq!(img.get(x, y), [0.0; 4], "{x},{y}");
+        }
     }
 }

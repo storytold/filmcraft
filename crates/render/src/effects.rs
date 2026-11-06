@@ -1524,18 +1524,17 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 c2[0] *= 1.0 + 0.25 * htemp;
                 c2[2] *= 1.0 - 0.25 * htemp;
                 c2[1] *= 1.0 - 0.2 * htint;
-                // contrast: Basic Correction's S-curve around mid grey; values Temperature lifted
-                // above 1 pass through (the curve meets them at 1), as HDR highlights do there
+                // contrast: Basic Correction's S-curve around mid grey. Values Temperature or Tint
+                // lifted above 1 keep their detail: they continue from the curve's end at 1 with
+                // slope 1 (unchanged when the curve ends at 1, i.e. positive contrast)
                 if contrast.abs() > 1e-4 {
                     let k = 1.0 + contrast;
-                    c2 = c2.map(|q| {
-                        if q > 1.0 {
-                            return q;
-                        }
-                        let q = q.max(0.0);
+                    let curve = |q: f32| {
                         let s = q * q * (3.0 - 2.0 * q);
                         if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
-                    });
+                    };
+                    let top = curve(1.0);
+                    c2 = c2.map(|q| if q > 1.0 { top + (q - 1.0) } else { curve(q.max(0.0)) });
                 }
                 [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
             }
@@ -1549,6 +1548,10 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let mut sharp = img.clone();
         unsharp(&mut sharp, 1.2 * cx.px_scale.max(0.35), sharpen, 0.0);
         img.px.par_chunks_mut(4).zip(sharp.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, s), &m)| {
+            // transparent pixels stay empty (a blurred key can reach them)
+            if p[3] <= 0.0 {
+                return;
+            }
             for k in 0..3 {
                 p[k] += (s[k] - p[k]) * m;
             }
