@@ -360,6 +360,17 @@ fn hdr_exports_signal_pq_and_hlg() {
 /// process-global and parallel tests would see each other's factories.
 #[test]
 fn gpu_hook_scenarios() {
+    gpu_hook_declining_and_producing();
+    gpu_hook_hostile_frame_sizes();
+    gpu_hook_panicking_renderer_retires_pool();
+    gpu_hook_cpu_adjustment_layer_fallback();
+    gpu_hook_gpu_adjustment_layer_caps();
+    gpu_hook_rgba8_direct_bypasses();
+    gpu_hook_rgba8_direct_hdr_limiter_and_fallbacks();
+    crate::reset_frame_renderers_for_tests();
+}
+
+fn gpu_hook_declining_and_producing() {
     // 1. Declining renderer: byte-equal to Off, and an empty registry too.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| None);
@@ -389,7 +400,9 @@ fn gpu_hook_scenarios() {
     mk(&tmp("fake-off.png"), Some(false));
     assert_eq!(gpu_render_stats().fallbacks, 0, "Off must not count as fallback");
     assert_ne!(std::fs::read(tmp("fake-gpu000.png")).unwrap(), std::fs::read(tmp("fake-off000.png")).unwrap(), "the fake GPU picture must reach the export");
+}
 
+fn gpu_hook_hostile_frame_sizes() {
     // 3. Hostile and degenerate frame sizes must not panic with a renderer attached.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| None);
@@ -428,7 +441,9 @@ fn gpu_hook_scenarios() {
         let bytes = std::fs::read(tmp("hostile000.png")).unwrap_or_default();
         assert!(!bytes.is_empty(), "{w}x{h}: PNG written");
     }
+}
 
+fn gpu_hook_panicking_renderer_retires_pool() {
     // 4. A renderer that panics is dropped, not put back: the export still completes, every
     //    frame comes from the CPU (byte-equal to Off), and no renderer is used after its panic.
     crate::reset_frame_renderers_for_tests();
@@ -452,24 +467,31 @@ fn gpu_hook_scenarios() {
     }
     // at most one panic per pooled renderer (4): none is used again after it panicked
     assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
+}
 
+fn project_with_adjustment_effect(effect_id: &str) -> (Arc<Project>, ItemId, SourceMap) {
+    let (p, seq, m) = project();
+    let mut p = Arc::unwrap_or_clone(p);
+    let r = FrameRate::FPS_24;
+    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect(effect_id).unwrap().instance());
+    let v2 = filmcraft_project::TrackId(p.alloc_id());
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+    q.video_tracks[1].items.push(over);
+    (Arc::new(p), seq, m)
+}
+
+fn gpu_hook_cpu_adjustment_layer_fallback() {
     // 5. A frame the planner hands back as one CPU image (an adjustment layer with an effect the
     //    GPU doesn't run, over the clip from frame 12) is rendered by the CPU without taking a
     //    pooled renderer: it counts as a fallback, and the renderer's picture reaches only the
     //    frames before it.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
-    let (p, seq, m) = project();
-    let mut p = Arc::unwrap_or_clone(p);
+    let (p, seq, m) = project_with_adjustment_effect("emboss");
     let r = FrameRate::FPS_24;
-    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
-    let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
-    q.video_tracks[1].items.push(over);
-    let p = Arc::new(p);
     let mk24 = |path: &String, gpu: crate::GpuRendering| {
         let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
         s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
@@ -484,27 +506,22 @@ fn gpu_hook_scenarios() {
         assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
+}
 
+fn gpu_hook_gpu_adjustment_layer_caps() {
     // 6. An adjustment layer whose effect the GPU runs (Invert, over the clip from frame 12) is
     //    handed to a renderer whose device runs adjustment layers, and never to one without an
     //    effect stage: there those frames render on the export's thread, byte-equal to Off, and
     //    count as fallbacks.
-    let (p, seq, m) = project();
-    let mut p = Arc::unwrap_or_clone(p);
-    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    over.effects.insert(0, filmcraft_project::find_effect("invert").unwrap().instance());
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
-    let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
-    q.video_tracks[1].items.push(over);
-    let p = Arc::new(p);
+    let (p, seq, m) = project_with_adjustment_effect("invert");
+    let r = FrameRate::FPS_24;
     let mk24 = |path: &String, gpu: crate::GpuRendering| {
         let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
         s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
         s.gpu_rendering = gpu;
         export(&p, seq, &s, &m, &Progress::default()).unwrap()
     };
+    let frame = |name: &str, f: &str| std::fs::read(tmp(&format!("{name}{f}.png"))).unwrap();
     mk24(&tmp("gpu-adj-off.png"), crate::GpuRendering::Off);
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::NONE)) as Box<dyn FrameRenderer>));
@@ -521,7 +538,215 @@ fn gpu_hook_scenarios() {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
+}
+
+fn run_final_renderer_with_settings(
+    p: &Arc<Project>,
+    seq: ItemId,
+    m: &SourceMap,
+    name: &str,
+    mode: u8,
+    configure: &dyn Fn(&mut ExportSettings),
+) -> (usize, usize, crate::GpuRenderStats) {
     crate::reset_frame_renderers_for_tests();
+    RENDER_F32_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    RENDER_RGBA8_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    RGBA8_MODE.store(mode, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| Some(Box::new(FinalFrameRenderer) as Box<dyn FrameRenderer>));
+    let mut s = ExportSettings { format: Format::PngSequence, path: tmp(&format!("{name}.png")), ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+    s.gpu_rendering = crate::GpuRendering::Auto;
+    configure(&mut s);
+    export(p, seq, &s, m, &Progress::default()).unwrap();
+    (RENDER_F32_CALLS.load(std::sync::atomic::Ordering::SeqCst), RENDER_RGBA8_CALLS.load(std::sync::atomic::Ordering::SeqCst), gpu_render_stats())
+}
+
+fn gpu_hook_rgba8_direct_bypasses() {
+    // 7a-7d. Eligibility and bypass coverage for `rgba8_direct` (`FrameRenderer::render_rgba8`):
+    //        - Opaque matching SDR export uses `render_rgba8` directly.
+    //        - Alpha (`keeps_alpha`), fitting / PAR / non-matching geometry, and overlays (timecode,
+    //          name, image) bypass `render_rgba8` and finish the float `render` frame.
+    let (p, seq, m) = project();
+    let run = |name: &str, mode: u8, configure: &dyn Fn(&mut ExportSettings)| run_final_renderer_with_settings(&p, seq, &m, name, mode, configure);
+    let first = |name: &str| std::fs::read(tmp(&format!("{name}000.png"))).unwrap();
+
+    // 7a. Opaque matching SDR export -> `render_rgba8` is used; float `render` is not called.
+    let (f32_calls, rgba8_calls, stats) = run("final", 0, &|_| {});
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 2, 2, 0));
+
+    // Reference float-path outputs from `FakeRenderer`.
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    let mut s_float = ExportSettings { format: Format::PngSequence, path: tmp("float.png"), ..Default::default() };
+    s_float.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+    s_float.gpu_rendering = crate::GpuRendering::Auto;
+    export(&p, seq, &s_float, &m, &Progress::default()).unwrap();
+    s_float.path = tmp("float-tc.png");
+    s_float.effects.timecode_overlay.enabled = true;
+    export(&p, seq, &s_float, &m, &Progress::default()).unwrap();
+    assert_ne!(first("final"), first("float"), "the renderer's 8-bit frame is the export's");
+
+    // 7b. Alpha output (`keeps_alpha()` is true) -> bypasses `render_rgba8`, uses float `render`.
+    let (f32_calls, rgba8_calls, stats) = run("final-alpha", 0, &|s| {
+        s.alpha = true;
+        assert!(s.keeps_alpha());
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "alpha export must use float render");
+
+    // 7c. Fitting / PAR / non-matching geometry -> bypasses `render_rgba8`, uses float `render`.
+    let (f32_calls, rgba8_calls, stats) = run("final-letterbox", 0, &|s| {
+        s.frame_size = Some((320, 240));
+        s.scaling = crate::Scaling::ScaleToFit;
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "letterbox fitting must use float render");
+
+    let (f32_calls, rgba8_calls, stats) = run("final-mrq-downscale", 0, &|s| {
+        s.frame_size = Some((160, 90));
+        s.max_render_quality = true;
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "max-render-quality resample must use float render");
+
+    let (f32_calls, rgba8_calls, stats) = run("final-par", 0, &|s| {
+        s.pixel_aspect = Some((4, 3));
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "non-square PAR must use float render");
+
+    // 7d. Overlays (timecode, non-empty name, image) -> bypass `render_rgba8`, use float `render`.
+    let (f32_calls, rgba8_calls, stats) = run("final-tc", 0, &|s| {
+        s.effects.timecode_overlay.enabled = true;
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "timecode overlay must use float render");
+    assert_eq!(first("final-tc"), first("float-tc"), "with an overlay the float frame is finished as before");
+
+    let (f32_calls, rgba8_calls, stats) = run("final-name", 0, &|s| {
+        s.effects.name_overlay.enabled = true;
+        s.effects.name_overlay.text = "Clip 1".into();
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "name overlay must use float render");
+
+    // An enabled name overlay with blank/whitespace text draws nothing and still uses `render_rgba8`.
+    let (f32_calls, rgba8_calls, stats) = run("final-blank-name", 0, &|s| {
+        s.effects.name_overlay.enabled = true;
+        s.effects.name_overlay.text = "   ".into();
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 2, 2, 0), "blank name overlay keeps rgba8_direct");
+
+    let overlay_png = tmp("off000.png");
+    let (f32_calls, rgba8_calls, stats) = run("final-img-ov", 0, &|s| {
+        s.effects.image_overlay.enabled = true;
+        s.effects.image_overlay.path = overlay_png.clone();
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (2, 0, 2, 0), "image overlay must use float render");
+}
+
+fn gpu_hook_rgba8_direct_hdr_limiter_and_fallbacks() {
+    let (p, seq, m) = project();
+    let run = |name: &str, mode: u8, configure: &dyn Fn(&mut ExportSettings)| run_final_renderer_with_settings(&p, seq, &m, name, mode, configure);
+    let first = |name: &str| std::fs::read(tmp(&format!("{name}000.png"))).unwrap();
+
+    // 7e. HDR output (`hdr_out == true`) -> bypasses `render_rgba8`:
+    //     - On a Rec.2100 PQ sequence, `export()` sets `hdr_out = true` (`rgba8_direct = false`)
+    //       and `is_cpu_frame` sends the wide-gamut frame to the CPU (`rgba8_calls == 0`).
+    //     - On `Pipeline::new(..., hdr_out = true)`, `!hdr_out` directly disables `rgba8_direct`
+    //       so `pipe.frame(...)` calls float `render` (`f32_calls == 1, rgba8_calls == 0`) and
+    //       encodes HDR floats.
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    let mut hdr_p = (*p).clone();
+    hdr_p.sequence_mut(seq).unwrap().settings.color = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+    let hdr_p = Arc::new(hdr_p);
+    crate::reset_frame_renderers_for_tests();
+    RENDER_F32_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    RENDER_RGBA8_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    RGBA8_MODE.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| Some(Box::new(FinalFrameRenderer) as Box<dyn FrameRenderer>));
+    let mut s_hdr = ExportSettings { format: Format::ProRes, path: tmp("final-hdr.mov"), include_audio: false, ..Default::default() };
+    s_hdr.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+    s_hdr.gpu_rendering = crate::GpuRendering::Auto;
+    export(&hdr_p, seq, &s_hdr, &m, &Progress::default()).unwrap();
+    let f32_calls = RENDER_F32_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let rgba8_calls = RENDER_RGBA8_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let stats = gpu_render_stats();
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 0, 0, 2), "Rec.2100 PQ export bypasses render_rgba8 and renders on CPU");
+
+    crate::reset_frame_renderers_for_tests();
+    RENDER_F32_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    RENDER_RGBA8_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| Some(Box::new(FinalFrameRenderer) as Box<dyn FrameRenderer>));
+    let pipe = crate::pipeline::Pipeline::new(p.clone(), seq, &s_hdr, true).unwrap();
+    let (rgba, hdr_f32) = pipe.frame(0, &m);
+    let f32_calls = RENDER_F32_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let rgba8_calls = RENDER_RGBA8_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!((f32_calls, rgba8_calls), (1, 0), "hdr_out = true disables rgba8_direct and calls float render");
+    assert!(rgba.is_empty() && hdr_f32.len() == 320 * 180 * 3, "hdr_out produces encoded float RGB");
+
+    // 7f. Video limiter (`video_limiter.enabled = true`) -> uses `render_rgba8` and clamps
+    //     identically to `limit_rgba8` on the float `finish()` path.
+    let (f32_calls, rgba8_calls, stats) = run("final-limited", 4, &|s| {
+        s.effects.video_limiter.enabled = true;
+        s.effects.video_limiter.min_percent = 10.0;
+        s.effects.video_limiter.max_percent = 80.0;
+    });
+    assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 2, 2, 0), "video limiter still uses render_rgba8");
+    let limited_rgba = image::load_from_memory(&first("final-limited")).unwrap().to_rgba8();
+    let mut expected_px = [250u8, 250, 250, 255];
+    crate::pipeline::limit_rgba8(&mut expected_px, 10.0, 80.0);
+    assert_eq!(&limited_rgba.as_raw()[..4], &expected_px, "video limiter clamped the render_rgba8 pixels");
+
+    // 7g. Missing (`None`) or wrong-sized (`(w - 1, h, ...)` and short buffer) results from
+    //     `render_rgba8` are rejected, increment `fallbacks`, and fall back to the CPU reference.
+    for (mode, label) in [(1u8, "none"), (2u8, "wrong-dim"), (3u8, "short-buf")] {
+        let name = format!("final-fallback-{label}");
+        let (f32_calls, rgba8_calls, stats) = run(&name, mode, &|_| {});
+        assert_eq!((f32_calls, rgba8_calls, stats.frames, stats.fallbacks), (0, 2, 0, 2), "{label}: rejected render_rgba8 must count as fallback");
+        assert_eq!(first(&name), first("off"), "{label}: rejected render_rgba8 must fall back to CPU reference");
+    }
+}
+
+static RENDER_F32_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RENDER_RGBA8_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// 0: valid 320×180 green, 1: `None`, 2: wrong dimensions (319×180), 3: short buffer, 4: bright 250 white.
+static RGBA8_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// [`FakeRenderer`] that records `render` vs `render_rgba8` calls and returns configurable
+/// `render_rgba8` payloads.
+struct FinalFrameRenderer;
+
+impl FrameRenderer for FinalFrameRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        RENDER_F32_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let w = (320.0 * opts.scale).round().max(1.0) as usize;
+        let h = (180.0 * opts.scale).round().max(1.0) as usize;
+        Some(filmcraft_render::Image::new(w, h))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn render_rgba8(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        RENDER_RGBA8_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match RGBA8_MODE.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => None,
+            2 => Some((319, 180, [10u8, 200, 30, 255].repeat(319 * 180))),
+            3 => Some((320, 180, vec![10u8; 16])),
+            4 => Some((320, 180, [250u8, 250, 250, 255].repeat(320 * 180))),
+            _ => Some((320, 180, [10u8, 200, 30, 255].repeat(320 * 180))),
+        }
+    }
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

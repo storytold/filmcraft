@@ -171,6 +171,37 @@ impl ExportRenderer {
             }
         }
     }
+
+    /// One frame as `render(..)` followed by `Image::over_black_rgba8` would make it (opaque
+    /// 8-bit sRGB RGBA at the render size), for an export that needs nothing else done to the
+    /// picture: composited and encoded on the GPU, without the float frame. `None` when this
+    /// frame must go to the CPU renderer.
+    pub fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            // Already the CPU image: encode it here.
+            FramePlan::Image(img) => Some((img.w, img.h, img.over_black_rgba8())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let (w, h, px) = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some((w as usize, h as usize, px))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +478,11 @@ mod tests {
                     assert_eq!(after, (before.0 + 1, before.1 + 1, before.2), "{what}: the Push and the adjustment layer drawn on the GPU");
                     let cpu = filmcraft_render::render_sequence(&p, seq, t, opts, &m);
                     assert_parity(&cpu, &gpu, &what);
+                    let (w8, h8, gpu8) = r.render_rgba8(&p, seq, t, opts, &m).expect("GPU RGBA8 frame");
+                    let after8 = (r.compositor.gpu_transitions, r.compositor.gpu_adjustments, r.compositor.cpu_adjustments);
+                    assert_eq!(after8, (after.0 + 1, after.1 + 1, after.2), "{what}: render_rgba8 runs the Push and adjustment layer on the GPU");
+                    assert_eq!((w8, h8), (gpu.w, gpu.h));
+                    assert_eq!(gpu8, gpu.over_black_rgba8(), "{what}: render_rgba8 matches float frame over black");
                 }
             }
         }
@@ -598,6 +634,10 @@ mod tests {
                 let gpu = r.render(&p, seq, t, opts, &m).expect("GPU transition frame");
                 assert_eq!(r.compositor.gpu_transitions, before + 1, "{id}: drawn on the GPU");
                 assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
+                let (w8, h8, gpu8) = r.render_rgba8(&p, seq, t, opts, &m).expect("GPU transition RGBA8 frame");
+                assert_eq!(r.compositor.gpu_transitions, before + 2, "{id}: render_rgba8 drawn on the GPU");
+                assert_eq!((w8, h8), (gpu.w, gpu.h));
+                assert_eq!(gpu8, gpu.over_black_rgba8(), "{id} reverse={reverse} frame {f}: render_rgba8 matches float frame over black");
             }
         }
         // Film Dissolve has no GPU stage: the whole frame stays a CPU image
@@ -617,6 +657,222 @@ mod tests {
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
         assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "transformed fixture must contain a visible picture");
         assert_parity(&cpu, &gpu, "transformed");
+    }
+
+    /// The 8-bit frame encoded by the export LUT resolve shader matches the float frame encoded
+    /// on the CPU (`over_black_rgba8`) byte-for-byte, and stays within the CPU parity bound.
+    #[test]
+    fn rgba8_frame_matches_float_frame_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        for transform in [false, true] {
+            let (p, seq, m) = project(transform);
+            let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+            let (w, h, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            assert_eq!((w, h), (float.w, float.h));
+            assert_eq!(gpu8.len(), w * h * 4);
+            let encoded = float.over_black_rgba8();
+            assert_eq!(gpu8, encoded, "transform {transform}: 8-bit frame must match the encoded float frame byte-for-byte");
+            let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
+            assert_parity(&cpu, &Image { w, h, px: gpu8.iter().map(|&c| filmcraft_color::srgb_u8_to_linear_table()[c as usize]).collect() }, "rgba8");
+        }
+    }
+
+    fn demo_effects_project(scene: filmcraft_media::generators::DemoScene, w: u32, h: u32, rate: filmcraft_time::FrameRate) -> (Project, ItemId, SourceMap) {
+        use filmcraft_project::{ParamValue, find_effect};
+        let mut p = Project::new("x");
+        let g = GeneratorSource::new(Generator::Demo(scene), w, h, rate, Tick(2 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let id = p.add_item(
+            &info.name.clone(),
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 3, 1, None);
+        let layers: [(f64, (f64, f64), f64, &[(&str, &[(&str, f64)])]); 3] = [
+            (100.0, (0.0, 0.0), 100.0, &[("proc_amp", &[("contrast", 110.0)]), ("gaussian_blur", &[("blurriness", 8.0)]), ("vignette", &[])]),
+            (50.0, (160.0, -90.0), 100.0, &[("brightness_contrast", &[("brightness", 10.0), ("contrast", 15.0)])]),
+            (33.0, (-186.0, 100.0), 70.0, &[("sharpen", &[("amount", 40.0)])]),
+        ];
+        for (i, (scale, (px, py), opacity, fx)) in layers.into_iter().enumerate() {
+            let mut v = p.make_track_item(id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            let m = v.effect_mut("motion").unwrap();
+            m.params.get_mut("scale").unwrap().value = ParamValue::Float(scale);
+            m.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(px, py));
+            v.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(opacity);
+            for (k, (fx_id, set)) in fx.iter().enumerate() {
+                let mut e = find_effect(fx_id).unwrap().instance();
+                for (name, val) in *set {
+                    e.params.get_mut(*name).unwrap().value = ParamValue::Float(*val);
+                }
+                v.effects.insert(k, e);
+            }
+            p.sequence_mut(seq).unwrap().video_tracks[i].items.push(v);
+        }
+        let mut m = SourceMap::default();
+        m.0.insert(id, Arc::new(g));
+        (p, seq, m)
+    }
+
+    /// Across all demo scenes and the bench's multi-layer effects stack (three scaled layers, one
+    /// at 70 % opacity, with proc amp, Gaussian blur, vignette, brightness/contrast and sharpen),
+    /// `render_rgba8` resolves `accum` through the 4096-entry sRGB LUT and matches `render` +
+    /// `over_black_rgba8()` byte-for-byte.
+    #[test]
+    fn rgba8_frame_with_effects_matches_float_frame_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export parity): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        for scene in filmcraft_media::generators::DemoScene::ALL {
+            let (p, seq, m) = demo_effects_project(scene, 640, 360, rate);
+            for frame in [3, 17] {
+                let t = rate.tick_of(frame);
+                let (_, _, gpu8) = r.render_rgba8(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let float = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+                let cpu8 = float.over_black_rgba8();
+                assert_eq!(gpu8, cpu8, "{scene:?} frame {frame}: GPU LUT resolve must match over_black_rgba8 byte-for-byte");
+            }
+        }
+    }
+
+    /// Build the 256×256 raw f16 accumulator fixture (all 65,536 halves in R, G, and B) and its
+    /// expected `over_black_rgba8()` output.
+    fn raw_f16_lut_fixture() -> (u32, u32, Vec<u8>, Vec<u8>) {
+        let (fw, fh) = (256u32, 256u32);
+        let mut raw_f16_bytes = Vec::with_capacity((fw * fh * 8) as usize);
+        let mut expected_f32 = Vec::with_capacity((fw * fh * 4) as usize);
+        for i in 0..=u16::MAX {
+            let r = i;
+            let g = i.wrapping_add(21_845);
+            let b = i.wrapping_add(43_690);
+            let a = 0x3c00u16; // 1.0
+            for h in [r, g, b, a] {
+                raw_f16_bytes.extend_from_slice(&h.to_le_bytes());
+                expected_f32.push(f16_to_f32(h));
+            }
+        }
+        let expected_rgba8 = Image { w: fw as usize, h: fh as usize, px: expected_f32 }.over_black_rgba8();
+        (fw, fh, raw_f16_bytes, expected_rgba8)
+    }
+
+    /// Build the f32 rounding-threshold fixture: `(k * 0.5 / 4095.0) ± 1 ULP` for `k in 0..=8190`,
+    /// plus `NaN`, `±Inf`, `-0.0`, negatives, and `> 1.0`.
+    fn rounding_threshold_lut_fixture() -> (usize, usize, FramePlan, crate::PreparedPlan) {
+        let mut threshold_vals = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 0.0, 1.0, -1.0, 2.0, 1e-30];
+        threshold_vals.extend(
+            (0..=8190).map(|k| k as f32 * 0.5 / 4095.0).flat_map(|b| [b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]),
+        );
+        let (tw, th) = (256usize, 36usize);
+        let mut threshold_px = vec![1.0f32; tw * th * 4];
+        for (idx, &v) in threshold_vals.iter().enumerate() {
+            let p = idx % (tw * th);
+            threshold_px[p * 4] = v;
+            threshold_px[p * 4 + 1] = threshold_vals[(idx + 8191) % threshold_vals.len()];
+            threshold_px[p * 4 + 2] = threshold_vals[(idx + 16382) % threshold_vals.len()];
+            threshold_px[p * 4 + 3] = 1.0;
+        }
+        let threshold_plan = FramePlan::Image(Image { w: tw, h: th, px: threshold_px });
+        let threshold_prep = prepare(&threshold_plan);
+        (tw, th, threshold_plan, threshold_prep)
+    }
+
+    /// Precision and multi-backend verification of the 4096-entry LUT export resolve pass:
+    /// 1. All 65,536 `f16` bit patterns (`0x0000..=0xffff`, including signaling/quiet `NaN`,
+    ///    `±Inf`, `-0.0`, negatives, subnormals, `> 1.0`, and every `f16` in `[0.0, 1.0]`) written
+    ///    into `accum` (`Rgba16Float`) across R, G, and B resolve to the exact same bytes as
+    ///    `Image::over_black_rgba8()`.
+    /// 2. All 4,095 LUT rounding midpoints `(k + 0.5) / 4095.0` (plus `± 1 ULP` in `f32`,
+    ///    `NaN`, `±Inf`, `-0.0`, `-1.0`, `2.0`) through `render_export_rgba8_prepared` match
+    ///    `render_export_prepared` + `over_black_rgba8()` byte-for-byte.
+    /// 3. Runs across every available native backend (`Vulkan`, `Dx12`, `Metal`) and checks
+    ///    cross-backend agreement.
+    #[test]
+    fn rgba8_lut_matches_over_black_rgba8_across_all_f16_and_rounding_thresholds() {
+        if wgpu::Instance::enabled_backend_features().is_empty() {
+            eprintln!("SKIPPED (LUT precision): no wgpu backend enabled");
+            return;
+        }
+        let (fw, fh, raw_f16_bytes, expected_f16_rgba8) = raw_f16_lut_fixture();
+        let (tw, th, threshold_plan, threshold_prep) = rounding_threshold_lut_fixture();
+
+        // Multi-backend loop across Vulkan, DX12, and Metal.
+        let (scene_p, scene_seq, scene_m) = project(true);
+        let scene_t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+        let mut backend_renders: Vec<(wgpu::Backend, String, Vec<u8>)> = Vec::new();
+
+        let instance = crate::adapter::native_instance();
+        for backend_flag in [wgpu::Backends::VULKAN, wgpu::Backends::DX12, wgpu::Backends::METAL] {
+            let adapters = pollster::block_on(instance.enumerate_adapters(backend_flag));
+            let Ok(adapter) = crate::adapter::pick(&adapters, None, wgpu::PowerPreference::HighPerformance) else {
+                continue;
+            };
+            let info = adapter.get_info();
+            let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else {
+                continue;
+            };
+            eprintln!("testing LUT precision on {} ({:?})", info.name, info.backend);
+            let mut c = GpuCompositor::new(&device, &queue);
+
+            // 1. All 65,536 raw f16 bit patterns in `accum` -> `resolve_export_rgba8`.
+            c.render_plan(&FramePlan::Layers { width: fw as usize, height: fh as usize, layers: Vec::new() }, None, true, false);
+            let accum_tex = c.accum.as_ref().expect("accum allocated").0.clone();
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &accum_tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &raw_f16_bytes,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(fw * 8), rows_per_image: Some(fh) },
+                wgpu::Extent3d { width: fw, height: fh, depth_or_array_layers: 1 },
+            );
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("test-lut-f16") });
+            c.resolve_export_rgba8(&mut enc).expect("resolve_export_rgba8");
+            let size = c.copy_output(&mut enc).expect("copy_output");
+            let sub = queue.submit([enc.finish()]);
+            let (_, _, got_f16_rgba8) = c.map_output(size, sub).expect("map_output");
+            assert_eq!(got_f16_rgba8, expected_f16_rgba8, "{:?} ({}) failed raw f16 LUT parity", info.backend, info.name);
+
+            // 2. Rounding-threshold f32 fixture through `render_export_rgba8_prepared` vs `render_export_prepared`.
+            let (_, _, got_thresh_rgba8) = c.render_export_rgba8_prepared(&threshold_plan, Some(&threshold_prep)).expect("threshold rgba8");
+            let (_, _, got_thresh_f32) = c.render_export_prepared(&threshold_plan, Some(&threshold_prep)).expect("threshold f32");
+            let want_thresh_rgba8 = Image { w: tw, h: th, px: got_thresh_f32 }.over_black_rgba8();
+            assert_eq!(got_thresh_rgba8, want_thresh_rgba8, "{:?} ({}) failed rounding threshold LUT parity", info.backend, info.name);
+
+            // 3. Transformed scene parity on this backend and record for cross-backend comparison.
+            let plan = plan_frame(&scene_p, scene_seq, scene_t, RenderOptions::default(), c.caps(), &scene_m);
+            let prep = prepare(&plan);
+            let (_, _, scene_rgba8) = c.render_export_rgba8_prepared(&plan, Some(&prep)).expect("scene rgba8");
+            let (sw, sh, scene_f32) = c.render_export_prepared(&plan, Some(&prep)).expect("scene f32");
+            assert_eq!(
+                scene_rgba8,
+                Image { w: sw as usize, h: sh as usize, px: scene_f32 }.over_black_rgba8(),
+                "{:?} ({}) scene rgba8 != over_black_rgba8",
+                info.backend,
+                info.name
+            );
+            backend_renders.push((info.backend, info.name.clone(), scene_rgba8));
+        }
+
+        assert!(!backend_renders.is_empty(), "at least one native GPU backend must be tested");
+        for w in backend_renders.windows(2) {
+            let ((b0, n0, r0), (b1, n1, r1)) = (&w[0], &w[1]);
+            let max_diff = r0.iter().zip(r1).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+            eprintln!("cross-backend {b0:?} ({n0}) vs {b1:?} ({n1}): max channel diff = {max_diff}");
+            assert!(max_diff <= 1, "cross-backend {b0:?} vs {b1:?} differed by {max_diff}");
+        }
     }
 
     #[test]
