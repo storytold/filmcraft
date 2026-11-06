@@ -1005,7 +1005,7 @@ fn gpu_lumetri_passes_match_cpu() {
             assert!(op.gpu_ok(), "{name}: not GPU-capable: {op:?}");
             let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
             op.apply(&mut cpu);
-            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
             let (worst, flips) = compare(&cpu.px, &gpu);
             eprintln!("{name} @ {px_scale}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
             if worst > EXACT || flips > if *steps { FLIPS } else { 0.0 } {
@@ -1045,7 +1045,7 @@ fn gpu_lut_shapers_and_domains_match_cpu() {
         assert!(op.gpu_ok(), "lut {i}");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst <= EXACT && flips <= FLIPS, "lut {i}: {worst:.2e}, flips {flips:.4}");
     }
@@ -1078,7 +1078,7 @@ fn gpu_stabilizer_framings_match_cpu() {
         assert!(op.gpu_ok(), "{name}");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst <= EXACT && flips == 0.0, "{name}: {worst:.2e}, flips {flips:.4}");
     }
@@ -1099,11 +1099,11 @@ fn gpu_lut_tables_are_cached_per_frame() {
         &[("input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into())), ("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))],
     );
     let op = || FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("op");
-    let a = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op()] }).expect("first").2;
+    let a = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op()] }).expect("first").2;
     assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(2), "the LUT and the curve tables");
-    let b = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op()] }).expect("second").2;
+    let b = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op()] }).expect("second").2;
     assert_eq!(a, b);
     assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(2), "reused, not re-uploaded");
-    c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![FxOp::BlackWhite] }).expect("plain");
+    c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).expect("plain");
     assert_eq!(c.fx.as_ref().map(|f| f.data_entries()), Some(0), "released when unused");
 }

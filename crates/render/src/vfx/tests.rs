@@ -1415,7 +1415,7 @@ mod pipeline {
         setf(&mut lu, "hsl_blur", 30.0);
         place(&mut p, seq, 0, ocean, vec![inst("warp_stabilizer"), lu]);
         let t = FrameRate::FPS_24.tick_of(10);
-        let plan = plan_frame(&p, seq, t, RenderOptions::default(), &map);
+        let plan = plan_frame(&p, seq, t, RenderOptions::default(), crate::plan::DeviceCaps::ALL, &map);
         let fx_layer = |ls: &[crate::plan::PlanLayer]| ls.iter().any(|l| l.fx.is_some());
         let on_gpu = match &plan {
             FramePlan::Layers { layers, .. } => fx_layer(layers),

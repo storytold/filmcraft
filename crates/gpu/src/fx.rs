@@ -351,7 +351,7 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
         FxOp::Resample(r) => out.push(resample_step(OP_RESAMPLE, r)),
         FxOp::SynthEdges(r) => out.push(resample_step(OP_SYNTH_EDGES, r)),
-        FxOp::Seq(ops) => out.extend(ops.iter().flat_map(steps)),
+        FxOp::Seq(ops) => out.extend(ops.iter().flat_map(|o| steps(o, w, h))),
         FxOp::Lut(l) => {
             let mut s = step(OP_LUT, [0; 4], &[]);
             s.data = Some(Data::Lut(l.clone()));
