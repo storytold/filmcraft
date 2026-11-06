@@ -10,7 +10,24 @@ use crate::{Error, Report, Result};
 
 type Uid = [u8; 12];
 
-const MAX_REFERENCE_VISITS: usize = 65_536;
+#[cfg(test)]
+mod tests;
+
+// Discovery walks the stored graph once. Expansion can legitimately do much more
+// work (especially dense gain automation), so it has a separate, 16x larger budget.
+// Both allowances cover the whole document, never reset per track or composition.
+const MAX_DISCOVERY_VISITS: usize = 65_536;
+const MAX_EXPANSION_VISITS: usize = 1_048_576;
+const MAX_SEGMENT_DEPTH: usize = 32;
+
+fn traversal_error(message: &str, object: impl std::fmt::Display) -> Error {
+    Error::Parse { format: "OMF", message: format!("{message} at object {object}") }
+}
+
+fn ref_keys(value: &[u8]) -> impl ExactSizeIterator<Item = &[u8; 4]> {
+    let count = value.get(..2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).unwrap_or(0);
+    value.get(2..).unwrap_or_default().as_chunks::<4>().0.iter().take(count)
+}
 
 struct R<'a, 'b> {
     c: &'b Container<'a>,
@@ -21,6 +38,8 @@ struct R<'a, 'b> {
     media: HashMap<Uid, Vec<u8>>,
     doc: Document,
     sources: HashMap<(Uid, u32, String), usize>,
+    remaining_discovery_visits: usize,
+    remaining_expansion_visits: usize,
 }
 
 pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
@@ -29,7 +48,17 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let class_of = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").and_then(|v| v.get(..4).map(|b| [b[0], b[1], b[2], b[3]]));
     let head = c.objects.keys().copied().find(|&o| class_of(o) == Some(*b"HEAD")).ok_or_else(|| perr("no OMF header object".into()))?;
     let be = c.get(head, "OMFI:HEAD:ByteOrder").is_none_or(|v| v.first() != Some(&0x49));
-    let mut r = R { c: &c, report, be, mobs: HashMap::new(), media: HashMap::new(), doc: Document::default(), sources: HashMap::new() };
+    let mut r = R {
+        c: &c,
+        report,
+        be,
+        mobs: HashMap::new(),
+        media: HashMap::new(),
+        doc: Document::default(),
+        sources: HashMap::new(),
+        remaining_discovery_visits: MAX_DISCOVERY_VISITS,
+        remaining_expansion_visits: MAX_EXPANSION_VISITS,
+    };
     let mob_list = r.refs(head, "OMFI:HEAD:Mobs");
     let mob_list = if mob_list.is_empty() {
         c.objects.keys().copied().filter(|&o| matches!(class_of(o).as_ref(), Some(b"CMOB" | b"MMOB" | b"SMOB"))).collect()
@@ -54,9 +83,8 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let cmobs: Vec<u32> = mob_list.iter().copied().filter(|&m| class_of(m) == Some(*b"CMOB")).collect();
     let mut referenced = HashSet::new();
     let mut visited = HashSet::new();
-    let mut visits = 0;
     for &m in &cmobs {
-        r.collect_refs(m, &mut referenced, &mut visited, &mut visits, 0);
+        r.collect_refs(m, &mut referenced, &mut visited, 0)?;
     }
     let primary: Vec<u32> = r.refs(head, "OMFI:HEAD:PrimaryMobs").into_iter().filter(|m| cmobs.contains(m)).collect();
     let top: Vec<u32> = if !primary.is_empty() {
@@ -65,7 +93,7 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
         cmobs.iter().copied().filter(|m| r.uid(*m, "OMFI:MOBJ:MobID").is_none_or(|id| !referenced.contains(&id))).collect()
     };
     for m in top {
-        let comp = r.composition(m);
+        let comp = r.composition(m)?;
         r.doc.compositions.push(comp);
     }
     if r.doc.compositions.is_empty() {
@@ -75,6 +103,30 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
 }
 
 impl R<'_, '_> {
+    fn visit(&mut self, object: u32) -> Result<()> {
+        self.spend_visits(1, object)
+    }
+
+    fn spend_visits(&mut self, count: usize, object: u32) -> Result<()> {
+        self.remaining_expansion_visits = self
+            .remaining_expansion_visits
+            .checked_sub(count)
+            .ok_or_else(|| traversal_error("composition/automation expansion budget exceeded (1,048,576 visits)", object))?;
+        Ok(())
+    }
+
+    fn enter_segment(&mut self, seg: u32, path: &mut Vec<u32>) -> Result<()> {
+        self.visit(seg)?;
+        if path.contains(&seg) {
+            return Err(traversal_error("cycle in segment references", seg));
+        }
+        if path.len() > MAX_SEGMENT_DEPTH {
+            return Err(traversal_error("segment nesting exceeds depth limit (32 edges)", seg));
+        }
+        path.push(seg);
+        Ok(())
+    }
+
     fn class(&self, o: u32) -> [u8; 4] {
         self.c.get(o, "OMFI:OOBJ:ObjClass").and_then(|v| v.get(..4).map(|b| [b[0], b[1], b[2], b[3]])).unwrap_or(*b"????")
     }
@@ -113,11 +165,15 @@ impl R<'_, '_> {
     }
     fn refs(&self, o: u32, p: &str) -> Vec<u32> {
         let Some(v) = self.c.get(o, p) else { return Vec::new() };
-        if v.len() < 2 {
-            return Vec::new();
-        }
-        let n = u16::from_be_bytes([v[0], v[1]]) as usize;
-        v[2..].as_chunks::<4>().0.iter().take(n).map(|k| self.c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
+        ref_keys(&v).map(|k| self.c.resolve(o, u32::from_be_bytes(*k))).collect()
+    }
+    fn budgeted_refs(&mut self, o: u32, p: &str) -> Result<Vec<u32>> {
+        let Some(v) = self.c.get(o, p) else { return Ok(Vec::new()) };
+        let keys = ref_keys(&v);
+        // Charge complete keys actually present, before resolving or collecting
+        // the list, even if the caller will stop at its first matching entry.
+        self.spend_visits(keys.len(), o)?;
+        Ok(keys.map(|k| self.c.resolve(o, u32::from_be_bytes(*k))).collect())
     }
     fn data_kind(&self, o: u32) -> String {
         self.r#ref(o, "OMFI:CPNT:DataKind").and_then(|d| self.string(d, "OMFI:DDEF:DataKindID")).unwrap_or_default()
@@ -126,11 +182,15 @@ impl R<'_, '_> {
         self.i32(o, "OMFI:CPNT:Length").unwrap_or(0).max(0)
     }
 
-    fn collect_refs(&self, o: u32, out: &mut HashSet<Uid>, visited: &mut HashSet<u32>, visits: &mut usize, depth: usize) {
-        if depth > 64 || !visited.insert(o) || *visits >= MAX_REFERENCE_VISITS {
-            return;
+    fn collect_refs(&mut self, o: u32, out: &mut HashSet<Uid>, visited: &mut HashSet<u32>, depth: usize) -> Result<()> {
+        self.remaining_discovery_visits =
+            self.remaining_discovery_visits.checked_sub(1).ok_or_else(|| traversal_error("reference discovery budget exceeded (65,536 visits)", o))?;
+        if !visited.insert(o) {
+            return Ok(());
         }
-        *visits += 1;
+        if depth > 64 {
+            return Err(traversal_error("reference nesting exceeds depth limit (64 edges)", o));
+        }
         if self.class(o) == *b"SCLP"
             && let Some(id) = self.uid(o, "OMFI:SCLP:SourceID")
         {
@@ -138,17 +198,19 @@ impl R<'_, '_> {
         }
         for p in ["OMFI:MOBJ:Slots", "OMFI:SEQU:Components", "OMFI:EFFE:EffectSlots"] {
             for c in self.refs(o, p) {
-                self.collect_refs(c, out, visited, visits, depth + 1);
+                self.collect_refs(c, out, visited, depth + 1)?;
             }
         }
         for p in ["OMFI:MSLT:Segment", "OMFI:ESLT:ArgValue"] {
             if let Some(c) = self.r#ref(o, p) {
-                self.collect_refs(c, out, visited, visits, depth + 1);
+                self.collect_refs(c, out, visited, depth + 1)?;
             }
         }
+        Ok(())
     }
 
-    fn composition(&mut self, m: u32) -> Composition {
+    fn composition(&mut self, m: u32) -> Result<Composition> {
+        self.visit(m)?;
         let name = self.string(m, "OMFI:MOBJ:Name").unwrap_or_else(|| "Sequence".into());
         let mut comp = Composition {
             name,
@@ -164,6 +226,7 @@ impl R<'_, '_> {
         let slots = self.refs(m, "OMFI:MOBJ:Slots");
         let mut na = 0;
         for s in slots {
+            self.visit(s)?;
             let Some(seg) = self.r#ref(s, "OMFI:MSLT:Segment") else { continue };
             let rate = self.rational(s, "OMFI:MSLT:EditRate").filter(|r| r.0 > 0 && r.1 > 0).unwrap_or((25, 1));
             let kind = self.data_kind(seg);
@@ -190,7 +253,7 @@ impl R<'_, '_> {
             if rate.1 == 1 && rate.0 >= 8000 {
                 comp.sample_rate = rate.0 as u32;
             }
-            let items = self.segment(seg, rate, 0);
+            let items = self.segment(seg, rate, &mut Vec::new())?;
             na += 1;
             let td = self.r#ref(s, "OMFI:MSLT:TrackDesc");
             let tname = td.and_then(|t| self.string(t, "OMFI:TRKD:TrackName")).unwrap_or_else(|| format!("A{na}"));
@@ -206,24 +269,22 @@ impl R<'_, '_> {
                 .min(6);
             comp.tracks.push(CTrack { kind: CKind::Sound, name: tname, number, channels, items });
         }
-        comp
+        Ok(comp)
     }
 
-    fn segment(&mut self, seg: u32, rate: (i64, i64), depth: usize) -> Vec<CItem> {
+    fn segment(&mut self, seg: u32, rate: (i64, i64), path: &mut Vec<u32>) -> Result<Vec<CItem>> {
+        self.enter_segment(seg, path)?;
         let len = units_to_ticks(self.len(seg), rate.0, rate.1);
-        if depth > 32 {
-            return vec![CItem::Filler(len)];
-        }
-        match &self.class(seg) {
+        let items = match &self.class(seg) {
             b"SEQU" => {
                 let mut out = Vec::new();
                 for c in self.refs(seg, "OMFI:SEQU:Components") {
-                    out.extend(self.segment(c, rate, depth + 1));
+                    out.extend(self.segment(c, rate, path)?);
                 }
                 out
             }
             b"FILL" => vec![CItem::Filler(len)],
-            b"SCLP" => vec![self.clip(seg, rate)],
+            b"SCLP" => vec![self.clip(seg, rate)?],
             b"TRAN" => {
                 let cut = units_to_ticks(self.i32(seg, "OMFI:TRAN:CutPoint").unwrap_or(0), rate.0, rate.1);
                 let effect =
@@ -232,19 +293,20 @@ impl R<'_, '_> {
             }
             b"EFFE" => {
                 let kind = self.r#ref(seg, "OMFI:EFFE:EffectKind").and_then(|k| self.string(k, "OMFI:EDEF:EffectID")).unwrap_or_default();
-                let slots = self.refs(seg, "OMFI:EFFE:EffectSlots");
+                let slots = self.budgeted_refs(seg, "OMFI:EFFE:EffectSlots")?;
                 let arg =
                     |r: &Self, id: i64| slots.iter().copied().find(|&s| r.i32(s, "OMFI:ESLT:ArgID") == Some(id)).and_then(|s| r.r#ref(s, "OMFI:ESLT:ArgValue"));
                 let Some(input) = arg(self, -1).or_else(|| arg(self, 1).filter(|_| kind != "omfi:effect:MonoAudioGain")) else {
-                    return vec![CItem::Filler(len)];
+                    path.pop();
+                    return Ok(vec![CItem::Filler(len)]);
                 };
                 let gain = if kind == "omfi:effect:MonoAudioGain" {
-                    arg(self, 1).and_then(|v| self.gain(v, len))
+                    arg(self, 1).map(|v| self.gain(v, len)).transpose()?.flatten()
                 } else {
                     self.report.warn("OMF effects other than audio gain are not imported (their input is used)");
                     None
                 };
-                let mut items = self.segment(input, rate, depth + 1);
+                let mut items = self.segment(input, rate, path)?;
                 if let (Some(g), [CItem::Clip(c)]) = (gain, items.as_mut_slice()) {
                     c.gain = Some(g);
                 }
@@ -254,20 +316,22 @@ impl R<'_, '_> {
                 self.report.info("an unsupported OMF component was imported as a gap");
                 vec![CItem::Filler(len)]
             }
-        }
+        };
+        path.pop();
+        Ok(items)
     }
 
     fn amp(&self, v: &[u8]) -> Option<f64> {
         self.rational_of(v).filter(|r| r.1 != 0).map(|(n, d)| n as f64 / d as f64)
     }
 
-    fn gain(&mut self, v: u32, len: Tick) -> Option<Gain> {
-        match &self.class(v) {
+    fn gain(&mut self, v: u32, len: Tick) -> Result<Option<Gain>> {
+        Ok(match &self.class(v) {
             b"CVAL" => self.c.get(v, "OMFI:CVAL:Value").and_then(|d| self.amp(&d)).map(Gain::Constant),
             b"VVAL" => {
                 let linear = self.u16(v, "OMFI:VVAL:Interpolation") != Some(1);
-                let points: Vec<(Tick, f64)> = self
-                    .refs(v, "OMFI:VVAL:PointList")
+                let refs = self.budgeted_refs(v, "OMFI:VVAL:PointList")?;
+                let points: Vec<(Tick, f64)> = refs
                     .into_iter()
                     .filter_map(|p| {
                         let (n, d) = self.rational(p, "OMFI:CTLP:Time").filter(|r| r.1 != 0)?;
@@ -278,79 +342,107 @@ impl R<'_, '_> {
                 (!points.is_empty()).then_some(Gain::Varying { linear, points })
             }
             _ => None,
-        }
+        })
     }
 
-    fn clip(&mut self, c: u32, rate: (i64, i64)) -> CItem {
+    fn clip(&mut self, c: u32, rate: (i64, i64)) -> Result<CItem> {
         let len = units_to_ticks(self.len(c), rate.0, rate.1);
         let start = units_to_ticks(self.i32(c, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
         let name = self.string(c, "FilmCraft:SCLP:ClipName").unwrap_or_default();
-        let (Some(id), Some(track)) = (self.uid(c, "OMFI:SCLP:SourceID"), self.u32(c, "OMFI:SCLP:SourceTrackID")) else { return CItem::Filler(len) };
+        let (Some(id), Some(track)) = (self.uid(c, "OMFI:SCLP:SourceID"), self.u32(c, "OMFI:SCLP:SourceTrackID")) else { return Ok(CItem::Filler(len)) };
         if id == [0; 12] {
-            return CItem::Filler(len);
+            return Ok(CItem::Filler(len));
         }
-        match self.resolve(id, track, start, None, 0) {
+        Ok(match self.resolve(id, track, start, None, 0)? {
             Some((source, t)) => CItem::Clip(CClip { len, source, start: t, gain: None, name }),
             None => CItem::Filler(len),
-        }
+        })
     }
 
-    fn slot_of(&self, mob: u32, track: u32) -> Option<u32> {
-        self.refs(mob, "OMFI:MOBJ:Slots")
-            .into_iter()
-            .find(|&s| self.r#ref(s, "OMFI:MSLT:TrackDesc").and_then(|t| self.u32(t, "OMFI:TRKD:TrackID")) == Some(track))
+    fn slot_of(&mut self, mob: u32, track: u32) -> Result<Option<u32>> {
+        let slots = self.budgeted_refs(mob, "OMFI:MOBJ:Slots")?;
+        Ok(slots.into_iter().find(|&s| self.r#ref(s, "OMFI:MSLT:TrackDesc").and_then(|t| self.u32(t, "OMFI:TRKD:TrackID")) == Some(track)))
     }
 
-    fn first_clip(&self, seg: u32) -> Option<u32> {
+    fn first_clip(&mut self, seg: u32, path: &mut Vec<u32>) -> Result<Option<u32>> {
+        self.enter_segment(seg, path)?;
+        let mut clip = None;
         match &self.class(seg) {
-            b"SCLP" => Some(seg),
-            b"SEQU" => self.refs(seg, "OMFI:SEQU:Components").into_iter().find_map(|c| self.first_clip(c)),
-            _ => None,
+            b"SCLP" => clip = Some(seg),
+            b"SEQU" => {
+                let components = self.budgeted_refs(seg, "OMFI:SEQU:Components")?;
+                for c in components {
+                    clip = self.first_clip(c, path)?;
+                    if clip.is_some() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
         }
+        path.pop();
+        Ok(clip)
     }
 
-    fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Option<(usize, Tick)> {
+    fn source_timecode(&mut self, seg: u32, rate: (i64, i64)) -> Result<Option<(i64, FrameRate)>> {
+        let Some(clip) = self.first_clip(seg, &mut Vec::new())? else { return Ok(None) };
+        let Some(tape) = self.uid(clip, "OMFI:SCLP:SourceID").and_then(|id| self.mobs.get(&id)).copied() else { return Ok(None) };
+        let slots = self.budgeted_refs(tape, "OMFI:MOBJ:Slots")?;
+        let Some((start_tc, fps, trate)) = slots.into_iter().find_map(|s| {
+            let g = self.r#ref(s, "OMFI:MSLT:Segment")?;
+            (self.class(g) == *b"TCCP")
+                .then(|| (self.i32(g, "OMFI:TCCP:Start").unwrap_or(0), self.u16(g, "OMFI:TCCP:FPS").unwrap_or(25), self.rational(s, "OMFI:MSLT:EditRate")))
+        }) else {
+            return Ok(None);
+        };
+        let tcr = trate.filter(|r| r.0 > 0 && r.1 > 0).map(|r| FrameRate::new(r.0, r.1)).unwrap_or_else(|| FrameRate::new(fps.max(1) as i64, 1));
+        let off = units_to_ticks(self.i32(clip, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
+        Ok(Some((start_tc + tcr.frame_at(off), tcr)))
+    }
+
+    fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Result<Option<(usize, Tick)>> {
         if depth > 16 {
-            return None;
+            let object = self.mobs.get(&id).map(u32::to_string).unwrap_or_else(|| format!("UID {id:02x?}"));
+            return Err(traversal_error("source chain exceeds depth limit (16 edges)", object));
         }
         let Some(&mob) = self.mobs.get(&id) else {
             self.report.warn("a clip references a mob that is not in the file (imported as a gap)");
-            return None;
+            return Ok(None);
         };
-        let slot = self.slot_of(mob, track)?;
+        let Some(slot) = self.slot_of(mob, track)? else { return Ok(None) };
         let rate = self.rational(slot, "OMFI:MSLT:EditRate").filter(|r| r.0 > 0 && r.1 > 0).unwrap_or((48_000, 1));
-        let seg = self.r#ref(slot, "OMFI:MSLT:Segment")?;
+        let Some(seg) = self.r#ref(slot, "OMFI:MSLT:Segment") else { return Ok(None) };
         match &self.class(mob) {
             b"MMOB" => {
                 let key = master.unwrap_or_else(|| id.iter().map(|b| format!("{b:02x}")).collect());
-                let clip = self.first_clip(seg)?;
+                let Some(clip) = self.first_clip(seg, &mut Vec::new())? else { return Ok(None) };
                 let inner = units_to_ticks(self.i32(clip, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
-                let next = self.uid(clip, "OMFI:SCLP:SourceID")?;
-                let next_track = self.u32(clip, "OMFI:SCLP:SourceTrackID")?;
+                let Some(next) = self.uid(clip, "OMFI:SCLP:SourceID") else { return Ok(None) };
+                let Some(next_track) = self.u32(clip, "OMFI:SCLP:SourceTrackID") else { return Ok(None) };
                 let name = self.string(mob, "OMFI:MOBJ:Name");
-                let r = self.resolve(next, next_track, start + inner, Some(key), depth + 1)?;
+                let Some(r) = self.resolve(next, next_track, start + inner, Some(key), depth + 1)? else { return Ok(None) };
                 if let Some(n) = name {
                     self.doc.sources[r.0].name = n;
                 }
-                Some(r)
+                Ok(Some(r))
             }
             b"SMOB" => {
-                let desc = self.r#ref(mob, "OMFI:SMOB:MediaDescription")?;
+                let Some(desc) = self.r#ref(mob, "OMFI:SMOB:MediaDescription") else { return Ok(None) };
                 let sr = self.rational(desc, "OMFI:MDFL:SampleRate");
                 if sr.is_none() && !self.media.contains_key(&id) {
-                    return None; // a tape / physical source
+                    return Ok(None); // a tape / physical source
                 }
                 let key = master.unwrap_or_else(|| id.iter().map(|b| format!("{b:02x}")).collect());
                 let skey = (id, track, key.clone());
                 if let Some(&i) = self.sources.get(&skey) {
-                    return Some((i, start));
+                    return Ok(Some((i, start)));
                 }
                 let file_rate = sr.filter(|r| r.0 > 0 && r.1 > 0).unwrap_or(rate);
                 let length = units_to_ticks(self.i32(desc, "OMFI:MDFL:Length").unwrap_or(0), file_rate.0, file_rate.1);
                 let summary = self.c.get(desc, "OMFI:WAVD:Summary").or_else(|| self.c.get(desc, "OMFI:AIFD:Summary")).unwrap_or_default();
                 let fmt = crate::wav::parse_wav(&summary).or_else(|| crate::wav::parse_aiff(&summary)).map(|(_, ch, sr, bits)| (ch as u32, sr, bits));
                 let mut path = None;
-                for l in self.refs(desc, "OMFI:MDES:Locator") {
+                for l in self.budgeted_refs(desc, "OMFI:MDES:Locator")? {
                     let p = match &self.class(l) {
                         b"UNXL" => self.string(l, "OMFI:UNXL:PathName"),
                         b"DOSL" => self.string(l, "OMFI:DOSL:PathName"),
@@ -364,23 +456,11 @@ impl R<'_, '_> {
                         break;
                     }
                 }
-                let sound_slots = self.refs(mob, "OMFI:MOBJ:Slots").len();
+                let sound_slots = self.budgeted_refs(mob, "OMFI:MOBJ:Slots")?.len();
                 let (file_channels, sample_rate, bits) = fmt.unwrap_or((1, file_rate.0 as u32, 16));
                 let channel = (file_channels > 1 && sound_slots > 1).then(|| track.saturating_sub(1).min(file_channels - 1));
                 // timecode of the physical source
-                let tc = self.first_clip(seg).and_then(|clip| {
-                    let tid = self.uid(clip, "OMFI:SCLP:SourceID")?;
-                    let tape = *self.mobs.get(&tid)?;
-                    let (start_tc, fps, trate) = self.refs(tape, "OMFI:MOBJ:Slots").into_iter().find_map(|s| {
-                        let g = self.r#ref(s, "OMFI:MSLT:Segment")?;
-                        (self.class(g) == *b"TCCP").then(|| {
-                            (self.i32(g, "OMFI:TCCP:Start").unwrap_or(0), self.u16(g, "OMFI:TCCP:FPS").unwrap_or(25), self.rational(s, "OMFI:MSLT:EditRate"))
-                        })
-                    })?;
-                    let tcr = trate.filter(|r| r.0 > 0 && r.1 > 0).map(|r| FrameRate::new(r.0, r.1)).unwrap_or_else(|| FrameRate::new(fps.max(1) as i64, 1));
-                    let off = units_to_ticks(self.i32(clip, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
-                    Some((start_tc + tcr.frame_at(off), tcr))
-                });
+                let tc = self.source_timecode(seg, rate)?;
                 let mut s = Source {
                     key,
                     name: self.string(mob, "OMFI:MOBJ:Name").unwrap_or_default(),
@@ -416,11 +496,11 @@ impl R<'_, '_> {
                 let i = self.doc.sources.len();
                 self.doc.sources.push(s);
                 self.sources.insert(skey, i);
-                Some((i, start))
+                Ok(Some((i, start)))
             }
             _ => {
                 self.report.warn("nested OMF compositions are not supported (imported as gaps)");
-                None
+                Ok(None)
             }
         }
     }
