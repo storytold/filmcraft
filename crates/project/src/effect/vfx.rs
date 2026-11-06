@@ -1169,7 +1169,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
         let accel = match e.category.first().copied() {
             Some("Legacy") => !matches!(id, "camera_blur"),
             _ if folder == "Obsolete" => false,
-            _ => !matches!(id, "clone" | "stroke"),
+            // CPU only: no GPU op, so no Accelerated badge
+            _ => !matches!(id, "clone" | "stroke" | "surface_blur"),
         };
         e.accelerated = accel;
         e.float32 = a32;
@@ -1266,8 +1267,9 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
-    /// Effects FilmCraft adds to Premiere's folders, which Premiere has no equivalent of.
-    const BEYOND_PREMIERE: &[&str] = &["surface_blur"];
+    /// Effects FilmCraft adds beyond the catalogue above, as (folder, name). They sit in the folder
+    /// their kind belongs to; nothing else may.
+    const BEYOND_CATALOGUE: &[(&str, &str)] = &[("Blur & Sharpen", "Surface Blur")];
 
     #[test]
     fn premiere_26_video_effects_catalogue() {
@@ -1289,7 +1291,7 @@ mod tests {
             if f == "Obsolete" {
                 continue;
             }
-            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name)) || BEYOND_PREMIERE.contains(&d.id);
+            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name)) || BEYOND_CATALOGUE.contains(&(f, d.name));
             assert!(listed, "{} in {f} is not in Premiere's list", d.name);
         }
         for name in LEGACY_NAMES {

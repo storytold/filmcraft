@@ -3,7 +3,7 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, dec, enc, fv, luma, over, pv, smoothstep};
+use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, enc, fv, luma, over, pv, smoothstep};
 use crate::effects::gaussian;
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;
@@ -272,9 +272,12 @@ pub fn surface(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             return;
         }
         let at = |k: usize| smooth.get(k).and_then(|c| c.get(n)).copied().unwrap_or(0.0);
-        let l = dec([at(0), at(1), at(2)].map(|q| q.max(0.0)));
-        for k in 0..3 {
-            p[k] = l[k] * a;
+        // no upper clamp: HDR values above 1.0 keep their headroom
+        let l = [0, 1, 2].map(|k| filmcraft_color::srgb_to_linear(at(k).max(0.0)));
+        if l.iter().all(|v| v.is_finite()) {
+            for k in 0..3 {
+                p[k] = l[k] * a;
+            }
         }
     });
 }
@@ -314,6 +317,7 @@ fn box_mean(p: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     transpose_plane(&cols, h, w)
 }
 
+/// Mean of the `2r + 1` samples around every sample of each row of a plane `w` wide, edges clamped.
 fn box_rows_plane(p: &[f32], w: usize, r: usize) -> Vec<f32> {
     let mut out = vec![0f32; p.len()];
     let (last, ri) = (w as isize - 1, r as isize);
