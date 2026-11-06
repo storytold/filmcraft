@@ -85,10 +85,12 @@ pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
 
 /// Cache key of a media clip's full-resolution reference ("" matches anything: sources inserted
 /// without a key). A generator's key holds its parameters, so a Color Matte whose color changes
-/// (or comes back with undo) is generated again.
+/// (or comes back with undo) is generated again. An image sequence and the still at its first
+/// frame share a path, so the kind is part of the key: undoing Replace Footage reopens the right one.
 pub fn media_key(m: &MediaClip) -> String {
     match &m.media {
         MediaRef::File { path } if m.offline => format!("offline:{path}"),
+        MediaRef::File { path } if m.info.kind == filmcraft_media::MediaKind::ImageSequence => format!("sequence:{path}"),
         MediaRef::File { path } => format!("file:{path}"),
         MediaRef::Generator(g) => format!("generator:{g:?}"),
     }
