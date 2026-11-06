@@ -1296,7 +1296,7 @@ pub(crate) fn wheel_rgb(v: Vec2) -> [f32; 3] {
     if len < 1e-5 {
         return [0.0; 3];
     }
-    let a = (v.y).atan2(v.x) as f32;
+    let a = (-v.y).atan2(v.x) as f32;
     let tau = std::f32::consts::TAU;
     [a.cos() * len, (a - tau / 3.0).cos() * len, (a + tau / 3.0).cos() * len]
 }
