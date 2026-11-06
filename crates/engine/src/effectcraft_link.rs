@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_export::{Progress, Report};
-use filmcraft_project::{ClipId, ItemId, Label, MediaRef};
+use filmcraft_project::{ClipId, ItemId, Label, MediaRef, TrackItem};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -371,6 +371,8 @@ pub struct EcJob {
     /// Where in the footage the composition starts: the render is the part of the footage the
     /// clip uses, so the clip's media times move back by this.
     offset: Tick,
+    /// How much of the footage the render covers, from `offset`.
+    length: Tick,
     project: String,
     comp: String,
     render: String,
@@ -492,6 +494,7 @@ fn replace_clip(s: &mut Session, p: &Value) -> Result<Value> {
         sequence,
         old_item,
         offset,
+        length,
         project: project.clone(),
         comp: comp.clone(),
         render: render.clone(),
@@ -510,13 +513,20 @@ fn replace_clip(s: &mut Session, p: &Value) -> Result<Value> {
         let done = job.done.clone();
         let (prog, outcome) = register_job(s, &clip_name, "Starting...");
         job.progress = Some(prog.clone());
+        let (worker_prog, worker_outcome) = (prog.clone(), outcome.clone());
         let spawned = std::thread::Builder::new().name("effectcraft-replace".into()).spawn(move || {
+            let (prog, outcome) = (worker_prog, worker_outcome);
             let t0 = web_time::Instant::now();
             let r = guarded(|| build_and_render(&cli, &plan, Some(&prog)));
             close_job(&prog, &outcome, &r, t0.elapsed().as_secs_f64());
             *done.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
         });
-        spawned.map_err(|e| EngineError::Other(format!("can't start the render: {e}")))?;
+        if let Err(e) = spawned {
+            // No worker will ever close the entry: it must not stay "running" in the Jobs list.
+            let why = format!("can't start the render: {e}");
+            close_job(&prog, &outcome, &Err(why.clone()), 0.0);
+            return Err(EngineError::Other(why));
+        }
         let out = json!({"started": true, "clip": clip.0, "project": job.project, "render": job.render});
         s.ec_jobs.push(job);
         return Ok(out);
@@ -535,7 +545,7 @@ fn finish(s: &mut Session, job: &EcJob, render: &str) -> Result<Value> {
     // The clip and the new project item take the Dynamic Link label (Settings > Labels), so a
     // clip made in EffectCraft stands out on the timeline.
     let label = s.prefs.labels.defaults.dynamic_link;
-    let repointed = repoint(s, job.sequence, job.clip, job.old_item, new_item, job.offset, label)?;
+    let repointed = repoint(s, job.sequence, job.clip, job.old_item, new_item, (job.offset, job.length), label)?;
     s.ec_links.retain(|l| l.render != render && l.project != job.project);
     s.ec_links.push(EcLink {
         project: job.project.clone(),
@@ -576,7 +586,32 @@ fn used_range(s: &Session, seq: ItemId, clip: ClipId, footage: Tick, frame: Tick
     Some((lo, len.max(frame)))
 }
 
-fn repoint(s: &mut Session, seq: ItemId, clip: ClipId, old: ItemId, new: ItemId, offset: Tick, label: Label) -> Result<usize> {
+/// A linked partner of the replaced clip (the audio of a J-cut or L-cut) can use footage outside
+/// the render, which covers `range` = (offset, length). Cut the partner back to the part the render
+/// has, keeping what remains in sync with the picture: its new `(start, duration, source_in)`, with
+/// the media times counted from the render's start. `None` when nothing of it is inside the render
+/// (or its speed is unusable); it then keeps playing the old footage.
+fn fit_to_render(it: &TrackItem, range: (Tick, Tick)) -> Option<(Tick, Tick, Tick)> {
+    let (offset, length) = range;
+    let speed = it.speed.abs();
+    if !(speed.is_finite() && speed > 1e-9) {
+        return None;
+    }
+    let (lo, hi) = (it.source_in, it.source_out());
+    let end = Tick(offset.0.saturating_add(length.0));
+    let (head_src, tail_src) = (Tick((offset.0 - lo.0).max(0)), Tick((hi.0 - end.0).max(0)));
+    let on_timeline = |t: Tick| Tick((t.0 as f64 / speed).round() as i64);
+    // A reversed clip plays its footage from the high end down, so the cuts swap sides.
+    let (head, tail) = if it.reverse { (on_timeline(tail_src), on_timeline(head_src)) } else { (on_timeline(head_src), on_timeline(tail_src)) };
+    let duration = Tick(it.duration.0.saturating_sub(head.0).saturating_sub(tail.0));
+    if duration.0 <= 0 {
+        return None;
+    }
+    Some((Tick(it.start.0.saturating_add(head.0)), duration, Tick(lo.0.max(offset.0) - offset.0)))
+}
+
+fn repoint(s: &mut Session, seq: ItemId, clip: ClipId, old: ItemId, new: ItemId, range: (Tick, Tick), label: Label) -> Result<usize> {
+    let offset = range.0;
     s.edit("Replace With EffectCraft Composition", |proj, _| {
         if let Some(i) = proj.item_mut(new) {
             i.label = label;
@@ -586,15 +621,21 @@ fn repoint(s: &mut Session, seq: ItemId, clip: ClipId, old: ItemId, new: ItemId,
         let mut n = 0;
         for t in q.all_tracks_mut() {
             for it in t.items.iter_mut() {
-                if it.item == old && (it.id == clip || (link.is_some() && it.link == link)) {
-                    it.item = new;
-                    it.label = label;
-                    it.source_in = Tick(it.source_in.0.saturating_sub(offset.0).max(0));
-                    if let Some(h) = it.frame_hold.as_mut() {
-                        *h = Tick(h.0.saturating_sub(offset.0).max(0));
-                    }
-                    n += 1;
+                if it.item != old || !(it.id == clip || (link.is_some() && it.link == link)) {
+                    continue;
                 }
+                if it.id != clip && it.frame_hold.is_none() {
+                    let Some((start, duration, source_in)) = fit_to_render(it, range) else { continue };
+                    (it.start, it.duration, it.source_in) = (start, duration, source_in);
+                } else {
+                    it.source_in = Tick(it.source_in.0.saturating_sub(offset.0).max(0));
+                }
+                it.item = new;
+                it.label = label;
+                if let Some(h) = it.frame_hold.as_mut() {
+                    *h = Tick(h.0.saturating_sub(offset.0).max(0));
+                }
+                n += 1;
             }
         }
         Ok(n)
@@ -677,6 +718,13 @@ fn sync_now(s: &mut Session, _: &Value) -> Result<Value> {
 impl Session {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn start_effectcraft_sync(&mut self) {
+        self.start_sync_with(|work| std::thread::Builder::new().name("effectcraft-sync".into()).spawn(work).map(drop));
+    }
+
+    /// [`Session::start_effectcraft_sync`] with the way a worker is started given, so a start that
+    /// fails can be tested.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_sync_with(&mut self, spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>) {
         if self.ec_sync.is_some() || self.ec_links.is_empty() {
             return;
         }
@@ -700,7 +748,9 @@ impl Session {
         let slot: EcSync = Arc::default();
         let out = slot.clone();
         let running: Vec<(String, Arc<Progress>)> = todo.iter().map(|(l, _, prog, _)| (l.project.clone(), prog.clone())).collect();
-        let spawned = std::thread::Builder::new().name("effectcraft-sync".into()).spawn(move || {
+        let entries: Vec<(String, Option<Stamp>, Arc<Progress>, Outcome)> =
+            todo.iter().map(|(l, now, prog, outcome)| (l.project.clone(), *now, prog.clone(), outcome.clone())).collect();
+        let spawned = spawn(Box::new(move || {
             let mut results = Vec::new();
             for (l, now, prog, outcome) in todo {
                 let t0 = web_time::Instant::now();
@@ -712,10 +762,22 @@ impl Session {
                 results.push((l.project.clone(), now, r));
             }
             *out.lock().unwrap_or_else(PoisonError::into_inner) = Some(results);
-        });
-        if spawned.is_ok() {
-            self.ec_sync = Some(slot);
-            self.ec_progress = running;
+        }));
+        match spawned {
+            Ok(()) => {
+                self.ec_sync = Some(slot);
+                self.ec_progress = running;
+            }
+            Err(e) => {
+                // Nothing will close these entries, and the next look at the project would add
+                // more: close them, and try again only when the project is saved again.
+                for (project, now, prog, outcome) in entries {
+                    close_job(&prog, &outcome, &Err(format!("can't start the render: {e}")), 0.0);
+                    if let Some(l) = self.ec_links.iter_mut().find(|l| l.project == project) {
+                        l.stamp = now;
+                    }
+                }
+            }
         }
     }
 
@@ -850,6 +912,11 @@ impl Session {
                 Ok(new) => match self.switch_linked_render(&project, stamp, &new) {
                     Ok(()) => n += 1,
                     Err(e) => {
+                        // The footage did not switch: take the stamp anyway, or the next look
+                        // renders the whole composition again, every two seconds.
+                        if let Some(l) = self.ec_links.iter_mut().find(|l| l.project == project) {
+                            l.stamp = stamp;
+                        }
                         first_error.get_or_insert(e);
                     }
                 },

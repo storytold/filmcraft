@@ -696,6 +696,76 @@ fn undoing_a_re_render_finds_the_old_movie() {
     assert!(Path::new(&path_of(&s)).exists(), "so the clips are not offline after Undo");
 }
 
+fn partner(source_in: i64, duration: i64, speed: f64, reverse: bool) -> TrackItem {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_media::DemoScene;
+    let dir = tmp_dir("ec-link-partner");
+    let src = dir.join("p.mov");
+    make_movie(&src, DemoScene::Aurora, 64, 36, 4);
+    let (s, _, seq) = session_with(&[&src]);
+    let mut it = s.project.sequence(seq).and_then(|q| q.video_tracks.first()).and_then(|t| t.items.first()).cloned().unwrap();
+    (it.start, it.duration, it.source_in, it.speed, it.reverse) = (Tick(1000), Tick(duration), Tick(source_in), speed, reverse);
+    it
+}
+
+/// The render covers footage 100..200. A partner that starts earlier (a J-cut) loses its head
+/// instead of being pulled later against the picture, and one that runs past the end loses its
+/// tail; what is left stays in sync.
+#[test]
+fn a_linked_partner_outside_the_render_is_cut_back_to_stay_in_sync() {
+    let range = (Tick(100), Tick(100));
+    // footage 40..160 on the timeline from 1000: the head 40..100 is cut, 60 ticks
+    assert_eq!(fit_to_render(&partner(40, 120, 1.0, false), range), Some((Tick(1060), Tick(60), Tick(0))));
+    // footage 150..260: the tail 200..260 is cut
+    assert_eq!(fit_to_render(&partner(150, 110, 1.0, false), range), Some((Tick(1000), Tick(50), Tick(50))));
+    // inside: only moves back by the offset
+    assert_eq!(fit_to_render(&partner(120, 50, 1.0, false), range), Some((Tick(1000), Tick(50), Tick(20))));
+    // at double speed 40..160 is 60 timeline ticks; the 60 footage ticks of head are 30 of them
+    assert_eq!(fit_to_render(&partner(40, 60, 2.0, false), range), Some((Tick(1030), Tick(30), Tick(0))));
+    // reversed: the footage plays from the high end, so the low footage is at the end
+    assert_eq!(fit_to_render(&partner(40, 120, 1.0, true), range), Some((Tick(1000), Tick(60), Tick(0))));
+    // nothing inside the render, or no speed: it keeps the old footage
+    assert_eq!(fit_to_render(&partner(300, 50, 1.0, false), range), None);
+    assert_eq!(fit_to_render(&partner(0, 50, 1.0, false), range), None);
+    assert_eq!(fit_to_render(&partner(120, 50, 0.0, false), range), None);
+}
+
+/// A worker that cannot start must not leave "running" entries behind, nor add more at every look.
+#[test]
+fn a_sync_pass_that_cannot_start_closes_its_jobs_and_waits_for_the_next_save() {
+    let dir = std::env::temp_dir().join(format!("ec-link-nostart-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let project = dir.join("a.ecproj");
+    std::fs::write(&project, b"{}").unwrap();
+    let mut s = Session::default();
+    s.ec_links.push(EcLink { project: project.to_string_lossy().into_owned(), comp: "A".into(), render: "r.mov".into(), stamp: None, cli: None, app: None });
+    let refuse = |_: Box<dyn FnOnce() + Send>| Err(std::io::Error::other("no threads"));
+    s.start_sync_with(refuse);
+    assert!(s.ec_sync.is_none());
+    assert_eq!(s.jobs.len(), 1);
+    assert!(s.jobs.iter().all(|j| j.progress.finished.load(Ordering::Relaxed)), "no entry stays running");
+    assert_eq!(s.effectcraft_progress(), None);
+    s.start_sync_with(refuse);
+    assert_eq!(s.jobs.len(), 1, "the unchanged project is not tried again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// If the footage cannot be switched to a new render, the project is not rendered again at every look.
+#[test]
+fn a_failed_footage_switch_does_not_render_again_at_every_look() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_media::DemoScene;
+    let dir = tmp_dir("ec-link-noswitch");
+    let old = dir.join("old.mov");
+    make_movie(&old, DemoScene::Aurora, 64, 36, 4);
+    let (mut s, _, _) = session_with(&[&old]);
+    s.ec_links.push(EcLink { project: "a.ecproj".into(), comp: "A".into(), render: old.to_string_lossy().into_owned(), stamp: None, cli: None, app: None });
+    let missing = dir.join("never-written.mov").to_string_lossy().into_owned();
+    s.ec_sync = Some(Arc::new(Mutex::new(Some(vec![("a.ecproj".into(), Some((7, 8)), Ok(missing))]))));
+    assert!(matches!(s.poll_effectcraft_sync(), Some(Err(_))), "the switch failed");
+    assert_eq!(s.ec_links.first().and_then(|l| l.stamp), Some((7, 8)), "the project's state is remembered all the same");
+}
+
 #[test]
 fn a_missing_cli_is_reported_not_fatal() {
     let r = run_cli("definitely-not-effectcraft-cli", &[]);
