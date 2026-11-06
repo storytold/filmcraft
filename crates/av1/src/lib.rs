@@ -14,6 +14,7 @@ mod decoder;
 mod frame;
 mod grain;
 mod header;
+mod host;
 mod inter;
 mod inter_info;
 mod intra;
@@ -29,7 +30,8 @@ mod tile;
 mod transform;
 
 pub use decoder::Decoder;
-pub use header::{ColorConfig, SequenceHeader};
+pub use header::{ColorConfig, FilmGrainParams, FrameHeader, SequenceHeader, TileInfo};
+pub use host::{HostEvent, HostFrame, HostParser, HostTile, global_warp_valid};
 pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.

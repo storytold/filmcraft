@@ -579,46 +579,15 @@ impl Decoder {
     /// tile_group_obu( sz ): returns the output when the frame is complete and shown.
     fn tile_group(&mut self, data: &[u8]) -> Result<Option<Output>> {
         let mut job = self.pending.take().ok_or(Error::Invalid("tile group without a frame header"))?;
-        let (cols, rows, cols_log2, rows_log2, tsb) = {
-            let t = &job.fh.tile_info;
-            (t.cols, t.rows, t.cols_log2, t.rows_log2, t.tile_size_bytes)
-        };
-        let num_tiles = cols * rows;
-        let mut r = BitReader::new(data);
-        let mut tg_start = 0;
-        let mut tg_end = num_tiles - 1;
-        if num_tiles > 1 && r.flag()? {
-            let bits = cols_log2 + rows_log2;
-            tg_start = r.f(bits)? as usize;
-            tg_end = r.f(bits)? as usize;
-        }
-        r.byte_align();
-        if tg_end >= num_tiles || tg_start > tg_end {
-            return Err(Error::Invalid("tile group range"));
-        }
-        let mut pos = r.byte_pos();
-        for tile_num in tg_start..=tg_end {
-            let size = if tile_num == tg_end {
-                data.len().checked_sub(pos).ok_or(Error::Truncated)?
-            } else {
-                let prefix_end = pos.checked_add(tsb as usize).ok_or(Error::Truncated)?;
-                let prefix = data.get(pos..prefix_end).ok_or(Error::Truncated)?;
-                let mut v = 0usize;
-                for (i, &byte) in prefix.iter().enumerate() {
-                    v |= usize::from(byte) << (8 * i);
-                }
-                pos = prefix_end;
-                v.checked_add(1).ok_or(Error::Truncated)?
-            };
-            let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
+        let (entries, last) = crate::host::tile_group_entries(data, &job.fh.tile_info)?;
+        for (tile_num, range) in entries {
             if job.tile_covered.get(tile_num).copied() != Some(false) {
                 return Err(Error::Invalid("tile is covered by multiple tile groups"));
             }
-            job.tiles.push((tile_num, data[pos..end].to_vec()));
+            job.tiles.push((tile_num, data.get(range).ok_or(Error::Truncated)?.to_vec()));
             job.tile_covered[tile_num] = true;
-            pos = end;
         }
-        if tg_end != num_tiles - 1 {
+        if !last {
             self.pending = Some(job);
             return Ok(None);
         }
@@ -635,23 +604,7 @@ impl Decoder {
         let fh = &job.fh;
         for i in 0..NUM_REF_FRAMES {
             if (fh.refresh_frame_flags >> i) & 1 == 1 {
-                let ri = &mut self.refs[i];
-                ri.valid = true;
-                ri.frame_id = fh.current_frame_id;
-                ri.upscaled_width = fh.upscaled_width;
-                ri.frame_width = fh.frame_width;
-                ri.frame_height = fh.frame_height;
-                ri.render_width = fh.render_width;
-                ri.render_height = fh.render_height;
-                ri.mi_cols = fh.mi_cols;
-                ri.mi_rows = fh.mi_rows;
-                ri.frame_type = fh.frame_type;
-                ri.order_hint = fh.order_hint;
-                ri.saved_order_hints = fh.order_hints;
-                ri.gm_params = fh.gm_params;
-                ri.lf_deltas = fh.lf.deltas;
-                ri.seg_features = fh.seg.features;
-                ri.grain = fh.film_grain.clone();
+                self.refs[i].store(fh);
                 self.ref_frames[i] = Some(job.slot.clone());
             }
         }
