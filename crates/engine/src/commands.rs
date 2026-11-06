@@ -1723,6 +1723,14 @@ fn build() -> Vec<CommandSpec> {
                 return Err(bad("file.import", "need `paths`"));
             }
             if bool_p(p, "replace").unwrap_or(false) {
+                // a refused import must not clear the project it was to replace
+                let refused: Vec<String> = paths
+                    .iter()
+                    .filter_map(|x| crate::export_tools::running_export_writing(s, x).map(|label| crate::export_tools::running_export_error(&label, x)))
+                    .collect();
+                if refused.len() == paths.len() {
+                    return Err(EngineError::Other(refused.join("; ")));
+                }
                 let name = s.project.name.clone();
                 s.execute("file.newProject", json!({ "name": name }))?;
             }
@@ -1737,6 +1745,10 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if let Some(label) = crate::export_tools::running_export_writing(s, &path) {
+                    errors.push(crate::export_tools::running_export_error(&label, &path));
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
