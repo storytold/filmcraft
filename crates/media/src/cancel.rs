@@ -91,6 +91,12 @@ pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// This thread's cancellation flag ([`with_cancel`]), to tell later whether the work that is
+/// running now was cancelled (None: it cannot be).
+pub fn current_flag() -> Option<Arc<AtomicBool>> {
+    CURRENT.with(|c| c.borrow().clone())
+}
+
 /// Whether the work running on this thread has been cancelled.
 pub fn cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
