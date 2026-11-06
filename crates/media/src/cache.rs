@@ -87,6 +87,23 @@ impl<K: Eq + Hash + Clone> FrameCache<K> {
         g.bytes = 0;
     }
 
+    /// Drop one entry (nothing happens when `k` is not cached).
+    pub fn remove(&self, k: &K) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = g.map.remove(k) {
+            g.bytes -= e.bytes;
+        }
+    }
+
+    /// Bytes of the frames held.
+    pub fn bytes(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).bytes
+    }
+
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
+
     pub fn retain(&self, mut keep: impl FnMut(&K) -> bool) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut freed = 0;
