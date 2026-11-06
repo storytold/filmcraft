@@ -1,4 +1,5 @@
 # Japanese (ja) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation. It covers the
+	Selection order: {position} of {total}	選択順序: {total} 個中 {position} 番目
 # whole interface (the same entries as `es.tsv`); a string without an entry is shown in English.
 #
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary

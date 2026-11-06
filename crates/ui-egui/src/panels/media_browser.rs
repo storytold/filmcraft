@@ -480,11 +480,12 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     }
     let all = file_drag_items(&known, &items);
     let Some(first) = all.first().copied() else { return };
-    // the drop targets place the whole Project selection when the dragged item is one of it
+    // Select the imported items so they remain highlighted during the drag.
     if all.len() > 1 {
-        app.session.state.project_selection = all;
+        app.session.state.project_selection = all.clone();
     }
-    crate::panels::start_drag_item(ui, first);
+    let drag = crate::panels::ItemDrag::capture(first, all, &app.session.project);
+    crate::panels::start_drag_items(ui, drag);
     if !items.is_empty() {
         let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
         let after = app.session.history.undo.len();

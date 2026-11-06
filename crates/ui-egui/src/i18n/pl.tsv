@@ -1,4 +1,5 @@
 # Polish (pl) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+	Selection order: {position} of {total}	Kolejność zaznaczenia: {position} z {total}
 #
 # Clean-room: every entry was written from the plain meaning of the English label using ordinary
 # Polish video-editing vocabulary. No proprietary localisation resource, string table or product UI

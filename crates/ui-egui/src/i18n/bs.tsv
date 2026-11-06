@@ -1,4 +1,5 @@
 # Bosnian (bs) catalog, Latin script, Ijekavian. Columns separated by TAB: context <TAB> source <TAB> translation
+	Selection order: {position} of {total}	Redoslijed odabira: {position} od {total}
 # Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing …
 # Original clean-room translations from the meaning of FilmCraft's English labels, using standard
 # Bosnian video-editing vocabulary (sekvenca, glava za reprodukciju, radno područje). No proprietary

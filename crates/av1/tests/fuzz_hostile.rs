@@ -38,12 +38,13 @@ fn ivf_frames(data: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn make(ff: &std::path::Path, name: &str, args: &str, pix: &str) -> Option<Vec<Vec<u8>>> {
-    let out = filmcraft_testkit::fixtures_dir("av1").join(format!("{name}.ivf"));
+    let out = filmcraft_testkit::fixtures_dir("av1").join(format!("{name}_64x64.ivf"));
     let p = filmcraft_testkit::fixtures::generate(&out, |tmp| {
         let a: Vec<&str> = args.split_whitespace().collect();
+        // Keep both dimensions at least 64 for compatibility with SVT-AV1 builds that reject smaller inputs.
         matches!(
             Command::new(ff)
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "6", "-pix_fmt", pix])
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=25", "-frames:v", "6", "-pix_fmt", pix])
                 .args(a)
                 .args(["-f", "ivf"])
                 .arg(tmp)

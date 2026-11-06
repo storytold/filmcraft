@@ -15,6 +15,71 @@ fn counts(s: &Session) -> (usize, usize) {
     (q.video_tracks.iter().map(|t| t.items.len()).sum(), q.audio_tracks.iter().map(|t| t.items.len()).sum())
 }
 
+fn assert_default_placement_span(s: &mut Session, item: ItemId, bounds: (Tick, Tick), duration: Tick) {
+    assert_eq!(crate::commands::placement_bounds(s, s.project.item(item).unwrap()), bounds);
+    let before = s.project.clone();
+    let result = s.execute("timeline.place", json!({"item": item.0, "track": "V1", "time": 0, "audio": false})).unwrap();
+    let clips = result["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 1);
+    let id = filmcraft_project::ClipId(clips[0].as_u64().unwrap());
+    let clip = s.active_sequence().unwrap().find_item(id).unwrap().1;
+    assert_eq!((clip.item, clip.source_in, clip.duration), (item, bounds.0, duration));
+    s.undo();
+    assert_eq!(s.project, before);
+}
+
+/// An inclusive media Out includes one source frame, even when the timeline uses a different rate.
+#[test]
+fn placement_bounds_media_marks_keep_the_inclusive_source_out() {
+    let source_rate = filmcraft_time::FrameRate::FPS_24;
+    for (mark_in, mark_out, start, end, placed_frames) in [
+        (None, None, 0, 96, 240),
+        (Some(10), None, 10, 96, 215),
+        (None, Some(29), 0, 30, 75),
+        (Some(10), Some(29), 10, 30, 50),
+        (Some(10), Some(10), 10, 11, 2),
+    ] {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"fps": 60})).unwrap();
+        let item = ItemId(
+            s.execute("file.newOfflineFile", json!({"name": "Marked source", "video": true, "audio": false, "fps": 24, "seconds": 4})).unwrap()["item"]
+                .as_u64()
+                .unwrap(),
+        );
+        s.execute(
+            "project.setMarks",
+            json!({"item": item.0, "in": mark_in.map(|f| source_rate.tick_of(f).0), "out": mark_out.map(|f| source_rate.tick_of(f).0)}),
+        )
+        .unwrap();
+        assert_eq!(s.project.item(item).unwrap().frame_rate(), source_rate);
+        assert_ne!(s.sequence_rate(), source_rate);
+        let duration = s.sequence_rate().tick_of(placed_frames);
+        assert_default_placement_span(&mut s, item, (source_rate.tick_of(start), source_rate.tick_of(end)), duration);
+    }
+}
+
+/// A subclip uses its own half-open range; parent marks and inclusive-Out arithmetic do not apply.
+#[test]
+fn placement_bounds_subclip_keeps_its_exact_range() {
+    let (mut s, sub) = subclip_session(true, false);
+    let ItemKind::Subclip { parent, .. } = s.project.item(sub).unwrap().kind else { panic!("expected a subclip") };
+    let rate = filmcraft_time::FrameRate::FPS_24;
+    s.execute("project.setMarks", json!({"item": parent.0, "in": rate.tick_of(1).0, "out": rate.tick_of(2).0})).unwrap();
+    assert_default_placement_span(&mut s, sub, (rate.tick_of(10), rate.tick_of(60)), rate.tick_of(50));
+}
+
+/// An adjustment layer uses its full duration rather than the still-image preference.
+#[test]
+fn placement_bounds_other_item_uses_its_full_duration() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"fps": 24})).unwrap();
+    s.execute("prefs.set", json!({"values": {"timeline.stillImageUnit": "seconds", "timeline.stillImageDuration": 11}})).unwrap();
+    let item = ItemId(s.execute("file.newAdjustmentLayer", json!({"seconds": 3})).unwrap()["item"].as_u64().unwrap());
+    assert!(matches!(s.project.item(item).unwrap().kind, ItemKind::AdjustmentLayer { .. }));
+    let duration = filmcraft_time::FrameRate::FPS_24.tick_of(72);
+    assert_default_placement_span(&mut s, item, (Tick::ZERO, duration), duration);
+}
+
 #[test]
 fn unmarked_source_defaults_to_full_span_without_writing_marks() {
     let s = setup();
