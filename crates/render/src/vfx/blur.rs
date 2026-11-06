@@ -231,7 +231,10 @@ pub fn interlace_flicker(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// out and variation above it (edges) stays. **Detail** adds the finest band of what was removed
 /// (below a 1 px Gaussian) back, so surfaces keep some fine texture.
 ///
-/// Runs per channel on sRGB-encoded straight colour, where texture contrast is perceptual.
+/// Runs per channel on sRGB-encoded straight colour, where texture contrast is perceptual. The
+/// filter's statistics weigh every sample by its alpha, so transparent pixels (and the black of
+/// their straight colour) never pull visible edges. Each channel is written back as soon as it is
+/// done, so only a few full-frame planes are alive at once.
 pub fn surface(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (w, h) = (img.w, img.h);
     let scale = if cx.px_scale.is_finite() { cx.px_scale.max(0.0) } else { 1.0 };
@@ -243,43 +246,44 @@ pub fn surface(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let sigma = 0.005 + 0.15 * unit(fv(e, "threshold", cx), 0.2);
     let detail = unit(fv(e, "detail", cx), 0.0);
 
-    // display colour, per pixel
-    let src: Vec<[f32; 3]> = img
-        .px
-        .par_chunks(4)
-        .map(|p| {
-            if p[3] <= 1e-6 {
-                return [0.0; 3];
-            }
-            enc(Image::unpremul([p[0], p[1], p[2], p[3]])).map(|q| if q.is_finite() { q.max(0.0) } else { 0.0 })
-        })
-        .collect();
-    let smooth: Vec<Vec<f32>> = (0..3)
-        .map(|k| {
-            let i: Vec<f32> = src.par_iter().map(|p| p[k]).collect();
-            let q = guided(&i, w, h, r, sigma * sigma);
-            if detail <= 0.0 {
-                return q;
-            }
-            let removed: Vec<f32> = i.par_iter().zip(&q).map(|(a, b)| a - b).collect();
+    // alpha weights and their box sums, shared by the three channels
+    let wt: Vec<f32> = img.px.par_chunks(4).map(|p| if p[3].is_finite() && p[3] > 1e-6 { p[3].min(1.0) } else { 0.0 }).collect();
+    let wsum = box_mean(&wt, w, h, r);
+    for k in 0..3 {
+        // display value of channel k (0 where transparent: it has no weight)
+        let i: Vec<f32> = img
+            .px
+            .par_chunks(4)
+            .map(|p| {
+                let (c, a) = (p.get(k).copied().unwrap_or(0.0), p[3]);
+                if a.is_nan() || a <= 1e-6 {
+                    return 0.0;
+                }
+                let v = filmcraft_color::linear_to_srgb((c / a).max(0.0));
+                if v.is_finite() { v } else { 0.0 }
+            })
+            .collect();
+        let mut q = guided(&i, &wt, &wsum, w, h, r, sigma * sigma);
+        if detail > 0.0 {
+            let removed: Vec<f32> = i.par_iter().zip(&q).zip(&wt).map(|((a, b), wt)| if *wt > 0.0 { a - b } else { 0.0 }).collect();
             let coarse = blur_plane(&removed, w, h, scale);
-            q.par_iter().zip(&removed).zip(&coarse).map(|((q, d), c)| q + detail * (d - c)).collect()
-        })
-        .collect();
-    img.px.par_chunks_mut(4).enumerate().for_each(|(n, p)| {
-        let a = p[3];
-        if a <= 1e-6 {
-            return;
+            q.par_iter_mut().zip(&removed).zip(&coarse).for_each(|((q, d), c)| *q += detail * (d - c));
         }
-        let at = |k: usize| smooth.get(k).and_then(|c| c.get(n)).copied().unwrap_or(0.0);
-        // no upper clamp: HDR values above 1.0 keep their headroom
-        let l = [0, 1, 2].map(|k| filmcraft_color::srgb_to_linear(at(k).max(0.0)));
-        if l.iter().all(|v| v.is_finite()) {
-            for k in 0..3 {
-                p[k] = l[k] * a;
+        drop(i);
+        img.px.par_chunks_mut(4).zip(&q).for_each(|(p, &v)| {
+            let a = p[3];
+            if a.is_nan() || a <= 1e-6 {
+                return;
             }
-        }
-    });
+            // no upper clamp: HDR values above 1.0 keep their headroom
+            let l = filmcraft_color::srgb_to_linear(v.max(0.0));
+            if let Some(c) = p.get_mut(k)
+                && l.is_finite()
+            {
+                *c = l * a;
+            }
+        });
+    }
 }
 
 /// A 0…100 parameter as 0…1; `default` when it is not a number.
@@ -287,23 +291,35 @@ fn unit(v: f32, default: f32) -> f32 {
     if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { default }
 }
 
-/// Self-guided filter of one plane (He, Sun and Tang 2010, Algorithm 1 with guide I = input p):
-/// per box, `a = var / (var + eps)` and `b = mean · (1 − a)`, averaged over the boxes covering
-/// each sample, then `q = a·I + b`.
-fn guided(i: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
-    let sq: Vec<f32> = i.par_iter().map(|v| v * v).collect();
-    let (mean, mean_sq) = (box_mean(i, w, h, r), box_mean(&sq, w, h, r));
-    let (a, b): (Vec<f32>, Vec<f32>) = mean
-        .par_iter()
-        .zip(&mean_sq)
-        .map(|(&m, &m2)| {
-            let var = (m2 - m * m).max(0.0);
+/// Self-guided filter of one plane (He, Sun and Tang 2010, Algorithm 1 with guide I = input p),
+/// with weighted statistics: per box, the `wt`-weighted mean and variance give
+/// `a = var / (var + eps)` and `b = mean · (1 − a)`; their `wt`-weighted averages over the boxes
+/// covering each sample give `q = a·I + b`. `wsum` is the box mean of `wt`. With every weight 1
+/// this is the paper's filter; a sample of weight 0 does not count at all.
+fn guided(i: &[f32], wt: &[f32], wsum: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
+    let wi: Vec<f32> = i.par_iter().zip(wt).map(|(v, k)| v * k).collect();
+    let wi2: Vec<f32> = wi.par_iter().zip(i).map(|(a, v)| a * v).collect();
+    let mut mean = box_mean(&wi, w, h, r);
+    drop(wi);
+    let mut mean_sq = box_mean(&wi2, w, h, r);
+    drop(wi2);
+    // a and b in place of the two means, already weighted for the second pass
+    mean.par_iter_mut().zip(mean_sq.par_iter_mut()).zip(wsum).zip(wt).for_each(|(((m, m2), &s), &k)| {
+        let (a, b) = if s > 1e-6 {
+            let (mu, mu2) = (*m / s, *m2 / s);
+            let var = (mu2 - mu * mu).max(0.0);
             let a = var / (var + eps.max(1e-12));
-            (a, m - a * m)
-        })
-        .unzip();
-    let (ma, mb) = (box_mean(&a, w, h, r), box_mean(&b, w, h, r));
-    i.par_iter().zip(&ma).zip(&mb).map(|((&v, &a), &b)| a * v + b).collect()
+            (a, mu - a * mu)
+        } else {
+            (1.0, 0.0)
+        };
+        (*m, *m2) = (k * a, k * b);
+    });
+    let ma = box_mean(&mean, w, h, r);
+    drop(mean);
+    let mb = box_mean(&mean_sq, w, h, r);
+    drop(mean_sq);
+    i.par_iter().zip(&ma).zip(&mb).zip(wsum).map(|(((&v, &a), &b), &s)| if s > 1e-6 { (a * v + b) / s } else { v }).collect()
 }
 
 /// Mean of the (2r+1)² box around every sample of a `w`×`h` plane, edges clamped; running sums
@@ -313,7 +329,10 @@ fn box_mean(p: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
         return p.to_vec();
     }
     let rows = box_rows_plane(p, w, r);
-    let cols = box_rows_plane(&transpose_plane(&rows, w, h), h, r);
+    let t = transpose_plane(&rows, w, h);
+    drop(rows);
+    let cols = box_rows_plane(&t, h, r);
+    drop(t);
     transpose_plane(&cols, h, w)
 }
 
