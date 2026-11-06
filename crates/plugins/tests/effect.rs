@@ -112,7 +112,14 @@ fn a_plugin_effect_changes_real_pixels_through_the_render_path() {
     // ---- the plan: not a GPU effect, so the layer is a CPU canvas and the GPU gets no effect stage
     let seq = session.state.active_sequence.expect("sequence");
     let provider = session.media.provider(session.project.clone(), session.services.clone());
-    let plan = plan_frame(&session.project, seq, session.playhead(), RenderOptions { scale: 0.5, ..RenderOptions::default() }, &provider);
+    let plan = plan_frame(
+        &session.project,
+        seq,
+        session.playhead(),
+        RenderOptions { scale: 0.5, ..RenderOptions::default() },
+        filmcraft_engine::render::plan::DeviceCaps::ALL,
+        &provider,
+    );
     let layers = match &plan {
         FramePlan::Layers { layers, .. } => layers.as_slice(),
         FramePlan::Composite { steps, .. } => match steps.first() {
