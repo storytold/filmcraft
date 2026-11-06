@@ -78,6 +78,17 @@ pub fn init_contexts(ctx: &mut Contexts, slice_qp: i32, init_type: usize) {
     }
 }
 
+/// Engine state and contexts of a [`Cabac`] decoder, to continue decoding the same data later
+/// ([`Cabac::resume`]).
+#[derive(Clone)]
+pub struct CabacState {
+    next_byte: usize,
+    range: u32,
+    value: u64,
+    bits: u32,
+    ctx: Contexts,
+}
+
 pub struct Cabac<'a> {
     data: &'a [u8],
     /// Byte position of the next byte to load into `value`.
@@ -98,6 +109,16 @@ impl<'a> Cabac<'a> {
         init_contexts(&mut c.ctx, slice_qp, init_type);
         c.init_engine()?;
         Ok(c)
+    }
+
+    /// The engine state and contexts, for [`Cabac::resume`].
+    pub fn save(&self) -> CabacState {
+        CabacState { next_byte: self.next_byte, range: self.range, value: self.value, bits: self.bits, ctx: self.ctx }
+    }
+
+    /// Continue decoding `data` where [`Cabac::save`] left off.
+    pub fn resume(data: &'a [u8], s: &CabacState) -> Self {
+        Cabac { data, next_byte: s.next_byte, range: s.range, value: s.value, bits: s.bits, ctx: s.ctx }
     }
 
     /// 9.3.2.6: ivlCurrRange = 510, ivlOffset = read_bits(9) (from the current byte-aligned position).

@@ -142,3 +142,33 @@ fn generate_fixtures() {
         filmcraft_testkit::fixtures::generate_and_report(&format!("hevc/{}", f.name), &outs, || common::ensure(f));
     }
 }
+
+/// Decoding inside pictures on several threads: wavefront rows (x265's default streams carry
+/// WPP entry points, also with several slices per picture) and, without WPP, in-loop filters next
+/// to the parsing thread. Every thread count gives exactly the single-threaded pictures, and the
+/// pictures were in fact split.
+#[test]
+fn intra_picture_parallel_matches_single_thread() {
+    for (name, wpp) in [("medium", true), ("slices4", true), ("hd_1080p", true), ("no_wpp", false), ("bframes", true)] {
+        let f = common::fixture(name);
+        let Some((hevc, _)) = common::ensure(f) else {
+            eprintln!("skipped {name}");
+            continue;
+        };
+        let (serial, stats) = common::decode_file_cfg(&hevc, 1, false, None).unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
+        // x265 enables WPP unless told not to (`no-wpp=1`)
+        assert_eq!(stats.wpp_pictures > 0, wpp, "{name}: WPP pictures {}", stats.wpp_pictures);
+        assert_eq!(stats.parallel_pictures, 0, "{name}: one thread splits no picture");
+        for threads in [2, 4, 8] {
+            let (pics, stats) = common::decode_file_cfg(&hevc, threads, false, Some(true))
+                .unwrap_or_else(|(au, e, _)| panic!("{name} ({threads} threads): error at {au}: {e}"));
+            // (without the thread pool everything is decoded on the calling thread)
+            let split = if cfg!(feature = "threads") { stats.pictures } else { 0 };
+            assert_eq!(stats.parallel_pictures, split, "{name} ({threads} threads): every picture split");
+            assert_eq!(pics.len(), serial.len(), "{name} ({threads} threads)");
+            for (i, (a, b)) in pics.iter().zip(&serial).enumerate() {
+                assert!(a.y == b.y && a.u == b.u && a.v == b.v && a.pts == b.pts, "{name} ({threads} threads): picture {i} differs from one thread");
+            }
+        }
+    }
+}
