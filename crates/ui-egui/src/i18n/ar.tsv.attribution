@@ -1,0 +1,12 @@
+asset:        ar.tsv
+title:        Arabic interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-11-01 by test-bit-sys
+notes:        Original clean-room English-to-Arabic translation of the full 3,704-string
+              reference catalog, using ordinary Arabic video-editing vocabulary (NLE-style
+              terms: تسلسل، مجلد، مسار، تصيير، رأس التشغيل، شفرة القص). No proprietary
+              localisation resource, string table or product interface was consulted.
+              Reviewed against the tests and validated for 100% catalog coverage.

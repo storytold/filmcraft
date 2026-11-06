@@ -123,6 +123,11 @@ pub(crate) fn is_system_face(name: &str) -> bool {
     system_fonts().iter().any(|(n, _)| n == name)
 }
 
+/// Whether an Arabic face is available (from craft-fonts or installed on the system).
+pub(crate) fn arabic_font_available() -> bool {
+    craft_fonts().any(|f| f.scripts.contains(&"Arab")) || system_fonts().iter().any(|(name, _)| name == "system-arab")
+}
+
 /// Whether `text` has a right-to-left letter (Arabic, Hebrew…), the only text [`Lines`] reorders.
 pub(crate) fn has_rtl(text: &str) -> bool {
     text.chars().any(|c| matches!(bidi_class(c), BidiClass::R | BidiClass::AL))
