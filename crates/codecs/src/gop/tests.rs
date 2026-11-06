@@ -1041,3 +1041,43 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+/// Every sample claims to be a keyframe but none can start a decode: the search for a random-access
+/// sample gives up after a bounded number of probes instead of reading them all.
+#[test]
+fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
+    struct Aliased {
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl VideoSamples for Aliased {
+        fn count(&self) -> usize {
+            1 << 20
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            usize::try_from(t).ok()
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; 16])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Err(crate::CodecError::Unsupported("test".into()))
+        }
+    }
+    let s = Aliased { reads: Default::default() };
+    assert!(random_access_at_or_before(&s, 1 << 19, |_| Some(false)).is_err());
+    assert!(s.reads.load(std::sync::atomic::Ordering::Relaxed) <= MAX_RANDOM_ACCESS_PROBES);
+    // a sample that can start a decode ends the search at once
+    assert_eq!(random_access_at_or_before(&s, 100, |_| Some(true)).unwrap(), 100);
+    assert_eq!(random_access_at_or_before(&s, 0, |_| Some(false)).unwrap(), 0);
+    // a cancelled request is refused even when the search starts at sample zero
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
+    assert!(matches!(r, Err(CodecError::Cancelled)));
+}
