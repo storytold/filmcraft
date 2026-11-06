@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::Ka => Some(include_str!("ka.tsv")),
     }
 }
 
@@ -54,7 +55,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
     }
     assert_eq!(Language::En.tr("File"), "File");
     assert_eq!(Language::parse("xx"), None);
-    for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE"] {
+    for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE", "ka-GE"] {
         assert_eq!(Language::parse(code), None, "the preference stores the bare code");
     }
     // language names are always shown in their own language
@@ -73,6 +74,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
         (Language::Tr, "Türkçe"),
+        (Language::Ka, "ქართული"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -536,6 +538,42 @@ fn language_commands_switch_and_persist_without_a_document() {
     set_current(Language::En);
 }
 
+/// Georgian switches, shows as checked in Edit > Language, and persists when a Georgian face is
+/// available (craft-fonts `Geor` or an installed one), and is refused (the interface stays as it
+/// was) without one.
+#[test]
+fn georgian_switches_and_persists_or_is_refused_without_a_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let r = crate::menus::invoke(&mut app, &ctx, "app.language.georgian", serde_json::json!({}));
+    if !georgian_font_available() {
+        eprintln!("no Georgian face: checking that Georgian is refused");
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.session.prefs.general.interface_language, "system");
+        // a saved Georgian preference falls back to English at startup
+        app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ka"})).unwrap();
+        app.apply_prefs(&ctx);
+        assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.ui.status, "no Georgian font is installed on this system; the interface stays in English");
+        set_current(Language::En);
+        return;
+    }
+    assert_eq!(r.unwrap(), serde_json::json!("ka"));
+    assert_eq!((app.ui.language, current()), (Language::Ka, Language::Ka));
+    assert_eq!(app.session.prefs.general.interface_language, "ka");
+    for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
+        assert_eq!(it.checked, Some(it.id == "app.language.georgian"), "{}", it.id);
+    }
+    assert_eq!(Language::Ka.tr("Save As…"), "შენახვა როგორც…");
+    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+    let mut restarted = filmcraft_engine::Session::default();
+    restarted.prefs = serde_json::from_str(&prefs).unwrap();
+    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Ka);
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    set_current(Language::En);
+}
+
 fn locales(tags: &[&str]) -> Language {
     Language::from_locales(&tags.iter().map(|t| t.to_string()).collect::<Vec<_>>())
 }
@@ -604,6 +642,12 @@ fn system_language_picks_italian_korean_and_the_first_known() {
         assert_eq!(l(&[tag]), Language::Tr, "{tag}");
     }
     for none in [&["ita"][..], &["i"], &["-it"]] {
+        assert_eq!(l(none), Language::En, "{none:?}");
+    }
+    for tag in ["ka", "KA", "ka-GE", "ka_GE", "ka_GE.UTF-8", "ka_GE.UTF-8@x"] {
+        assert_eq!(l(&[tag]), Language::Ka, "{tag}");
+    }
+    for none in [&["kat"][..], &["k"], &["-ka"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
