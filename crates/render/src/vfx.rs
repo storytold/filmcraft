@@ -91,6 +91,16 @@ pub fn is_temporal(id: &str) -> bool {
     matches!(id, "posterize_time" | "echo" | "warp_stabilizer" | "auto_reframe")
 }
 
+/// Whether `item` has an enabled Auto Reframe on the sequence's aspect, with no mask. Rendering with
+/// effects then scales the picture to cover the frame ([`crate::reframe_cover`]), so the effect only
+/// picks the window. A masked one works inside the layer as before: a mask can't take back a zoom
+/// of the whole layer.
+pub fn reframes_to_sequence(item: &TrackItem) -> bool {
+    item.effects
+        .iter()
+        .any(|e| e.enabled && e.effect == "auto_reframe" && chv(e, "aspect") == 0 && e.masks.iter().all(|m| m.mode == filmcraft_project::MaskMode::None))
+}
+
 impl FxEnv for ItemEnv<'_> {
     fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
         let t2 = self.t + Tick::from_seconds_f64(dt);

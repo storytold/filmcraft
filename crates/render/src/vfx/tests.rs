@@ -1339,6 +1339,100 @@ mod pipeline {
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
     }
+
+    /// How the 16:9 clip of the Auto Reframe tests sits in a 9:16 sequence.
+    #[derive(Clone, Copy)]
+    struct Setup {
+        reframe: bool,
+        aspect: u32,
+        masked: bool,
+        scale_to_frame: bool,
+        scale: f64,
+        rotation: f64,
+        effects: bool,
+    }
+    impl Default for Setup {
+        fn default() -> Self {
+            Setup { reframe: true, aspect: 0, masked: false, scale_to_frame: false, scale: 100.0, rotation: 0.0, effects: true }
+        }
+    }
+
+    /// A 64 x 36 clip in a 36 x 64 sequence, with Auto Reframe as `s` sets it, at frame 12.
+    fn reframed(s: Setup) -> Image {
+        let r = FrameRate::FPS_24;
+        let mut p = Project::new("reframe");
+        let mut map = SourceMap::default();
+        let clip = add(&mut p, &mut map, GeneratorSource::new(Generator::Demo(DemoScene::OceanSunset), 64, 36, r, Tick(10 * TICKS_PER_SECOND)));
+        let seq = p.new_sequence("s", SequenceSettings { width: 36, height: 64, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let mut ar = inst("auto_reframe");
+        set(&mut ar, "aspect", ParamValue::Choice(s.aspect));
+        if s.masked {
+            ar.masks.push(filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 36.0)));
+        }
+        place(&mut p, seq, 0, clip, if s.reframe { vec![ar] } else { vec![] });
+        let ti = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+        ti.scale_to_frame = s.scale_to_frame;
+        let motion = ti.effect_mut("motion").unwrap();
+        motion.params.get_mut("scale").unwrap().value = ParamValue::Float(s.scale);
+        motion.params.get_mut("rotation").unwrap().value = ParamValue::Float(s.rotation);
+        render_sequence(&p, seq, r.tick_of(12), RenderOptions { effects: s.effects, ..RenderOptions::default() }, &map)
+    }
+
+    #[test]
+    fn auto_reframe_on_the_sequence_fills_a_frame_of_another_aspect() {
+        // A 16:9 clip in a 9:16 sequence, Auto Reframe on the sequence's aspect (its default). At
+        // Motion's defaults the clip stayed a band (rows 14 to 49), the zoom kept inside its own
+        // picture; after Fill Frame the zoom applied twice.
+        let plain = reframed(Setup::default());
+        for y in [2, 61] {
+            assert!((0..36).all(|x| plain.get(x, y)[3] > 0.99), "row {y} is not covered");
+        }
+        // Scale to Frame Size, Fill Frame (64 / 36 = 177.8 %) and Fill Frame with the 9:16 aspect
+        // chosen by hand show the same window
+        let fill = 64.0 / 36.0 * 100.0;
+        for (s2f, scale, aspect) in [(true, 100.0, 0), (false, fill, 0), (false, fill, 1)] {
+            let d = max_diff(&reframed(Setup { scale_to_frame: s2f, scale, aspect, ..Setup::default() }), &plain);
+            assert!(d < 1e-3, "scale to frame {s2f}, scale {scale}, aspect {aspect}: {d}");
+        }
+    }
+
+    #[test]
+    fn auto_reframe_zooms_the_layer_only_as_far_as_the_frame_needs() {
+        enum Want {
+            /// every pixel three in from the frame's edges is picture
+            Covered,
+            /// the frame Motion alone gives, without Auto Reframe
+            AsWithout,
+            /// rows 2 and 61 stay off the clip, as at Motion's defaults
+            Band,
+        }
+        let rows = [
+            ("a quarter turn covers the frame by itself", Setup { rotation: 90.0, ..Setup::default() }, Want::AsWithout),
+            ("at 45 degrees the corners are covered too", Setup { rotation: 45.0, ..Setup::default() }, Want::Covered),
+            ("with effects off, Motion's framing stays", Setup { effects: false, ..Setup::default() }, Want::AsWithout),
+            ("a masked Auto Reframe doesn't zoom the whole layer", Setup { masked: true, ..Setup::default() }, Want::Band),
+        ];
+        for (name, setup, want) in rows {
+            let img = reframed(setup);
+            match want {
+                Want::Covered => {
+                    let edges = (3..33).flat_map(|x| [(x, 3), (x, 60)]).chain((3..61).flat_map(|y| [(3, y), (32, y)]));
+                    for (x, y) in edges {
+                        assert!(img.get(x, y)[3] > 0.99, "{name}: ({x}, {y}) is not covered");
+                    }
+                }
+                Want::AsWithout => {
+                    let d = max_diff(&img, &reframed(Setup { reframe: false, ..setup }));
+                    assert!(d < 1e-4, "{name}: {d}");
+                }
+                Want::Band => {
+                    for y in [2, 61] {
+                        assert!((0..36).all(|x| img.get(x, y)[3] < 0.01), "{name}: row {y} is covered");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
