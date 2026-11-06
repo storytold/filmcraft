@@ -90,6 +90,11 @@ sync_github_name = false
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
 
+[people.AnarchByte0]
+real_name = "Maksym Sukhanov"
+display_name = "AnarchByte0"
+sync_github_name = true
+
 [people.marshiyar]
 display_name = "Arshiya"
 real_name = "Arshiya Rahgozar"
@@ -111,3 +116,4 @@ real_name = "Alexander Alber"
 sync_github_name = true
 [people.helenkwok]
 real_name = "Helen Kwok"
+
