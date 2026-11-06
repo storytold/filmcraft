@@ -1212,6 +1212,60 @@ mod running_export_outputs {
     }
 
     #[test]
+    fn a_refused_replacing_import_leaves_the_project_as_it_is() {
+        let dir = tmp_dir("running-export-replace");
+        let (a, dest) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"));
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        running(&mut s, &dest, Format::default(), None);
+        let (items, history) = (s.project.items.len(), s.history.undo.len());
+        let err = s.execute("file.import", json!({"paths": [dest], "replace": true})).unwrap_err().to_string();
+        assert!(err.contains("being written by"), "{err}");
+        assert_eq!((s.project.items.len(), s.history.undo.len()), (items, history), "the project and its undo history are kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_search_does_not_offer_a_file_a_running_export_is_writing() {
+        let dir = tmp_dir("running-export-search");
+        let (a, elsewhere) = (movie(&dir, "a.mov"), dir.join("other"));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let copy = movie(&elsewhere, "a.mov");
+        let (mut s, items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        let found = |s: &mut Session| {
+            let r = s.execute("media.search", json!({"folder": elsewhere.to_string_lossy(), "item": items[0].0})).unwrap();
+            r["results"][0]["candidates"].as_array().map(Vec::len).unwrap_or(0)
+        };
+        assert_eq!(found(&mut s), 1, "the copy is a candidate");
+        let job = running(&mut s, &copy, Format::default(), None);
+        assert_eq!(found(&mut s), 0, "not while an export is writing it");
+        finish(&mut s, job);
+        assert_eq!(found(&mut s), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_to_a_still_of_a_running_export_is_refused() {
+        let dir = tmp_dir("running-export-link");
+        let a = movie(&dir, "a.mov");
+        let still = dir.join("Shot000.png");
+        std::fs::write(&still, b"png").unwrap();
+        let alias = dir.join("alias.png");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&still, &alias).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&still, &alias).is_ok(); // needs the privilege to link
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if linked {
+            let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+            running(&mut s, &dir.join("Shot.png").to_string_lossy(), Format::PngSequence, None);
+            let err = s.execute("file.import", json!({"paths": [alias.to_string_lossy()]})).unwrap_err().to_string();
+            assert!(err.contains("being written by"), "{err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_real_export_keeps_its_destination_out_of_the_project_until_it_finishes() {
         let movie = tmp_dir("running-export-real").join("a.mp4");
         make_movie(&movie, filmcraft_media::DemoScene::Dunes, 320, 180, 240);

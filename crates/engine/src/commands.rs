@@ -1688,6 +1688,14 @@ fn build() -> Vec<CommandSpec> {
                 return Err(bad("file.import", "need `paths`"));
             }
             if bool_p(p, "replace").unwrap_or(false) {
+                // a refused import must not clear the project it was to replace
+                let refused: Vec<String> = paths
+                    .iter()
+                    .filter_map(|x| crate::export_tools::running_export_writing(s, x).map(|label| crate::export_tools::running_export_error(&label, x)))
+                    .collect();
+                if refused.len() == paths.len() {
+                    return Err(EngineError::Other(refused.join("; ")));
+                }
                 let name = s.project.name.clone();
                 s.execute("file.newProject", json!({ "name": name }))?;
             }

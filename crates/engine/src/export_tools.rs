@@ -532,7 +532,9 @@ impl ExportOutputs {
 /// `candidate` is named like a numbered still of an image sequence exported to `path`
 /// (`Shot.png` → `Shot000.png`, `Shot1234.png`), in the same folder.
 fn is_numbered_still_of(path: &str, candidate: &str) -> bool {
-    let (dest, cand) = (Path::new(path), Path::new(candidate));
+    // a link to a still is the still: look at the file it names
+    let resolved = canonical(Path::new(candidate));
+    let (dest, cand) = (Path::new(path), resolved.as_path());
     let (Some(stem), Some(ext)) = (dest.file_stem().map(|x| x.to_string_lossy()), dest.extension().map(|x| x.to_string_lossy())) else { return false };
     let (Some(name), Some(cand_ext)) = (cand.file_stem().map(|x| x.to_string_lossy()), cand.extension().map(|x| x.to_string_lossy())) else { return false };
     let digits = name.get(stem.len()..).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
