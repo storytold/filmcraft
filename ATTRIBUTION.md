@@ -178,6 +178,13 @@ SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
 |---|---|---|---|
 | Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |
 
+## Window-controls review screenshots
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| `docs/window-controls/gnome-wayland.png` | @danielmigueltejedor with Codex | Original screenshot of FilmCraft in an isolated compositor, 2026-10-21; generated demo content or an empty home screen | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
+| `docs/window-controls/kde-x11.png` | @danielmigueltejedor with Codex | Original screenshot of FilmCraft in an isolated compositor, 2026-10-21; generated demo content or an empty home screen | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
+
 ## egui dependency fonts
 
 | Asset | Author | Source | Licence | Use |
