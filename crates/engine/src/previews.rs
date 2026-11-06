@@ -67,6 +67,10 @@ pub enum RenderMode {
     EffectsInToOut,
     /// Every segment in In/Out, including no-bar ones.
     InToOut,
+    /// Red segments in the active work area.
+    EffectsInWorkArea,
+    /// Red and yellow segments in the active work area.
+    EntireWorkArea,
     /// Segments showing a selected clip.
     Selection,
 }
@@ -76,7 +80,8 @@ impl RenderMode {
     /// aside).
     pub fn renders(self, need: Need) -> bool {
         match self {
-            RenderMode::EffectsInToOut => need == Need::Render,
+            RenderMode::EffectsInToOut | RenderMode::EffectsInWorkArea => need == Need::Render,
+            RenderMode::EntireWorkArea => matches!(need, Need::Render | Need::Realtime),
             RenderMode::InToOut | RenderMode::Selection => true,
         }
     }
@@ -621,8 +626,25 @@ fn in_out(s: &Session) -> Result<(ItemId, TimeRange)> {
     let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
     let fd = q.settings.frame_rate.frame_duration();
     let a = q.mark_in.unwrap_or(Tick::ZERO);
-    let b = q.mark_out.map(|o| o + fd).unwrap_or(q.duration());
+    let b = match q.mark_out {
+        Some(out) => Tick(out.0.checked_add(fd.0).ok_or_else(|| EngineError::Other("set an Out point within the sequence time range".into()))?),
+        None => q.duration(),
+    };
+    if a < Tick::ZERO || b < Tick::ZERO || b.0.checked_sub(a.0).is_none() {
+        return Err(EngineError::Other("set valid In and Out points before rendering previews".into()));
+    }
     Ok((id, TimeRange::from_bounds(a, b.max(a))))
+}
+
+/// The active sequence's positive work area.
+pub(crate) fn work_area(s: &Session) -> Result<(ItemId, TimeRange)> {
+    let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
+    let range = q.work_area.ok_or_else(|| EngineError::Other("enable the Work Area Bar before using work-area previews".into()))?;
+    if range.start < Tick::ZERO || range.duration <= Tick::ZERO || range.start.0.checked_add(range.duration.0).is_none() {
+        return Err(EngineError::Other("set a work area with an end after its start".into()));
+    }
+    Ok((id, range))
 }
 
 /// One preview file to render: frames `off..off + len` of segment `seg` (from its start).
@@ -637,7 +659,10 @@ struct Todo {
 /// The In/Out modes render only the frames between In and Out (a segment that extends past them
 /// gets a partial preview), and every mode renders only frames that have no preview yet.
 pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
-    let (seq, range) = in_out(s)?;
+    let (seq, range) = match mode {
+        RenderMode::EffectsInWorkArea | RenderMode::EntireWorkArea => work_area(s)?,
+        _ => in_out(s)?,
+    };
     let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
     let store = s.previews.clone();
     let dir = store.dir().ok_or_else(|| EngineError::Other("render previews are not available here (no preview folder)".into()))?;
@@ -646,7 +671,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let mut todo: Vec<Todo> = Vec::new();
     for g in segs.iter().filter(|g| mode.renders(g.need)) {
         let (a, b) = match mode {
-            RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
+            RenderMode::EffectsInToOut | RenderMode::InToOut | RenderMode::EffectsInWorkArea | RenderMode::EntireWorkArea => rel_range(g, rate, &range),
             RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
             RenderMode::Selection => continue,
         };
@@ -887,12 +912,20 @@ pub fn read_wav_f32(b: &[u8]) -> Option<Vec<f32>> {
     }
     None
 }
-/// Delete Render Files (all of the project's previews) or Delete Render Files In to Out.
-pub fn delete(s: &mut Session, in_to_out: bool) -> Result<Value> {
-    let n = if in_to_out {
-        let (seq, range) = in_out(s)?;
+/// Scope of a preview-file deletion.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DeleteScope {
+    All,
+    InToOut,
+    WorkArea,
+}
+
+/// Delete Render Files (all of the project's previews), In to Out, or in the work area.
+pub fn delete(s: &mut Session, scope: DeleteScope) -> Result<Value> {
+    let n = if scope != DeleteScope::All {
+        let (seq, range) = if scope == DeleteScope::WorkArea { work_area(s)? } else { in_out(s)? };
         let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
-        // the files holding frames between In and Out (a partial preview outside them stays)
+        // Files holding frames in the chosen range; other partial files stay.
         let names: Vec<String> = s
             .previews
             .segments(&s.project, seq)
@@ -902,6 +935,18 @@ pub fn delete(s: &mut Session, in_to_out: bool) -> Result<Value> {
                 s.previews.parts_in(g, a, b)
             })
             .collect();
+        let names = if scope == DeleteScope::WorkArea {
+            // Keep a content-addressed file when another sequence uses it.
+            let shared: HashSet<String> = s
+                .project
+                .sequences()
+                .filter(|item| item.id != seq)
+                .flat_map(|item| s.previews.segments(&s.project, item.id).iter().flat_map(|g| s.previews.parts_in(g, 0, g.frames)).collect::<Vec<_>>())
+                .collect();
+            names.into_iter().filter(|name| !shared.contains(name)).collect()
+        } else {
+            names
+        };
         s.previews.delete_files(&names)
     } else {
         s.previews.delete(None)

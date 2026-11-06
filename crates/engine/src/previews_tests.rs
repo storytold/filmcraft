@@ -350,9 +350,14 @@ fn render_commands_are_registered_like_premiere() {
         "sequence.renderAudio",
         "sequence.deleteRenderFiles",
         "sequence.deleteRenderFilesInToOut",
+        "sequence.renderEffectsInWorkArea",
+        "sequence.renderEntireWorkArea",
+        "sequence.deleteWorkAreaRenderFiles",
     ] {
         assert_eq!(f(id).menu, &["Sequence"]);
     }
+    assert_eq!(f("sequence.renderEntireWorkArea").shortcut, None);
+    assert_eq!(f("sequence.deleteWorkAreaRenderFiles").shortcut, None);
 }
 
 #[test]
@@ -389,4 +394,142 @@ fn preview_files_are_streamed_not_read_whole() {
         assert!(crate::previews::open_preview_file(&s.media, "still.png", &png).is_none());
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn work_area_modes_pick_red_or_red_and_yellow_segments() {
+    use crate::previews::RenderMode;
+    use filmcraft_render::preview::Need;
+    assert!(RenderMode::EffectsInWorkArea.renders(Need::Render));
+    assert!(!RenderMode::EffectsInWorkArea.renders(Need::Realtime));
+    assert!(!RenderMode::EffectsInWorkArea.renders(Need::None));
+    assert!(RenderMode::EntireWorkArea.renders(Need::Render));
+    assert!(RenderMode::EntireWorkArea.renders(Need::Realtime));
+    assert!(!RenderMode::EntireWorkArea.renders(Need::None));
+}
+
+#[test]
+fn work_area_render_reuses_green_and_ignores_marks() {
+    use BarState::{Green, None as NoBar, Yellow};
+    let (mut s, _) = session("work-area-render");
+    let rate = FrameRate::FPS_24;
+    let seq = s.state.active_sequence.unwrap();
+    s.edit_sequence("work area and marks", |q, _, _| {
+        q.work_area = Some(TimeRange::from_bounds(rate.tick_of(6), rate.tick_of(12)));
+        q.mark_in = Some(rate.tick_of(30));
+        q.mark_out = Some(rate.tick_of(35));
+        Ok(())
+    })
+    .unwrap();
+    let effects = s.execute("sequence.renderEffectsInWorkArea", json!({"wait": true})).unwrap();
+    assert_eq!(effects["segments"], 0);
+    assert_eq!(spans(&s), vec![(0, 24, Yellow), (24, 48, NoBar)]);
+    let entire = s.execute("sequence.renderEntireWorkArea", json!({"wait": true})).unwrap();
+    job_ok(&s, &entire);
+    assert_eq!(entire["frames"], 6);
+    assert_eq!(spans(&s), vec![(0, 6, Yellow), (6, 12, Green), (12, 24, Yellow), (24, 48, NoBar)]);
+    let again = s.execute("sequence.renderEntireWorkArea", json!({"wait": true})).unwrap();
+    assert!(again["job"].is_null());
+    assert_eq!(s.previews.count(), 1);
+    let deleted = s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap();
+    assert_eq!(deleted["deleted"], 1);
+    assert_eq!(spans(&s), vec![(0, 24, Yellow), (24, 48, NoBar)]);
+    assert_eq!(s.state.active_sequence, Some(seq));
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+#[test]
+fn work_area_commands_reject_missing_and_invalid_ranges_without_mutation() {
+    let (mut s, _) = session("work-area-errors");
+    let commands = ["sequence.renderEffectsInWorkArea", "sequence.renderEntireWorkArea", "sequence.deleteWorkAreaRenderFiles"];
+    for command in commands {
+        assert!(s.execute(command, json!({"wait": true})).is_err(), "{command}");
+    }
+    let seq = s.state.active_sequence.unwrap();
+    for range in [TimeRange::new(Tick::ZERO, Tick::ZERO), TimeRange::new(Tick(-1), Tick(1)), TimeRange::new(Tick(10), Tick(-1))] {
+        let mut project = (*s.project).clone();
+        project.sequence_mut(seq).unwrap().work_area = Some(range);
+        s.project = Arc::new(project);
+        for command in commands {
+            let before = s.previews.count();
+            assert!(s.execute(command, json!({"wait": true})).is_err(), "{command}: {range:?}");
+            assert_eq!(s.previews.count(), before);
+        }
+    }
+    s.state.active_sequence = None;
+    for command in commands {
+        assert!(s.execute(command, json!({"wait": true})).is_err(), "{command}");
+    }
+    assert!(s.project.sequence(seq).is_some());
+    assert!(s.jobs.is_empty());
+}
+
+#[test]
+fn work_area_delete_removes_overlapping_whole_and_partial_files_only() {
+    let (mut s, tint) = session("work-area-delete");
+    let rate = FrameRate::FPS_24;
+    set_marks(&mut s, Some((2, 5)));
+    let first = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &first);
+    set_marks(&mut s, Some((8, 11)));
+    let second = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &second);
+    set_marks(&mut s, Some((14, 17)));
+    let outside = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &outside);
+    let active = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    let tracks = project.sequence(active).unwrap().video_tracks.clone();
+    let other = project.new_sequence("Other", SequenceSettings { width: 80, height: 36, frame_rate: rate, ..Default::default() }, 2, 1, None);
+    project.sequence_mut(other).unwrap().video_tracks = tracks;
+    s.project = Arc::new(project);
+    s.state.active_sequence = Some(other);
+    set_marks(&mut s, Some((0, 3)));
+    let other_render = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &other_render);
+    s.state.active_sequence = Some(active);
+    s.edit_sequence("work area", |q, _, _| {
+        q.work_area = Some(TimeRange::from_bounds(rate.tick_of(5), rate.tick_of(9)));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.previews.count(), 4);
+    let deleted = s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap();
+    assert_eq!(deleted["deleted"], 2, "both preview files touch the work area");
+    assert_eq!(s.previews.count(), 2);
+    assert!(s.previews.frame(&s.media, &s.project, other, 1, 1.0).is_some());
+    s.execute("sequence.deleteRenderFiles", json!({})).unwrap();
+    set_marks(&mut s, None);
+    render_tint(&mut s, tint);
+    assert_eq!(s.previews.count(), 1);
+    // A sequence with the same content shows the same preview file, which stays.
+    let mut project = (*s.project).clone();
+    let source = project.sequence(active).unwrap().clone();
+    let twin = project.new_sequence("Twin", source.settings.clone(), 2, 1, None);
+    let q = project.sequence_mut(twin).unwrap();
+    q.video_tracks = source.video_tracks.clone();
+    q.audio_tracks = source.audio_tracks.clone();
+    s.project = Arc::new(project);
+    assert!(s.previews.frame(&s.media, &s.project, twin, 1, 1.0).is_some(), "the twin shows the same preview");
+    assert_eq!(s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap()["deleted"], 0);
+    assert_eq!(s.previews.count(), 1);
+    let mut project = (*s.project).clone();
+    project.sequence_mut(twin).unwrap().video_tracks.clear();
+    s.project = Arc::new(project);
+    assert_eq!(s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap()["deleted"], 1);
+    assert_eq!(s.previews.count(), 0);
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+#[test]
+fn overflowing_out_mark_reports_an_error_without_starting_a_preview_job() {
+    let (mut s, _) = session("out-overflow");
+    let seq = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    project.sequence_mut(seq).unwrap().mark_out = Some(Tick(i64::MAX));
+    s.project = Arc::new(project);
+    let error = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap_err().to_string();
+    assert!(error.contains("Out point"), "{error}");
+    assert_eq!(s.previews.count(), 0);
+    assert!(s.jobs.is_empty());
 }
