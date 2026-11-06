@@ -40,6 +40,41 @@ fn a_rollback_restores_the_path_the_document_saves_to() {
     assert_eq!(session.path.as_deref(), Some(saved_at.as_str()), "the document saves where it did before");
 }
 
+/// A faulted call that replaced the document (`file.open`, or a template that clears the pool in
+/// place) puts back the media pool. The relative media paths of the original project must still
+/// resolve against the original project file, not against the template.
+#[test]
+fn a_rollback_restores_the_media_pool_and_the_document_of_each_stored_path() {
+    let dir = std::env::temp_dir().join(format!("bridge-pool-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let template = dir.join("Template.fcproj");
+    std::fs::write(&template, filmcraft_format::encode(&demo_session().project, false)).unwrap();
+    let template = template.to_string_lossy().into_owned();
+    let original = dir.join("Film.fcproj").to_string_lossy().into_owned();
+    let replacing = [("file.newProjectFromTemplate", json!({"template": template, "force": true})), ("file.open", json!({"path": template}))];
+
+    for (command, params) in replacing {
+        let mut session = demo_session();
+        session.path = Some(original.clone());
+        session.media.add_stored_paths(["clips/a.mov".to_owned()], Some(original.as_str()));
+        let resolved = session.media.follow("clips/a.mov").expect("a stored path follows its document");
+        assert_ne!(resolved, "clips/a.mov", "the path resolves against the document folder, so the test checks a real mapping");
+        let bridge = Bridge::new(Duration::from_secs(1));
+
+        let (during, outcome) = bridge.scoped(&mut session, || {
+            let scope = bridge.begin();
+            bridge.execute(command, &params).unwrap_or_else(|e| panic!("{command}: {e:?}"));
+            let during = bridge.with_session(|s| s.media.follow("clips/a.mov").ok()).expect("session");
+            (during, bridge.end(scope, true))
+        });
+
+        assert_eq!(during.as_deref(), Some("clips/a.mov"), "{command} dropped the mapping, so the test checks a real change");
+        assert_eq!(outcome, None, "{command}: the rollback ran");
+        assert_eq!(session.media.follow("clips/a.mov").ok().as_deref(), Some(resolved.as_str()), "{command}: the stored path lost its document");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A document with unsaved edits stays unsaved after a rollback, even when the faulted call ran a
 /// command that marks the document clean. A clean report would let autosave drop the recovery
 /// journal of work the user has not saved.

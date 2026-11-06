@@ -79,6 +79,16 @@ impl Default for MediaPool {
     }
 }
 
+/// What a pool holds that depends on the document: the opened sources, the proxies, the offline
+/// notes and the document each stored path came from. [`MediaPool::snapshot`] takes it and
+/// [`MediaPool::restore`] puts it back, so a command that clears the pool in place can be undone.
+pub struct PoolSnapshot {
+    sources: HashMap<ItemId, (String, SharedSource)>,
+    proxies: HashMap<ItemId, (String, SharedSource)>,
+    offline: HashMap<ItemId, OfflineStatus>,
+    stored: HashMap<String, Option<PathBuf>>,
+}
+
 /// Largest file [`MediaPool::probe_file`] reads whole when no streaming reader takes it (WAV,
 /// MP3 and other byte-opened formats, or an unsupported container).
 pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
@@ -201,6 +211,25 @@ impl MediaPool {
         for p in paths {
             stored.entry(p).or_insert_with(|| document.clone());
         }
+    }
+
+    /// The document dependent state of the pool, for [`Self::restore`].
+    pub fn snapshot(&self) -> PoolSnapshot {
+        let read = |lock: &RwLock<HashMap<ItemId, (String, SharedSource)>>| lock.read().unwrap_or_else(PoisonError::into_inner).clone();
+        PoolSnapshot {
+            sources: read(&self.sources),
+            proxies: read(&self.proxies),
+            offline: self.offline.read().unwrap_or_else(PoisonError::into_inner).clone(),
+            stored: self.stored.read().unwrap_or_else(PoisonError::into_inner).clone(),
+        }
+    }
+
+    /// Put back what [`Self::snapshot`] took. Openers and the proxy switch are not part of it.
+    pub fn restore(&self, snapshot: PoolSnapshot) {
+        *self.sources.write().unwrap_or_else(PoisonError::into_inner) = snapshot.sources;
+        *self.proxies.write().unwrap_or_else(PoisonError::into_inner) = snapshot.proxies;
+        *self.offline.write().unwrap_or_else(PoisonError::into_inner) = snapshot.offline;
+        *self.stored.write().unwrap_or_else(PoisonError::into_inner) = snapshot.stored;
     }
 
     /// Forget the stored paths (a new project).

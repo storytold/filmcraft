@@ -30,8 +30,9 @@
 //! `begin` opens a scope. The first command a scope runs takes a [`Checkpoint`] of the
 //! document just before it runs, because a guest can change the document only through `cmd.execute`.
 //! `end` with a fault puts the checkpoint back. What a checkpoint covers: the project, the editor
-//! state, the undo and redo stacks, the command journal and the path the document saves to. What it
-//! cannot cover: files a command wrote and jobs it started.
+//! state, the undo and redo stacks, the command journal, the path the document saves to and the
+//! media pool with the document of each stored media path. What it cannot cover: files a command
+//! wrote and jobs it started.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -43,8 +44,9 @@ use std::time::Duration;
 
 use craft_command::Cause;
 use craft_plugin_host::services::{CommandFailure, UserNotice};
+use filmcraft_engine::media_pool::PoolSnapshot;
 use filmcraft_engine::project::Project;
-use filmcraft_engine::{EditorState, FsServices, Session};
+use filmcraft_engine::{EditorState, FsServices, MediaPool, Session};
 use serde_json::Value;
 
 /// How many commands may nest through plugins before a call is refused.
@@ -85,6 +87,10 @@ pub struct Checkpoint {
     /// Where the document saves. `file.newProject` and `file.open` change it.
     path: Option<String>,
     journal_len: usize,
+    /// The media pool of the document and what it held. `file.open` swaps the pool, and
+    /// `file.newProjectFromTemplate` clears it in place, with the paths' documents.
+    media: Arc<MediaPool>,
+    pool: PoolSnapshot,
     /// The project was clean (saved) when the scope began.
     clean: bool,
     /// `Session::saved_revision` when the scope began. A command such as `file.newProject` moves it,
@@ -105,6 +111,8 @@ impl Checkpoint {
             merge_key: s.history.merge_key.clone(),
             path: s.path.clone(),
             journal_len: s.journal.len(),
+            media: Arc::clone(&s.media),
+            pool: s.media.snapshot(),
             clean: !s.is_dirty(),
             saved_revision: s.saved_revision,
             last_revision: s.revision,
@@ -116,6 +124,8 @@ impl Checkpoint {
         let hooks = s.hooks.clone();
         let path_moved = s.path != self.path;
         s.path = self.path;
+        s.media = self.media;
+        s.media.restore(self.pool);
         hooks.with_cause(Cause::Job("plugin rollback"), || {
             s.set_project(self.project);
             s.state = self.state;
