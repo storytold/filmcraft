@@ -402,11 +402,12 @@ fn push_adjustment(sc: Scene, item: &TrackItem, out: &mut PlanStack) {
 fn push_tracks(sc: Scene, layers: &mut PlanStack) {
     let Scene { project, seq, t, opts, .. } = sc;
     let (w, h) = output_size(seq, opts.scale);
-    for tr in &seq.video_tracks {
+    let mattes = crate::matte_tracks(project, seq, t, opts.effects);
+    for (ti, tr) in seq.video_tracks.iter().enumerate() {
         if layers.exhausted {
             return;
         }
-        if !tr.enabled {
+        if !tr.enabled || mattes.contains(&ti) {
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {

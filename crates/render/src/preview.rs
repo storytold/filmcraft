@@ -44,7 +44,7 @@ use filmcraft_time::{FrameRate, Tick};
 use serde::Serialize;
 
 /// Bump when the hash layout or the preview format changes (invalidates every preview).
-pub const HASH_VERSION: &str = "filmcraft-preview-v1";
+pub const HASH_VERSION: &str = "filmcraft-preview-v2";
 
 /// Multiple of the frame duration a frame may take before a segment is marked red. Playback
 /// renders ahead on several worker threads (2–6), so a frame can take somewhat longer than its
