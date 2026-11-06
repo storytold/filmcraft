@@ -1,4 +1,5 @@
 use super::*;
+use crate::AutomationError;
 
 #[test]
 fn render_scale_zero_means_no_limit() {
@@ -680,7 +681,7 @@ fn session_with_job(result: Option<Result<filmcraft_engine::export::Report, Stri
 fn confining_a_session_with_a_running_job_is_refused() {
     let (_base, roots) = roots_base("running-job");
     let e = FilmcraftMcp::headless(session_with_job(None)).with_roots(Some(roots)).err();
-    assert_eq!(e.as_deref(), Some("confine the session before starting jobs"));
+    assert!(matches!(e, Some(AutomationError::BadRequest(ref m)) if m == "confine the session before starting jobs"), "{e:?}");
 }
 
 /// A job that has finished holds nothing, so it doesn't stand in the way.
@@ -733,7 +734,7 @@ fn confining_a_session_with_queued_exports_is_refused() {
     let mut s = demo();
     s.execute("export.queue.add", json!({"path": base.join("outside/q.mp4").to_string_lossy(), "format": "h264"})).unwrap();
     let e = FilmcraftMcp::headless(s).with_roots(Some(roots)).err();
-    assert_eq!(e.as_deref(), Some("confine the session before queueing exports"));
+    assert!(matches!(e, Some(AutomationError::BadRequest(ref m)) if m == "confine the session before queueing exports"), "{e:?}");
 }
 
 /// The queue of a confined headless session only holds checked paths, so it can still run.
