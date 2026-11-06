@@ -832,6 +832,7 @@ fn build_effects() -> Vec<EffectDef> {
             vec![pt("position", "Position", f64::NAN, f64::NAN), fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1)],
         ),
         video("simple_text", "Simple Text", vfx::UTILITY, vec![]),
+        video("burning_text", "Burning Text", vfx::UTILITY, vec![]),
         // ---- audio effects ----
         // (defined in effect/audio.rs; appended below)
         EffectDef {

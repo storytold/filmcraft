@@ -597,6 +597,36 @@ pub fn builtin_templates() -> Vec<GraphicsTemplate> {
             ],
         ));
     }
+    // Burning title with dynamic Perlin noise and orange glow edge.
+    {
+        let mut title = text(1, "Title", "BURNING", (960.0, 540.0), 96.0, "Regular");
+        set(&mut title, "font", ParamValue::Text("Stalinist One".into()));
+        set(&mut title, "align", ParamValue::Choice(1));
+        set(&mut title, "fill_color", rgb(0xffffff));
+        set(&mut title, "burn", ParamValue::Bool(true));
+        set(&mut title, "burn_progress", ParamValue::Float(0.0));
+        set(&mut title, "burn_direction", ParamValue::Choice(0));
+        set(&mut title, "burn_glow", ParamValue::Bool(true));
+        set(&mut title, "burn_glow_color", ParamValue::Color([1.0, 0.42, 0.05, 1.0]));
+        v.push(builtin(
+            "title-burning",
+            "Title – Burning",
+            "Titles",
+            "Burning title with dynamic Perlin noise and bright orange burn edge.",
+            5,
+            vec![title],
+            vec![
+                ctl("title", "Title", 1, "text"),
+                ctl("font", "Font", 1, "font"),
+                slider("title_size", "Title Size", 1, "size", 40.0, 240.0),
+                ctl("title_color", "Title Color", 1, "fill_color"),
+                slider("burn_progress", "Burn Progress", 1, "burn_progress", 0.0, 100.0),
+                ctl("burn_direction", "Burn Direction", 1, "burn_direction"),
+                ctl("burn_glow", "Orange Burn Glow", 1, "burn_glow"),
+                ctl("position", "Position", 1, "position"),
+            ],
+        ));
+    }
     // End credits that roll from below the frame to above it.
     {
         let mut heading = text(1, "Heading", "CREDITS", (960.0, 160.0), 72.0, "Bold");

@@ -20,12 +20,17 @@ struct Driver {
 impl Driver {
     /// A sequence with two 48-frame clips on V1 (and their sounds on A1) at frames 0 and 96.
     fn two_clips() -> (Self, ClipId, ClipId) {
+        Self::two_clips_at(0, 96)
+    }
+
+    /// Two 48-frame clips on V1 (and A1) placed at custom frames `f1` and `f2`.
+    fn two_clips_at(f1: i64, f2: i64) -> (Self, ClipId, ClipId) {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.execute("file.newSequence", json!({"name": "Gaps", "video": 1, "audio": 1})).unwrap();
         let rate = s.sequence_rate();
         let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
-        for f in [0, 96] {
+        for f in [f1, f2] {
             s.execute("timeline.place", json!({"item": item.0, "frame": f, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0})).unwrap();
         }
         s.execute("edit.deselectAll", json!({})).unwrap();
@@ -87,7 +92,7 @@ impl Driver {
         let ra = self.rect(&format!("timeline.clip.{}", a.0)).expect("the first clip is shown");
         let rb = self.rect(&format!("timeline.clip.{}", b.0)).expect("the second clip is shown");
         let (gap_l, gap_r) = (ra[0] + ra[2], rb[0]);
-        assert!(gap_r - gap_l > 10.0, "the gap is wide enough to click: {ra:?} {rb:?}");
+        assert!(gap_r - gap_l > 0.0, "the gap is wide enough to click: {ra:?} {rb:?}");
         self.ok("ui.click", json!({"x": (gap_l + gap_r) / 2.0, "y": ra[1] + ra[3] / 2.0, "button": button}));
         self.frames(3);
     }
@@ -132,16 +137,51 @@ fn backspace_closes_a_selected_gap_too() {
 }
 
 #[test]
-fn right_clicking_a_gap_offers_ripple_delete() {
+fn right_clicking_a_gap_offers_delete_gap() {
     let (mut d, a, b) = Driver::two_clips();
     let f48 = d.frame(48);
     d.click_between(a, b, "right");
     assert!(d.gap().is_object(), "right-clicking selects the gap");
-    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some(), "its menu offers Ripple Delete");
+    assert!(d.rect("timeline.gapMenu.deleteGap").is_some(), "its menu offers Delete Gap alias");
+    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some(), "its menu offers Delete Gap under rippleDelete id");
     assert!(d.rect("timeline.clipMenu.edit.cut").is_none(), "not the clip menu");
-    d.ok("ui.click", json!({"id": "timeline.gapMenu.edit.rippleDelete"}));
+    d.ok("ui.click", json!({"id": "timeline.gapMenu.deleteGap"}));
     d.frames(3);
-    assert_eq!(d.start(b), f48, "Ripple Delete closes the gap");
+    assert_eq!(d.start(b), f48, "Delete Gap closes the gap");
+}
+
+#[test]
+fn right_clicking_narrow_gap_opens_delete_gap_and_closes_it() {
+    // 48-frame clip at 0 (ends at 48) and 48-frame clip at 50 (gap of 2 frames, ~8px < 14px):
+    let (mut d, a, b) = Driver::two_clips_at(0, 50);
+    let f48 = d.frame(48);
+    d.click_between(a, b, "right");
+    assert!(d.gap().is_object(), "right-clicking narrow gap selects the gap");
+    assert!(d.rect("timeline.gapMenu.deleteGap").is_some(), "menu offers Delete Gap");
+    assert!(d.rect("timeline.editPointMenu.rippleIn").is_none(), "not swallowed by trim edge zone");
+    d.ok("ui.click", json!({"id": "timeline.gapMenu.deleteGap"}));
+    d.frames(3);
+    assert_eq!(d.start(b), f48, "closing narrow gap shifts clip flush against previous clip");
+}
+
+#[test]
+fn delete_gap_with_spanning_clip_on_other_track_closes_without_conflict() {
+    let (mut d, a, b) = Driver::two_clips();
+    let f48 = d.frame(48);
+    // Place a clip on another video track (V2) spanning across the gap:
+    let rate = d.harness.state().session.sequence_rate();
+    let item = d.harness.state().session.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    d.ok("engine.execute", json!({"command": "sequence.addTracks", "params": {"video": 1, "audio": 0}}));
+    d.ok("engine.execute", json!({"command": "timeline.place", "params": {"track": "V2", "item": item.0, "frame": 40, "duration": rate.tick_of(30).0}}));
+    d.frames(3);
+
+    d.click_between(a, b, "right");
+    assert!(d.rect("timeline.gapMenu.deleteGap").is_some());
+    d.ok("ui.click", json!({"id": "timeline.gapMenu.deleteGap"}));
+    d.frames(3);
+    // V1 gap closes cleanly without being blocked by V2's spanning clip:
+    assert_eq!(d.start(b), f48, "Delete Gap closes V1 gap cleanly");
+    assert_eq!(d.gap(), Value::Null);
 }
 
 #[test]

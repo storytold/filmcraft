@@ -545,13 +545,8 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
         if tr.locked {
             continue;
         }
-        if tr.id != track {
-            if !tr.sync_lock {
-                continue;
-            }
-            if !track_range_empty(tr, gap) {
-                return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
-            }
+        if tr.id != track && (!tr.sync_lock || !track_range_empty(tr, gap)) {
+            continue;
         }
         shift_track_from(tr, gap.end(), -gap.duration);
     }
