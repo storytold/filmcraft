@@ -1364,7 +1364,7 @@ mod pipeline {
         place(&mut p, seq, 2, white, vec![crop]);
         let cpu = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
         // the layer plan (playback and export) leaves the matte out too
-        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), &map));
+        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), crate::plan::DeviceCaps::ALL, &map));
         for (path, img) in [("cpu", &cpu), ("plan", &planned)] {
             let (left, right) = (img.get(10, 18), img.get(54, 18));
             assert!(left[0] > 0.9 && left[1] < 0.1 && left[2] < 0.1, "{path}: red where the matte is white, got {left:?}");
@@ -1374,7 +1374,7 @@ mod pipeline {
         let key = p.sequence_mut(seq).unwrap().video_tracks[1].items[0].effects.iter_mut().find(|e| e.effect == "track_matte").unwrap();
         key.enabled = false;
         let cpu = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
-        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), &map));
+        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), crate::plan::DeviceCaps::ALL, &map));
         for (path, img) in [("cpu", &cpu), ("plan", &planned)] {
             let left = img.get(10, 18);
             assert!(left.iter().all(|v| *v > 0.9), "{path}: the matte shows when the key is off, got {left:?}");
