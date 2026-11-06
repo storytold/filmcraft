@@ -1925,6 +1925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-alac"
+version = "0.17.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-apv"
 version = "0.17.0"
 dependencies = [
@@ -2142,6 +2151,7 @@ name = "filmcraft-export"
 version = "0.17.0"
 dependencies = [
  "filmcraft-aac",
+ "filmcraft-alac",
  "filmcraft-apv",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",

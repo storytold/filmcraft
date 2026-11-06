@@ -3736,3 +3736,10 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) à la taille de la séquence, qualité constante CRF 16, AAC 320 kbps ; un master 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, chaque image est une image clé), CRF 12, AAC 320 kbps ; un intermédiaire facile à monter
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC stores whole-number samples only	ALAC ne stocke que des échantillons entiers
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 bits
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) en audio MPEG-4 (.m4a), stéréo 48 kHz 24 bits

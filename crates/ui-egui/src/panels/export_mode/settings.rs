@@ -689,18 +689,22 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
+            AudioCodec::Alac => tl!("ALAC (Apple Lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
-        // MP4 takes AAC or FLAC; QuickTime any of the three
+        // MP4 takes AAC, FLAC or ALAC; QuickTime any of the four
         let labels = vec![
             ("AAC".to_string(), !audio_only),
             (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),
             (tl!("FLAC (lossless)").to_string(), true),
+            (tl!("ALAC (Apple Lossless)").to_string(), true),
         ];
         if fixed {
             ui.label(cur);
-        } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
+        } else if let Some(&c) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0)
+            .and_then(|i| [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Alac].get(i))
+        {
+            s.audio.codec = c;
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
@@ -741,6 +745,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             let why = |f: SampleFormat| match (s.supports_sample_format(f), s.audio_codec()) {
                 (true, _) => None,
                 (false, AudioCodec::Flac) => Some(tl!("FLAC stores whole-number samples only")),
+                (false, AudioCodec::Alac) => Some(tl!("ALAC stores whole-number samples only")),
                 (false, _) if s.format.is_mxf() => Some(tl!("MXF export writes integer PCM only")),
                 (false, _) => Some(tl!("Not supported by FilmCraft's encoders yet")),
             };

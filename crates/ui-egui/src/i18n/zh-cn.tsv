@@ -3764,3 +3764,10 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC（Apple 无损）
+	ALAC stores whole-number samples only	ALAC 只能存储整数采样
+	Apple Lossless (ALAC)	Apple 无损 (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple 无损 48 kHz 24 位
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	MPEG-4 音频 (.m4a) 中的 Apple 无损 (ALAC)，立体声 48 kHz 24 位

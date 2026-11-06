@@ -3754,3 +3754,10 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	シーケンスと同じサイズの H.264 High 10 (10-bit 4:2:0)、固定品質 CRF 16、AAC 320 kbps。10 ビットのマスター
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0、すべてのフレームがキーフレーム)、CRF 12、AAC 320 kbps。編集しやすい中間ファイル
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC stores whole-number samples only	ALAC は整数サンプルのみ保存できます
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 ビット
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	MPEG-4 オーディオ (.m4a) の Apple Lossless (ALAC)、ステレオ 48 kHz 24 ビット

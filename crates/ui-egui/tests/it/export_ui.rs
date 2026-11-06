@@ -632,3 +632,40 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+/// Apple Lossless is a Format (audio-only `.m4a`) and an Audio Format of the movie formats; its
+/// Sample Size greys out 32-bit float with the reason.
+#[test]
+fn alac_format_and_audio_format() {
+    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format};
+    let mut d = Driver::new("alac");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    // the Format list names it
+    d.click("export.format");
+    let alac = Format::ALL.iter().position(|&f| f == Format::Alac).unwrap();
+    let id = format!("export.format.option.{alac}");
+    let e = d.ok("ui.elements", json!({"prefix": id}));
+    assert_eq!(e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).map(|e| e["label"].clone()), Some(json!("Apple Lossless (ALAC)")));
+    d.click(&id);
+    assert_eq!(d.app().ui.export.settings.format, Format::Alac);
+    assert_eq!(d.app().ui.export.settings.extension(), "m4a");
+    // ProRes: Audio Format offers ALAC as its fourth entry
+    d.app().ui.export.settings = ExportSettings { format: Format::ProRes, ..Default::default() };
+    d.app().ui.export.open_sections.retain(|k| k != "video");
+    d.frames(4);
+    d.click("export.audio.codec");
+    let e = d.ok("ui.elements", json!({"prefix": "export.audio.codec.option.3"}));
+    assert_eq!(e[0]["label"], "ALAC (Apple Lossless)");
+    d.snapshot("export-alac-audio-format");
+    d.click("export.audio.codec.option.3");
+    assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Alac);
+    // 32 bit float is greyed out: clicking it changes nothing
+    d.click("export.audio.bits");
+    d.ok("ui.move", json!({"id": "export.audio.bits.option.3"}));
+    d.frames(30);
+    d.snapshot("export-alac-sample-size");
+    d.click("export.audio.bits.option.3");
+    assert!(!d.app().ui.export.settings.audio.float);
+    assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Alac);
+}
