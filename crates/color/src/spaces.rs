@@ -362,6 +362,41 @@ impl WorkingSpace {
     }
 }
 
+/// How HLG media is converted to SDR (Sequence Settings ▸ Color): the BT.2100 OOTF at the
+/// SDR display's system gamma — what phones and Apple's own conversion produce — or
+/// ITU-R BT.2446-1 Method A, the broadcast-delivery convention.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HlgSdr {
+    /// BT.2100 OOTF for a 100 cd/m² display (system gamma ≈ 0.846): HLG 100 % lands on SDR
+    /// white, 75 % at ≈ 0.33 linear.
+    #[default]
+    Ootf,
+    /// ITU-R BT.2446-1 §4.1 Method A (1000 → 100 cd/m²), with its perceptual chroma correction.
+    Bt2446,
+}
+
+impl HlgSdr {
+    pub const ALL: [HlgSdr; 2] = [HlgSdr::Ootf, HlgSdr::Bt2446];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            HlgSdr::Ootf => "ootf",
+            HlgSdr::Bt2446 => "bt2446",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            HlgSdr::Ootf => "HLG OOTF (Apple, phones)",
+            HlgSdr::Bt2446 => "BT.2446-1 A (broadcast)",
+        }
+    }
+    pub fn parse(s: &str) -> Option<HlgSdr> {
+        let norm = |x: &str| x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let n = norm(s);
+        HlgSdr::ALL.into_iter().find(|h| norm(h.id()) == n || norm(h.label()) == n)
+    }
+}
+
 /// Everything the renderer needs to know about a sequence's colour pipeline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ColorPipeline {
@@ -370,10 +405,14 @@ pub struct ColorPipeline {
     pub wide_gamut: bool,
     /// Tone map HDR and log media into an SDR working space (Auto Tone Map Media).
     pub auto_tone_map: bool,
+    /// The HLG → SDR conversion when `auto_tone_map` is on (and on an HLG sequence's SDR
+    /// monitors and exports).
+    #[serde(default)]
+    pub hlg_sdr: HlgSdr,
 }
 
 impl ColorPipeline {
-    pub const REC709: ColorPipeline = ColorPipeline { working: WorkingSpace::Rec709, wide_gamut: false, auto_tone_map: true };
+    pub const REC709: ColorPipeline = ColorPipeline { working: WorkingSpace::Rec709, wide_gamut: false, auto_tone_map: true, hlg_sdr: HlgSdr::Ootf };
 
     /// Linear primaries of the compositing space.
     pub fn working_gamut(&self) -> Gamut {

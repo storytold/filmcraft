@@ -325,9 +325,25 @@ fn hdr_exports_signal_pq_and_hlg() {
         }
         // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
+        // The SDR policy can change while HDR export must retain the original working
+        // light. BT.2087 maps linear BT.709 red to this BT.2020 triple; allow the HDR
+        // transfer's 8-bit quantization for H.264 (ProRes is 10-bit).
+        let working = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline { working: ws, ..ColorPipeline::REC709 });
+        let hdr_rgb = filmcraft_render::Image::unpremul(working.get(160, 90));
+        for (got, expected) in hdr_rgb[..3].iter().zip([0.6274, 0.0691, 0.0164]) {
+            assert!((got - expected).abs() < 0.04, "{path}: HDR working light changed: {hdr_rgb:?}");
+        }
         let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
         let c = filmcraft_render::Image::unpremul(back.get(160, 90));
-        assert!(c[0] > 0.6 && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
+        if transfer == Transfer::Hlg {
+            // HLG now uses the same pre-matrix Method A on input and output.
+            // PQ retains the legacy pre/post-matrix BT.2390 behaviour.
+            let preview = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, Default::default(), &m);
+            let expected = filmcraft_render::Image::unpremul(preview.get(160, 90));
+            assert!(c[..3].iter().zip(&expected[..3]).all(|(a, b)| (a - b).abs() < 0.05), "{path}: SDR round trip {c:?}, monitor {expected:?}");
+        }
+        let minimum_red = if transfer == Transfer::Hlg { 0.3 } else { 0.6 };
+        assert!(c[0] > minimum_red && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
         // ffprobe agrees
         let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("hdr export signalling") else { continue };
         let out = std::process::Command::new(&ffprobe)

@@ -509,7 +509,7 @@ fn fast_half_float_conversion_matches_the_reference_for_every_value() {
 }
 
 /// HDR and wide-gamut Y'CbCr on a Rec. 709 sequence (#965): the shader's colour management
-/// (curve, HLG OOTF, BT.2020 → 709 matrix, BT.2390 tone mapping, desaturation) matches the CPU
+/// (curve, HLG OOTF, BT.2446 A / BT.2390 tone mapping, BT.2020 → 709, desaturation) matches the CPU
 /// running the same `InputTransform`.
 #[test]
 fn hdr_input_gpu_matches_cpu() {
@@ -525,18 +525,27 @@ fn hdr_input_gpu_matches_cpu() {
     let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
     let cb: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].0, w as usize)).collect();
     let cr: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].1, w as usize)).collect();
-    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb.clone()), Arc::new(cr.clone())], chroma: Chroma::C444, bits: 10, alpha: None };
     let hdr = |transfer| ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited };
+    let broadcast = ColorPipeline { hlg_sdr: filmcraft_color::HlgSdr::Bt2446, ..ColorPipeline::REC709 };
     let cases = [
-        ("HLG", hdr(Transfer::Hlg), None),
-        ("PQ", hdr(Transfer::Pq), None),
-        ("PQ 4000 cd/m²", hdr(Transfer::Pq), Some(4000.0)),
-        ("BT.2020 SDR", ColorInfo { primaries: Primaries::Bt2020, ..ColorInfo::REC709 }, None),
+        ("HLG OOTF", hdr(Transfer::Hlg), None, ColorPipeline::REC709),
+        ("HLG BT.2446 A", hdr(Transfer::Hlg), None, broadcast),
+        ("HLG full range", ColorInfo { range: Range::Full, ..hdr(Transfer::Hlg) }, None, ColorPipeline::REC709),
+        ("PQ", hdr(Transfer::Pq), None, ColorPipeline::REC709),
+        ("PQ 4000 cd/m²", hdr(Transfer::Pq), Some(4000.0), ColorPipeline::REC709),
+        ("BT.2020 SDR", ColorInfo { primaries: Primaries::Bt2020, ..ColorInfo::REC709 }, None, ColorPipeline::REC709),
     ];
-    for (name, color, peak) in cases {
+    for (name, color, peak, pipe) in cases {
+        let data = if color.range == Range::Full {
+            let y = (0..h).flat_map(|_| (0..w).map(|x| (x * 1023 / 255) as u16)).collect();
+            PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb.clone()), Arc::new(cr.clone())], chroma: Chroma::C444, bits: 10, alpha: None }
+        } else {
+            data.clone()
+        };
         let frame = Arc::new(VideoFrame { width: w, height: h, data: data.clone(), color, par: (1, 1), pts: Default::default() });
         let cs = ColorSpace::from_info(&color);
-        let t = Arc::new(InputTransform::new(cs, color.range, &ColorPipeline::REC709, peak));
+        let t = Arc::new(InputTransform::new(cs, color.range, &pipe, peak));
         assert!(t.gpu_params().is_some(), "{name}");
         let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
         let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
@@ -544,6 +553,8 @@ fn hdr_input_gpu_matches_cpu() {
         c.composite(&plan);
         let (_, _, gpu) = c.read_output().expect("readback");
         let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        c.composite_prepared(&plan, Some(&prepare(&plan)));
+        assert_eq!(c.read_output().expect("prepared readback").2, gpu, "{name}: prepared matches inline upload");
         // and the stage does something: the default decode of the same frame is far off
         let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
         c.composite(&plain);
