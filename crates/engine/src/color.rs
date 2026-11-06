@@ -420,6 +420,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"preset": preset.name, "clips": n}))
 }
 
+/// Generates a contact sheet thumbnail grid previewing Lumetri presets.
 fn preset_thumbnails(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.presetThumbnails";
     let presets = presets_of(p);

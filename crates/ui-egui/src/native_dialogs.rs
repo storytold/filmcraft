@@ -94,6 +94,7 @@ impl FileDialog {
     pub fn open_files(exts: &[&str]) -> Self {
         Self::OpenFiles { exts: strings(exts), at: None }
     }
+    /// Prompts the user to choose one or more files matching extensions, optionally starting at directory `at`.
     pub fn open_files_at(exts: &[&str], at: Option<String>) -> Self {
         Self::OpenFiles { exts: strings(exts), at }
     }

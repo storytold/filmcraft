@@ -232,10 +232,12 @@ pub struct StrokeStyle {
 }
 
 impl StrokeStyle {
+    /// Returns true when stroke is enabled and has finite positive width.
     pub fn active(&self) -> bool {
         self.enabled && self.width.is_finite() && self.width > 0.0
     }
 
+    /// Overrides stroke properties with character-level style overrides.
     fn with_char_style(self, c: &crate::graphic_design::CharStyle, second: bool) -> Self {
         let (enabled, color, width, kind) =
             if second { (c.stroke2, c.stroke2_color, c.stroke2_width, c.stroke2_type) } else { (c.stroke, c.stroke_color, c.stroke_width, c.stroke_type) };

@@ -127,6 +127,7 @@ fn cache_put(c: &SynthCache, key: String, a: Arc<tts::Audio>) {
     c.drain(..extra);
 }
 
+/// Serializes neural voice package metadata into JSON.
 fn package_json(pkg: Option<&str>) -> Value {
     let dir = crate::transcript::models_dir();
     let is_piper = pkg == Some(tts::catalog::PIPER_RU_PACKAGE_ID);
@@ -155,6 +156,7 @@ fn package_json(pkg: Option<&str>) -> Value {
     }
 }
 
+/// Returns catalogue information about available speech synthesis voices and packages.
 fn voices(_s: &mut Session, p: &Value) -> Result<Value> {
     let dir = crate::transcript::models_dir();
     let pkg = str_p(p, "package").or_else(|| str_p(p, "voice").and_then(tts::catalog::package_for_voice));
@@ -505,6 +507,7 @@ fn download_voices(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id, "installed": false}))
 }
 
+/// Downloads model files for the specified neural voice package into `dir` with progress reporting.
 #[cfg(feature = "neural-voices")]
 fn download_package(dir: &std::path::Path, pkg: &str, prog: &filmcraft_export::Progress) -> std::result::Result<(), String> {
     use std::sync::atomic::Ordering;
@@ -529,6 +532,7 @@ fn download_package(_: &std::path::Path, _: &str, _: &filmcraft_export::Progress
     Err("natural voices are not available in this build".into())
 }
 
+/// Validates whether natural voice downloads are supported by the engine build.
 fn download_voices_enabled(_: &Session) -> std::result::Result<(), String> {
     if !cfg!(feature = "neural-voices") {
         return Err("natural voices are not available in this build (built without the `neural-voices` feature)".into());
