@@ -632,6 +632,27 @@ struct Todo {
     len: i64,
 }
 
+/// Export settings of one preview part: full-resolution ProRes of `range`, video only.
+pub(crate) fn segment_settings(part: &Path, range: TimeRange) -> filmcraft_export::ExportSettings {
+    filmcraft_export::ExportSettings {
+        format: filmcraft_export::Format::ProRes,
+        path: part.to_string_lossy().to_string(),
+        range: Some(range),
+        scale: 1.0,
+        include_audio: false,
+        quality: 90,
+        bitrate_kbps: 0,
+        // Captions stay live over previews and are not part of the preview hash.
+        burn_captions: false,
+        part_of_batch: true,
+        // previews stand in for the monitor picture: display-referred SDR
+        sdr: true,
+        // as the monitor composites; frames the GPU can't render go to the CPU
+        gpu_rendering: filmcraft_export::GpuRendering::Auto,
+        ..Default::default()
+    }
+}
+
 /// Start rendering previews as a background job. `{"wait": true}` renders synchronously.
 ///
 /// The In/Out modes render only the frames between In and Out (a segment that extends past them
@@ -692,21 +713,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             let name = part_name(&t.seg.hash, t.off, t.len, t.seg.frames);
             let part = dir.join(format!("{name}.part"));
             let first = t.seg.first_frame.saturating_add(t.off);
-            let settings = filmcraft_export::ExportSettings {
-                format: filmcraft_export::Format::ProRes,
-                path: part.to_string_lossy().to_string(),
-                range: Some(TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)))),
-                scale: 1.0,
-                include_audio: false,
-                quality: 90,
-                bitrate_kbps: 0,
-                // Captions stay live over previews and are not part of the preview hash.
-                burn_captions: false,
-                part_of_batch: true,
-                // previews stand in for the monitor picture: display-referred SDR
-                sdr: true,
-                ..Default::default()
-            };
+            let range = TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)));
+            let settings = segment_settings(&part, range);
             match filmcraft_export::export(&project, seq, &settings, &provider, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
