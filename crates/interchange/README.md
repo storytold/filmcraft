@@ -25,6 +25,36 @@ read off files it exports, never from the application itself.
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 
+## FCP7 audio source selection
+
+The multi-stream interpretation below is a proposal based on issue #2872's generated Resolve XML.
+Compatibility with native Premiere/FCP7 exports remains unverified pending representative samples;
+this does not establish that sibling audio elements always describe separate streams.
+
+For xmeml v4/v5 files that declare several sibling `file/media/audio` elements, each element is
+retained as a separate source stream. An audio clip's one-based `sourcetrack/trackindex` selects
+that stream without splitting or automatically panning its channels. Single-stream split-channel
+mapping and explicit Premiere exploded tracks keep their existing channel semantics. Authored Audio
+Pan values and keyframes take precedence. Import reads declared XML metadata without opening media.
+
+Export retains all stream descriptions and the selected stream for supported mappings. A simultaneous
+channel subset of a multi-stream source is not encoded by this mapping: export returns an
+unsupported-mapping error instead of selecting different audio. This includes imported Premiere
+exploded-track clips on multi-stream media and authored clips combining stream and channel selection;
+the previous export discarded sibling metadata and could not round-trip these mappings losslessly.
+The error preserves the project mapping rather than silently rewriting it. Invalid source-stream
+selectors are reported and their audio clip is skipped. Invalid individual sample rates, channel
+counts and bit depths warn and keep importing, using the missing-field defaults of 48 kHz, two
+channels and unspecified depth respectively. Valid fields, sibling descriptions and stream order
+are retained. Finite decimal values retain legacy rounding when the rounded number is within the
+field's bounds. Missing fields use those defaults without an invalid-field warning. Descriptions are
+bounded to 64 streams, 64 channels per stream, 384 kHz and 64-bit samples; exceeding the stream count
+still returns a parse error rather than truncating descriptions or changing stream selection.
+Export checks every stream against the same numeric bounds before returning XML.
+`tests/it/fcp7_audio_streams.rs` covers
+the issue #2872 reporter's XML, authored pan, source references, project/XML round trips and malformed
+metadata; the existing `tests/it/fcp7.rs` covers single-stream split channels and their pan.
+
 **Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/it/file_urls.rs`
 checks expected Unicode paths through the public converter, resolver and EDL importer.
