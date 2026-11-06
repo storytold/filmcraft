@@ -326,6 +326,8 @@ pub struct FilmcraftApp {
     pub(crate) timeline_still: u32,
     input_waiters: Vec<Sender<Value>>,
     styled: bool,
+    /// The language the current font definitions were installed for.
+    fonts_language: Option<i18n::Language>,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a

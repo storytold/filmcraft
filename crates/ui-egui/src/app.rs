@@ -94,6 +94,7 @@ impl FilmcraftApp {
             timeline_still: 0,
             input_waiters: Vec::new(),
             styled: false,
+            fonts_language: None,
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
@@ -202,7 +203,7 @@ impl FilmcraftApp {
     /// falls back to English as before.
     fn logic_theme(&mut self, ctx: &egui::Context) {
         if !self.styled {
-            theme::install(ctx, &self.tokens);
+            theme::install_for(ctx, &self.tokens, self.ui.language);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
@@ -213,6 +214,7 @@ impl FilmcraftApp {
             {
                 self.ui.language = i18n::Language::En;
             }
+            self.fonts_language = Some(self.ui.language);
             self.styled = true;
             ctx.request_repaint();
         } else {

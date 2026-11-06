@@ -885,3 +885,41 @@ fn system_language_picks_bosnian() {
     }
     assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
 }
+
+/// A language switch reinstalls the fonts: Korean puts the Korean face first, and switching
+/// away puts the Chinese face first again.
+#[test]
+fn switching_language_reorders_korean_and_chinese_faces() {
+    filmcraft_text::fonts::scan_system();
+    if !korean_font_available() || !chinese_font_available() {
+        eprintln!("SKIPPED: needs an installed Korean and Chinese font");
+        return;
+    }
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+    let check = |korean_first: bool| {
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            let defs = fonts.definitions().clone();
+            let stack = defs.families.get(&egui::FontFamily::Proportional).expect("the theme defines Proportional");
+            let korean = stack.iter().position(|n| n == "system-korean").expect("the Korean face is installed");
+            let chinese = stack
+                .iter()
+                .position(|n| n == "system-chinese" || n.starts_with("craft:Noto Sans CJK") || n.contains("Source Han"))
+                .expect("the Chinese face is installed");
+            if korean_first {
+                assert!(korean < chinese, "the Korean interface draws Hangul with the Korean face: {stack:?}");
+            } else {
+                assert!(chinese < korean, "other languages keep shared Hanzi on the Chinese face: {stack:?}");
+            }
+        });
+    };
+    check(false);
+    let r = crate::menus::invoke(&mut app, &ctx, "app.language.korean", serde_json::json!({}));
+    assert!(r.is_ok(), "{r:?}");
+    check(true);
+    let r = crate::menus::invoke(&mut app, &ctx, "app.language.chinese", serde_json::json!({}));
+    assert!(r.is_ok(), "{r:?}");
+    check(false);
+}
