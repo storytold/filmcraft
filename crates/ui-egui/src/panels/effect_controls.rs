@@ -627,6 +627,7 @@ fn lane_row_interact(
     }
 }
 
+/// Draws an effect parameter row in Effect Controls including label, value inputs, stopwatch, and keyframe lane.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn param_row(
     app: &mut FilmcraftApp,

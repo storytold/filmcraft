@@ -110,6 +110,7 @@ impl Voice for FormantVoice {
         self.spec.info
     }
 
+    /// Synthesizes speech from script text using rule-based formant acoustic models.
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError> {
         check_text(text)?;
         params.check()?;

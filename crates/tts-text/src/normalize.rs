@@ -340,6 +340,7 @@ fn scale_word_after(after: &str) -> Option<(&'static str, usize)> {
     Some((scale, word_start + word_len))
 }
 
+/// Returns major and minor currency unit words for a given currency symbol and target language.
 fn money_units(symbol: char, lang: Lang) -> (&'static str, &'static str) {
     match (lang, symbol) {
         (Lang::RuRu, '₽') => ("рублей", "копеек"),
@@ -361,6 +362,7 @@ fn push_unit(words: &mut Vec<String>, unit: &str, singular: bool) {
     }
 }
 
+/// Returns the singular form of a known currency unit name.
 fn unit_singular(unit: &str) -> &str {
     match unit {
         "dollars" => "dollar",
@@ -562,6 +564,7 @@ fn read_u64(s: &str, start: usize, max: usize) -> Option<(u64, usize)> {
     digits.parse::<u64>().ok().map(|v| (v, end))
 }
 
+/// Expands month and day numbers into spoken date word tokens for the target language.
 fn date_words(month: u64, day: u64, lang: Lang) -> Vec<Token> {
     let mut out = Vec::new();
     match lang {

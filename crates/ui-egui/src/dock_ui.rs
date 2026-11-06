@@ -228,6 +228,7 @@ impl FilmcraftApp {
             || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
 
+    /// Renders the multi-panel dock layout tree inside rectangle `body`.
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
