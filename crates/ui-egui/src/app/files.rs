@@ -60,7 +60,7 @@ impl FilmcraftApp {
                     let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
                     match &r {
                         Ok(_) => crate::menus::saved_status(app, cmd, &path),
-                        Err(e) => app.ui.status = e.clone(),
+                        Err(e) => app.ui.fail(e.clone()),
                     }
                     r
                 })

@@ -820,7 +820,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     {
         match app.session.execute("file.open", json!({"path": path})) {
             Ok(_) => edit_after_open(app, prompt),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

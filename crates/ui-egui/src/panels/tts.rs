@@ -145,7 +145,7 @@ fn poll(app: &mut FilmcraftApp) {
             }
             Some(Err(e)) => {
                 app.ui.tts.pending = None;
-                app.ui.status = format!("Text to Speech: {e}");
+                app.ui.fail(format!("Text to Speech: {e}"));
             }
         }
     }
@@ -153,10 +153,10 @@ fn poll(app: &mut FilmcraftApp) {
         && let Some(r) = job_outcome(app, j)
     {
         app.ui.tts.download_job = None;
-        app.ui.status = match r {
-            Ok(()) => "Natural voices installed".into(),
-            Err(e) => format!("Download of the natural voices failed: {e}"),
-        };
+        match r {
+            Ok(()) => app.ui.status = "Natural voices installed".into(),
+            Err(e) => app.ui.fail(format!("Download of the natural voices failed: {e}")),
+        }
     }
 }
 

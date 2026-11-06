@@ -818,7 +818,7 @@ fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: Rect
         None => return,
     };
     if let Err(e) = app.session.execute(cmd, p) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 

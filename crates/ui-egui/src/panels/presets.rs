@@ -212,21 +212,21 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, name: &str) {
     match cmd {
         "presets.apply" => {
             if let Err(e) = app.session.execute(cmd, json!({"preset": name})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
         "presets.delete" => {
             if let Err(e) = app.session.execute(cmd, json!({"name": name})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
         "presets.revealFolder" => match app.session.presets.library_dir() {
             Some(dir) => {
                 if let Err(e) = crate::panels::menu_dialogs::open_path(app, ctx, &dir.to_string_lossy(), false) {
-                    app.ui.status = e;
+                    app.ui.fail(e);
                 }
             }
-            None => app.ui.status = tl!("No presets folder: the app has no data directory").to_string(),
+            None => app.ui.fail(tl!("No presets folder: the app has no data directory")),
         },
         "presets.export" => {
             let name = name.to_string();

@@ -286,7 +286,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         app.ui.language = language;
         crate::i18n::set_current(language);
         if let Err(e) = saved {
-            app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
+            app.ui.fail(tlf!("The language changed but could not be saved: {e}", e));
         }
         ctx.request_repaint();
         return Ok(json!(app.ui.language));

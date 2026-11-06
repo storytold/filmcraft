@@ -57,10 +57,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                     app.ui.status =
                                         tlf!("Preset library updated: {imported} loaded, {removed} removed", imported = imported, removed = removed);
                                 } else if let Some(e) = v["errors"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                                    app.ui.status = e.to_string();
+                                    app.ui.fail(e.to_string());
                                 }
                             }
-                            Err(e) => app.ui.status = e.to_string(),
+                            Err(e) => app.ui.fail(e.to_string()),
                         }
                     }
                     preset_action = crate::panels::presets::folder_rows(app, ui, filter).or(preset_action.take());

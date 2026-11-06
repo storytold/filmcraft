@@ -46,6 +46,16 @@ fn an_error_is_marked_and_a_note_is_not() {
     assert!(!has(&h, "status.error"));
 }
 
+/// A failure from the Presets bin is an error too, not a note.
+#[test]
+fn a_preset_that_cannot_be_applied_is_an_error() {
+    let mut h = app();
+    let ctx = h.ctx.clone();
+    filmcraft_ui_egui::panels::presets::run(h.state_mut(), &ctx, "presets.apply", "No such preset");
+    assert!(!h.state().ui.status.is_empty(), "the failure is reported");
+    assert!(h.state().ui.status_is_error(), "{}", h.state().ui.status);
+}
+
 #[test]
 fn a_click_on_the_status_bar_dismisses_an_error() {
     let mut h = app();
