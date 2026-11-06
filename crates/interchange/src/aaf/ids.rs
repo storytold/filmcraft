@@ -27,7 +27,34 @@ pub(crate) const fn class(xx: u8) -> Auid {
 /// The root object's class (the storage class of the file's root).
 pub(crate) const ROOT: Auid = guid(0xB3B398A5, 0x1C90, 0x11D4, [0x80, 0x53, 0x08, 0x00, 0x36, 0x21, 0x08, 0x04]);
 /// The meta-dictionary (class 0x25 of the meta-model, 06.0E.2B.34.02.06.01.01.0D.01.01.01.02.25.00.00).
-pub(crate) const META_DICTIONARY: Auid = ul([0x06, 0x0E, 0x2B, 0x34, 0x02, 0x06, 0x01, 0x01, 0x0D, 0x01, 0x01, 0x01, 0x02, 0x25, 0x00, 0x00]);
+pub(crate) const META_DICTIONARY: Auid = meta_class(0x25);
+
+/// Meta-model class AUID: SMPTE label 06.0E.2B.34.02.06.01.01.0D.01.01.01.02.xx.00.00.
+pub(crate) const fn meta_class(xx: u8) -> Auid {
+    ul([0x06, 0x0E, 0x2B, 0x34, 0x02, 0x06, 0x01, 0x01, 0x0D, 0x01, 0x01, 0x01, 0x02, xx, 0x00, 0x00])
+}
+
+/// Classes of the definitions in the meta-dictionary.
+pub(crate) mod meta {
+    use super::meta_class;
+    use crate::aaf::store::Auid;
+    pub const CLASS_DEFINITION: Auid = meta_class(0x01);
+    pub const PROPERTY_DEFINITION: Auid = meta_class(0x02);
+    pub const TYPE_INTEGER: Auid = meta_class(0x04);
+    pub const TYPE_STRONG_REFERENCE: Auid = meta_class(0x05);
+    pub const TYPE_WEAK_REFERENCE: Auid = meta_class(0x06);
+    pub const TYPE_ENUMERATION: Auid = meta_class(0x07);
+    pub const TYPE_FIXED_ARRAY: Auid = meta_class(0x08);
+    pub const TYPE_VARIABLE_ARRAY: Auid = meta_class(0x09);
+    pub const TYPE_SET: Auid = meta_class(0x0A);
+    pub const TYPE_STRING: Auid = meta_class(0x0B);
+    pub const TYPE_STREAM: Auid = meta_class(0x0C);
+    pub const TYPE_RECORD: Auid = meta_class(0x0D);
+    pub const TYPE_RENAME: Auid = meta_class(0x0E);
+    pub const TYPE_EXTENDIBLE_ENUMERATION: Auid = meta_class(0x20);
+    pub const TYPE_INDIRECT: Auid = meta_class(0x21);
+    pub const TYPE_CHARACTER: Auid = meta_class(0x23);
+}
 
 #[allow(dead_code)]
 pub(crate) mod cls {
@@ -86,6 +113,34 @@ pub(crate) mod pid {
     pub const META_CLASS_DEFINITIONS: u16 = 0x0003;
     pub const META_TYPE_DEFINITIONS: u16 = 0x0004;
     pub const META_IDENTIFICATION: u16 = 0x0005;
+    pub const META_NAME: u16 = 0x0006;
+    // ClassDefinition, PropertyDefinition
+    pub const CLASS_PARENT: u16 = 0x0008;
+    pub const CLASS_PROPERTIES: u16 = 0x0009;
+    pub const CLASS_IS_CONCRETE: u16 = 0x000A;
+    pub const PROPERTY_TYPE: u16 = 0x000B;
+    pub const PROPERTY_IS_OPTIONAL: u16 = 0x000C;
+    pub const PROPERTY_LOCAL_ID: u16 = 0x000D;
+    pub const PROPERTY_IS_UNIQUE: u16 = 0x000E;
+    // TypeDefinition subclasses
+    pub const INTEGER_SIZE: u16 = 0x000F;
+    pub const INTEGER_IS_SIGNED: u16 = 0x0010;
+    pub const STRONG_REFERENCED_TYPE: u16 = 0x0011;
+    pub const WEAK_REFERENCED_TYPE: u16 = 0x0012;
+    pub const WEAK_TARGET_SET: u16 = 0x0013;
+    pub const ENUMERATION_ELEMENT_TYPE: u16 = 0x0014;
+    pub const ENUMERATION_NAMES: u16 = 0x0015;
+    pub const ENUMERATION_VALUES: u16 = 0x0016;
+    pub const FIXED_ARRAY_ELEMENT_TYPE: u16 = 0x0017;
+    pub const FIXED_ARRAY_COUNT: u16 = 0x0018;
+    pub const VARIABLE_ARRAY_ELEMENT_TYPE: u16 = 0x0019;
+    pub const SET_ELEMENT_TYPE: u16 = 0x001A;
+    pub const STRING_ELEMENT_TYPE: u16 = 0x001B;
+    pub const RECORD_MEMBER_TYPES: u16 = 0x001C;
+    pub const RECORD_MEMBER_NAMES: u16 = 0x001D;
+    pub const RENAMED_TYPE: u16 = 0x001E;
+    pub const EXTENDIBLE_ENUMERATION_NAMES: u16 = 0x001F;
+    pub const EXTENDIBLE_ENUMERATION_VALUES: u16 = 0x0020;
     // Header
     pub const BYTE_ORDER: u16 = 0x3B01;
     pub const LAST_MODIFIED: u16 = 0x3B02;
@@ -259,4 +314,6 @@ pub(crate) mod path {
     pub const PARAMETER_DEFS: [u16; 3] = [pid::ROOT_HEADER, pid::DICTIONARY, pid::PARAMETER_DEFINITIONS];
     pub const INTERPOLATION_DEFS: [u16; 3] = [pid::ROOT_HEADER, pid::DICTIONARY, pid::INTERPOLATION_DEFINITIONS];
     pub const CONTAINER_DEFS: [u16; 3] = [pid::ROOT_HEADER, pid::DICTIONARY, pid::CONTAINER_DEFINITIONS];
+    pub const META_CLASSES: [u16; 2] = [pid::ROOT_META_DICTIONARY, pid::META_CLASS_DEFINITIONS];
+    pub const META_TYPES: [u16; 2] = [pid::ROOT_META_DICTIONARY, pid::META_TYPE_DEFINITIONS];
 }

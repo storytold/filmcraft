@@ -26,6 +26,9 @@
 //! tape **SourceMob** carrying the media's start timecode. Clip and media markers become comment
 //! markers on the master mob.
 //!
+//! The meta-dictionary holds the class model the file uses: its classes, their properties and
+//! the types of those (see `meta`).
+//!
 //! Import reads the same structures (and the common variations: sequences inside sequences,
 //! selectors, operation groups around clips, legacy data definitions, essence groups, and Premiere
 //! Pro's one video slot holding a nested scope with a segment per video track) into FilmCraft
@@ -33,6 +36,7 @@
 //! caller to write) and markers.
 
 mod ids;
+mod meta;
 mod read;
 pub(crate) mod store;
 mod write;
