@@ -925,16 +925,21 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if p["template"].as_str().is_none_or(str::is_empty) {
                 return Err(tl!("Choose a project template").into());
             }
+            // a file dialog may still be answering an earlier save prompt (Save As), which would go
+            // on with this prompt instead of its own
+            if app.dialog_busy() {
+                return Err(tl!("A file dialog is already open").into());
+            }
             let mut q = p.clone();
             if q["name"].as_str().is_none_or(|n| n.trim().is_empty()) {
                 q.as_object_mut().map(|m| m.remove("name"));
             }
             // unsaved changes: Save / Don't Save / Cancel first, then the project is replaced
-            if s.is_dirty() {
+            if app.session.is_dirty() {
                 crate::panels::clip_dialogs::ask_before_replacing(app, "file.newProjectFromTemplate", q);
                 return Ok(None);
             }
-            s.execute("file.newProjectFromTemplate", q).map_err(|e| e.to_string())?;
+            app.session.execute("file.newProjectFromTemplate", q).map_err(|e| e.to_string())?;
             Ok(None)
         }
         "file.saveAsTemplate" => {

@@ -437,6 +437,37 @@ fn new_project_from_template_asks_to_save_unsaved_changes() {
     assert!(!d.app().session.is_dirty());
 }
 
+/// A file dialog still answering an earlier save prompt (Save As for Close Project) is not finished
+/// by New Project from Template: its OK is refused until that dialog is answered.
+#[test]
+fn new_project_from_template_waits_for_an_open_file_dialog() {
+    let (mut d, tmp) = with_templates();
+    let held: std::sync::Arc<std::sync::Mutex<Vec<Sender<Vec<String>>>>> = std::sync::Arc::default();
+    let h = held.clone();
+    d.app().hooks.run_dialog = Some(Box::new(move |_| {
+        let (tx, rx) = channel();
+        h.lock().unwrap().push(tx);
+        rx
+    }));
+    d.app().session.path = None;
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    d.menu("file.closeProject");
+    d.click("closeProject.save");
+    assert!(d.app().native_dialog_open(), "Save As is open");
+    d.menu("file.newProjectFromTemplate");
+    d.click("newFromTemplate.ok");
+    assert!(d.dialog_open(), "OK is refused while the file dialog is open");
+    assert!(d.app().ui.clip_dialog.is_none());
+    d.click("newFromTemplate.cancel");
+    // Save As answers: Close Project goes on, not the template
+    let saved = tmp.path().join("saved.fcproj");
+    held.lock().unwrap()[0].send(vec![saved.to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert!(saved.exists());
+    assert!(!root_bin(&mut d, "Vlog Bin") && !root_bin(&mut d, "Unsaved"));
+    assert!(d.app().session.project.items.is_empty(), "the project was closed");
+}
+
 #[test]
 fn reveal_in_finder_opens_an_imported_clip() {
     let dir = std::env::temp_dir().join(format!("fc-ui-reveal-{}", std::process::id()));
