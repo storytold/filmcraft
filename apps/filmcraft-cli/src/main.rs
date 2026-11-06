@@ -121,7 +121,8 @@ VALUES
   `exec timeline.razor seconds=3.5`, `exec file.newBin name=Selects`.
   Times: 254016000000 ticks per second; most commands also take seconds=, frame= or timecode=.
   file.newSequenceFromClip uses the current Project selection when items is omitted.
-  In scripts, pass items=[id,...] or call project.select first to set that selection.
+  In scripts, pass items=[id,...] or call project.select first in the same run script.
+  Separate headless exec calls do not share selection; a shared --bridge session retains it.
 
 EXIT STATUS
   0 success · 1 a command failed, or export/render drew offline media without --allow-offline
