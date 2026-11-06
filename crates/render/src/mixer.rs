@@ -62,6 +62,10 @@ pub const MASTER: TrackId = filmcraft_project::mixer::MASTER_STRIP;
 pub const PARAM_BLOCK: i64 = 64;
 /// Longest pre-roll for a fresh graph (seconds).
 const MAX_PREROLL_S: f64 = 3.0;
+/// Longest effect tail played past the end of a sequence (seconds; see [`effect_tail`]).
+pub const MAX_TAIL_S: f64 = 10.0;
+/// Most keyframe times checked for the longest tail ([`Plan::peak_tail_s`]).
+const MAX_TAIL_TIMES: usize = 4096;
 
 // ------------------------------------------------------------------------------------- live state
 
@@ -481,10 +485,64 @@ impl<'a> Plan<'a> {
         h.finish()
     }
 
+    /// How long (seconds) the inserts of audible strips keep sounding after their input falls
+    /// silent at `t` (reverb and echo tails, dynamics release): the pre-roll a fresh graph needs.
+    ///
+    /// Inserts in series add up: a reverb feeding an echo on the same strip, or a track reverb
+    /// feeding a submix or Mix reverb, rings on for both tails. So each strip's inserts are summed
+    /// and every route adds the tail of the strip it feeds; the longest path through the graph
+    /// wins.
+    fn tail_s(&self, t: Tick) -> f64 {
+        // one insert's tail, made safe (a hostile parameter can make it NaN or huge)
+        let one = |i: &Insert<'_>| {
+            let s = (i.map.preroll)(&i.effect, t);
+            if s.is_finite() { s.clamp(0.0, MAX_TAIL_S) } else { 0.0 }
+        };
+        let own: Vec<f64> = self.strips.iter().map(|s| if s.silent { 0.0 } else { s.pre.iter().chain(&s.post).map(one).sum() }).collect();
+        // the longest tail from each strip to the Mix: routes only feed later strips, but relax
+        // at most once per strip so a malformed plan still ends
+        let mut total = own.clone();
+        for _ in 0..self.strips.len() {
+            let mut changed = false;
+            for r in &self.routes {
+                let (Some(&mine), Some(&down)) = (own.get(r.src), total.get(r.target)) else { continue };
+                if let Some(t) = total.get_mut(r.src)
+                    && mine + down > *t
+                {
+                    *t = mine + down;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let s = total.into_iter().fold(0.0, f64::max);
+        if s.is_finite() { s.max(0.0) } else { 0.0 }
+    }
+
+    /// The longest [`Self::tail_s`] up to `end`, checked at `end` and at each insert keyframe before
+    /// it: a long decay automated down near the end has already filled the effect's buffers, and
+    /// they still ring on after a shorter setting takes over. At most [`MAX_TAIL_TIMES`] times, the
+    /// latest ones, so a project with hostile keyframe counts costs a bounded amount.
+    fn peak_tail_s(&self, end: Tick) -> f64 {
+        let mut times: Vec<Tick> = self
+            .strips
+            .iter()
+            .flat_map(|s| s.pre.iter().chain(&s.post))
+            .flat_map(|i| i.effect.params.values())
+            .flat_map(|p| p.keyframes.iter().map(|k| k.time))
+            .filter(|t| *t < end)
+            .collect();
+        times.sort_unstable();
+        times.dedup();
+        let skip = times.len().saturating_sub(MAX_TAIL_TIMES);
+        times.iter().skip(skip).chain(std::iter::once(&end)).map(|t| self.tail_s(*t)).fold(0.0, f64::max)
+    }
+
     /// Longest pre-roll the inserts need for a fresh graph (samples).
     fn preroll(&self, t: Tick, sr: u32) -> usize {
-        let s = self.strips.iter().flat_map(|s| s.pre.iter().chain(&s.post)).map(|i| (i.map.preroll)(&i.effect, t)).fold(0.0, f64::max);
-        (s.min(MAX_PREROLL_S) * sr as f64).ceil() as usize
+        (self.tail_s(t).min(MAX_PREROLL_S) * sr as f64).ceil() as usize
     }
 }
 
@@ -583,6 +641,22 @@ fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
 pub fn graph_latency(seq: &Sequence) -> usize {
     let plan = Plan::build(seq, &HashMap::new());
     build_state(&plan, seq.settings.sample_rate).latency
+}
+
+/// How long the mixer graph keeps sounding once the timeline falls silent at its end: the longest
+/// tail of the track, submix and Mix inserts (reverb, echo, dynamics release) at any point their
+/// automation reaches, plus the graph
+/// latency, capped at [`MAX_TAIL_S`]. Zero when no insert can ring on. Playback keeps the sound
+/// running this long past the sequence end so effect tails decay instead of being cut (#2731).
+pub fn effect_tail(seq: &Sequence) -> Tick {
+    let plan = Plan::build(seq, &HashMap::new());
+    let sr = seq.settings.sample_rate.max(1);
+    let tail = plan.peak_tail_s(seq.duration()).min(MAX_TAIL_S);
+    if tail <= 0.0 {
+        return Tick::ZERO;
+    }
+    let latency = build_state(&plan, sr).latency;
+    Tick::from_seconds_f64(tail) + Tick::from_units(i64::try_from(latency).unwrap_or(0), sr as i64)
 }
 
 // ------------------------------------------------------------------------------------- processing

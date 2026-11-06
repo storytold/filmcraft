@@ -223,8 +223,10 @@ pub struct AudioSegment {
 
 /// Audio segments of sequence `seq_id`: cut at every audio clip and audio transition edge. The
 /// hash covers the mix-wide state (master volume/effects, every track's mute/solo/volume/pan/
-/// effects) and, per track, the clip or transition heard, relative to the segment start. Effect
-/// tails (delay, reverb) carried across a cut from the previous segment are not part of the hash.
+/// effects) and, per track, the clip or transition heard, relative to the segment start. When the
+/// mixer's inserts ring on (reverb, echo; [`crate::mixer::effect_tail`]), the content of each earlier
+/// segment ending within that tail is part of the hash too, so a preview never keeps a stale tail
+/// of what came before it (#2731), and one past the tail stays valid when earlier clips change.
 pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     let Some(seq) = project.sequence(seq_id) else { return Vec::new() };
     let sr = seq.settings.sample_rate.max(1) as i64;
@@ -253,7 +255,11 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     }
     // submixes (routing, inserts, automation) affect every segment
     global.json(&seq.submix_tracks);
-    let mut out = Vec::new();
+    // samples the mixer's effect tails reach past their input (0 = no insert rings on)
+    let tail = crate::mixer::effect_tail(seq).to_units_floor(sr);
+    let mut out: Vec<AudioSegment> = Vec::new();
+    // each segment in `out`, hashed without any earlier segment's tail
+    let mut contents: Vec<u128> = Vec::new();
     for w in cuts.windows(2) {
         let (a, b) = (w[0], w[1]);
         if b <= a {
@@ -290,7 +296,17 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
             }
         }
         if heard {
+            let content = h.0;
+            // latest first; the segments are in time order, so the first one past the tail ends it
+            for (prev, prev_content) in out.iter().zip(&contents).rev() {
+                let distance = a.saturating_sub(prev.first_sample.saturating_add(prev.samples));
+                if tail <= 0 || distance >= tail {
+                    break;
+                }
+                h.json(&("tail", distance, prev.first_sample, prev_content));
+            }
             out.push(AudioSegment { first_sample: a, samples: b - a, hash: h.hex() });
+            contents.push(content);
         }
     }
     out

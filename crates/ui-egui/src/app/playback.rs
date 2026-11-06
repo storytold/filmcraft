@@ -37,6 +37,8 @@ impl FilmcraftApp {
         }
         self.playback.playing = true;
         self.playback.speed = speed;
+        self.playback.ring_out_key = None;
+        self.refresh_ring_out();
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
         self.playback.smooth_playhead = None;
@@ -215,6 +217,18 @@ impl FilmcraftApp {
 
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
     /// is lost or stalls.
+    /// The effect tail of the sequence as it is now, kept in `playback.ring_out`: inserts edited
+    /// during playback (a longer reverb decay, a new echo) count when the end is reached.
+    fn refresh_ring_out(&mut self) -> Tick {
+        // opening another sequence changes the active one without a new project revision
+        let key = (self.session.revision, self.session.state.active_sequence);
+        if self.playback.ring_out_key != Some(key) {
+            self.playback.ring_out = self.session.active_sequence().map(filmcraft_render::mixer::effect_tail).unwrap_or_default();
+            self.playback.ring_out_key = Some(key);
+        }
+        self.playback.ring_out
+    }
+
     pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             self.playback.smooth_playhead = None;
@@ -300,6 +314,11 @@ impl FilmcraftApp {
             if self.playback.looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
+            } else if self.playback.audio_clock && t < hi + self.refresh_ring_out() {
+                // effect tails ring out past the end (#2731): the sound plays on, the playhead
+                // rests on the last frame (the drawn one too, not the smoothed clock before it)
+                self.session.set_playhead(hi - rate.frame_duration());
+                self.playback.smooth_playhead = None;
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();
