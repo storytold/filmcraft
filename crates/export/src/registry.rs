@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::Ordering;
-use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
+use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, hevc_factory, mjpeg_factory, prores_factory};
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
@@ -81,7 +81,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 pub(crate) fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, hevc_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 
 pub(crate) fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {

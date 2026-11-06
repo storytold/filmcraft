@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · apv · dng · aac · ac3 · mpa · opus
+     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · hevcenc · vp9 · av1 · mpeg2v · prores · dnx · apv · dng · aac · ac3 · mpa · opus
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -49,6 +49,7 @@ and `filmcraft-cli`.
 | `ogg` | L0 | Ogg demux (RFC 3533), Ogg Opus timing (RFC 7845 granules, pre-skip, end trimming), Vorbis headers |
 | `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
+| `hevcenc` | L0 | H.265 software encoder (Main, 8-bit 4:2:0, I/P) |
 | `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
 | `apv` | L0 | Advanced Professional Video (IETF RFC 9924) decoder and encoder ([README](../crates/apv/README.md)) |
