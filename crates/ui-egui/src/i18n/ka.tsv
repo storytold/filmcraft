@@ -447,7 +447,7 @@
 	Are you sure you want to discard your changes to '{file}'?	ნამდვილად გსურთ „{file}“-ის ცვლილებების უარყოფა?
 	Yes	დიახ
 	No	არა
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	დაამატეთ მედია პროექტში. ჩააგდეთ ფაილები ფანჯრის ნებისმიერ ადგილას ან აირჩიეთ წყარო ქვემოთ.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	დაამატეთ მედია პროექტში. ჩააგდეთ ფაილები ან საქაღალდეები ფანჯრის ნებისმიერ ადგილას, ან აირჩიეთ წყარო ქვემოთ.
 	Browse files…	ფაილების არჩევა…
 	Movies, audio and stills from disk	ფილმები, აუდიო და კადრები დისკიდან
 	Demo footage	სადემონსტრაციო ვიდეომასალა
@@ -638,7 +638,7 @@
 	Solo	სოლო
 	Bypass	გვერდის ავლა
 	Thr	ზღვ.
-	Ratio	თანაფარდობა
+	Ratio	თანაფ.
 	Att	შეტ.
 	Rel	გაშვ.
 	Gain	გაძლიერება
@@ -744,6 +744,7 @@
 	Histogram	ჰისტოგრამა
 	Paste Attributes	ატრიბუტების ჩასმა
 	Remove Attributes	ატრიბუტების წაშლა
+	Ticked attributes are removed from the selected clips.	ჩართული ატრიბუტები მონიშნული კლიპებიდან წაიშლება.
 	New Offline File	ახალი ოფლაინ ფაილი
 	Nested Sequence Name	ჩადგმული სეკვენციის სახელი
 	Make Subclip	ქვეკლიპის შექმნა
@@ -3724,8 +3725,6 @@
 	Delete Track	ტრეკის წაშლა
 	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	„ადაპტიური დიზაინი – დრო“ გრაფიკის შრეების საკვანძო კადრებს დროში გადაანაწილებს; კლიპის ეფექტები, როგორიცაა გაუმჭვირვალობა და მოძრაობა, მედიის დროს ინარჩუნებს
 	Set as Default Transition	ნაგულისხმევ გადასვლად დაყენება
-	FilmCraft Updates	FilmCraft-ის განახლებები
-	1/2	1/2
 # Saves, short-form social presets and the Three-Way Color Corrector (strings no catalog has yet).
 	Project saved to {path}	პროექტი შენახულია: {path}
 	Copy of the project saved to {path}	პროექტის ასლი შენახულია: {path}
@@ -3750,13 +3749,26 @@
 	Highlight Level	ღია ტონების დონე
 	Highlight Softness	ღია ტონების სირბილე
 	Key Out Brights	ღია ტონების ამოკვეთა
+# Effect preset library, Maintain Audio Pitch and H.264 High 10 / all-intra export (sync 2026-11-07).
+	Maintain Audio Pitch	აუდიოს ტონის სიმაღლის შენარჩუნება
+	Open Presets Folder	პრესეტების საქაღალდის გახსნა
+	Scan Presets Folder	პრესეტების საქაღალდის სკანირება
+	From preset file:	პრესეტის ფაილიდან:
+	No presets folder: the app has no data directory	პრესეტების საქაღალდე არ არის: აპლიკაციას მონაცემთა საქაღალდე არ აქვს
+	Imported {n} preset(s)	იმპორტირებული პრესეტი: {n}
+	Imported {n} preset(s); {skipped} skipped	იმპორტირებული პრესეტი: {n}; გამოტოვებული: {skipped}
+	Imported {n} preset(s); {warnings} with unsupported parameters	იმპორტირებული პრესეტი: {n}; მხარდაუჭერელი პარამეტრებით: {warnings}
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	იმპორტირებული პრესეტი: {n}; გამოტოვებული: {skipped}, მხარდაუჭერელი პარამეტრებით: {warnings}
+	Imported {n} preset(s); not imported: {error}	იმპორტირებული პრესეტი: {n}; ვერ დაიმპორტდა: {error}
+	Preset library updated: {imported} loaded, {removed} removed	პრესეტების ბიბლიოთეკა განახლდა: ჩატვირთული: {imported}, წაშლილი: {removed}
+	Preset library updated	პრესეტების ბიბლიოთეკა განახლდა
+	Preset library is up to date	პრესეტების ბიბლიოთეკა განახლებულია
+	High 10	High 10
 	10-bit color	10-ბიტიანი ფერი
-	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	დაამატეთ მედია პროექტში. ჩააგდეთ ფაილები ან საქაღალდეები ფანჯრის ნებისმიერ ადგილას, ან აირჩიეთ წყარო ქვემოთ.
 	All Intra	სრული ინტრა
 	Every frame a keyframe (edit-friendly, larger files)	ყოველი კადრი საკვანძოა (მონტაჟისთვის მოსახერხებელი, უფრო დიდი ფაილები)
-	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) სეკვენციის ზომით, მუდმივი ხარისხი CRF 16, AAC 320 kbps; 10-ბიტიანი მასტერი
-	H.264 High 10 Intra	H.264 High 10 Intra
-	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, ყოველი კადრი საკვანძოა), CRF 12, AAC 320 kbps; მონტაჟისთვის მოსახერხებელი შუალედური ფორმატი
 	H.264 High 10 Master	H.264 High 10 მასტერი
-	High 10	High 10
-	Maintain Audio Pitch	აუდიოს ტონის სიმაღლის შენარჩუნება
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) სეკვენციის ზომით, მუდმივი ხარისხი CRF 16, AAC 320 kbps; 10-ბიტიანი მასტერი
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, ყოველი კადრი საკვანძოა), CRF 12, AAC 320 kbps; მონტაჟისთვის მოსახერხებელი შუალედური ფორმატი
+	Full Screen Program Monitor	პროგრამის მონიტორი სრულ ეკრანზე
