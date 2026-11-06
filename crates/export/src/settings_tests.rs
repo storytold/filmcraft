@@ -1109,17 +1109,23 @@ fn h264_high422_export() {
         let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high422") else { return };
         let out = std::process::Command::new(ffmpeg)
             // `-v error`: ffmpeg warns that it guesses the layout of any QuickTime PCM track (ProRes too)
-            .args(["-v", "error", "-i", &path, "-map", "0:v", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
+            .args(["-v", "error", "-i", &path, "-map", "0:v", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
             .output()
             .unwrap();
         assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
         // the matte's BT.709 codes, chroma read at the bottom row of a full-height (160x180) plane:
         // Y' = .2126·.2 + .7152·.6 + .0722·.9 = .537 → 534, Cb = 512 + 896·(.9 − Y')/1.8556 → 687,
         // Cr = 512 + 896·(.2 − Y')/1.5748 → 320
+        // every one of the 12 exported frames (B-frames in the MP4, all intra in the preset's MOV)
         let at = |o: usize| u16::from_le_bytes([out.stdout[2 * o], out.stdout[2 * o + 1]]) as i32;
         let (ys, cs) = (320 * 180, 160 * 180);
-        let (y, cb, cr) = (at(90 * 320 + 160), at(ys + 179 * 160 + 80), at(ys + cs + 179 * 160 + 80));
-        assert!((y - 534).abs() <= 3 && (cb - 687).abs() <= 3 && (cr - 320).abs() <= 3, "{path}: Y {y} Cb {cb} Cr {cr}");
+        let fs = ys + 2 * cs;
+        assert_eq!(out.stdout.len(), 12 * fs * 2, "{path}: 12 frames");
+        for frame in 0..12 {
+            let base = frame * fs;
+            let (y, cb, cr) = (at(base + 90 * 320 + 160), at(base + ys + 179 * 160 + 80), at(base + ys + cs + 179 * 160 + 80));
+            assert!((y - 534).abs() <= 3 && (cb - 687).abs() <= 3 && (cr - 320).abs() <= 3, "{path}: frame {frame}: Y {y} Cb {cb} Cr {cr}");
+        }
     }
 }
 
