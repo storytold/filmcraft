@@ -295,6 +295,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
         }));
+        app.hooks.pick_files_at = Some(Box::new(|exts: &[&str], at: Option<&str>| {
+            let mut d = rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts));
+            if let Some(dir) = at.filter(|d| std::path::Path::new(d).is_dir()) {
+                d = d.set_directory(dir);
+            }
+            d.pick_files().unwrap_or_default().into_iter().map(|p| p.to_string_lossy().to_string()).collect()
+        }));
         // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
         app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
             rfd::FileDialog::new()
@@ -507,8 +514,12 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
         let shown = std::panic::catch_unwind(move || {
             let path = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
             match dialog {
-                FileDialog::OpenFiles { exts } => {
-                    rfd::FileDialog::new().add_filter(&media, &exts).pick_files().unwrap_or_default().into_iter().map(path).collect()
+                FileDialog::OpenFiles { exts, at } => {
+                    let mut d = rfd::FileDialog::new().add_filter(&media, &exts);
+                    if let Some(dir) = at.as_deref().filter(|d| std::path::Path::new(d).is_dir()) {
+                        d = d.set_directory(dir);
+                    }
+                    d.pick_files().unwrap_or_default().into_iter().map(path).collect()
                 }
                 FileDialog::OpenFile { filter, exts } => rfd::FileDialog::new().add_filter(&filter, &exts).pick_file().map(path).into_iter().collect(),
                 FileDialog::Relink { exts, .. } => rfd::FileDialog::new().add_filter(&media, &exts).pick_file().map(path).into_iter().collect(),
@@ -559,7 +570,7 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
     let patterns = |exts: Vec<String>| file_filters::extensions(&exts.iter().map(String::as_str).collect::<Vec<_>>());
     match dialog {
-        FileDialog::OpenFiles { exts } => FileDialog::OpenFiles { exts: patterns(exts) },
+        FileDialog::OpenFiles { exts, at } => FileDialog::OpenFiles { exts: patterns(exts), at },
         FileDialog::OpenFile { filter, exts } => FileDialog::OpenFile { filter: t(&filter), exts: patterns(exts) },
         FileDialog::SaveAs { filter, exts, name, adds_ext } => FileDialog::SaveAs { filter: t(&filter), exts: patterns(exts), name, adds_ext },
         FileDialog::Relink { exts, hint } => FileDialog::Relink { exts: patterns(exts), hint },
@@ -597,13 +608,15 @@ mod tests {
         let mp4 = || vec!["mp4".to_string()];
         let hint = RelinkHint { command: "media.relink".into(), params: serde_json::json!({}) };
         for dialog in [
-            FileDialog::OpenFiles { exts: mp4() },
+            FileDialog::OpenFiles { exts: mp4(), at: None },
             FileDialog::OpenFile { filter: "Media".into(), exts: mp4() },
             FileDialog::SaveAs { filter: "Media".into(), exts: mp4(), name: "clip.mp4".into(), adds_ext: true },
             FileDialog::Relink { exts: mp4(), hint },
         ] {
             let exts = match super::prepare_dialog(dialog) {
-                FileDialog::OpenFiles { exts } | FileDialog::OpenFile { exts, .. } | FileDialog::SaveAs { exts, .. } | FileDialog::Relink { exts, .. } => exts,
+                FileDialog::OpenFiles { exts, .. } | FileDialog::OpenFile { exts, .. } | FileDialog::SaveAs { exts, .. } | FileDialog::Relink { exts, .. } => {
+                    exts
+                }
                 other => panic!("the dialog changed kind: {other:?}"),
             };
             assert_eq!(exts.first().map(String::as_str), Some("mp4"), "the literal extension stays first (save suffix)");
