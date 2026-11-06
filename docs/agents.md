@@ -257,8 +257,10 @@ strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
-the next one says so on stderr, waits, and then edits what the first one saved. A crash releases the
-lock, and the empty file left behind is harmless. Only these CLI runs take the lock: the desktop app,
+the next one says so on stderr, waits, and then edits what the first one saved. A run through a
+symbolic link also takes the lock next to the file the link points to, so it takes turns with runs
+through the real path or another link too. A crash releases the lock, and the empty file left behind
+is harmless. Only these CLI runs take the lock: the desktop app,
 `mcp`, and a `file.save` line in a script run without `--save` don't. OS locks can also be unreliable
 over network shares and synced folders. If the lock can't be taken, the run warns on stderr and
 saves anyway.

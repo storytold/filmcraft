@@ -225,6 +225,63 @@ fn runs_that_do_not_save_in_place_ignore_the_lock() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A run through a symlink edits the same file as a run through the real path, or through another
+/// link to it, so it waits while either holds the lock (#4151).
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_symlink_waits_for_a_save_through_the_real_path() {
+    use std::os::unix::fs::symlink;
+    let (dir, _) = lock_test_project("link-and-real");
+    std::fs::create_dir_all(dir.join("links")).unwrap();
+    // fresh links for each run: a save through a link replaces it with a regular file (#4005)
+    let direct = dir.join("links/direct.fcproj");
+    symlink("../p.fcproj", &direct).unwrap();
+    let (first, chained) = (dir.join("links/first.fcproj"), dir.join("chained.fcproj"));
+    symlink("../p.fcproj", &first).unwrap();
+    symlink(&first, &chained).unwrap();
+    for (n, through) in [&direct, &chained].into_iter().enumerate() {
+        // what a run through the real path holds while it edits
+        let held = hold_lock(&dir, "p.fcproj");
+        let name = format!("name=through-link-{n}");
+        let mut child = start_waiting_run(&["--project", through.to_str().unwrap(), "--save", "exec", "file.newBin", &name]);
+        drop(held);
+        assert!(child.wait().unwrap().success(), "{through:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A link and its file whose names share their first 200 bytes have one lock file between them,
+/// and the run through the link takes it once instead of waiting on itself.
+#[cfg(unix)]
+#[test]
+fn a_link_sharing_a_lock_file_with_its_file_does_not_wait_on_itself() {
+    let (dir, _) = lock_test_project("long-names");
+    let prefix = "p".repeat(200);
+    let real = dir.join(format!("{prefix}-real.fcproj"));
+    json_out(&cli(&["--demo", "--save-as", real.to_str().unwrap(), "exec", "file.newBin", "name=start"]));
+    let link = dir.join(format!("{prefix}-link.fcproj"));
+    std::os::unix::fs::symlink(real.file_name().unwrap(), &link).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+        .args(["--project", link.to_str().unwrap(), "--save", "exec", "file.newBin", "name=long"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the run is waiting on its own lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let (dir, _) = lock_test_project("missing");
