@@ -348,6 +348,39 @@ fn ducking_generates_volume_keyframes_under_dialogue() {
     assert!(s.execute("essentialSound.generateDucking", json!({"clips": [c[0].0]})).is_err(), "dialogue does not duck");
 }
 
+#[test]
+fn ducking_says_how_many_volume_keyframes_it_replaced() {
+    // #4026: ducking replaces the Volume level keyframes (a fade written before it is lost), and the
+    // result says how many it replaced on each clip
+    let dlg = speech(10.0, 0.4, |t| (2.0..4.0).contains(&t));
+    let (mut s, c) = session_with(&[(dlg, 0.0), (tone(10.0, 220.0, 0.2), 0.0), (tone(10.0, 330.0, 0.2), 0.0)]);
+    let (faded, plain) = (c[1], c[2]);
+    s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips": [faded.0, plain.0], "type": "music"})).unwrap();
+    s.execute("essentialSound.set", json!({"clips": [faded.0, plain.0], "values": {"ducking.enabled": true}})).unwrap();
+    let level = |s: &Session, c: ClipId| item(s, c).effect("volume").unwrap().param("level").unwrap().clone();
+    let replaced = |r: &Value, c: ClipId| {
+        let clip = r["clips"].as_array().unwrap().iter().find(|x| x["clip"] == c.0).unwrap();
+        clip["replacedKeyframes"].as_u64().unwrap()
+    };
+    // a fade-out at 8 to 9 s on one music clip only
+    for (t, v) in [(8.0, 0.0), (9.0, -60.0)] {
+        let t = Tick::from_seconds_f64(t).0;
+        s.execute("effects.setParam", json!({"clip": faded.0, "effect": "volume", "param": "level", "value": v, "keyframe": true, "time": t})).unwrap();
+    }
+    assert_eq!(level(&s, faded).keyframes.len(), 2);
+    assert!(level(&s, plain).keyframes.is_empty());
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0]})).unwrap();
+    assert_eq!((replaced(&r, faded), replaced(&r, plain)), (2, 0), "counted per clip: {r}");
+    let lvl = level(&s, faded);
+    assert!(!lvl.keyframes.is_empty());
+    assert!(lvl.keyframes.iter().all(|k| k.value.as_f64() != Some(-60.0)), "the fade is replaced, not kept: {lvl:?}");
+    // regenerating replaces the ducking keyframes themselves
+    let (n_faded, n_plain) = (level(&s, faded).keyframes.len() as u64, level(&s, plain).keyframes.len() as u64);
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0]})).unwrap();
+    assert_eq!((replaced(&r, faded), replaced(&r, plain)), (n_faded, n_plain), "{r}");
+}
+
 /// Run `sig` through one Dialogue repair setting and return (input, output) over 1…len−0.5 s.
 fn repair(sig: Vec<f32>, values: Value) -> (Vec<f32>, Vec<f32>) {
     let (mut s, c) = session_with(&[(sig.clone(), 0.0)]);
