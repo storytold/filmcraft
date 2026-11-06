@@ -57,6 +57,7 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+mod icons_svg;
 mod ime_reset;
 pub mod links;
 pub mod menus;
