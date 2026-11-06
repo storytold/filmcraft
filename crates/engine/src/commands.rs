@@ -3293,6 +3293,8 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links_p(s, p, c);
+                // the media each trimmed edge has, to tell after the edit whether it stopped the trim
+                let reach = crate::handles::trim_reach(s, &clips, edge, d);
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
@@ -3336,7 +3338,9 @@ fn build() -> Vec<CommandSpec> {
                     Ok(dd)
                 });
                 s.command_origin = outer;
-                Ok(json!({"delta": applied?.0}))
+                let applied = applied?;
+                let short: Vec<Value> = reach.iter().filter_map(|r| r.short(s, d, applied)).collect();
+                Ok(json!({"delta": applied.0, "short": short}))
             }
         ),
         // ================= Trim mode =================
@@ -3423,6 +3427,8 @@ fn build() -> Vec<CommandSpec> {
                 .unwrap_or_default();
             // `followLinks: false` rolls only this pair; the default clamps linked cuts together.
             let follow = s.state.linked_selection && p.get("followLinks").and_then(Value::as_bool).unwrap_or(true);
+            let pairs = s.active_sequence().map(|q| linked_roll_pairs(q, l, r, follow)).unwrap_or_default();
+            let reach: Vec<crate::handles::Reach> = pairs.iter().filter_map(|&(pl, pr)| crate::handles::Reach::of_cut(s, Some(pl), Some(pr), d)).collect();
             let (x, n, linked) = s.edit_sequence("Rolling Edit", |q, ctx, _| {
                 let pairs = linked_roll_pairs(q, l, r, follow);
                 let linked = pairs.len() > 1;
@@ -3434,7 +3440,8 @@ fn build() -> Vec<CommandSpec> {
                 }
                 Ok((d, pairs.len(), linked))
             })?;
-            Ok(json!({"delta": x.0, "pairs": n, "linked": linked}))
+            let short: Vec<Value> = reach.iter().filter_map(|r| r.short(s, d, x)).collect();
+            Ok(json!({"delta": x.0, "pairs": n, "linked": linked, "short": short}))
         }),
         cmd!("timeline.slip", "Slip", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slip", "need `clip`"))?;
@@ -5001,7 +5008,8 @@ fn set_transition(s: &mut Session, p: &Value) -> Result<Value> {
             q.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == tid).and_then(|x| edit::transitions::bounds(tr, x).map(|b| (x.clone(), b.1))))
         })
         .map(|(x, cut)| edit::transitions::alignment(&x, cut, frame).id());
-    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse, "start": st.0, "duration": d.0, "align": al}))
+    let short = crate::handles::transition_short(s, tid);
+    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse, "start": st.0, "duration": d.0, "align": al, "short": short}))
 }
 
 fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value> {
@@ -5013,7 +5021,7 @@ fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value
     let (track, tr) = preview_transition(s, p, kind)?;
     let label = format!("Apply {}", tr.effect.def().map_or("Transition", |d| d.name));
     let id = s.edit_sequence(&label, |q, ctx, _| Ok(edit::add_transition(q, track, tr, ctx)?))?;
-    Ok(json!({"transition": id.0}))
+    Ok(json!({"transition": id.0, "short": crate::handles::transition_short(s, id)}))
 }
 
 /// Plan an applied transition without editing the project or allocating an id.

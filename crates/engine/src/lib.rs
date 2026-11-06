@@ -22,6 +22,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+mod handles;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
@@ -1391,6 +1392,8 @@ mod media_test_util;
 #[cfg(test)]
 mod media_watch_tests;
 #[cfg(test)]
+mod missing_handles_tests;
+#[cfg(test)]
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
@@ -1454,6 +1457,8 @@ mod timeline_move_tests;
 mod track_params_tests;
 #[cfg(test)]
 mod transcript_tests;
+#[cfg(test)]
+mod transition_handles_tests;
 #[cfg(test)]
 mod trim_tests;
 #[cfg(test)]
