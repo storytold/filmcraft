@@ -358,7 +358,7 @@ fn hdr_media_is_planned_for_the_gpu_with_its_colour_management() {
         let f = Arc::new(VideoFrame { color, ..(*camera(W, H)).clone() });
         let (p, seq, map) = scene(&[Spec::new(f)]);
         let opts = RenderOptions::default();
-        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map);
+        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, plan::DeviceCaps::ALL, &map);
         let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{name}: not a layer plan") };
         assert_eq!(layers.len(), 1, "{name}");
         assert!(matches!(layers[0].frame.data, PixelData::Yuv8 { .. }), "{name}: converted on the CPU");
