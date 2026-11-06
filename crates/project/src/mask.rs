@@ -420,6 +420,8 @@ pub struct ColorRange {
 }
 
 impl Default for ColorRange {
+    /// HSL Secondary's defaults: Hue Center 0°, Hue Range 30°, Saturation Min 10, Luma 5…95,
+    /// Soften 20, Blur 0.
     fn default() -> Self {
         let f = |v| Param::new(ParamValue::Float(v));
         Self { hue: f(0.0), hue_range: f(30.0), sat_min: f(10.0), luma_min: f(5.0), luma_max: f(95.0), soften: f(20.0), blur: f(0.0) }
@@ -427,6 +429,7 @@ impl Default for ColorRange {
 }
 
 impl ColorRange {
+    /// The parameter with a [`COLOR_PARAMS`] id.
     fn param(&self, id: &str) -> Option<&Param> {
         match id {
             "color_hue" => Some(&self.hue),
@@ -439,6 +442,7 @@ impl ColorRange {
             _ => None,
         }
     }
+    /// The parameter with a [`COLOR_PARAMS`] id, mutably.
     fn param_mut(&mut self, id: &str) -> Option<&mut Param> {
         match id {
             "color_hue" => Some(&mut self.hue),
