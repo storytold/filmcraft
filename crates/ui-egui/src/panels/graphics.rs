@@ -242,7 +242,7 @@ mod ime_byte_delete_tests {
                 uid: 0,
                 pin: None,
                 content: LayerContent::Text(props),
-                appearance: Appearance { fill: None, gradient: None, strokes: Vec::new(), background: None, shadow: None },
+                appearance: Appearance { fill: None, gradient: None, strokes: Vec::new(), background: None, shadow: None, burn: None },
                 transform: LayerTransform { position: Vec2::ZERO, anchor: Vec2::ZERO, scale: Vec2::new(1.0, 1.0), rotation: 0.0, opacity: 1.0 },
             },
             to_screen: Affine::IDENTITY,

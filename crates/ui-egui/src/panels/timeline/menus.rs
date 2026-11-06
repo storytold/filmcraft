@@ -239,11 +239,12 @@ pub(super) fn run_track_menu(app: &mut FilmcraftApp, ui: &egui::Ui, picked: Opti
     }
 }
 
-/// The menu of a right-clicked gap: Ripple Delete closes it.
+/// The menu of a right-clicked gap: Delete Gap closes it.
 pub(super) fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
-    let label = tl!("Ripple Delete");
+    let label = tl!("Delete Gap");
     let r = ui.add_enabled(app.session.state.gap_selection.is_some(), egui::Button::new(label));
     app.auto.add("timeline.gapMenu.edit.rippleDelete", r.rect, label);
+    app.auto.add("timeline.gapMenu.deleteGap", r.rect, label);
     if r.clicked() {
         if let Err(e) = crate::menus::invoke(app, ctx, "edit.rippleDelete", json!({})) {
             app.ui.status = e;

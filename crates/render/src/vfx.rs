@@ -507,6 +507,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "brush_strokes" => stylize::brush_strokes(img, e, cx),
         "color_emboss" => stylize::color_emboss(img, e, cx),
         "roughen_edges" => stylize::roughen_edges(img, e, cx),
+        "tv_static" => stylize::tv_static(img, e, cx),
         "long_shadow" => stylize::long_shadow(img, e, cx),
         "stroke" => stylize::stroke(img, e, cx),
         "gradient" => stylize::gradient(img, e, cx),
@@ -526,6 +527,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "auto_reframe" => temporal::auto_reframe(img, e, cx),
         // Text
         "simple_text" => text::simple_text(img, e, cx),
+        "burning_text" => text::burning_text(img, e, cx),
         "metadata_burnin" => text::metadata_burnin(img, e, cx),
         id if id.starts_with("vr_") => immersive::apply(img, e, cx),
         _ => return false,
