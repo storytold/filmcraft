@@ -67,6 +67,7 @@ const NEW_IDS: &[&str] = &[
     "compound_blur",
     "focus_blur",
     "reduce_interlace_flicker",
+    "surface_blur",
     "asc_cdl",
     "video_limiter",
     "vignette",
@@ -231,6 +232,7 @@ fn neutral_parameters_are_identity() {
         ("channel_blur", vec![]),
         ("bokeh_blur", vec![("amount", ParamValue::Float(0.0))]),
         ("reduce_interlace_flicker", vec![]),
+        ("surface_blur", vec![("radius", ParamValue::Float(0.0))]),
         ("vr_blur", vec![]),
         ("vr_sharpen", vec![]),
         ("vr_denoise", vec![]),
@@ -1473,4 +1475,54 @@ fn lengths_past_the_picture_keep_their_fade_and_weighting() {
     assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
     let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
     assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
+}
+
+/// Surface Blur on fine texture over two flat tones (a lighter band across the top): the
+/// texture drops, the edge between the tones stays, and Detail brings some texture back.
+#[test]
+fn surface_blur_smooths_texture_and_keeps_edges() {
+    let (w, h) = (48usize, 48usize);
+    let mut img = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let grain = (((x * 7919 + y * 104_729) % 97) as f32 / 97.0 - 0.5) * 0.08;
+            let base = if y < 16 { [0.93, 0.74, 0.62] } else { [0.78, 0.55, 0.42] };
+            let l = dec(base.map(|c| (c + grain).clamp(0.0, 1.0)));
+            img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[l[0], l[1], l[2], 1.0]);
+        }
+    }
+    let spread = |im: &Image| {
+        let v: Vec<f32> = (24..44).flat_map(|y| (4..44).map(move |x| (x, y))).map(|(x, y)| enc([im.get(x, y)[0], 0.0, 0.0])[0]).collect();
+        let m = v.iter().sum::<f32>() / v.len() as f32;
+        (v.iter().map(|q| (q - m) * (q - m)).sum::<f32>() / v.len() as f32).sqrt()
+    };
+    let mean = |im: &Image, y: usize| (4..44).map(|x| enc([im.get(x, y)[0], 0.0, 0.0])[0]).sum::<f32>() / 40.0;
+    let mut e = inst("surface_blur");
+    setf(&mut e, "radius", 4.0);
+    let o = run("surface", &e, &img, &cx());
+    let (before, after) = (spread(&img), spread(&o));
+    assert!(after < before * 0.5, "texture {before} -> {after}");
+    let (step_before, step_after) = (mean(&img, 12) - mean(&img, 19), mean(&o, 12) - mean(&o, 19));
+    assert!(step_after > step_before * 0.9, "edge {step_before} -> {step_after}");
+    setf(&mut e, "detail", 100.0);
+    let d = run("surface", &e, &img, &cx());
+    assert!(spread(&d) > after, "detail adds nothing");
+}
+
+/// Hostile parameters and sizes: no panic, finite output.
+#[test]
+fn surface_blur_survives_hostile_input() {
+    let img = picture(9, 5);
+    for (k, v) in [("radius", f64::NAN), ("radius", 1e12), ("radius", -5.0), ("threshold", f64::INFINITY), ("detail", f64::NAN), ("detail", 1e9)] {
+        let mut e = pushed("surface_blur");
+        setf(&mut e, k, v);
+        for c in [cx(), FxCtx { px_scale: f32::NAN, ..cx() }, FxCtx { px_scale: 0.0, ..cx() }] {
+            let o = run("surface", &e, &img, &c);
+            assert!(o.px.iter().all(|q| q.is_finite()), "{k}={v}");
+        }
+    }
+    for (w, h) in [(1, 1), (1, 7), (7, 1)] {
+        let o = run("surface", &pushed("surface_blur"), &picture(w, h), &cx());
+        assert!(o.px.iter().all(|q| q.is_finite()), "{w}x{h}");
+    }
 }

@@ -3,7 +3,7 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::{Affine, FxCtx, Image, Vec2, bv, chv, enc, fv, luma, over, pv, smoothstep};
+use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, dec, enc, fv, luma, over, pv, smoothstep};
 use crate::effects::gaussian;
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;
@@ -222,4 +222,120 @@ pub fn focus(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 pub fn interlace_flicker(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let s = fv(e, "softness", cx) * cx.px_scale.max(0.25);
     gaussian(img, 0.0, s, true);
+}
+
+/// Surface Blur: an edge-preserving blur that smooths surfaces and keeps edges.
+///
+/// A guided filter with the image as its own guide (He, Sun and Tang, "Guided Image Filtering",
+/// ECCV 2010, Algorithm 1): within Radius, variation below Threshold (texture, noise) averages
+/// out and variation above it (edges) stays. **Detail** adds the finest band of what was removed
+/// (below a 1 px Gaussian) back, so surfaces keep some fine texture.
+///
+/// Runs per channel on sRGB-encoded straight colour, where texture contrast is perceptual.
+pub fn surface(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let (w, h) = (img.w, img.h);
+    let scale = if cx.px_scale.is_finite() { cx.px_scale.max(0.0) } else { 1.0 };
+    let radius = fv(e, "radius", cx) * scale;
+    if w == 0 || h == 0 || radius.is_nan() || radius < 0.5 {
+        return;
+    }
+    let r = radius.round().min(w.max(h) as f32) as usize;
+    let sigma = 0.005 + 0.15 * unit(fv(e, "threshold", cx), 0.2);
+    let detail = unit(fv(e, "detail", cx), 0.0);
+
+    // display colour, per pixel
+    let src: Vec<[f32; 3]> = img
+        .px
+        .par_chunks(4)
+        .map(|p| {
+            if p[3] <= 1e-6 {
+                return [0.0; 3];
+            }
+            enc(Image::unpremul([p[0], p[1], p[2], p[3]])).map(|q| if q.is_finite() { q.max(0.0) } else { 0.0 })
+        })
+        .collect();
+    let smooth: Vec<Vec<f32>> = (0..3)
+        .map(|k| {
+            let i: Vec<f32> = src.par_iter().map(|p| p[k]).collect();
+            let q = guided(&i, w, h, r, sigma * sigma);
+            if detail <= 0.0 {
+                return q;
+            }
+            let removed: Vec<f32> = i.par_iter().zip(&q).map(|(a, b)| a - b).collect();
+            let coarse = blur_plane(&removed, w, h, scale);
+            q.par_iter().zip(&removed).zip(&coarse).map(|((q, d), c)| q + detail * (d - c)).collect()
+        })
+        .collect();
+    img.px.par_chunks_mut(4).enumerate().for_each(|(n, p)| {
+        let a = p[3];
+        if a <= 1e-6 {
+            return;
+        }
+        let at = |k: usize| smooth.get(k).and_then(|c| c.get(n)).copied().unwrap_or(0.0);
+        let l = dec([at(0), at(1), at(2)].map(|q| q.max(0.0)));
+        for k in 0..3 {
+            p[k] = l[k] * a;
+        }
+    });
+}
+
+/// A 0…100 parameter as 0…1; `default` when it is not a number.
+fn unit(v: f32, default: f32) -> f32 {
+    if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { default }
+}
+
+/// Self-guided filter of one plane (He, Sun and Tang 2010, Algorithm 1 with guide I = input p):
+/// per box, `a = var / (var + eps)` and `b = mean · (1 − a)`, averaged over the boxes covering
+/// each sample, then `q = a·I + b`.
+fn guided(i: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
+    let sq: Vec<f32> = i.par_iter().map(|v| v * v).collect();
+    let (mean, mean_sq) = (box_mean(i, w, h, r), box_mean(&sq, w, h, r));
+    let (a, b): (Vec<f32>, Vec<f32>) = mean
+        .par_iter()
+        .zip(&mean_sq)
+        .map(|(&m, &m2)| {
+            let var = (m2 - m * m).max(0.0);
+            let a = var / (var + eps.max(1e-12));
+            (a, m - a * m)
+        })
+        .unzip();
+    let (ma, mb) = (box_mean(&a, w, h, r), box_mean(&b, w, h, r));
+    i.par_iter().zip(&ma).zip(&mb).map(|((&v, &a), &b)| a * v + b).collect()
+}
+
+/// Mean of the (2r+1)² box around every sample of a `w`×`h` plane, edges clamped; running sums
+/// make it O(1) per sample for any radius.
+fn box_mean(p: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    if w == 0 || h == 0 || p.len() != w * h {
+        return p.to_vec();
+    }
+    let rows = box_rows_plane(p, w, r);
+    let cols = box_rows_plane(&transpose_plane(&rows, w, h), h, r);
+    transpose_plane(&cols, h, w)
+}
+
+fn box_rows_plane(p: &[f32], w: usize, r: usize) -> Vec<f32> {
+    let mut out = vec![0f32; p.len()];
+    let (last, ri) = (w as isize - 1, r as isize);
+    let n = (2 * r + 1) as f64;
+    out.par_chunks_mut(w).zip(p.par_chunks(w)).for_each(|(o, row)| {
+        let at = |x: isize| f64::from(row.get(x.clamp(0, last) as usize).copied().unwrap_or(0.0));
+        let mut acc: f64 = (-ri..=ri).map(at).sum();
+        for (x, v) in o.iter_mut().enumerate() {
+            *v = (acc / n) as f32;
+            acc += at(x as isize + ri + 1) - at(x as isize - ri);
+        }
+    });
+    out
+}
+
+/// The `h`×`w` transpose of a `w`×`h` plane.
+fn transpose_plane(p: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut t = vec![0f32; p.len()];
+    t.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        for (y, v) in col.iter_mut().enumerate() {
+            *v = p.get(y * w + x).copied().unwrap_or(0.0);
+        }
+    });
+    t
 }

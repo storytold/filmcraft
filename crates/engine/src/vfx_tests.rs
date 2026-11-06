@@ -65,8 +65,13 @@ fn effects_list_reports_folders_and_badges() {
     assert_eq!(find("crop")["category"], json!(["Legacy", "Video Effects"]));
     assert_eq!(find("luma_key")["badges"], json!({"accelerated": true, "float32": true, "yuv": true}));
     assert_eq!(find("lens_flare")["folder"], "Lights & Glows");
-    let n =
-        arr.iter().filter(|e| e["kind"] == "Video" && e["category"][0] == "Video Effects" && e["folder"] != "Obsolete" && e["folder"] != Value::Null).count();
+    // Surface Blur is FilmCraft's own, beyond Premiere's list
+    assert_eq!(find("surface_blur")["folder"], "Blur & Sharpen");
+    let n = arr
+        .iter()
+        .filter(|e| e["kind"] == "Video" && e["category"][0] == "Video Effects" && e["folder"] != "Obsolete" && e["folder"] != Value::Null)
+        .filter(|e| e["id"] != "surface_blur")
+        .count();
     assert_eq!(n, 93, "Premiere 26's current Video Effects");
 }
 
