@@ -3764,3 +3764,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p 全高清
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K 超高清
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080，VBR 1 次，目标 14 Mbps，AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160，VBR 1 次，目标 35 Mbps，AAC 320 kbps

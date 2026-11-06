@@ -1221,6 +1221,16 @@ fn settings_serde_and_estimates() {
 }
 
 #[test]
+fn av1_presets_are_listed_only_when_av1_encoder_is_available() {
+    let all = builtin_presets();
+    let has_av1 = all.iter().any(|p| p.settings.format == Format::Av1);
+    assert_eq!(has_av1, crate::available(Format::Av1));
+    if !crate::available(Format::Av1) {
+        assert!(all.iter().all(|p| !p.name.starts_with("AV1 ")));
+    }
+}
+
+#[test]
 fn builtin_presets_are_valid_and_unique() {
     let all = builtin_presets();
     assert!(all.len() >= 24);

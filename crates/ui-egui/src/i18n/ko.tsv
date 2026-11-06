@@ -3701,3 +3701,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10비트 4:2:0), 시퀀스 크기, 고정 품질 CRF 16, AAC 320 kbps, 10비트 마스터
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10비트 4:2:0, 모든 프레임이 키프레임), CRF 12, AAC 320 kbps, 편집하기 쉬운 중간 파일
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p 풀 HD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080, VBR 1패스, 목표 14 Mbps, AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160, VBR 1패스, 목표 35 Mbps, AAC 320 kbps

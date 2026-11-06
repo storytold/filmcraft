@@ -3754,3 +3754,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	シーケンスと同じサイズの H.264 High 10 (10-bit 4:2:0)、固定品質 CRF 16、AAC 320 kbps。10 ビットのマスター
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0、すべてのフレームがキーフレーム)、CRF 12、AAC 320 kbps。編集しやすい中間ファイル
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p フルHD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080、VBR 1パス、目標 14 Mbps、AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160、VBR 1パス、目標 35 Mbps、AAC 320 kbps

@@ -441,3 +441,9 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p Full HD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080, VBR 1 прохід, цільовий 14 Мбіт/с, AAC 320 кбіт/с
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160, VBR 1 прохід, цільовий 35 Мбіт/с, AAC 320 кбіт/с
