@@ -533,6 +533,12 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   max(Feather, 1) centred on the edge (linear = exact box-filtered antialiasing at Feather 0,
   blending into smoothstep as Feather grows). Masks combine top to bottom with Add / Subtract /
   Intersect / Lighten / Darken / Difference; Inverted and Opacity apply per mask.
+- **Colour range.** A mask may carry a `ColorRange` (Lumetri's HSL Secondary key: Hue Center,
+  Hue Range, Saturation Min, Luma Min / Max, Soften, Blur; keyframable mask parameters
+  `color_*`). Its key, computed on the picture the effect receives, multiplies the shape's
+  coverage before Inverted, so a qualifier combines with shapes and the other masks and works
+  with every effect. `masks.add` `"shape": "color"` makes one over the whole frame; `masks.set`
+  `colorRange` adds or removes one on any mask. CPU only (masked layers already are).
 - **Semantics.** A masked effect is `lerp(original, effected, coverage)` per premultiplied channel
   (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
   follow the clip's transform. Adjustment-layer masks are in sequence pixels.

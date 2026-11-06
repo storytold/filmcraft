@@ -12,6 +12,10 @@
 //! hold otherwise), *Feather* (falloff width in pixels, centred on the edge), *Opacity* (%),
 //! *Expansion* (pixels, grows/shrinks the shape by signed distance), *Inverted*, and a combine
 //! [`MaskMode`] with the masks above it. Coverage is computed by `filmcraft_render::mask`.
+//!
+//! A mask can also carry a [`ColorRange`]: it then covers only the pixels inside its shape whose
+//! hue, saturation and lightness fall in the range (Lumetri's HSL Secondary key, computed on the
+//! picture the effect receives), so a qualifier combines with shapes and works on every effect.
 
 use filmcraft_geom::{Affine, Vec2};
 use serde::{Deserialize, Serialize};
@@ -391,10 +395,63 @@ pub struct Mask {
     pub mode: MaskMode,
     #[serde(default)]
     pub track_method: TrackMethod,
+    /// Limits the mask to a colour range (schema v18).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Box<ColorRange>>,
 }
 
 /// Mask parameter ids (keyframe commands address them with `"mask": n`).
 pub const MASK_PARAMS: [&str; 4] = ["path", "feather", "opacity", "expansion"];
+
+/// Colour range parameter ids, present while the mask has a [`ColorRange`].
+pub const COLOR_PARAMS: [&str; 7] = ["color_hue", "color_hue_range", "color_sat_min", "color_luma_min", "color_luma_max", "color_soften", "color_blur"];
+
+/// A mask's colour range: Lumetri's HSL Secondary key with the same parameters, ranges and
+/// defaults (Hue Center and Hue Range in degrees, the others 0…100).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorRange {
+    pub hue: Param,
+    pub hue_range: Param,
+    pub sat_min: Param,
+    pub luma_min: Param,
+    pub luma_max: Param,
+    pub soften: Param,
+    pub blur: Param,
+}
+
+impl Default for ColorRange {
+    fn default() -> Self {
+        let f = |v| Param::new(ParamValue::Float(v));
+        Self { hue: f(0.0), hue_range: f(30.0), sat_min: f(10.0), luma_min: f(5.0), luma_max: f(95.0), soften: f(20.0), blur: f(0.0) }
+    }
+}
+
+impl ColorRange {
+    fn param(&self, id: &str) -> Option<&Param> {
+        match id {
+            "color_hue" => Some(&self.hue),
+            "color_hue_range" => Some(&self.hue_range),
+            "color_sat_min" => Some(&self.sat_min),
+            "color_luma_min" => Some(&self.luma_min),
+            "color_luma_max" => Some(&self.luma_max),
+            "color_soften" => Some(&self.soften),
+            "color_blur" => Some(&self.blur),
+            _ => None,
+        }
+    }
+    fn param_mut(&mut self, id: &str) -> Option<&mut Param> {
+        match id {
+            "color_hue" => Some(&mut self.hue),
+            "color_hue_range" => Some(&mut self.hue_range),
+            "color_sat_min" => Some(&mut self.sat_min),
+            "color_luma_min" => Some(&mut self.luma_min),
+            "color_luma_max" => Some(&mut self.luma_max),
+            "color_soften" => Some(&mut self.soften),
+            "color_blur" => Some(&mut self.blur),
+            _ => None,
+        }
+    }
+}
 
 impl Mask {
     pub fn new(name: impl Into<String>, path: MaskPath) -> Self {
@@ -407,6 +464,7 @@ impl Mask {
             inverted: false,
             mode: MaskMode::Add,
             track_method: TrackMethod::default(),
+            color: None,
         }
     }
     pub fn param(&self, id: &str) -> Option<&Param> {
@@ -415,7 +473,7 @@ impl Mask {
             "feather" => Some(&self.feather),
             "opacity" => Some(&self.opacity),
             "expansion" => Some(&self.expansion),
-            _ => None,
+            _ => self.color.as_deref()?.param(id),
         }
     }
     pub fn param_mut(&mut self, id: &str) -> Option<&mut Param> {
@@ -424,7 +482,7 @@ impl Mask {
             "feather" => Some(&mut self.feather),
             "opacity" => Some(&mut self.opacity),
             "expansion" => Some(&mut self.expansion),
-            _ => None,
+            _ => self.color.as_deref_mut()?.param_mut(id),
         }
     }
     pub fn path_at(&self, t: filmcraft_time::Tick) -> MaskPath {
@@ -434,11 +492,15 @@ impl Mask {
         }
     }
     pub fn is_animated(&self) -> bool {
-        MASK_PARAMS.iter().any(|p| self.param(p).is_some_and(Param::is_animated))
+        MASK_PARAMS.iter().chain(&COLOR_PARAMS).any(|p| self.param(p).is_some_and(Param::is_animated))
     }
     /// Keyframe times of every mask parameter (for the keyframe lane / presets).
-    pub fn params_mut(&mut self) -> [&mut Param; 4] {
-        [&mut self.path, &mut self.feather, &mut self.opacity, &mut self.expansion]
+    pub fn params_mut(&mut self) -> Vec<&mut Param> {
+        let mut v = vec![&mut self.path, &mut self.feather, &mut self.opacity, &mut self.expansion];
+        if let Some(c) = self.color.as_deref_mut() {
+            v.extend([&mut c.hue, &mut c.hue_range, &mut c.sat_min, &mut c.luma_min, &mut c.luma_max, &mut c.soften, &mut c.blur]);
+        }
+        v
     }
 }
 
@@ -460,6 +522,31 @@ pub fn mask_param_defs() -> &'static [ParamDef] {
             fl("feather", "Mask Feather", 10.0, (0.0, 10_000.0), (0.0, 500.0), ""),
             fl("opacity", "Mask Opacity", 100.0, (0.0, 100.0), (0.0, 100.0), " %"),
             fl("expansion", "Mask Expansion", 0.0, (-10_000.0, 10_000.0), (-500.0, 500.0), ""),
+        ]
+    })
+}
+
+/// Parameter schemas of a colour range's rows in Effect Controls (Lumetri's HSL Secondary labels).
+pub fn color_param_defs() -> &'static [ParamDef] {
+    use std::sync::OnceLock;
+    static DEFS: OnceLock<Vec<ParamDef>> = OnceLock::new();
+    DEFS.get_or_init(|| {
+        let fl = |id, label, def, (min, max): (f64, f64), unit| ParamDef {
+            id,
+            label,
+            kind: ParamKind::Float { min, max, soft_min: min, soft_max: max, unit, decimals: 0 },
+            default: ParamValue::Float(def),
+            animatable: true,
+            group: None,
+        };
+        vec![
+            fl("color_hue", "Hue Center", 0.0, (0.0, 360.0), "°"),
+            fl("color_hue_range", "Hue Range", 30.0, (1.0, 180.0), "°"),
+            fl("color_sat_min", "Saturation Min", 10.0, (0.0, 100.0), ""),
+            fl("color_luma_min", "Luma Min", 5.0, (0.0, 100.0), ""),
+            fl("color_luma_max", "Luma Max", 95.0, (0.0, 100.0), ""),
+            fl("color_soften", "Soften", 20.0, (0.0, 100.0), ""),
+            fl("color_blur", "Blur", 0.0, (0.0, 100.0), ""),
         ]
     })
 }
@@ -520,6 +607,29 @@ mod tests {
         m.feather.put_keyframe(Tick(10), ParamValue::Float(4.0));
         let s = serde_json::to_string(&m).unwrap();
         let back: Mask = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, m);
+    }
+
+    /// A colour range round-trips, its parameters are addressable (and keyframable) by id, and a
+    /// mask without one reads and writes exactly as before.
+    #[test]
+    fn color_range_params_and_serde() {
+        let mut m = Mask::new("Mask (1)", MaskPath::rect(0.0, 0.0, 10.0, 10.0));
+        let plain = serde_json::to_value(&m).unwrap();
+        assert!(plain.get("color").is_none(), "{plain}");
+        assert_eq!(serde_json::from_value::<Mask>(plain).unwrap().color, None);
+        assert!(m.param("color_hue").is_none() && m.param_mut("color_blur").is_none());
+        assert_eq!(m.params_mut().len(), 4);
+        m.color = Some(Box::default());
+        assert_eq!(m.param("color_hue_range").and_then(|p| p.value.as_f64()), Some(30.0));
+        m.param_mut("color_hue").unwrap().put_keyframe(Tick(10), ParamValue::Float(20.0));
+        assert!(m.is_animated());
+        assert_eq!(m.params_mut().len(), 4 + COLOR_PARAMS.len());
+        for (id, d) in COLOR_PARAMS.iter().zip(color_param_defs()) {
+            assert_eq!(*id, d.id);
+            assert!(m.param(id).is_some(), "{id}");
+        }
+        let back: Mask = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(back, m);
     }
 

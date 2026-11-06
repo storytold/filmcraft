@@ -223,6 +223,44 @@ fn create_and_edit_masks_on_the_monitor() {
 
 /// The selected mask's outline and handles are drawn on the Program monitor only while its clip
 /// is selected, as Motion's box is: selecting another clip, or none, hides them (#1341).
+/// The colour range icon creates a whole-frame colour range mask; the Color Range checkbox
+/// removes the range and adds it back, and its HSL Secondary rows show while it is on.
+#[test]
+fn color_range_masks_from_effect_controls() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    d.exec("effects.apply", json!({"effect": "gaussian_blur"}));
+    d.exec("effects.setParam", json!({"clip": id, "effect": "gaussian_blur", "param": "blurriness", "value": 30.0}));
+    d.frames(4);
+    for fx in ["motion", "opacity", "time_remap"] {
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask.color"}));
+    d.frames(3);
+    let m = d.masks();
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(m[0]["colorRange"]["color_hue_range"], 30.0, "{m:?}");
+    assert!(d.has("effectControls.gaussian_blur.mask0.color_hue.stopwatch"));
+    d.shot("mask-color-range");
+    // scroll Effect Controls so the Color Range row is on screen
+    d.ok("ui.scroll", json!({"id": "effectControls.gaussian_blur.mask0", "dy": -200.0}));
+    d.frames(3);
+    d.shot("mask-color-range-rows");
+    d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.colorRange"}));
+    d.frames(3);
+    assert!(d.masks()[0]["colorRange"].is_null());
+    assert!(!d.has("effectControls.gaussian_blur.mask0.color_hue.stopwatch"));
+    d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.colorRange"}));
+    d.frames(3);
+    assert_eq!(d.masks()[0]["colorRange"]["color_luma_max"], 95.0);
+}
+
 #[test]
 fn mask_handles_follow_the_clip_selection() {
     let mut d = Driver::demo();
