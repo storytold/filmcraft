@@ -550,7 +550,7 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
     for c in n.children() {
         if c.is_text() {
             for ch in c.text().unwrap_or("").chars() {
-                if ch.is_whitespace() {
+                if is_xml_space(ch) {
                     out.pending = true;
                 } else {
                     out.flush();
@@ -587,8 +587,14 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
     }
 }
 
+/// XML whitespace: only these characters collapse (U+00A0 and other Unicode spaces are content).
+fn is_xml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
 fn clean(s: &str) -> String {
-    s.lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_string()
+    // `split` (not `lines`) keeps the empty edge lines produced by a leading or trailing `<br/>`.
+    s.split('\n').map(|l| l.trim_matches(is_xml_space)).collect::<Vec<_>>().join("\n")
 }
 
 pub fn parse(text: &str) -> Result<Document> {
@@ -719,7 +725,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                             o.s.push_str(&format!("</{t}>"));
                         }
                         let text = clean(&o.s);
-                        if e > b && !text.is_empty() {
+                        if e > b && !text.trim_matches(is_xml_space).is_empty() {
                             doc.cues.push(Cue { start: b, end: e, text, speaker: cue_speaker, id, ..Default::default() });
                         }
                     }
@@ -733,7 +739,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                                 let mut o = Out { s: String::new(), pending: false };
                                 collect(sp, styles, style_of(sp, styles, f), &mut o);
                                 let text = clean(&o.s);
-                                if se > sb && !text.is_empty() {
+                                if se > sb && !text.trim_matches(is_xml_space).is_empty() {
                                     doc.cues.push(Cue {
                                         start: sb,
                                         end: se,
@@ -758,6 +764,29 @@ mod tests {
 
     fn tm(rate: FrameRate) -> Timing {
         Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: FrameRate::new(1, 1) }
+    }
+
+    #[test]
+    fn only_xml_whitespace_collapses_in_cue_text() {
+        let xml =
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">\t 10\u{a0}km\u{2009}a\u{3000}b \t\r\n  c \n</p></div></body></tt>";
+        let doc = parse(xml).unwrap();
+        assert_eq!(doc.cues[0].text, "10\u{a0}km\u{2009}a\u{3000}b c");
+        let xml = "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">\u{a0}x<br/>y\u{a0}</p></div></body></tt>";
+        let doc = parse(xml).unwrap();
+        assert_eq!(doc.cues[0].text, "\u{a0}x\ny\u{a0}");
+    }
+
+    #[test]
+    fn edge_line_breaks_survive_round_trip() {
+        for (body, want) in [("<br/>text", "\ntext"), ("text<br/>", "text\n"), (" <br/> text <br/> ", "\ntext\n")] {
+            let xml = format!("<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">{body}</p></div></body></tt>");
+            let doc = parse(&xml).unwrap();
+            assert_eq!(doc.cues[0].text, want);
+            let out = write(&doc, Flavor::Dfxp, None, "en");
+            let again = parse(&out).unwrap();
+            assert_eq!(again.cues[0].text, want);
+        }
     }
 
     #[test]
