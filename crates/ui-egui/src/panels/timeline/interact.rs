@@ -241,7 +241,7 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
         tt = snap_playhead(app, seq, layout, tt);
     }
     // a press on a marker selects it: the playhead goes exactly onto it (#695)
-    if let Some(m) = marker_at(seq, layout, p) {
+    if let Some(m) = marker_at(seq, &app.session.state, layout, p) {
         tt = m.max(Tick::ZERO);
     }
     app.session.set_playhead(tt);
@@ -1187,7 +1187,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     // Marker flags overlap the work area's hit padding; a double-click has one owner.
     let marker_double_clicked = if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Some(marker) = marker_under_pointer(seq, layout, p)
+        && let Some(marker) = marker_under_pointer(seq, &app.session.state, layout, p)
     {
         crate::panels::marker_properties::open(app, marker);
         true
@@ -1214,7 +1214,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     // ---- double-click a marker on the ruler: the Edit Marker dialog (#3023)
     if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Some(marker) = marker_under_pointer(seq, layout, p)
+        && let Some(marker) = marker_under_pointer(seq, &app.session.state, layout, p)
     {
         super::super::marker_properties::open(app, marker);
     }
@@ -1281,7 +1281,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let marker = marker_under_pointer(seq, layout, p);
+        let marker = marker_under_pointer(seq, &app.session.state, layout, p);
         if let Some(m) = marker {
             app.session.set_playhead(m.start.max(Tick::ZERO));
         }
@@ -1292,7 +1292,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let on_ruler = layout.ruler.contains(p) && marker_under_pointer(seq, layout, p).is_none();
+        let on_ruler = layout.ruler.contains(p) && marker_under_pointer(seq, &app.session.state, layout, p).is_none();
         ctx.data_mut(|d| d.insert_temp(ruler_menu_id, on_ruler));
         if on_ruler {
             ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));

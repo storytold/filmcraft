@@ -972,11 +972,16 @@ fn mini_timeline(
             );
         }
     }
-    // markers: the sequence's (Program), the clip's or the subclip's inherited ones (Source)
+    // markers: the sequence's (Program), the clip's or the subclip's inherited ones (Source),
+    // without those the colour filter hides, so they are neither drawn nor clickable
     let markers = match which {
         Which::Program => app.session.active_sequence().map(|q| q.markers.clone()),
         Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
     };
+    let markers = markers.map(|mut list| {
+        list.retain(|m| app.session.state.marker_shown(m));
+        list
+    });
     let within = |time: Tick| time >= shown.0 && time <= shown.1;
     if let Some(markers) = &markers {
         paint_ruler_markers(app, p, bar, markers, &xof, &within, &shows);

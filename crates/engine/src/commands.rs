@@ -3017,7 +3017,8 @@ fn build() -> Vec<CommandSpec> {
                 let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
                 let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
                 let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
-                let id = s.edit_sequence("Add Marker", |q, ctx, _| {
+                let id = s.edit_sequence("Add Marker", |q, ctx, st| {
+                    st.show_marker_color(color, custom_color);
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker {
                         url: String::new(),
@@ -3043,7 +3044,7 @@ fn build() -> Vec<CommandSpec> {
             }
             let t = s.playhead();
             s.active_sequence().ok_or(EngineError::NoSequence)?;
-            if let Some(m) = s.active_sequence().and_then(|q| q.markers.iter().map(|m| m.start).find(|m| *m > t)) {
+            if let Some(m) = s.active_sequence().and_then(|q| q.markers.iter().filter(|m| s.state.marker_shown(m)).map(|m| m.start).find(|m| *m > t)) {
                 s.set_playhead(m);
             }
             Ok(Value::Null)
@@ -3054,7 +3055,7 @@ fn build() -> Vec<CommandSpec> {
             }
             let t = s.playhead();
             s.active_sequence().ok_or(EngineError::NoSequence)?;
-            if let Some(m) = s.active_sequence().and_then(|q| q.markers.iter().rev().map(|m| m.start).find(|m| *m < t)) {
+            if let Some(m) = s.active_sequence().and_then(|q| q.markers.iter().rev().filter(|m| s.state.marker_shown(m)).map(|m| m.start).find(|m| *m < t)) {
                 s.set_playhead(m);
             }
             Ok(Value::Null)
@@ -3064,8 +3065,8 @@ fn build() -> Vec<CommandSpec> {
                 return Ok(v);
             }
             let t = s.playhead();
-            s.edit_sequence("Clear Marker", |q, _, _| {
-                q.markers.retain(|m| m.start != t);
+            s.edit_sequence("Clear Marker", |q, _, st| {
+                q.markers.retain(|m| m.start != t || !st.marker_shown(m));
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -3083,8 +3084,8 @@ fn build() -> Vec<CommandSpec> {
             if let Some(v) = crate::source_monitor::route(s, "markers.clearAll", p)? {
                 return Ok(v);
             }
-            s.edit_sequence("Clear All Markers", |q, _, _| {
-                q.markers.clear();
+            s.edit_sequence("Clear All Markers", |q, _, st| {
+                q.markers.retain(|m| !st.marker_shown(m));
                 Ok(())
             })?;
             Ok(Value::Null)

@@ -180,6 +180,9 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
     let marker_y = ruler.min.y + 2.0;
     // Point flags stay whole; ranges split the same glyph across their endpoints.
     for m in &seq.markers {
+        if !app.session.state.marker_shown(m) {
+            continue;
+        }
         let x = layout.x_of(m.start);
         let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);

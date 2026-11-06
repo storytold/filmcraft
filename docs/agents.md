@@ -272,6 +272,11 @@ frames: the warning stays and the exit status is 0. The export result lists the 
 `offline` or `unreadable`), and `[]` when every clip it drew was online; check before exporting with
 `exec media.status` or `exec media.findMissing`.
 
+`markers.filterColors` hides marker colours in the Markers panel, on the Timeline ruler and in the
+Program and Source monitors; `markers.showAllMarkerColors` brings them back. Hidden markers stay in
+the project, but snapping, `markers.goNext`, `markers.goPrev`, `markers.clearCurrent` and
+`markers.clearAll` skip them. A marker added in a hidden colour shows that colour again.
+
 `markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
 in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF
 records; quotes, commas and embedded newlines are escaped. Columns are Sequence, Marker ID, Name,
