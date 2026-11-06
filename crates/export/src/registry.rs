@@ -205,6 +205,25 @@ pub fn hdr_available(format: Format) -> bool {
     probes.into_iter().any(|p| p())
 }
 
+fn cqp_probes() -> &'static RwLock<Vec<FormatProbe>> {
+    static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a probe indicating whether the encoder of `format` supports CQP (constant quantizer) mode.
+pub fn register_cqp_probe(format: Format, probe: fn() -> bool) {
+    let mut g = cqp_probes().write().unwrap_or_else(PoisonError::into_inner);
+    if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
+        g.push((format, probe));
+    }
+}
+
+/// Whether a registered probe says the encoder of `format` supports CQP mode on this machine.
+pub fn cqp_available(format: Format) -> bool {
+    let probes: Vec<fn() -> bool> = cqp_probes().read().unwrap_or_else(PoisonError::into_inner).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
 /// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
 /// says its encoder works here.
 pub fn available(format: Format) -> bool {

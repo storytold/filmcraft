@@ -441,3 +441,13 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+
+# Advanced Rate Control (CQP, multipass, AQ, lookahead)
+	CQP (constant quantizer)	CQP (постійний квантувач)
+	Quantizer (QP)	Квантувач (QP)
+	Multipass	Багатопрохідний режим
+	Spatial AQ	Просторове AQ
+	Lookahead	Lookahead
+	Enable hardware two-pass / multipass rate control	Увімкнути апаратний двопрохідний / багатопрохідний контроль бітрейту
+	Enable spatial adaptive quantization	Увімкнути просторову адаптивну квантизацію
+	Enable lookahead frame analysis	Увімкнути аналіз кадрів lookahead

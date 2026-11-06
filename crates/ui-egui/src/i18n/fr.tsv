@@ -3593,7 +3593,6 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
-
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Un marqueur de plage doit avoir une durée positive
 	Add Custom Color	Ajouter une couleur personnalisée
@@ -3736,3 +3735,13 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) à la taille de la séquence, qualité constante CRF 16, AAC 320 kbps ; un master 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, chaque image est une image clé), CRF 12, AAC 320 kbps ; un intermédiaire facile à monter
+
+# Advanced Rate Control (CQP, multipass, AQ, lookahead)
+	CQP (constant quantizer)	CQP (quantificateur constant)
+	Lookahead	Anticipation
+	Multipass	Multipasses
+	Quantizer (QP)	Quantificateur (QP)
+	Spatial AQ	AQ spatiale
+	Enable hardware two-pass / multipass rate control	Activer le contrôle de débit deux passes / multipasses matériel
+	Enable spatial adaptive quantization	Activer la quantification adaptative spatiale
+	Enable lookahead frame analysis	Activer l'analyse des images par anticipation

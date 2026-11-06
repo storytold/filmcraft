@@ -3754,3 +3754,13 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	シーケンスと同じサイズの H.264 High 10 (10-bit 4:2:0)、固定品質 CRF 16、AAC 320 kbps。10 ビットのマスター
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0、すべてのフレームがキーフレーム)、CRF 12、AAC 320 kbps。編集しやすい中間ファイル
+
+# Advanced Rate Control (CQP, multipass, AQ, lookahead)
+	CQP (constant quantizer)	CQP (固定量子化)
+	Lookahead	先読み
+	Multipass	マルチパス
+	Quantizer (QP)	量子化パラメーター (QP)
+	Spatial AQ	空間適応量子化 (AQ)
+	Enable hardware two-pass / multipass rate control	ハードウェア 2 パス / マルチパス レート制御を有効にする
+	Enable spatial adaptive quantization	空間適応量子化を有効にする
+	Enable lookahead frame analysis	先読みフレーム分析を有効にする

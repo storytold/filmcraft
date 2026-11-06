@@ -3746,3 +3746,13 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) con el tamaño de la secuencia, calidad constante CRF 16, AAC 320 kbps; un máster de 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, cada fotograma es clave), CRF 12, AAC 320 kbps; un intermedio fácil de editar
+
+# Advanced Rate Control (CQP, multipass, AQ, lookahead)
+	CQP (constant quantizer)	CQP (cuantizador constante)
+	Lookahead	Preanálisis
+	Multipass	Pasadas múltiples
+	Quantizer (QP)	Cuantizador (QP)
+	Spatial AQ	AQ espacial
+	Enable hardware two-pass / multipass rate control	Activar control de velocidad de dos pasos / pasadas múltiples por hardware
+	Enable spatial adaptive quantization	Activar cuantización adaptativa espacial
+	Enable lookahead frame analysis	Activar análisis de fotogramas por preanálisis

@@ -96,6 +96,7 @@ pub const NV_ENC_BUFFER_FORMAT_NV12: u32 = 0x1;
 pub const NV_ENC_BUFFER_FORMAT_YUV420_10BIT: u32 = 0x10000;
 /// ABGR: 8-bit packed, one 32-bit little-endian word per pixel with R in the lowest byte (bytes R, G, B, A).
 pub const NV_ENC_BUFFER_FORMAT_ABGR: u32 = 0x10000000;
+pub const NV_ENC_PARAMS_RC_CONSTQP: u32 = 0;
 pub const NV_ENC_PARAMS_RC_VBR: u32 = 1;
 pub const NV_ENC_PARAMS_RC_CBR: u32 = 2;
 pub const NV_ENC_TUNING_INFO_HIGH_QUALITY: u32 = 1;

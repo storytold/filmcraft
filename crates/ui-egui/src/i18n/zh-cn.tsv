@@ -3764,3 +3764,13 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件
+
+# Advanced Rate Control (CQP, multipass, AQ, lookahead)
+	CQP (constant quantizer)	CQP（恒定画质量化）
+	Lookahead	预分析
+	Multipass	多遍处理
+	Quantizer (QP)	量化参数 (QP)
+	Spatial AQ	空间自适应量化 (AQ)
+	Enable hardware two-pass / multipass rate control	启用硬件双遍/多遍码率控制
+	Enable spatial adaptive quantization	启用空间自适应量化
+	Enable lookahead frame analysis	启用前向预测帧分析

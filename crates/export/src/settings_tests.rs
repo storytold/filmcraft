@@ -1711,3 +1711,48 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+#[test]
+fn cqp_validation_rejection_and_summary() {
+    // 1. "cqp" round-trips through serde
+    let json_str = r#"{"bitrateMode":"cqp","qp":28,"multipass":true,"spatialAq":true,"lookahead":16}"#;
+    let s: ExportSettings = serde_json::from_str(json_str).expect("deserialize cqp settings");
+    assert_eq!(s.bitrate_mode, BitrateMode::Cqp);
+    assert_eq!(s.qp, Some(28));
+    assert!(s.multipass);
+    assert!(s.spatial_aq);
+    assert_eq!(s.lookahead, Some(16));
+    let serialized = serde_json::to_string(&s).expect("serialize");
+    assert!(serialized.contains(r#""bitrateMode":"cqp""#));
+
+    // 2. validate() rejects Cqp with hardware encoding off, and with no CQP probe registered
+    let mut s_h264 = ExportSettings { bitrate_mode: BitrateMode::Cqp, hardware_encoding: HardwareEncoding::Off, ..Default::default() };
+    let err = s_h264.validate().unwrap_err();
+    assert!(err.to_string().contains("does not support CQP"), "{err}");
+
+    // Format without registered CQP probe rejects Cqp even with HardwareEncoding::Auto
+    let s_wav = ExportSettings { format: Format::Wav, bitrate_mode: BitrateMode::Cqp, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+    let err_wav = s_wav.validate().unwrap_err();
+    assert!(err_wav.to_string().contains("does not support CQP"), "{err_wav}");
+
+    // 3. validate() rejects qp > 51
+    register_cqp_probe(Format::H264, || true);
+    s_h264.hardware_encoding = HardwareEncoding::Auto;
+    s_h264.qp = Some(52);
+    let err_qp = s_h264.validate().unwrap_err();
+    assert!(err_qp.to_string().contains("QP must be between 0 and 51"), "{err_qp}");
+    s_h264.qp = Some(51);
+    assert!(s_h264.validate().is_ok());
+
+    // 4. Built-in software H.264 factory returns Unsupported for Cqp
+    let h264_res = super::h264_factory(Format::H264, 64, 36, FrameRate::FPS_24, &s_h264);
+    assert!(matches!(h264_res, Some(Err(ExportError::Unsupported(_)))));
+
+    // 5. summary() shows the QP
+    s_h264.qp = Some(18);
+    let summary = s_h264.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(summary.video.contains("QP 18"), "{}", summary.video);
+    let s_hevc = ExportSettings { format: Format::Hevc, bitrate_mode: BitrateMode::Cqp, qp: Some(30), ..Default::default() };
+    let summary_hevc = s_hevc.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(summary_hevc.video.contains("QP 30"), "{}", summary_hevc.video);
+}

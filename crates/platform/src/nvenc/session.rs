@@ -18,11 +18,12 @@ use super::ffi::{
     NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID, NV_ENC_HEVC_CUSIZE_AUTOSELECT,
     NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_LEVEL_AUTOSELECT,
     NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS,
-    NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID,
-    NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN,
-    NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709,
-    NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
+    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_CONSTQP, NV_ENC_PARAMS_RC_VBR,
+    NV_ENC_PIC_FLAG_EOS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER,
+    NV_ENC_PRESET_P5_GUID, NV_ENC_QP, NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER,
+    NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN, NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709,
+    NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709, NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER,
+    NVENCAPI_VERSION, NvStatus, RC_ENABLE_AQ, RC_ENABLE_LOOKAHEAD,
 };
 
 /// The driver's entry points (loaded once).
@@ -160,6 +161,11 @@ pub struct Params {
     pub bitrate: u32,
     pub max_bitrate: u32,
     pub cbr: bool,
+    pub cqp: bool,
+    pub qp: u32,
+    pub multipass: bool,
+    pub spatial_aq: bool,
+    pub lookahead: Option<u32>,
     pub gop: u32,
     /// H.264 only: 0 baseline, 1 main, 2 high (HEVC is Main, or Main 10 with `ten_bit`).
     pub profile: u8,
@@ -375,12 +381,30 @@ impl Session {
             cfg.frameIntervalP = 1 + p.bframes as i32;
             let rc = &mut cfg.rcParams;
             rc.version = NV_ENC_RC_PARAMS_VER;
-            rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
-            rc.averageBitRate = p.bitrate.saturating_mul(1000);
-            rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
-            // a one-second buffer, the usual for streaming-style rate control
-            rc.vbvBufferSize = rc.maxBitRate;
-            rc.vbvInitialDelay = rc.vbvBufferSize;
+            if p.cqp {
+                rc.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+                let qp = p.qp.min(51);
+                rc.constQP = NV_ENC_QP { qpInterP: qp, qpInterB: qp, qpIntra: qp };
+            } else {
+                rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
+                rc.averageBitRate = p.bitrate.saturating_mul(1000);
+                rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
+                // a one-second buffer, the usual for streaming-style rate control
+                rc.vbvBufferSize = rc.maxBitRate;
+                rc.vbvInitialDelay = rc.vbvBufferSize;
+            }
+            if !p.cqp {
+                if p.spatial_aq {
+                    rc.flags |= RC_ENABLE_AQ;
+                }
+                if let Some(la) = p.lookahead {
+                    rc.flags |= RC_ENABLE_LOOKAHEAD;
+                    rc.lookaheadDepth = la.clamp(1, 64) as u16;
+                }
+                if p.multipass {
+                    rc.multiPass = 2;
+                }
+            }
             match p.codec {
                 Codec::H264 => {
                     let h = &mut cfg.encodeCodecConfig.h264Config;
