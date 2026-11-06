@@ -1041,3 +1041,39 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn frame_budget_clamping_logic() {
+    let (pool, per_cache) = clamp_frame_budgets(FRAME_BUDGET);
+    assert_eq!(pool, 1 << 30);
+    assert_eq!(per_cache, 384 << 20); // exactly 3/8 of 1 GiB, matching FRAME_CACHE_CEILING
+
+    let (small_pool, small_cache) = clamp_frame_budgets(100);
+    assert_eq!(small_pool, 256 << 20);
+    assert_eq!(small_cache, (256 << 20) * 3 / 8);
+
+    let (large_pool, large_cache) = clamp_frame_budgets(usize::MAX);
+    assert_eq!(large_pool, (4u64 << 30).min(usize::MAX as u64) as usize);
+    assert_eq!(large_cache, 384 << 20); // capped at FRAME_CACHE_CEILING (384 MiB)
+
+    // active_frame_budget returns a valid non-zero budget without modifying global state
+    assert!(active_frame_budget() >= 256 << 20);
+}
+
+#[test]
+fn pool_with_updated_budget_trims_at_new_budget_not_at_base() {
+    // Start with a large budget: 44 bytes held does NOT exceed it.
+    let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, 1 << 30));
+    let (a, b) = (samples(300, 250, 0, false), samples(300, 250, 0, false));
+    let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
+
+    assert_eq!(index_of(&ca.frame(&a, 10_000).expect("frame")), 10);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 44);
+
+    // Update pool's budget to 40 bytes (smaller than 44).
+    pool.budget_val.store(40, Ordering::Relaxed);
+
+    // Requesting frame on cb must trigger trim_frames and trim idle ca down to 40 bytes.
+    assert_eq!(index_of(&cb.frame(&b, 5_000).expect("frame")), 5);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 40);
+}

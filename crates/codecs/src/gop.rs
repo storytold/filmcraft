@@ -315,10 +315,40 @@ const RECENT: Duration = Duration::from_millis(500);
 /// layers plus the clips just left behind).
 const HARD_DECODERS: usize = 8;
 
-/// Decoded frames all caches may hold together before idle ones give theirs up. Each cache also
+/// Base decoded frames all caches may hold together before idle ones give theirs up. Each cache also
 /// has its own budget, which alone let every clip on a timeline keep hundreds of MB of frames
 /// nobody was looking at.
 pub const FRAME_BUDGET: usize = 1 << 30;
+
+static GLOBAL_BUDGET: AtomicUsize = AtomicUsize::new(FRAME_BUDGET);
+static CACHE_BUDGET: AtomicUsize = AtomicUsize::new(384 << 20);
+
+/// Clamp a candidate pool frame budget (in bytes) and calculate the matching per-stream budget.
+pub fn clamp_frame_budgets(bytes: usize) -> (usize, usize) {
+    let min_pool = 256 << 20;
+    let max_pool = (4u64 << 30).min(usize::MAX as u64) as usize;
+    let pool = bytes.clamp(min_pool, max_pool);
+    // Maintain standard per-stream cache budget at 384 MiB base (clamped up to 3/8 of pool)
+    // using 64-bit arithmetic to prevent overflow on 32-bit targets.
+    let per_cache_calc = ((pool as u64).saturating_mul(3) / 8).min(usize::MAX as u64) as usize;
+    let max_cache = (384u64 << 20).min(usize::MAX as u64) as usize;
+    let per_cache = per_cache_calc.clamp(96 << 20, max_cache);
+    (pool, per_cache)
+}
+
+/// Set the process-wide decoded frame budget (bytes) for GOP caching.
+/// Automatically adjusts cache headroom for higher-RAM systems (e.g. 32 GB+).
+pub fn set_frame_budget(bytes: usize) {
+    let (pool, per_cache) = clamp_frame_budgets(bytes);
+    GLOBAL_BUDGET.store(pool, Ordering::Relaxed);
+    CACHE_BUDGET.store(per_cache, Ordering::Relaxed);
+    Pool::global().budget_val.store(pool, Ordering::Relaxed);
+}
+
+/// Retrieve the active global frame budget in bytes.
+pub fn active_frame_budget() -> usize {
+    GLOBAL_BUDGET.load(Ordering::Relaxed)
+}
 
 /// What the caches of a process share: the cap on live decoders and the frame budget.
 struct Pool {
@@ -333,7 +363,7 @@ struct Pool {
     hard_decoders: usize,
     /// Bytes of the frames the caches hold.
     bytes: AtomicUsize,
-    budget: usize,
+    budget_val: AtomicUsize,
 }
 
 /// The part of a [`GopCache`] its pool reaches.
@@ -369,7 +399,7 @@ impl Pool {
             recent: idle,
             hard_decoders: max_decoders,
             bytes: AtomicUsize::new(0),
-            budget,
+            budget_val: AtomicUsize::new(budget),
         }
     }
 
@@ -383,7 +413,7 @@ impl Pool {
     /// The pool of every cache in the process.
     fn global() -> Arc<Pool> {
         static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
-        POOL.get_or_init(|| Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS))).clone()
+        POOL.get_or_init(|| Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, active_frame_budget()).tiered(RECENT, HARD_DECODERS))).clone()
     }
 
     fn register(&self, c: &Arc<Shared>) {
@@ -471,7 +501,8 @@ impl Pool {
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
     fn trim_frames(&self, me: &Shared) {
-        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        let limit = self.budget_val.load(Ordering::Relaxed);
+        let over = || self.bytes.load(Ordering::Relaxed) > limit;
         if !over() {
             return;
         }
@@ -610,7 +641,7 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: CACHE_BUDGET.load(Ordering::Relaxed) }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
