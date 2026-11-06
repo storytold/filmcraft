@@ -1543,13 +1543,11 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
         gs.decode(out)
     });
-    // Sharpen: Creative ▸ Sharpen's unsharp mask (the same Gaussian), mixed in by the key. It
-    // works on straight colour, so a soft alpha edge of one colour gets no halo
+    // Sharpen: Creative ▸ Sharpen's unsharp mask (σ 1.2 px at full resolution), mixed in by the
+    // key. It works on straight colour, so a soft alpha edge of one colour gets no halo, and blurs
+    // with sampled weights, which stay effective at the small σ of quarter-resolution playback
     if show_mask == 0 && sharpen.abs() > 1e-3 && mask.par_iter().any(|&m| m > 0.0) {
-        let radius = 1.2 * cx.px_scale.max(0.35);
-        let (rx, ry) = gaussian_boxes(img.w, img.h, radius, radius);
-        let mut blurred = img.clone();
-        box_blur(&mut blurred, &rx, &ry, true);
+        let blurred = sampled_gaussian(img, 1.2 * cx.px_scale.max(0.35));
         img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, b), &m)| {
             // transparent pixels stay empty (a blurred key can reach them)
             let a = p[3];
@@ -1566,6 +1564,36 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         });
     }
+}
+
+/// A separable Gaussian of `sigma` px (all four channels, edges repeated) from sampled weights,
+/// for blurs too small for [`gaussian`]'s box passes, which round σ below about 0.6 px to nothing.
+fn sampled_gaussian(img: &Image, sigma: f32) -> Image {
+    let (w, h) = (img.w, img.h);
+    if w == 0 || h == 0 || img.px.len() != w * h * 4 || sigma.is_nan() || sigma <= 0.0 {
+        return img.clone();
+    }
+    let r = ((3.0 * sigma).ceil() as usize).clamp(1, 32);
+    let mut k: Vec<f32> = (0..=2 * r).map(|i| (-(i as f32 - r as f32).powi(2) / (2.0 * sigma * sigma)).exp()).collect();
+    let sum: f32 = k.iter().sum();
+    k.iter_mut().for_each(|v| *v /= sum);
+    let mut rows = vec![0f32; img.px.len()];
+    rows.par_chunks_mut(w * 4).zip(img.px.par_chunks(w * 4)).for_each(|(o, row)| {
+        for x in 0..w {
+            for c in 0..4 {
+                o[x * 4 + c] = k.iter().enumerate().map(|(i, kv)| kv * row[(x + i).saturating_sub(r).min(w - 1) * 4 + c]).sum();
+            }
+        }
+    });
+    let mut out = Image::new(w, h);
+    out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, o)| {
+        for x in 0..w {
+            for c in 0..4 {
+                o[x * 4 + c] = k.iter().enumerate().map(|(i, kv)| kv * rows[((y + i).saturating_sub(r).min(h - 1) * w + x) * 4 + c]).sum();
+            }
+        }
+    });
+    out
 }
 
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges

@@ -379,3 +379,26 @@ fn hsl_sharpen_puts_no_halo_on_a_soft_alpha_edge() {
         }
     }
 }
+
+/// Sharpen and soften change keyed texture at full and at quarter-resolution playback (where the
+/// blur's σ is under half a pixel).
+#[test]
+fn hsl_sharpen_works_at_full_and_quarter_resolution() {
+    for scale in [1.0f32, 0.25] {
+        let run = |amount: f64| {
+            let mut img = textured_red_blue();
+            let e = lumetri(&[
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", F(0.0)),
+                ("hsl_hue_range", F(40.0)),
+                ("hsl_soft", F(0.0)),
+                ("hsl_sharpen", F(amount)),
+            ]);
+            apply(&mut img, &e, &FxCtx { px_scale: scale, ..cx(WorkingSpace::Rec709) });
+            spread(&img, 0)
+        };
+        let base = run(0.0);
+        assert!(run(100.0) > base * 1.2, "scale {scale}: sharpen {} vs {base}", run(100.0));
+        assert!(run(-100.0) < base * 0.8, "scale {scale}: soften {} vs {base}", run(-100.0));
+    }
+}
