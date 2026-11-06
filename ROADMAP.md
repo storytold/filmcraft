@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+Experimental contribution (2026-10-24, #388): saved-project links with an EffectCraft CLI adapter are implemented on this branch. Full-composition background cache refresh, error handling, relinking, and baking/restoring are in scope; frame serving, used ranges, web/Flatpak packaging and other app adapters remain. This is a draft prototype, not a readiness or parity-score increase. See [linked-projects](docs/linked-projects.md).
+
 - M3: Markers and clips share the existing sixteen clip presets plus a project-local custom hex palette. A reusable wheel/hex editor defines colors separately from marker editing; timeline markers expose Edit Marker with Name, Author and Notes. Marker/clip colors, palette edits and authors persist with undo and project saves. AVB marker import remains separate.
 
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.

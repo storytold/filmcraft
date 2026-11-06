@@ -394,3 +394,22 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
     assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
     assert_eq!(p.source_par(ItemId(987_654_321)), None);
 }
+
+#[test]
+fn max_id_reserves_orphaned_project_link_keys() {
+    let mut p = Project::new("Orphaned link");
+    p.project_links.insert(
+        ItemId(9000),
+        project_link::ProjectLink {
+            version: 1,
+            provider: "effectcraft".into(),
+            project_path: "missing.ecproj".into(),
+            object: "comp".into(),
+            object_name: "Old composition".into(),
+            revision: String::new(),
+            cache_generation: 0,
+            baked: false,
+        },
+    );
+    assert_eq!(p.max_id(), 9000);
+}
