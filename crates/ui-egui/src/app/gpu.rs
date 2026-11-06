@@ -10,9 +10,10 @@ impl FilmcraftApp {
             self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
-        // wgpu's default reaction to a validation error or lost device is to panic, which closed
-        // the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log instead and
-        // fall back to the CPU compositor.
+        // wgpu's default reaction to a validation or internal error, or a lost device, is to panic,
+        // which closed the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log
+        // instead and fall back to the CPU compositor. The effect stage captures its own errors, so
+        // a failure there only sends effects to the CPU.
         let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = broken.clone();
         rs.device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {

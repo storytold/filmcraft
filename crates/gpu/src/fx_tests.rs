@@ -361,27 +361,83 @@ fn gpu_effects_match_cpu_exactly() {
     effects_match_cpu_exactly(&dev, &q);
 }
 
-/// The same on DX12 with FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
-/// FilmCraft's builds). FXC aborted on the effect stage ("internal error: compilation aborted
-/// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
-/// CPU. WARP stands in when there is no GPU.
+/// A DX12 device on FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
+/// FilmCraft's builds). WARP stands in when there is no GPU.
 #[cfg(windows)]
-#[test]
-fn gpu_effects_match_cpu_exactly_with_fxc() {
+fn fxc_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::DX12;
     desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
     let instance = wgpu::Instance::new(desc);
     let adapter = [false, true].into_iter().find_map(|force_fallback_adapter| {
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter, ..Default::default() })).ok()
-    });
-    let Some(adapter) = adapter else {
+    })?;
+    eprintln!("DX12 + FXC on {}", adapter.get_info().name);
+    Some(pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("DX12 device"))
+}
+
+/// The same on FXC. It aborted on the effect stage ("internal error: compilation aborted
+/// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
+/// CPU.
+#[cfg(windows)]
+#[test]
+fn gpu_effects_match_cpu_exactly_with_fxc() {
+    let Some((dev, q)) = fxc_device() else {
         eprintln!("no DX12 adapter; skipping");
         return;
     };
-    eprintln!("DX12 + FXC on {}", adapter.get_info().name);
-    let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("DX12 device");
     effects_match_cpu_exactly(&dev, &q);
+}
+
+/// wgpu reports a shader its backend compiler rejects as an internal error, not a validation one,
+/// so the effect stage's validation scope missed it and the default handler panicked. Effects must
+/// fall back to the CPU, with the rest of the compositor still on the GPU. FXC compiles before any
+/// driver is involved, so no particular GPU is needed: it aborts on this huge workgroup array,
+/// whose size wgpu doesn't check.
+#[cfg(windows)]
+#[test]
+fn gpu_effect_stage_compiler_failure_falls_back_to_cpu() {
+    const UNCOMPILABLE: &str = "
+        var<workgroup> too_big: array<f32, 65536>;
+        @compute @workgroup_size(1) fn fx_px() { too_big[0] = 1.0; }
+        @compute @workgroup_size(1) fn fx_run() { too_big[0] = 1.0; }
+    ";
+    let Some((dev, q)) = fxc_device() else {
+        eprintln!("no DX12 adapter; skipping");
+        return;
+    };
+    // Must stay a compiler failure: a validation scope alone would capture a validation error, and
+    // this test would prove nothing.
+    let scope = dev.push_error_scope(wgpu::ErrorFilter::Internal);
+    let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(UNCOMPILABLE.into()) });
+    let _pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: None,
+        module: &module,
+        entry_point: Some("fx_px"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let error = poll_now(scope.pop()).flatten();
+    eprintln!("compiler failure: {error:?}");
+    assert!(matches!(error, Some(wgpu::Error::Internal { .. })), "expected an internal error, got {error:?}");
+
+    let mut c = GpuCompositor::with_fx_source(&dev, &q, UNCOMPILABLE);
+    assert!(c.fx.is_none(), "the effect stage built from a shader that doesn't compile");
+    let ops = vec![FxOp::eval(&effect("tint", &[("amount", fl(70.0))]), &cx(Tick::ZERO, 1.0), 64, 32).expect("tint")];
+    let plan = FramePlan::Layers {
+        width: 64,
+        height: 32,
+        layers: vec![PlanLayer {
+            fx: Some(Arc::new(LayerFx { size: (64, 32), decimation: 1, ops })),
+            ..PlanLayer::new(ramp_layer(64, 32, 2), Affine::IDENTITY, 1.0, Blend::Normal)
+        }],
+    };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
+    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
 }
 
 fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
