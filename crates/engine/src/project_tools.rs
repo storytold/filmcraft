@@ -1333,6 +1333,7 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
                     filmcraft_edit::insert_track_gap(t, first, len, ctx, &mut links);
                 }
             }
+            filmcraft_edit::drop_lone_links(q, &links);
             Ok(())
         })?;
     }

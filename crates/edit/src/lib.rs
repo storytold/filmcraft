@@ -91,7 +91,8 @@ pub enum TrimMode {
 
 /// Split the item strictly containing `t` into two. Returns the new (right) item's id.
 /// `links` maps old link groups to the new group for right-hand pieces (so linked partners split
-/// in the same operation stay linked to each other).
+/// in the same operation stay linked to each other); the sequence edits that split end with
+/// [`drop_lone_links`], which unlinks a piece whose partner was not split.
 pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) -> Option<ClipId> {
     let idx = track.items.iter().position(|i| i.start < t && t < i.end())?;
     let left = &mut track.items[idx];
@@ -169,6 +170,27 @@ pub fn shift_track_from(track: &mut Track, at: Tick, delta: Tick) {
 pub fn insert_track_gap(track: &mut Track, at: Tick, dur: Tick, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) {
     split_track_at(track, at, ctx, links);
     shift_track_from(track, at, dur);
+}
+
+/// Finish an operation's splits: clear the link of each right-hand piece whose new link group (a
+/// value of `links`) has no other member, because its partner was not split with it. A link with
+/// one member would read as linked with nothing to follow, so the piece is left unlinked, as a copy
+/// made without its partner is.
+pub fn drop_lone_links(seq: &mut Sequence, links: &HashMap<u64, u64>) {
+    if links.is_empty() {
+        return;
+    }
+    let mut members: HashMap<u64, usize> = links.values().map(|&l| (l, 0)).collect();
+    for l in seq.all_tracks().flat_map(|t| &t.items).filter_map(|i| i.link) {
+        if let Some(n) = members.get_mut(&l) {
+            *n += 1;
+        }
+    }
+    for i in seq.all_tracks_mut().flat_map(|t| &mut t.items) {
+        if i.link.is_some_and(|l| members.get(&l).is_some_and(|&n| n < 2)) {
+            i.link = None;
+        }
+    }
 }
 
 /// Whether `range` holds no items on a track.
@@ -321,6 +343,7 @@ pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx:
         ids.push(item.id);
         place(t, item);
     }
+    drop_lone_links(seq, &links);
     Ok(ids)
 }
 
@@ -352,6 +375,7 @@ pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &m
         ids.push(item.id);
         place(t, item);
     }
+    drop_lone_links(seq, &links);
     Ok(ids)
 }
 
@@ -367,6 +391,7 @@ pub fn razor(seq: &mut Sequence, tracks: &[TrackId], t: Tick, ctx: &mut EditCtx)
             out.push(id);
         }
     }
+    drop_lone_links(seq, &links);
     out
 }
 
@@ -386,6 +411,7 @@ pub fn razor_items(seq: &mut Sequence, items: &[ClipId], t: Tick, ctx: &mut Edit
             out.push(id);
         }
     }
+    drop_lone_links(seq, &links);
     out
 }
 
@@ -398,6 +424,7 @@ pub fn lift(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &mut 
             removed.extend(clear_track_range(tr, range, ctx, &mut links));
         }
     }
+    drop_lone_links(seq, &links);
     removed
 }
 
@@ -415,6 +442,7 @@ pub fn extract(seq: &mut Sequence, tracks: &[TrackId], range: TimeRange, ctx: &m
     for ct in seq.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
         captions::extract_range(ct, range);
     }
+    drop_lone_links(seq, &links);
     removed
 }
 
