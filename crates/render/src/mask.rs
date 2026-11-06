@@ -413,12 +413,15 @@ mod tests {
         img
     }
 
+    /// A colour range mask (default range: red) whose shape covers a `w`×`h` frame and well past it.
     fn whole(w: f64, h: f64) -> Mask {
         let mut m = mask(MaskPath::rect(-w, -h, 2.0 * w, 2.0 * h), 0.0);
         m.color = Some(Box::default());
         m
     }
 
+    /// A colour range keeps its mask to matching pixels: alone, inverted, on another hue, inside a
+    /// shape, intersected with a plain shape, and softened by Blur; shapes alone ignore it.
     #[test]
     fn color_range_limits_a_mask_to_matching_pixels() {
         let img = red_blue(20, 10);
