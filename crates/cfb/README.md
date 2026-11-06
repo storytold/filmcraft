@@ -50,3 +50,6 @@ chain is contiguous. Sibling trees are balanced binary search trees in [MS-CFB] 
 bytes) and multi-sector streams and up to 40 siblings; red-black invariants of every sibling tree;
 a 7.5 MB stream that needs DIFAT sectors; Unicode and case-insensitive names; truncation at every
 29 bytes and 1500 random mutations never panic and only return complete streams.
+The writer rejects a duplicate sibling name with an O(1) hash lookup on the upper-cased name (a scan over the
+siblings made n children cost O(n^2): 20 000 AAF markers took a minute); `adding_many_children_is_not_quadratic`
+and `duplicate_names_are_still_rejected` (`tests/writer_scale.rs`) cover it.

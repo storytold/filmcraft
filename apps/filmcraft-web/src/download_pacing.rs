@@ -1,4 +1,4 @@
-//! Spacing of browser downloads (pure, so it is tested natively in `tests/download_pacing.rs`; the
+//! Spacing of browser downloads (pure, so it is tested natively in `tests/it/download_pacing.rs`; the
 //! anchor clicks live in [`crate::fs::download`]).
 //!
 //! Chrome drops anchor-click downloads that start in one tight burst, so an image-sequence export

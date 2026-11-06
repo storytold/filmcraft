@@ -3,13 +3,25 @@
 use filmcraft_project::EffectInstance;
 use filmcraft_text::{Align, ParagraphStyle, TextStyle, layout, render};
 
-use super::*;
+use super::{FxCtx, Image, Vec2, chv, cv, fv, pv, tv};
 use crate::graphics::paint_mask;
+
+/// Where and how [`draw_text`] sets its text: font family, anchor, pixel size, alignment code
+/// (0 left, 1 centre, 2 right), colour and opacity of the black box behind it.
+#[derive(Clone, Copy)]
+pub(crate) struct TextLook<'a> {
+    pub family: &'a str,
+    pub pos: Vec2,
+    pub px: f32,
+    pub align: u32,
+    pub color: [f32; 4],
+    pub box_alpha: f32,
+}
 
 /// Draw `text` with its first baseline's cap height centred on `pos` (layer pixels), aligned
 /// left/centre/right on `pos.x`, over an optional black box.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, align: u32, color: [f32; 4], box_alpha: f32) {
+pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
+    let TextLook { family, pos, px, align, color, box_alpha } = look;
     if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() {
         return;
     }
@@ -50,7 +62,7 @@ pub fn simple_text(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let family = ["Inter", "JetBrains Mono"][chv(e, "font").min(1) as usize];
     let color = cv(e, "color", cx);
     let bg = fv(e, "bg_opacity", cx) / 100.0;
-    draw_text(img, &text, family, pos, size, chv(e, "alignment"), color, bg);
+    draw_text(img, &text, TextLook { family, pos, px: size, align: chv(e, "alignment"), color, box_alpha: bg });
 }
 
 /// The text a Metadata & Timecode Burn-in shows.
@@ -86,5 +98,5 @@ pub fn metadata_burnin(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         _ => (pv(e, "position", cx, img), 1),
     };
     let family = if matches!(chv(e, "source"), 0 | 1 | 4) { "JetBrains Mono" } else { "Inter" };
-    draw_text(img, &text, family, pos, size, align, cv(e, "color", cx), fv(e, "opacity", cx) / 100.0);
+    draw_text(img, &text, TextLook { family, pos, px: size, align, color: cv(e, "color", cx), box_alpha: fv(e, "opacity", cx) / 100.0 });
 }

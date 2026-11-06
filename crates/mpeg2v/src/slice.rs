@@ -4,7 +4,7 @@
 use crate::bits::Bits;
 use crate::headers::{PictureCodingExtension, PictureType, SCAN};
 use crate::idct::idct;
-use crate::mc::{Frame, predict};
+use crate::mc::{Block, Frame, predict};
 use crate::vlc::{DCT_EOB, DCT_ESCAPE, MB_BWD, MB_FWD, MB_INTRA, MB_PATTERN, MB_QUANT, MBA_ESCAPE, MBA_STUFFING, tables};
 
 /// Non-linear quantiser_scale (Table 7-6), indexed by quantiser_scale_code.
@@ -232,7 +232,6 @@ fn skipped_mb(p: &PicParams, st: &mut SliceState, addr: usize, buf: &mut MbBuf, 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn macroblock(p: &PicParams, st: &mut SliceState, b: &mut Bits, addr: usize, buf: &mut MbBuf, blk: &mut [i32; 64], t: &mut Target) -> R<()> {
     let tb = tables();
     let ti = match p.ptype {
@@ -257,15 +256,81 @@ fn macroblock(p: &PicParams, st: &mut SliceState, b: &mut Bits, addr: usize, buf
     if flags & MB_QUANT != 0 {
         st.qscale = qscale(p, b.read(5) as usize);
     }
-    // motion vectors
-    let (count, field_fmt, dual) = match (frame_pic, m.mtype) {
-        (true, MT_FIELD) => (2, true, false),
-        (true, MT_DUAL) | (false, MT_DUAL) => (1, true, true),
-        (true, _) => (1, false, false),
-        (false, MT_16X8) => (2, true, false),
-        (false, _) => (1, true, false),
-    };
     let concealment = intra && p.pce.concealment_motion_vectors;
+    read_motion_vectors(p, st, b, &mut m, concealment)?;
+    if concealment {
+        b.skip(1); // marker_bit
+    }
+    // coded_block_pattern
+    let nblocks = 4 + p.chroma_blocks();
+    let cbp = read_cbp(p, b, flags, intra)?;
+    let (mbx, mby) = (addr % p.mb_width, addr / p.mb_width);
+    if intra {
+        if !concealment {
+            st.pmv = [[[0; 2]; 2]; 2];
+        }
+    } else {
+        st.dc_pred = [dc_reset(p); 3];
+        if p.ptype == PictureType::P && flags & MB_FWD == 0 {
+            // "No MC": zero vector from the same position (same-parity field in field pictures)
+            st.pmv = [[[0; 2]; 2]; 2];
+            m.flags |= MB_FWD;
+            m.mtype = if frame_pic { MT_FRAME } else { MT_FIELD };
+            m.select[0][0] = p.parity;
+        }
+        predict_mb(p, &m, mbx, mby, buf);
+    }
+    // blocks
+    let (cbw, cbh) = p.cmb();
+    for i in 0..nblocks {
+        if cbp & (1 << (nblocks - 1 - i)) == 0 {
+            continue;
+        }
+        let cc = block_component(i);
+        let dc_only = block(p, st, b, cc, intra, blk)?;
+        idct(blk, dc_only);
+        place_block(buf, blk, i, (cbw, cbh), dct_type, intra);
+    }
+    if p.ptype == PictureType::D {
+        b.skip(1); // end_of_macroblock
+    }
+    t.put(mbx, mby, buf, (cbw, cbh));
+    st.last = m;
+    Ok(())
+}
+
+/// Colour component (0 luma, 1 Cb, 2 Cr) of block `i` of a macroblock.
+fn block_component(i: usize) -> usize {
+    if i < 4 { 0 } else { 1 + (i & 1) }
+}
+
+/// How a macroblock's motion vectors are sent.
+struct MvLayout {
+    /// Vectors per direction: 1, or 2 for field/16x8 prediction.
+    count: usize,
+    field_fmt: bool,
+    dual: bool,
+}
+
+impl MvLayout {
+    fn of(frame_pic: bool, mtype: u8) -> MvLayout {
+        let (count, field_fmt, dual) = match (frame_pic, mtype) {
+            (true, MT_FIELD) => (2, true, false),
+            (true, MT_DUAL) | (false, MT_DUAL) => (1, true, true),
+            (true, _) => (1, false, false),
+            (false, MT_16X8) => (2, true, false),
+            (false, _) => (1, true, false),
+        };
+        MvLayout { count, field_fmt, dual }
+    }
+}
+
+/// Read the motion vectors (and dual-prime vectors) of a macroblock, updating the predictors.
+fn read_motion_vectors(p: &PicParams, st: &mut SliceState, b: &mut Bits, m: &mut Motion, concealment: bool) -> R<()> {
+    let tb = tables();
+    let frame_pic = p.frame_picture();
+    let MvLayout { count, field_fmt, dual } = MvLayout::of(frame_pic, m.mtype);
+    let flags = m.flags;
     for s in 0..2 {
         let present = if s == 0 { flags & MB_FWD != 0 || concealment } else { flags & MB_BWD != 0 };
         if !present {
@@ -301,75 +366,49 @@ fn macroblock(p: &PicParams, st: &mut SliceState, b: &mut Bits, addr: usize, buf
             }
         }
     }
-    if concealment {
-        b.skip(1); // marker_bit
-    }
-    // coded_block_pattern
+    Ok(())
+}
+
+/// coded_block_pattern: one bit per block, first block in the most significant bit.
+fn read_cbp(p: &PicParams, b: &mut Bits, flags: i16, intra: bool) -> R<u32> {
     let nblocks = 4 + p.chroma_blocks();
-    let cbp: u32 = if flags & MB_PATTERN != 0 {
-        let v = tb.cbp.decode(b).ok_or(SliceError("bad coded_block_pattern"))? as u32;
+    Ok(if flags & MB_PATTERN != 0 {
+        let v = tables().cbp.decode(b).ok_or(SliceError("bad coded_block_pattern"))? as u32;
         if nblocks == 8 { (v << 2) | b.read(2) } else { v }
     } else if intra {
         (1 << nblocks) - 1
     } else {
         0
-    };
-    let (mbx, mby) = (addr % p.mb_width, addr / p.mb_width);
-    if intra {
-        if !concealment {
-            st.pmv = [[[0; 2]; 2]; 2];
-        }
+    })
+}
+
+/// Write (intra) or add (inter) the decoded block `i` into the macroblock buffer.
+fn place_block(buf: &mut MbBuf, blk: &[i32; 64], i: usize, cmb: (usize, usize), dct_type: bool, intra: bool) {
+    let (cbw, cbh) = cmb;
+    let cc = block_component(i);
+    let (dst, stride, x0, y0, step) = if i < 4 {
+        let x0 = (i & 1) * 8;
+        let (y0, step) = if dct_type { (i >> 1, 2) } else { ((i >> 1) * 8, 1) };
+        (&mut buf.y[..], 16, x0, y0, step)
     } else {
-        st.dc_pred = [dc_reset(p); 3];
-        if p.ptype == PictureType::P && flags & MB_FWD == 0 {
-            // "No MC": zero vector from the same position (same-parity field in field pictures)
-            st.pmv = [[[0; 2]; 2]; 2];
-            m.flags |= MB_FWD;
-            m.mtype = if frame_pic { MT_FRAME } else { MT_FIELD };
-            m.select[0][0] = p.parity;
-        }
-        predict_mb(p, &m, mbx, mby, buf);
-    }
-    // blocks
-    let (cbw, cbh) = p.cmb();
-    for i in 0..nblocks {
-        if cbp & (1 << (nblocks - 1 - i)) == 0 {
-            continue;
-        }
-        let cc = if i < 4 { 0 } else { 1 + (i & 1) };
-        let dc_only = block(p, st, b, cc, intra, blk)?;
-        idct(blk, dc_only);
-        // placement
-        let (dst, stride, x0, y0, step) = if i < 4 {
-            let x0 = (i & 1) * 8;
-            let (y0, step) = if dct_type { (i >> 1, 2) } else { ((i >> 1) * 8, 1) };
-            (&mut buf.y[..], 16, x0, y0, step)
+        let k = (i - 4) >> 1; // 0 for 4:2:0; 0/1 (top/bottom) for 4:2:2
+        let (y0, step) = if cbh == 16 && dct_type { (k, 2) } else { (k * 8, 1) };
+        (&mut buf.c[cc - 1][..], cbw, 0, y0, step)
+    };
+    for r in 0..8 {
+        let at = (y0 + r * step) * stride + x0;
+        let row = &mut dst[at..at + 8];
+        let src = &blk[r * 8..r * 8 + 8];
+        if intra {
+            for (o, &v) in row.iter_mut().zip(src) {
+                *o = v.clamp(0, 255) as u8;
+            }
         } else {
-            let k = (i - 4) >> 1; // 0 for 4:2:0; 0/1 (top/bottom) for 4:2:2
-            let (y0, step) = if cbh == 16 && dct_type { (k, 2) } else { (k * 8, 1) };
-            (&mut buf.c[cc - 1][..], cbw, 0, y0, step)
-        };
-        for r in 0..8 {
-            let at = (y0 + r * step) * stride + x0;
-            let row = &mut dst[at..at + 8];
-            let src = &blk[r * 8..r * 8 + 8];
-            if intra {
-                for (o, &v) in row.iter_mut().zip(src) {
-                    *o = v.clamp(0, 255) as u8;
-                }
-            } else {
-                for (o, &v) in row.iter_mut().zip(src) {
-                    *o = (*o as i32 + v).clamp(0, 255) as u8;
-                }
+            for (o, &v) in row.iter_mut().zip(src) {
+                *o = (*o as i32 + v).clamp(0, 255) as u8;
             }
         }
     }
-    if p.ptype == PictureType::D {
-        b.skip(1); // end_of_macroblock
-    }
-    t.put(mbx, mby, buf, (cbw, cbh));
-    st.last = m;
-    Ok(())
 }
 
 /// Decode and dequantise one block into `blk` (raster order). Returns whether only the DC
@@ -504,6 +543,7 @@ fn reference<'a>(p: &PicParams<'a>, s: usize, sel: usize) -> Option<&'a Frame> {
 /// Form the prediction of a non-intra macroblock in `buf` (§7.6).
 fn predict_mb(p: &PicParams, m: &Motion, mbx: usize, mby: usize, buf: &mut MbBuf) {
     let (cbw, cbh) = p.cmb();
+    let mb = Pred { mv: [0; 2], mbx, mby, cbw, cbh, avg: false };
     let frame_pic = p.frame_picture();
     let mut avg = false;
     for s in 0..2 {
@@ -516,7 +556,7 @@ fn predict_mb(p: &PicParams, m: &Motion, mbx: usize, mby: usize, buf: &mut MbBuf
                 MT_FIELD => {
                     for r in 0..2 {
                         let Some(f) = reference(p, s, m.select[r][s]) else { return gray(buf) };
-                        pred_block(p, buf, f, Some(m.select[r][s]), m.mv[r][s], mbx, mby, 8, r, 2, (cbw, cbh), avg);
+                        pred_block(p, buf, f, Some(m.select[r][s]), Pred { mv: m.mv[r][s], avg, ..mb }, (8, r, 2));
                     }
                 }
                 MT_DUAL => {
@@ -525,13 +565,13 @@ fn predict_mb(p: &PicParams, m: &Motion, mbx: usize, mby: usize, buf: &mut MbBuf
                         let opp = 1 - par;
                         let (mm, e) = if par == 0 { (if p.pce.top_field_first { 1 } else { 3 }, -1) } else { (if p.pce.top_field_first { 3 } else { 1 }, 1) };
                         let d = dual_vector(m.mv[0][s], m.dmv, mm, e);
-                        pred_block(p, buf, f, Some(par), m.mv[0][s], mbx, mby, 8, par, 2, (cbw, cbh), avg);
-                        pred_block(p, buf, f, Some(opp), d, mbx, mby, 8, par, 2, (cbw, cbh), true);
+                        pred_block(p, buf, f, Some(par), Pred { mv: m.mv[0][s], avg, ..mb }, (8, par, 2));
+                        pred_block(p, buf, f, Some(opp), Pred { mv: d, avg: true, ..mb }, (8, par, 2));
                     }
                 }
                 _ => {
                     let Some(f) = reference(p, s, 0) else { return gray(buf) };
-                    pred_block(p, buf, f, None, m.mv[0][s], mbx, mby, 16, 0, 1, (cbw, cbh), avg);
+                    pred_block(p, buf, f, None, Pred { mv: m.mv[0][s], avg, ..mb }, (16, 0, 1));
                 }
             }
         } else {
@@ -539,7 +579,7 @@ fn predict_mb(p: &PicParams, m: &Motion, mbx: usize, mby: usize, buf: &mut MbBuf
                 MT_16X8 => {
                     for r in 0..2 {
                         let Some(f) = reference(p, s, m.select[r][s]) else { return gray(buf) };
-                        pred_half(p, buf, f, m.select[r][s], m.mv[r][s], mbx, mby, r, (cbw, cbh), avg);
+                        pred_half(p, buf, f, m.select[r][s], Pred { mv: m.mv[r][s], avg, ..mb }, r);
                     }
                 }
                 MT_DUAL => {
@@ -549,12 +589,12 @@ fn predict_mb(p: &PicParams, m: &Motion, mbx: usize, mby: usize, buf: &mut MbBuf
                     let Some(fo) = reference(p, s, opp) else { return gray(buf) };
                     let e = if same == 1 { 1 } else { -1 };
                     let d = dual_vector(m.mv[0][s], m.dmv, 1, e);
-                    pred_block(p, buf, fs, Some(same), m.mv[0][s], mbx, mby, 16, 0, 1, (cbw, cbh), avg);
-                    pred_block(p, buf, fo, Some(opp), d, mbx, mby, 16, 0, 1, (cbw, cbh), true);
+                    pred_block(p, buf, fs, Some(same), Pred { mv: m.mv[0][s], avg, ..mb }, (16, 0, 1));
+                    pred_block(p, buf, fo, Some(opp), Pred { mv: d, avg: true, ..mb }, (16, 0, 1));
                 }
                 _ => {
                     let Some(f) = reference(p, s, m.select[0][s]) else { return gray(buf) };
-                    pred_block(p, buf, f, Some(m.select[0][s]), m.mv[0][s], mbx, mby, 16, 0, 1, (cbw, cbh), avg);
+                    pred_block(p, buf, f, Some(m.select[0][s]), Pred { mv: m.mv[0][s], avg, ..mb }, (16, 0, 1));
                 }
             }
         }
@@ -574,47 +614,49 @@ fn dual_vector(v: [i32; 2], dmv: [i32; 2], m: i32, e: i32) -> [i32; 2] {
     [scale(v[0]) + dmv[0], scale(v[1]) + e + dmv[1]]
 }
 
-/// Predict a 16-wide luma block of `lh` lines (plus chroma) from `f` (one field when `field`),
-/// into `buf` lines `first + k·step`. `lh` is 16 (frame or field-picture prediction) or 8 (one
-/// field of a frame macroblock).
-#[allow(clippy::too_many_arguments)]
-fn pred_block(
-    p: &PicParams,
-    buf: &mut MbBuf,
-    f: &Frame,
-    field: Option<usize>,
+/// One motion-compensated prediction: vector, macroblock position, chroma block size, and
+/// whether to average with what the buffer already holds.
+#[derive(Clone, Copy)]
+struct Pred {
     mv: [i32; 2],
     mbx: usize,
     mby: usize,
-    lh: usize,
-    first: usize,
-    step: usize,
-    (cbw, cbh): (usize, usize),
+    cbw: usize,
+    cbh: usize,
     avg: bool,
-) {
+}
+
+/// Predict a 16-wide luma block of `lh` lines (plus chroma) from `f` (one field when `field`),
+/// into `buf` lines `first + k·step`; `lines` is `(lh, first, step)`. `lh` is 16 (frame or
+/// field-picture prediction) or 8 (one field of a frame macroblock).
+fn pred_block(p: &PicParams, buf: &mut MbBuf, f: &Frame, field: Option<usize>, pr: Pred, lines: (usize, usize, usize)) {
+    let Pred { mv, mbx, mby, cbw, cbh, avg } = pr;
+    let (lh, first, step) = lines;
     // luma: base position in the reference plane's own (frame or field) lines
     let by = if lh == 8 { mby * 8 } else { mby * 16 };
     let (x, y) = ((mbx * 16) as i32 + (mv[0] >> 1), by as i32 + (mv[1] >> 1));
-    predict(&mut buf.y, first * 16, 16 * step, f.plane(0, field), x, y, mv[0] & 1 != 0, mv[1] & 1 != 0, 16, lh, avg);
+    predict(&mut buf.y, first * 16, 16 * step, f.plane(0, field), Block { x, y, hx: mv[0] & 1 != 0, hy: mv[1] & 1 != 0, bw: 16, bh: lh }, avg);
     let cmv = [if p.shx == 1 { mv[0] / 2 } else { mv[0] }, if p.shy == 1 { mv[1] / 2 } else { mv[1] }];
     let clh = if lh == 8 { cbh / 2 } else { cbh };
     let cby = mby * clh;
     let (cx, cy) = ((mbx * cbw) as i32 + (cmv[0] >> 1), cby as i32 + (cmv[1] >> 1));
+    let cb = Block { x: cx, y: cy, hx: cmv[0] & 1 != 0, hy: cmv[1] & 1 != 0, bw: cbw, bh: clh };
     for c in 0..2 {
-        predict(&mut buf.c[c], first * cbw, cbw * step, f.plane(1 + c, field), cx, cy, cmv[0] & 1 != 0, cmv[1] & 1 != 0, cbw, clh, avg);
+        predict(&mut buf.c[c], first * cbw, cbw * step, f.plane(1 + c, field), cb, avg);
     }
 }
 
 /// 16x8 motion compensation in a field picture: half `r` (0 upper, 1 lower) of the macroblock.
-#[allow(clippy::too_many_arguments)]
-fn pred_half(p: &PicParams, buf: &mut MbBuf, f: &Frame, field: usize, mv: [i32; 2], mbx: usize, mby: usize, r: usize, (cbw, cbh): (usize, usize), avg: bool) {
+fn pred_half(p: &PicParams, buf: &mut MbBuf, f: &Frame, field: usize, pr: Pred, r: usize) {
+    let Pred { mv, mbx, mby, cbw, cbh, avg } = pr;
     let (x, y) = ((mbx * 16) as i32 + (mv[0] >> 1), (mby * 16 + r * 8) as i32 + (mv[1] >> 1));
-    predict(&mut buf.y, r * 8 * 16, 16, f.plane(0, Some(field)), x, y, mv[0] & 1 != 0, mv[1] & 1 != 0, 16, 8, avg);
+    predict(&mut buf.y, r * 8 * 16, 16, f.plane(0, Some(field)), Block { x, y, hx: mv[0] & 1 != 0, hy: mv[1] & 1 != 0, bw: 16, bh: 8 }, avg);
     let cmv = [if p.shx == 1 { mv[0] / 2 } else { mv[0] }, if p.shy == 1 { mv[1] / 2 } else { mv[1] }];
     let ch = cbh / 2;
     let (cx, cy) = ((mbx * cbw) as i32 + (cmv[0] >> 1), (mby * cbh + r * ch) as i32 + (cmv[1] >> 1));
+    let cb = Block { x: cx, y: cy, hx: cmv[0] & 1 != 0, hy: cmv[1] & 1 != 0, bw: cbw, bh: ch };
     for c in 0..2 {
-        predict(&mut buf.c[c], r * ch * cbw, cbw, f.plane(1 + c, Some(field)), cx, cy, cmv[0] & 1 != 0, cmv[1] & 1 != 0, cbw, ch, avg);
+        predict(&mut buf.c[c], r * ch * cbw, cbw, f.plane(1 + c, Some(field)), cb, avg);
     }
 }
 

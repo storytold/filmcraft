@@ -110,13 +110,13 @@ pub const COLUMNS: [&str; 15] = [
 /// The text of one column of an item (empty when the item has no such value).
 pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
     let media = match &it.kind {
-        ItemKind::Media(m) => Some(m),
+        ItemKind::Media(m) => Some(m.as_ref()),
         ItemKind::Subclip { parent, .. } => p.item(*parent).and_then(|x| x.as_media()),
         _ => None,
     };
     match column.to_ascii_lowercase().as_str() {
         "name" => it.name.clone(),
-        "label" => it.label.name().to_string(),
+        "label" => it.label_value(),
         "media type" | "type" => it.type_label().to_string(),
         "frame rate" => {
             if it.has_video() {

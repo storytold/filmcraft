@@ -32,6 +32,7 @@ impl Decoder {
 
     /// Creates a decoder for a parsed header at `sample_rate` (8/12/16/24/48 kHz).
     pub fn from_head(head: OpusHead, sample_rate: u32) -> Result<Decoder> {
+        head.validate()?;
         let mut streams = Vec::with_capacity(head.streams);
         for s in 0..head.streams {
             let ch = if s < head.coupled_streams { 2 } else { 1 };

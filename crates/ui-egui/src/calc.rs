@@ -15,25 +15,27 @@ pub fn eval(text: &str, current: f64) -> Option<f64> {
     if raw.len() > MAX_LEN {
         return None;
     }
-    // letters between two digits (`1e3`, `10x20`) are not a unit: refuse rather than guess
-    let mut i = 0;
-    while let Some(c) = raw.get(i) {
-        if c.is_alphabetic() {
-            let end = raw.iter().skip(i).position(|c| !c.is_alphabetic()).map_or(raw.len(), |n| i + n);
-            let before = i.checked_sub(1).and_then(|b| raw.get(b)).is_some_and(|c| c.is_ascii_digit());
-            let after = raw.get(end).is_some_and(|c| c.is_ascii_digit() || *c == '.');
-            if before && after {
-                return None;
-            }
-            i = end;
-        } else {
-            i += 1;
+    // spaces or a unit between two numbers (`1e3`, `10x20`, `10 x 20`, `1920 1080`) would fuse them
+    // into one number once dropped: refuse rather than guess
+    let skipped = |c: &char| c.is_alphabetic() || c.is_whitespace() || matches!(c, '%' | '°');
+    let mut after_number = false;
+    let mut gap = false;
+    for c in &raw {
+        if skipped(c) {
+            gap = true;
+            continue;
         }
+        let number_char = c.is_ascii_digit() || *c == '.';
+        if number_char && after_number && gap {
+            return None;
+        }
+        after_number = number_char;
+        gap = false;
     }
     let chars: Vec<char> = raw
         .iter()
         .copied()
-        .filter(|c| !(c.is_alphabetic() || c.is_whitespace() || matches!(c, '%' | '°')))
+        .filter(|c| !skipped(c))
         .map(|c| match c {
             '×' => '*',
             '÷' => '/',
@@ -180,5 +182,16 @@ mod tests {
         // letters between digits are refused, not dropped (`1e3` is not 13)
         assert_eq!(eval("1e3", 0.0), None);
         assert_eq!(eval("10x20", 0.0), None);
+    }
+
+    #[test]
+    fn numbers_separated_by_spaces_or_a_unit_are_not_merged() {
+        for bad in ["10 x 20", "1 e 3", "1920 1080", "10px 20", "50% 2", "1 .5"] {
+            assert_eq!(eval(bad, 0.0), None, "{bad:?}");
+        }
+        assert_eq!(eval("100 * 2", 0.0), Some(200.0));
+        assert_eq!(eval("10px", 0.0), Some(10.0));
+        assert_eq!(eval("10 px * 2", 0.0), Some(20.0));
+        assert_eq!(eval("*2", 5.0), Some(10.0));
     }
 }
