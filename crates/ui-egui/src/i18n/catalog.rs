@@ -69,6 +69,13 @@ impl Catalog {
         c
     }
 
+    /// Rearrange every translation with `f` (the Arabic catalog is stored in logical order and
+    /// rearranged for display, as egui lays the runs out left to right; see `crate::rtl`).
+    pub fn map_translations(&mut self, f: impl Fn(&str) -> String) {
+        self.plain.values_mut().for_each(|t| *t = f(t));
+        self.contextual.values_mut().for_each(|t| *t = f(t));
+    }
+
     pub fn plain(&self, s: &str) -> Option<&str> {
         self.plain.get(s).map(String::as_str)
     }

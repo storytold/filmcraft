@@ -45,6 +45,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
+    uic!("app.language.arabic", "العربية", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -248,6 +249,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.polish"
             | "app.language.swedish"
             | "app.language.turkish"
+            | "app.language.arabic"
+
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -260,6 +263,10 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         // Korean needs an installed Hangul font (none is bundled; see cjk.rs)
         if id == "app.language.korean" && !crate::i18n::korean_font_available() {
             return Err("no Korean font is installed on this system (for example Malgun Gothic or Noto Sans CJK KR); the interface stays in English".into());
+        }
+        // Arabic needs a craft-fonts or installed Arabic face (see rtl.rs)
+        if id == "app.language.arabic" && !crate::i18n::arabic_font_available() {
+            return Err("no Arabic font is installed on this system (for example Noto Sans Arabic or Tahoma); the interface stays in English".into());
         }
         let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
@@ -278,6 +285,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.polish" => crate::i18n::Language::Pl,
             "app.language.swedish" => crate::i18n::Language::Sv,
             "app.language.turkish" => crate::i18n::Language::Tr,
+            "app.language.arabic" => crate::i18n::Language::Ar,
+
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -944,6 +953,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.arabic" => it.checked = Some(app.ui.language == crate::i18n::Language::Ar),
+
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {
@@ -984,7 +995,15 @@ fn open_recent(items: &mut Vec<MenuItem>, session: &filmcraft_engine::Session, t
     let mut sub: Vec<MenuItem> = recent
         .iter()
         .enumerate()
-        .map(|(i, p)| MenuItem { id: format!("file.openRecent.{i}"), label: recent_name(p), path: path.clone(), shortcut: None, enabled: true, checked: None })
+        // A project name is user text: reordered for display (`rtl::visual`).
+        .map(|(i, p)| MenuItem {
+            id: format!("file.openRecent.{i}"),
+            label: crate::rtl::visual(&recent_name(p)).into_owned(),
+            path: path.clone(),
+            shortcut: None,
+            enabled: true,
+            checked: None,
+        })
         .collect();
     sub.push(MenuItem { id: "file.clearRecent".into(), label: tr("Clear Recent Files"), path, shortcut: None, enabled: !recent.is_empty(), checked: None });
     items.splice(at + 1..at + 1, sub);

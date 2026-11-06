@@ -8,6 +8,8 @@
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (language table: Arabic ships the menus in display order) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -82,7 +84,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,593 strings
 | Simplified Chinese | partial (whole interface; engine errors English) | 99.6% |
 | Spanish | partial (whole interface) | 99.9% |
 | Hindi | none (no Devanagari shaping in the interface) | 0% |
-| Arabic | none (no RTL interface) | 0% |
+| Arabic | menus only (labels and names in display order; needs an installed or craft-fonts Arabic face; no mirrored layout) | ~10% |
 | French | partial (whole interface; native review welcome) | ~100% |
 | Portuguese (Brazil) | partial (whole interface; native review welcome) | ~100% |
 | Indonesian | partial (whole interface; native review welcome) | ~100% |
@@ -115,6 +117,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
+- **2026-10-14:** Arabic ships the menus (358 strings, ~10%): `ar.tsv` shown in display order through `rtl::display_rtl` / `rtl::visual`, recent-project names reordered where painted, a craft-fonts or installed Arabic face is required (switching is refused without one), and `app.language.arabic` / `ar` in Settings ▸ General. The chrome is not mirrored and titles stay broken (#395).
+
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
 - **2026-10-10 (changed media):** Settings ▸ Media ▸ Automatically refresh growing files works: media files that change on disk while the project is open (a recording still being written, a render written over the file a clip uses) are read again every *Refresh growing files every* seconds and as soon as the window comes back to the front: the new length, picture and identity, without an undo step (`media.refreshChanged`, `media_watch`).
 - **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
@@ -178,6 +182,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 | 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
+| 2026-10-14 | minor | Language table: Arabic ships the menus in display order (~10%) |
+
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
 | 2026-10-10 | minor | Readiness-by-audience table with hours to ~95% per audience |
