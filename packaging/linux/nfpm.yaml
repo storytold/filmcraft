@@ -1,6 +1,6 @@
 # .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
 # the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
-# exports VERSION and NFPM_ARCH.
+# exports VERSION, NFPM_ARCH and GLIBC_FLOOR.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
 name: filmcraft
@@ -29,7 +29,7 @@ description: |-
 overrides:
   deb:
     depends:
-      - libc6 (>= 2.35)
+      - libc6 (>= ${GLIBC_FLOOR})
       - libgcc-s1
       - libxkbcommon0
       - libvulkan1 | libegl1
@@ -45,9 +45,9 @@ overrides:
       - xdg-desktop-portal
   rpm:
     depends:
-      # the same floor as the deb: built on glibc 2.35, so RHEL 9 (2.34) must refuse the install
-      # instead of installing binaries that can't start (#93)
-      - glibc >= 2.35
+      # the same floor as the deb: built on glibc 2.35 (riscv64: 2.39), so RHEL 9 (2.34) must
+      # refuse the install instead of installing binaries that can't start (#93)
+      - glibc >= ${GLIBC_FLOOR}
       - libxkbcommon
       - (vulkan-loader or libglvnd-egl)
       - alsa-lib
