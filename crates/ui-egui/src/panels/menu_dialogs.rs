@@ -230,6 +230,33 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.session.execute(&id, p).map_err(|e| e.to_string())
             }));
         }
+        // Lumetri Color panel menu ▸ Export .cube…: ask where to save the grade, then export it
+        "lumetri.exportCube" if params.get("path").is_none() => {
+            if let Err(e) = enabled(app, id) {
+                return Some(Err(e));
+            }
+            // the clip is fixed now, not when the dialog closes
+            let found = app.session.state.selection.iter().find_map(|c| {
+                let (_, it) = app.session.active_sequence()?.find_item(*c)?;
+                it.effects.iter().any(|e| e.enabled && e.effect == "lumetri").then(|| (c.0, it.name.clone()))
+            });
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Lumetri Color".into())) };
+            let stem: String =
+                stem.unwrap_or_else(|| "Lumetri".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+            let mut p = params.as_object().cloned().unwrap_or_default();
+            p.entry("clip").or_insert(json!(clip));
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::save_as(tl!("Cube LUT"), &["cube"], &format!("{stem}.cube")), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                p.insert("path".into(), json!(path));
+                let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+                app.ui.status = match &r {
+                    Ok(_) => tlf!("Exported {path}", path),
+                    Err(e) => e.clone(),
+                };
+                r
+            }));
+        }
         "file.mediaPropertiesFile" if params.get("path").is_none() => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();

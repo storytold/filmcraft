@@ -320,3 +320,104 @@ fn color_info_says_which_values_no_tag_gave() {
     let item = s.active_sequence().unwrap().find_item(clip).unwrap().1.item;
     assert_eq!(s.execute("media.colorInfo", json!({"item": item.0})).unwrap()["assumed"], serde_json::Value::Null);
 }
+
+/// Linear premultiplied pixels to encoded RGB (sRGB transfer), for comparing renders as the
+/// viewer sees them.
+fn encoded(img: &filmcraft_render::Image) -> Vec<[f32; 3]> {
+    use filmcraft_color::linear_to_srgb;
+    img.px.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2]].map(|v| linear_to_srgb(v.clamp(0.0, 1.0)))).collect()
+}
+
+#[test]
+fn export_cube_gives_the_render_when_applied_to_the_ungraded_frame() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    for (param, value) in [("exposure", 0.5), ("contrast", 20.0), ("saturation", 140.0), ("temperature", 25.0), ("vignette_amount", -2.0), ("sharpen", 50.0)] {
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": "lumetri", "param": param, "value": value})).unwrap();
+    }
+    let undo = s.history.undo.len();
+    let path = tmp("grade.cube");
+    let r = s.execute("lumetri.exportCube", json!({"path": path, "size": 33})).unwrap();
+    assert_eq!((r["clip"].as_u64(), r["size"].as_u64()), (Some(clip.0), Some(33)), "{r}");
+    assert_eq!(r["leftOut"], json!(["Vignette", "Sharpen"]), "what a LUT cannot hold is named");
+    assert_eq!(s.history.undo.len(), undo, "exporting changes nothing in the project");
+    let lut = Lut3d::parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(lut.size, 33);
+    // the render without the vignette and sharpen, and the ungraded render the table is applied to
+    let render = |s: &mut Session, edit: &dyn Fn(&mut filmcraft_project::EffectInstance)| {
+        s.edit_sequence("probe", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).unwrap();
+            edit(it.effects.iter_mut().find(|e| e.effect == "lumetri").unwrap());
+            Ok(())
+        })
+        .unwrap();
+        s.render_program(0.125).unwrap()
+    };
+    let graded = render(&mut s, &|e| {
+        for k in ["vignette_amount", "sharpen"] {
+            e.params.get_mut(k).unwrap().value = ParamValue::Float(0.0);
+        }
+    });
+    let plain = render(&mut s, &|e| e.enabled = false);
+    let (want, base) = (encoded(&graded), encoded(&plain));
+    assert!(want.iter().zip(&base).any(|(a, b)| (a[0] - b[0]).abs() > 0.05), "the grade changes the picture");
+    let (mut sum, mut worst) = (0.0f32, 0.0f32);
+    for (w, b) in want.iter().zip(&base) {
+        let got = lut.apply(*b);
+        for k in 0..3 {
+            let d = (w[k] - got[k]).abs();
+            sum += d;
+            worst = worst.max(d);
+        }
+    }
+    let mean_err = sum / (want.len() * 3) as f32;
+    assert!(mean_err < 1.5 / 255.0 && worst < 12.0 / 255.0, "mean {mean_err}, worst {worst}");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let path = tmp("nolumetri.cube");
+    // no Lumetri on the clip: nothing to export, and the command does not add one
+    assert!(s.execute("lumetri.exportCube", json!({"path": path})).is_err());
+    assert!(s.execute("lumetri.exportCube", json!({"clip": clip.0, "path": path})).is_err());
+    assert!(!std::path::Path::new(&path).exists());
+    // a malformed `clip` is an error, not the selection's clip
+    assert!(s.execute("lumetri.exportCube", json!({"clip": "x", "path": path})).is_err());
+    let q = s.active_sequence().unwrap();
+    let other = q.video_tracks[0].items.iter().rfind(|i| i.id != clip).unwrap();
+    let reference = other.start + filmcraft_time::Tick(other.duration.0 / 2);
+    s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0})).unwrap();
+    let path = tmp("match.cube");
+    let r = s.execute("lumetri.exportCube", json!({"path": path, "size": 17})).unwrap();
+    assert_eq!(r["leftOut"], json!([]), "{r}");
+    let lut = Lut3d::parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let grey = lut.apply([0.5, 0.5, 0.5]);
+    assert!((0..3).any(|k| (grey[k] - 0.5).abs() > 0.002), "the match grades: {grey:?}");
+    // a Lumetri that is switched off is not a grade to export
+    let set_enabled = |s: &mut Session, on: bool| {
+        s.edit_sequence("toggle", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).unwrap();
+            it.effects.iter_mut().for_each(|e| e.enabled = on);
+            Ok(())
+        })
+        .unwrap();
+    };
+    set_enabled(&mut s, false);
+    assert!(s.execute("lumetri.exportCube", json!({"clip": clip.0, "path": path})).is_err());
+    set_enabled(&mut s, true);
+    // hostile parameters
+    for params in
+        [json!({"path": path, "size": 1}), json!({"path": path, "size": 66}), json!({"path": path, "size": -3}), json!({"path": path, "size": 4.5}), json!({})]
+    {
+        assert!(s.execute("lumetri.exportCube", params.clone()).is_err(), "{params}");
+    }
+    assert!(s.execute("lumetri.exportCube", json!({"path": "/nonexistent-dir/x.cube"})).is_err());
+    // a wide-gamut sequence grades in another pipeline: refused, not wrong
+    s.execute("sequence.colorSettings", json!({"wideGamut": true})).unwrap();
+    assert!(s.execute("lumetri.exportCube", json!({"path": path})).is_err());
+    std::fs::remove_file(&path).ok();
+}

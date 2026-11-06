@@ -72,6 +72,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_seq,
             apply_match,
         ),
+        query("lumetri.exportCube", "Export .cube…", r#"{"clip":id?,"path":str,"size":n=33}"#, export_cube),
         spec(
             "lumetri.setSection",
             "Toggle Lumetri Section",
@@ -163,6 +164,44 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     };
     std::fs::write(path, &text).map_err(|e| bad("lut.export", format!("{path}: {e}")))?;
     Ok(json!({"path": path, "bytes": text.len()}))
+}
+
+/// `lumetri.exportCube`: the grade of a clip's Lumetri Color (also the result of `lumetri.applyMatch`)
+/// as a 3D `.cube` LUT: its per-pixel colour pipeline sampled on a `size³` lattice in the sequence's
+/// output encoding, so the table applied to the ungraded frame gives the render. `clip` defaults to
+/// the first selected clip that has Lumetri. The vignette, sharpen and the HSL Secondary denoise
+/// and blur cannot live in a LUT: they are left out and named, with the other effects on the clip,
+/// in `leftOut`. The grade is sampled at the playhead (inside the clip). Nothing in the project
+/// changes.
+fn export_cube(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "lumetri.exportCube";
+    let path = str_p(p, "path").ok_or_else(|| bad(CMD, "need `path`"))?;
+    let size = crate::commands::checked_u32_p(p, "size", CMD)?.unwrap_or(33) as usize;
+    let q = s.active_sequence().ok_or_else(|| bad(CMD, "no active sequence"))?;
+    let has_lumetri = |c: &ClipId| q.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri"));
+    let clip = match clip_p(p, "clip") {
+        Some(c) => c,
+        None if p.get("clip").is_some_and(|v| !v.is_null()) => return Err(bad(CMD, "`clip` must be a clip id")),
+        None => s.state.selection.iter().copied().find(has_lumetri).ok_or_else(|| bad(CMD, "select a clip with Lumetri Color (or pass `clip`)"))?,
+    };
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {}", clip.0)))?;
+    if !has_lumetri(&clip) {
+        return Err(bad(CMD, "the clip has no enabled Lumetri Color to export"));
+    }
+    let t = it.effect_time_at(s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start)));
+    let lumetri: Vec<&filmcraft_project::EffectInstance> = it.effects.iter().filter(|e| e.effect == "lumetri").collect();
+    let title: String = it.name.chars().filter(|c| !c.is_control()).collect();
+    let sample = filmcraft_render::lumetri_cube::sample_lumetri(&lumetri, Some(&s.project), t, q.settings.frame_rate.as_f64(), &q.settings.color, size, &title)
+        .map_err(|e| bad(CMD, e))?;
+    let mut left_out: Vec<String> = sample.left_out.iter().map(|n| n.to_string()).collect();
+    for e in it.effects.iter().filter(|e| e.enabled && e.effect != "lumetri") {
+        if let Some(d) = e.def().filter(|d| !d.intrinsic) {
+            left_out.push(d.name.to_string());
+        }
+    }
+    let text = sample.lut.to_cube();
+    std::fs::write(path, &text).map_err(|e| bad(CMD, format!("{path}: {e}")))?;
+    Ok(json!({"clip": clip.0, "path": path, "size": size, "bytes": text.len(), "leftOut": left_out}))
 }
 
 /// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
