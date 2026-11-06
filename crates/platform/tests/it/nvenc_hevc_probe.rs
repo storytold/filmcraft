@@ -10,6 +10,7 @@ use filmcraft_platform::nvenc::hevc_available;
 
 #[test]
 fn the_probe_runs_once_and_registers_the_format() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let t0 = Instant::now();
     let first = hevc_available();
     let cold = t0.elapsed();
