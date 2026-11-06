@@ -345,8 +345,20 @@ pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgres
     Ok(())
 }
 
+/// How long the download waits on the server: for the response headers, and for each read of the
+/// body. A stalled server would otherwise block the download for good, where the progress callback
+/// can't cancel it. A per-read limit doesn't cut off a large model on a slow but moving connection,
+/// as a limit on the whole body would.
+#[cfg(feature = "download")]
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[cfg(feature = "download")]
 fn agent() -> ureq::Agent {
+    agent_with_stall_timeout(STALL_TIMEOUT)
+}
+
+#[cfg(feature = "download")]
+fn agent_with_stall_timeout(stall: std::time::Duration) -> ureq::Agent {
     let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
     ureq::Agent::config_builder()
         .tls_config(
@@ -357,6 +369,8 @@ fn agent() -> ureq::Agent {
                 .build(),
         )
         .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .timeout_recv_response(Some(stall))
+        .timeout_per_read(Some(stall))
         .build()
         .into()
 }
@@ -364,6 +378,32 @@ fn agent() -> ureq::Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server that sends part of a body and then goes quiet ends the read with an error.
+    #[cfg(feature = "download")]
+    #[test]
+    fn a_stalled_download_times_out() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = c.read(&mut req);
+            c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nabc").unwrap();
+            c.flush().unwrap();
+            // hold the connection open past the client's limit
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        });
+        let agent = agent_with_stall_timeout(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let resp = agent.get(format!("http://127.0.0.1:{port}/m")).call().unwrap();
+        let mut got = Vec::new();
+        let read = resp.into_body().as_reader().read_to_end(&mut got);
+        assert!(read.is_err(), "{read:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4), "{:?}", started.elapsed());
+        let _ = server.join();
+    }
 
     #[test]
     fn catalogue_is_pinned_and_checksummed() {
