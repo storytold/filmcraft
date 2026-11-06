@@ -97,7 +97,7 @@ fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
 
 /// The selected clip (video first) and the audio linked to it when that audio is selected or
 /// linked selection is on — so clip audio FX (Parametric EQ, Custom Setup) stay visible on A/V pairs.
-fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
+pub(crate) fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     let Some(seq) = app.session.active_sequence() else { return Vec::new() };
     let picked: Vec<(ClipId, &TrackItem, TrackKind)> = app
         .session
