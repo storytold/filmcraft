@@ -58,7 +58,8 @@ pub(crate) fn read_accum(c: &GpuCompositor) -> Vec<f32> {
         wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
         wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(*h) } },
         wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
-    );
+    )
+    .unwrap();
     c.queue.submit([enc.finish()]);
     let slice = buf.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
