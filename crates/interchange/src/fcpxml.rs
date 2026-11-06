@@ -9,6 +9,8 @@
 //! - Rational times (`1001/24000s`) map exactly onto ticks.
 //! - Standalone `video` elements reference the picture of an asset (including still images),
 //!   without importing that asset's audio. Effect-backed generators are reported as unsupported.
+//! - `adjust-conform` (`fit`, the default, and `none`) maps to the clip's scale-to-frame-size flag;
+//!   `fill` is reported and imported as `fit`.
 //! - `adjust-transform` (position in percent of frame height, FCP y-up, counter-clockwise
 //!   rotation), `adjust-blend` (opacity), `adjust-volume` (dB) and their keyframes are mapped;
 //!   constant speed, reverse and freeze frames use a two-point `timeMap`.
@@ -557,8 +559,15 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
         let _ = ctx.seq_rate;
+        // no `adjust-conform` means `fit`: the picture is scaled into the frame before any transform
+        let mut conform = true;
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
+                ("adjust-conform", TrackKind::Video) => match a.attribute("type").unwrap_or("fit") {
+                    "none" => conform = false,
+                    "fill" => self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead"),
+                    _ => {}
+                },
                 ("adjust-transform", TrackKind::Video) => {
                     let to_px = move |v: &str| {
                         let (x, y) = pair(v);
@@ -621,6 +630,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
                 _ => {}
             }
+        }
+        if kind == TrackKind::Video {
+            ti.scale_to_frame = conform;
         }
     }
 
@@ -1077,6 +1089,10 @@ impl Exp<'_, '_> {
             if it.speed == 0.0 || it.frame_hold.is_some() { local } else { local + Tick(((t - it.source_in).0 as f64 / it.speed).round() as i64) }
         };
         if kind == TrackKind::Video {
+            // a clip without scale-to-frame keeps its native pixels; an absent element would mean `fit`
+            if !it.scale_to_frame {
+                children.push("<adjust-conform type=\"none\"/>".into());
+            }
             self.transform(it, seq, &to_local, &mut children);
         }
         if let Some(a) = audio.or((kind == TrackKind::Audio).then_some(it)) {
