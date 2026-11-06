@@ -66,7 +66,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, id: &str, label: &str, enabled: bool) -> bool {
     let t = app.tokens;
     let resp = ui.interact(r, egui::Id::unique(("text-tool", id)), if enabled { Sense::click() } else { Sense::hover() });
-    if enabled && resp.hovered() {
+    if enabled && (resp.hovered() || resp.has_focus()) {
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled { t.icon } else { t.text_faint });
