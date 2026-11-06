@@ -68,6 +68,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "sequence.normalizeMixTrack" => (tl!("Normalize Mix Track"), "normalizeMix", tl!("OK")),
         "sequence.simplify" => (tl!("Simplify Sequence"), "simplify", tl!("Simplify")),
         "sequence.transcribe" => (tl!("Transcribe Sequence"), "transcribe", tl!("Transcribe")),
+        "audio.removeSilence" => ("Remove Silence", "removeSilence", "Apply Cuts"),
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
         "help.systemCompatibilityReport" => (tl!("System Compatibility Report"), "systemReport", tl!("Close")),
@@ -92,6 +93,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
         "sequence.simplify" => "sequence.simplify",
         "sequence.transcribe" => "sequence.transcribe",
+        "audio.removeSilence" => "audio.removeSilence",
         "file.saveAsTemplate" => "file.saveAsTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
         "file.newColorMatte" => "file.newColorMatte",
@@ -341,6 +343,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
                 Value::Null,
             )
         }
+        "audio.removeSilence" => (json!({"thresholdDb": -40.0, "minSeconds": 0.7, "paddingSeconds": 0.12}), Value::Null),
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
             (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
@@ -474,6 +477,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
+            "audio.removeSilence" => {
+                ui.label("Analyze audio pauses and ripple-delete matching video and audio ranges.");
+                number(ui, &mut elems, pre, p, "thresholdDb", "Silence threshold:", NumberOptions { range: -120.0..=0.0, suffix: " dBFS" });
+                number(ui, &mut elems, pre, p, "minSeconds", "Minimum pause:", NumberOptions { range: 0.0..=60.0, suffix: " s" });
+                number(ui, &mut elems, pre, p, "paddingSeconds", "Keep padding:", NumberOptions { range: 0.0..=10.0, suffix: " s" });
+                if ui.button("Preview cuts").clicked() {
+                    action = Some("preview");
+                }
+                if let Some(result) = d.info.get("result") {
+                    let count = result["removed"].as_u64().unwrap_or(0);
+                    ui.label(format!("{count} cuts, {:.2} seconds to remove", result["seconds"].as_f64().unwrap_or(0.0)));
+                    if count == 0 {
+                        ui.label("No matching silence found. Try -30 dBFS or a shorter minimum pause.");
+                    }
+                }
+                ui.label("Apply Cuts edits the timeline. Save a test copy first; Undo reverses the edit.");
+            }
             "edit.find" => {
                 radios(ui, &mut elems, pre, p, "scope", tl!("Find in:"), &[("project", tl!("Project")), ("timeline", tl!("Timeline"))]);
                 ui.separator();
@@ -859,6 +879,17 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             app.ui.extras.dialog = None;
             return;
         }
+        Some("preview") => {
+            let mut params = d.params.clone();
+            params["preview"] = json!(true);
+            match app.session.execute("audio.removeSilence", params) {
+                Ok(result) => {
+                    d.info["result"] = result;
+                    d.error.clear();
+                }
+                Err(error) => d.error = error.to_string(),
+            }
+        }
         Some("ok") => match run(app, &d) {
             Ok(Some(info)) => d.info["result"] = json!(info),
             Ok(None) => {
@@ -877,6 +908,14 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
     let s = &mut app.session;
     let p = &d.params;
     match d.command.as_str() {
+        "audio.removeSilence" => {
+            let mut params = p.clone();
+            params["preview"] = json!(false);
+            let result = s.execute("audio.removeSilence", params).map_err(|e| e.to_string())?;
+            app.ui.status =
+                format!("Removed {} silence ranges ({:.2} seconds)", result["removed"].as_u64().unwrap_or(0), result["seconds"].as_f64().unwrap_or(0.0));
+            Ok(None)
+        }
         "edit.find" => {
             let mut q = p.clone();
             if q["scope"] == "timeline" {
