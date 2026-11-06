@@ -112,6 +112,31 @@ fn vtt_overrides(settings: &str) -> (Option<f32>, Option<CaptionAlign>) {
     (line, align)
 }
 
+
+/// Soft pixel coverage for a rounded rectangle.
+/// `px`, `py` are the integer pixel top-left coords (pixel occupies [px, px+1] x [py, py+1]).
+/// Returns a value in [0.0, 1.0]; when `r` is 0 the result equals the plain `fx * fy` used
+/// by the flat-box path so default-style output stays pixel-identical.
+fn rounded_rect_cover(px: f32, py: f32, x0: f32, x1: f32, y0: f32, y1: f32, r: f32) -> f32 {
+    let r = r.min((x1 - x0) * 0.5).min((y1 - y0) * 0.5).max(0.0);
+    let fx = ((px + 1.0).min(x1) - px.max(x0)).clamp(0.0, 1.0);
+    let fy = ((py + 1.0).min(y1) - py.max(y0)).clamp(0.0, 1.0);
+    if fx <= 0.0 || fy <= 0.0 || r <= 0.0 {
+        return fx * fy;
+    }
+    // Pixel centre.
+    let (pcx, pcy) = (px + 0.5, py + 0.5);
+    // Nearest point on the inner (straight-edged) rectangle.
+    let nx = pcx.clamp(x0 + r, x1 - r);
+    let ny = pcy.clamp(y0 + r, y1 - r);
+    // Only pixels outside both the horizontal and vertical inner bands are in a corner zone.
+    if (pcx - nx).abs() > 0.0 && (pcy - ny).abs() > 0.0 {
+        let d = ((pcx - nx).powi(2) + (pcy - ny).powi(2)).sqrt();
+        return ((r + 0.5 - d).clamp(0.0, 1.0)) * fx * fy;
+    }
+    fx * fy
+}
+
 /// Lay out and rasterise one caption for a `w`×`h` frame.
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
     if w == 0 || h == 0 {
@@ -157,6 +182,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         })
         .collect();
     let outline = (style.outline * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+    let corner_r = (style.box_corner_radius * scale).max(0.0);
     let grow = outline.ceil() + 1.0;
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
@@ -182,11 +208,12 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
             let (y0, y1) = (lt, lt + lh);
             for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
-                let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
                 for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
-                    let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
-                    let j = (y - oy) as usize * ow + (x - ox) as usize;
-                    bg[j] = (bg[j] + fx * fy).min(1.0);
+                    let a = rounded_rect_cover(x as f32, y as f32, x0, x1, y0, y1, corner_r);
+                    if a > 0.0 {
+                        let j = (y - oy) as usize * ow + (x - ox) as usize;
+                        bg[j] = (bg[j] + a).min(1.0);
+                    }
                 }
             }
         }
@@ -625,4 +652,24 @@ mod tests {
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
     }
+    #[test]
+    fn corner_radius_rounds_box() {
+        // A large corner radius should cut the box corners and produce fewer background pixels
+        // than a square box.
+        let flat = CaptionStyle { background: true, box_corner_radius: 0.0, ..Default::default() };
+        let rounded = CaptionStyle { background: true, box_corner_radius: 40.0, ..Default::default() };
+        let c = cap("Hello");
+        let o_flat = render_caption(&c, &flat, 1920, 1080).unwrap();
+        let o_rounded = render_caption(&c, &rounded, 1920, 1080).unwrap();
+        assert!(o_rounded.w > 0, "overlay has non-zero width");
+        // Count dark semi-transparent background pixels (same criterion as bottom_centre_with_box).
+        let count_bg = |o: &Overlay| o.px.chunks(4).filter(|p| p[3] > 0.7 && p[0] < 0.01).count();
+        assert!(
+            count_bg(&o_rounded) < count_bg(&o_flat),
+            "rounded corners should have fewer background pixels: rounded={} flat={}",
+            count_bg(&o_rounded),
+            count_bg(&o_flat),
+        );
+    }
+
 }
