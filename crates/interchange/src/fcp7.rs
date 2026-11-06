@@ -394,15 +394,19 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 "clipitem" | "generatoritem" => {
                     if let Some((ti_item, refs)) = self.clip_item(c, kind, rate, frame) {
                         let xml_id = node_key(c);
-                        self.xml_clip_ids.insert((seq_id, xml_id), ti_item.id);
+                        self.xml_clip_ids.insert((seq_id, xml_id.clone()), ti_item.id);
                         if !refs.is_empty() {
                             self.links.push(PendingLink { seq: seq_id, kind, track: ti, clip: ti_item.id, refs });
                         }
                         let t = &mut seq.tracks_mut(kind)[ti];
                         if t.items.iter().any(|o| o.start < ti_item.end() && ti_item.start < o.end()) {
                             self.report.warn("overlapping clip items on one track; the later one was moved to a new track");
+                            let clip = ti_item.id;
                             if self.b.place(seq, kind, ti + 1, ti_item).is_none() {
                                 self.report.warn(format!("FCP7 {kind:?} track exceeds the {MAX_IMPORTED_TRACKS}-track import limit; clip was skipped"));
+                                // never imported: must not stay a link target, or its partners get a one-member link group
+                                self.xml_clip_ids.remove(&(seq_id, xml_id));
+                                self.links.retain(|l| l.clip != clip);
                             }
                         } else {
                             t.items.push(ti_item);

@@ -737,3 +737,35 @@ fn a_huge_link_group_does_not_write_quadratic_links() {
     assert_eq!(text.matches("<linkclipref>").count(), 64 * 64);
     assert!(rep.has_warnings(), "{rep}");
 }
+
+/// A clip skipped because its overlap has no track left to move to was never imported, so a partner
+/// that links to it must not end up in a one-member link group.
+#[test]
+fn a_clip_skipped_at_the_track_limit_leaves_no_dangling_link() {
+    let empty_tracks = "<track></track>".repeat(255);
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4"><sequence id="sequence-1"><name>S</name><duration>48</duration>{RATE}
+  <media><video>{empty_tracks}<track>
+    <clipitem id="clipitem-1"><name>a</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out>
+      <file id="file-1"><name>a.mov</name><pathurl>file://localhost/media/a.mov</pathurl>{RATE}<duration>48</duration><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video></media></file>
+    </clipitem>
+    <clipitem id="clipitem-2"><name>b</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out><file id="file-1"/></clipitem>
+  </track></video>
+  <audio><track>
+    <clipitem id="clipitem-3"><name>c</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out>
+      <file id="file-2"><name>c.wav</name><pathurl>file://localhost/media/c.wav</pathurl>{RATE}<duration>48</duration><media><audio><channelcount>2</channelcount></audio></media></file>
+      <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+      <link><linkclipref>clipitem-2</linkclipref><mediatype>video</mediatype></link>
+      <link><linkclipref>clipitem-3</linkclipref><mediatype>audio</mediatype></link>
+    </clipitem>
+  </track></audio></media>
+</sequence></xmeml>"#
+    );
+    let (imp, rep) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert!(rep.has_warnings(), "{rep}");
+    assert_eq!(seq.tracks(TrackKind::Video).iter().map(|t| t.items.len()).sum::<usize>(), 1, "clip-2 is skipped");
+    assert_eq!(seq.tracks(TrackKind::Audio)[0].items[0].link, None);
+}
