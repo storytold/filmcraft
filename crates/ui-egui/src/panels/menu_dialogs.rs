@@ -264,6 +264,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 
 /// Initial parameters (and display info) of a dialog.
 fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value), String> {
+    let shown_bin = crate::panels::project::shown_bin(app);
     let s = &mut app.session;
     Ok(match cmd {
         "edit.find" => {
@@ -349,7 +350,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
         "file.newColorMatte" => {
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0}), Value::Null)
+            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0, "bin": shown_bin}), Value::Null)
         }
         "project.matteColor" => {
             let matte = match s.state.project_selection.as_slice() {

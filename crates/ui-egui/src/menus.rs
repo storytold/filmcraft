@@ -225,6 +225,15 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
     }
+    // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
+    // Sequence and Color Matte take it when they open); a `bin` of the caller wins
+    if matches!(id, "file.newAdjustmentLayer" | "file.newBarsAndTone" | "file.newBlackVideo" | "file.newCountingLeader" | "file.newTransparentVideo")
+        && params.get("bin").is_none_or(Value::is_null)
+        && let Some(bin) = crate::panels::project::shown_bin(app)
+        && let Some(object) = params.as_object_mut()
+    {
+        object.insert("bin".into(), json!(bin));
+    }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
