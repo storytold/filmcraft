@@ -213,6 +213,15 @@ impl MediaPool {
         }
     }
 
+    /// An empty pool for the next document: it keeps the openers (plug-in formats register once, at
+    /// start) and the proxy switch, and nothing that came from the old document.
+    pub fn successor(&self) -> MediaPool {
+        let next = MediaPool::default();
+        *next.openers.write().unwrap_or_else(PoisonError::into_inner) = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
+        next.set_use_proxies(self.use_proxies());
+        next
+    }
+
     /// The document dependent state of the pool, for [`Self::restore`].
     pub fn snapshot(&self) -> PoolSnapshot {
         let read = |lock: &RwLock<HashMap<ItemId, (String, SharedSource)>>| lock.read().unwrap_or_else(PoisonError::into_inner).clone();

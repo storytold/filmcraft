@@ -96,3 +96,21 @@ fn a_session_opens_only_the_formats_of_its_own_host() {
     assert!(import(&mut without_plugin, &file).is_err(), "the other session must not borrow the first host's plug-in");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_format_still_imports_after_another_project_is_opened() {
+    let dir = std::env::temp_dir().join(format!("fc-formats-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pic.rgbraw");
+    std::fs::write(&file, rgb_file(2, 1, &[10, 20, 30, 40, 50, 60])).unwrap();
+    let other = dir.join("Other.fcproj");
+    std::fs::write(&other, filmcraft_format::encode(&Session::default().project, false)).unwrap();
+
+    let mut session = Session::default();
+    let host = PluginHost::start(&mut session, HostConfig::default()).unwrap();
+    common::install(&host, &raw_package());
+    assert!(import(&mut session, &file).is_ok());
+    session.execute("file.open", json!({"path": other})).unwrap();
+    assert!(import(&mut session, &file).is_ok(), "opening a project dropped the plug-in's formats");
+    let _ = std::fs::remove_dir_all(&dir);
+}
