@@ -79,6 +79,12 @@ pub struct TrackItem {
     #[serde(default)]
     pub reverse: bool,
     pub enabled: bool,
+    /// Per-clip mute (silences audio and hides video in the output).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+    /// Per-clip solo (only this and other soloed clips play on the same track).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solo: bool,
     /// Linked partner items (video ↔ audio of the same source).
     #[serde(default)]
     pub link: Option<u64>,

@@ -520,6 +520,8 @@ impl Builder {
             speed: 1.0,
             reverse: false,
             enabled: true,
+            muted: false,
+            solo: false,
             link: None,
             group: None,
             effects: match kind {

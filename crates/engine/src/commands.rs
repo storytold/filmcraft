@@ -2399,6 +2399,36 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        cmd!("clip.mute", "Mute Clip", ["Clip"], None, r#"{"clips":[id]?,"muted":bool?}"#, has_selection, |s, p| {
+            let mut sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
+            sel.sort();
+            sel.dedup();
+            let force = p.get("muted").and_then(Value::as_bool);
+            s.edit_sequence("Mute Clip", |q, _, _| {
+                for c in &sel {
+                    if let Some((_, i)) = q.find_item_mut(*c) {
+                        i.muted = force.unwrap_or(!i.muted);
+                    }
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
+        cmd!("clip.solo", "Solo Clip", ["Clip"], None, r#"{"clips":[id]?,"solo":bool?}"#, has_selection, |s, p| {
+            let mut sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
+            sel.sort();
+            sel.dedup();
+            let force = p.get("solo").and_then(Value::as_bool);
+            s.edit_sequence("Solo Clip", |q, _, _| {
+                for c in &sel {
+                    if let Some((_, i)) = q.find_item_mut(*c) {
+                        i.solo = force.unwrap_or(!i.solo);
+                    }
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
         cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
             let sel = clips_p(s, p);
             // Unlink when any selected clip is linked, as the Timeline's context menu says (#1103):

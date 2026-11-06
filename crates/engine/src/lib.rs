@@ -1351,6 +1351,8 @@ mod avi_import_tests;
 #[cfg(test)]
 mod clip_mismatch_tests;
 #[cfg(test)]
+mod clip_mute_solo_tests;
+#[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
