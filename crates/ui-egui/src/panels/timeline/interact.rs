@@ -1063,7 +1063,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
 }
 
 /// An effect or transition dragged over a clip: previews where it would land (the transition
-/// spanning the nearest edge, the effect covering the clip) and applies it on release.
+/// spanning the nearest edge, the effect covering its target clips) and applies it on release.
 fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout) {
     let ctx = ui.ctx().clone();
     if let Some(effect) = crate::panels::dragged_effect(ui)
@@ -1080,6 +1080,8 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 filmcraft_project::EffectKind::AudioTransition => Some(TrackKind::Audio),
                 _ => None,
             });
+            let clips = if transition_kind.is_none() && app.session.state.selection.contains(&clip) { app.session.state.selection.clone() } else { vec![clip] };
+            let clip_ids: Vec<u64> = clips.iter().map(|c| c.0).collect();
             let edge = if p.x - layout.x_of(it.start) < layout.x_of(it.end()) - p.x { "in" } else { "out" };
             let mut params = json!({"effect": effect, "clip": clip.0, "edge": edge});
             if let Some(kind) = transition_kind {
@@ -1116,23 +1118,43 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                     }
                 }
             } else {
-                let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
-                ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                let mut outline_targets = clips.clone();
+                if matches!(filmcraft_project::find_effect(&effect).map(|d| d.kind), Some(filmcraft_project::EffectKind::Audio)) {
+                    for target in filmcraft_engine::commands::audio_effect_targets(&app.session, &clips) {
+                        if !outline_targets.contains(&target) {
+                            outline_targets.push(target);
+                        }
+                    }
+                }
+                for target in &outline_targets {
+                    if let Some((tid, it)) = seq.find_item(*target)
+                        && let Some(row) = layout.rows.iter().find(|r| r.track == tid)
+                    {
+                        let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
+                        let pane = layout.shown(row).intersect(layout.content);
+                        let visible = r.intersect(pane);
+                        if !visible.is_positive() {
+                            continue;
+                        }
+                        ui.painter().with_clip_rect(pane).rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                        app.auto.add(&format!("timeline.effectDropPreview.{}", target.0), visible, "Apply effect");
+                    }
+                }
             }
             if ctx.input(|i| i.pointer.any_released()) {
                 let r = if let Some(name) = effect.strip_prefix("preset:") {
-                    app.session.execute("presets.apply", json!({"preset": name, "clips": [clip.0]}))
+                    app.session.execute("presets.apply", json!({"preset": name, "clips": clip_ids}))
                 } else if let Some(name) = effect.strip_prefix(crate::panels::LUMETRI_PRESET_PREFIX) {
-                    app.session.execute("lumetri.applyPreset", json!({"name": name, "clips": [clip.0]}))
+                    app.session.execute("lumetri.applyPreset", json!({"name": name, "clips": clip_ids}))
                 } else if transition_kind.is_some() {
                     app.session.execute("effects.apply", params)
                 } else {
-                    app.session.execute("effects.apply", json!({"effect": effect, "clips": [clip.0]}))
+                    app.session.execute("effects.apply", json!({"effect": effect, "clips": clip_ids}))
                 };
                 if let Err(e) = r {
                     app.ui.status = e.to_string();
-                } else {
-                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+                } else if transition_kind.is_some() || !app.session.state.selection.contains(&clip) {
+                    let _ = app.session.execute("timeline.select", json!({"clips": clip_ids}));
                 }
                 crate::panels::clear_drag(ui);
             }
