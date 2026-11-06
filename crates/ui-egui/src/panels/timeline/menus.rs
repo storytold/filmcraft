@@ -55,6 +55,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
     ],
     &[("Label", "edit.label")],
     &[("Add Marker", "markers.add")],
+    &[("Apply Default Transitions", "sequence.applyDefaultTransitionsToSelection")],
     &[("Speed/Duration…", "clip.speedDuration"), ("Scene Edit Detection…", "clip.sceneEditDetection")],
     &[
         ("Frame Hold Options…", "clip.frameHoldOptions"),
