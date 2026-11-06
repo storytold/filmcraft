@@ -23,6 +23,74 @@ use crate::{FilmcraftApp, RelinkHint};
 
 type Elems = Vec<(String, egui::Rect, String)>;
 
+/// A Link Media search under way (#3937). Walking the chosen folder (up to
+/// [`filmcraft_engine::relink::SEARCH_LIMIT`] files) is the slow part, a long wait on a network
+/// volume, so it runs on another thread while the window keeps drawing. The files it lists are
+/// checked as candidates on the UI thread, as `media.search` checks them.
+#[derive(Clone, Debug)]
+pub struct LinkMediaSearch {
+    /// The `media.search` parameters: folder, item and what to match.
+    params: Value,
+    /// The files found, once the walk is over (`None` inside: it was cancelled).
+    done: std::sync::Arc<std::sync::Mutex<Option<Option<filmcraft_engine::relink::FolderIndex>>>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LinkMediaSearch {
+    fn start(ctx: &egui::Context, params: Value) -> Self {
+        let search = Self { params, done: Default::default(), cancel: Default::default() };
+        let folder = std::path::PathBuf::from(search.params["folder"].as_str().unwrap_or_default());
+        let (done, cancel, ctx) = (search.done.clone(), search.cancel.clone(), ctx.clone());
+        let run = move || {
+            let index = filmcraft_engine::relink::index_folder_until(&folder, filmcraft_engine::relink::SEARCH_LIMIT, &cancel);
+            *done.lock().unwrap_or_else(|e| e.into_inner()) = Some(index);
+            ctx.request_repaint();
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(run);
+        #[cfg(target_arch = "wasm32")]
+        run();
+        search
+    }
+
+    /// Stop the walk (the dialog closed, or another search replaced this one).
+    fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the walk was told to stop.
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The files found, when the walk is over.
+    fn take(&self) -> Option<Option<filmcraft_engine::relink::FolderIndex>> {
+        self.done.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+/// Show a search's result in the dialog: its candidates for the selected row, or why there are none.
+fn show_search_result(d: &mut LinkMediaDraft, result: filmcraft_engine::Result<Value>) {
+    match result {
+        Ok(v) => {
+            d.candidates = v["results"][0]["candidates"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|c| {
+                            let probs = c["problems"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+                            (c["path"].as_str().unwrap_or_default().to_string(), c["ok"] == json!(true), c["identityMatch"].as_bool(), probs)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            d.candidate = d.candidates.iter().position(|c| c.1);
+            d.message = if d.candidates.is_empty() { tl!("Nothing found with that name.").into() } else { String::new() };
+        }
+        Err(e) => d.message = e.to_string(),
+    }
+}
+
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
     elems.push((id.into(), r.rect, label.into()));
 }
@@ -41,6 +109,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if app.ui.link_media.is_some() {
         link_media(app, ctx);
+    }
+    // Closing the dialog drops its search, and stops the walk.
+    if app.ui.link_media.is_none()
+        && let Some(search) = app.ui.link_media_search.take()
+    {
+        search.cancel();
     }
     if app.ui.make_offline.is_some() {
         make_offline(app, ctx);
@@ -306,6 +380,18 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     let (item, ..) = rows[d.row].clone();
+    // A search whose walk is over: check its files for the row it was started for. Another row
+    // selected since has its own candidates to find, so the result is dropped.
+    if let Some(found) = app.ui.link_media_search.as_ref().and_then(LinkMediaSearch::take)
+        && let Some(search) = app.ui.link_media_search.take()
+    {
+        match found {
+            Some(index) if search.params["item"] == json!(item) => {
+                show_search_result(&mut d, filmcraft_engine::relink::search_index(&app.session, &search.params, &index));
+            }
+            _ => d.message.clear(),
+        }
+    }
     let relink = |app: &mut FilmcraftApp, d: &mut LinkMediaDraft, path: String| relink_to(app, d, &json!(item), path);
     match action {
         Some("browse") => app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
@@ -318,25 +404,14 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             p["folder"] = json!(d.folder);
             p["item"] = json!(item);
             p["exactName"] = json!(d.exact_name);
-            match app.session.execute("media.search", p) {
-                Ok(v) => {
-                    d.candidates = v["results"][0]["candidates"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .map(|c| {
-                                    let probs =
-                                        c["problems"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default();
-                                    (c["path"].as_str().unwrap_or_default().to_string(), c["ok"] == json!(true), c["identityMatch"].as_bool(), probs)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    d.candidate = d.candidates.iter().position(|c| c.1);
-                    d.message = if d.candidates.is_empty() { tl!("Nothing found with that name.").into() } else { String::new() };
-                }
-                Err(e) => d.message = e.to_string(),
+            // The folder is walked on another thread (#3937); the candidates show when it's done.
+            if let Some(old) = app.ui.link_media_search.take() {
+                old.cancel();
             }
+            d.candidates.clear();
+            d.candidate = None;
+            d.message = tl!("Searching…").into();
+            app.ui.link_media_search = Some(LinkMediaSearch::start(ctx, p));
         }
         Some("locate") => {
             let exts: Vec<&str> =
