@@ -20,7 +20,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
-| `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
+| `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes, sized by Project Settings ▸ General ▸ Action and Title Safe Areas (each percent is the margin taken from that axis: 10 % and 20 % by default) |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
 Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or the left ruler for
