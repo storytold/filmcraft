@@ -64,6 +64,8 @@ pub const PARAM_BLOCK: i64 = 64;
 const MAX_PREROLL_S: f64 = 3.0;
 /// Longest effect tail played past the end of a sequence (seconds; see [`effect_tail`]).
 pub const MAX_TAIL_S: f64 = 10.0;
+/// Most keyframe times checked for the longest tail ([`Plan::peak_tail_s`]).
+const MAX_TAIL_TIMES: usize = 4096;
 
 // ------------------------------------------------------------------------------------- live state
 
@@ -519,6 +521,25 @@ impl<'a> Plan<'a> {
         if s.is_finite() { s.max(0.0) } else { 0.0 }
     }
 
+    /// The longest [`Self::tail_s`] up to `end`, checked at `end` and at each insert keyframe before
+    /// it: a long decay automated down near the end has already filled the effect's buffers, and
+    /// they still ring on after a shorter setting takes over. At most [`MAX_TAIL_TIMES`] times, the
+    /// latest ones, so a project with hostile keyframe counts costs a bounded amount.
+    fn peak_tail_s(&self, end: Tick) -> f64 {
+        let mut times: Vec<Tick> = self
+            .strips
+            .iter()
+            .flat_map(|s| s.pre.iter().chain(&s.post))
+            .flat_map(|i| i.effect.params.values())
+            .flat_map(|p| p.keyframes.iter().map(|k| k.time))
+            .filter(|t| *t < end)
+            .collect();
+        times.sort_unstable();
+        times.dedup();
+        let skip = times.len().saturating_sub(MAX_TAIL_TIMES);
+        times.iter().skip(skip).chain(std::iter::once(&end)).map(|t| self.tail_s(*t)).fold(0.0, f64::max)
+    }
+
     /// Longest pre-roll the inserts need for a fresh graph (samples).
     fn preroll(&self, t: Tick, sr: u32) -> usize {
         (self.tail_s(t).min(MAX_PREROLL_S) * sr as f64).ceil() as usize
@@ -623,13 +644,14 @@ pub fn graph_latency(seq: &Sequence) -> usize {
 }
 
 /// How long the mixer graph keeps sounding once the timeline falls silent at its end: the longest
-/// tail of the track, submix and Mix inserts (reverb, echo, dynamics release) plus the graph
+/// tail of the track, submix and Mix inserts (reverb, echo, dynamics release) at any point their
+/// automation reaches, plus the graph
 /// latency, capped at [`MAX_TAIL_S`]. Zero when no insert can ring on. Playback keeps the sound
 /// running this long past the sequence end so effect tails decay instead of being cut (#2731).
 pub fn effect_tail(seq: &Sequence) -> Tick {
     let plan = Plan::build(seq, &HashMap::new());
     let sr = seq.settings.sample_rate.max(1);
-    let tail = plan.tail_s(seq.duration()).min(MAX_TAIL_S);
+    let tail = plan.peak_tail_s(seq.duration()).min(MAX_TAIL_S);
     if tail <= 0.0 {
         return Tick::ZERO;
     }

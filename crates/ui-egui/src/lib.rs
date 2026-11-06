@@ -173,8 +173,8 @@ pub struct Playback {
     /// [`filmcraft_render::mixer::effect_tail`], taken when playback starts. The playhead rests
     /// on the last frame meanwhile. Taken again at the end if the project changed since.
     pub ring_out: Tick,
-    /// The project revision `ring_out` was taken at.
-    pub ring_out_revision: Option<u64>,
+    /// The project revision and active sequence `ring_out` was taken for.
+    pub ring_out_key: Option<(u64, Option<filmcraft_project::ItemId>)>,
     /// Where the Timeline draws the playhead while playing, and when (monotonic host s): it moves
     /// with the wall clock every frame and eases toward the playback clock, so it glides instead
     /// of jumping a frame at a time or by a device buffer. The session playhead stays on the

@@ -412,6 +412,27 @@ fn a_scrub_stops_a_text_to_speech_preview_but_not_an_idle_output() {
     assert_eq!(stops.load(Ordering::Relaxed), before + 1, "and a second seek has nothing left to stop");
 }
 
+/// Opening another sequence changes the active one without a new project revision, so the tail
+/// taken for the first must not be reused for the second.
+#[test]
+fn the_ring_out_follows_the_active_sequence() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let dry = session.state.active_sequence.unwrap();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let wet = session.state.active_sequence.unwrap();
+    assert_ne!(dry, wet);
+    session.execute("mixer.addInsert", json!({"strip":"A1","effect":"studio_reverb"})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    assert!(app.refresh_ring_out() > Tick::ZERO, "the active sequence has a reverb");
+    let revision = app.session.revision;
+    app.session.execute("sequence.open", json!({"item":dry.0})).unwrap();
+    assert_eq!(app.session.revision, revision, "the project did not change");
+    assert_eq!(app.refresh_ring_out(), Tick::ZERO, "the dry sequence has no tail");
+    app.session.execute("sequence.open", json!({"item":wet.0})).unwrap();
+    assert!(app.refresh_ring_out() > Tick::ZERO);
+}
+
 /// #2731: at the sequence end a track reverb keeps sounding until its tail has decayed (the
 /// playhead resting on the last frame); without one, playback stops right there.
 #[test]

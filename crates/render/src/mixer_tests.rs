@@ -826,6 +826,21 @@ fn effect_tail_follows_the_inserts() {
     assert_eq!(tail(&r), Tick::ZERO);
 }
 
+/// A long decay automated down before the end has already filled the reverb's buffers, so the tail
+/// follows the longest setting, not the one at the end.
+#[test]
+fn effect_tail_uses_the_longest_automated_setting() {
+    let mut r = short_clip(noise, 24_000);
+    let tail = |r: &Rig| mixer::effect_tail(r.p.sequence(r.seq).unwrap());
+    r.track(0).effects.push(studio_reverb(true));
+    r.track(0).effects[0].param_mut("decay").unwrap().value = ParamValue::Float(0.0);
+    let short = tail(&r);
+    let end = r.p.sequence(r.seq).unwrap().duration();
+    r.track(0).effects[0].param_mut("decay").unwrap().keyframes =
+        vec![Keyframe::new(Tick::ZERO, ParamValue::Float(100.0)), Keyframe::new(Tick(end.0 / 2), ParamValue::Float(0.0))];
+    assert!(tail(&r) > short, "the decay at the start still rings on");
+}
+
 /// Inserts in series ring on for the sum of their tails: two reverbs on one track, and a track
 /// reverb feeding a Mix reverb, both outlast either reverb alone (#2731).
 #[test]

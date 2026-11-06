@@ -37,7 +37,7 @@ impl FilmcraftApp {
         }
         self.playback.playing = true;
         self.playback.speed = speed;
-        self.playback.ring_out_revision = None;
+        self.playback.ring_out_key = None;
         self.refresh_ring_out();
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
@@ -220,9 +220,11 @@ impl FilmcraftApp {
     /// The effect tail of the sequence as it is now, kept in `playback.ring_out`: inserts edited
     /// during playback (a longer reverb decay, a new echo) count when the end is reached.
     fn refresh_ring_out(&mut self) -> Tick {
-        if self.playback.ring_out_revision != Some(self.session.revision) {
+        // opening another sequence changes the active one without a new project revision
+        let key = (self.session.revision, self.session.state.active_sequence);
+        if self.playback.ring_out_key != Some(key) {
             self.playback.ring_out = self.session.active_sequence().map(filmcraft_render::mixer::effect_tail).unwrap_or_default();
-            self.playback.ring_out_revision = Some(self.session.revision);
+            self.playback.ring_out_key = Some(key);
         }
         self.playback.ring_out
     }

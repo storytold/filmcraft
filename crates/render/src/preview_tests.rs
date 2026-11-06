@@ -335,6 +335,28 @@ fn a_track_effect_tail_ties_an_audio_preview_to_what_came_before() {
 }
 
 #[test]
+fn a_track_effect_tail_ties_a_preview_only_to_clips_within_the_tail() {
+    let (mut p, _, ocean, seq) = setup();
+    let first = place_kind(&mut p, seq, TrackKind::Audio, ocean, 0, 24);
+    // short enough for the first clip's tail to reach past it, then long enough to outlast the tail
+    place_kind(&mut p, seq, TrackKind::Audio, ocean, 24, 2);
+    place_kind(&mut p, seq, TrackKind::Audio, ocean, 26, 2);
+    place_kind(&mut p, seq, TrackKind::Audio, ocean, 28, 24 * 60);
+    place_kind(&mut p, seq, TrackKind::Audio, ocean, 28 + 24 * 60, 24);
+    let mut reverb = find_effect("studio_reverb").unwrap().instance();
+    reverb.post_fader = true;
+    p.sequence_mut(seq).unwrap().audio_tracks[0].effects.push(reverb);
+    let before = audio_hashes(&p, seq);
+    assert_eq!(before.len(), 5);
+    p.sequence_mut(seq).unwrap().find_item_mut(first).unwrap().1.gain_db = -6.0;
+    let after = audio_hashes(&p, seq);
+    assert_ne!(after[1], before[1], "next to the first clip");
+    assert_ne!(after[2], before[2], "the tail reaches past the clip between them");
+    assert_ne!(after[3], before[3], "starts within the tail");
+    assert_eq!(after[4], before[4], "the clip before it outlasts the tail, so back-to-back clips don't chain");
+}
+
+#[test]
 fn a_subclip_that_is_its_own_parent_does_not_recurse_forever() {
     let (mut p, _, ocean, seq) = setup();
     let sub = p.add_item(
