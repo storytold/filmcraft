@@ -1538,3 +1538,24 @@ fn surface_blur_keeps_hdr_headroom() {
         assert!((a - b).abs() < 1e-3 * b.abs().max(1.0), "{a} vs {b}");
     }
 }
+
+/// Transparency has no weight: a flat light shape next to transparent pixels keeps its colour up
+/// to its edge (black straight colour under alpha 0 does not darken it), and alpha is unchanged.
+#[test]
+fn surface_blur_ignores_transparent_pixels() {
+    let (w, h) = (24usize, 8usize);
+    let mut img = Image::new(w, h);
+    let c = dec([0.9, 0.85, 0.8]);
+    for y in 0..h {
+        for x in 12..w {
+            img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], 1.0]);
+        }
+    }
+    let mut e = inst("surface_blur");
+    setf(&mut e, "radius", 4.0);
+    setf(&mut e, "threshold", 100.0);
+    let o = run("surface", &e, &img, &cx());
+    for (a, b) in o.px.iter().zip(&img.px) {
+        assert!((a - b).abs() < 1e-4, "{a} vs {b}");
+    }
+}
