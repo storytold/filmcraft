@@ -854,7 +854,9 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
 /// past it and is linked to a clip that shifts (a split edit). The edit is refused when it would
 /// overwrite material on a sync-locked track, or when such a linked clip has no room to follow.
 pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
-    let Some(&first) = clips.first() else { return Ok(Tick::ZERO) };
+    if clips.is_empty() {
+        return Ok(Tick::ZERO);
+    }
     for c in clips {
         unlocked_track(seq, *c)?;
     }
@@ -882,12 +884,23 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             origins.push((tid, from));
         }
     }
+    shift_ripple_followers(seq, &mut work, clips, edge, &origins, d)?;
+    transitions_follow_cuts(seq, &mut work);
+    work.check().map_err(EditError::Other)?;
+    *seq = work;
+    Ok(d)
+}
+
+/// Shared follower rules for a ripple trim and an Out-edge ripple rate stretch. The caller edits
+/// only a working copy, so a blocked sync-locked track leaves the original sequence untouched.
+fn shift_ripple_followers(before: &Sequence, work: &mut Sequence, clips: &[ClipId], edge: Edge, origins: &[(TrackId, Tick)], d: Tick) -> Result<()> {
+    let Some(&first) = clips.first() else { return Ok(()) };
     // a shorter or longer head: the cut is the latest member's start (a sound that leads its picture
     // starts earlier), whichever member was grabbed
     let main_from = if edge == Edge::In {
         origins.iter().map(|o| o.1).max().unwrap_or_default()
     } else {
-        let (tid, _) = seq.find_item(first).ok_or(EditError::NoItem(first))?;
+        let (tid, _) = before.find_item(first).ok_or(EditError::NoItem(first))?;
         origins.iter().find(|(t, _)| *t == tid).map(|o| o.1).unwrap_or_default()
     };
     let shift = if edge == Edge::In { -d } else { d };
@@ -930,13 +943,14 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
             let closing = if edge == Edge::In { TimeRange::new(from - Tick(1), -shift) } else { TimeRange::new(from + shift, -shift) };
             let own = |i: &TrackItem| i.link.is_some_and(|l| own_links.contains(&l));
             if tr.items.iter().any(|i| i.range().overlaps(&closing) && !follows(i) && !own(i) && !stays(i)) {
-                return Err(EditError::SyncLockConflict(track_label(seq, tid)));
+                return Err(EditError::SyncLockConflict(track_label(before, tid)));
             }
         }
         let followers: Vec<ClipId> = tr.items.iter().filter(|i| !clips.contains(&i.id) && follows(i)).map(|i| i.id).collect();
         for i in &mut tr.items {
             if !clips.contains(&i.id) && (i.start >= from || followers.contains(&i.id)) {
-                i.start += shift;
+                let start = i.start.0.checked_add(shift.0).filter(|s| *s >= 0 && s.checked_add(i.duration.0).is_some_and(|end| end <= Tick::MAX.0));
+                i.start = Tick(start.ok_or_else(|| EditError::SyncLockConflict(track_label(before, tid)))?);
             }
         }
         tr.sort();
@@ -949,13 +963,10 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
         });
         // a follower with no room (a clip in its way, or the sequence start) blocks the edit
         if tr.items.first().is_some_and(|i| i.start < Tick::ZERO) || tr.items.windows(2).any(|w| w[0].end() > w[1].start) {
-            return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
+            return Err(EditError::SyncLockConflict(track_label(before, tr.id)));
         }
     }
-    transitions_follow_cuts(seq, &mut work);
-    work.check().map_err(EditError::Other)?;
-    *seq = work;
-    Ok(d)
+    Ok(())
 }
 
 /// Rolling edit between two adjacent items on one track: moves the cut by `delta`.
@@ -1174,6 +1185,86 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
         it.speed = speed;
     }
     Ok(speed)
+}
+
+/// Ripple Rate Stretch of an Out edge. Keep the source range, anchor the In edge and move later
+/// material by the duration change. Unlike an ordinary stretch, adjacent followers do not bound
+/// the new duration. Locked partners stay fixed, as for ordinary Rate Stretch. Split edits with
+/// unequal durations/rates are refused: one visual edge cannot give them a common new rate.
+pub fn ripple_rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+    let grabbed = *clips.first().ok_or(EditError::Nothing)?;
+    unlocked_track(seq, grabbed)?;
+    let mut open = Vec::new();
+    for &c in clips {
+        match unlocked_track(seq, c) {
+            Ok(_) => {
+                if !open.contains(&c) {
+                    open.push(c);
+                }
+            }
+            Err(EditError::Locked) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let first = *open.first().ok_or(EditError::Locked)?;
+    let (_, main) = seq.find_item(first).ok_or(EditError::NoItem(first))?;
+    let duration = main.duration;
+    let speed = main.speed;
+    let start = main.start;
+    let reverse = main.reverse;
+    if duration < ctx.min_duration || ctx.min_duration <= Tick::ZERO || !speed.is_finite() || speed <= 0.0 {
+        return Err(EditError::Other("rate stretch needs a positive duration and speed".into()));
+    }
+    let mut origins = Vec::new();
+    let mut room = Tick::MAX;
+    for c in &open {
+        let (tid, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        if it.start != start || it.duration != duration || it.speed != speed || it.reverse != reverse || origins.iter().any(|o: &(TrackId, Tick)| o.0 == tid) {
+            return Err(EditError::Other("ripple rate stretch needs aligned linked clips with equal durations, speeds and direction".into()));
+        }
+        if it.frame_hold.is_some() {
+            return Err(EditError::Other("a held frame cannot be rate stretched".into()));
+        }
+        room = room.min(Tick::MAX - it.start);
+        origins.push((tid, it.end()));
+    }
+    if room < ctx.min_duration {
+        return Err(EditError::TooShort);
+    }
+    let new_duration = (duration + delta).clamp(ctx.min_duration, room);
+    let d = new_duration - duration;
+    if d == Tick::ZERO {
+        return Ok(speed);
+    }
+    // Captions inside the stretched take need retiming, and later captions need a shift. Until
+    // that mapping is supported, refuse rather than silently break an unlocked track's sync.
+    if let Some(tr) = seq.caption_tracks.iter().find(|tr| !tr.locked && tr.sync_lock && tr.captions.iter().any(|c| c.end() > start)) {
+        return Err(EditError::Other(format!(
+            "ripple rate stretch cannot retime sync-locked caption track `{}`; lock it or turn off its sync lock to keep it fixed",
+            tr.name
+        )));
+    }
+    let mut work = seq.clone();
+    let mut new_speed = speed;
+    for c in &open {
+        let (_, it) = work.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        let source_length = it.source_out() - it.source_in;
+        new_speed = source_length.0 as f64 / new_duration.0 as f64;
+        if !new_speed.is_finite() || new_speed <= 0.0 {
+            return Err(EditError::Other("rate stretch needs a positive source range".into()));
+        }
+        it.duration = new_duration;
+        it.speed = new_speed;
+    }
+    shift_ripple_followers(seq, &mut work, &open, Edge::Out, &origins, d)?;
+    transitions_follow_cuts(seq, &mut work);
+    for c in &open {
+        let (tid, _) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        fades_follow_edges(work.track_mut(tid).ok_or(EditError::NoTrack(tid))?, *c);
+    }
+    work.check().map_err(EditError::Other)?;
+    *seq = work;
+    Ok(new_speed)
 }
 
 /// Set speed/duration (Clip ▸ Speed/Duration…). `ripple` shifts following material.
