@@ -82,6 +82,12 @@ independent). Results never depend on scheduling (the oracle tests compare 1 thr
 and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
 
+Frame-job panics become decoder errors in both threaded and sequential decoding. Abandoned jobs
+complete their pending reference and picture slots with errors, so dependent jobs and decoder
+shutdown are not left waiting for results that cannot arrive. Use `decode_pts` and `flush_result`
+to receive errors observable through shown pictures or dependent jobs. A terminal non-shown frame
+without a dependent may not report its error. The legacy `flush` convenience method discards drain errors.
+
 `tests/it/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
 (`Decoder::stats()`) and all-core fps with its per-stage ms/frame for 1080p fixtures (key frames,
 GOPs, tiles, low delay) and a single-tile 2160p GOP; `AV1_PERF_ONLY=a,b` picks fixtures. The hot loops (sub-pixel filters,
@@ -147,5 +153,5 @@ for sample in samples {                  // one temporal unit (MP4 / Matroska sa
         // pic.width, pic.height, pic.bit_depth, pic.planes[0..3], pic.pts
     }
 }
-let rest = dec.flush();                  // pictures still in flight at the end
+let rest = dec.flush_result()?;          // pictures still in flight; propagate drain errors
 ```
