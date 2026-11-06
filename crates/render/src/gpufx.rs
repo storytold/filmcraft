@@ -104,6 +104,15 @@ pub enum FxOp {
     Posterize {
         n: f32,
     },
+    /// Noise: per-frame hash noise added in display space; `seed` is the exact frame time
+    /// (`effects::noise_frame_seed`), `grain` the cell size in working-image pixels (≥ 1).
+    Noise {
+        amount: f32,
+        colored: bool,
+        clip: bool,
+        grain: f32,
+        seed: u64,
+    },
     /// Three box passes per axis approximating a Gaussian (radii per pass; empty: axis untouched).
     Gaussian {
         rx: Vec<u32>,
@@ -237,6 +246,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "extract",
     "invert",
     "posterize",
+    "noise",
+    "noise_legacy",
     "gaussian_blur",
     "gaussian_blur_legacy",
     "camera_blur",
@@ -388,6 +399,13 @@ impl FxOp {
             }
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
+            "noise" | "noise_legacy" => FxOp::Noise {
+                amount: f(e, "amount", cx) / 100.0,
+                colored: crate::vfx::bv(e, "color"),
+                clip: crate::vfx::bv(e, "clip"),
+                grain: (f(e, "grain_size", cx).max(1.0) * cx.px_scale).max(1.0),
+                seed: crate::effects::noise_frame_seed(cx),
+            },
             "gaussian_blur" | "gaussian_blur_legacy" => {
                 let r = f(e, "blurriness", cx) * cx.px_scale * 0.5;
                 let dims = choice(e, "dimensions");
@@ -688,6 +706,7 @@ impl FxOp {
             FxOp::Extract { lo, hi, soft, .. } => fin(&[*lo, *hi, *soft]),
             FxOp::Invert { blend, .. } => blend.is_finite(),
             FxOp::Posterize { n } => n.is_finite(),
+            FxOp::Noise { amount, grain, .. } => amount.is_finite() && grain.is_finite(),
             FxOp::Gaussian { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
@@ -891,6 +910,7 @@ impl FxOp {
                 let n = *n;
                 img.map_rgb(|c, _, _| dec(enc(c).map(|v| (v * n).round() / n)));
             }
+            FxOp::Noise { amount, colored, clip, grain, seed } => noise(img, *amount, *colored, *clip, *grain, *seed),
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
             FxOp::Bokeh { levels, boost, threshold, sides, rot, rr, rings } => {
@@ -1193,6 +1213,37 @@ pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
         cr *= s;
     }
     to_rgb(y, cb, cr).map(|q| q.clamp(0.0, max))
+}
+
+/// Noise (and Noise (Legacy)): one hash per `grain`-pixel cell and frame, added to the display
+/// (sRGB) values; colour noise hashes each channel with its own offset of the frame seed.
+fn noise(img: &mut Image, amount: f32, colored: bool, clip: bool, grain: f32, seed: u64) {
+    if amount <= 0.0 || img.w == 0 {
+        return;
+    }
+    let w = img.w;
+    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        for x in 0..w {
+            let Some(p) = row.get_mut(x * 4..x * 4 + 4) else { continue };
+            let a = p[3];
+            if a <= 0.0 {
+                continue;
+            }
+            let (gx, gy) = ((x as f32 / grain) as usize, (y as f32 / grain) as usize);
+            let h = |z: u64| crate::effects::hash3(gx, gy, z) - 0.5;
+            let n0 = h(seed);
+            let ns = if colored { [n0, h(seed.wrapping_add(7777)), h(seed.wrapping_add(99_991))] } else { [n0; 3] };
+            let c = enc([p[0] / a, p[1] / a, p[2] / a]);
+            let mut o = [c[0] + ns[0] * amount, c[1] + ns[1] * amount, c[2] + ns[2] * amount];
+            if clip {
+                o = o.map(|v| v.clamp(0.0, 1.0));
+            }
+            let o = dec(o);
+            p[0] = o[0] * a;
+            p[1] = o[1] * a;
+            p[2] = o[2] * a;
+        }
+    });
 }
 
 /// The body of `Image::transformed` (no mip path) for a precomputed inverse and rectangle.
