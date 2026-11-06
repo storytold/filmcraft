@@ -7,7 +7,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156; NVENC H.265 export on Linux) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -112,6 +112,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- **2026-11-05:** NVENC H.265 export on Linux (#1648, #1624). `nvenc::export::factory` sends H.265 to `hevc_factory` on every platform NVENC runs on, not only Windows, and the Linux block of `register()` installs the H.265 format probe and the H.265 HDR probe, so the format is offered wherever a small HEVC session opens and an HDR sequence exports as HEVC Main 10 wherever NVENC has a 10-bit encoder. Choosing the format is the opt-in: there is no software encoder to fall back to, so H.265 was simply not available on Linux at all. The probe is deliberately **not** warmed on Linux, as it is on Windows: warming starts a thread that opens a hardware session, and the CLI is short-lived, so the process can exit while the probe is still inside the driver, whose exit handler then waits on a join the probe cannot reach. Measured by @tydude001 on Linux with an NVIDIA GPU, `filmcraft-cli --test cli` hung in 21 of 45 runs with the thread started and in 0 of 45 without it. **Verified on 64-bit Linux with NVIDIA hardware** by @padab (Arch Linux, RTX 5060 Ti 16 GB, driver 615.78.08: 16 NVENC/HEVC integration tests pass), @tydude001 (Fedora 44, RTX 5070, driver 615.78.08: 45 / 45 with 0 hangs) and @schnierk (Linux Mint 22.3, RTX 5090, driver 595.99.02). The Linux claims are for 64-bit Linux: `register()`'s Linux block installs the probes under `target_pointer_width = "64"`. This branch was written and reviewed on Windows, where it also compiles and the Linux-gated code cross-checks for `x86_64-unknown-linux-gnu`.
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
@@ -174,6 +175,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | NVENC H.265 export on Linux (#1648, #1624) |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
