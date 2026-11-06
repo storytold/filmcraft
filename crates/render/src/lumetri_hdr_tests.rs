@@ -181,3 +181,224 @@ fn hsl_refine_blur_softens_the_key() {
     let speck = img.get(3, 3);
     assert!(speck[0] > speck[1], "speckle left alone after denoise: {speck:?}");
 }
+
+/// 40×20: a textured, mid-grey-ish red left half (keyed by hue 0) and the same texture in blue on
+/// the right.
+fn textured_red_blue() -> Image {
+    let mut img = Image::new(40, 20);
+    for y in 0..20 {
+        for x in 0..40 {
+            let t = if (x + y) % 2 == 0 { 0.08 } else { -0.08 };
+            let c = if x < 20 { [0.62 + t, 0.42 + t, 0.38 + t] } else { [0.2 + t, 0.3 + t, 0.75 + t] };
+            let l = c.map(filmcraft_color::srgb_to_linear);
+            img.px[(y * 40 + x) * 4..][..4].copy_from_slice(&[l[0], l[1], l[2], 1.0]);
+        }
+    }
+    img
+}
+
+/// Spread (standard deviation, display units) of the green channel over the inner 12×12 of a half.
+fn spread(img: &Image, x0: usize) -> f32 {
+    let v: Vec<f32> = (4..16).flat_map(|y| (x0 + 4..x0 + 16).map(move |x| (x, y))).map(|(x, y)| filmcraft_color::linear_to_srgb(img.get(x, y)[1])).collect();
+    let m = v.iter().sum::<f32>() / v.len() as f32;
+    (v.iter().map(|q| (q - m) * (q - m)).sum::<f32>() / v.len() as f32).sqrt()
+}
+
+/// [`textured_red_blue`] through Lumetri with HSL Secondary keying the red half (hard key) and
+/// these float parameters.
+fn hsl_correct(params: &[(&str, f64)]) -> Image {
+    let mut img = textured_red_blue();
+    let mut p = vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0))];
+    p.extend(params.iter().map(|(k, v)| (*k, F(*v))));
+    apply(&mut img, &lumetri(&p), &cx(WorkingSpace::Rec709));
+    img
+}
+
+/// HSL Secondary ▸ Correction ▸ Contrast and Sharpen change the keyed colour only: Contrast
+/// spreads or flattens its tones, negative Sharpen softens its texture and positive sharpens it.
+#[test]
+fn hsl_contrast_and_sharpen_act_inside_the_key() {
+    let src = textured_red_blue();
+    let plain = hsl_correct(&[]);
+    for (x, y) in [(5, 5), (30, 5)] {
+        let (a, b) = (plain.get(x, y), src.get(x, y));
+        assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-5), "neutral correction at {x},{y}: {a:?} vs {b:?}");
+    }
+    let base = spread(&plain, 0);
+    for (params, grows) in [
+        (vec![("hsl_contrast", 100.0)], true),
+        (vec![("hsl_contrast", -100.0)], false),
+        (vec![("hsl_sharpen", 100.0)], true),
+        (vec![("hsl_sharpen", -100.0)], false),
+    ] {
+        let img = hsl_correct(&params);
+        let s = spread(&img, 0);
+        if grows {
+            assert!(s > base * 1.2, "{params:?}: keyed texture {base} -> {s}");
+        } else {
+            assert!(s < base * 0.8, "{params:?}: keyed texture {base} -> {s}");
+        }
+        // blue is outside the key: untouched (Sharpen's blur reaches 2 px past the key's edge)
+        let blue = (24..40)
+            .flat_map(|x| (0..20).map(move |y| (x, y)))
+            .map(|(x, y)| (0..3).map(|k| (img.get(x, y)[k] - src.get(x, y)[k]).abs()).fold(0.0, f32::max))
+            .fold(0.0, f32::max);
+        assert!(blue < 1e-5, "{params:?}: blue changed by {blue}");
+    }
+    // Show Mask views stay the key, without the correction
+    let mut shown = textured_red_blue();
+    let e = lumetri(&[
+        ("hsl_on", ParamValue::Bool(true)),
+        ("hsl_hue", F(0.0)),
+        ("hsl_hue_range", F(40.0)),
+        ("hsl_soft", F(0.0)),
+        ("hsl_sharpen", F(-100.0)),
+        ("hsl_contrast", F(100.0)),
+        ("hsl_show_mask", ParamValue::Choice(3)),
+    ]);
+    apply(&mut shown, &e, &cx(WorkingSpace::Rec709));
+    assert!(shown.get(5, 5)[1] > 0.9 && shown.get(30, 5)[1] < 0.01);
+}
+
+/// Hostile Contrast and Sharpen values: no panic, finite output.
+#[test]
+fn hsl_contrast_and_sharpen_survive_hostile_values() {
+    for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e30, -1e30] {
+        for k in ["hsl_contrast", "hsl_sharpen"] {
+            let img = hsl_correct(&[(k, v)]);
+            assert!(img.px.iter().all(|q| q.is_finite()), "{k}={v}");
+        }
+    }
+}
+
+/// HDR: positive Contrast leaves keyed values that Temperature lifted above 1 where they are (as
+/// Basic Correction leaves highlights above HDR White) instead of clipping them to 1; negative
+/// Contrast lowers them with the top of its curve but keeps them above it.
+#[test]
+fn hsl_contrast_keeps_values_above_one() {
+    let red = |contrast: f64| {
+        let mut img = Image::new(1, 1);
+        // a bright red highlight, about 400 cd/m², at the top of its pixel's normalised signal
+        img.px.copy_from_slice(&[2.0, 0.9, 0.8, 1.0]);
+        let e = lumetri(&[
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", F(0.0)),
+            ("hsl_hue_range", F(40.0)),
+            ("hsl_soft", F(0.0)),
+            ("hsl_temp", F(100.0)),
+            ("hsl_contrast", F(contrast)),
+        ]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+        img.px[0]
+    };
+    let warm = red(0.0);
+    assert!(warm > 2.0 * 1.05, "Temperature warms the red highlight: {warm}");
+    for c in [50.0, 100.0] {
+        assert!((red(c) - warm).abs() <= warm * 1e-4, "contrast {c}: {} vs {warm}", red(c));
+    }
+    // negative: lowered, but still above a keyed pixel that ends exactly at the curve's top
+    let (soft, top) = (red(-50.0), {
+        let mut img = Image::new(1, 1);
+        img.px.copy_from_slice(&[1.0, 0.45, 0.4, 1.0]);
+        let e =
+            lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0)), ("hsl_contrast", F(-50.0))]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+        img.px[0]
+    });
+    assert!(soft < warm && soft > top, "contrast -50: {soft}, between {top} and {warm}");
+}
+
+/// HDR: across a gradient that Temperature lifts through 1, negative Contrast stays continuous
+/// (no edge where values cross 1) and keeps the detail above it.
+#[test]
+fn hsl_negative_contrast_is_continuous_across_one() {
+    let n = 64;
+    let mut img = Image::new(n, 1);
+    for i in 0..n {
+        let r = 1.0 + 1.6 * i as f32 / (n - 1) as f32;
+        img.px[i * 4..i * 4 + 4].copy_from_slice(&[r, 0.45 * r, 0.4 * r, 1.0]);
+    }
+    let e = lumetri(&[
+        ("hsl_on", ParamValue::Bool(true)),
+        ("hsl_hue", F(0.0)),
+        ("hsl_hue_range", F(40.0)),
+        ("hsl_soft", F(0.0)),
+        ("hsl_temp", F(100.0)),
+        ("hsl_contrast", F(-100.0)),
+    ]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec2100Pq));
+    let red: Vec<f32> = (0..n).map(|i| img.px[i * 4]).collect();
+    let steps: Vec<f32> = red.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+    assert!(mean > 0.0, "the gradient keeps rising: {red:?}");
+    for (i, d) in steps.iter().enumerate() {
+        assert!(*d >= -1e-4 && *d <= 4.0 * mean, "step {i}: {d} (mean {mean}): {red:?}");
+    }
+}
+
+/// Sharpen leaves fully transparent pixels empty, even where Refine Blur spreads the key onto them.
+#[test]
+fn hsl_sharpen_leaves_transparent_pixels_empty() {
+    let mut img = textured_red_blue();
+    for y in 0..20 {
+        for x in 8..12 {
+            img.px[(y * 40 + x) * 4..][..4].copy_from_slice(&[0.0; 4]);
+        }
+    }
+    let e = lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_blur", F(100.0)), ("hsl_sharpen", F(-100.0))]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    for y in 0..20 {
+        for x in 8..12 {
+            assert_eq!(img.get(x, y), [0.0; 4], "{x},{y}");
+        }
+    }
+}
+
+/// Sharpen works on straight colour: a keyed red of one colour whose alpha ramps down (a soft edge)
+/// keeps its colour, with no bright or dark halo along the ramp.
+#[test]
+fn hsl_sharpen_puts_no_halo_on_a_soft_alpha_edge() {
+    let (w, h) = (24usize, 6usize);
+    let l = [0.62f32, 0.42, 0.38].map(filmcraft_color::srgb_to_linear);
+    for amount in [100.0, -100.0] {
+        let mut img = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let a = (1.0 - x as f32 / (w - 1) as f32 * 0.8).clamp(0.2, 1.0);
+                img.px[(y * w + x) * 4..][..4].copy_from_slice(&[l[0] * a, l[1] * a, l[2] * a, a]);
+            }
+        }
+        let e =
+            lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0)), ("hsl_sharpen", F(amount))]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+        for x in 0..w {
+            let p = img.get(x, 3);
+            for k in 0..3 {
+                assert!((p[k] / p[3] - l[k]).abs() < 1e-4, "sharpen {amount} at x {x}: straight {:?} vs {l:?}", [p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+            }
+        }
+    }
+}
+
+/// Sharpen and soften change keyed texture at full and at quarter-resolution playback (where the
+/// blur's σ is under half a pixel).
+#[test]
+fn hsl_sharpen_works_at_full_and_quarter_resolution() {
+    for scale in [1.0f32, 0.25] {
+        let run = |amount: f64| {
+            let mut img = textured_red_blue();
+            let e = lumetri(&[
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", F(0.0)),
+                ("hsl_hue_range", F(40.0)),
+                ("hsl_soft", F(0.0)),
+                ("hsl_sharpen", F(amount)),
+            ]);
+            apply(&mut img, &e, &FxCtx { px_scale: scale, ..cx(WorkingSpace::Rec709) });
+            spread(&img, 0)
+        };
+        let base = run(0.0);
+        assert!(run(100.0) > base * 1.2, "scale {scale}: sharpen {} vs {base}", run(100.0));
+        assert!(run(-100.0) < base * 0.8, "scale {scale}: soften {} vs {base}", run(-100.0));
+    }
+}

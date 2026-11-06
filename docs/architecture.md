@@ -594,7 +594,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   White pass through (contrast leaves them alone; **HDR Specular** scales them). Rec. 709
   sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
   radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
-  resolution.
+  resolution. HSL Secondary ▸ Correction follows Premiere's Temperature, Tint, Contrast, Sharpen,
+  Saturation (plus Hue Shift): **Contrast** is Basic Correction's S-curve and **Sharpen** Creative ▸
+  Sharpen's unsharp mask (negative softens), both inside the key.
 - **HDR metadata.** `VideoStreamInfo::hdr` (`HdrMetadata`: ST 2086 mastering luminance, MaxCLL,
   MaxFALL) is read from `mdcv` / `clli` (MP4 / MOV) and Matroska `MasteringMetadata` / `MaxCLL` /
   `MaxFALL`. PQ media tone mapped into an SDR working space uses it as the BT.2390 source peak
