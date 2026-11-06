@@ -198,6 +198,12 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
     id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
 }
+/// A call whose params name the exact cut it acts on: it validates that cut itself and answers
+/// with that cut's reason (locked track, protected linked audio), so it does not go through the
+/// command's enablement gate, which speaks for the whole sequence ("no through edits to join").
+pub(crate) fn names_its_cut(id: &str, p: &Value) -> bool {
+    id == "sequence.joinThroughEdits" && p.get("cut").is_some()
+}
 /// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {
     let v = match p.get("color") {

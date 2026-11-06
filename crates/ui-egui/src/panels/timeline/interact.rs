@@ -1385,8 +1385,14 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         "clip.link" if linked => tl!("Unlink"),
                         _ => crate::i18n::t(label),
                     };
-                    let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                    let enabled = if cmd == "sequence.joinThroughEdits" {
+                        let only = filmcraft_engine::commands::with_links(&app.session, &sel);
+                        !filmcraft_edit::through::joinable_through_edits_where(seq, |a, b| only.contains(&a) || only.contains(&b)).is_empty()
+                    } else {
+                        app.session.is_enabled(cmd)
+                    };
+                    let r = ui.add_enabled(!sel.is_empty() && enabled, egui::Button::new(label));
+                    app.auto.add_response(&format!("timeline.clipMenu.{cmd}"), &r, label);
                     if r.clicked() {
                         match crate::menus::invoke(app, &ctx, cmd, json!({})) {
                             // Unlink (#220): the clips were selected together because they were linked;
