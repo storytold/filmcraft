@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface; Traditional Chinese (Taiwan)) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -10,7 +10,7 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|korean|czech|polish|swedish|turkish>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|korean|czech|polish|swedish|turkish|bosnian|traditionalChinese>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
@@ -32,6 +32,10 @@ blocks, the Text panel list when not being edited) are laid out in reading order
 itself is never mirrored right to left. The title engine (`crates/text`, harfrust + bidi) lays out
 right to left, but Arabic titles are reported broken (#395).
 
+The Traditional Chinese menu label uses the existing Chinese fallback before selection. A Taiwan
+interface face is resolved and read only when that language is selected. If no supporting face is
+available, the fallback status is intentionally English, so it stays readable without that font.
+
 ## Status
 
 Measured 2026-10-19 by counting entries in each catalog. The denominator is the union of all
@@ -52,6 +56,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Japanese | ja | 3,487 (99.7%) | as zh-cn; system-font kanji may pick the Chinese fallback (#547) | CJK fonts, vertical title text | not recorded | partial | 4–8 h + review |
 | German | de | 3,590 (same entries as Spanish) | as Spanish | Latin (bundled fonts) | menus yes (#630); the rest not recorded, welcome | partial | review |
 | Korean | ko | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | installed system Hangul font (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…); refused without one | not recorded; welcome | partial (#508) | review; Hangul in craft-fonts for the web |
+| Traditional Chinese (Taiwan) | zh-tw | 3,595 entries; missing keys fall back to English | dialogs, Settings, effects, shortcuts and status; engine errors English | native builds; Taiwan face loaded on selection, with collection face indices retained | Taiwan terminology corrections from WavJaby; further review welcome | partial | native-speaker review |
 | Russian | ru | 3,592 (100%; every Spanish entry) | dialogs, Settings, effects, shortcuts, status; engine errors English | Cyrillic (bundled fonts), «ё» | not recorded; welcome | partial | native review |
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
@@ -104,6 +109,8 @@ creative effect names, and the shared `Subtitle` key (caption format and graphic
 | 2026-10-30 | minor | Bosnian (bs, Latin, Ijekavian) covers the whole interface: 3,610 entries, Edit ▸ Language ▸ Bosanski, every `bs-*` locale; AI-assisted, not native-reviewed |
 | 2026-10-26 | minor | Swedish (sv) covers the whole interface (all 3,581 strings); System Language picks it for `sv-*` locales |
 | 2026-10-23 | minor | Missing translations never fail a test or build (they show in English); `cargo xtask i18n-report`, also run by `cargo xtask ci`, lists them per language |
+| 2026-10-19 | minor | Taiwan fonts load on language selection; missing-font status intentionally stays readable in English |
+| 2026-10-13 | minor | Native Traditional Chinese, Taiwan, added with locale selection, persistence and font fallbacks |
 | 2026-10-19 | minor | Added Czech (`cs`) interface catalog and locale detection; rewrote all catalog rows with a binding glossary; AI-assisted, not yet proofread by a native speaker |
 | 2026-10-19 | major | Russian (ru) covers the whole interface: 3,592 entries (100% of the Spanish catalog), `ru.tsv` translated from the English sources with Premiere-style Russian vocabulary; a font test covers the Russian alphabet including «ё», System Language maps `ru-*`; native review welcome |
 | 2026-10-13 | minor | German (de) covers the whole interface: every entry of the Spanish catalog (3,590); the tests require the core menus and the macOS app menu and reject entries without a Spanish one |
