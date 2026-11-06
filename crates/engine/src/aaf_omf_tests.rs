@@ -575,4 +575,38 @@ mod selected_streams {
         assert!(error.to_string().contains("embedded") || error.to_string().contains("separate"));
         assert!(files.writes.lock().unwrap().is_empty());
     }
+    /// #2129: the misspelling "Premiera" must never appear anywhere in an exported AAF file.
+    /// FilmCraft writes "FilmCraft" as its creating-application string; "Premiera" was a
+    /// historical typo.
+    #[test]
+    fn aaf_label_does_not_contain_premiera() {
+        use filmcraft_interchange::aaf::{AafOptions, export};
+        use filmcraft_project::{Project, SequenceSettings};
+
+        let mut project = Project::default();
+        let seq = project.new_sequence(
+            "Test",
+            SequenceSettings {
+                width: 32,
+                height: 18,
+                frame_rate: FrameRate::FPS_24,
+                ..Default::default()
+            },
+            0,
+            0,
+            None,
+        );
+        let opts = AafOptions::default();
+        let (bytes, _) = export(&project, seq, &opts).expect("export must succeed");
+
+        let typo_utf16: Vec<u8> = "Premiera"
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        assert!(
+            !bytes.windows(typo_utf16.len()).any(|w| w == typo_utf16),
+            "AAF bytes must not contain the misspelling 'Premiera'"
+        );
+    }
+
 }
