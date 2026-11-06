@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_project::graphic::{self, layer_display_name, layer_indices};
-use filmcraft_project::graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, RollMode, SourceGraphic, apply_char_style, clear_char_style};
+use filmcraft_project::graphic_design::{CharStyle, DesignEnd, GraphicMeta, LayerExtra, Pin, PinTarget, RollMode, SourceGraphic, apply_char_style, clear_char_style};
 use filmcraft_project::gtemplate::{
     self, ControlKind, FontResource, GraphicsTemplate, TEMPLATE_EXTENSION, TemplateControl, base64_decode, base64_encode, builtin_templates, ensure_uids,
     layer_uid,
@@ -642,8 +642,16 @@ fn set_roll(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_responsive_time(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = target_clip(s, p).ok_or_else(|| bad("graphics.setResponsiveTime", "no graphic clip"))?;
     let (intro, outro) = (dur_p(s, p, "intro"), dur_p(s, p, "outro"));
-    if intro.is_none() && outro.is_none() {
-        return Err(bad("graphics.setResponsiveTime", "need `introFrames` / `outroFrames` (or seconds / ticks)"));
+    let end = p.get("end").and_then(|v| v.as_str());
+    let parsed_end = end
+        .map(|x| match x.to_ascii_lowercase().as_str() {
+            "animate" => Ok(DesignEnd::Animate),
+            "cut" => Ok(DesignEnd::Cut),
+            _ => Err(bad("graphics.setResponsiveTime", "`end` is `animate` or `cut`")),
+        })
+        .transpose()?;
+    if intro.is_none() && outro.is_none() && parsed_end.is_none() {
+        return Err(bad("graphics.setResponsiveTime", "need `introFrames` / `outroFrames` (or seconds / ticks), or `end`"));
     }
     let m = edit_meta(s, clip, "Responsive Design - Time", |m, it| {
         if !m.has_responsive_time() {
@@ -656,6 +664,9 @@ fn set_responsive_time(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(x) = outro {
             m.outro = x.max(Tick::ZERO);
         }
+        if let Some(x) = parsed_end {
+            m.end = x;
+        }
         if m.intro + m.outro > m.design_duration {
             return Err(bad("graphics.setResponsiveTime", "the intro and outro are longer than the graphic"));
         }
@@ -665,7 +676,7 @@ fn set_responsive_time(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"clip": clip.0, "intro": m.intro.0, "outro": m.outro.0, "designDuration": m.design_duration.0}))
+    Ok(json!({"clip": clip.0, "intro": m.intro.0, "outro": m.outro.0, "designDuration": m.design_duration.0, "end": if m.end == DesignEnd::Cut { "cut" } else { "animate" }}))
 }
 
 fn edges_p(p: &Value) -> [bool; 4] {
