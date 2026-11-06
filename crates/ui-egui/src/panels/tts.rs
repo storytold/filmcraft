@@ -58,6 +58,7 @@ pub struct Pending {
 }
 
 impl Default for TtsDraft {
+    /// Creates a default Text-to-Speech draft configured with the default English voice and sample sentence.
     fn default() -> Self {
         TtsDraft {
             text: filmcraft_tts::sample_sentence_for_language("en-US").into(),
@@ -243,6 +244,7 @@ enum Action {
     CancelDownload,
 }
 
+/// Renders the Text-to-Speech narration panel UI, including language, voice picker, pitch/pace controls, and download prompts.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let painter = ui.painter().clone();

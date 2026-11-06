@@ -115,6 +115,7 @@ fn find_line(manifest: &str) -> Result<(usize, &str), String> {
     Err("no `version = \"…\"` in [workspace.package] of the root Cargo.toml".into())
 }
 
+/// Executes workspace version inspection, bumping, or changelog rotation commands.
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let path = root.join("Cargo.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;

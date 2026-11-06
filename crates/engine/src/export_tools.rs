@@ -968,6 +968,7 @@ fn queue_clear(s: &mut Session, p: &Value) -> Result<Value> {
 // quick export, resolve, presets commands
 // ---------------------------------------------------------------------------------------------
 
+/// Enqueues or starts a quick export using the specified or default export preset.
 fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.quick";
     let name = str_p(p, "preset").map(str::to_string).or_else(|| s.export_queue.quick_preset.clone()).unwrap_or_else(|| DEFAULT_PRESET.to_string());

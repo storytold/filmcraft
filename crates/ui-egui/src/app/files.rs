@@ -8,6 +8,7 @@ impl FilmcraftApp {
         panels::project::view_of(self, panels::project::shown_inst(self)).bin
     }
 
+    /// Opens a native file dialog corresponding to action `id` and executes completion handler on selection.
     pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {

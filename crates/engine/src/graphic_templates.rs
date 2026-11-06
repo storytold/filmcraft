@@ -321,6 +321,7 @@ fn fold_undo(s: &mut Session, before: usize, label: &str) {
     }
 }
 
+/// Instantiates and places a graphics template onto the sequence timeline.
 fn apply_template(s: &mut Session, p: &Value) -> Result<Value> {
     let key = str_p(p, "template").or_else(|| str_p(p, "id")).or_else(|| str_p(p, "name")).ok_or_else(|| bad("graphics.template.apply", "need `template`"))?;
     let entry = find_template(s, key)?;
@@ -835,6 +836,7 @@ fn char_stroke_kind(k: &str, v: &Value) -> Result<u32> {
     kind.ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be outer, center, inner, or 0..2")))
 }
 
+/// Parses JSON parameter object into a text character style specification.
 fn char_style_p(v: &Value) -> Result<CharStyle> {
     let o = v.as_object().ok_or_else(|| bad("graphics.setCharStyle", "`style` must be an object"))?;
     let mut c = CharStyle::default();
@@ -1253,6 +1255,7 @@ fn list_fonts_used(s: &mut Session, _: &Value) -> Result<Value> {
     ))
 }
 
+/// Returns command specifications exposed by the graphics templates engine module.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         query(

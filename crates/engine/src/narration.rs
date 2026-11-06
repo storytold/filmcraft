@@ -177,6 +177,7 @@ fn voices(_s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// Synthesizes and plays preview audio for the requested text and narration settings.
 fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.preview";
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
@@ -551,6 +552,7 @@ fn spec(
     CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
 }
 
+/// Returns command specifications exposed by the narration engine module.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         spec("tts.voices", "List Narration Voices", "{}", always, voices, false),

@@ -208,6 +208,7 @@ fn wants_effect(sel: &AttrSel, e: &filmcraft_project::EffectInstance) -> bool {
     sel.effects.as_ref().is_none_or(|ids| ids.contains(&e.effect))
 }
 
+/// Pastes selected attributes and effects from clipboard onto target clips.
 pub(super) fn paste_attributes(s: &mut Session, p: &Value) -> Result<Value> {
     let sel = attr_sel(p);
     let scale = bool_p(p, "scaleTimes").unwrap_or(true);
@@ -245,6 +246,7 @@ pub(super) fn paste_attributes(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"clips": n}))
 }
 
+/// Removes specified intrinsic or filter attributes from target clips, restoring default parameter states.
 pub(super) fn remove_attributes(s: &mut Session, p: &Value) -> Result<Value> {
     let sel = attr_sel(p);
     let targets = with_links(s, &clips_p(s, p));
