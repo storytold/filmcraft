@@ -84,6 +84,9 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
+    /// Length of each item's opened source: a generated proxy is as long as the source, which a
+    /// project's stored duration can overstate.
+    pub source_durations: Vec<(ItemId, Tick)>,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -135,7 +138,8 @@ fn transcode_with_file(
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
-    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: info.duration });
+    // the opened source's length, not the project's stored one: a project can claim any duration
+    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: src.info().duration });
     let mut placed = Vec::new();
     if has_v && let Some(ti) = p.make_track_item(item, TrackKind::Video, Tick::ZERO, range, rate) {
         placed.push((TrackKind::Video, ti));
@@ -260,13 +264,16 @@ fn items_param(s: &Session, p: &Value) -> Vec<ItemId> {
 fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
     let mut tasks = Vec::new();
     let mut total = 0;
+    let mut source_durations = Vec::new();
     for (item, output, pr) in work {
         let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
         let src = s.media.full_res_source(&s.project, item, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: no source")))?;
         if s.media.offline_status(item).is_some() {
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
-        total += frame_count(&clip, None);
+        let source_duration = src.info().duration;
+        total += frame_count(&clip, Some(TimeRange { start: Tick::ZERO, duration: source_duration }));
+        source_durations.push((item, source_duration));
         tasks.push((item, clip, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
@@ -333,7 +340,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -360,7 +367,7 @@ pub fn poll(s: &mut Session) {
             continue;
         }
         let r = match pj.on_done {
-            OnDone::AttachProxies => attach(s, &outs, false).map(|_| ()),
+            OnDone::AttachProxies => attach_checked(s, &outs, false, &pj.source_durations).map(|_| ()),
             OnDone::ReplaceMedia => replace_media(s, &outs),
             OnDone::Nothing => Ok(()),
         };
@@ -371,17 +378,19 @@ pub fn poll(s: &mut Session) {
 }
 
 /// Check a proxy file against its clip: duration within one frame, same frame rate.
-fn check_proxy(s: &Session, item: ItemId, path: &str) -> Result<()> {
+/// `source_duration`: the length a generated proxy has (the opened source's), when known; otherwise the clip's stored duration.
+fn check_proxy(s: &Session, item: ItemId, path: &str, source_duration: Option<Tick>) -> Result<()> {
     let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.attachProxies", format!("item {} is not file media", item.0)))?;
     let src = s.media.open_file(path, &*s.services).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let pi = src.info();
     let fd = clip.info.frame_rate().frame_duration();
-    if (pi.duration - clip.info.duration).0.abs() > fd.0 {
+    let expected = source_duration.unwrap_or(clip.info.duration);
+    if (pi.duration - expected).0.abs() > fd.0 {
         return Err(EngineError::Other(format!(
             "{}: the proxy is {:.3}s long but {name} is {:.3}s",
             Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             pi.duration.seconds(),
-            clip.info.duration.seconds()
+            expected.seconds()
         )));
     }
     if let (Some(a), Some(b)) = (&pi.video, &clip.info.video)
@@ -397,9 +406,14 @@ fn check_proxy(s: &Session, item: ItemId, path: &str) -> Result<()> {
 
 /// Attach proxies (checked unless `force`). One undo step.
 pub fn attach(s: &mut Session, pairs: &[(ItemId, String)], force: bool) -> Result<Value> {
+    attach_checked(s, pairs, force, &[])
+}
+
+/// [`attach`] with the source lengths of generated proxies, which the check uses in place of the stored duration.
+fn attach_checked(s: &mut Session, pairs: &[(ItemId, String)], force: bool, source_durations: &[(ItemId, Tick)]) -> Result<Value> {
     if !force {
         for (i, p) in pairs {
-            check_proxy(s, *i, p)?;
+            check_proxy(s, *i, p, source_durations.iter().find(|(d, _)| d == i).map(|&(_, t)| t))?;
         }
     }
     let pairs = pairs.to_vec();

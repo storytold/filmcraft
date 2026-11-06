@@ -24,6 +24,23 @@ use serde_json::{Value, json};
 use crate::commands::{CommandSpec, bad, bool_p, clips_p, f64_p, has_seq, u64_p};
 use crate::{EngineError, Result, Session};
 
+/// Frames one clip is analysed for at most (24 h at 60 fps).
+pub(crate) const MAX_ANALYSED_FRAMES: i64 = 24 * 3600 * 60;
+
+/// Frames the clips of one job are analysed for in all: repeated or many clips cannot sum past one clip's cap.
+pub(crate) const MAX_TOTAL_ANALYSED_FRAMES: i64 = MAX_ANALYSED_FRAMES;
+
+/// Frames to schedule for a clip of `duration`, spent from `remaining` (the job's budget). Checked before any
+/// schedule is built, so the memory a job asks for stays bounded.
+pub(crate) fn scheduled_frames(duration: Tick, frame_duration: Tick, remaining: &mut i64) -> Result<i64> {
+    let n = (duration.0 / frame_duration.0.max(1)).clamp(1, MAX_ANALYSED_FRAMES);
+    if n > *remaining {
+        return Err(bad("clip.sceneEditDetection", "the selected clips are too long to analyse in one job; select fewer or shorter clips"));
+    }
+    *remaining -= n;
+    Ok(n)
+}
+
 /// Longest side of the frames analysed (speed; the measures don't need detail).
 const ANALYSIS_WIDTH: f64 = 256.0;
 
@@ -116,6 +133,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("Scene Edit Detection is already running on this sequence".into()));
     }
     let mut work = Vec::new();
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
     for c in clips_p(s, p) {
         let Some((tid, it)) = q.find_item(c) else { continue };
         if q.track(tid).is_none_or(|t| t.kind != TrackKind::Video) {
@@ -124,7 +142,9 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(media_item) = media_root(&s.project, it.item) else { continue };
         let Some(src) = s.source(it.item) else { continue };
         let Some(v) = src.info().video.clone() else { continue };
-        let n = (it.duration.0 / fd.0.max(1)).max(1);
+        // The schedule is built here, before the job can be cancelled; a project can store any
+        // clip duration, so it is capped (a day at 60 fps) rather than trusted.
+        let n = scheduled_frames(it.duration, fd, &mut remaining)?;
         let frames: Vec<(Tick, Tick)> = (0..n)
             .map(|j| {
                 let t = it.start + Tick(fd.0 * j);
