@@ -77,8 +77,9 @@ use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
-    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
+    GpuRenderStats, HwEncodeStats, Stage, clear_hw_decline_reason, export_lock_wait, gpu_render_stats, hw_decline_reason, hw_encode_stats, note_gpu_fallback,
+    note_gpu_frame, note_hw_encode_declined, note_hw_encode_declined_with, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait,
+    stage_times, timed,
 };
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
@@ -151,6 +152,15 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// What wrote the stream: "software H.264", "NVENC H.264", "Media Foundation H.265",
+    /// "software GIF". An image sequence writes stills, so it leaves this empty.
+    /// A hardware encoder that declined leaves the software encoder to write the file, and
+    /// this says so - the same bytes under a different name are not the same file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoder: String,
+    /// Why the hardware encoder declined, when one did and the software encoder took over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declined: Option<String>,
 }
 
 #[cfg(test)]

@@ -75,6 +75,43 @@ fn mjpeg_mov_roundtrip() {
     }
 }
 
+/// The export result says which encoder wrote the file, so a file the hardware encoder
+/// declined - and the software encoder took instead - is visible (#3952).
+#[test]
+fn the_report_names_the_encoder_that_wrote_the_file() {
+    let (p, seq, m) = project();
+    let path = tmp("named.mov");
+    let prog = Progress::default();
+    let r = export(&p, seq, &ExportSettings { format: Format::Mjpeg, path, ..Default::default() }, &m, &prog).unwrap();
+    // no hardware encoder is registered in this crate's tests, so the software one wrote it
+    assert_eq!(r.encoder, "software QuickTime (Motion JPEG)", "{}", r.encoder);
+    assert_eq!(r.declined, None, "nothing declined it");
+    // the status says it too, so the app shows which encoder ran without reading the result
+    let status = prog.status.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(status.contains("software QuickTime (Motion JPEG)"), "{status}");
+}
+
+/// A GIF is a stream written by the image crate's encoder, even though it shares the still-writing
+/// path; an image sequence writes stills, so no encoder wrote it (#4339).
+#[test]
+fn gif_names_its_encoder_and_image_sequences_do_not() {
+    let (p, seq, m) = project();
+    let range = TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(6));
+    let gif =
+        export(&p, seq, &ExportSettings { format: Format::Gif, path: tmp("named.gif"), range: Some(range), ..Default::default() }, &m, &Progress::default())
+            .unwrap();
+    assert_eq!(gif.encoder, "software GIF");
+    let stills = export(
+        &p,
+        seq,
+        &ExportSettings { format: Format::PngSequence, path: tmp("named-seq.png"), range: Some(range), ..Default::default() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap();
+    assert_eq!(stills.encoder, "", "an image sequence has no encoder");
+}
+
 #[test]
 fn wav_png_gif() {
     let (p, seq, m) = project();
