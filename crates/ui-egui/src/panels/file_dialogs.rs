@@ -15,6 +15,7 @@ use crate::{Dialog, FilmcraftApp};
 #[derive(Default)]
 pub struct FileDialogState {
     pub recovery_choice: usize,
+    pub recovery_error: Option<String>,
 }
 
 pub(crate) fn modal_frame(t: &Tokens) -> Frame {
@@ -74,9 +75,17 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     let r = ui.radio(choice == i, RichText::new(&label).size(12.5));
                     app.auto.add(&format!("recovery.item.{i}"), r.rect, &label);
                     if r.clicked() {
+                        if choice != i {
+                            app.file_dialogs.recovery_error = None;
+                        }
                         choice = i;
                     }
                 }
+            }
+            if let Some(message) = &app.file_dialogs.recovery_error {
+                ui.add_space(8.0);
+                let response = ui.colored_label(ui.visuals().error_fg_color, message);
+                app.auto.add("recovery.error", response.rect, message);
             }
             ui.add_space(18.0);
             let id = items[choice]["id"].as_str().unwrap_or("").to_string();
@@ -91,7 +100,11 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     if button(app, ui, "recovery.recover", tl!("Recover"), true) {
                         match app.session.execute("file.recover", json!({ "id": id })) {
                             Ok(_) => open = false,
-                            Err(e) => app.ui.status = e.to_string(),
+                            Err(e) => {
+                                let message = e.to_string();
+                                app.ui.status = message.clone();
+                                app.file_dialogs.recovery_error = Some(message);
+                            }
                         }
                     }
                     if button(app, ui, "recovery.later", tl!("Not Now"), false) {
@@ -102,7 +115,11 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         });
     });
     app.file_dialogs.recovery_choice = choice;
-    open && !app.session.recovery_candidates().is_empty()
+    let remains_open = open && !app.session.recovery_candidates().is_empty();
+    if !remains_open {
+        app.file_dialogs.recovery_error = None;
+    }
+    remains_open
 }
 
 pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
