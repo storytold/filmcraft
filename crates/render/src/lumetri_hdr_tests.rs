@@ -353,3 +353,29 @@ fn hsl_sharpen_leaves_transparent_pixels_empty() {
         }
     }
 }
+
+/// Sharpen works on straight colour: a keyed red of one colour whose alpha ramps down (a soft edge)
+/// keeps its colour, with no bright or dark halo along the ramp.
+#[test]
+fn hsl_sharpen_puts_no_halo_on_a_soft_alpha_edge() {
+    let (w, h) = (24usize, 6usize);
+    let l = [0.62f32, 0.42, 0.38].map(filmcraft_color::srgb_to_linear);
+    for amount in [100.0, -100.0] {
+        let mut img = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let a = (1.0 - x as f32 / (w - 1) as f32 * 0.8).clamp(0.2, 1.0);
+                img.px[(y * w + x) * 4..][..4].copy_from_slice(&[l[0] * a, l[1] * a, l[2] * a, a]);
+            }
+        }
+        let e =
+            lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0)), ("hsl_sharpen", F(amount))]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+        for x in 0..w {
+            let p = img.get(x, 3);
+            for k in 0..3 {
+                assert!((p[k] / p[3] - l[k]).abs() < 1e-4, "sharpen {amount} at x {x}: straight {:?} vs {l:?}", [p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+            }
+        }
+    }
+}

@@ -1543,17 +1543,26 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
         gs.decode(out)
     });
-    // Sharpen: Creative ▸ Sharpen's unsharp mask, mixed in by the key
+    // Sharpen: Creative ▸ Sharpen's unsharp mask (the same Gaussian), mixed in by the key. It
+    // works on straight colour, so a soft alpha edge of one colour gets no halo
     if show_mask == 0 && sharpen.abs() > 1e-3 && mask.par_iter().any(|&m| m > 0.0) {
-        let mut sharp = img.clone();
-        unsharp(&mut sharp, 1.2 * cx.px_scale.max(0.35), sharpen, 0.0);
-        img.px.par_chunks_mut(4).zip(sharp.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, s), &m)| {
+        let radius = 1.2 * cx.px_scale.max(0.35);
+        let (rx, ry) = gaussian_boxes(img.w, img.h, radius, radius);
+        let mut blurred = img.clone();
+        box_blur(&mut blurred, &rx, &ry, true);
+        img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, b), &m)| {
             // transparent pixels stay empty (a blurred key can reach them)
-            if p[3] <= 0.0 {
+            let a = p[3];
+            if a.is_nan() || a <= 0.0 {
                 return;
             }
             for k in 0..3 {
-                p[k] += (s[k] - p[k]) * m;
+                let v = p[k] / a;
+                let around = if b[3] > 1e-6 { b[k] / b[3] } else { v };
+                let sharp = (v + (v - around) * sharpen).max(0.0) * a;
+                if sharp.is_finite() {
+                    p[k] += (sharp - p[k]) * m;
+                }
             }
         });
     }
