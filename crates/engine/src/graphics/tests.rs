@@ -95,6 +95,29 @@ fn graphic_placement_takes_a_track_and_a_time() {
     }
 }
 
+/// `track` also takes a track name as `timeline.place` does; a track the sequence does not have,
+/// or a value that names no track, is an error and places nothing.
+#[test]
+fn graphic_track_by_name_and_bad_tracks() {
+    for command in ["graphics.newText", "graphics.newShape"] {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"name": "Placement", "fps": 24, "width": 128, "height": 128, "video": 3, "audio": 1})).unwrap();
+        for (track, index) in [(json!("V3"), 2), (json!("v2"), 1)] {
+            let r = s.execute(command, json!({"track": track, "frame": 0, "seconds": 1})).unwrap();
+            let q = s.active_sequence().unwrap();
+            let (t, _) = q.find_item(ClipId(r["clip"].as_u64().unwrap())).unwrap();
+            assert_eq!(t, q.video_tracks[index].id, "{command} {track}");
+        }
+        for track in [json!("V7"), json!("V0"), json!(3), json!("A1"), json!("Captions"), json!(1.5), json!(true)] {
+            let e = s.execute(command, json!({"track": track, "frame": 48, "seconds": 1})).unwrap_err().to_string();
+            assert!(e.contains("no video track") && e.contains(command), "{command} {track}: {e}");
+        }
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.video_tracks.len(), 3, "{command}: no track was added");
+        assert_eq!(q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 2, "{command}: nothing placed for the bad tracks");
+    }
+}
+
 /// Every graphic layer gets a stable uid when it is created, both in a new clip and when added to
 /// an existing one. Two byte-identical layers with different text must not share an identity.
 #[test]
@@ -576,11 +599,11 @@ fn paragraph_text_wraps_in_its_box_and_hides_what_does_not_fit() {
     assert_eq!(s.execute("graphics.list", json!({"clip": clip.0})).unwrap()["layers"][0]["overflow"], true);
 
     // point text has no box, and a vertical layer never gets one
-    let r = s.execute("graphics.newText", json!({"text": "Title", "newClip": true, "track": 3})).unwrap();
+    let r = s.execute("graphics.newText", json!({"text": "Title", "newClip": true})).unwrap();
     let point = s.execute("graphics.list", json!({"clip": r["clip"]})).unwrap();
     assert_eq!(point["layers"][0]["textType"], "point");
     assert_eq!(point["layers"][0]["box"], json!(null));
-    let r = s.execute("graphics.newText", json!({"text": "Tate", "vertical": true, "box": [300, 300], "newClip": true, "track": 4})).unwrap();
+    let r = s.execute("graphics.newText", json!({"text": "Tate", "vertical": true, "box": [300, 300], "newClip": true})).unwrap();
     assert_eq!(s.execute("graphics.list", json!({"clip": r["clip"]})).unwrap()["layers"][0]["textType"], "point");
 }
 
