@@ -67,6 +67,7 @@ fn effects_list_reports_folders_and_badges() {
     assert_eq!(find("lens_flare")["folder"], "Lights & Glows");
     // Surface Blur is FilmCraft's own, beyond Premiere's list
     assert_eq!(find("surface_blur")["folder"], "Blur & Sharpen");
+    assert_eq!(find("surface_blur")["badges"]["accelerated"], false, "CPU only");
     let n = arr
         .iter()
         .filter(|e| e["kind"] == "Video" && e["category"][0] == "Video Effects" && e["folder"] != "Obsolete" && e["folder"] != Value::Null)

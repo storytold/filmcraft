@@ -1526,3 +1526,15 @@ fn surface_blur_survives_hostile_input() {
         assert!(o.px.iter().all(|q| q.is_finite()), "{w}x{h}");
     }
 }
+
+/// HDR: a flat overbright picture keeps its values above 1.0 (the decode does not clip).
+#[test]
+fn surface_blur_keeps_hdr_headroom() {
+    let img = Image::filled(16, 12, [4.0, 2.5, 1.5, 1.0]);
+    let mut e = inst("surface_blur");
+    setf(&mut e, "radius", 3.0);
+    let o = run("surface", &e, &img, &cx());
+    for (a, b) in o.px.iter().zip(&img.px) {
+        assert!((a - b).abs() < 1e-3 * b.abs().max(1.0), "{a} vs {b}");
+    }
+}
