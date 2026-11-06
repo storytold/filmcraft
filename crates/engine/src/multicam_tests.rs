@@ -219,6 +219,9 @@ fn timecode_marker_and_in_point_sync_within_one_frame() {
     for (it, t) in [(items[0], rate.tick_of(event_frame_a)), (items[1], rate.snap(at_b))] {
         let m = p.item_mut(it).unwrap().as_media_mut().unwrap();
         m.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900 + it.0),
             start: t,
             duration: Tick::ZERO,
@@ -328,6 +331,59 @@ const H: u32 = 90;
 /// Three 4-second cameras (different scenes, own audio), a multi-camera source sequence by In
 /// points, and a sequence holding one multi-camera clip on V1/A1. Returns (session, camera items,
 /// source sequence, edit sequence).
+/// #1362: with nothing selected in the Project panel, Create Multi-Camera Source Sequence and Merge
+/// Clips take the media of the clips selected in the Timeline.
+#[test]
+fn multicam_from_clips_selected_in_the_timeline() {
+    let dir = tmp_dir("mc-timeline");
+    let files: Vec<PathBuf> = ["a.mov", "b.mov", "c.mov"].iter().map(|f| dir.join(f)).collect();
+    for (f, sc) in files.iter().zip([DemoScene::OceanSunset, DemoScene::CityNight, DemoScene::Aurora]) {
+        make_movie(f, sc, W, H, 48);
+    }
+    let mut s = Session::default();
+    let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+    let items = import(&mut s, &refs);
+    let mut p = (*s.project).clone();
+    let edit =
+        p.new_sequence("Edit", filmcraft_project::SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+    s.project = std::sync::Arc::new(p);
+    s.state.active_sequence = Some(edit);
+    for (k, item) in items.iter().enumerate() {
+        s.set_playhead(FrameRate::FPS_24.tick_of(k as i64 * 48));
+        s.execute("source.open", json!({"item": item.0})).unwrap();
+        s.execute("source.overwrite", json!({})).unwrap();
+    }
+    s.execute("project.select", json!({"items": []})).unwrap();
+    s.execute("timeline.select", json!({"clips": []})).unwrap();
+    assert!(!s.is_enabled("clip.createMulticam"), "nothing selected anywhere");
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert_eq!(clips.len(), 3);
+    s.execute("timeline.select", json!({"clips": clips})).unwrap();
+    assert!(s.is_enabled("clip.createMulticam") && s.is_enabled("clip.mergeClips"));
+    // Merge Clips opens on them, and says why it can't merge three video clips
+    assert!(s.execute("clip.mergeClips", json!({"method": "in"})).unwrap_err().to_string().contains("one video clip"));
+    let r = s.execute("clip.createMulticam", json!({"method": "in"})).unwrap();
+    let src = ItemId(r["sequence"].as_u64().unwrap());
+    let cameras: Vec<ItemId> = s.project.sequence(src).unwrap().video_tracks.iter().filter_map(|t| t.items.first().map(|c| c.item)).collect();
+    assert_eq!(cameras, items, "one camera per selected clip's media, in selection order");
+
+    // one video clip and an audio-only one, selected in the Timeline: Merge Clips takes them
+    s.state.active_sequence = Some(edit);
+    let wav = dir.join("room.wav");
+    std::fs::write(&wav, crate::voiceover::write_wav_f32(&vec![0.0; 48_000 * 2], 48_000)).unwrap();
+    let audio = import(&mut s, &[wav.as_path()])[0];
+    s.set_playhead(FrameRate::FPS_24.tick_of(200));
+    s.execute("source.open", json!({"item": audio.0})).unwrap();
+    s.execute("source.overwrite", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let a = q.audio_tracks.iter().flat_map(|t| &t.items).find(|c| c.item == audio).unwrap().id.0;
+    s.execute("project.select", json!({"items": []})).unwrap();
+    s.execute("timeline.select", json!({"clips": [clips[0], a], "linked": false})).unwrap();
+    assert!(s.is_enabled("clip.mergeClips"));
+    let r = s.execute("clip.mergeClips", json!({"method": "in"})).unwrap();
+    assert!(r["item"].as_u64().is_some(), "{r}");
+}
+
 fn mc_session(audio: &str) -> (Session, Vec<ItemId>, ItemId, ItemId) {
     let dir = tmp_dir("mc-edit");
     let files: Vec<PathBuf> = ["a.mov", "b.mov", "c.mov"].iter().map(|f| dir.join(f)).collect();
@@ -840,4 +896,70 @@ fn perf_grid_of_four_1080p_angles() {
     eprintln!(
         "Multi-Camera grid (4 × 1080p H.264, ¼-scale cells): {grid_ms:.1} ms/frame wall, {grid_cpu:.1} ms/frame CPU; one angle at ½ scale: {one_ms:.1} ms/frame wall (24 fps budget 41.7 ms)"
     );
+}
+
+/// Clip ▸ Multi-Camera ▸ Enable / Flatten were enabled for any selection and then failed when
+/// chosen with plain clips selected. They are enabled when the selection holds what they work on:
+/// a nested sequence clip (Enable), an enabled multi-camera clip (Flatten). Naming the clips still
+/// works with nothing selected.
+#[test]
+fn multicam_menu_items_are_enabled_only_for_clips_they_work_on() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [first.0]})).unwrap();
+    assert!(!s.is_enabled("clip.multicamEnable"), "a plain clip is not a nest");
+    assert!(!s.is_enabled("clip.multicamFlatten"));
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    assert!(s.is_enabled("clip.multicamEnable"), "a nested sequence clip can become multi-camera");
+    assert!(!s.is_enabled("clip.multicamFlatten"), "not multi-camera yet");
+    s.execute("clip.multicamEnable", json!({})).unwrap();
+    assert!(s.is_enabled("clip.multicamFlatten"));
+    // agents naming the clips do not depend on the selection
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    assert!(!s.is_enabled("clip.multicamFlatten"));
+    s.execute("clip.multicamFlatten", json!({"clips": [nest.0]})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(q.find_item(nest).is_none(), "flattened into the camera clips");
+}
+
+/// Synchronizing by audio against a long stereo reference clip works (#3554): the analysis read is
+/// chunked, so a stereo read of more than 23 minutes stays under the audio buffer limit instead of
+/// failing as "has no audio to synchronize by".
+#[test]
+fn audio_sync_against_a_long_stereo_clip() {
+    let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("long stereo sync") else { return };
+    let dir = filmcraft_testkit::fixtures_dir("multicam");
+    // 25 minutes of stereo pink noise (AAC, small), and a 20 s excerpt of it starting at 100 s
+    let gen_clip = |name: &str, extra: &[&str]| {
+        filmcraft_testkit::fixtures::generate(&dir.join(name), |tmp| {
+            let t = tmp.to_string_lossy();
+            let mut args = vec![
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=64x36:r=1:d=1500",
+                "-f",
+                "lavfi",
+                "-i",
+                "anoisesrc=d=1500:c=pink:r=48000:a=0.35:s=11,aformat=channel_layouts=stereo",
+            ];
+            args.extend_from_slice(extra);
+            args.extend_from_slice(&["-c:v", "libx264", "-c:a", "aac", "-b:a", "32k", "-shortest", "-f", "mp4", &t]);
+            ff(&ffmpeg, &args)
+        })
+    };
+    let long = gen_clip("long_stereo.mp4", &["-t", "1500"]);
+    let short = gen_clip("long_stereo_excerpt.mp4", &["-ss", "100", "-t", "20"]);
+    // ffmpeg is there (the skip above): a fixture that cannot be generated is a failure, not a pass
+    let (Some(long), Some(short)) = (long, short) else { panic!("ffmpeg could not generate the long stereo fixtures") };
+    let mut s = Session::default();
+    let items = import(&mut s, &[&long, &short]);
+    let clips: Vec<_> = items.iter().map(|i| crate::sync::project_clip(&s.project, *i).unwrap()).collect();
+    let a = crate::sync::anchors(&s, &clips, 0, &crate::sync::Method::Audio, Tick::ZERO).unwrap();
+    // the excerpt's media 0 lines up with the long clip's media 100 s: the long clip starts 100 s earlier
+    let dt = (a[1].anchor - a[0].anchor).0 as f64 / TICKS_PER_SECOND as f64;
+    assert!((dt + 100.0).abs() < 0.05, "{dt}");
 }

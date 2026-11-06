@@ -244,7 +244,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(6.0);
         label(ui, &t, "Language");
         let lang_name = filmcraft_tts::LANGUAGES.iter().find(|(id, _)| *id == d.language).map_or(d.language.as_str(), |(_, n)| n);
-        let cb = egui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
             for (id, name) in filmcraft_tts::LANGUAGES {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
                     d.language = id.to_string();
@@ -255,7 +255,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(10.0);
         label(ui, &t, "Voice");
         let voice_name = voices.iter().find(|v| v.id == d.voice).map_or(d.voice.as_str(), |v| v.name);
-        let cb = egui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
             for (engine, heading) in [("neural", "Natural voices"), ("basic", "Basic voices (built in)")] {
                 ui.label(egui::RichText::new(heading).color(t.text_faint).size(11.0));
                 for v in voices.iter().filter(|v| v.language == d.language && v.engine == engine) {
@@ -329,13 +329,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             actions.push(Action::Run("tts.preview", json!({"sample": true, "voice": d.voice, "pitch": d.pitch.id(), "pace": d.pace}), true));
         }
         ui.add_space(8.0);
-        let (hr, open) = crate::widgets::section_header(ui, egui::Id::new("tts-advanced"), "Advanced", d.advanced_open, &t, true);
+        let (hr, open) = crate::widgets::section_header(ui, egui::Id::unique("tts-advanced"), "Advanced", d.advanced_open, &t, true);
         auto.add("tts.advanced", visible(ui, hr.rect), "Advanced");
         d.advanced_open = open;
         if open {
             ui.add_space(4.0);
             label(ui, &t, "Vocal pitch");
-            let cb = egui::ComboBox::from_id_salt("tts-pitch").selected_text(d.pitch.label()).width(w).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("tts-pitch").selected_text(d.pitch.label()).width(w).show_ui(ui, |ui| {
                 for p in VocalPitch::ALL {
                     if ui.selectable_label(d.pitch == p, p.label()).clicked() {
                         d.pitch = p;
@@ -378,7 +378,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             .desired_width(w)
             .desired_rows(8)
             .char_limit(filmcraft_tts::MAX_TEXT_BYTES);
-        let r = ui.add(te);
+        let r = crate::widgets::accessible_name(ui.add(te), "Text");
         auto.add("tts.text", visible(ui, r.rect), "Text");
     });
 
@@ -445,7 +445,7 @@ fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
 
 #[allow(clippy::too_many_arguments)]
 fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primary: bool, active: bool, id: &str) -> egui::Response {
-    let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     let p = ui.painter();
     let (bg, fg) = match (primary, active) {
         (true, true) => (if resp.hovered() { t.accent_hover } else { t.accent }, egui::Color32::WHITE),

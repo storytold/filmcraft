@@ -2,7 +2,9 @@
 //! super-resolution upscaling (7.16) and loop restoration (7.17).
 
 use crate::frame::RowBand;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    GLOBAL_GLOBALMV, GLOBALMV, INTRA_FRAME, MAX_LOOP_FILTER, NEARESTMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SEG_LVL_ALT_LF_Y_V, TX_HEIGHT, TX_WIDTH,
+};
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
 
@@ -287,7 +289,6 @@ impl LfThresh {
 
 /// Sample filtering process (7.14.6) for one line across the edge: `base` indexes q0 and
 /// `step` is the distance between samples across the edge.
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn sample_filter(d: &mut [u16], base: usize, step: usize, chroma: bool, filter_size: usize, t: LfThresh) {
     let at = |d: &[u16], k: isize| -> i32 { d[(base as isize + k * step as isize) as usize] as i32 };

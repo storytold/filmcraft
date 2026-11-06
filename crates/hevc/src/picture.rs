@@ -61,7 +61,7 @@ impl Sample for u8 {
         }
     }
     fn wrap_rows(rows: Box<[OnceLock<FrameRow<u8>>]>) -> Rows {
-        Rows::U8(rows)
+        Rows::U8(rows.into())
     }
 }
 
@@ -94,7 +94,7 @@ impl Sample for u16 {
         }
     }
     fn wrap_rows(rows: Box<[OnceLock<FrameRow<u16>>]>) -> Rows {
-        Rows::U16(rows)
+        Rows::U16(rows.into())
     }
 }
 
@@ -114,9 +114,10 @@ pub struct FrameRow<S> {
 }
 
 /// The CTB rows of a frame, in its storage type.
+#[derive(Clone)]
 pub enum Rows {
-    U8(Box<[OnceLock<FrameRow<u8>>]>),
-    U16(Box<[OnceLock<FrameRow<u16>>]>),
+    U8(Arc<[OnceLock<FrameRow<u8>>]>),
+    U16(Arc<[OnceLock<FrameRow<u16>>]>),
 }
 
 /// A decoded (or in-progress) picture as stored in the DPB and referenced by later pictures.
@@ -223,7 +224,7 @@ impl Frame {
     }
 
     /// Copy a w x h luma window at (x0, y0) with edge replication into `out` (stride `os`).
-    pub fn luma_window<S: Sample>(&self, x0: i32, y0: i32, w: usize, h: usize, out: &mut [i16], os: usize) {
+    pub fn luma_window<S: Sample>(&self, (x0, y0): (i32, i32), (w, h): (usize, usize), out: &mut [i16], os: usize) {
         let (width, height) = (self.width as i32, self.height as i32);
         let sh = self.log2_ctb;
         let mask = (1i32 << sh) - 1;
@@ -236,7 +237,7 @@ impl Frame {
     }
 
     /// Copy a w x h window of chroma component `c` (0 = Cb, 1 = Cr) with edge replication.
-    pub fn chroma_window<S: Sample>(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [i16], os: usize) {
+    pub fn chroma_window<S: Sample>(&self, c: usize, (x0, y0): (i32, i32), (w, h): (usize, usize), out: &mut [i16], os: usize) {
         let (cw, ch) = (self.cwidth as i32, self.cheight as i32);
         let sh = self.log2_ctb - 1;
         let mask = (1i32 << sh) - 1;
@@ -283,8 +284,7 @@ impl Frame {
 
     /// Copy the w x h block at (x0, y0) of plane `c` (0 = luma, 1 = Cb, 2 = Cr) into `dst`
     /// (stride `ds`), samples outside the picture replicated from its edges (8-228, 8-229).
-    #[allow(clippy::too_many_arguments)]
-    pub fn copy_block<S: Sample>(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, dst: &mut [S], ds: usize) {
+    pub fn copy_block<S: Sample>(&self, c: usize, (x0, y0): (i32, i32), (w, h): (usize, usize), dst: &mut [S], ds: usize) {
         let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - 1) };
         let inside = usize::try_from(x0).ok().filter(|&x| x.saturating_add(w) <= pw);
         for (r, d) in dst.chunks_mut(ds).take(h).enumerate() {
@@ -389,6 +389,23 @@ impl Frame {
         let f = Frame::new(id, poc, like.width, like.height, like.log2_ctb, like.bit_depth, like.bit_depth_c);
         f.publish_gray();
         f
+    }
+
+    /// A distinct logical frame sharing this frame's rows. Used for fully published, immutable
+    /// gray references: deblocking needs a unique frame ID even when their samples are identical.
+    pub fn with_identity(&self, id: u32, poc: i32) -> Frame {
+        Frame {
+            id,
+            poc,
+            width: self.width,
+            height: self.height,
+            cwidth: self.cwidth,
+            cheight: self.cheight,
+            log2_ctb: self.log2_ctb,
+            bit_depth: self.bit_depth,
+            bit_depth_c: self.bit_depth_c,
+            rows: self.rows.clone(),
+        }
     }
 
     /// A frame with every row published from full-picture planes and no motion.
@@ -587,10 +604,10 @@ mod tests {
         assert!(f.row::<u16>(0).is_none());
         assert_eq!(f.row::<u8>(1).map(|r| r.y[0]), Some(128));
         let mut win = [7i16; 64];
-        f.luma_window::<u16>(-3, -3, 8, 8, &mut win, 8);
+        f.luma_window::<u16>((-3, -3), (8, 8), &mut win, 8);
         assert!(win.iter().all(|&v| v == 7));
         let mut dst = [5u16; 16];
-        f.copy_block::<u16>(0, 0, 0, 4, 4, &mut dst, 4);
+        f.copy_block::<u16>(0, (0, 0), (4, 4), &mut dst, 4);
         assert!(dst.iter().all(|&v| v == 5));
         let g = Frame::gray(1, 0, &Frame::new(0, 0, 16, 8, 4, 10, 10));
         assert!(g.is_complete());
