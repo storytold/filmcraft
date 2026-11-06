@@ -1,5 +1,5 @@
 use super::{
-    Avail, BLK4_XY, Cand, Deadzone, Edge4, Edge8, MbCtx, MbEdges, MbKind, Pixel, RASTER_TO_BLK4, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, dequant_luma_dc,
+    Avail, BLK4_XY, CMB, Cand, Deadzone, Edge4, Edge8, MbCtx, MbEdges, MbKind, Pixel, RASTER_TO_BLK4, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, dequant_luma_dc,
     dequant4, dequant8, fdct4, fdct8, filter8, idct4, idct8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16, quant_luma_dc, quant4, quant8, satd,
 };
 
@@ -101,8 +101,9 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         if ac_any { 15 } else { 0 }
     }
 
-    fn best_chroma_mode(&self, e: &MbEdges<P>, av: Avail, src: &Src<P>, lam: u32) -> (u8, [P; 64], [P; 64]) {
-        let mut best = (u32::MAX, 0u8, [P::default(); 64], [P::default(); 64]);
+    fn best_chroma_mode(&self, e: &MbEdges<P>, av: Avail, src: &Src<P>, lam: u32) -> (u8, [P; CMB], [P; CMB]) {
+        let rows = self.f.p.ch();
+        let mut best = (u32::MAX, 0u8, [P::default(); CMB], [P::default(); CMB]);
         for mode in 0..4u8 {
             let ok = match mode {
                 0 => true,
@@ -113,11 +114,11 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
             if !ok {
                 continue;
             }
-            let mut pu = [P::default(); 64];
-            let mut pv = [P::default(); 64];
-            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, self.f.p.depth, &mut pu);
-            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, self.f.p.depth, &mut pv);
-            let cost = satd(&src.u, 8, &pu, 8, 8, 8) + satd(&src.v, 8, &pv, 8, 8, 8) + ((lam * (1 + 2 * mode as u32)) >> 8);
+            let mut pu = [P::default(); CMB];
+            let mut pv = [P::default(); CMB];
+            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, self.f.p.depth, rows, &mut pu);
+            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, self.f.p.depth, rows, &mut pv);
+            let cost = satd(&src.u, 8, &pu, 8, 8, rows) + satd(&src.v, 8, &pv, 8, 8, rows) + ((lam * (1 + 2 * mode as u32)) >> 8);
             if cost < best.0 {
                 best = (cost, mode, pu, pv);
             }

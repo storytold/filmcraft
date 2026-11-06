@@ -44,6 +44,8 @@ pub struct Sps {
     pub max_num_ref_frames: u32,
     /// BitDepthY = BitDepthC (8 to 10).
     pub bit_depth: u8,
+    /// 1 (4:2:0) or 2 (4:2:2).
+    pub chroma_format_idc: u8,
     pub vui: Vui,
 }
 
@@ -55,7 +57,7 @@ impl Sps {
         w.write_bits(self.level_idc as u32, 8);
         w.write_ue(0); // seq_parameter_set_id
         if matches!(self.profile_idc, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
-            w.write_ue(1); // chroma_format_idc 4:2:0
+            w.write_ue(self.chroma_format_idc as u32); // chroma_format_idc: 1 = 4:2:0, 2 = 4:2:2
             w.write_ue(self.bit_depth.saturating_sub(8) as u32); // bit_depth_luma_minus8
             w.write_ue(self.bit_depth.saturating_sub(8) as u32); // bit_depth_chroma_minus8
             w.write_bit(false); // qpprime_y_zero_transform_bypass_flag
@@ -76,7 +78,8 @@ impl Sps {
             w.write_ue(0);
             w.write_ue(self.crop_right / 2);
             w.write_ue(0);
-            w.write_ue(self.crop_bottom / 2);
+            // CropUnitY = SubHeightC: 2 rows for 4:2:0, 1 for 4:2:2 (7.4.2.1.1)
+            w.write_ue(if self.chroma_format_idc == 2 { self.crop_bottom } else { self.crop_bottom / 2 });
         }
         w.write_bit(true); // vui_parameters_present_flag
         let v = &self.vui;
@@ -291,7 +294,7 @@ pub fn avcc(sps_nal: &[u8], pps_nal: &[u8], sps: &Sps) -> Vec<u8> {
     v.extend_from_slice(pps_nal);
     if matches!(profile_idc, 100 | 110 | 122 | 144) {
         let bd = sps.bit_depth.saturating_sub(8) & 7;
-        v.push(0xFC | 1); // chroma_format 4:2:0
+        v.push(0xFC | (sps.chroma_format_idc & 3)); // chroma_format
         v.push(0xF8 | bd); // bit_depth_luma_minus8
         v.push(0xF8 | bd); // bit_depth_chroma_minus8
         v.push(0); // numOfSequenceParameterSetExt

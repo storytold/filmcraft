@@ -7,12 +7,13 @@ use crate::dsp::{sad, sad8, sad16, satd, ssd};
 use crate::intra::{Edge4, Edge8, filter8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16};
 use crate::mbinfo::{MbInfo, MbKind, Mv, Part};
 use crate::nal::{SliceHeader, SliceType, nal};
-use crate::picture::{CHROMA_PAD, Frame, LUMA_PAD, RefPic, avg_into};
+use crate::picture::{Frame, LUMA_PAD, RefPic, avg_into, chroma_pad};
 use crate::pixel::{Depth, Pixel, QP_PRIME_MAX};
 use crate::syntax::{MbCode, NbCtx};
 use crate::tables::{BLK4_XY, NUM_CTX, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8, chroma_qp_prime};
 use crate::transform::{
-    Deadzone, QuantTables, dequant_chroma_dc, dequant_luma_dc, dequant4, dequant8, fdct4, fdct8, idct4, idct8, quant_chroma_dc, quant_luma_dc, quant4, quant8,
+    CHROMA_DC422_SCAN, Deadzone, QuantTables, dequant_chroma_dc, dequant_chroma_dc422, dequant_luma_dc, dequant4, dequant8, fdct4, fdct8, idct4, idct8,
+    quant_chroma_dc, quant_chroma_dc422, quant_luma_dc, quant4, quant8,
 };
 use crate::{cabac_mb, cavlc};
 
@@ -47,6 +48,33 @@ pub struct EncParams {
     /// Maximum CAVLC level magnitude (Baseline).
     pub cavlc_clamp: bool,
     pub depth: Depth,
+    /// 4:2:2 chroma (chroma_format_idc 2): 8x16 chroma per macroblock instead of 8x8.
+    pub c422: bool,
+}
+
+/// Chroma samples of one macroblock component, 8 wide: 8 rows (4:2:0) or 16 rows (4:2:2) are used.
+pub const CMB: usize = 128;
+
+impl EncParams {
+    /// Chroma rows per macroblock (MbHeightC).
+    #[inline]
+    pub fn ch(&self) -> usize {
+        if self.c422 { 16 } else { 8 }
+    }
+    /// Chroma 4x4 blocks per component (4 · NumC8x8).
+    #[inline]
+    pub fn nc4(&self) -> usize {
+        if self.c422 { 8 } else { 4 }
+    }
+    /// Luma rows per chroma row (SubHeightC).
+    #[inline]
+    pub fn sub_h(&self) -> usize {
+        if self.c422 { 1 } else { 2 }
+    }
+    #[inline]
+    pub fn cpad(&self) -> usize {
+        chroma_pad(self.c422)
+    }
 }
 
 /// Per-frame shared encoding state.
@@ -134,7 +162,8 @@ struct MbEdges<P> {
     left: [P; 16],
     tl: P,
     ctop: [[P; 8]; 2],
-    cleft: [[P; 8]; 2],
+    /// Left chroma column, 8 (4:2:0) or 16 (4:2:2) samples used.
+    cleft: [[P; 16]; 2],
     ctl: [P; 2],
 }
 
@@ -143,8 +172,8 @@ struct Cand<P> {
     code: MbCode,
     info: MbInfo,
     ry: [P; 256],
-    ru: [P; 64],
-    rv: [P; 64],
+    ru: [P; CMB],
+    rv: [P; CMB],
     cost: u64,
 }
 
@@ -154,8 +183,8 @@ impl<P: Pixel> Cand<P> {
             code: MbCode::default(),
             info: MbInfo::default(),
             ry: [P::default(); 256],
-            ru: [P::default(); 64],
-            rv: [P::default(); 64],
+            ru: [P::default(); CMB],
+            rv: [P::default(); CMB],
             cost: u64::MAX,
         })
     }
@@ -282,13 +311,15 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     }
     #[inline]
     fn rc(&self, x: usize, y: usize) -> usize {
-        (y - self.y0 * 8) * self.band.cs + CHROMA_PAD + x
+        (y - self.y0 * self.f.p.ch()) * self.band.cs + self.f.p.cpad() + x
     }
 
     fn edges(&self, mx: usize, my: usize, av: Avail) -> MbEdges<P> {
         let (px, py) = (mx * 16, my * 16);
         let m = P::of(self.f.p.depth.mid);
-        let mut e = MbEdges { top: [m; 24], left: [m; 16], tl: m, ctop: [[m; 8]; 2], cleft: [[m; 8]; 2], ctl: [m; 2] };
+        let mut e = MbEdges { top: [m; 24], left: [m; 16], tl: m, ctop: [[m; 8]; 2], cleft: [[m; 16]; 2], ctl: [m; 2] };
+        // chroma (x, y) of the macroblock's top-left sample, and its rows
+        let (cx, cy, ch) = (px / 2, my * self.f.p.ch(), self.f.p.ch());
         if av.top {
             let i = self.ry(px, py - 1);
             e.top[..16].copy_from_slice(&self.band.y[i..i + 16]);
@@ -299,7 +330,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
                 e.top[16..24].fill(v);
             }
             for (c, pl) in [&*self.band.u, &*self.band.v].into_iter().enumerate() {
-                let i = self.rc(px / 2, py / 2 - 1);
+                let i = self.rc(cx, cy - 1);
                 e.ctop[c].copy_from_slice(&pl[i..i + 8]);
             }
         }
@@ -308,15 +339,15 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
                 e.left[y] = self.band.y[self.ry(px - 1, py + y)];
             }
             for (c, pl) in [&*self.band.u, &*self.band.v].into_iter().enumerate() {
-                for y in 0..8 {
-                    e.cleft[c][y] = pl[self.rc(px / 2 - 1, py / 2 + y)];
+                for y in 0..ch {
+                    e.cleft[c][y] = pl[self.rc(cx - 1, cy + y)];
                 }
             }
         }
         if av.tl {
             e.tl = self.band.y[self.ry(px - 1, py - 1)];
-            e.ctl[0] = self.band.u[self.rc(px / 2 - 1, py / 2 - 1)];
-            e.ctl[1] = self.band.v[self.rc(px / 2 - 1, py / 2 - 1)];
+            e.ctl[0] = self.band.u[self.rc(cx - 1, cy - 1)];
+            e.ctl[1] = self.band.v[self.rc(cx - 1, cy - 1)];
         }
         e
     }
@@ -470,15 +501,15 @@ struct PartSearch {
     seed: Mv,
 }
 
-/// Destination buffers (luma 16x16, chroma 8x8 each) of a motion-compensated prediction.
+/// Destination buffers (luma 16x16, chroma 8x8 or 8x16 each) of a motion-compensated prediction.
 struct PredOut<'p, P> {
     y: &'p mut [P; 256],
-    u: &'p mut [P; 64],
-    v: &'p mut [P; 64],
+    u: &'p mut [P; CMB],
+    v: &'p mut [P; CMB],
 }
 
 struct Src<P> {
     y: [P; 256],
-    u: [P; 64],
-    v: [P; 64],
+    u: [P; CMB],
+    v: [P; CMB],
 }

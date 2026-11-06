@@ -268,3 +268,36 @@ fn high10_export_encodes_sdr_and_hdr_frames_at_10_bits() {
         }
     }
 }
+
+/// High 4:2:2 encodes SDR and HDR frames as 10-bit 4:2:2: profile 122, chroma_format 2 and 10-bit
+/// depths in the avcC; a frame whose pixels do not match its size is an error, not a panic.
+#[test]
+fn high422_export_encodes_sdr_and_hdr_frames() {
+    for signal in [ColorSignal::default(), ColorSignal::PQ] {
+        for intra in [false, true] {
+            let s = ExportSettings { format: Format::H264, signal, h264_profile: H264Profile::High422, h264_intra_only: intra, ..Default::default() };
+            let mut enc = h264_factory(Format::H264, 64, 48, FrameRate::FPS_24, &s).unwrap().unwrap();
+            let rgb = vec![0.5f32; 64 * 48 * 3];
+            let rgba = vec![128u8; 64 * 48 * 4];
+            let mut packets = Vec::new();
+            for index in 0..4 {
+                let hdr = signal.is_hdr().then_some(&rgb[..]);
+                packets.extend(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &rgba, hdr, index }).unwrap());
+            }
+            packets.extend(enc.flush().unwrap());
+            assert_eq!(packets.len(), 4, "{signal:?}");
+            assert_eq!(packets.iter().all(|p| p.key), intra, "{signal:?} intra {intra}");
+            let e = enc.sample_entry();
+            let filmcraft_isobmff::CodecConfig::Avc(c) = &e.codec else { panic!("{:?}", e.codec) };
+            assert_eq!(c.profile, 122);
+            assert_eq!(c.compatibility & 0x10 != 0, intra, "constraint_set3 marks High 4:2:2 Intra");
+            assert_eq!(c.ext, [0xFE, 0xFA, 0xFA, 0x00]);
+        }
+    }
+    let s = ExportSettings { format: Format::H264, h264_profile: H264Profile::High422, ..Default::default() };
+    let mut enc = h264_factory(Format::H264, 64, 48, FrameRate::FPS_24, &s).unwrap().unwrap();
+    let short = vec![128u8; 10];
+    assert!(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &short, hdr: None, index: 0 }).is_err());
+    let rgb = vec![0.5f32; 7];
+    assert!(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &[], hdr: Some(&rgb), index: 0 }).is_err());
+}

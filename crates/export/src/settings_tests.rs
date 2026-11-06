@@ -1082,6 +1082,53 @@ fn h264_profile_level_and_keyframes() {
 }
 
 /// H.264 High 10 (#1221): MP4 and MOV carry a 10-bit stream ffmpeg decodes without a message;
+/// High 4:2:2 exports 10-bit 4:2:2 in MP4 and QuickTime, and the High 4:2:2 Intra preset is
+/// QuickTime with 24-bit PCM, every frame a keyframe (#1221 stage 2).
+#[test]
+fn h264_high422_export() {
+    let (p, seq, m) = matte([0.2, 0.6, 0.9, 1.0], 320, 180, Some(-6.0));
+    let dir = Scratch::new("high422");
+    let preset = crate::presets::builtin_presets().into_iter().find(|x| x.name == "H.264 High 4:2:2 Intra").unwrap().settings;
+    assert_eq!(
+        (preset.h264_profile, preset.h264_intra_only, preset.multiplexer, preset.audio_codec()),
+        (H264Profile::High422, true, Multiplexer::Mov, AudioCodec::Pcm)
+    );
+    for (ext, s) in
+        [("mp4", ExportSettings { format: Format::H264, h264_profile: H264Profile::High422, include_audio: false, ..Default::default() }), ("mov", preset)]
+    {
+        let path = dir.path(&format!("high422.{ext}"));
+        let mut s = ExportSettings { path: path.clone(), ..s };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert!(summary.contains(if s.h264_intra_only { "High 4:2:2 Intra (10-bit 4:2:2)" } else { "High 4:2:2 (10-bit 4:2:2)" }), "{summary}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
+        let st = j["streams"].as_array().unwrap().iter().find(|x| x["codec_type"] == "video").unwrap().clone();
+        assert_eq!(st["profile"], if s.h264_intra_only { "High 4:2:2 Intra" } else { "High 4:2:2" }, "{path}");
+        assert_eq!(st["pix_fmt"], "yuv422p10le", "{path}");
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high422") else { return };
+        let out = std::process::Command::new(ffmpeg)
+            // `-v error`: ffmpeg warns that it guesses the layout of any QuickTime PCM track (ProRes too)
+            .args(["-v", "error", "-i", &path, "-map", "0:v", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        // the matte's BT.709 codes, chroma read at the bottom row of a full-height (160x180) plane:
+        // Y' = .2126·.2 + .7152·.6 + .0722·.9 = .537 → 534, Cb = 512 + 896·(.9 − Y')/1.8556 → 687,
+        // Cr = 512 + 896·(.2 − Y')/1.5748 → 320
+        // every one of the 12 exported frames (B-frames in the MP4, all intra in the preset's MOV)
+        let at = |o: usize| u16::from_le_bytes([out.stdout[2 * o], out.stdout[2 * o + 1]]) as i32;
+        let (ys, cs) = (320 * 180, 160 * 180);
+        let fs = ys + 2 * cs;
+        assert_eq!(out.stdout.len(), 12 * fs * 2, "{path}: 12 frames");
+        for frame in 0..12 {
+            let base = frame * fs;
+            let (y, cb, cr) = (at(base + 90 * 320 + 160), at(base + ys + 179 * 160 + 80), at(base + ys + cs + 179 * 160 + 80));
+            assert!((y - 534).abs() <= 3 && (cb - 687).abs() <= 3 && (cr - 320).abs() <= 3, "{path}: frame {frame}: Y {y} Cb {cb} Cr {cr}");
+        }
+    }
+}
+
 /// All Intra makes High 10 Intra with every frame a keyframe; the grey matte keeps its 10-bit code.
 #[test]
 fn h264_high10_and_all_intra_export() {

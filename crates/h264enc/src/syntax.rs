@@ -24,10 +24,12 @@ pub struct MbCode {
     pub luma4: [[i16; 16]; 16],
     /// Luma 8x8 levels by 8x8 block, zig-zag order.
     pub luma8: [[i16; 64]; 4],
-    /// Chroma DC levels (Cb, Cr) in raster (c0..c3) order.
-    pub cdc: [[i16; 4]; 2],
-    /// Chroma AC levels, Cb blocks 0..3 then Cr 0..3, zig-zag order (index 0 unused).
-    pub cac: [[i16; 16]; 8],
+    /// Chroma DC levels (Cb, Cr) in coding order: c0..c3 (4:2:0, raster 2x2) or c0..c7 (4:2:2,
+    /// the 2x4 scan of §8.5.11.1).
+    pub cdc: [[i16; 8]; 2],
+    /// Chroma AC levels, Cb blocks 0..7 then Cr 0..7 (blocks 0..3 used for 4:2:0), zig-zag order
+    /// (index 0 unused).
+    pub cac: [[i16; 16]; 16],
 }
 
 impl Default for MbCode {
@@ -46,8 +48,8 @@ impl Default for MbCode {
             luma_dc: [0; 16],
             luma4: [[0; 16]; 16],
             luma8: [[0; 64]; 4],
-            cdc: [[0; 4]; 2],
-            cac: [[0; 16]; 8],
+            cdc: [[0; 8]; 2],
+            cac: [[0; 16]; 16],
         }
     }
 }
@@ -85,6 +87,8 @@ pub struct NbCtx<'a> {
     pub slice_type: SliceType,
     pub prev_dqp_nz: bool,
     pub t8x8_mode: bool,
+    /// 4:2:2 chroma: eight chroma 4x4 blocks per component (2 wide, 4 tall).
+    pub c422: bool,
 }
 
 impl NbCtx<'_> {
@@ -105,16 +109,24 @@ impl NbCtx<'_> {
             self.top.map(|m| m.nnz[12 + x])
         }
     }
-    /// Chroma AC neighbour count for component `c`, block raster `b` (2x2).
+    /// Chroma 4x4 blocks per component.
+    #[inline]
+    pub fn nc4(&self) -> usize {
+        if self.c422 { 8 } else { 4 }
+    }
+    /// Chroma AC neighbour count for component `c`, block raster `b` (2 wide, 2 or 4 tall).
     #[inline]
     pub fn chroma_nnz(&self, c: usize, b: usize, left: bool) -> Option<u8> {
         let (x, y) = (b & 1, b >> 1);
+        let base = c * 8;
         if left {
-            if x > 0 { Some(self.cur.nnz_c[c * 4 + b - 1]) } else { self.left.map(|m| m.nnz_c[c * 4 + y * 2 + 1]) }
+            if x > 0 { Some(self.cur.nnz_c[base + b - 1]) } else { self.left.map(|m| m.nnz_c[base + y * 2 + 1]) }
         } else if y > 0 {
-            Some(self.cur.nnz_c[c * 4 + b - 2])
+            Some(self.cur.nnz_c[base + b - 2])
         } else {
-            self.top.map(|m| m.nnz_c[c * 4 + 2 + x])
+            // the bottom row of the macroblock above
+            let bottom = self.nc4() - 2;
+            self.top.map(|m| m.nnz_c[base + bottom + x])
         }
     }
 }

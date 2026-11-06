@@ -28,6 +28,8 @@ for p in enc.flush() { /* ... */ }
 
 - Input: planar 4:2:0 8-bit (`YuvFrame` with strides); any even size, non-multiple-of-16 sizes are
   cropped via the SPS frame cropping. `try_encode` returns an error instead of panicking on short planes.
+- High 4:2:2: `cfg.profile = Profile::High422; cfg.bit_depth = 10;` (8 to 10) with chroma planes `width / 2` wide
+  and `height` tall (`uv_stride` per chroma row); `intra_only` gives High 4:2:2 Intra.
 - High 10: `cfg.profile = Profile::High10; cfg.bit_depth = 10;` (8 to 10) and `enc.encode16(&YuvFrame16 { … })`
   with samples in the low bits of each `u16` (values above the bit depth are clipped); 8-bit `YuvFrame`s are
   also taken and scaled up exactly. `cfg.intra_only = true` codes every picture as an IDR without reference
@@ -44,7 +46,8 @@ for p in enc.flush() { /* ... */ }
 
 | Area | Implemented |
 |---|---|
-| Profiles | Constrained Baseline (CAVLC, I/P), Main (CABAC, I/P/B), High (CABAC, 8x8 transform, I/P/B), 4:2:0 8-bit; High 10 and High 10 Intra (4:2:0, 8 to 10 bits); frame coding |
+| Profiles | Constrained Baseline (CAVLC, I/P), Main (CABAC, I/P/B), High (CABAC, 8x8 transform, I/P/B), 4:2:0 8-bit; High 10 and High 10 Intra (4:2:0, 8 to 10 bits); High 4:2:2 and High 4:2:2 Intra (4:2:2, 8 to 10 bits); frame coding |
+| 4:2:2 | chroma_format_idc 2: 8x16 chroma per macroblock (eight 4x4 blocks per component), the 2x4 chroma DC transform with qP,DC = QP'C + 3 and its coding order, chroma intra DC per 4x4 block and plane prediction with yCF = 4, chroma motion compensation at full vertical resolution (yFracC = (mvCLX[1] & 3) << 1), CABAC chroma DC contexts over NumC8x8 = 2, four horizontal chroma deblocking edges (their bS taken from all four luma edges, also inside 8x8-transform macroblocks), CropUnitY = 1, cpbBrVclFactor 4000, avcC chroma_format 2. CAVLC is only written for Baseline, which is always 4:2:0 |
 | Bit depth | the encoder is generic over the sample type: `u8` at 8 bits (the same code as before High 10), `u16` above; QP' = QP + QpBdOffset in quantisation and lambdas (QPY down to −6·(BitDepth − 8)), mb_qp_delta range and wrap, chroma QP mapping, α/β/tC0 scaled by 2^(BitDepth − 8), clipping in prediction, interpolation and reconstruction; SATD heuristics scaled; lookahead, AQ and rate control work on 8-bit-scaled statistics |
 | Parameter sets | SPS (level auto-selected from size/rate/DPB/bitrate with the profile's cpbBrVclFactor, cropping, bit depth, VUI: SAR, colour description + range, timing, bitstream restriction/reorder), PPS, AUD, user-data SEI, avcC (with the High-profile chroma format and bit depth fields) |
 | Intra | 16x16 (4 modes, SATD), 4x4 (9 modes, SATD + mode-cost, sequential reconstruction), 8x8 (9 modes with reference filtering, High), chroma (4 modes) |
@@ -66,6 +69,12 @@ and be **bit-identical to the encoder's reconstruction** — this covers Baselin
 B-frames, 1–4 slices and automatic slicing at 1080p, odd sizes, `testsrc2` and `mandelbrot` sources, and
 length-prefixed output re-wrapped with the avcC parameter sets. B-frame display order is checked with ffprobe. A
 negative control drops and truncates slices and checks that the oracle reports them.
+
+High 4:2:2 (`tests/it/high422_oracle.rs`) is decoded as `yuv422p10le` (`yuv422p` at 8 bits, `yuv422p9le` at 9) and
+must be bit-identical to the reconstruction in the same way: all presets, 0–3 B-frames, 1–4 slices, odd sizes and
+row counts, QP 22–46, CRF down to −12, CBR, intra-only with every chroma intra mode, 8- and 9-bit and length-prefixed
+output with the avcC. ffprobe reports `High 4:2:2` / `High 4:2:2 Intra`. On a source with chroma detail in every row,
+High 4:2:2 keeps 68 dB chroma PSNR where the same source through 4:2:0 (High 10) reaches 52 dB.
 
 High 10 (`tests/high10_oracle.rs`) is decoded as `yuv420p10le` (`yuv420p9le` at 9 bits) and must equally be
 bit-identical to the reconstruction: all presets, 0–3 B-frames, 1–4 slices, odd sizes, QP 22–46, CRF down to −12
@@ -94,9 +103,9 @@ ffmpeg and reports speed, bitrate, PSNR and any encoder/decoder mismatch (`MAP=1
 
 ## Limitations / not yet implemented
 
-- Single reference frame per list; no B-pyramid, no weighted prediction, no interlaced/MBAFF, no 4:2:2/4:4:4,
+- Single reference frame per list; no B-pyramid, no weighted prediction, no interlaced/MBAFF, no 4:4:4,
   no bit depths above 10, no lossless (transform bypass), no custom scaling matrices, no sub-8x8 partitions, no
-  B_8x8 (#1221 plans High 4:2:2, High 4:4:4 Predictive and lossless).
+  B_8x8 (#1221 plans High 4:4:4 Predictive and lossless).
 - CAVLC is used only for Baseline (High/Main always use CABAC); 8x8 transform is therefore CABAC-only.
 - No trellis quantisation, no psy-RD; no HRD/buffering-period SEI (VBV is enforced internally only).
 - Threading is slice-based only (no frame-level pipelining); with many slices, slice edges are not deblocked.

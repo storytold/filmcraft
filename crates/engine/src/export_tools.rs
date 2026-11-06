@@ -287,7 +287,7 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.apv_profile = v.to_string();
     }
     if let Some(v) = str_p(p, "h264Profile") {
-        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10 | high422"))?;
     }
     if let Some(v) = bool_p(p, "h264IntraOnly") {
         settings.h264_intra_only = v;

@@ -1,6 +1,6 @@
 use super::{
-    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits, sad,
-    sad8, sad16, satd,
+    Avail, CMB, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits,
+    sad, sad8, sad16, satd,
 };
 use crate::picture::McBlock;
 
@@ -162,8 +162,12 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         let (px, py) = origin;
         let (x, yy, w, h) = rect;
         r.mc_luma(McBlock { x: px + x, y: py + yy, w, h }, mv, &mut out.y[yy * 16 + x..], 16);
-        let co = (yy / 2) * 8 + x / 2;
-        r.mc_chroma(McBlock { x: (px + x) / 2, y: (py + yy) / 2, w: w / 2, h: h / 2 }, mv, (&mut out.u[co..], &mut out.v[co..]), 8);
+        // 4:2:2 chroma has luma's vertical resolution: a quarter-sample vertical mv is a chroma quarter,
+        // i.e. twice the value in the eighth-sample units `mc_chroma` takes (§8.4.1.4, §8.4.2.2.2)
+        let sh = self.f.p.sub_h();
+        let cmv = if sh == 1 { Mv { x: mv.x, y: mv.y.saturating_mul(2) } } else { mv };
+        let co = (yy / sh) * 8 + x / 2;
+        r.mc_chroma(McBlock { x: (px + x) / 2, y: (py + yy) / sh, w: w / 2, h: h / sh }, cmv, (&mut out.u[co..], &mut out.v[co..]), 8);
     }
 
     pub(super) fn cand_inter_info(c: &mut Cand<P>, part: Part, refs: [[i8; 4]; 2], mvs: [[Mv; 4]; 2], mvds: [[Mv; 4]; 2]) {
@@ -257,8 +261,8 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         let mut skip_pred = None;
         if skip_ok {
             let mut y = [P::default(); 256];
-            let mut u = [P::default(); 64];
-            let mut v = [P::default(); 64];
+            let mut u = [P::default(); CMB];
+            let mut v = [P::default(); CMB];
             self.pred_block(r, (px, py), (0, 0, 16, 16), skip_mv, PredOut { y: &mut y, u: &mut u, v: &mut v });
             let s = sad16(&src.y, 16, &y, 16, 16);
             let qstep_thresh = (f.qt.v4[(qp % 6) as usize][0] << (qp / 6)) as u32 * 16;
@@ -271,7 +275,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
                     c.code.kind = MbKind::PSkip;
                     Self::cand_inter_info(&mut c, Part::P16x16, [[0; 4], [-1; 4]], [[skip_mv; 4], [Mv::ZERO; 4]], [[Mv::ZERO; 4]; 2]);
                     c.info.nnz = [0; 16];
-                    c.info.nnz_c = [0; 8];
+                    c.info.nnz_c = [0; 16];
                     c.info.dc_cbf = 0;
                     c.info.t8x8 = false;
                     c.ry = y;
@@ -321,8 +325,8 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         ci.code.kind = MbKind::PInter;
         ci.code.part = best_part;
         let mut py_ = [P::default(); 256];
-        let mut pu = [P::default(); 64];
-        let mut pv = [P::default(); 64];
+        let mut pu = [P::default(); CMB];
+        let mut pv = [P::default(); CMB];
         if let (Part::P16x16, true, Some((a, b, c))) = (best_part, best_mvs[0] == skip_mv, skip_pred) {
             py_ = a;
             pu = b;

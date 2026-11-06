@@ -205,6 +205,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
             (false, H264Profile::High) => Profile::High,
             // 10-bit H.264 and all-intra streams are the built-in encoder's
             (false, H264Profile::High10) => return Err("High 10".into()),
+            (false, H264Profile::High422) => return Err("High 4:2:2".into()),
         },
         // the H.264 level setting means nothing for H.265: the encoder picks the level
         level: if hevc { None } else { s.h264_level },
@@ -315,6 +316,7 @@ mod tests {
         s.field_order = FieldOrder::Progressive;
         // 10-bit and all-intra H.264 are the built-in encoder's (#1221)
         declined(Format::H264, 640, 360, &ExportSettings { h264_profile: H264Profile::High10, ..s.clone() });
+        declined(Format::H264, 640, 360, &ExportSettings { h264_profile: H264Profile::High422, ..s.clone() });
         declined(Format::H264, 640, 360, &ExportSettings { h264_intra_only: true, ..s.clone() });
     }
 

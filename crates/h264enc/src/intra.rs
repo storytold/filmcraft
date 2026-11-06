@@ -218,23 +218,26 @@ pub fn pred16x16<P: Pixel>(mode: u8, top: &[P; 16], left: &[P; 16], tl: P, has_t
     }
 }
 
-/// Chroma 8x8 prediction (4:2:0). Modes: 0 DC, 1 H, 2 V, 3 plane.
+/// Chroma prediction of one component (§8.3.4): 8x8 (4:2:0) or 8x16 (4:2:2, `rows` = 16) into an
+/// 8-wide `out`. Modes: 0 DC, 1 H, 2 V, 3 plane. `left` holds `rows` samples.
 #[allow(clippy::too_many_arguments)]
-pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 8], tl: P, has_top: bool, has_left: bool, d: Depth, out: &mut [P; 64]) {
+pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 16], tl: P, has_top: bool, has_left: bool, d: Depth, rows: usize, out: &mut [P; 128]) {
     match mode {
         0 => {
-            for by in 0..2 {
+            for by in 0..rows / 4 {
                 for bx in 0..2 {
                     let st: i32 = top[bx * 4..bx * 4 + 4].iter().map(|&v| v.get()).sum();
                     let sl: i32 = left[by * 4..by * 4 + 4].iter().map(|&v| v.get()).sum();
-                    let dc = if (bx == 0 && by == 0) || (bx == 1 && by == 1) {
+                    // (xO, yO) = (0, 0) or both > 0: top and left; xO > 0, yO = 0: top first;
+                    // xO = 0, yO > 0: left first (§8.3.4.1-3)
+                    let dc = if (bx == 0 && by == 0) || (bx > 0 && by > 0) {
                         match (has_top, has_left) {
                             (true, true) => (st + sl + 4) >> 3,
                             (true, false) => (st + 2) >> 2,
                             (false, true) => (sl + 2) >> 2,
                             _ => d.mid,
                         }
-                    } else if bx == 1 && by == 0 {
+                    } else if bx > 0 && by == 0 {
                         if has_top {
                             (st + 2) >> 2
                         } else if has_left {
@@ -258,30 +261,34 @@ pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 8], tl: P, has_t
             }
         }
         1 => {
-            for y in 0..8 {
+            for y in 0..rows {
                 out[y * 8..y * 8 + 8].fill(left[y]);
             }
         }
         2 => {
-            for y in 0..8 {
+            for y in 0..rows {
                 out[y * 8..y * 8 + 8].copy_from_slice(top);
             }
         }
         _ => {
             let p_t = |x: i32| if x < 0 { tl.get() } else { top[x as usize].get() };
             let p_l = |y: i32| if y < 0 { tl.get() } else { left[y as usize].get() };
+            // yCF = 4 for 4:2:2 (chroma_format_idc != 1), 0 for 4:2:0; xCF = 0 for both
+            let ycf = if rows == 16 { 4 } else { 0 };
             let mut h = 0;
             let mut v = 0;
             for i in 0..4 {
                 h += (i + 1) * (p_t(4 + i) - p_t(2 - i));
-                v += (i + 1) * (p_l(4 + i) - p_l(2 - i));
             }
-            let a = 16 * (p_l(7) + p_t(7));
+            for i in 0..4 + ycf {
+                v += (i + 1) * (p_l(4 + ycf + i) - p_l(2 + ycf - i));
+            }
+            let a = 16 * (p_l(rows as i32 - 1) + p_t(7));
             let b = (34 * h + 32) >> 6;
-            let c = (34 * v + 32) >> 6;
-            for y in 0..8 {
+            let c = ((34 - 29 * (rows == 16) as i32) * v + 32) >> 6;
+            for y in 0..rows {
                 for x in 0..8 {
-                    out[y * 8 + x] = P::clip((a + b * (x as i32 - 3) + c * (y as i32 - 3) + 16) >> 5, d);
+                    out[y * 8 + x] = P::clip((a + b * (x as i32 - 3) + c * (y as i32 - 3 - ycf) + 16) >> 5, d);
                 }
             }
         }

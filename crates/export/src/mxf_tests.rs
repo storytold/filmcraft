@@ -301,3 +301,38 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
         assert!(mono == want, "{a}: channel {k} differs from the WAV export");
     }
 }
+
+/// MXF OP1a carries H.264 High 4:2:2 (#1221 stage 2): a 10-bit 4:2:2 CDCI descriptor (horizontal
+/// subsampling 2, vertical 1) and the High 4:2:2 long-GOP label; ffmpeg decodes it as it decodes
+/// the same essence in a MOV export.
+#[test]
+fn op1a_h264_high422() {
+    let (p, seq, m) = project();
+    let path = tmp("high422.mxf");
+    let s = ExportSettings { h264_profile: H264Profile::High422, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let mx = filmcraft_mxf::open(&bytes).unwrap();
+    assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
+    let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+    assert_eq!(v.samples.len(), 24);
+    let pic = v.picture.as_ref().unwrap();
+    assert_eq!((pic.component_depth, pic.horizontal_subsampling, pic.vertical_subsampling), (10, 2, 1));
+    // RP 2008 coding label: byte 13 0x31 long GOP, byte 14 0x60 High 4:2:2
+    let label = pic.picture_coding.map(|u| u.0).unwrap_or_default();
+    assert_eq!((label[13], label[14]), (0x31, 0x60));
+    let (Some(ffprobe), Some(ffmpeg)) =
+        (filmcraft_testkit::ffprobe_or_skip("MXF High 4:2:2 probe"), filmcraft_testkit::ffmpeg_or_skip("MXF High 4:2:2 decode"))
+    else {
+        return;
+    };
+    let j = ffprobe_json(&ffprobe, &path);
+    let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "video").unwrap().clone();
+    assert_eq!(st["profile"], "High 4:2:2");
+    assert_eq!(st["pix_fmt"], "yuv422p10le");
+    let mov = tmp("high422.mov");
+    let ms = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mov, path: mov.clone(), ..s.clone() };
+    export(&p, seq, &ms, &m, &Progress::default()).unwrap();
+    let raw = ["-f", "rawvideo", "-pix_fmt", "yuv422p10le"];
+    assert!(ffmpeg_raw(&ffmpeg, &path, "0:v:0", &raw) == ffmpeg_raw(&ffmpeg, &mov, "0:v:0", &raw), "MXF and MOV decode differently");
+}

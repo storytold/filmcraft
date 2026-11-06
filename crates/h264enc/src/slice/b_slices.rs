@@ -1,5 +1,6 @@
 use super::{
-    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, Shape, SliceEnc, Src, avg_into, mv_bits, sad16, satd,
+    Avail, CMB, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, Shape, SliceEnc, Src, avg_into, mv_bits, sad16,
+    satd,
 };
 
 impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
@@ -62,7 +63,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         for l in 0..2 {
             mvs[l] = self.search_part(rp[l], &PartSearch { mx, my, part, list: l, lam, seed: seeds[l] }, src).0;
         }
-        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
+        let mut preds = [([P::default(); 256], [P::default(); CMB], [P::default(); CMB]), ([P::default(); 256], [P::default(); CMB], [P::default(); CMB])];
         for l in 0..2 {
             let (a, b, c) = &mut preds[l];
             for pi in 0..2 {
@@ -74,7 +75,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         avg_into(&mut bi.1, &preds[1].1);
         avg_into(&mut bi.2, &preds[1].2);
         let srcs = [&preds[0], &preds[1], &bi];
-        let (mut py_, mut pu, mut pv) = ([P::default(); 256], [P::default(); 64], [P::default(); 64]);
+        let (mut py_, mut pu, mut pv) = ([P::default(); 256], [P::default(); CMB], [P::default(); CMB]);
         let mut dirs = [0u8; 4];
         let mut cost = ((lam * 8) >> 8) as u64;
         for pi in 0..2 {
@@ -99,7 +100,8 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
             for r in y..y + h {
                 py_[r * 16 + x..r * 16 + x + w].copy_from_slice(&s.0[r * 16 + x..r * 16 + x + w]);
             }
-            for r in y / 2..(y + h) / 2 {
+            let sh = self.f.p.sub_h();
+            for r in y / sh..(y + h) / sh {
                 let o = r * 8 + x / 2;
                 pu[o..o + w / 2].copy_from_slice(&s.1[o..o + w / 2]);
                 pv[o..o + w / 2].copy_from_slice(&s.2[o..o + w / 2]);
@@ -171,11 +173,11 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         let mut best: Option<Box<Cand<P>>> = None;
         if direct_ok {
             let mut y = [P::default(); 256];
-            let mut u = [P::default(); 64];
-            let mut v = [P::default(); 64];
+            let mut u = [P::default(); CMB];
+            let mut v = [P::default(); CMB];
             let mut ty = [P::default(); 256];
-            let mut tu = [P::default(); 64];
-            let mut tv = [P::default(); 64];
+            let mut tu = [P::default(); CMB];
+            let mut tv = [P::default(); CMB];
             for q in 0..4 {
                 let rect = Part::P8x8.rect(q);
                 let (u0, u1) = (dref[0][q] >= 0, dref[1][q] >= 0);
@@ -189,8 +191,9 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
                         for rr in 0..h {
                             avg_into(&mut y[(yy + rr) * 16 + x..(yy + rr) * 16 + x + w], &ty[(yy + rr) * 16 + x..(yy + rr) * 16 + x + w]);
                         }
-                        for rr in 0..h / 2 {
-                            let o = (yy / 2 + rr) * 8 + x / 2;
+                        let sh = self.f.p.sub_h();
+                        for rr in 0..h / sh {
+                            let o = (yy / sh + rr) * 8 + x / 2;
                             avg_into(&mut u[o..o + w / 2], &tu[o..o + w / 2]);
                             avg_into(&mut v[o..o + w / 2], &tv[o..o + w / 2]);
                         }
@@ -225,7 +228,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
             let (m, p, c) = self.search_part(rp, &PartSearch { mx, my, part: Part::P16x16, list: l, lam, seed: dmv[l][0] }, src);
             res[l] = (m[0], p[0], c);
         }
-        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
+        let mut preds = [([P::default(); 256], [P::default(); CMB], [P::default(); CMB]), ([P::default(); 256], [P::default(); CMB], [P::default(); CMB])];
         for (l, rp) in [(0usize, r0), (1usize, r1)] {
             let (a, b, c) = &mut preds[l];
             self.pred_block(rp, (px, py), (0, 0, 16, 16), res[l].0, PredOut { y: a, u: b, v: c });
