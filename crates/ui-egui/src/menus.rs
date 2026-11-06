@@ -337,6 +337,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
         return r;
     }
+    if let Some(r) = crate::panels::caption_dialog::route(app, id, &params) {
+        return r;
+    }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
         return r;
     }
