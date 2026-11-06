@@ -13,7 +13,7 @@ pub(super) fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut 
     let r = ui.button(label);
     app.auto.add("timeline.markerMenu.markers.edit", r.rect, label);
     if r.clicked() {
-        super::marker_dialog::open(app, ctx, marker.id);
+        super::super::marker_properties::open(app, &marker);
         ui.close();
     }
     crate::panels::misc::marker_label_menu(app, ui, &marker, "timeline.markerMenu");

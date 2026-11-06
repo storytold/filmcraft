@@ -300,6 +300,9 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         it.effect_mut("opacity").unwrap().params.insert("opacity".into(), Param::new(ParamValue::Float(75.0)));
         it.effects.push(filmcraft_project::find_effect("gaussian_blur").unwrap().instance());
         it.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900),
             start: r.tick_of(310),
             duration: r.tick_of(5),
@@ -314,6 +317,9 @@ fn rich_project() -> (Project, filmcraft_project::ItemId) {
         let (_, ai) = q.find_item_mut(a1).unwrap();
         ai.effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.0)));
         q.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(901),
             start: r.tick_of(12),
             duration: Tick::ZERO,
@@ -714,4 +720,20 @@ fn absurd_start_timecode_is_bounded() {
         assert_eq!(imported.project.sequence(*seq).map(|s| s.start_timecode), Some(0));
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
+}
+
+#[test]
+fn a_huge_link_group_does_not_write_quadratic_links() {
+    let r = FrameRate::FPS_29_97;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "Main", r, true);
+    let ids: Vec<_> = (0..300).map(|i| clip(&mut p, s, TrackKind::Audio, 0, a, 0..10, i * 10)).collect();
+    link(&mut p, s, &ids);
+    // the truncation warning is reported by the export, so it is the export's report that is checked
+    let (bytes, rep) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+    let text = String::from_utf8(bytes).expect("utf-8");
+    // only the first 64 clips are linked, each to the 64 members: the other 236 stay unlinked
+    assert_eq!(text.matches("<linkclipref>").count(), 64 * 64);
+    assert!(rep.has_warnings(), "{rep}");
 }

@@ -66,6 +66,66 @@ fn merge_reallocates_ids_and_keeps_links() {
 }
 
 #[test]
+fn otio_import_merges_saved_palette_without_duplicates_or_overflow() {
+    use filmcraft_project::HexColor;
+    let mut src = Project::new("source");
+    src.custom_colors = vec![HexColor([1, 2, 3]), HexColor([4, 5, 6]), HexColor([4, 5, 6])];
+    src.custom_color_names.insert(HexColor([4, 5, 6]), "Review".into());
+    let seq = sequence(&mut src, "Sequence", FrameRate::FPS_25, false);
+    let (bytes, _) = export(&src, seq, Format::Otio, &ExportOptions::default()).unwrap();
+    let mut target = Project::new("target");
+    target.custom_colors = vec![HexColor([1, 2, 3])];
+    let (fragment, _) = import(&bytes, Format::Otio, None).unwrap();
+    merge_into(&mut target, fragment, None);
+    assert_eq!(target.custom_colors, vec![HexColor([1, 2, 3]), HexColor([4, 5, 6])]);
+    assert_eq!(target.custom_color_names[&HexColor([4, 5, 6])], "Review");
+
+    target.custom_colors = (0..63).map(|v| HexColor([v, 0, 0])).collect();
+    let (fragment, _) = import(&bytes, Format::Otio, None).unwrap();
+    merge_into(&mut target, fragment, None);
+    assert_eq!(target.custom_colors.len(), 64);
+    assert_eq!(target.custom_colors.last(), Some(&HexColor([1, 2, 3])));
+}
+
+#[test]
+fn review_unused_saved_palette_warns_for_lossy_exports() {
+    let mut project = Project::new("Palette only");
+    let seq = sequence(&mut project, "Sequence", FrameRate::FPS_25, false);
+    project.custom_colors.push(filmcraft_project::HexColor([18, 52, 86]));
+    project.custom_color_names.insert(project.custom_colors[0], "Review".into());
+    for format in [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Aaf, Format::Omf] {
+        let (_, report) = export(&project, seq, format, &ExportOptions::default()).unwrap();
+        assert!(report.mentions("palette"), "{format:?}: {report}");
+    }
+    let (_, report) = export(&project, seq, Format::Otio, &ExportOptions::default()).unwrap();
+    assert!(!report.mentions("palette"), "OTIO preserves the palette: {report}");
+}
+
+#[test]
+fn review_palette_import_fills_missing_names_at_capacity_without_orphans() {
+    use filmcraft_project::HexColor;
+    let unnamed = HexColor([1, 0, 0]);
+    let named = HexColor([2, 0, 0]);
+    let excluded = HexColor([255, 255, 255]);
+    for count in [3, 64] {
+        let mut target = Project::new("target");
+        target.custom_colors = (0..count).map(|v| HexColor([v, 0, 0])).collect();
+        target.custom_color_names.insert(named, "Keep target name".into());
+        let mut fragment = Project::new("fragment");
+        // A new color precedes existing colors: hitting the limit must not end name merging.
+        fragment.custom_colors = vec![excluded, unnamed, named];
+        fragment.custom_color_names.insert(excluded, "New color".into());
+        fragment.custom_color_names.insert(unnamed, "Imported name".into());
+        fragment.custom_color_names.insert(named, "Do not overwrite".into());
+        merge_into(&mut target, filmcraft_interchange::Imported { project: fragment, sequences: vec![] }, None);
+        assert_eq!(target.custom_color_names.get(&unnamed).map(String::as_str), Some("Imported name"));
+        assert_eq!(target.custom_color_names.get(&named).map(String::as_str), Some("Keep target name"));
+        assert_eq!(target.custom_colors.len(), if count == 64 { 64 } else { 4 });
+        assert_eq!(target.custom_color_names.contains_key(&excluded), count < 64, "no name may reference a rejected swatch");
+    }
+}
+
+#[test]
 fn rebase_shifts_source_times() {
     let edl = "TITLE: T\nFCM: NON-DROP FRAME\n\n001  CAM      V     C        01:00:10:00 01:00:12:00 01:00:00:00 01:00:02:00\n* FROM CLIP NAME: cam.mov\n* SOURCE FILE: /m/cam.mov\n";
     let (imp, _) = import(edl.as_bytes(), Format::Edl, None).unwrap();

@@ -14,6 +14,10 @@
 # To remove your names, delete your entry (or set fields empty) in a PR. The next
 # contributors.py run, and the next build, drop them.
 
+[people.whatever-industries]
+display_name = "Benji Stinson"
+sync_github_name = false
+
 [people.echelon]
 real_name = "Brandon Thomas"
 display_name = "Brandon Thomas"
@@ -105,3 +109,5 @@ real_name = "Alexander Alber"
 
 [people.dylanmtaylor]
 sync_github_name = true
+[people.helenkwok]
+real_name = "Helen Kwok"

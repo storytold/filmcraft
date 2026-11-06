@@ -469,7 +469,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Jeste li sigurni da želite odbaciti promjene u '{file}'?
 	Yes	Da
 	No	Ne
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke bilo gdje u prozoru ili odaberite izvor ispod.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke ili foldere bilo gdje u prozoru ili odaberite izvor ispod.
 	Browse files…	Pregledaj datoteke…
 	Movies, audio and stills from disk	Filmovi, zvuk i fotografije s diska
 	Demo footage	Demo snimak
@@ -3458,6 +3458,7 @@
 	Clip Speed / Duration	Brzina / trajanje klipa
 	Speed:	Brzina:
 	Reverse Speed	Obrnuta brzina
+	Maintain Audio Pitch	Zadrži visinu tona
 	Ripple Edit, Shifting Trailing Clips	Ripple montaža, pomjeranje narednih klipova
 	About	O programu
 	Contributors	Saradnici
@@ -3656,3 +3657,95 @@
 	Video Names	Nazivi videa
 	Web Link	Web veza
 	“{file}” already exists in “{folder}”. Do you want to replace it?	„{file}” već postoji u „{folder}”. Želite li ga zamijeniti?
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-bitna boja
+	All Intra	Samo intra
+	Every frame a keyframe (edit-friendly, larger files)	Svaka sličica je ključna (pogodno za montažu, veće datoteke)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; 10-bitni master
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
+
+# Strings added on main since (markers, custom colors, preset import, export messages).
+	1 frame ({seconds} s)	1 sličica ({seconds} s)
+	A range marker needs a positive duration	Marker raspona zahtijeva pozitivno trajanje
+	Add Custom Color	Dodaj prilagođenu boju
+	Add Track	Dodaj traku
+	Add and apply	Dodaj i primijeni
+	Add color	Dodaj boju
+	Add custom color	Dodaj prilagođenu boju
+	Add custom color…	Dodaj prilagođenu boju…
+	Author	Autor
+	Caption Export Settings	Postavke izvoza titlova
+	Chapter	Poglavlje
+	Choose Color…	Odaberi boju…
+	Choose color with system picker	Odaberi boju sistemskim biračem
+	Color picker	Birač boja
+	Color selected markers	Oboji odabrane markere
+	Custom Color…	Prilagođena boja…
+	Delete Marker	Izbriši marker
+	Delete Markers	Izbriši markere
+	Delete Track	Izbriši traku
+	Delete selected markers	Izbriši odabrane markere
+	Duration (frames):	Trajanje (sličice):
+	Edit Custom Color	Uredi prilagođenu boju
+	Edit Marker	Uredi marker
+	Edit Markers	Uredi markere
+	Edit color	Uredi boju
+	Editing or removing a swatch leaves assigned colors unchanged.	Uređivanje ili uklanjanje uzorka boje ne mijenja već dodijeljene boje.
+	Enter a valid HH:MM:SS:FF timecode	Unesite važeći vremenski kod HH:MM:SS:FF
+	Enter a valid HTTP or HTTPS URL without credentials	Unesite važeći HTTP ili HTTPS URL bez pristupnih podataka
+	Enter six hex digits, for example FF80C0.	Unesite šest heksadecimalnih cifara, na primjer FF80C0.
+	Exported {path} as {format}, from its file extension	Izvezeno {path} kao {format}, prema ekstenziji datoteke
+	From preset file:	Iz datoteke predloška:
+	Hex	Hex
+	Hex color	Hex boja
+	Imported {n} preset(s)	Uvezeno predložaka: {n}
+	Imported {n} preset(s); not imported: {error}	Uvezeno predložaka: {n}; nije uvezeno: {error}
+	Imported {n} preset(s); {skipped} skipped	Uvezeno predložaka: {n}; preskočeno: {skipped}
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Uvezeno predložaka: {n}; preskočeno: {skipped}, s nepodržanim parametrima: {warnings}
+	Imported {n} preset(s); {warnings} with unsupported parameters	Uvezeno predložaka: {n}; s nepodržanim parametrima: {warnings}
+	Manage Colors	Upravljaj bojama
+	Manage Colors…	Upravljaj bojama…
+	Marker changed or was removed. Reopen it to continue.	Marker je promijenjen ili uklonjen. Ponovo ga otvorite da nastavite.
+	Marker owner is unavailable	Vlasnik markera nije dostupan
+	Next	Sljedeće
+	No markers	Nema markera
+	No matching markers	Nema odgovarajućih markera
+	No presets folder: the app has no data directory	Nema foldera predložaka: aplikacija nema direktorij podataka
+	No saved colors	Nema sačuvanih boja
+	No sequence open	Nijedna sekvenca nije otvorena
+	No source clip open	Nijedan izvorni klip nije otvoren
+	Notes	Bilješke
+	Open Link	Otvori vezu
+	Open Presets Folder	Otvori folder predložaka
+	Opens this address in your web browser	Otvara ovu adresu u vašem web pregledniku
+	Preset library is up to date	Biblioteka predložaka je ažurna
+	Preset library updated	Biblioteka predložaka je ažurirana
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteka predložaka je ažurirana: učitano {imported}, uklonjeno {removed}
+	Previous	Prethodno
+	Project Colors	Boje projekta
+	Range marker	Marker raspona
+	Remove Custom Color	Ukloni prilagođenu boju
+	Remove saved color	Ukloni sačuvanu boju
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Responzivni dizajn – Vrijeme preslikava ključne sličice sloja grafike; efekti klipa poput Neprozirnosti i Kretanja zadržavaju vrijeme medija
+	Save color	Sačuvaj boju
+	Scan Presets Folder	Skeniraj folder predložaka
+	Search markers	Pretraži markere
+	Search name, notes, author	Pretraži naziv, bilješke, autora
+	Select all	Odaberi sve
+	Select all visible markers	Odaberi sve vidljive markere
+	Sequence: {name}	Sekvenca: {name}
+	Set as Default Transition	Postavi kao zadani prijelaz
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Izvorni ulaz/izlaz traje samo 1 sličicu. Odaberite Cijeli izvor da izvezete cijelu sekvencu.
+	Source: {name}	Izvor: {name}
+	Source: {name} (shared source markers)	Izvor: {name} (dijeljeni markeri izvora)
+	System color picker unavailable: {error}	Sistemski birač boja nije dostupan: {error}
+	Time is outside the supported range	Vrijeme je izvan podržanog raspona
+	URL	URL
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Kada je omogućeno, GIF prozirnost je uključena/isključena: alfa ispod 128 je prozirna; 128 i više je neprozirna.
+	{count} selected	Odabrano: {count}
+	{frames} frames ({seconds} s)	{frames} sličica ({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} već postoji, pa ništa nije izvezeno. Da ga zamijenite, odaberite ga u dijalogu za čuvanje.

@@ -59,7 +59,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | *Other shipped:* Polish | pl | every Spanish entry plus the native macOS menu items; counts written count-neutral | as Spanish | Latin (bundled fonts) | not recorded; AI-drafted, review welcome | partial | review |
 | *Other shipped:* Swedish | sv | 3,581 (100%) | as Spanish | Latin (bundled fonts, å ä ö) | not recorded; welcome | partial | review |
 | *Other shipped:* Turkish | tr | 3,590 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
-| *Other shipped:* Bosnian | bs | 3,651 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
+| *Other shipped:* Bosnian | bs | 3,740 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the
