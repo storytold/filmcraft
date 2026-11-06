@@ -37,7 +37,12 @@ fn parent_dir(path: &Path) -> PathBuf {
 /// write `data` to a temp file in the same directory, `fsync` it, rename it over `path`, then
 /// `fsync` the directory so the rename itself survives a power cut. If anything fails the temp file
 /// is removed and `path` is untouched.
+///
+/// A symlink at `path` is followed: the file it points to is the one replaced, with the temp file
+/// in that file's folder, and the link stays as it was (#4005). A link to nothing is an error.
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    let target = follow_links(path)?;
+    let path = target.as_path();
     // `rename` replaces the inode, so a new staging file must inherit an existing project's
     // access mode instead of silently broadening a private file to the process default.
     let permissions = match fs::metadata(path) {
@@ -104,6 +109,36 @@ fn sync_dir(dir: &Path) {
     }
 }
 
+/// Most symlinks followed from one path, the limit Linux uses.
+const MAX_LINKS: usize = 40;
+
+/// The file a write to `path` replaces: `path` itself, or the file at the end of the chain of
+/// symlinks that starts there. Renaming over a link would replace the link and leave the file it
+/// points to as it was. A link to nothing is an error: the save would land wherever it points, in
+/// the empty mount point of a drive that isn't plugged in, for one.
+fn follow_links(path: &Path) -> io::Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    let mut followed = 0;
+    loop {
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if followed == MAX_LINKS {
+                    return Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())));
+                }
+                followed += 1;
+                // a relative target is relative to the link's folder; `join` keeps an absolute one
+                let next = parent_dir(&path).join(fs::read_link(&path)?);
+                if matches!(fs::symlink_metadata(&next), Err(e) if e.kind() == io::ErrorKind::NotFound) {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, format!("the symbolic link points to {}, which doesn't exist", next.display())));
+                }
+                path = next;
+            }
+            // not a link (or nothing there yet: a new file); the write itself reports any other problem
+            _ => return Ok(path),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +201,84 @@ mod tests {
         atomic_write(&p, b"after").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"after");
         assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// No `.tmp` file is left anywhere under `dir`.
+    #[cfg(unix)]
+    fn no_temp_files(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().flatten().all(|e| {
+            let p = e.path();
+            !e.file_name().to_string_lossy().ends_with(".tmp") && (p.is_symlink() || !p.is_dir() || no_temp_files(&p))
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_through_a_symlink_replaces_the_file_it_points_to() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let d = tmpdir("symlink");
+        fs::create_dir_all(d.join("links")).unwrap();
+        let real = d.join("real.fcproj");
+        fs::write(&real, b"before").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        // relative and in another folder, then a chain with an absolute link at the end
+        let relative = d.join("links/relative.fcproj");
+        symlink("../real.fcproj", &relative).unwrap();
+        let chained = d.join("links/chained.fcproj");
+        symlink(&relative, &chained).unwrap();
+        for (link, data) in [(&relative, &b"one"[..]), (&chained, b"two")] {
+            atomic_write(link, data).unwrap();
+            assert!(fs::symlink_metadata(&relative).unwrap().file_type().is_symlink(), "{link:?} replaced the link");
+            assert!(fs::symlink_metadata(&chained).unwrap().file_type().is_symlink(), "{link:?} replaced the link");
+            assert_eq!(fs::read(&real).unwrap(), data, "{link:?}");
+            assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600, "{link:?}");
+        }
+        assert_eq!(fs::read_link(&relative).unwrap(), Path::new("../real.fcproj"));
+        assert!(no_temp_files(&d));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_or_a_loop_is_an_error_and_writes_nothing() {
+        use std::os::unix::fs::symlink;
+
+        let d = tmpdir("symlink-ends");
+        let dangling = d.join("dangling.fcproj");
+        symlink("new.fcproj", &dangling).unwrap();
+        assert_eq!(atomic_write(&dangling, b"new").unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        assert!(!d.join("new.fcproj").exists());
+        let (a, b) = (d.join("a.fcproj"), d.join("b.fcproj"));
+        symlink(&b, &a).unwrap();
+        symlink(&a, &b).unwrap();
+        assert!(atomic_write(&a, b"x").is_err());
+        assert!(fs::symlink_metadata(&a).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&b).unwrap().file_type().is_symlink());
+        assert!(no_temp_files(&d));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_forty_symlinks_is_followed_and_one_of_forty_one_is_not() {
+        let d = tmpdir("symlink-chain");
+        let real = d.join("real.fcproj");
+        fs::write(&real, b"before").unwrap();
+        // link-1 points to the file, and each next one to the one before
+        let mut previous = real.clone();
+        for n in 1..=41 {
+            let link = d.join(format!("link-{n}"));
+            std::os::unix::fs::symlink(&previous, &link).unwrap();
+            previous = link;
+        }
+        atomic_write(&d.join("link-40"), b"after").unwrap();
+        assert_eq!(fs::read(&real).unwrap(), b"after");
+        assert!(atomic_write(&d.join("link-41"), b"x").is_err());
+        assert_eq!(fs::read(&real).unwrap(), b"after");
+        assert!(no_temp_files(&d));
         fs::remove_dir_all(&d).unwrap();
     }
 

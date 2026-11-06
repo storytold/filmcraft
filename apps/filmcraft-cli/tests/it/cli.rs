@@ -178,8 +178,8 @@ fn a_save_in_place_waits_for_the_lock_then_edits_the_latest_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A save through a symlink replaces the link. The runs before and after that must share one lock,
-/// or a run still waiting on the old one could overwrite a later run's save.
+/// Runs through a symlink take the same lock before and after a save, or a run still waiting on
+/// the old one could overwrite a later run's save.
 #[cfg(unix)]
 #[test]
 fn a_symlinked_project_keeps_its_lock_after_a_save() {
@@ -191,6 +191,24 @@ fn a_symlinked_project_keeps_its_lock_after_a_save() {
         let mut child = start_waiting_run(&["--project", link.to_str().unwrap(), "--save", "exec", "file.newBin", name]);
         drop(held);
         assert!(child.wait().unwrap().success(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A save through a symlink edits the file the link points to, and the link stays (#4005).
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_symlink_edits_the_file_it_points_to() {
+    let (dir, proj) = lock_test_project("through-link");
+    let link = dir.join("link.fcproj");
+    std::os::unix::fs::symlink("p.fcproj", &link).unwrap();
+    let link = link.to_str().unwrap();
+    json_out(&cli(&["--project", link, "--save", "exec", "file.newBin", "name=via-save"]));
+    json_out(&cli(&["--project", link, "--save-as", link, "exec", "file.newBin", "name=via-save-as"]));
+    assert!(std::fs::symlink_metadata(link).unwrap().file_type().is_symlink(), "the save replaced the link");
+    let tree = json_out(&cli(&["--project", &proj, "inspect", "project"])).to_string();
+    for name in ["via-save", "via-save-as"] {
+        assert!(tree.contains(&format!("\"{name}\"")), "{proj} lost {name}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
