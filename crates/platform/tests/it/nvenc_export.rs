@@ -136,11 +136,24 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
         (0, 1)
     );
     // an odd frame size is rounded to even by the pipeline, so NVENC still takes it
-    let hardware_available = filmcraft_platform::nvenc::available();
+    let hardware_available = filmcraft_platform::nvenc::available() || amf_available();
     let odd = run("odd.mp4", &|s| s.frame_size = Some((641, 359)));
     assert_eq!(odd, if hardware_available { (24, 0) } else { (0, 1) });
     // Off never touches the hardware encoder
     assert_eq!(run("off.mp4", &|s| s.hardware_encoding = HardwareEncoding::Off), (0, 0));
     // the decoded file of a declined export is fine
     assert_eq!(decode(&tmp("odd.mp4")).len(), 24);
+}
+
+/// AMD AMF encodes what NVENC would where there is no NVIDIA GPU (#880): either is the hardware
+/// encoder for these exports.
+fn amf_available() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        filmcraft_platform::amf::is_available()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
 }

@@ -4,9 +4,9 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use super::ffi::{
-    runtime, AmfBuffer, AmfComponent, AmfContext, AmfSurface, AmfVariant, AMF_DX11_1, AMF_EOF, AMF_INPUT_FULL, AMF_MEMORY_HOST, AMF_OK,
-    AMF_REPEAT, AMF_SURFACE_NV12, AMF_SURFACE_P010, AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY, AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR,
-    AMF_VIDEO_ENCODER_HW_AV1, AMF_VIDEO_ENCODER_HW_HEVC, AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR, AMF_VIDEO_ENCODER_VCE_AVC,
+    AMF_DX11_1, AMF_EOF, AMF_INPUT_FULL, AMF_MEMORY_HOST, AMF_OK, AMF_REPEAT, AMF_SURFACE_NV12, AMF_SURFACE_P010, AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY,
+    AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR, AMF_VIDEO_ENCODER_HW_AV1, AMF_VIDEO_ENCODER_HW_HEVC, AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR,
+    AMF_VIDEO_ENCODER_VCE_AVC, AmfBuffer, AmfComponent, AmfContext, AmfSurface, AmfVariant, runtime,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +152,8 @@ impl Session {
                 set(windows::core::w!("PeakBitrate").as_ptr(), AmfVariant::int64(peak_bps));
                 set(windows::core::w!("RateControlMethod").as_ptr(), AmfVariant::int64(rate_control));
                 set(windows::core::w!("GOPSize").as_ptr(), AmfVariant::int64(i64::from(cfg.keyint.max(1))));
+                // the AVC encoder places IDR frames by IDRPeriod (240 by default), not by GOPSize
+                set(windows::core::w!("IDRPeriod").as_ptr(), AmfVariant::int64(i64::from(cfg.keyint.max(1))));
             }
             Codec::Hevc => {
                 let prof_val = if ten_bit { 2 } else { 1 };
@@ -334,7 +336,9 @@ impl Session {
         let mut var = AmfVariant { var_type: 0, _pad: 0, val: [0; 16] };
         // SAFETY: calling get_property on valid AmfBuffer pointer.
         let hr = unsafe { ((*(*buf).vtbl).get_property)(buf, prop_name.as_ptr(), &mut var) };
-        if hr == AMF_OK && let Some(val) = var.as_int64() {
+        if hr == AMF_OK
+            && let Some(val) = var.as_int64()
+        {
             val == target_enum
         } else {
             is_keyframe(self.codec, slice)
@@ -473,7 +477,9 @@ fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
                     let has_size = (b0 >> 1) & 1;
                     pos += 1;
                     if extension_flag != 0 {
-                        if pos >= data.len() { break; }
+                        if pos >= data.len() {
+                            break;
+                        }
                         pos += 1;
                     }
                     let payload_start = if has_size != 0 {
@@ -490,7 +496,9 @@ fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
                                 break;
                             }
                         }
-                        if !valid { break; }
+                        if !valid {
+                            break;
+                        }
                         let start = pos;
                         pos = pos.saturating_add(payload_len);
                         start
@@ -520,16 +528,13 @@ fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn drain_loop_fails_on_timeout_without_eof() {
-        let res = Session::drain_loop(Duration::from_millis(20), || {
-            Ok((vec![], false))
-        });
+        let res = Session::drain_loop(Duration::from_millis(20), || Ok((vec![], false)));
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("timed out before receiving EOF"));
     }
@@ -539,11 +544,7 @@ mod tests {
         let mut count = 0;
         let res = Session::drain_loop(Duration::from_millis(100), || {
             count += 1;
-            if count == 3 {
-                Ok((vec![Packet { data: vec![1, 2, 3], key: true, pts: 0, dts: 0 }], true))
-            } else {
-                Ok((vec![], false))
-            }
+            if count == 3 { Ok((vec![Packet { data: vec![1, 2, 3], key: true, pts: 0, dts: 0 }], true)) } else { Ok((vec![], false)) }
         });
         assert!(res.is_ok());
         let packets = res.unwrap();
