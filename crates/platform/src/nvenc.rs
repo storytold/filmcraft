@@ -146,8 +146,9 @@ const PROBE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The answer to a hardware-encoder probe, and when it was given.
 ///
-/// A "yes" is kept for good: the encoder is there. A "no" is kept only for [`PROBE_RETRY`], so a
-/// transient failure does not hide the format for the rest of the process. One probe at a time: a
+/// A "yes" is kept for good: the encoder is there. A "no" is kept only for [`PROBE_RETRY`] from
+/// the moment it was given, so a transient failure does not hide the format for the rest of the
+/// process. One probe at a time: a
 /// caller that asks while another is probing waits for the same answer, as it did with the
 /// `OnceLock` this replaces.
 struct ProbeAnswer {
@@ -177,7 +178,10 @@ impl ProbeAnswer {
             return yes;
         }
         let answer = probe();
-        *g = Some((answer, now));
+        // The window starts when the probe ANSWERED, not when it was asked. A probe that took
+        // longer than the window is then remembered for a full window after it was given, instead
+        // of being stale the moment it is written.
+        *g = Some((answer, std::time::Instant::now()));
         answer
     }
 
@@ -894,6 +898,33 @@ mod tests {
         }
     }
 
+    /// The retry window starts when the probe ANSWERED, not when it was asked: a probe that took
+    /// longer than the window is remembered for a full window after it was given, instead of
+    /// being stale the moment it is written.
+    ///
+    /// The check compares the timestamps rather than the clock: the probe says when it was asked
+    /// and when it had answered, and the answer must be remembered from the second of those.
+    #[test]
+    fn the_retry_window_starts_when_the_probe_answered() {
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_secs(60) };
+        let mut asked_at = None;
+        let mut answered_at = None;
+        assert!(!answer.get(|| {
+            asked_at = Some(std::time::Instant::now());
+            answered_at = Some(std::time::Instant::now());
+            false
+        }));
+        let asked = asked_at.expect("the probe ran");
+        let answered = answered_at.expect("the probe ran");
+        let stored = answer.answer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = stored.expect("the failure is remembered").1;
+        assert!(
+            at >= answered,
+            "the window starts when the probe answered, not when it was asked: the answer is remembered from {at:?}, \
+             but the probe only answered at {answered:?} (it was asked at {asked:?})"
+        );
+    }
+
     /// A probe that succeeded is not asked again; one that failed is, so that a transient failure
     /// does not hide the format for the rest of the process.
     #[test]
@@ -926,26 +957,42 @@ mod tests {
 
     /// The same, with the window the production code uses rather than none: a failure is asked
     /// again once the window has passed. The test above uses a zero window, so it cannot see this.
+    ///
+    /// Neither half of this depends on the wall clock. The "inside the window" half uses the
+    /// window the production code uses (60 s), which no scheduling delay can cross, and the "after
+    /// the window" half starts from an answer that is already stale. A window short enough for a
+    /// thread preemption to cross - or a sleep to reach it - would test the clock rather than the
+    /// rule, and would pass on an idle machine and fail on a loaded one.
     #[test]
     fn a_failed_probe_is_asked_again_after_the_window() {
-        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_millis(1) };
+        // Inside the window the failure is remembered, and the probe is not asked again.
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_secs(60) };
         let mut calls = 0;
         assert!(!answer.get(|| {
             calls += 1;
             false
         }));
-        // inside the window the failure is remembered
         assert!(!answer.get(|| {
             calls += 1;
             false
         }));
         assert_eq!(calls, 1, "a failure is remembered for the window");
-        // and after it, the probe is asked again
-        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        // After the window the probe is asked again. The answer is already older than the
+        // window, so this does not depend on how long the machine takes to get here.
+        let now = std::time::Instant::now();
+        let (at, retry) = match now.checked_sub(std::time::Duration::from_secs(61)) {
+            Some(old) => (old, std::time::Duration::from_secs(60)),
+            // The clock has less than a minute of history - a machine that booted seconds ago.
+            // A zero window makes any answer stale, which is the same case.
+            None => (now, std::time::Duration::ZERO),
+        };
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(Some((false, at))), retry };
+        let mut calls = 0;
         assert!(!answer.get(|| {
             calls += 1;
             false
         }));
-        assert_eq!(calls, 2, "a failed probe is asked again after the window");
+        assert_eq!(calls, 1, "a failed probe is asked again after the window");
     }
 }
