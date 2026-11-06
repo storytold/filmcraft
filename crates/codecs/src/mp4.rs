@@ -709,7 +709,13 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         c => codec_label(c),
     };
     let (rate, ch) = filmcraft_media::bounded_audio_dimensions(rate, ch).ok()?;
-    Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits })
+    // PCM is unpacked in place when `decode_pcm` knows its format; everything else needs a packet decoder (an unknown sample entry
+    // such as Apple Positional Audio `apac` has none: #2758)
+    let decodable = match &entry.codec {
+        CodecConfig::Pcm(p) => crate::audio::pcm_decodable(p.bits, p.float),
+        c => crate::audio::PacketDecoder::for_isobmff(c, rate).is_ok(),
+    };
+    Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits, decodable })
 }
 
 /// The display name of a sample entry's codec in the stream info, such as "H.264 (High)", "Apple
@@ -762,6 +768,13 @@ pub(crate) fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Opus(_) => "Opus".into(),
         CodecConfig::Dnx { fourcc } if fourcc.0 == *b"AVdh" => "Avid DNxHR".into(),
         CodecConfig::Dnx { .. } => "Avid DNxHD".into(),
+        // name the sample entry, so probe says what the stream is rather than just "unknown"
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"apac" => "Apple Positional Audio (apac)".into(),
+        // a fourcc is any four bytes (`ms\0\x11` is a real one): keep control bytes out of the label
+        CodecConfig::Unknown { fourcc, .. } => {
+            let name: String = fourcc.0.iter().map(|&c| if c.is_ascii_graphic() || c == b' ' { char::from(c) } else { '?' }).collect();
+            format!("unknown ({})", name.trim_end())
+        }
         other => other.name().to_string(),
     }
 }
@@ -999,6 +1012,62 @@ mod multi_audio_tests {
         assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][50] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 100, 48_000).is_err());
+        assert!(source.info().audio_streams.iter().all(|a| a.decodable));
+    }
+
+    /// #2758: an iPhone 17 Pro video carries Apple Positional Audio (`apac`, no decoder) next to
+    /// its AAC track, often first. The stream keeps its index, names its sample entry and says it
+    /// can't be decoded; the stream after it still plays.
+    #[test]
+    fn a_track_with_no_decoder_is_listed_as_undecodable() {
+        use filmcraft_isobmff::{CodecConfig, FourCc};
+        let rate = 48_000u32;
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        for fourcc in [*b"apac", *b"zzzz", *b"ms\0\x11"] {
+            // AudioSampleEntry body: reserved, data reference 1, version fields, 4 ch, 16-bit, 48 kHz
+            let mut raw = vec![0u8; 6];
+            raw.extend_from_slice(&1u16.to_be_bytes());
+            raw.extend_from_slice(&[0; 8]);
+            raw.extend_from_slice(&4u16.to_be_bytes());
+            raw.extend_from_slice(&16u16.to_be_bytes());
+            raw.extend_from_slice(&[0; 4]);
+            raw.extend_from_slice(&(rate << 16).to_be_bytes());
+            let fourcc = FourCc(fourcc);
+            let entry = SampleEntry::audio(fourcc, CodecConfig::Unknown { fourcc, raw }, 4, f64::from(rate), 16);
+            let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+            mux.write_sample(t, WriteSample { data: &[0x5a; 64], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: f64::from(rate) });
+        let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+        let data: Vec<u8> = (0..rate / 10).flat_map(|_| 8192i16.to_le_bytes()).collect();
+        mux.write_sample(t, WriteSample { data: &data, duration: rate / 10, composition_offset: 0, is_sync: true }).unwrap();
+        let bytes = mux.finish().unwrap().into_inner();
+        let source = super::Mp4Source::open("iphone.mov", bytes.into()).unwrap();
+        let streams = &source.info().audio_streams;
+        let got: Vec<(&str, bool)> = streams.iter().map(|a| (a.codec.as_str(), a.can_decode())).collect();
+        assert_eq!(got, vec![("Apple Positional Audio (apac)", false), ("unknown (zzzz)", false), ("unknown (ms??)", false), ("PCM 16-bit", true)]);
+        assert_eq!(streams[0].channels, 4);
+        // the undecodable stream reads as silence (no error), the PCM one as its tone
+        assert!(source.audio(0, 100, 48_000).map_or(true, |b| b.channels.iter().flatten().all(|v| *v == 0.0)));
+        assert!((source.audio_stream(3, 0, 100, 48_000).unwrap().channels[0][50] - 0.25).abs() < 0.001);
+    }
+
+    /// #2758: 64-bit integer PCM has no decoder (`decode_pcm` gives silence), so the track is
+    /// listed as undecodable instead of taking A1; 16-bit PCM next to it still decodes.
+    #[test]
+    fn pcm_in_a_format_we_cannot_decode_is_listed_as_undecodable() {
+        let rate = 48_000u32;
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        for bits in [64u16, 16] {
+            let entry = SampleEntry::pcm(PcmConfig { bits, float: false, big_endian: false, signed: true, channels: 1, sample_rate: f64::from(rate) });
+            let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+            let data = vec![0x40u8; usize::from(bits / 8) * 480];
+            mux.write_sample(t, WriteSample { data: &data, duration: 480, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let bytes = mux.finish().unwrap().into_inner();
+        let source = super::Mp4Source::open("pcm64.mov", bytes.into()).unwrap();
+        let got: Vec<bool> = source.info().audio_streams.iter().map(|a| a.can_decode()).collect();
+        assert_eq!(got, vec![false, true]);
     }
 }
 

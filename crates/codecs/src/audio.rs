@@ -241,7 +241,18 @@ impl PacketDecoder {
             C::Aac(a) => Self::aac(&a.asc, if rate > 0 { rate } else { a.sample_rate }),
             C::Mp3 => Ok(Self::lazy_mpeg_audio(rate)),
             C::Ac3 { .. } | C::Eac3 { .. } => Self::ac3(),
-            C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
+            C::Alac { cookie } => {
+                // the decoder allocates frame length × channels from the file's cookie (a big-endian u32 first)
+                let frame_length = cookie.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+                if frame_length == Some(0) {
+                    // the decoder would have no room for samples, and the stream would never give any audio
+                    return Err(CodecError::Unsupported("ALAC: frame length is zero".into()));
+                }
+                if frame_length.is_some_and(|n| n > ALAC_MAX_FRAME_LENGTH) {
+                    return Err(CodecError::Unsupported("ALAC: frame length too large".into()));
+                }
+                Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone()))
+            }
             // the decoder needs the STREAMINFO body: `dfLa` holds it after the 4-byte block header
             C::Flac(f) => Self::new(CODEC_TYPE_FLAC, rate, f.metadata_blocks.get(4..38).map(<[u8]>::to_vec)),
             C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
@@ -786,6 +797,17 @@ pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>>
     out
 }
 
+/// Largest ALAC frame length accepted from a file. Encoders write 4096, and the decoder allocates
+/// this many samples per channel when it is created.
+const ALAC_MAX_FRAME_LENGTH: u32 = 1 << 20;
+
+/// Whether [`decode_pcm`] decodes `bits`-bit samples: 8/16/24/32-bit integer or 32/64-bit float.
+/// Any other format (64-bit integer, 20-bit, 16-bit float…) reads as silence there, so a
+/// container must list such a track as undecodable rather than place it (#2758).
+pub fn pcm_decodable(bits: u16, float: bool) -> bool {
+    if float { matches!(bits, 32 | 64) } else { matches!(bits, 8 | 16 | 24 | 32) }
+}
+
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
     let ch = cfg.channels.max(1) as usize;
@@ -797,6 +819,7 @@ pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f3
     }
     let bps = (cfg.bits as usize).div_ceil(8);
     let n = data.len() / (bps * ch);
+    let top_bit = if cfg.signed { 0 } else { i32::MIN };
     let mut out = vec![Vec::with_capacity(n); ch];
     for i in 0..n {
         for (c, o) in out.iter_mut().enumerate() {
@@ -818,9 +841,16 @@ pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f3
                 (16, _, true) => i16::from_be_bytes([b[0], b[1]]) as f32 / 32768.0,
                 (24, _, false) => (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0,
                 (24, _, true) => (i32::from_be_bytes([b[0], b[1], b[2], 0]) >> 8) as f32 / 8_388_608.0,
-                (32, false, false) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                (32, false, true) => i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
+                // offset binary is flipped in the integer: f32 would round the signed value first and lose what is near silence
+                (32, false, false) => (i32::from_le_bytes([b[0], b[1], b[2], b[3]]) ^ top_bit) as f32 / 2_147_483_648.0,
+                (32, false, true) => (i32::from_be_bytes([b[0], b[1], b[2], b[3]]) ^ top_bit) as f32 / 2_147_483_648.0,
                 _ => 0.0,
+            };
+            // the arms above read 16- and 24-bit samples as signed: offset binary is that with the top bit flipped
+            let v = match (!cfg.signed && !cfg.float && matches!(cfg.bits, 16 | 24), v < 0.0) {
+                (true, true) => v + 1.0,
+                (true, false) => v - 1.0,
+                (false, _) => v,
             };
             o.push(v);
         }
@@ -883,7 +913,13 @@ impl AudioFileSource {
                 kind: MediaKind::AudioOnly,
                 duration: Tick::from_units(frames as i64, rate as i64),
                 video: None,
-                audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: samples.len() as u32, codec: format!("MP{layer}"), bits_per_sample: None }],
+                audio_streams: vec![AudioStreamInfo {
+                    sample_rate: rate,
+                    channels: samples.len() as u32,
+                    codec: format!("MP{layer}"),
+                    bits_per_sample: None,
+                    decodable: true,
+                }],
                 container: ext.to_uppercase(),
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
@@ -898,7 +934,13 @@ impl AudioFileSource {
                 kind: MediaKind::AudioOnly,
                 duration: Tick::from_units(frames as i64, rate as i64),
                 video: None,
-                audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: samples.len() as u32, codec: "AAC".into(), bits_per_sample: None }],
+                audio_streams: vec![AudioStreamInfo {
+                    sample_rate: rate,
+                    channels: samples.len() as u32,
+                    codec: "AAC".into(),
+                    bits_per_sample: None,
+                    decodable: true,
+                }],
                 container: "ADTS".into(),
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
@@ -948,6 +990,7 @@ impl AudioFileSource {
                 channels: samples.len() as u32,
                 codec: codec_name,
                 bits_per_sample: track.codec_params.bits_per_sample,
+                decodable: true,
             }],
             container: ext.to_uppercase(),
             start_timecode: None,
@@ -1490,6 +1533,95 @@ mod decode_pcm_tests {
         let out = decode_pcm(&[0u8; 64], &cfg);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(Vec::is_empty));
+    }
+
+    /// #2758: every format `pcm_decodable` accepts decodes a real sample; 64-bit integer PCM,
+    /// which it rejects, is the silence `decode_pcm` returns for formats it doesn't know.
+    #[test]
+    fn pcm_decodable_matches_what_decode_pcm_decodes() {
+        let pcm = |bits, float| filmcraft_isobmff::PcmConfig { bits, float, big_endian: false, signed: bits > 8, channels: 1, sample_rate: 48_000.0 };
+        let first = |data: &[u8], bits, float| super::decode_pcm(data, &pcm(bits, float)).first().and_then(|c| c.first().copied());
+        for bits in [8u16, 16, 24, 32] {
+            assert!(super::pcm_decodable(bits, false), "{bits}-bit");
+            assert_ne!(first(&vec![0x40; usize::from(bits / 8)], bits, false), Some(0.0), "{bits}-bit");
+        }
+        assert!(super::pcm_decodable(32, true) && super::pcm_decodable(64, true));
+        assert_eq!(first(&0.5f32.to_le_bytes(), 32, true), Some(0.5));
+        assert_eq!(first(&0.5f64.to_le_bytes(), 64, true), Some(0.5));
+        assert!(!super::pcm_decodable(64, false));
+        assert_eq!(first(&[0x40; 8], 64, false), Some(0.0));
+        for (bits, float) in [(0, false), (20, false), (16, true), (8, true)] {
+            assert!(!super::pcm_decodable(bits, float), "{bits}-bit float={float}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod hostile_config_tests {
+    use super::*;
+    use filmcraft_isobmff::{CodecConfig, PcmConfig};
+
+    #[test]
+    fn unsigned_pcm_is_centred_on_silence() {
+        let pcm = |bits, big_endian, signed| PcmConfig { bits, float: false, big_endian, signed, channels: 1, sample_rate: 48_000.0 };
+        // midpoint is silence, the ends are full scale
+        let u16le = [0x00, 0x80, 0x00, 0x00, 0xff, 0xff];
+        let out = decode_pcm(&u16le, &pcm(16, false, false));
+        assert_eq!(out[0][0], 0.0);
+        assert_eq!(out[0][1], -1.0);
+        assert!((out[0][2] - 1.0).abs() < 1e-4, "{}", out[0][2]);
+        assert_eq!(decode_pcm(&[0x80, 0x00], &pcm(16, true, false))[0][0], 0.0);
+        assert_eq!(decode_pcm(&[0x00, 0x00, 0x80], &pcm(24, false, false))[0][0], 0.0);
+        assert_eq!(decode_pcm(&[0x80, 0x00, 0x00, 0x00], &pcm(32, true, false))[0][0], 0.0);
+        // signed is unchanged
+        assert_eq!(decode_pcm(&[0x00, 0x00], &pcm(16, false, true))[0][0], 0.0);
+        assert_eq!(decode_pcm(&[0x00, 0x80], &pcm(16, false, true))[0][0], -1.0);
+    }
+
+    fn alac_cookie(frame_length: u32) -> Vec<u8> {
+        let mut c = frame_length.to_be_bytes().to_vec();
+        c.extend_from_slice(&[0, 16, 40, 10, 14, 2, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb, 0x80]);
+        c
+    }
+
+    /// Near the midpoint an unsigned 32-bit sample keeps the level `f32` can represent: centring
+    /// it after the conversion rounded it would turn it into silence.
+    #[test]
+    fn unsigned_32_bit_pcm_is_centred_before_it_is_rounded() {
+        let pcm = |big_endian, signed| PcmConfig { bits: 32, float: false, big_endian, signed, channels: 1, sample_rate: 48_000.0 };
+        let smallest = 1.0 / 2_147_483_648.0;
+        for big_endian in [false, true] {
+            let read = |v: u32, signed| {
+                let bytes = if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+                decode_pcm(&bytes, &pcm(big_endian, signed))[0][0]
+            };
+            assert_eq!(read(0x8000_0001, false), smallest);
+            assert_eq!(read(0x7FFF_FFFF, false), -smallest);
+            assert_eq!(read(0x8000_0000, false), 0.0);
+            assert_eq!(read(0x0000_0000, false), -1.0);
+            assert_eq!(read(0xFFFF_FFFF, false), 1.0);
+            // signed is unchanged
+            assert_eq!(read(0x0000_0001, true), smallest);
+            assert_eq!(read(0x8000_0000, true), -1.0);
+        }
+    }
+
+    /// A frame length of zero builds a decoder with no room for samples, so a probe would call the
+    /// stream decodable and it would never produce audio.
+    #[test]
+    fn alac_frame_length_of_zero_is_refused() {
+        let r = PacketDecoder::for_isobmff(&CodecConfig::Alac { cookie: alac_cookie(0) }, 48_000);
+        assert!(matches!(r, Err(CodecError::Unsupported(_))));
+    }
+
+    #[test]
+    fn alac_frame_length_is_bounded_before_the_decoder_allocates() {
+        for n in [ALAC_MAX_FRAME_LENGTH + 1, u32::MAX] {
+            let r = PacketDecoder::for_isobmff(&CodecConfig::Alac { cookie: alac_cookie(n) }, 48_000);
+            assert!(matches!(r, Err(CodecError::Unsupported(_))), "{n}");
+        }
+        assert!(PacketDecoder::for_isobmff(&CodecConfig::Alac { cookie: alac_cookie(4096) }, 48_000).is_ok());
+        assert!(PacketDecoder::for_isobmff(&CodecConfig::Alac { cookie: vec![0xff; 3] }, 48_000).is_err());
     }
 }
 

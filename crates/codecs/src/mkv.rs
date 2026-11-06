@@ -158,9 +158,13 @@ fn audio_info(t: &filmcraft_matroska::Track) -> Option<AudioStreamInfo> {
         channels = h.channels as u32;
     }
     let (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels).ok()?;
+    let decodable = match t.codec {
+        Codec::Pcm { bits, float, .. } => crate::audio::pcm_decodable(bits, float),
+        _ => audio_decoder(&t.codec, rate).is_ok(),
+    };
     // an audio codec without a decoder plays silent: say so in the media info, as MPEG / MXF do (#1422)
     let codec = if audio_decodable(&t.codec) { codec_label(&t.codec) } else { format!("{} (unsupported)", codec_label(&t.codec)) };
-    Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32) })
+    Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32), decodable })
 }
 
 /// The track timestamp that media time zero stands for (#715): the earliest start among the
@@ -352,9 +356,8 @@ fn codec_label(c: &Codec) -> String {
 /// [`MkvSource::audio_decoder`] (keep the two in step).
 fn audio_decodable(c: &Codec) -> bool {
     match c {
-        Codec::Pcm { .. } | Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => {
-            true
-        }
+        Codec::Pcm { bits, float, .. } => crate::audio::pcm_decodable(*bits, *float),
+        Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => true,
         Codec::Vorbis { headers } => headers.len() == 3,
         _ => false,
     }
@@ -510,26 +513,6 @@ impl MkvSource {
         first.is_some_and(|b| b & 0x10 == 0)
     }
 
-    fn audio_decoder(&self, c: &Codec, rate: u32) -> crate::Result<PacketDecoder> {
-        use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
-        match c {
-            Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
-            Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
-            Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
-            Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
-            Codec::Mp1 => PacketDecoder::mpeg_audio(1, rate),
-            Codec::Ac3 | Codec::Eac3 => PacketDecoder::ac3(),
-            // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
-            Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
-            Codec::Vorbis { headers } if headers.len() == 3 => {
-                let mut extra = headers[0].clone();
-                extra.extend_from_slice(&headers[2]);
-                PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
-            }
-            other => Err(CodecError::Unsupported(format!("{} audio (FilmCraft has no decoder for it)", codec_label(other)))),
-        }
-    }
-
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
     fn audio_packet(&self, a: &MkvAudio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
         if let Some(p) = st.packets.get(&i) {
@@ -553,7 +536,7 @@ impl MkvSource {
             }
             c => {
                 if st.decoder.is_none() {
-                    st.decoder = Some(self.audio_decoder(c, ainfo.sample_rate)?);
+                    st.decoder = Some(audio_decoder(c, ainfo.sample_rate)?);
                 }
                 // Non-sequential access: reset and prime with the preceding packets (codec pre-roll:
                 // one packet, or `SeekPreRoll` worth for Opus).
@@ -579,6 +562,27 @@ impl MkvSource {
         let p = Arc::new(decoded);
         crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
+    }
+}
+
+/// The packet decoder for an audio track (`Err`: FilmCraft has none for its codec).
+fn audio_decoder(c: &Codec, rate: u32) -> crate::Result<PacketDecoder> {
+    use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
+    match c {
+        Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
+        Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
+        Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
+        Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
+        Codec::Mp1 => PacketDecoder::mpeg_audio(1, rate),
+        Codec::Ac3 | Codec::Eac3 => PacketDecoder::ac3(),
+        // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
+        Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
+        Codec::Vorbis { headers } if headers.len() == 3 => {
+            let mut extra = headers[0].clone();
+            extra.extend_from_slice(&headers[2]);
+            PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
+        }
+        other => Err(CodecError::Unsupported(format!("{} audio (FilmCraft has no decoder for it)", codec_label(other)))),
     }
 }
 
