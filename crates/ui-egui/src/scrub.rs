@@ -233,6 +233,27 @@ mod tests {
         assert!(fill.lock().unwrap().is_none());
     }
 
+    /// Export's seek command feeds the same per-frame pointer scrub path as the monitors.
+    #[test]
+    fn export_preview_seek_respects_the_shared_scrub_audio_preference() {
+        for enabled in [false, true] {
+            let (mut app, fill) = app(enabled);
+            app.ui.mode = crate::state::Mode::Export;
+            app.ui.export.range = "entire".into();
+            app.session.set_playhead(app.session.sequence_rate().tick_of(48));
+            app.scrub_tick(0.0, true);
+            crate::panels::export_mode::preview_command(&mut app, "export.preview.seek", &serde_json::json!({"frame": 60})).unwrap();
+            assert_eq!(app.scrub_tick(0.02, true), enabled);
+            if enabled {
+                assert!(loudness(&fill) > 0.0, "the export seek auditions the demo's sequence mix");
+            } else {
+                assert!(fill.lock().unwrap().is_none());
+            }
+            assert!(!app.scrub_tick(0.03 + LINGER_S, false));
+            assert!(fill.lock().unwrap().is_none());
+        }
+    }
+
     #[test]
     fn nothing_plays_with_the_setting_off_or_while_playing() {
         let (mut app, fill) = app(false);

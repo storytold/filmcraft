@@ -141,11 +141,12 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         }
     }
     if let Some(m) = s("mode") {
-        app.ui.mode = match m.to_ascii_lowercase().as_str() {
+        let mode = match m.to_ascii_lowercase().as_str() {
             "import" => Mode::Import,
             "export" => Mode::Export,
             _ => Mode::Edit,
         };
+        app.set_mode(mode);
     }
     if let Some(th) = s("theme") {
         match crate::theme::ThemeKind::from_name(th) {
