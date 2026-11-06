@@ -162,6 +162,22 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
+/// Open the project at `path` that the user chose (File ▸ Open's dialog, or the web build's picker
+/// and a project dropped on its page): [`ask_before_open`] first, else it opens now.
+pub fn open_chosen_project(app: &mut FilmcraftApp, path: &str) -> Result<Value, String> {
+    if let Some(asked) = ask_before_open(app, path) {
+        return asked;
+    }
+    app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+}
+
+/// Whether the prompt that [`open_chosen_project`] showed for `path` is still waiting for an
+/// answer, including a replace prompt that its **Save** raised.
+pub fn open_prompt_pending(app: &FilmcraftApp, path: &str) -> bool {
+    let asking = app.ui.clip_dialog.as_ref().is_some_and(|d| d.command == "file.open" && d.params.get("path").and_then(Value::as_str) == Some(path));
+    asking || app.overwrite_prompt_path().is_some()
+}
+
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
