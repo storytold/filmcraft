@@ -616,16 +616,30 @@ mod tests {
     fn tabular_text_gives_every_digit_the_same_room() {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &Tokens::for_kind(ThemeKind::Dark)); // the app's UI font
+        // The system face may already use tabular figures. Inter, still in the stack, is the
+        // proportional face this layout has to correct. Fonts exist only after the first frame.
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+        let mut fonts = ctx.fonts_mut(|fonts| fonts.definitions().clone());
+        fonts.families.insert(egui::FontFamily::Name("inter-only".into()), vec!["inter".into()]);
+        ctx.set_fonts(fonts);
         let mut widths = Vec::new();
+        let mut inter_plain = (0.0, 0.0);
+        let mut inter_tabular = (0.0, 0.0);
         ctx.run_ui(egui::RawInput::default(), |ui| {
             for s in ["Exporting… 11% · 11:11 left", "Exporting… 88% · 88:08 left"] {
                 widths.push(tabular_text(ui.painter(), s, &Tokens::ui(11.0), Color32::WHITE).1);
             }
-            let plain = |s: &str| ui.painter().layout_no_wrap(s.to_string(), Tokens::ui(11.0), Color32::WHITE).size().x;
-            assert!(plain("11:11") < plain("88:08"), "the font's own digits differ in width");
+            let inter = egui::FontId::new(11.0, egui::FontFamily::Name("inter-only".into()));
+            let plain = |s: &str| ui.painter().layout_no_wrap(s.to_string(), inter.clone(), Color32::WHITE).size().x;
+            inter_plain = (plain("11:11"), plain("88:08"));
+            let tab = |s: &str| tabular_text(ui.painter(), s, &inter, Color32::WHITE).1;
+            inter_tabular = (tab("11:11"), tab("88:08"));
         })
         .textures_delta
         .clear();
+        assert!(inter_plain.0 < inter_plain.1, "Inter digits differ in width: {inter_plain:?}");
+        assert!((inter_tabular.0 - inter_tabular.1).abs() < 0.01, "{inter_tabular:?}");
         assert!((widths[0] - widths[1]).abs() < 0.01, "{widths:?}");
     }
 
