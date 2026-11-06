@@ -212,7 +212,7 @@ fn plan_matches_reference_renderer() {
     for f in [0, 12, 20, 40] {
         let opts = RenderOptions { scale: 0.5, ..Default::default() };
         let reference = render_sequence(&p, seq, r.tick_of(f), opts, &map);
-        let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, &map);
+        let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
         assert!(matches!(plan, plan::FramePlan::Layers { .. }), "simple frame should be GPU-drawable");
         let got = plan::execute_cpu(&plan);
         assert_eq!((got.w, got.h), (reference.w, reference.h));
@@ -251,7 +251,7 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
                 tr.to = if missing { None } else { Some(b) };
                 for f in [18, 21, 24, 29] {
                     let opts = RenderOptions { scale, ..Default::default() };
-                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, &map);
+                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
                     assert!(matches!(plan, plan::FramePlan::Composite { .. }));
                     let got = plan::execute_cpu(&plan);
                     let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
@@ -282,9 +282,9 @@ fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
         reverse: false,
     });
     let opts = RenderOptions { scale: 0.5, ..Default::default() };
-    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
-    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10)), "outside the transition the frame stays on the GPU");
-    let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, &map);
+    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24), opts, plan::DeviceCaps::ALL));
+    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10), opts, plan::DeviceCaps::ALL), "outside the transition the frame stays on the GPU");
+    let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, plan::DeviceCaps::ALL, &map);
     assert!(matches!(plan, plan::FramePlan::Image(_)));
     assert_eq!(plan::execute_cpu(&plan).px, render_sequence(&p, seq, rate.tick_of(24), opts, &map).px);
 }
@@ -417,7 +417,7 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
     for draft in [false, true] {
         for (scale, small_w) in [(1.0f32, 320u32), (0.5, 160), (0.25, 80)] {
             let opts = RenderOptions { scale, ..Default::default() };
-            let plan = filmcraft_media::cancel::with_draft(draft, || plan::plan_frame(&p, seq, t, opts, &map));
+            let plan = filmcraft_media::cancel::with_draft(draft, || plan::plan_frame(&p, seq, t, opts, plan::DeviceCaps::ALL, &map));
             let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU-drawable") };
             // exact playback hands over the decoded picture; draft playback planes at the drawn size
             assert_eq!(layers[0].frame.width, if draft { small_w } else { 320 }, "scale {scale}, draft {draft}");
@@ -445,7 +445,7 @@ fn a_multicam_clip_showing_itself_plans_and_renders_to_an_end() {
     p.sequence_mut(a).unwrap().video_tracks[0].items.push(it);
     let opts = RenderOptions { scale: 0.1, ..Default::default() };
     let sources = SourceMap::default();
-    let img = plan::execute_cpu(&plan::plan_frame(&p, a, Tick::ZERO, opts, &sources));
+    let img = plan::execute_cpu(&plan::plan_frame(&p, a, Tick::ZERO, opts, plan::DeviceCaps::ALL, &sources));
     assert!(img.w > 0 && img.h > 0);
     let img = render_sequence(&p, a, Tick::ZERO, opts, &sources);
     assert!(img.w > 0 && img.h > 0);
@@ -510,7 +510,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let shown = |p: &Project, f: i64, planned: bool| -> Vec<i64> {
         src.asked.lock().unwrap().clear();
         if planned {
-            plan::execute_cpu(&plan::plan_frame(p, seq, r.tick_of(f), opts, &map));
+            plan::execute_cpu(&plan::plan_frame(p, seq, r.tick_of(f), opts, plan::DeviceCaps::ALL, &map));
         } else {
             render_sequence(p, seq, r.tick_of(f), opts, &map);
         }
