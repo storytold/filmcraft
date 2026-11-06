@@ -91,8 +91,10 @@ fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: 
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     arrows_start_from_the_end(ui, edit_id, buf);
+    // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
+    let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
-    let mut out = None;
+    let mut out = stepped;
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
         let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
@@ -123,6 +125,47 @@ fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: 
         }
     }
     (r, out)
+}
+
+/// Up/Down in a hot number's text field step the typed value as Premiere does: by 1, or by the last
+/// shown digit when the range is narrow (Exposure steps 0.01); Shift is x10 and Command x0.1, the
+/// drag multipliers. The new value replaces the text, stays selected (typing still replaces it) and
+/// is returned to be applied. The keys are consumed so the `TextEdit` does not move its caret.
+/// Call before drawing the `TextEdit` with id `edit_id` that holds `buf`.
+fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, range: (f64, f64), suffix: &str) -> Option<f64> {
+    let mut direction = 0.0;
+    let mut mult = 1.0;
+    ui.input_mut(|i| {
+        for (key, dir) in [(egui::Key::ArrowUp, 1.0), (egui::Key::ArrowDown, -1.0)] {
+            for (mods, m) in [(egui::Modifiers::SHIFT, 10.0), (egui::Modifiers::COMMAND, 0.1), (egui::Modifiers::NONE, 1.0)] {
+                if direction == 0.0 && i.consume_key(mods, key) {
+                    direction = dir;
+                    mult = m;
+                }
+            }
+        }
+    });
+    if direction == 0.0 {
+        return None;
+    }
+    let typed = if suffix.trim().is_empty() { buf.trim().to_owned() } else { buf.trim().replace(suffix.trim(), "") };
+    let current = crate::calc::eval(&typed, value).filter(|v| v.is_finite())?;
+    // the last shown digit of the typed number, in a narrow range only
+    let shown = typed.trim().split_once('.').map_or(0, |(_, f)| f.chars().filter(char::is_ascii_digit).count()).min(6);
+    let narrow = (range.1 - range.0).abs() <= 10.0;
+    let base = if narrow { 10f64.powi(-(shown as i32)) } else { 1.0 };
+    let step = base * mult;
+    let step_digits = (-step.log10()).ceil().clamp(0.0, 6.0) as usize;
+    let decimals = shown.max(step_digits);
+    let text = format!("{:.decimals$}", (current + direction * step).clamp(range.0, range.1));
+    let new = text.parse::<f64>().ok()?;
+    let len = text.chars().count();
+    *buf = text;
+    let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len))));
+    st.store(ui.ctx(), edit_id);
+    // at the edge of the range the value does not change: nothing to apply
+    ((new - value).abs() > f64::EPSILON).then_some(new)
 }
 
 /// Whether a field has keyboard focus, also while the window is in the background: `has_focus` is
