@@ -791,7 +791,8 @@ mod tests {
         for frac in [0.45, 0.6, 0.8, 1.2, 1.6, 2.0] {
             for segments in [0.0, 25.0, 50.0, 75.0, 100.0] {
                 let target = (a.len as f64 * frac) as i64;
-                let Ok(p) = plan(&a, target, Params { segments, variations: 50.0 }) else { continue };
+                let p = plan(&a, target, Params { segments, variations: 50.0 })
+                    .unwrap_or_else(|e| panic!("{bpm} BPM: no plan for {frac}x at Segments {segments}: {e:?}"));
                 worst = worst.max((p.len() - target).abs() as f64 / a.period);
                 for (out, inn) in p.cuts() {
                     joints += 1;
