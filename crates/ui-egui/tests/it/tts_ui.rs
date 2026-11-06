@@ -272,3 +272,71 @@ fn example_text_automatically_populated() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn russian_settings_remembered_across_language_switches_and_restarts() {
+    let dir = scratch("russian-prefs");
+    let prefs_path = std::path::PathBuf::from(&dir).join("preferences.json");
+    let mut session = Session::default();
+    session.prefs_path = Some(prefs_path.clone());
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    session.execute("file.projectSettings.scratchDisks", json!({"captured": dir.clone()})).expect("scratch disk");
+
+    let (tx, rx) = channel();
+    let app = FilmcraftApp::new(session).with_control(rx);
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx };
+    d.frames(4);
+
+    d.exec("window.panel.TextToSpeech", json!({}));
+    d.frames(3);
+
+    // Switch to Russian, choose voice, pace and pitch
+    d.harness.state_mut().ui.tts.language = "ru-RU".into();
+    d.harness.state_mut().ui.tts.voice = "basic-russian-female".into();
+    d.harness.state_mut().ui.tts.pace = 1.25;
+    d.harness.state_mut().ui.tts.pitch = filmcraft_project::VocalPitch::High;
+    d.frames(3);
+
+    // Verify session preferences updated
+    let prefs = &d.harness.state().session.prefs.tts;
+    assert_eq!(prefs.last_language, "ru-RU");
+    let ru = prefs.languages.get("ru-RU").expect("ru-RU prefs saved");
+    assert_eq!(ru.voice, "basic-russian-female");
+    assert_eq!(ru.pitch, filmcraft_project::VocalPitch::High);
+    assert!((ru.pace - 1.25).abs() < 1e-4);
+
+    // Switch to English
+    d.harness.state_mut().ui.tts.language = "en-US".into();
+    d.harness.state_mut().ui.tts.voice = "basic-english-female".into();
+    d.harness.state_mut().ui.tts.pace = 1.0;
+    d.harness.state_mut().ui.tts.pitch = filmcraft_project::VocalPitch::Default;
+    d.frames(3);
+    assert_eq!(d.harness.state().session.prefs.tts.last_language, "en-US");
+
+    // Click Russian in the language combobox or trigger switch: should restore saved Russian settings
+    d.harness.state_mut().ui.tts.language = "ru-RU".into();
+    let ru_saved = d.harness.state().session.prefs.tts.languages.get("ru-RU").cloned();
+    if let Some(lp) = ru_saved {
+        d.harness.state_mut().ui.tts.voice = lp.voice;
+        d.harness.state_mut().ui.tts.pitch = lp.pitch;
+        d.harness.state_mut().ui.tts.pace = lp.pace;
+    }
+    d.frames(3);
+    assert_eq!(d.draft()["language"], "ru-RU");
+    assert_eq!(d.draft()["voice"], "basic-russian-female");
+    assert_eq!(d.draft()["pitch"], "high");
+    assert_eq!(d.draft()["pace"], 1.25);
+
+    // Simulate app restart by loading saved preferences
+    let mut restarted_session = Session::default();
+    restarted_session.prefs_path = Some(prefs_path);
+    restarted_session.prefs = d.harness.state().session.prefs.clone();
+    let restarted_app = FilmcraftApp::new(restarted_session);
+    assert_eq!(restarted_app.ui.tts.language, "ru-RU");
+    assert_eq!(restarted_app.ui.tts.voice, "basic-russian-female");
+    assert_eq!(restarted_app.ui.tts.pitch, filmcraft_project::VocalPitch::High);
+    assert!((restarted_app.ui.tts.pace - 1.25).abs() < 1e-4);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
