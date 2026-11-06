@@ -500,7 +500,7 @@ def main():
     ap.add_argument("--captions-only", action="store_true", help="so gera o .srt (a timeline ja foi criada antes)")
     a = ap.parse_args()
 
-    v = Path(a.video)
+    v = Path(a.video).resolve()
     if not v.exists():
         sys.exit("Arquivo nao encontrado")
     for tool in (FFMPEG, FFPROBE):
