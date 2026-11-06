@@ -794,6 +794,79 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
 }
 
 #[test]
+fn a_waiting_queue_start_sees_a_running_encode_through_then_the_rest() {
+    // an item started without waiting is still encoding when `export.queue.start` waits: the call
+    // returns once that encode is done and the rest of the queue is exported (#4143)
+    use crate::export_tools::QueueStatus;
+    let mut s = demo();
+    let dir = Scratch::new("queue-wait");
+    for name in ["running.wav", "next.wav"] {
+        s.execute(
+            "export.queue.add",
+            json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.path(name), "range": "custom", "startSeconds": 0, "endSeconds": 0.25}),
+        )
+        .unwrap();
+    }
+    // the first item's encode runs in the background and ends a little later
+    let job = crate::Job { id: 77, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    let (result, progress) = (job.result.clone(), job.progress.clone());
+    s.jobs.push(job);
+    s.export_queue.items[0].status = QueueStatus::Encoding;
+    s.export_queue.items[0].job = Some(77);
+    s.export_queue.running = true;
+    let ender = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let report = filmcraft_export::Report { path: String::new(), frames: 1, seconds: 0.0, bytes: 0, render_fps: 0.0, extra_files: Vec::new() };
+        *result.lock().unwrap() = Some(Ok(report));
+        progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    let items = queue(&mut s);
+    assert_eq!(items[0]["status"], "done", "{}", items[0]);
+    assert_eq!(items[1]["status"], "done", "the rest of the queue ran: {}", items[1]);
+    assert!(std::fs::metadata(dir.path("next.wav")).map(|m| m.len() > 44).unwrap_or(false));
+    ender.join().unwrap();
+}
+
+#[test]
+fn a_waiting_queue_never_returns_with_an_encode_unsettled() {
+    // an encode that ends between the queue's look at it and its decision to wait is still settled
+    // before `pump_queue` returns (#4143). 3000 finished encodes after it make that gap a few
+    // milliseconds wide, and the encode ends at points spread across it.
+    use crate::export_tools::{QueueItem, QueueStatus, pump_queue};
+    let mut s = demo();
+    let dir = Scratch::new("queue-settle");
+    s.execute(
+        "export.queue.add",
+        json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.path("x.wav"), "range": "custom", "startSeconds": 0, "endSeconds": 0.25}),
+    )
+    .unwrap();
+    let base = s.export_queue.items[0].clone();
+    let finished = || Some(Ok(filmcraft_export::Report { path: String::new(), frames: 1, seconds: 0.0, bytes: 0, render_fps: 0.0, extra_files: Vec::new() }));
+    for delay_us in (0..40u64).map(|k| k * 100) {
+        s.jobs.clear();
+        s.export_queue.items.clear();
+        for k in 0..3001u64 {
+            let job = crate::Job { id: 1000 + k, label: String::new(), progress: Default::default(), result: Default::default() };
+            if k > 0 {
+                *job.result.lock().unwrap() = finished();
+            }
+            s.jobs.push(job);
+            s.export_queue.items.push(QueueItem { id: k + 1, status: QueueStatus::Encoding, job: Some(1000 + k), ..base.clone() });
+        }
+        s.export_queue.running = true;
+        let result = s.jobs[0].result.clone();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_micros(delay_us));
+            *result.lock().unwrap() = finished();
+        });
+        pump_queue(&mut s, true);
+        ender.join().unwrap();
+        assert_eq!(s.export_queue.items[0].status, QueueStatus::Done, "ended after {delay_us} µs: returned with the encode unsettled");
+    }
+}
+
+#[test]
 fn hardware_encoding_is_off_unless_asked_for() {
     use filmcraft_export::HardwareEncoding::{Auto, Off};
     let s = demo();

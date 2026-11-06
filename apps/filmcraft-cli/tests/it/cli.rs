@@ -316,6 +316,31 @@ fn run_waits_for_an_export_on_its_last_line() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn run_waits_for_background_jobs() {
+    // #4143: the export queue and Project Manager finish their jobs before `run` exits
+    let dir = std::env::temp_dir().join(format!("fc-cli-run-jobs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let queued = dir.join("queued.wav");
+    let collected = dir.join("collected");
+    let script = [
+        json!({"id": "export.queue.add", "params": {"path": queued.to_str().unwrap(), "format": "wav"}}),
+        json!({"id": "export.queue.start", "params": {}}),
+        json!({"id": "file.projectManager", "params": {"destination": collected.to_str().unwrap(), "mode": "collect", "projectName": "collected"}}),
+    ]
+    .map(|line| format!("{line}\n"))
+    .concat();
+    let mut child =
+        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    let o = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{stdout}");
+    assert!(std::fs::metadata(&queued).map(|m| m.len() > 44).unwrap_or(false), "{stdout}");
+    assert!(collected.join("collected.fcproj").is_file(), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `export --preset`: a built-in preset by name (dash or en dash), a custom range, a user preset
 /// from `--data-dir`, `--list-presets`, `--queue`, and a clean failure for an unknown preset.
 #[test]
