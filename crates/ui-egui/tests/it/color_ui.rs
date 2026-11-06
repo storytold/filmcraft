@@ -368,6 +368,14 @@ fn interpret_footage_assumes_a_frame_rate() {
     assert!((item_duration(&mut d, &item) as f64 - half).abs() < 254_016_000_000.0 / 50.0);
     let info = d.exec("clip.interpretFootage", json!({"items": [item], "colorSpace": "auto"}));
     assert_eq!(info["frameRate"], "50", "{info}");
+    // a typed fraction stays exact: 8.333 would drift by 0.004%
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    retype(&mut d, "colorDialog.rate.value", "25/3");
+    d.click("colorDialog.ok");
+    let exact = before as f64 * 24_000.0 / 1001.0 / (25.0 / 3.0);
+    let after = item_duration(&mut d, &item) as f64;
+    assert!((after - exact).abs() / exact < 1e-6, "{after}, want {exact}");
     // and the file's rate back
     d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
     d.frames(3);
@@ -626,6 +634,9 @@ fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
     d.frames(3);
     d.click("project.itemMenu.interpretFootage");
     d.frames(3);
+    d.click("colorDialog.tab.color");
+    d.frames(2);
+    d.click("colorDialog.space.list");
     d.click("colorDialog.space.slog3-sgamut3cine");
     d.click("colorDialog.ok");
     assert_eq!(over(&mut d, a), json!("slog3-sgamut3cine"));
@@ -639,6 +650,9 @@ fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
     d.frames(3);
     d.click("project.itemMenu.interpretFootage");
     d.frames(3);
+    d.click("colorDialog.tab.color");
+    d.frames(2);
+    d.click("colorDialog.space.list");
     d.click("colorDialog.space.slog3-sgamut3cine");
     d.click("colorDialog.ok");
     assert_eq!(over(&mut d, c), json!("slog3-sgamut3cine"));

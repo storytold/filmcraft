@@ -122,6 +122,41 @@ fn check_image_sequence_with_missing_frames(prefix: &str) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A sequence rendered at 24 fps imports at the timebase setting; Interpret Footage plays every
+/// frame at the rate it was rendered at, and the file's rate goes back.
+#[test]
+fn image_sequence_assumes_the_rate_it_was_rendered_at() {
+    let dir = tmp_dir("imgseq-assume-rate");
+    let mut s = demo();
+    s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "29.97"})).unwrap();
+    let numbers: Vec<u32> = (1..=12).collect();
+    let paths = write_frames(&dir, "shot_", &numbers, "png");
+    let id = item_of(&s.execute("file.import", json!({"paths": [paths[0]], "imageSequence": true})).unwrap());
+    let media = |s: &Session| s.project.item(id).unwrap().as_media().unwrap().clone();
+    assert_eq!((media(&s).info.kind, media(&s).info.frame_rate()), (MediaKind::ImageSequence, FrameRate::FPS_29_97));
+
+    let r = s.execute("clip.interpretFootage", json!({"items": [id.0], "frameRate": 24})).unwrap();
+    assert_eq!((r["frameRate"].as_str(), r["fileFrameRate"].as_str()), (Some("24"), Some("29.97")), "{r}");
+    assert_eq!(media(&s).duration(), FrameRate::FPS_24.tick_of(12));
+
+    // on the timeline it lasts the twelve frames at 24 fps and shows each at its own time
+    let start = s.active_sequence().unwrap().duration();
+    let r = s.execute("timeline.place", json!({"item": id.0, "track": "V1", "time": start.0})).unwrap();
+    let clip = ClipId(r["clips"][0].as_u64().unwrap());
+    let dur = s.active_sequence().unwrap().find_item(clip).unwrap().1.duration;
+    assert_eq!(dur, s.sequence_rate().snap_nearest(FrameRate::FPS_24.tick_of(12)), "{dur:?}");
+    for (frame, level) in [(0, 10_i32), (5, 60), (11, 120)] {
+        let mid = FrameRate::FPS_24.tick_of(frame).0 + FrameRate::FPS_24.frame_duration().0 / 2;
+        let image = s.render_program_at(1.0, filmcraft_time::Tick(start.0 + mid)).unwrap();
+        let shown = i32::from(image.to_rgba8()[(image.h / 2 * image.w + image.w / 2) * 4]);
+        assert!((shown - level).abs() <= 3, "frame {frame} shows red {shown}, want {level}");
+    }
+
+    s.execute("clip.interpretFootage", json!({"items": [id.0], "frameRate": "file"})).unwrap();
+    assert_eq!(media(&s).duration(), FrameRate::FPS_29_97.tick_of(12));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn import_image_sequences_setting_detects_a_numbered_still() {
     let dir = tmp_dir("imgseq-auto");

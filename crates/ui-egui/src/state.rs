@@ -839,7 +839,7 @@ pub enum ColorDialog {
         items: Vec<u64>,
         color_space: String,
         #[serde(default)]
-        assume_rate: Option<f64>,
+        assume_rate: Option<filmcraft_time::FrameRate>,
         #[serde(default)]
         tab: String,
         #[serde(default)]

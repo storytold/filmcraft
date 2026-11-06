@@ -32,7 +32,7 @@ fn medias(app: &FilmcraftApp, items: &[u64]) -> Vec<MediaClip> {
 fn settings(m: &MediaClip) -> Value {
     json!({
         "colorSpace": m.interpret.color_space.map_or("auto", |c| c.id()),
-        "frameRate": m.conform().map_or(json!("file"), |c| json!(c.assumed.as_f64())),
+        "frameRate": m.conform().map_or(json!("file"), |c| rate_param(c.assumed)),
         "ignoreAlpha": m.interpret.ignore_alpha,
         "invertAlpha": m.interpret.invert_alpha,
     })
@@ -90,9 +90,9 @@ pub fn open_interpret(app: &mut FilmcraftApp, params: &Value) {
     app.ui.color_dialog = Some(ColorDialog::Interpret {
         items,
         color_space: current,
-        assume_rate: assume.map(FrameRate::as_f64),
+        assume_rate: assume,
         tab: tab.into(),
-        rate_text: assume.or(file_rate).map(FrameRate::label).unwrap_or_default(),
+        rate_text: assume.map(rate_text).or(file_rate.map(FrameRate::label)).unwrap_or_default(),
         ignore_alpha: m.is_some_and(|m| m.interpret.ignore_alpha),
         invert_alpha: m.is_some_and(|m| m.interpret.invert_alpha),
         mixed,
@@ -103,6 +103,17 @@ pub fn open_interpret(app: &mut FilmcraftApp, params: &Value) {
 /// The rate typed in Assume this frame rate (`25`, `23.976`, `24000/1001`), if usable.
 fn parse_rate(text: &str) -> Option<FrameRate> {
     filmcraft_engine::export_tools::parse_rate(&json!(text.trim())).filter(|r| r.is_usable())
+}
+
+/// `rate` as an exact `clip.interpretFootage` parameter.
+fn rate_param(rate: FrameRate) -> Value {
+    json!(format!("{}/{}", rate.num, rate.den))
+}
+
+/// `rate` for the Assume this frame rate field: its label, or the fraction if the label rounds it.
+fn rate_text(rate: FrameRate) -> String {
+    let label = rate.label();
+    if parse_rate(&label) == Some(rate) { label } else { format!("{}/{}", rate.num, rate.den) }
 }
 
 /// The field order the file's pixel format names (MPEG-2 and MXF report interlaced pictures).
@@ -134,7 +145,7 @@ fn group(ui: &mut egui::Ui, title: &str, mixed: bool, add: impl FnOnce(&mut egui
 
 /// The Interpret Footage tab's choices (a view of the dialog's draft).
 struct Choices<'a> {
-    assume: &'a mut Option<f64>,
+    assume: &'a mut Option<FrameRate>,
     rate_text: &'a mut String,
     ignore_alpha: &'a mut bool,
     invert_alpha: &'a mut bool,
@@ -170,7 +181,7 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
                 ui.end_row();
                 if radio(app, ui, "colorDialog.rate.assume", c.assume.is_some(), tl!("Assume this frame rate:"), OPTION_W) {
                     if c.assume.is_none() {
-                        *c.assume = Some(parse_rate(c.rate_text).unwrap_or(file_rate).as_f64());
+                        *c.assume = Some(parse_rate(c.rate_text).unwrap_or(file_rate));
                     }
                     rate_chosen = true;
                 }
@@ -181,14 +192,14 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
                     if r.changed()
                         && let Some(rate) = parse_rate(c.rate_text)
                     {
-                        *c.assume = Some(rate.as_f64());
+                        *c.assume = Some(rate);
                         rate_chosen = true;
                     }
                     let mut picked = None;
                     let list = craft_ui::ComboBox::from_id_salt("interpret-rate-list").selected_text("").width(20.0).show_ui(ui, |ui| {
                         for rate in FrameRate::COMMON {
                             let label = rate.label();
-                            let on = c.assume.is_some_and(|f| (f - rate.as_f64()).abs() < 0.0005);
+                            let on = *c.assume == Some(rate);
                             let r = ui.selectable_label(on, &label);
                             app.auto.add(&format!("colorDialog.rate.{label}"), r.rect, &label);
                             if r.clicked() {
@@ -198,7 +209,7 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
                     });
                     app.auto.add("colorDialog.rate.list", list.response.rect, "Frame rates");
                     if let Some(rate) = picked {
-                        *c.assume = Some(rate.as_f64());
+                        *c.assume = Some(rate);
                         *c.rate_text = rate.label();
                         rate_chosen = true;
                     }
@@ -208,7 +219,7 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
                 // how long the footage plays at the rate chosen
                 let tc = one_or_various(ms.iter().filter(|m| moving(m)).map(|m| {
                     let file = m.info.frame_rate();
-                    let playing = c.assume.and_then(|f| parse_rate(&f.to_string())).unwrap_or(file);
+                    let playing = c.assume.unwrap_or(file);
                     filmcraft_time::format_timecode_frames(file.frame_at(m.info.duration), playing, playing.supports_drop_frame())
                 }));
                 ui.label(tl!("Duration:"));
@@ -367,7 +378,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     if ok && !touched.is_empty() {
                         let draft = json!({
                             "colorSpace": color_space,
-                            "frameRate": assume_rate.map_or(json!("file"), |f| json!(f)),
+                            "frameRate": assume_rate.map_or(json!("file"), rate_param),
                             "ignoreAlpha": *ignore_alpha,
                             "invertAlpha": *invert_alpha,
                         });

@@ -59,6 +59,9 @@ fn setup() -> Setup {
     info.audio_streams = vec![AudioStreamInfo { sample_rate: 48_000, channels: 1, codec: "pcm".into(), bits_per_sample: None }];
     let mut p = Project::new("conform");
     let marker = filmcraft_project::Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: filmcraft_project::MarkerId(900),
         start: secs(1.0),
         duration: Tick::ZERO,
