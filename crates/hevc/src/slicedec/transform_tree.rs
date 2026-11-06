@@ -1,6 +1,7 @@
 use super::{
-    CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CTX_IDX_MAP, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2, LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE,
-    PartMode, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, for_runs, intra, scan_order, transform,
+    CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2, LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE, PartMode,
+    PicState, Result, SCAN_4, SIG_COEFF, SIG_CTX, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, for_runs, intra, scan_order, scan_pos,
+    transform,
 };
 
 /// Significant scan positions of one sub-block, in decoding (descending) order.
@@ -43,54 +44,26 @@ struct GreaterFlags {
     g1ctx: u32,
 }
 
-/// sigCtx increment of sig_coeff_flag (9.3.4.2.5) for the position `(xp, yp)` inside the sub-block.
-fn sig_ctx_inc(p: &SigMapParams, (xp, yp): (usize, usize)) -> usize {
-    let (xc, yc) = (p.xs * 4 + xp, p.ys * 4 + yp);
+/// sigCtx increments (9.3.4.2.5) of the 16 scan positions of one sub-block.
+fn sig_ctx_table(p: &SigMapParams) -> [u8; 16] {
     if p.log2 == 2 {
-        return CTX_IDX_MAP[(yc << 2) + xc] as usize;
+        return SIG_CTX[p.scan_idx][4];
     }
-    if xc + yc == 0 {
-        return 0;
-    }
-    let mut s = match p.prev_csbf {
-        0 => {
-            if xp + yp == 0 {
-                2
-            } else if xp + yp < 3 {
-                1
-            } else {
-                0
-            }
-        }
-        1 => {
-            if yp == 0 {
-                2
-            } else if yp == 1 {
-                1
-            } else {
-                0
-            }
-        }
-        2 => {
-            if xp == 0 {
-                2
-            } else if xp == 1 {
-                1
-            } else {
-                0
-            }
-        }
-        _ => 2,
-    };
-    if p.c == 0 {
-        if p.xs + p.ys > 0 {
-            s += 3;
-        }
-        s += if p.log2 == 3 { if p.scan_idx == 0 { 9 } else { 15 } } else { 21 };
+    let off = if p.c == 0 {
+        (if p.xs + p.ys > 0 { 3 } else { 0 }) + if p.log2 == 3 { if p.scan_idx == 0 { 9 } else { 15 } } else { 21 }
+    } else if p.log2 == 3 {
+        9
     } else {
-        s += if p.log2 == 3 { 9 } else { 12 };
+        12
+    };
+    let mut t = SIG_CTX[p.scan_idx][p.prev_csbf as usize];
+    for v in t.iter_mut() {
+        *v += off;
     }
-    s
+    if p.xs + p.ys == 0 {
+        t[0] = 0;
+    }
+    t
 }
 
 /// A node of the transform tree: the block at (`x0`, `y0`) of size 2^`log2`, its parent's origin
@@ -213,43 +186,45 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut al = [false; 129];
         let mut at = [false; 129];
         let addr = self.slice_addr;
-        let pic = &*self.pic;
-        let units = (2 * n / unit) as u32;
-        let mut ml = pic.zavail_run((xl, yl), (xl - 1, yl), true, units, addr);
-        let mut mt = pic.zavail_run((xl, yl), (xl, yl - 1), false, units, addr);
-        let mut corner = pic.zavail(xl, yl, xl - 1, yl - 1, addr);
-        if constrained {
-            let intra = |x: i32, y: i32| pic.blk_at(x, y).flags & F_INTRA != 0;
-            for k in 0..units {
-                if ml & (1 << k) != 0 && !intra(xl - 1, yl + 4 * k as i32) {
-                    ml &= !(1 << k);
-                }
-                if mt & (1 << k) != 0 && !intra(xl + 4 * k as i32, yl - 1) {
-                    mt &= !(1 << k);
-                }
-            }
-            corner = corner && intra(xl - 1, yl - 1);
-        }
-        let plane = &pic.planes[c];
+        let avail =
+            |pic: &PicState<S>, xn: i32, yn: i32| -> bool { pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0) };
+        let plane = &self.pic.planes[c];
+        // window line of component line y (y >= the window's first line wherever it is read)
+        let yb = self.pic.line0(c);
         let r = &mut self.refs_buf;
-        if corner {
+        // corner
+        if avail(self.pic, xl - 1, yl - 1) {
             al[0] = true;
             at[0] = true;
-            let v = plane[(y0 - 1) as usize * stride + (x0 - 1) as usize].to_u16();
+            let v = plane[((y0 - 1) as usize - yb) * stride + (x0 - 1) as usize].to_u16();
             r.left[0] = v;
             r.top[0] = v;
         }
+        // Left and top availability as 4x4-unit masks (one CTB check per CTB segment), then copy
+        // the available samples run by run.
+        let units = (2 * n / unit) as u32;
+        let mut ml = self.pic.zavail_run((xl, yl), (xl - 1, yl), true, units, addr);
+        let mut mt = self.pic.zavail_run((xl, yl), (xl, yl - 1), false, units, addr);
+        if constrained {
+            for k in 0..units {
+                if ml & (1 << k) != 0 && self.pic.blk_at(xl - 1, yl + 4 * k as i32).flags & F_INTRA == 0 {
+                    ml &= !(1 << k);
+                }
+                if mt & (1 << k) != 0 && self.pic.blk_at(xl + 4 * k as i32, yl - 1).flags & F_INTRA == 0 {
+                    mt &= !(1 << k);
+                }
+            }
+        }
         for_runs(ml, unit, |a, b| {
-            let left = (y0 as usize + a) * stride + x0 as usize - 1;
             al[1 + a..1 + b].fill(true);
             for (k, v) in r.left[1 + a..1 + b].iter_mut().enumerate() {
-                *v = plane[left + k * stride].to_u16();
+                *v = plane[(y0 as usize + a + k - yb) * stride + (x0 - 1) as usize].to_u16();
             }
         });
         for_runs(mt, unit, |a, b| {
-            let top = (y0 as usize - 1) * stride + x0 as usize;
             at[1 + a..1 + b].fill(true);
-            for (v, s) in r.top[1 + a..1 + b].iter_mut().zip(&plane[top + a..top + b]) {
+            let o = ((y0 - 1) as usize - yb) * stride + (x0 as usize + a);
+            for (v, s) in r.top[1 + a..1 + b].iter_mut().zip(&plane[o..o + (b - a)]) {
                 *v = s.to_u16();
             }
         });
@@ -258,7 +233,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if c == 0 {
             intra::filter(r, mode, n, self.sps.strong_intra_smoothing, true, bd);
         }
-        let off = y0 as usize * stride + x0 as usize;
+        let off = (y0 as usize - yb) * stride + x0 as usize;
         intra::predict(r, mode, n, c == 0, bd, &mut self.pic.planes[c][off..], stride);
     }
 
@@ -306,14 +281,13 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     /// sig_coeff_flag decoding of one coded sub-block, appending the significant scan positions
     /// (descending) to `list`.
     fn read_sig_map(&mut self, p: &SigMapParams, list: &mut SigList) {
-        let pos_scan = &SCAN_4[p.scan_idx];
         let c_off_sig = if p.c == 0 { 0 } else { 27 };
+        let ctx_tab = sig_ctx_table(p);
         let mut infer_dc = p.infer_dc;
         let mut np = p.start;
         while np >= 0 {
-            let (xp, yp) = (pos_scan[np as usize].0 as usize, pos_scan[np as usize].1 as usize);
             if np > 0 || !infer_dc {
-                let sig_ctx = sig_ctx_inc(p, (xp, yp));
+                let sig_ctx = ctx_tab[np as usize] as usize;
                 if self.c.decode_decision(SIG_COEFF + c_off_sig + sig_ctx) == 1 {
                     list.push(np as u8);
                     infer_dc = false;
@@ -411,9 +385,23 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let sb_scan = scan_order(log2sb, scan_idx);
         let pos_scan = &SCAN_4[scan_idx];
         let sb_w = 1usize << log2sb;
-        let last_sb = sb_scan.iter().position(|&(x, y)| x as u32 == lx >> 2 && y as u32 == ly >> 2).unwrap_or(0);
-        let last_pos = pos_scan.iter().position(|&(x, y)| x as u32 == lx & 3 && y as u32 == ly & 3).unwrap_or(0);
-        self.coeffs[..n * n].fill(0);
+        let last_sb = scan_pos(log2sb, scan_idx, lx >> 2, ly >> 2);
+        let last_pos = scan_pos(2, scan_idx, lx & 3, ly & 3);
+        // scaling (8.6.3), applied as each coefficient is decoded
+        let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
+        let bd_shift = bd + log2 - 5;
+        let round = 1i64 << (bd_shift - 1);
+        let scale = (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6);
+        let matrix = match &self.pic.scaling {
+            Some(s) if !bypass && !(ts && n > 4) => {
+                let size_id = (log2 - 2) as usize;
+                let matrix_id = if self.cu_intra { c } else { 3 + c };
+                Some((s.clone(), size_id * 6 + matrix_id))
+            }
+            _ => None,
+        };
+        let m: Option<&[u8]> = matrix.as_ref().map(|(s, i)| &s[*i][..]);
+        let mut nnz = 0;
         let mut csbf = [0u8; 64];
         let mut prev_g1: Option<u32> = None;
         let sdh = self.pps.sign_data_hiding && !bypass;
@@ -458,12 +446,18 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             for k in 0..list.n {
                 let np = list.pos[k] as usize;
                 let (xc, yc) = (xs * 4 + pos_scan[np].0 as usize, ys * 4 + pos_scan[np].1 as usize);
-                self.coeffs[yc * n + xc] = values[k];
+                let mut v = values[k];
+                if !bypass {
+                    let f = m.map_or(16, |m| m[yc * n + xc] as i64);
+                    v = ((v as i64 * f * scale + round) >> bd_shift).clamp(-32768, 32767) as i32;
+                }
+                self.nz[nnz] = ((yc * n + xc) as u16, v);
+                nnz += 1;
                 max_x = max_x.max(xc);
                 max_y = max_y.max(yc);
             }
         }
-        self.reconstruct((x0, y0), log2, c, qp, ts, (max_x, max_y))
+        self.reconstruct((x0, y0), log2, c, ts, nnz, (max_x, max_y))
     }
 
     fn coeff_abs_level_remaining(&mut self, rice: u32) -> Result<i32> {
@@ -481,55 +475,71 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
-    /// Scaling, transform and addition to the prediction.
-    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, qp: i32, ts: bool, (max_x, max_y): (usize, usize)) -> Result<()> {
+    /// Transform of the scaled coefficients `nz[..nnz]` and addition to the prediction.
+    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, ts: bool, nnz: usize, (max_x, max_y): (usize, usize)) -> Result<()> {
         let n = 1usize << log2;
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
-        let coeffs = &mut self.coeffs[..n * n];
-        let mut dc_only = false;
-        if !self.cu_transquant_bypass {
-            // scaling (8.6.3)
-            let bd_shift = bd + log2 - 5;
-            let round = 1i64 << (bd_shift - 1);
-            let scale = (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6);
-            let m: Option<&[u8]> = match &self.pic.scaling {
-                Some(s) if !(ts && n > 4) => {
-                    let size_id = (log2 - 2) as usize;
-                    let matrix_id = if self.cu_intra { c } else { 3 + c };
-                    Some(&s[size_id * 6 + matrix_id])
-                }
-                _ => None,
-            };
-            for y in 0..=max_y {
-                for x in 0..=max_x {
-                    let v = coeffs[y * n + x];
-                    if v != 0 {
-                        let f = m.map_or(16, |m| m[y * n + x] as i64);
-                        coeffs[y * n + x] = ((v as i64 * f * scale + round) >> bd_shift).clamp(-32768, 32767) as i32;
-                    }
-                }
+        let bypass = self.cu_transquant_bypass;
+        let dst = self.cu_intra && c == 0 && n == 4;
+        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
+        let yb = self.pic.line0(c);
+        let off = (y0 as usize - yb) * stride + x0 as usize;
+        let plane = &mut self.pic.planes[c];
+        let bd_shift = 20 - bd;
+        if !bypass && !ts && max_x == 0 && max_y == 0 && !dst {
+            let v = transform::inverse_dc(self.nz[0].1, bd_shift);
+            match n {
+                4 => add_dc::<S, 4>(plane, off, stride, v, max),
+                8 => add_dc::<S, 8>(plane, off, stride, v, max),
+                16 => add_dc::<S, 16>(plane, off, stride, v, max),
+                _ => add_dc::<S, 32>(plane, off, stride, v, max),
             }
-            let bd_shift = 20 - bd;
+            return Ok(());
+        }
+        // the inverse transform reads only the bounding box of the coefficients
+        let coeffs = &mut self.coeffs[..n * n];
+        if bypass || ts {
+            coeffs.fill(0);
+        } else {
+            for row in coeffs.chunks_exact_mut(n).take(max_y + 1) {
+                row[..=max_x].fill(0);
+            }
+        }
+        for &(p, v) in &self.nz[..nnz] {
+            coeffs[p as usize] = v;
+        }
+        if !bypass {
             if ts {
                 transform::transform_skip(coeffs, n, bd_shift);
-            } else if max_x == 0 && max_y == 0 && !(self.cu_intra && c == 0 && n == 4) {
-                let v = transform::inverse_dc(coeffs[0], bd_shift);
-                coeffs.fill(v);
-                dc_only = true;
             } else {
-                let dst = self.cu_intra && c == 0 && n == 4;
                 transform::inverse_transform(coeffs, n, dst, max_x, max_y, bd_shift);
             }
         }
-        let _ = dc_only;
-        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
-        let plane = &mut self.pic.planes[c];
-        for y in 0..n {
-            let row = &mut plane[(y0 as usize + y) * stride + x0 as usize..][..n];
-            for (x, s) in row.iter_mut().enumerate() {
-                *s = S::from_i32((s.to_i32() + coeffs[y * n + x]).clamp(0, max));
-            }
+        match n {
+            4 => add_residual::<S, 4>(plane, off, stride, coeffs, max),
+            8 => add_residual::<S, 8>(plane, off, stride, coeffs, max),
+            16 => add_residual::<S, 16>(plane, off, stride, coeffs, max),
+            _ => add_residual::<S, 32>(plane, off, stride, coeffs, max),
         }
         Ok(())
+    }
+}
+
+#[inline(always)]
+fn add_residual<S: Sample, const N: usize>(plane: &mut [S], off: usize, stride: usize, res: &[i32], max: i32) {
+    for (y, r) in res.as_chunks::<N>().0.iter().take(N).enumerate() {
+        let row = &mut plane[off + y * stride..][..N];
+        for (s, &d) in row.iter_mut().zip(r) {
+            *s = S::from_i32((s.to_i32() + d).max(0).min(max));
+        }
+    }
+}
+
+#[inline(always)]
+fn add_dc<S: Sample, const N: usize>(plane: &mut [S], off: usize, stride: usize, v: i32, max: i32) {
+    for y in 0..N {
+        for s in &mut plane[off + y * stride..][..N] {
+            *s = S::from_i32((s.to_i32() + v).max(0).min(max));
+        }
     }
 }
