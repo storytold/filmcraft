@@ -25,7 +25,15 @@ impl FilmcraftApp {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
-            _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
+            _ => {
+                // A driver that cannot compile the compositor's shaders (the DX12 path on some
+                // Adreno drivers) is not "no GPU": the window is drawn by one. Say so in the UI as
+                // well as the log, or the preview simply renders on the CPU and looks like the app
+                // never saw the graphics card.
+                let info = rs.adapter.get_info();
+                log::error!("GPU compositor failed to initialise on {:?} ({:?}, {:?}); compositing on the CPU", info.name, info.backend, info.driver);
+                self.ui.status = tl!("GPU acceleration is unavailable; preview renders on the CPU").to_string();
+            }
         }
     }
 
@@ -79,5 +87,43 @@ impl FilmcraftApp {
         g.last_key = Some(key);
         g.size = size;
         Some((id, size))
+    }
+}
+
+#[cfg(test)]
+mod status_visibility_tests {
+    use super::FilmcraftApp;
+
+    #[test]
+    fn cpu_fallback_status_is_painted_and_respects_hidden_bar() {
+        let app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(move |_| app);
+        h.run_steps(4);
+        let project = h.state().session.project.clone();
+        let playheads = h.state().session.state.playheads.clone();
+        h.state_mut().ui.show_status_bar = true;
+        let expected = tl!("GPU acceleration is unavailable; preview renders on the CPU").to_string();
+        // Simulate the message written by the compositor-initialization failure arm.
+        h.state_mut().ui.status = expected.clone();
+        h.step();
+        assert_eq!(h.state().ui.status, expected);
+        assert!(h.state().gpu.is_none());
+        assert!(std::sync::Arc::ptr_eq(&h.state().session.project, &project));
+        assert_eq!(h.state().session.state.playheads, playheads);
+
+        fn visible_status(shape: &egui::Shape, clip: egui::Rect, expected: &str) -> bool {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == expected => {
+                    let visible = shape.visual_bounding_rect().intersect(clip);
+                    visible.is_positive() && visible.top() >= 780.0 && visible.bottom() <= 800.0
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().any(|shape| visible_status(shape, clip, expected)),
+                _ => false,
+            }
+        }
+        assert!(h.output().shapes.iter().any(|s| visible_status(&s.shape, s.clip_rect, &expected)), "fallback status must paint inside the status bar");
+        h.state_mut().ui.show_status_bar = false;
+        h.step();
+        assert!(!h.output().shapes.iter().any(|s| visible_status(&s.shape, s.clip_rect, &expected)));
     }
 }
