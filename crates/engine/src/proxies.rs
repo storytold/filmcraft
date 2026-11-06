@@ -531,6 +531,9 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     if !ing.enabled || items.is_empty() {
         return Ok(Value::Null);
     }
+    if s.files_confined {
+        return Ok(json!({"skipped": "file access is confined"}));
+    }
     // Ingest settings travel in a project file. A destination only becomes active after this
     // machine has chosen it, or when it is safely inside the project folder.
     let destination = ing

@@ -23,6 +23,8 @@ const VALUED: &[&str] = &[
     "--data-dir",
     "--settings",
     "--gpu-rendering",
+    "--automation-read-root",
+    "--automation-write-root",
 ];
 
 #[derive(Debug, Default)]
@@ -58,6 +60,11 @@ impl Args {
 
     pub fn opt(&self, k: &str) -> Option<&str> {
         self.opts.iter().rev().find(|(n, _)| n == k).and_then(|(_, v)| v.as_deref())
+    }
+
+    /// How many times `k` is given (`--x` or `--x=v`), so a flag that takes one value can refuse a second.
+    pub fn occurrences(&self, k: &str) -> usize {
+        self.opts.iter().filter(|(n, _)| n == k).count()
     }
 
     pub fn flag(&self, k: &str) -> bool {
@@ -176,10 +183,25 @@ mod tests {
 
     #[test]
     fn unknown_opt_reports_first_unlisted_option() {
-        let allowed = ["--bridge", "--project"];
-        assert_eq!(args("mcp --automation-read-root X").unknown_opt(&allowed), Some("--automation-read-root"));
-        assert_eq!(args("mcp --bridge=a --typo=1").unknown_opt(&allowed), Some("--typo"));
-        assert_eq!(args("mcp --project p --bridge a").unknown_opt(&allowed), None);
+        // `mcp`'s option list, the automation roots included (#985).
+        let allowed = ["--bridge", "--project", "--demo", "--data-dir", "--automation-read-root", "--automation-write-root"];
+        assert_eq!(args("mcp --typo=1").unknown_opt(&allowed), Some("--typo"));
+        assert_eq!(args("mcp --automation-read-root X").unknown_opt(&allowed), None);
+        assert_eq!(args("mcp --bridge=a --project p --demo --data-dir d --automation-write-root Y").unknown_opt(&allowed), None);
+    }
+
+    /// The roots take a space-separated or `=` value; with none given the option has no value,
+    /// which `mcp` refuses (a silently dropped root would leave the server unconfined).
+    #[test]
+    fn automation_roots_take_a_value() {
+        let a = args("mcp --automation-read-root R --automation-write-root=W --demo");
+        assert_eq!(a.opt("--automation-read-root"), Some("R"));
+        assert_eq!(a.opt("--automation-write-root"), Some("W"));
+        assert!(a.flag("--demo"));
+        let b = args("mcp --automation-read-root --demo");
+        assert_eq!(b.opt("--automation-read-root"), Some("--demo"), "the next word is taken whatever it is");
+        let c = args("mcp --automation-read-root");
+        assert!(c.opt("--automation-read-root").is_none() && c.occurrences("--automation-read-root") == 1);
     }
 
     #[test]

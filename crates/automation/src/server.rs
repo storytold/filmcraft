@@ -12,12 +12,19 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::roots::AutomationRoots;
 use crate::{AutomationError, BridgeClient, png_rgba};
 
 pub enum Backend {
     Headless(Arc<Mutex<Session>>),
     Bridge(Arc<BridgeClient>),
 }
+
+/// The bridge tools that drive the live app's input: while file access is confined they are
+/// refused, since they could drive its file dialogs past the roots. `ui_control` is refused with
+/// them (it calls any control-channel method, `ui.set` included, which can point the app's
+/// exports and scratch disks anywhere).
+const DRIVING_UI: &[&str] = &["ui.click", "ui.drag", "ui.key", "ui.type"];
 
 /// A panic payload as text.
 fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
@@ -38,6 +45,9 @@ pub struct FilmcraftMcp {
     /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
     /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
     render_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The folders commands may read and write (`--automation-read-root/--automation-write-root`);
+    /// `None`: nothing is confined.
+    roots: Option<Arc<AutomationRoots>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -202,11 +212,44 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 
 impl FilmcraftMcp {
+    /// A server on an in-process `session`, with nothing confined.
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
+        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), roots: None, tool_router: Self::tool_router() }
     }
+    /// A server on the app listening at `addr`, with nothing confined.
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
+        Ok(Self {
+            backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))),
+            render_lock: Arc::default(),
+            roots: None,
+            tool_router: Self::tool_router(),
+        })
+    }
+
+    /// Confine the files commands may read and write (`#985`): every command run through this
+    /// server, on either backend, must keep its file parameters inside the roots, and a headless
+    /// session's own file access is checked too. `None` (the default) leaves everything as it is.
+    ///
+    /// An error if a headless session already has a job running, since the job keeps the sources
+    /// it opened and nothing here can reach them, or has anything in its export queue, since each
+    /// item keeps its own output path. Confine the session before starting either, as the CLI does.
+    pub fn with_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Result<Self, AutomationError> {
+        if let (Some(r), Backend::Headless(s)) = (&roots, &*self.backend) {
+            let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
+            if g.jobs.iter().any(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).is_none()) {
+                return Err(AutomationError::BadRequest("confine the session before starting jobs".into()));
+            }
+            // Queued exports keep the paths they were given, and starting one doesn't check them again.
+            if !g.export_queue.items.is_empty() {
+                return Err(AutomationError::BadRequest("confine the session before queueing exports".into()));
+            }
+            g.services = Arc::new(crate::confined_services::ConfinedServices::new(g.services.clone(), r.clone()));
+            // Sources opened so far (`--project`) read through the old services: open them again.
+            g.media.clear();
+            g.files_confined = true;
+        }
+        self.roots = roots;
+        Ok(self)
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -276,8 +319,37 @@ impl FilmcraftMcp {
         r.map(|_| ())
     }
 
-    /// Run an engine command on whichever backend.
+    /// Run an engine command on whichever backend. With roots in force, the command's file
+    /// parameters are checked first: one outside them is an error the agent can act on.
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
+        let params = match self.roots.clone() {
+            Some(roots) => {
+                if matches!(&*self.backend, Backend::Bridge(_)) {
+                    AutomationRoots::check_bridge_command(id, &params).map_err(AutomationError::BadRequest)?;
+                }
+                // The check of a write walks folders, which doesn't belong on an async worker.
+                let id = id.to_string();
+                let checked = {
+                    let id = id.clone();
+                    tokio::task::spawn_blocking(move || roots.check_command(&id, &params).map(|()| params))
+                        .await
+                        .map_err(join_error)?
+                        .map_err(AutomationError::BadRequest)?
+                };
+                // A session in the app isn't confined, so its ingest would still run. Only a clear "off" will do.
+                if let Backend::Bridge(b) = &*self.backend
+                    && AutomationRoots::names_files(&id)
+                    && b.execute("project.inspect", json!({})).await?.get("ingestEnabled") != Some(&Value::Bool(false))
+                {
+                    return Err(AutomationError::BadRequest(format!(
+                        "`{id}` is not available while file access is confined and ingest is on in the app's project: \
+                         it copies what is imported to a folder of its own. Turn ingest off in the app's Project Settings first"
+                    )));
+                }
+                checked
+            }
+            None => params,
+        };
         match &*self.backend {
             Backend::Headless(s) => {
                 let s = s.clone();
@@ -321,7 +393,16 @@ impl FilmcraftMcp {
         }
     }
 
+    /// Call `method` on the live app: refused for [`DRIVING_UI`] while confined, an error without a bridge.
     async fn ui(&self, method: &str, params: Value) -> Result<CallToolResult, McpError> {
+        if let Some(roots) = &self.roots
+            && DRIVING_UI.contains(&method)
+        {
+            return Ok(fail(format!(
+                "`{method}` is not available while file access is confined ({}): the live app's file dialogs could write outside the roots",
+                roots.describe()
+            )));
+        }
         match self.bridge_client() {
             Some(b) => wrap(b.call(method, params).await),
             None => Ok(fail(
@@ -573,12 +654,19 @@ impl FilmcraftMcp {
         }
     }
 
+    /// Any control-channel method; refused outright while confined.
     #[tool(
         title = "Live app: control-channel call",
         description = "Live app: call any control-channel method directly (ui.set, ui.scroll, ui.timeline.hit, ui.timeline.locate, ui.playback, ui.panel.show, ui.menu.list, …).",
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn ui_control(&self, Parameters(p): Parameters<ControlParams>) -> Result<CallToolResult, McpError> {
+        if let Some(roots) = &self.roots {
+            return Ok(fail(format!(
+                "ui_control is not available while file access is confined ({}): the live app's file dialogs could write outside the roots",
+                roots.describe()
+            )));
+        }
         self.ui(&p.method, p.params.unwrap_or(json!({}))).await
     }
 }
@@ -639,10 +727,16 @@ fn cache_hints(context: &rmcp::service::RequestContext<rmcp::RoleServer>, ttl_ms
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for FilmcraftMcp {
+    /// The server's capabilities and instructions, which name the roots in force.
     fn get_info(&self) -> rmcp::model::ServerConfig {
+        // Tell the agent what it may touch, so a rejection names something it can act on.
+        let mut instructions = INSTRUCTIONS.to_string();
+        if let Some(roots) = &self.roots {
+            instructions.push_str(&format!(" File access is confined: {}.", roots.describe()));
+        }
         rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().enable_resources().build())
             .with_server_info(rmcp::model::Implementation::new("filmcraft", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS.to_string())
+            .with_instructions(instructions)
     }
 
     /// Strict arguments and long exports in front of the tool router.
