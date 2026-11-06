@@ -215,6 +215,8 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft
 }
 
 #[cfg(test)]
+mod aac_pce_tests;
+#[cfg(test)]
 mod audio_timing_tests;
 #[cfg(test)]
 mod avi_tests;
