@@ -1,4 +1,4 @@
-//! NVDEC decoding against our software decoders (Linux, NVIDIA's driver): every picture of the
+//! NVDEC decoding against our software decoders (Linux and Windows, NVIDIA's driver): every picture of the
 //! shared H.264 High, HEVC Main (open GOP) and Main 10 fixtures and of 1080p streams must be
 //! identical (bit-exact planes, colour, pixel aspect, pts and presentation order), also after
 //! `reset` + reseek; a forced mid-stream failure must continue in software with the software
@@ -6,7 +6,7 @@
 //! errors or fall back, never crash or hang. Skips without ffmpeg (fixture generator) or without
 //! an NVIDIA GPU. Its own test binary: one test turns the process-wide Hardware decoding switch
 //! off and on.
-#![cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 #[path = "it/common/mod.rs"]
 mod common;

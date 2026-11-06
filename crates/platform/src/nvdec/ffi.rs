@@ -24,14 +24,17 @@
 //
 
 //! NVDEC declarations transcribed from NVIDIA's MIT headers (NVDEC API 13.1).
-//! Linux LP64 only; C `tcu_ulong` is an unsigned long, not a u32.
+//! C `unsigned long` fields are `c_ulong`: 8 bytes on Linux LP64, 4 bytes on Windows.
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code)]
 use std::ffi::{c_int, c_uint, c_ulong, c_void};
 pub const cudaVideoCodec_H264: c_int = 4;
 pub const cudaVideoCodec_HEVC: c_int = 8;
 pub const cudaVideoChromaFormat_420: c_int = 1;
+pub const cudaVideoChromaFormat_422: c_int = 2;
 pub const cudaVideoSurfaceFormat_NV12: c_int = 0;
 pub const cudaVideoSurfaceFormat_P016: c_int = 1;
+pub const cudaVideoSurfaceFormat_NV16: c_int = 4;
+pub const cudaVideoSurfaceFormat_P216: c_int = 5;
 pub const cudaVideoDeinterlaceMode_Weave: c_int = 0;
 pub const cudaVideoCreate_PreferCUVID: c_ulong = 4;
 pub const CUVID_PKT_ENDOFSTREAM: c_ulong = 1;
