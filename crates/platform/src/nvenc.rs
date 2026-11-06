@@ -910,8 +910,18 @@ mod tests {
         let mut asked_at = None;
         let mut answered_at = None;
         assert!(!answer.get(|| {
-            asked_at = Some(std::time::Instant::now());
-            answered_at = Some(std::time::Instant::now());
+            let asked = std::time::Instant::now();
+            asked_at = Some(asked);
+            // The probe runs long enough that the clock has certainly ticked by the time it
+            // answers, so "asked at" and "answered at" are certainly two different instants.
+            // Without that the two can be the same instant, and the check below would pass
+            // even with the old stamp - the assertion would be testing the clock rather than
+            // the rule, which is what this test exists to prevent.
+            let mut answered = asked;
+            while answered == asked {
+                answered = std::time::Instant::now();
+            }
+            answered_at = Some(answered);
             false
         }));
         let asked = asked_at.expect("the probe ran");
