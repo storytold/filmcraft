@@ -283,7 +283,7 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
             let maintain_pitch = it.as_ref().is_some_and(|i| i.maintain_pitch);
             (
-                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "maintainPitch": maintain_pitch, "ripple": false, "interpolation": interp.name()}),
+                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "maintainPitch": maintain_pitch, "ripple": app.ui.speed_ripple, "interpolation": interp.name()}),
                 // the setting the checkbox starts at: sent on OK only when changed, so a selection whose
                 // clips differ keeps each clip's own setting unless the checkbox is used
                 json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps, "maintainPitch": maintain_pitch}),
@@ -728,8 +728,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("ok") => {
             let params = finish(&d);
+            let ripple = params["ripple"].as_bool();
             match app.session.execute(&d.command, params) {
                 Ok(_) => {
+                    // the dialog offers the applied Ripple Edit choice again next time (#2019)
+                    if d.command == "clip.speedDuration"
+                        && let Some(r) = ripple
+                    {
+                        app.ui.speed_ripple = r;
+                    }
                     app.ui.clip_dialog = None;
                     return;
                 }
