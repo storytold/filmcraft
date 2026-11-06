@@ -826,9 +826,17 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
-    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
+    let drag_mode = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id)).map(|(_, _, m)| m);
+    let hover_part = ui.input(|i| i.pointer.hover_pos()).map(|pos| ZoomThumbPart::at(thumb, pos));
+    let left_active = drag_mode == Some(1) || (drag_mode.is_none() && hover_part == Some(ZoomThumbPart::Left));
+    let right_active = drag_mode == Some(2) || (drag_mode.is_none() && hover_part == Some(ZoomThumbPart::Right));
+    for (x, active) in [
+        (thumb.min.x + thumb.height() / 2.0, left_active),
+        (thumb.max.x - thumb.height() / 2.0, right_active),
+    ] {
         p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
-        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, t.icon_active));
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, if active { t.accent } else { t.icon_active }));
     }
     app.auto.add(&format!("{prefix}.zoomBar"), thumb, "zoom scroll bar");
     app.auto.add(&format!("{prefix}.zoomBar.track"), bar, "zoom scroll bar track");
@@ -844,7 +852,6 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
-    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
     if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {

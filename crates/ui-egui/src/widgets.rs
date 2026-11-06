@@ -810,4 +810,14 @@ mod tests {
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
     }
+
+    #[test]
+    fn zoom_thumb_part_identifies_handles_middle_and_outside() {
+        let thumb = Rect::from_min_max(pos2(100.0, 10.0), pos2(200.0, 24.0));
+        assert_eq!(ZoomThumbPart::at(thumb, pos2(104.0, 17.0)), ZoomThumbPart::Left);
+        assert_eq!(ZoomThumbPart::at(thumb, pos2(196.0, 17.0)), ZoomThumbPart::Right);
+        assert_eq!(ZoomThumbPart::at(thumb, pos2(150.0, 17.0)), ZoomThumbPart::Middle);
+        assert_eq!(ZoomThumbPart::at(thumb, pos2(50.0, 17.0)), ZoomThumbPart::Beside);
+        assert_eq!(ZoomThumbPart::at(thumb, pos2(104.0, 50.0)), ZoomThumbPart::Beside);
+    }
 }
