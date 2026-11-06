@@ -1,6 +1,13 @@
 use super::*;
-use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, Sample, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use filmcraft_media::FrameRequest;
+
+#[test]
+fn nominal_rate_ignores_extreme_duration_outliers_without_overflow() {
+    let sample = |duration| Sample { offset: 0, size: 0, dts: 0, pts: 0, duration, is_sync: true, description_index: 1 };
+    let samples = [sample(3000), sample(3000), sample(3000), sample(u32::MAX)];
+    assert_eq!(nominal_rate(90_000, &samples), Some(FrameRate::FPS_30));
+}
 
 /// A one-frame 64×32 ProRes MOV (bright left half, dark right half) whose `tkhd` matrix is
 /// replaced by `matrix` — built here, no media files.

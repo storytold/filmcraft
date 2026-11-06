@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use filmcraft_project::{ClipId, ItemId, MulticamSel, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
-use crate::{EditCtx, EditError, Result, remove_orphan_transitions, split_track_at};
+use crate::{EditCtx, EditError, Result, relink_split_partners, remove_orphan_transitions, split_track_at, through::JoinedLinks};
 
 /// Whether `it` is a multi-camera clip (enabled or not).
 pub fn is_multicam(it: &TrackItem) -> bool {
@@ -56,6 +56,8 @@ pub fn set_enabled(seq: &mut Sequence, clips: &[ClipId], enabled: bool) -> usize
 fn continuous(a: &TrackItem, b: &TrackItem) -> bool {
     a.end() == b.start
         && a.item == b.item
+        && a.audio_stream == b.audio_stream
+        && a.source_channels == b.source_channels
         && a.multicam.is_some()
         && a.multicam == b.multicam
         && a.speed == b.speed
@@ -70,8 +72,16 @@ fn continuous(a: &TrackItem, b: &TrackItem) -> bool {
 }
 
 /// Remove through edits between pieces of the same multi-camera clip showing the same angle,
-/// for edit points in `range` (inclusive of its ends). Returns the ids of the removed pieces.
+/// for edit points in `range` (inclusive of its ends). Audio selections must match. Surviving
+/// partners on this track retain their links. Returns the ids of the removed pieces.
 pub fn heal_track(track: &mut Track, range: TimeRange) -> Vec<ClipId> {
+    let mut links = JoinedLinks::default();
+    let removed = heal_track_with_links(track, range, &mut links);
+    links.apply_track(track);
+    removed
+}
+
+fn heal_track_with_links(track: &mut Track, range: TimeRange, links: &mut JoinedLinks) -> Vec<ClipId> {
     let mut removed = Vec::new();
     let mut i = 0;
     while i + 1 < track.items.len() {
@@ -80,6 +90,8 @@ pub fn heal_track(track: &mut Track, range: TimeRange) -> Vec<ClipId> {
         if at >= range.start && at <= range.end() && continuous(a, b) {
             let (aid, bid) = (a.id, b.id);
             let dur = b.duration;
+            let link = links.merge(a.link, b.link);
+            track.items[i].link = link;
             track.items[i].duration += dur;
             track.items.remove(i + 1);
             track.transitions.retain(|tr| !(tr.from == Some(aid) && tr.to == Some(bid)));
@@ -110,7 +122,7 @@ pub struct Cut {
 /// Apply a recording pass: on `tracks`, the multi-camera clips of `source` get angle `cuts[i].angle` from
 /// `cuts[i].time` until the next cut, the last one until `end`. Clips are split at each cut and at
 /// `end`; afterwards through edits inside the recorded range are healed, so pressing the angle that
-/// is already showing adds no edit. Locked tracks are skipped. Returns the number of edit points
+/// is already showing adds no edit. Locked clip content is left alone while existing partner links stay coherent. Returns the number of edit points
 /// in the recorded range after the pass.
 pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cut], end: Tick, ctx: &mut EditCtx) -> usize {
     let mut cuts: Vec<Cut> = cuts.iter().copied().filter(|c| c.time < end).collect();
@@ -124,17 +136,20 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
         }
     }
     let Some(first) = dedup.first().map(|c| c.time) else { return 0 };
-    let mut links = HashMap::new();
+    for time in dedup.iter().map(|cut| cut.time).chain([end]) {
+        let mut links = HashMap::new();
+        for track in seq.all_tracks_mut().filter(|track| !track.locked && tracks.contains(&track.id)) {
+            if track.items.iter().any(|item| item.start < time && time < item.end() && is_multicam(item) && item.item == source) {
+                split_track_at(track, time, ctx, &mut links);
+            }
+        }
+        relink_split_partners(seq, time, &links);
+    }
+    let mut joined_links = JoinedLinks::default();
     let mut points = 0;
     for tr in seq.all_tracks_mut() {
         if tr.locked || !tracks.contains(&tr.id) {
             continue;
-        }
-        let mc_at = |tr: &Track, t: Tick| tr.items.iter().any(|i| i.start < t && t < i.end() && is_multicam(i) && i.item == source);
-        for t in dedup.iter().map(|c| c.time).chain([end]) {
-            if mc_at(tr, t) {
-                split_track_at(tr, t, ctx, &mut links);
-            }
         }
         for (k, c) in dedup.iter().enumerate() {
             let r_end = dedup.get(k + 1).map_or(end, |n| n.time);
@@ -144,9 +159,10 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
                 }
             }
         }
-        heal_track(tr, TimeRange::from_bounds(first, end));
+        heal_track_with_links(tr, TimeRange::from_bounds(first, end), &mut joined_links);
         points += tr.items.iter().filter(|i| i.start > first && i.start < end).count();
     }
+    joined_links.apply(seq);
     points
 }
 
