@@ -62,6 +62,13 @@ pub trait FxEnv: Sync {
     fn source_size(&self) -> (u32, u32);
     /// Identity of the clip and its source range (cache key for analyses).
     fn clip_key(&self) -> u64;
+    /// Identity of the media the clip shows, the same in every project: its file or generator, how
+    /// it is interpreted and the file's fingerprint (a subclip's parent's). [`Self::clip_key`] is
+    /// project-local, so analyses kept for the whole process key on both. 0 when the clip has none
+    /// outside its project (nested sequences, graphics, adjustment layers).
+    fn source_key(&self) -> u64 {
+        0
+    }
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].
@@ -78,6 +85,11 @@ pub(crate) struct ItemEnv<'a> {
     pub tc: &'a str,
 }
 
+/// FNV-1a of `bytes`.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
 fn resize(img: Image, w: usize, h: usize) -> Image {
     if img.w == w && img.h == h {
         return img;
@@ -89,6 +101,16 @@ fn resize(img: Image, w: usize, h: usize) -> Image {
 /// Effects that read other frames (skipped when rendering another frame for one of them).
 pub fn is_temporal(id: &str) -> bool {
     matches!(id, "posterize_time" | "echo" | "warp_stabilizer" | "auto_reframe")
+}
+
+/// Whether `item` has an enabled Auto Reframe on the sequence's aspect, with no mask. Rendering with
+/// effects then scales the picture to cover the frame ([`crate::reframe_cover`]), so the effect only
+/// picks the window. A masked one works inside the layer as before: a mask can't take back a zoom
+/// of the whole layer.
+pub fn reframes_to_sequence(item: &TrackItem) -> bool {
+    item.effects
+        .iter()
+        .any(|e| e.enabled && e.effect == "auto_reframe" && chv(e, "aspect") == 0 && e.masks.iter().all(|m| m.mode == filmcraft_project::MaskMode::None))
 }
 
 impl FxEnv for ItemEnv<'_> {
@@ -128,6 +150,18 @@ impl FxEnv for ItemEnv<'_> {
         }
         let o = RenderOptions { captions: false, working_output: true, depth: self.opts.depth + 1, ..self.opts };
         Some(crate::render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index)))
+    }
+    fn source_key(&self) -> u64 {
+        use filmcraft_project::ItemKind;
+        let media = match self.project.item(self.item.item).map(|p| &p.kind) {
+            Some(ItemKind::Media(m)) => Some(m),
+            Some(ItemKind::Subclip { parent, .. }) => match self.project.item(*parent).map(|p| &p.kind) {
+                Some(ItemKind::Media(m)) => Some(m),
+                _ => None,
+            },
+            _ => None,
+        };
+        media.map_or(0, |m| fnv(format!("{:?} {:?} {:?}", m.media, m.interpret, m.identity).as_bytes()))
     }
     fn layer_to_output(&self) -> Affine {
         self.layer_to_output

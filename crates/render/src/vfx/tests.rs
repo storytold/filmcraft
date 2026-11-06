@@ -1040,6 +1040,10 @@ impl FxEnv for ClipEnv {
     fn clip_key(&self) -> u64 {
         self.key
     }
+    /// The picture is the media: two envs with one key but different pictures are two projects.
+    fn source_key(&self) -> u64 {
+        self.pic as usize as u64
+    }
 }
 
 fn texture(x: f64, y: f64) -> [f32; 3] {
@@ -1255,6 +1259,59 @@ fn auto_reframe_follows_the_subject() {
     assert_eq!(img.px, raw.px);
 }
 
+#[test]
+fn auto_reframe_keeps_letterbox_bars_out_of_the_frame() {
+    // a 2.4:1 picture (rows 12 to 77) letterboxed in 160 x 90, a bright disc right of centre
+    fn scope(x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if !(12.0..78.0).contains(&y) {
+            return [0.0; 3];
+        }
+        if (x - 110.0).hypot(y - 45.0) < 10.0 { [0.8; 3] } else { [0.3; 3] }
+    }
+    // for a 9:16 sequence the frame shows the layer's centred 9:16 window, columns 55 to 105
+    let env = ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.5, key: 0xBA55, seq: (90, 160), pic: scope };
+    let mut img = env.render(0.5, 1.0);
+    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+    for y in 0..90 {
+        for x in 56..104 {
+            assert!(img.get(x, y)[0] > 0.2, "black at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn the_active_picture_is_inside_bars_on_both_sides_only() {
+    fn pillarbox(x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        if (40.0..120.0).contains(&x) { [0.3; 3] } else { [0.0; 3] }
+    }
+    fn dark_top(_x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if y < 30.0 { [0.0; 3] } else { [0.3; 3] }
+    }
+    fn black(_x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        [0.0; 3]
+    }
+    let active = |key, pic| temporal::active_picture(&ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.0, key, seq: (90, 160), pic }, 0.0);
+    // 4:3 in 16:9: columns 40 to 119, and one more on each side
+    assert_eq!(active(0xBA56, pillarbox), [41.0 / 160.0, 0.0, 1.0 - 41.0 / 160.0, 1.0]);
+    // black on one side only (a night sky) and a black clip have no bars
+    assert_eq!(active(0xBA57, dark_top), [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(active(0xBA58, black), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn clips_with_one_key_but_other_media_get_their_own_active_picture() {
+    // two projects can give their clips the same ids and timing, so the same clip key
+    fn scope(_x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if (12.0..78.0).contains(&y) { [0.3; 3] } else { [0.0; 3] }
+    }
+    fn full(_x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        [0.3; 3]
+    }
+    let active = |pic| temporal::active_picture(&ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.0, key: 0xBA59, seq: (90, 160), pic }, 0.0);
+    assert_eq!(active(scope), [0.0, 13.0 / 90.0, 1.0, 1.0 - 13.0 / 90.0]);
+    assert_eq!(active(full), [0.0, 0.0, 1.0, 1.0]);
+}
+
 // ------------------------------------------------------------------ through the compositor
 
 mod pipeline {
@@ -1338,6 +1395,100 @@ mod pipeline {
         place(&mut p2, seq2, 0, ocean2, vec![echo]);
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
+    }
+
+    /// How the 16:9 clip of the Auto Reframe tests sits in a 9:16 sequence.
+    #[derive(Clone, Copy)]
+    struct Setup {
+        reframe: bool,
+        aspect: u32,
+        masked: bool,
+        scale_to_frame: bool,
+        scale: f64,
+        rotation: f64,
+        effects: bool,
+    }
+    impl Default for Setup {
+        fn default() -> Self {
+            Setup { reframe: true, aspect: 0, masked: false, scale_to_frame: false, scale: 100.0, rotation: 0.0, effects: true }
+        }
+    }
+
+    /// A 64 x 36 clip in a 36 x 64 sequence, with Auto Reframe as `s` sets it, at frame 12.
+    fn reframed(s: Setup) -> Image {
+        let r = FrameRate::FPS_24;
+        let mut p = Project::new("reframe");
+        let mut map = SourceMap::default();
+        let clip = add(&mut p, &mut map, GeneratorSource::new(Generator::Demo(DemoScene::OceanSunset), 64, 36, r, Tick(10 * TICKS_PER_SECOND)));
+        let seq = p.new_sequence("s", SequenceSettings { width: 36, height: 64, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let mut ar = inst("auto_reframe");
+        set(&mut ar, "aspect", ParamValue::Choice(s.aspect));
+        if s.masked {
+            ar.masks.push(filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 36.0)));
+        }
+        place(&mut p, seq, 0, clip, if s.reframe { vec![ar] } else { vec![] });
+        let ti = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+        ti.scale_to_frame = s.scale_to_frame;
+        let motion = ti.effect_mut("motion").unwrap();
+        motion.params.get_mut("scale").unwrap().value = ParamValue::Float(s.scale);
+        motion.params.get_mut("rotation").unwrap().value = ParamValue::Float(s.rotation);
+        render_sequence(&p, seq, r.tick_of(12), RenderOptions { effects: s.effects, ..RenderOptions::default() }, &map)
+    }
+
+    #[test]
+    fn auto_reframe_on_the_sequence_fills_a_frame_of_another_aspect() {
+        // A 16:9 clip in a 9:16 sequence, Auto Reframe on the sequence's aspect (its default). At
+        // Motion's defaults the clip stayed a band (rows 14 to 49), the zoom kept inside its own
+        // picture; after Fill Frame the zoom applied twice.
+        let plain = reframed(Setup::default());
+        for y in [2, 61] {
+            assert!((0..36).all(|x| plain.get(x, y)[3] > 0.99), "row {y} is not covered");
+        }
+        // Scale to Frame Size, Fill Frame (64 / 36 = 177.8 %) and Fill Frame with the 9:16 aspect
+        // chosen by hand show the same window
+        let fill = 64.0 / 36.0 * 100.0;
+        for (s2f, scale, aspect) in [(true, 100.0, 0), (false, fill, 0), (false, fill, 1)] {
+            let d = max_diff(&reframed(Setup { scale_to_frame: s2f, scale, aspect, ..Setup::default() }), &plain);
+            assert!(d < 1e-3, "scale to frame {s2f}, scale {scale}, aspect {aspect}: {d}");
+        }
+    }
+
+    #[test]
+    fn auto_reframe_zooms_the_layer_only_as_far_as_the_frame_needs() {
+        enum Want {
+            /// every pixel three in from the frame's edges is picture
+            Covered,
+            /// the frame Motion alone gives, without Auto Reframe
+            AsWithout,
+            /// rows 2 and 61 stay off the clip, as at Motion's defaults
+            Band,
+        }
+        let rows = [
+            ("a quarter turn covers the frame by itself", Setup { rotation: 90.0, ..Setup::default() }, Want::AsWithout),
+            ("at 45 degrees the corners are covered too", Setup { rotation: 45.0, ..Setup::default() }, Want::Covered),
+            ("with effects off, Motion's framing stays", Setup { effects: false, ..Setup::default() }, Want::AsWithout),
+            ("a masked Auto Reframe doesn't zoom the whole layer", Setup { masked: true, ..Setup::default() }, Want::Band),
+        ];
+        for (name, setup, want) in rows {
+            let img = reframed(setup);
+            match want {
+                Want::Covered => {
+                    let edges = (3..33).flat_map(|x| [(x, 3), (x, 60)]).chain((3..61).flat_map(|y| [(3, y), (32, y)]));
+                    for (x, y) in edges {
+                        assert!(img.get(x, y)[3] > 0.99, "{name}: ({x}, {y}) is not covered");
+                    }
+                }
+                Want::AsWithout => {
+                    let d = max_diff(&img, &reframed(Setup { reframe: false, ..setup }));
+                    assert!(d < 1e-4, "{name}: {d}");
+                }
+                Want::Band => {
+                    for y in [2, 61] {
+                        assert!((0..36).all(|x| img.get(x, y)[3] < 0.01), "{name}: row {y} is covered");
+                    }
+                }
+            }
+        }
     }
 }
 
