@@ -51,7 +51,7 @@ use filmcraft_project::{Project, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use atomic::{atomic_write, atomic_write_new};
+pub use atomic::{atomic_write, atomic_write_new, atomic_write_with};
 
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";

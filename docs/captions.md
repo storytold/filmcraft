@@ -41,6 +41,9 @@ before replacing it, replaces it. Given a `path` (agents, the CLI), `captions.ex
 format from `format` or from the file extension. Its result's `warnings` names each character the file
 cannot carry: SCC and MCC drop the ones CEA-608 has no code for (such as …) or send a close one
 (’ as '), and the CEA-708 service in MCC sends `?` for the ones it has no code for (such as —).
+An MCC has a packet only on the frames with caption data; `"everyFrame": true` writes one on every
+frame to the end of the sequence, as SDI and frame-wrapped MXF (SMPTE 436M) carry them. MCC is
+written at 29.97 fps, so this needs a 29.97 fps sequence.
 
 Details of each format and the SCC encoder are in [`crates/captions/README.md`](../crates/captions/README.md).
 
@@ -65,7 +68,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `font`, `fontStyle`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
 | `captions.deleteTrack` | | `track` |
-| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`; import: `name`, `language` (default: the file's TTML `xml:lang`, else `en`); export: `format`, `track`, `dropFrame`. TTML and DFXP exports write the track's language as `xml:lang` |
+| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`; import: `name`, `language` (default: the file's TTML `xml:lang`, else `en`); export: `format`, `track`, `dropFrame`, `everyFrame` (MCC). TTML and DFXP exports write the track's language as `xml:lang` |
 | `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
 
 Tracks are addressed by id or `"C1"`, `"C2"`… (top first). Edits are limited by neighbouring

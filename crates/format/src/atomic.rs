@@ -38,6 +38,13 @@ fn parent_dir(path: &Path) -> PathBuf {
 /// `fsync` the directory so the rename itself survives a power cut. If anything fails the temp file
 /// is removed and `path` is untouched.
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    atomic_write_with(path, |f| f.write_all(data))
+}
+
+/// [`atomic_write`] with the contents written by `write` straight into the temp file, so a large
+/// file is never held in memory (wrap the file in a `BufWriter` for many small writes). The temp
+/// file is synced and renamed over `path` only when `write` returns `Ok`.
+pub fn atomic_write_with(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     // `rename` replaces the inode, so a new staging file must inherit an existing project's
     // access mode instead of silently broadening a private file to the process default.
     let permissions = match fs::metadata(path) {
@@ -53,7 +60,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
             if let Some(permissions) = permissions.as_ref() {
                 f.set_permissions(permissions.clone())?;
             }
-            f.write_all(data)?;
+            write(&mut f)?;
             f.sync_all()?;
         }
         fs::rename(&tmp, path)
@@ -151,6 +158,22 @@ mod tests {
         assert_eq!(fs::read(&p).unwrap(), b"good");
         let tmp_left = fs::read_dir(&d).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(tmp_left, 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn streamed_write_replaces_or_keeps_the_old_file() {
+        let d = tmpdir("streamed");
+        let p = d.join("cc.mcc");
+        atomic_write(&p, b"old").unwrap();
+        let ok: fn(&mut File) -> io::Result<()> = |f| (0..3).try_for_each(|i| writeln!(f, "line {i}"));
+        let failed: fn(&mut File) -> io::Result<()> = |f| f.write_all(b"half").and(Err(io::Error::other("disk full")));
+        // (writer, published, the file afterwards)
+        for (write, published, after) in [(failed, false, "old"), (ok, true, "line 0\nline 1\nline 2\n")] {
+            assert_eq!(atomic_write_with(&p, write).is_ok(), published);
+            assert_eq!(fs::read_to_string(&p).unwrap(), after);
+            assert_eq!(fs::read_dir(&d).unwrap().count(), 1, "temp file left behind");
+        }
         fs::remove_dir_all(&d).unwrap();
     }
 
