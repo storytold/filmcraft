@@ -267,6 +267,16 @@ pub(super) fn defs() -> Vec<EffectDef> {
             ],
         ),
         video("reduce_interlace_flicker", "Reduce Interlace Flicker", BLUR, vec![fs("softness", "Softness", 0.0, (0.0, 10.0), (0.0, 10.0), "", 2)]),
+        video(
+            "surface_blur",
+            "Surface Blur",
+            BLUR,
+            vec![
+                px("radius", "Radius", 5.0, 100.0, 30.0),
+                fs("threshold", "Threshold", 20.0, (0.0, 100.0), (0.0, 100.0), "", 0),
+                fs("detail", "Detail", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0),
+            ],
+        ),
         // ---- Color Correction ----
         video(
             "asc_cdl",
@@ -1256,6 +1266,9 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
+    /// Effects FilmCraft adds to Premiere's folders, which Premiere has no equivalent of.
+    const BEYOND_PREMIERE: &[&str] = &["surface_blur"];
+
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;
@@ -1276,7 +1289,7 @@ mod tests {
             if f == "Obsolete" {
                 continue;
             }
-            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));
+            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name)) || BEYOND_PREMIERE.contains(&d.id);
             assert!(listed, "{} in {f} is not in Premiere's list", d.name);
         }
         for name in LEGACY_NAMES {
