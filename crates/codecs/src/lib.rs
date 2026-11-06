@@ -144,7 +144,14 @@ fn undecodable_codec(entry: &filmcraft_isobmff::SampleEntry) -> String {
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
 /// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
+    static OPENERS: std::sync::OnceLock<Vec<filmcraft_media::Opener>> = std::sync::OnceLock::new();
+    OPENERS
+        .get_or_init(|| {
+            let plain: [filmcraft_media::OpenerFn; 9] =
+                [mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener];
+            plain.into_iter().map(filmcraft_media::opener_of).collect()
+        })
+        .clone()
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {

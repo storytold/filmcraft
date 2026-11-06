@@ -75,3 +75,24 @@ fn an_unknown_extension_imports_through_the_plugin_only_while_it_is_installed_an
     assert!(import(&mut session, &file).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_session_opens_only_the_formats_of_its_own_host() {
+    let dir = std::env::temp_dir().join(format!("fc-formats-own-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pic.rgbraw");
+    std::fs::write(&file, rgb_file(2, 1, &[10, 20, 30, 40, 50, 60])).unwrap();
+
+    // Two documents in one process. Only the first has the plug-in.
+    let mut with_plugin = Session::default();
+    let host_with = PluginHost::start(&mut with_plugin, HostConfig::default()).unwrap();
+    let mut without_plugin = Session::default();
+    let host_without = PluginHost::start(&mut without_plugin, HostConfig::default()).unwrap();
+    common::install(&host_with, &raw_package());
+    assert!(host_with.surfaces.formats.handles("rgbraw"));
+    assert!(!host_without.surfaces.formats.handles("rgbraw"));
+
+    assert!(import(&mut with_plugin, &file).is_ok(), "the host with the plug-in opens the file");
+    assert!(import(&mut without_plugin, &file).is_err(), "the other session must not borrow the first host's plug-in");
+    let _ = std::fs::remove_dir_all(&dir);
+}
