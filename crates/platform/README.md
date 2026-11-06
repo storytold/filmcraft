@@ -365,3 +365,20 @@ Linux registers the export factory even without a driver; `register()`'s return 
 `registered()` still describe hardware **decoding**, which this backend does not provide.
 Absent / old drivers decline once per export, with an informational log and
 `perf.stats` → `export.hardware.declined`; hardware encoding Off never opens the driver.
+
+## Hardware cancellation qualification
+
+The isolated cancellation/recovery test emits `FILMCRAFT_HW_CANCEL_STATUS=EXERCISED`
+only after the real encoder and its original frame-count/counter assertions pass.
+A missing encoder emits `FILMCRAFT_HW_CANCEL_STATUS=UNAVAILABLE`, which is an explicit
+skip and does not satisfy the hardware-coverage validator. For qualification use:
+
+```sh
+FILMCRAFT_REQUIRE_HW_CANCEL_ENCODER=1 cargo test -p filmcraft-platform --test it hardware_encode -- --nocapture
+```
+
+With that flag, unavailable hardware fails the cancellation/recovery test instead
+of being accepted as qualification. Other optional hardware tests retain their
+existing skip behavior. Regression tests exercise both optional-skip and required
+failure paths using a subprocess-only unavailable-encoder fault injection. This
+is a test harness feature, not an application or encoder setting.

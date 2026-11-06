@@ -20,6 +20,8 @@
 //!
 //! `log` records go to standard error and `<data dir>/Logs/filmcraft.log` (`RUST_LOG` sets the
 //! levels); see [`logging`].
+// ExportRenderer wraps wgpu handles with deep Send/Sync auto-trait bounds.
+#![recursion_limit = "256"]
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 

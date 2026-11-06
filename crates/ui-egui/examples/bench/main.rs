@@ -15,6 +15,9 @@
 //! with ffmpeg into `target/fixtures/playback/` on first use (see `fixtures.rs`); sections whose
 //! fixtures cannot be made are skipped. See `docs/performance.md`.
 
+// GPU export benchmarks instantiate wgpu handles with deep auto-trait bounds.
+#![recursion_limit = "256"]
+
 mod fixtures;
 #[allow(dead_code)]
 mod playback;
