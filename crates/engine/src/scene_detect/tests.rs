@@ -182,12 +182,12 @@ fn detects_the_cuts_of_an_ffmpeg_concat_and_cuts_linked_audio() {
     let rate = s.sequence_rate();
     assert_eq!(rate, FrameRate::FPS_24);
     // link the V1 / A1 pair, as an edit from the Source monitor would
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let seq = s.state.active_sequence.unwrap();
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks[0].items[0].link = Some(7777);
     q.audio_tracks[0].items[0].link = Some(7777);
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     select_v1(&mut s);
     for sensitivity in [20.0, 50.0, 80.0] {
         let r = s.execute("clip.sceneEditDetection", json!({"wait": true, "applyCuts": false, "generateMarkers": true, "sensitivity": sensitivity})).unwrap();

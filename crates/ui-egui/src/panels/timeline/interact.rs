@@ -1385,7 +1385,13 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         "clip.link" if linked => tl!("Unlink"),
                         _ => crate::i18n::t(label),
                     };
-                    let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                    let mut button = egui::Button::new(label);
+                    if let Some(keys) = app.session.shortcuts.primary(cmd) {
+                        button = button.shortcut_text(crate::menus::shortcut_text(&keys));
+                    }
+                    let reason = if sel.is_empty() { Err(tl!("select a clip in the timeline").to_string()) } else { app.session.enabled_state(cmd) }.err();
+                    let r = ui.add_enabled(reason.is_none(), button);
+                    let r = crate::menus::disabled_hint(r, reason.as_deref());
                     app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
                     if r.clicked() {
                         match crate::menus::invoke(app, &ctx, cmd, json!({})) {

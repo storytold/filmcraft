@@ -1,4 +1,8 @@
-//! Localhost JSON-lines control server (one request per line, one reply per line). Loopback only.
+//! Control endpoints of the desktop app. Two listeners feed one request queue.
+//!
+//! The Craft Link socket (`filmcraft-<pid>` under the runtime dir, token handshake in craft-ipc) is
+//! always on; [`start_with`] publishes it. `--control <port>` adds the localhost JSON-lines TCP
+//! server below (one request per line, one reply per line). Loopback only.
 //!
 //! The server only ever reads requests: a line that is not a JSON object with a string `method`
 //! (an HTTP request line from a browser's cross-origin `fetch`, a stray `nc`, binary junk) gets
@@ -10,11 +14,13 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use craft_ipc::LinkError;
+use craft_ipc::server::{ControlSink, FrameOpen, Frames, Server, ServerConfig};
 use filmcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
@@ -27,7 +33,7 @@ pub const MAX_CONNECTIONS: usize = 16;
 /// A peer that stops sending or reading must eventually give back its connection slot.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Why the control server is not serving although `--control` was given (#3436).
+/// Why the TCP control server is not serving although `--control` was given (#3436).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisabledWhy {
     /// `FILMCRAFT_CONTROL_TOKEN` is missing or is not 64 hex characters.
@@ -38,7 +44,7 @@ pub enum DisabledWhy {
 }
 
 /// `--control-input-only` was given but the control server is not serving: the session would be
-/// unreachable, so startup fails with this error and `main` exits directly — no dialog an
+/// unreachable, so startup fails with this error and `main` exits directly, with no dialog an
 /// unattended launch could not dismiss (#3436).
 #[derive(Debug)]
 pub struct ControlServerRequired(pub String);
@@ -61,40 +67,147 @@ impl DisabledWhy {
     }
 }
 
-/// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
-/// answer requests (until then they are rejected with a retryable error), and — when the server
-/// is *not* running — why (#3436), for the log and (for a bad token) the status bar.
-pub fn start(port: u16, ctx: egui::Context) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    start_with_token(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok())
+/// Queue a push event on the running link server. Quiet when none runs.
+pub fn emit(event: &str, data: Value) {
+    if let Some(server) = server_lock().as_ref() {
+        let _ = server.emit(event, data);
+    }
 }
 
+/// The link server has to outlive `start_with`, or the socket closes when the function returns.
+static SERVER: Mutex<Option<Server>> = Mutex::new(None);
+
+/// What [`start_with`] hands to the app.
+pub struct Started {
+    /// Requests from both listeners.
+    pub requests: Receiver<ControlRequest>,
+    /// The app sets this once it drains `requests`. Until then both listeners reject a request
+    /// with a retryable error instead of queueing it (#3436).
+    pub ready: Arc<AtomicBool>,
+    /// Why the TCP server is not serving, when `--control` was given and it is not.
+    pub tcp_disabled: Option<DisabledWhy>,
+}
+
+/// The Craft Link socket for `runtime` (the real runtime dir for `None`), plus the token-checked
+/// TCP server when `tcp_port` is set. Both feed one receiver. A failed link start is logged and
+/// nothing arrives from that listener.
+pub fn start_with(runtime: Option<craft_ipc::RuntimeDir>, tcp_port: Option<u16>, ctx: egui::Context) -> Started {
+    let (tx, requests) = channel::<ControlRequest>();
+    let ready = Arc::new(AtomicBool::new(false));
+    start_link(runtime, tx.clone(), ctx.clone(), Arc::clone(&ready));
+    let tcp_disabled = tcp_port.and_then(|port| start_tcp(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok(), tx, Arc::clone(&ready)));
+    Started { requests, ready, tcp_disabled }
+}
+
+/// The TCP server alone, with the credential given. The receiver disconnects when it did not start.
+#[cfg(test)]
 fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
     let (tx, rx) = channel::<ControlRequest>();
+    let ready = Arc::new(AtomicBool::new(false));
+    let why = start_tcp(port, ctx, token, tx, Arc::clone(&ready));
+    (rx, ready, why)
+}
+
+fn start_link(runtime: Option<craft_ipc::RuntimeDir>, tx: Sender<ControlRequest>, ctx: egui::Context, ready: Arc<AtomicBool>) {
+    let sink = Arc::new(UiSink { tx, ctx: ctx.clone(), ready });
+    let wake_ctx = ctx.clone();
+    let mut window = filmcraft_link::host::Host::window(ctx);
+    window.runtime = runtime.clone();
+    let host = filmcraft_link::host::install(window);
+    // Live links: find EffectCraft once a second, attach the project's links, pull frames from it.
+    let runtime_host = Arc::clone(&host);
+    filmcraft_link::manager::install(filmcraft_link::manager::ManagerConfig {
+        runtime: Arc::new(move || runtime_host.runtime_dir()),
+        ui: Arc::clone(&sink) as Arc<dyn ControlSink>,
+        wake: Arc::new(move || wake_ctx.request_repaint()),
+        scan_every: filmcraft_link::manager::SCAN_EVERY,
+        fetch: craft_ipc::fetch::FetchOptions::default(),
+    });
+    // The socket file is `filmcraft-<pid>`. Drop the previous listener before the new bind.
+    let mut slot = server_lock();
+    *slot = None;
+    match Server::start(ServerConfig {
+        app: "filmcraft".into(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        instance: None,
+        runtime,
+        tcp_port: None,
+        sink,
+        activate: host.activate_handler(),
+        frames: Arc::new(NoFrames),
+    }) {
+        Ok(server) => *slot = Some(server),
+        Err(err) => log::warn!("control server failed to start: {err}"),
+    }
+}
+
+/// Start the token-checked TCP server. Returns why it did not start.
+fn start_tcp(port: u16, ctx: egui::Context, token: Option<String>, tx: Sender<ControlRequest>, ready: Arc<AtomicBool>) -> Option<DisabledWhy> {
     // An inherited environment variable shares the credential with the owner's bridge process
     // without exposing it in command-line arguments, logs, or a shared discovery file.
     let Some(token) = token.filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
         // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
         // the app, which shows it in the status bar.
         log::warn!("control server disabled: {}", DisabledWhy::Token.reason());
-        return (rx, Arc::new(AtomicBool::new(true)), Some(DisabledWhy::Token));
+        return Some(DisabledWhy::Token);
     };
     match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
             log::info!("control server listening on 127.0.0.1:{port}");
-            // Requests that arrive before the app can answer them are rejected with a retryable
-            // error instead of queued: a queued request outlives its 60 s reply wait, and a
-            // client retry would then apply the same mutation twice (#3436).
-            let ready = Arc::new(AtomicBool::new(false));
-            let loop_ready = Arc::clone(&ready);
-            std::thread::spawn(move || accept_loop(listener, tx, ctx, token, loop_ready));
-            (rx, ready, None)
+            std::thread::spawn(move || accept_loop(listener, tx, ctx, token, ready));
+            None
         }
         Err(error) => {
             let why = DisabledWhy::Bind { port, error: error.to_string() };
             log::warn!("control server disabled: {}", why.reason());
-            (rx, Arc::new(AtomicBool::new(true)), Some(why))
+            Some(why)
         }
     }
+}
+
+fn server_lock() -> MutexGuard<'static, Option<Server>> {
+    SERVER.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+fn take_server() -> Option<Server> {
+    server_lock().take()
+}
+
+struct UiSink {
+    tx: Sender<ControlRequest>,
+    ctx: egui::Context,
+    ready: Arc<AtomicBool>,
+}
+
+impl ControlSink for UiSink {
+    fn submit(&self, method: String, params: Value) -> Option<Receiver<Value>> {
+        // Same rule as the TCP server: before the app drains the queue a request would outlive
+        // its reply wait and still run after startup.
+        if !self.ready.load(Ordering::Relaxed) {
+            return None;
+        }
+        let (req, rx) = ControlRequest::new(method, params);
+        if self.tx.send(req).is_err() {
+            return None;
+        }
+        self.ctx.request_repaint();
+        Some(rx)
+    }
+}
+
+struct NoFrames;
+
+impl Frames for NoFrames {
+    fn open(&self, _params: &serde_json::Map<String, Value>) -> Result<FrameOpen, LinkError> {
+        Err(LinkError::NotReady("frames are not available".into()))
+    }
+
+    fn render(&self, _ticket: &str, _header: &Value) -> Result<(Value, Vec<u8>), LinkError> {
+        Err(LinkError::NotReady("frames are not available".into()))
+    }
+
+    fn close_ticket(&self, _ticket: &str) {}
 }
 
 fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String, ready: Arc<AtomicBool>) {

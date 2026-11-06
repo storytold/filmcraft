@@ -50,7 +50,7 @@ fn naming_a_missing_track_is_an_error_not_a_default() {
     assert!(s.execute("timeline.setTargeting", json!({"track": "V2", "targeted": true})).is_err());
     assert!(s.execute("timeline.razor", json!({"track": "A2", "time": 10})).is_err());
     assert!(s.execute("sequence.goToNextGapInTrack", json!({"track": "V2"})).is_err());
-    assert_eq!(*s.project, *before, "nothing was edited");
+    assert_eq!(**s.project, *before, "nothing was edited");
     assert_eq!(s.history.undo.len(), undo, "and nothing was added to the undo history");
     // tracks that exist still resolve by name (either case) and by id
     s.execute("timeline.place", json!({"item": item.0, "seconds": 60.0, "track": "v1", "audioTrack": a1.0})).unwrap();
@@ -103,7 +103,7 @@ fn place_on_an_audio_track_places_the_sound_there_and_nothing_else() {
         assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "timeline.place"), "{p}: {e:?}");
         assert!(e.to_string().contains(why), "{p}: {e}");
     }
-    assert_eq!(*s.project, *before, "a refused place changes nothing");
+    assert_eq!(**s.project, *before, "a refused place changes nothing");
     assert_eq!(s.history.undo.len(), undo, "and adds nothing to the undo history");
     // a sound-only item dropped on a video row still lands on the audio track sent with it
     s.execute("timeline.place", json!({"item": sound_only.0, "track": "V1", "audioTrack": "A1", "seconds": 900.0})).unwrap();

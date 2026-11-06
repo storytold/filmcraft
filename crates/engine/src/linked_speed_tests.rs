@@ -41,9 +41,9 @@ fn slower_with_ripple_moves_later_clips_once() {
     assert_eq!(q.duration(), f192);
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step restores it");
+    assert_eq!(**s.project, *before, "one undo step restores it");
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
 }
 
 /// Faster with ripple was refused when more than one clip followed: the second ripple pulled the
@@ -70,7 +70,7 @@ fn speed_on_a_missing_clip_is_an_error() {
     let undo = s.history.undo.len();
     assert!(s.execute("clip.speedDuration", json!({"clips": [999_999], "speed": 50, "ripple": true})).is_err());
     assert!(s.execute("clip.speedDuration", json!({"clips": [picture2.0, 999_999], "speed": 50, "ripple": true})).is_err());
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     assert_eq!(s.history.undo.len(), undo);
 }
 
@@ -163,7 +163,7 @@ fn maintain_audio_pitch_goes_with_the_clip_and_its_sound() {
     assert!(flag(&s, picture) && flag(&s, sound));
     assert!(!flag(&s, other));
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before, "one undo step");
+    assert_eq!(**s.project, *before, "one undo step");
     s.execute("edit.redo", json!({})).unwrap();
     // left out: unchanged; `false`: off
     s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 120})).unwrap();
@@ -191,7 +191,7 @@ fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
     let [(picture, sound), _, _] = three_clips(&mut s);
     let flag = |s: &Session, c: ClipId| s.active_sequence().and_then(|q| q.find_item(c)).is_some_and(|(_, i)| i.maintain_pitch);
     let id = s.state.active_sequence.unwrap();
-    std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().audio_tracks[0].locked = true;
+    s.project_mut().sequence_mut(id).unwrap().audio_tracks[0].locked = true;
     s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 150, "maintainPitch": true})).unwrap();
     assert!(flag(&s, picture), "the picture's own setting changes");
     assert!(!flag(&s, sound), "the locked sound keeps its setting");

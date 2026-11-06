@@ -375,7 +375,7 @@ mod tests {
             Some(Err(MediaError::Unsupported(format!("got {} bytes", bytes.len()))))
         }
         let r: SharedReader = Arc::new(MemReader(Arc::from(&b"bytes"[..])));
-        let e = open_reader("a.xyz", r, &[], &[whole]).err().unwrap();
+        let e = open_reader("a.xyz", r, &[], &[crate::opener_of(whole)]).err().unwrap();
         assert!(matches!(&e, MediaError::Unsupported(m) if m == "got 5 bytes"), "{e:?}");
     }
 }

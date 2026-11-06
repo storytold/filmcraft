@@ -1683,7 +1683,7 @@ mod lane_tests {
         let mut app = crate::FilmcraftApp::new(s);
         let ctx = context();
         for duration in [0, -5 * filmcraft_time::TICKS_PER_SECOND] {
-            let project = std::sync::Arc::make_mut(&mut app.session.project);
+            let project = app.session.project_mut();
             project.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1.duration = Tick(duration);
             let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(700.0, 500.0));
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1775,7 +1775,7 @@ mod graph_drag_tests {
             session.execute("file.openDemoProject", json!({})).unwrap();
             let seq = session.state.active_sequence.unwrap();
             let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
-            let it = std::sync::Arc::make_mut(&mut session.project).sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+            let it = session.project_mut().sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
             let mut a = Keyframe::new(it.source_in + Tick(it.duration.0 / 4), from.clone());
             let mut b = Keyframe::new(it.source_in + Tick(it.duration.0 * 3 / 4), to);
             a.interp = Interpolation::Bezier;
@@ -1973,7 +1973,7 @@ mod frame_hold_tests {
             s.execute("clip.frameHoldOptions", json!({"clips": [v.id.0], "holdOn": "in", "holdFilters": hold_filters})).unwrap();
         }
         let seq = s.state.active_sequence.unwrap();
-        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let q = s.project_mut().sequence_mut(seq).unwrap();
         let it = q.find_item_mut(v.id).unwrap().1;
         animate(it, "motion", "position", ParamValue::Vec2(Vec2::new(400.0, 300.0)), ParamValue::Vec2(Vec2::new(800.0, 500.0)));
         animate(it, "lumetri", "saturation", ParamValue::Float(50.0), ParamValue::Float(150.0));

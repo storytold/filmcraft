@@ -371,3 +371,91 @@ fn authenticated_tcp_request_reaches_the_ui_queue() {
     server.join().unwrap();
     assert_eq!(serde_json::from_str::<Value>(&reply).unwrap(), json!({"id": 7, "ok": true}));
 }
+
+struct Tmp(std::path::PathBuf);
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `Client::call` returns `result` or a `LinkError`, so `id` is not on that value.
+/// The unix read below is the same server and shows the flat reply line.
+#[cfg(unix)]
+fn read_reply(reader: &mut impl std::io::BufRead) -> Value {
+    let bytes = craft_ipc::wire::read_line(reader, craft_ipc::wire::MAX_LINE).unwrap().unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn start_with_engine_commands_reply_is_not_wrapped() {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let mixed = (nanos as u64) ^ u64::from(std::process::id()).wrapping_mul(0x51ED);
+    let path = std::path::PathBuf::from(format!("/tmp/fc-ctrl-{}-{mixed:08x}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let runtime = craft_ipc::RuntimeDir::at(&path).unwrap();
+    let tmp = Tmp(path);
+
+    let started = start_with(Some(runtime.clone()), None, egui::Context::default());
+    started.ready.store(true, Ordering::Relaxed);
+    let rx = started.requests;
+    let mut script = vec![json!({"ok": true, "result": null}), json!({"ok": false, "error": "missing command"})];
+    #[cfg(unix)]
+    {
+        script.push(json!({"ok": true, "result": null}));
+        script.push(json!({"ok": false, "error": "missing command"}));
+    }
+    let helper = std::thread::spawn(move || {
+        for reply in script {
+            let req = rx.recv_timeout(Duration::from_secs(5)).expect("control request");
+            assert_eq!(req.method, "engine.commands");
+            req.reply.send(reply).expect("reply");
+        }
+    });
+
+    let records = craft_ipc::Discovery::scan(&runtime).expect("scan");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].app, "filmcraft");
+    assert_eq!(records[0].app_version, env!("CARGO_PKG_VERSION"));
+
+    let mut client = craft_ipc::client::Client::connect(&records[0]).expect("connect");
+    let result = client.call("engine.commands", json!({})).expect("engine.commands");
+    assert_eq!(result, Value::Null, "ok reply must not be nested, got {result}");
+    assert!(result.get("ok").is_none(), "nested as result.ok: {result}");
+    let err = client.call("engine.commands", json!({})).expect_err("error reply");
+    assert_eq!(err, craft_ipc::LinkError::Invalid("missing command".into()));
+
+    #[cfg(unix)]
+    {
+        use std::io::BufReader;
+        use std::os::unix::net::UnixStream;
+        let craft_ipc::Endpoint::Unix { path } = &records[0].endpoint else {
+            panic!("expected a unix endpoint, got {:?}", records[0].endpoint);
+        };
+        let stream = UnixStream::connect(path).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream);
+        craft_ipc::wire::write_line(reader.get_mut(), &json!({"id": 0, "method": "auth", "params": {"token": records[0].token}})).unwrap();
+        let auth = read_reply(&mut reader);
+        assert_eq!(auth["ok"], true, "{auth}");
+        craft_ipc::wire::write_line(reader.get_mut(), &json!({"id": 7, "method": "engine.commands", "params": {}})).unwrap();
+        let reply = read_reply(&mut reader);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"], Value::Null, "{reply}");
+        assert_eq!(reply["id"], 7, "{reply}");
+        assert!(reply["result"].get("ok").is_none(), "nested as result.ok: {reply}");
+        craft_ipc::wire::write_line(reader.get_mut(), &json!({"id": 8, "method": "engine.commands", "params": {}})).unwrap();
+        let bad = read_reply(&mut reader);
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert_eq!(bad["error"], "missing command", "{bad}");
+        assert!(bad.get("result").is_none(), "{bad}");
+    }
+
+    helper.join().expect("helper");
+    if let Some(server) = take_server() {
+        server.shutdown().expect("shutdown");
+    }
+    drop(tmp);
+}

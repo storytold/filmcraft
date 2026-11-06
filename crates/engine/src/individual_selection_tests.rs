@@ -58,7 +58,7 @@ fn implicit_clear_keeps_an_individually_selected_partner_and_undo() {
         assert!(q.find_item(partner).is_some(), "the unselected linked partner stays");
         assert!(s.state.linked_selection);
         s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(*s.project, *before, "one undo restores the pair");
+        assert_eq!(**s.project, *before, "one undo restores the pair");
     }
 }
 
@@ -81,9 +81,9 @@ fn implicit_ripple_delete_keeps_the_partner_on_an_unsynced_track() {
         assert!(s.state.linked_selection);
         let after = s.project.clone();
         s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
         s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(*s.project, *after);
+        assert_eq!(**s.project, *after);
     }
 }
 
@@ -97,7 +97,7 @@ fn individual_ripple_sync_lock_conflict_is_atomic() {
         let history = (s.history.undo.len(), s.history.redo.len());
         let error = s.execute("edit.rippleDelete", json!({})).unwrap_err();
         assert!(error.to_string().to_lowercase().contains("sync"), "{error}");
-        assert_eq!(*s.project, *before, "a conflict must not delete either clip");
+        assert_eq!(**s.project, *before, "a conflict must not delete either clip");
         assert_eq!(s.state.selection, vec![selected]);
         assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
         assert!(s.state.linked_selection);

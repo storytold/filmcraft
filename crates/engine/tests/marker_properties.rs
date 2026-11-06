@@ -256,7 +256,7 @@ fn custom_clip_colors_share_palette_and_survive_save_preset_switch_and_undo() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.active_sequence().unwrap().find_item(clip.id).unwrap().1.custom_label_color, color);
     s.execute("edit.label", json!({"items":[clip.item.0],"label":"#12ABCD"})).unwrap();
-    let mut project = (*s.project).clone();
+    let mut project = (**s.project).clone();
     let created = project
         .make_track_item(
             clip.item,

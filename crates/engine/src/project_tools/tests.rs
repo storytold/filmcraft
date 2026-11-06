@@ -388,11 +388,11 @@ fn edit_original_update_metadata_and_clip_items() {
     let w = d.execute("clip.generateAudioWaveform", json!({})).unwrap();
     assert_eq!(w["items"], json!([ocean.0]));
     // Update Metadata writes an XMP sidecar with the log fields
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let it = p.item_mut(items[0]).unwrap();
     it.metadata.insert("Scene".into(), "12A".into());
     it.metadata.insert("Log Note".into(), "best <take>".into());
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     let r = s.execute("clip.updateMetadata", json!({})).unwrap();
     let side = dir.join("take.xmp");
     assert_eq!(r["written"][0]["path"], side.to_string_lossy().as_ref());

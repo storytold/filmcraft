@@ -541,9 +541,9 @@ fn selected_character_size_drag_is_one_undo_step() {
     let after = d.harness.state().session.project.clone();
     assert_ne!(*after, *before);
     d.exec("edit.undo", json!({}));
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(*d.harness.state().session.project, *after);
+    assert_eq!(**d.harness.state().session.project, *after);
 }
 
 /// The Properties panel's stopwatches animate a layer property (#2358): Tracking (letter

@@ -90,7 +90,7 @@ fn stored_media_paths_open_only_on_this_computer_or_beside_the_project() {
     stored.push("b.mov".to_string());
     let files: Vec<&Path> = (0..refused).map(|_| a.as_path()).chain([beside.as_path()]).collect();
     let (mut s, items, _) = session_with(&files);
-    let p = Arc::make_mut(&mut s.project);
+    let p = s.project_mut();
     for (id, path) in items.iter().zip(&stored) {
         p.item_mut(*id).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: path.clone() };
     }

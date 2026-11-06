@@ -30,7 +30,7 @@ pub struct MaskSel {
 }
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: has_seq, run, journal: true }
+    CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: has_seq, run, journal: true }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -70,6 +70,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Select Mask",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"clip":id,"effect":index|id,"mask":n}|{"none":true}"#,
             enabled: has_seq,
             run: select,
@@ -80,6 +81,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "List Masks",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"clip":id?,"time":ticks?}"#,
             enabled: has_seq,
             run: list,

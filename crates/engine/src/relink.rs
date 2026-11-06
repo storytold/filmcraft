@@ -630,6 +630,8 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
         "status": status,
         "identity": m.identity,
         "proxy": proxy,
+        "link": s.link_badges.get(&id),
+        "link_frames": s.link_frames.get(&id).map(|(live, late, fallback)| json!({"live": live, "late": late, "fallback": fallback})),
     }))
 }
 
@@ -640,6 +642,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Find Missing Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: |s, _| {
@@ -653,6 +656,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Media Status",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id?}"#,
             enabled: always,
             run: |s, p| {
@@ -669,6 +673,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Link Media…",
             menu: &["File"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{}  (opens the Link Media dialog; agents use media.relink / media.autoRelink)"#,
             enabled: always,
             run: |s, _| {
@@ -683,6 +688,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Relink Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
@@ -693,6 +699,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Refresh Changed Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: crate::media_watch::refresh_changed,
@@ -703,6 +710,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Replace Footage…",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str}"#,
             enabled: always,
             run: |s, p| {
@@ -718,6 +726,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Relink Moved Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"from":str,"to":str}|{"folder":str} + match options"#,
             enabled: always,
             run: auto_relink,
@@ -728,6 +737,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Search for Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"folder":str,"item":id?,"exactName":bool=true}"#,
             enabled: always,
             run: |s, p| search(s, p),
@@ -738,6 +748,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Make Offline…",
             menu: &["File"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"items":[id]?,"deleteFiles":bool=false}"#,
             enabled: |s| {
                 let any = s
@@ -755,6 +766,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Offline All",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
             run: offline_all,

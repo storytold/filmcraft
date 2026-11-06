@@ -186,16 +186,16 @@ fn undo_and_redo_of_an_edit_are_exact() {
     let dir = tmp("undo");
     let r = s.execute("tts.create", json!({"text": "Before.", "time": 0, "dir": dir})).unwrap();
     let id = r["clip"].as_u64().unwrap();
-    let before = (*s.project).clone();
+    let before = (**s.project).clone();
     s.execute("tts.edit", json!({"clip": id, "text": "After.", "voice": "basic-male", "pitch": "extraHigh", "pace": 0.7})).unwrap();
-    let after = (*s.project).clone();
+    let after = (**s.project).clone();
     assert_ne!(before, after);
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, before);
+    assert_eq!(**s.project, before);
     let n = s.project.narrations.get(&clip(&s, id).item).unwrap();
     assert_eq!((n.text.as_str(), n.voice.as_str()), ("Before.", "basic-female"));
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, after);
+    assert_eq!(**s.project, after);
     let n = s.project.narrations.get(&clip(&s, id).item).unwrap();
     assert_eq!((n.text.as_str(), n.pitch, n.pace), ("After.", VocalPitch::ExtraHigh, 0.7));
     let _ = std::fs::remove_dir_all(&dir);
@@ -240,9 +240,9 @@ fn edit_on_a_locked_track_is_refused() {
     let r = s.execute("tts.create", json!({"text": "Locked.", "time": 0, "dir": dir})).unwrap();
     let track = r["track"].as_str().unwrap().to_string();
     s.execute("timeline.setTrack", json!({"track": track, "locked": true})).unwrap();
-    let snap = (*s.project).clone();
+    let snap = (**s.project).clone();
     assert!(s.execute("tts.edit", json!({"clip": r["clip"], "text": "Changed."})).is_err());
-    assert_eq!(*s.project, snap);
+    assert_eq!(**s.project, snap);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -250,7 +250,7 @@ fn edit_on_a_locked_track_is_refused() {
 fn hostile_parameters_are_refused_without_changes() {
     let mut s = demo();
     let dir = tmp("hostile");
-    let snap = (*s.project).clone();
+    let snap = (**s.project).clone();
     let undo0 = s.history.undo.len();
     let big = "word ".repeat(300_000);
     let cases = [
@@ -277,7 +277,7 @@ fn hostile_parameters_are_refused_without_changes() {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("tts.create", q.clone())));
         assert!(r.is_ok(), "panicked on {p}");
         assert!(r.unwrap().is_err(), "accepted {p}");
-        assert_eq!(*s.project, snap, "changed by {p}");
+        assert_eq!(**s.project, snap, "changed by {p}");
         assert_eq!(s.history.undo.len(), undo0);
     }
     for p in [json!({"clip": 999_999_999}), json!({"clip": "x"}), json!({"clip": -1})] {
@@ -296,11 +296,11 @@ fn preview_changes_nothing_and_hands_the_audio_to_the_host() {
     let mut s = demo();
     let dir = tmp("preview");
     std::fs::create_dir_all(&dir).unwrap();
-    let snap = (*s.project).clone();
+    let snap = (**s.project).clone();
     let undo0 = s.history.undo.len();
     let path = format!("{dir}/p.wav");
     let r = s.execute("tts.preview", json!({"text": "Preview me.", "path": path})).unwrap();
-    assert_eq!(*s.project, snap);
+    assert_eq!(**s.project, snap);
     assert_eq!(s.history.undo.len(), undo0);
     let a = s.tts_preview.clone().unwrap();
     assert_eq!(r["samples"], a.samples.len());
@@ -419,7 +419,7 @@ fn unique_wav_path_gives_up_instead_of_looping_forever() {
     for k in 1..=99_999u32 {
         let mut it = template.clone();
         it.name = format!("Narration {k}.wav");
-        std::sync::Arc::make_mut(&mut s.project).items.insert(ItemId(1_000_000 + u64::from(k)), it);
+        s.project_mut().items.insert(ItemId(1_000_000 + u64::from(k)), it);
     }
     assert!(crate::voiceover::unique_wav_path(&s, "/nonexistent-dir", "Narration").is_err());
 }

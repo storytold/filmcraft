@@ -1231,7 +1231,7 @@ struct CommandDefinition {
 
 fn spec(definition: CommandDefinition) -> CommandSpec {
     let CommandDefinition { id, label, menu, shortcut, params, enabled, run, journal } = definition;
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

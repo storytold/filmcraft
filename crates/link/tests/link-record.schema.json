@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "craft://schemas/link/link-record/1",
+  "title": "craft.link project item metadata",
+  "description": "Stored in the consumer's project item metadata[\"craft.link\"] on the linked media item. Unknown fields must be preserved on save. Records written before the asset fields existed (FilmCraft to EffectCraft) stay valid.",
+  "type": "object",
+  "required": ["v", "link_id", "target_app", "target_project", "result_path", "result_epoch", "format", "created"],
+  "anyOf": [
+    { "required": ["target_comp"] },
+    { "required": ["asset"] }
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "v": { "const": 1 },
+    "link_id": { "type": "string", "format": "uuid" },
+    "target_app": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$", "description": "app id of the producer, same pattern as the instance record app" },
+    "target_project": { "type": "string", "description": "path of the producer document, relative to the consumer project file when possible" },
+    "target_comp": { "type": "string", "description": "comp id inside the producer document. Required unless asset is present." },
+    "nested_sequence": { "type": "string", "description": "FilmCraft item id of the nest created by link.editIn. Absent for stills." },
+    "asset": {
+      "type": "object",
+      "required": ["kind", "moniker"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "enum": ["still", "vector", "sequence", "comp"] },
+        "moniker": { "type": "string", "pattern": "^craft://[a-z][a-z0-9-]{1,31}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/[a-z][a-z0-9-]{0,31}/[^/?#]+$" }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "required": ["app"],
+      "additionalProperties": true,
+      "properties": {
+        "app": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+        "app_version": { "type": "string" },
+        "doc_id": { "type": "string" }
+      }
+    },
+    "result_path": { "type": "string" },
+    "result_epoch": { "type": "integer", "minimum": 0 },
+    "format": {
+      "type": "object",
+      "required": ["w", "h", "alpha"],
+      "dependentRequired": { "rate_num": ["rate_den"], "rate_den": ["rate_num"] },
+      "properties": {
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 },
+        "rate_num": { "type": "integer", "minimum": 1 },
+        "rate_den": { "type": "integer", "minimum": 1 },
+        "duration_ticks": { "type": "integer", "minimum": 0 },
+        "alpha": { "type": "boolean" }
+      }
+    },
+    "created": { "type": "string", "format": "date-time" }
+  }
+}

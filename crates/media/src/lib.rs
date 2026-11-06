@@ -248,7 +248,17 @@ pub fn is_importable(path: &Path) -> bool {
 }
 
 /// A pluggable opener (containers/codecs register themselves here from higher-level crates).
-pub type Opener = fn(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource>>;
+/// It answers `None` for a file it does not handle. It may hold state, such as the plug-in host
+/// of one session; [`opener_of`] wraps a plain function.
+pub type Opener = Arc<dyn Fn(&str, Arc<[u8]>) -> Option<Result<SharedSource>> + Send + Sync>;
+
+/// The plain function form of an [`Opener`], for openers that hold nothing.
+pub type OpenerFn = fn(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource>>;
+
+/// Wrap a plain function as an [`Opener`].
+pub fn opener_of(f: OpenerFn) -> Opener {
+    Arc::new(f)
+}
 
 /// Open media from bytes, trying `extra` openers first, then the built-in ones (WAV, animated
 /// images, stills).
