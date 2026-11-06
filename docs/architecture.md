@@ -242,7 +242,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   it through `ProxySource`, which reports the original's size. Export always uses
   `MediaPool::full_res_provider`. Background jobs (exports, Render Previews, proxies) open their
   own copy of each file they can stream (`MediaPool::own_source`, `PoolProvider::own_sources`),
-  so they never take turns with the monitors on one decoder. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
+  so they never take turns with the monitors on one decoder. Offline slates retain source metadata
+  but generate at most 1,280 pixels per side and 921,600 pixels total; each pool cache generation retains at most
+  sixteen frames and 64 MiB of frame data, sharing concurrent same-key requests and serializing cold generation. Project
+  changes start a fresh pool. Clearing a pool replaces its cache; existing readers can retain
+  older generations and generate concurrently. Queued exports keep their project snapshot for
+  retries and capture their original pool until a terminal state; retries reconstruct readers from the original document-path and opener context,
+  never from the current project's pool. Finished queue history retains no readers or cached slate frames.
+  See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
