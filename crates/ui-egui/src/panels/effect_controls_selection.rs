@@ -115,6 +115,12 @@ impl Interaction {
         if cancelled {
             state.gesture = None;
         }
+        // A key that left the selection mid-drag (deleted, or on a row that turned disabled: Scale
+        // Width once Uniform Scale is on, through an undo or the control channel) is no longer
+        // dragged, so the drop doesn't move it.
+        if let Some(Gesture::Group(group)) = &mut state.gesture {
+            group.keys.retain(|k| app.ui.keyframe_selection.contains(k));
+        }
         let background = ui.interact(area, Id::unique(("ec-select", clip)), Sense::click_and_drag());
         if background.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
             app.ui.keyframe_selection.clear();

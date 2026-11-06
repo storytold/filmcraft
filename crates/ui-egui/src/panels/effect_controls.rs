@@ -73,7 +73,7 @@ fn effect_time_now(it: &TrackItem, ph: Tick) -> Tick {
 /// Uniform Scale is on, #4381). Such keyframes can't be selected, so a group drag or a selection's
 /// interpolation change leaves them alone.
 fn keyframe_disabled(it: &TrackItem, k: &KeyframeRef, ph: Tick) -> bool {
-    k.mask.is_none() && it.effects.get(k.effect).is_some_and(|e| ignored_by_uniform_scale(e, &k.param, effect_time_now(it, ph)))
+    k.mask.is_none() && it.effects.get(k.effect).is_some_and(|e| ignored_by_uniform_scale(it, e, &k.param, effect_time_now(it, ph)))
 }
 
 /// Edit ▸ Select All (⌘A) with Effect Controls focused selects every keyframe the panel shows
@@ -89,7 +89,7 @@ pub(crate) fn select_all_keyframes(app: &mut FilmcraftApp) -> bool {
         for (effect, e) in it.effects.iter().enumerate() {
             let key = |param: &str, mask, time| KeyframeRef { clip: clip.0, effect, param: param.to_string(), mask, time };
             // not a disabled row's (Scale Width while Uniform Scale is on)
-            for (param, p) in e.params.iter().filter(|(param, _)| !ignored_by_uniform_scale(e, param, mt)) {
+            for (param, p) in e.params.iter().filter(|(param, _)| !ignored_by_uniform_scale(&it, e, param, mt)) {
                 keys.extend(p.keyframes.iter().map(|kf| key(param, None, kf.time)));
             }
             for (m, mask) in e.masks.iter().enumerate() {
@@ -369,7 +369,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // Scale Width while Uniform Scale is on: greyed out, neither its value nor its
                     // graphs dragged or typed (#4381). Only that row gets a scope: an empty one
                     // (a parameter the instance lacks) would still add a row gap.
-                    if ignored_by_uniform_scale(e, pd.id, mt_now) {
+                    if ignored_by_uniform_scale(it, e, pd.id, mt_now) {
                         bui.add_enabled_ui(false, rows);
                     } else {
                         rows(bui);
@@ -603,12 +603,29 @@ fn properties_nav(
     }
 }
 
-/// Whether `param` is Scale Width with the effect's Uniform Scale on at media time `mt`: Motion,
-/// Transform and graphic layers then scale both axes by Scale (Transform's Scale Height) and the
-/// render ignores Scale Width. A missing or non-boolean Uniform Scale counts as the render reads
-/// it: on for Motion (an older project's), off for Transform and graphic layers.
-fn ignored_by_uniform_scale(e: &EffectInstance, param: &str, mt: Tick) -> bool {
-    param == "scale_width" && e.param("uniform_scale").and_then(|p| p.value_at(mt).as_bool()).unwrap_or(e.effect == "motion")
+/// Whether `param` is Scale Width with the effect's Uniform Scale on at media time `mt` of `it`:
+/// Motion, Transform and graphic layers then scale both axes by Scale (Transform's Scale Height)
+/// and the render ignores Scale Width. Uniform Scale is read exactly as the render reads it, so the
+/// row is greyed out exactly when Scale Width does nothing, even with a keyframe on it (Uniform
+/// Scale can't be animated, but `effects.addKeyframe` adds one) or with it missing or non-boolean:
+/// - Motion (`filmcraft_render::motion_matrix`): the stored value, keyframes aside; missing = on;
+/// - Transform (`gpufx`, `vfx::distort`): the stored value, keyframes aside; missing = off;
+/// - graphic layers (`filmcraft_project::graphic::eval_layer`): keyframes too, at the layer's time
+///   (Responsive Design – Time); missing = the definition's default (on).
+fn ignored_by_uniform_scale(it: &TrackItem, e: &EffectInstance, param: &str, mt: Tick) -> bool {
+    if param != "scale_width" {
+        return false;
+    }
+    let uniform = e.param("uniform_scale");
+    if filmcraft_project::graphic::is_layer(e) {
+        let t = filmcraft_render::graphic_clip::graphic_time(it, mt).0;
+        let value = match uniform {
+            Some(p) => Some(p.value_at(t)),
+            None => e.def().and_then(|d| d.param("uniform_scale")).map(|d| d.default.clone()),
+        };
+        return value.and_then(|v| v.as_bool()).unwrap_or(false);
+    }
+    uniform.and_then(|p| p.value.as_bool()).unwrap_or(e.effect == "motion")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2172,10 +2189,11 @@ mod uniform_scale_tests {
         assert_eq!(drag_scale_width_graph(true), 100.0, "with Uniform Scale on, the value graph can't change Scale Width");
     }
 
-    /// Scale Width keyframes selected while Uniform Scale was off (Select All) leave the selection
-    /// once it's on: dragging a selected Scale keyframe doesn't move them, and Select All skips them.
-    #[test]
-    fn scale_width_keyframes_leave_the_selection_while_uniform_scale_is_on() {
+    /// Keys Scale and Scale Width with Uniform Scale off, selects every keyframe (Select All), turns
+    /// Uniform Scale on (before or during the drag, as an undo or the control channel can) and
+    /// drags the selected second Scale keyframe right. Returns the app afterwards, whether that
+    /// Scale keyframe moved and whether Scale Width's keyframes stayed put.
+    fn drag_scale_keyframe(uniform_on_mid_drag: bool) -> (FilmcraftApp, bool, bool) {
         let mut s = filmcraft_engine::Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         let (clip, start, dur) = {
@@ -2187,17 +2205,23 @@ mod uniform_scale_tests {
                 s.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": param, "time": at.0})).unwrap();
             }
         }
-        s.execute("effects.setParam", json!({"clip": clip.0, "effect": "motion", "param": "uniform_scale", "value": false})).unwrap();
+        let uniform = |on: bool| json!({"clip": clip.0, "effect": "motion", "param": "uniform_scale", "value": on});
+        s.execute("effects.setParam", uniform(false)).unwrap();
         s.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
         let mut app = FilmcraftApp::new(s);
         let effects = |app: &FilmcraftApp| app.session.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
         let idx = effects(&app).iter().position(|e| e.effect == "motion").unwrap();
         let times = |app: &FilmcraftApp, param: &str| effects(app)[idx].params[param].keyframes.iter().map(|k| k.time).collect::<Vec<_>>();
-        let widths = |app: &FilmcraftApp| app.ui.keyframe_selection.iter().filter(|k| k.param == "scale_width").count();
         app.ui.focused = crate::dock::PanelKind::EffectControls;
         assert!(select_all_keyframes(&mut app));
-        assert_eq!(widths(&app), 2, "with Uniform Scale off, Select All takes Scale Width's keyframes");
-        app.session.execute("effects.setParam", json!({"clip": clip.0, "effect": "motion", "param": "uniform_scale", "value": true})).unwrap();
+        assert_eq!(
+            app.ui.keyframe_selection.iter().filter(|k| k.param == "scale_width").count(),
+            2,
+            "with Uniform Scale off, Select All takes Scale Width's keyframes"
+        );
+        if !uniform_on_mid_drag {
+            app.session.execute("effects.setParam", uniform(true)).unwrap();
+        }
         let (before, mid) = (times(&app, "scale_width"), times(&app, "scale")[1]);
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &app.tokens);
@@ -2216,30 +2240,107 @@ mod uniform_scale_tests {
         frame(&mut app, vec![egui::Event::PointerMoved(at), button(at, true)]);
         for dx in [10.0, 20.0, 40.0] {
             frame(&mut app, vec![egui::Event::PointerMoved(at + vec2(dx, 0.0))]);
+            if uniform_on_mid_drag && dx == 20.0 {
+                app.session.execute("effects.setParam", uniform(true)).unwrap();
+            }
         }
         frame(&mut app, vec![button(at + vec2(40.0, 0.0), false)]);
         frame(&mut app, vec![]);
-        assert_ne!(times(&app, "scale")[1], mid, "the selected Scale keyframes move");
-        assert_eq!(times(&app, "scale_width"), before, "Scale Width's keyframes, selected before Uniform Scale was on, stay put");
-        assert!(select_all_keyframes(&mut app));
-        assert_eq!(widths(&app), 0, "with Uniform Scale on, Select All skips Scale Width's keyframes");
+        let moved = times(&app, "scale")[1] != mid;
+        let stayed = times(&app, "scale_width") == before;
+        (app, moved, stayed)
     }
 
-    /// A missing or non-boolean Uniform Scale (an older or damaged project) counts as the render
-    /// reads it: Motion scales uniformly (`filmcraft_render::motion_matrix`), Transform and graphic layers
-    /// don't, so Scale Width is greyed out exactly when the render ignores it.
+    /// Scale Width keyframes selected while Uniform Scale was off (Select All) leave the selection
+    /// once it's on: dragging a selected Scale keyframe doesn't move them, and Select All skips them.
     #[test]
-    fn a_missing_uniform_scale_counts_as_the_render_reads_it() {
-        let instance = |id: &str| filmcraft_project::find_effect(id).unwrap().instance();
-        let text = filmcraft_project::graphic::new_text_layer("A", Default::default(), 20.0);
-        for (e, render_uniform) in [(instance("motion"), true), (instance("transform"), false), (text, false)] {
-            let mut missing = e.clone();
-            missing.params.remove("uniform_scale");
-            let mut odd = e.clone();
-            odd.params.get_mut("uniform_scale").unwrap().value = ParamValue::Float(1.0);
-            for e in [missing, odd] {
-                assert_eq!(ignored_by_uniform_scale(&e, "scale_width", Tick::ZERO), render_uniform, "{}", e.effect);
+    fn scale_width_keyframes_leave_the_selection_while_uniform_scale_is_on() {
+        let (mut app, moved, stayed) = drag_scale_keyframe(false);
+        assert!(moved, "the selected Scale keyframes move");
+        assert!(stayed, "Scale Width's keyframes, selected before Uniform Scale was on, stay put");
+        assert!(select_all_keyframes(&mut app));
+        assert!(app.ui.keyframe_selection.iter().all(|k| k.param != "scale_width"), "with Uniform Scale on, Select All skips Scale Width's keyframes");
+    }
+
+    /// Uniform Scale turned on during a group drag: the drop moves the Scale keyframes, not Scale
+    /// Width's, which were in the drag when it began.
+    #[test]
+    fn scale_width_keyframes_leave_a_drag_when_uniform_scale_turns_on_during_it() {
+        let (_, moved, stayed) = drag_scale_keyframe(true);
+        assert!(moved, "the selected Scale keyframes move");
+        assert!(stayed, "Scale Width's keyframes, disabled during the drag, stay put");
+    }
+
+    /// Whether the render ignores the Scale Width of effect `idx` of `it` at media time `mt`: the
+    /// result is the same with Scale Width at 50 % as at 200 %. Motion through
+    /// `filmcraft_render::motion_matrix`, graphic layers through `item_layer_specs`.
+    fn render_ignores_scale_width(seq: &filmcraft_project::Sequence, it: &TrackItem, idx: usize, mt: Tick) -> bool {
+        let with = |width: f64| {
+            let mut it = it.clone();
+            let p = it.effects[idx].params.get_mut("scale_width").unwrap();
+            (p.value, p.keyframes) = (ParamValue::Float(width), Vec::new());
+            if it.effects[idx].effect == "motion" {
+                format!("{:?}", filmcraft_render::motion_matrix(seq, &it, (1920, 1080), None, mt))
+            } else {
+                let specs = filmcraft_render::graphic_clip::item_layer_specs(&it, mt, (1920, 1080));
+                format!("{:?}", specs.iter().find(|(i, _)| *i == idx).unwrap().1.transform)
             }
+        };
+        with(50.0) == with(200.0)
+    }
+
+    /// Uniform Scale is read as the render reads it, so Scale Width is greyed out exactly when the
+    /// render ignores it: Motion and Transform read the stored value even when `effects.addKeyframe`
+    /// gave Uniform Scale a keyframe that differs from it, graphic layers read the keyframe; a
+    /// missing or non-boolean Uniform Scale (an older or damaged project) counts as each reads it.
+    #[test]
+    fn uniform_scale_counts_as_the_render_reads_it() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let (clip, start) = {
+            let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+            (it.id, it.start)
+        };
+        // Motion's Uniform Scale on, with a keyframe that says off (the command allows it)
+        let added = s.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "uniform_scale", "time": start.0})).unwrap();
+        let mt = Tick(added["mediaTime"].as_i64().unwrap());
+        s.execute("effects.setKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "uniform_scale", "mediaTime": mt.0, "value": false})).unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        let it = seq.find_item(clip).unwrap().1.clone();
+        let motion = it.effects.iter().position(|e| e.effect == "motion").unwrap();
+        let uniform = |it: &TrackItem, idx: usize| it.effects[idx].params["uniform_scale"].clone();
+        assert_eq!(uniform(&it, motion).value, ParamValue::Bool(true));
+        assert_eq!(uniform(&it, motion).value_at(mt), ParamValue::Bool(false), "the keyframe differs from the stored value");
+        // the same on a graphic layer and on Transform, each also with Uniform Scale missing and non-boolean
+        let mut it = it;
+        it.effects.push(filmcraft_project::graphic::new_text_layer("A", Default::default(), 20.0));
+        it.effects.push(filmcraft_project::find_effect("transform").unwrap().instance());
+        let (layer, transform) = (it.effects.len() - 2, it.effects.len() - 1);
+        for idx in [layer, transform] {
+            let p = it.effects[idx].params.get_mut("uniform_scale").unwrap();
+            p.add_keyframe(mt);
+            p.keyframes[0].value = ParamValue::Bool(false);
+        }
+        let variants = |idx: usize| {
+            let mut missing = it.clone();
+            missing.effects[idx].params.remove("uniform_scale");
+            let mut odd = it.clone();
+            odd.effects[idx].params.get_mut("uniform_scale").unwrap().value = ParamValue::Float(1.0);
+            [("keyframed", it.clone()), ("missing", missing), ("non-boolean", odd)]
+        };
+        for idx in [motion, layer] {
+            for (case, it) in variants(idx) {
+                let e = &it.effects[idx];
+                let render = render_ignores_scale_width(&seq, &it, idx, mt);
+                assert_eq!(ignored_by_uniform_scale(&it, e, "scale_width", mt), render, "{} ({case})", e.effect);
+            }
+        }
+        // the render ignores Motion's Scale Width by its stored value, a graphic layer's by the keyframe
+        assert!(render_ignores_scale_width(&seq, &variants(motion)[0].1, motion, mt));
+        assert!(!render_ignores_scale_width(&seq, &variants(layer)[0].1, layer, mt));
+        // Transform (`gpufx`, `vfx::distort`): the stored value, missing or non-boolean = off
+        for ((case, it), render) in variants(transform).into_iter().zip([true, false, false]) {
+            assert_eq!(ignored_by_uniform_scale(&it, &it.effects[transform], "scale_width", mt), render, "transform ({case})");
         }
     }
 }
