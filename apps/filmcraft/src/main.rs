@@ -137,6 +137,12 @@ fn main() -> eframe::Result {
     // fell back, that would load the driver that failed. Exports then composite on the CPU.
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
+    } else {
+        // no device is created; an export that asks for the GPU is told why it gets none (#1616)
+        filmcraft_export::register_frame_renderer(|| {
+            filmcraft_export::note_gpu_render_disabled("the app started in a fallback graphics mode; exports render on the CPU");
+            None
+        });
     }
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
@@ -437,7 +443,15 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
-        self.0.render(project, seq, t, opts, sources)
+        let image = self.0.render(project, seq, t, opts, sources);
+        // a device that failed mid-export: say why, so `perf.stats` can (#1616); a frame the GPU
+        // declines for its own reasons leaves no reason behind and says nothing
+        if image.is_none()
+            && let Some(why) = filmcraft_gpu::export_renderer::disabled_reason()
+        {
+            filmcraft_export::note_gpu_render_disabled(&why);
+        }
+        image
     }
 
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
@@ -446,8 +460,16 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
 }
 
 fn register_gpu_frame_renderer() {
+    filmcraft_gpu::export_renderer::on_device_failed(filmcraft_export::note_gpu_render_disabled);
     filmcraft_export::register_frame_renderer(|| {
-        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+        let renderer = filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>);
+        // no renderer: say why, so `perf.stats` can (#1616)
+        if renderer.is_none()
+            && let Some(why) = filmcraft_gpu::export_renderer::disabled_reason()
+        {
+            filmcraft_export::note_gpu_render_disabled(&why);
+        }
+        renderer
     });
 }
 

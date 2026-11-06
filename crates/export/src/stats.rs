@@ -143,12 +143,54 @@ pub fn reset_export_lock_wait() {
 }
 
 /// GPU-vs-CPU frame counters of the export renderer (per-process, like the hardware ones).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuRenderStats {
     pub frames: u64,
     pub fallbacks: u64,
+    /// Why GPU rendering is off for this process (no adapter, a device error), once it is; the
+    /// first reason only. `None` while the GPU renders, or before an export asked for it.
+    pub disabled: Option<String>,
 }
 
 pub fn gpu_render_stats() -> GpuRenderStats {
-    GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
+    GpuRenderStats {
+        frames: GPU_FRAMES.load(Ordering::Relaxed),
+        fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed),
+        disabled: gpu_disabled().lock().unwrap_or_else(|e| e.into_inner()).clone(),
+    }
+}
+
+pub(crate) fn gpu_disabled() -> &'static std::sync::Mutex<Option<String>> {
+    static D: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    D.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// The GPU frame renderer is off for the rest of this process, for `why` (#1616): the reason an
+/// export that asked for the GPU renders on the CPU, so `perf.stats` can say so where no logger
+/// runs (the CLI). A frame renderer factory says so when it cannot build its renderer. The first
+/// reason is kept; later ones are the same device's follow-up errors. Bounded to 500 characters.
+pub fn note_gpu_render_disabled(why: &str) {
+    let mut d = gpu_disabled().lock().unwrap_or_else(|e| e.into_inner());
+    if d.is_none() {
+        *d = Some(bounded(why));
+    }
+}
+
+/// At most 500 characters, the ellipsis included.
+fn bounded(why: &str) -> String {
+    if why.chars().count() > 500 { why.chars().take(499).chain(['…']).collect() } else { why.to_string() }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::bounded;
+
+    #[test]
+    fn a_reason_stays_within_its_bound_ellipsis_included() {
+        assert_eq!(bounded("short"), "short");
+        assert_eq!(bounded(&"é".repeat(500)), "é".repeat(500));
+        let long = bounded(&"é".repeat(501));
+        assert_eq!(long.chars().count(), 500);
+        assert!(long.ends_with('…'));
+    }
 }
