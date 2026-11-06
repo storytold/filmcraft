@@ -80,6 +80,40 @@ pub struct SequenceHeader {
 impl SequenceHeader {
     pub fn parse(data: &[u8]) -> Result<SequenceHeader> {
         let mut r = BitReader::new(data);
+        Self::parse_bits(&mut r, &mut (0..0))
+    }
+
+    /// Parse a bounded sequence OBU payload, including its required trailing bits (5.3.4).
+    /// The ordinary decoder parser remains tolerant of trailing bits for existing callers.
+    pub fn parse_checked(data: &[u8]) -> Result<SequenceHeader> {
+        Self::parse_checked_with_color_range(data).map(|(header, _, _)| header)
+    }
+
+    /// Return the validated header, the color-description bit range, and the syntax end bit.
+    /// The range includes the presence flag and the optional three color-code bytes.
+    pub fn parse_checked_with_color_range(data: &[u8]) -> Result<(SequenceHeader, std::ops::Range<usize>, usize)> {
+        if data.len() > 65_536 {
+            return Err(Error::Unsupported("sequence header exceeds 64 KiB inspection limit"));
+        }
+        let mut r = BitReader::new(data);
+        let mut color_range = 0..0;
+        let h = Self::parse_bits(&mut r, &mut color_range)?;
+        let syntax_end = r.position();
+        if !r.flag()? {
+            return Err(Error::Invalid("sequence trailing_one_bit"));
+        }
+        while r.position() < data.len().saturating_mul(8) {
+            if r.flag()? {
+                return Err(Error::Invalid("sequence trailing_zero_bit"));
+            }
+        }
+        if h.reduced_still_picture_header && !h.still_picture {
+            return Err(Error::Invalid("reduced still header without still_picture"));
+        }
+        Ok((h, color_range, syntax_end))
+    }
+
+    fn parse_bits(r: &mut BitReader, color_range: &mut std::ops::Range<usize>) -> Result<SequenceHeader> {
         let mut s = SequenceHeader { profile: r.f(3)? as u8, ..Default::default() };
         if s.profile > 2 {
             return Err(Error::Unsupported("seq_profile > 2"));
@@ -167,13 +201,13 @@ impl SequenceHeader {
         s.enable_superres = r.flag()?;
         s.enable_cdef = r.flag()?;
         s.enable_restoration = r.flag()?;
-        s.color = parse_color_config(&mut r, s.profile)?;
+        s.color = parse_color_config(r, s.profile, color_range)?;
         s.film_grain_params_present = r.flag()?;
         Ok(s)
     }
 }
 
-fn parse_color_config(r: &mut BitReader, profile: u8) -> Result<ColorConfig> {
+fn parse_color_config(r: &mut BitReader, profile: u8, color_range: &mut std::ops::Range<usize>) -> Result<ColorConfig> {
     let mut c = ColorConfig::default();
     let high = r.flag()?;
     c.bit_depth = if profile == 2 && high {
@@ -185,6 +219,7 @@ fn parse_color_config(r: &mut BitReader, profile: u8) -> Result<ColorConfig> {
     };
     c.mono_chrome = if profile == 1 { false } else { r.flag()? };
     c.num_planes = if c.mono_chrome { 1 } else { 3 };
+    let start = r.position();
     if r.flag()? {
         c.color_primaries = r.f(8)? as u8;
         c.transfer_characteristics = r.f(8)? as u8;
@@ -194,6 +229,7 @@ fn parse_color_config(r: &mut BitReader, profile: u8) -> Result<ColorConfig> {
         c.transfer_characteristics = 2;
         c.matrix_coefficients = 2;
     }
+    *color_range = start..r.position();
     if c.mono_chrome {
         c.color_range = r.flag()?;
         c.subsampling_x = 1;
@@ -939,6 +975,12 @@ impl FrameHeader {
         let t = &mut self.tile_info;
         t.mi_col_starts.clear();
         t.mi_row_starts.clear();
+        // At most one start per superblock plus the final boundary. Reserve fallibly before
+        // parsing either layout so header inspection never relies on an infallible Vec growth.
+        let columns = usize::try_from(sb_cols).ok().and_then(|n| n.checked_add(1)).ok_or(Error::Invalid("tile column count"))?;
+        let rows = usize::try_from(sb_rows).ok().and_then(|n| n.checked_add(1)).ok_or(Error::Invalid("tile row count"))?;
+        t.mi_col_starts.try_reserve(columns).map_err(|_| Error::Invalid("tile column allocation failed"))?;
+        t.mi_row_starts.try_reserve(rows).map_err(|_| Error::Invalid("tile row allocation failed"))?;
         if r.flag()? {
             t.cols_log2 = min_log2_tile_cols;
             while t.cols_log2 < max_log2_tile_cols {
