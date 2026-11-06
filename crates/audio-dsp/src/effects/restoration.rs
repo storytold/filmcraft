@@ -101,6 +101,10 @@ const MS_WINDOW_S: f32 = 1.5;
 /// Bias compensation of the minimum of smoothed periodograms (≈ +4 dB).
 const MS_BIAS: f32 = 2.5;
 const PSD_SMOOTH: f32 = 0.8;
+/// Mean square below which a hop of input counts as digital silence (≈ −100 dBFS). Frames that
+/// contain such a hop (the zeroed STFT buffer at start-up, silent pre-roll, gaps) would seed the
+/// noise minimum near zero and disable the gate until it ages out of the search window.
+const SILENCE_MS: f32 = 1e-10;
 
 #[derive(Clone, Debug)]
 struct NoiseState {
@@ -111,6 +115,8 @@ struct NoiseState {
     frames_in_sub: usize,
     gains: Vec<f32>,
     started: bool,
+    /// Consecutive non-silent hops in the analysis buffer.
+    live_hops: usize,
 }
 
 impl NoiseState {
@@ -123,6 +129,7 @@ impl NoiseState {
             frames_in_sub: 0,
             gains: vec![1.0; bins],
             started: false,
+            live_hops: 0,
         }
     }
     fn reset(&mut self) {
@@ -133,6 +140,7 @@ impl NoiseState {
         self.ring_pos = 0;
         self.frames_in_sub = 0;
         self.started = false;
+        self.live_hops = 0;
     }
 }
 
@@ -212,29 +220,39 @@ impl AudioEffect for DeNoise {
             let spec = &mut self.spec;
             let sg = &mut self.smoothed_gains;
             let mut frame = |input: &[f32], out: &mut [f32]| {
+                let newest = &input[input.len().saturating_sub(hop)..];
+                let ms = newest.iter().map(|v| v * v).sum::<f32>() / hop.max(1) as f32;
+                st.live_hops = if ms < SILENCE_MS { 0 } else { (st.live_hops + 1).min(n / hop) };
+                // Only frames whose whole window holds signal feed the noise tracker.
+                let measure = st.live_hops >= n / hop;
                 spec.analyse(input);
                 let bins = n / 2 + 1;
-                for k in 0..bins {
-                    let p = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
-                    st.psd[k] = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
-                    st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
-                }
-                st.started = true;
-                st.frames_in_sub += 1;
-                let rotate = st.frames_in_sub == sub_frames;
-                for k in 0..bins {
-                    let mut m = st.cur_min[k];
-                    for u in 0..MS_SUBWINDOWS {
-                        m = m.min(st.ring[u * bins + k]);
+                if measure {
+                    for k in 0..bins {
+                        let p = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
+                        st.psd[k] = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
+                        st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
                     }
-                    let noise = m * MS_BIAS;
-                    let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
-                    let g = &mut st.gains[k];
-                    let c = if target > *g { 0.7 } else { release };
-                    *g += (target - *g) * c;
-                    if rotate {
-                        st.ring[st.ring_pos * bins + k] = st.cur_min[k];
-                        st.cur_min[k] = f32::INFINITY;
+                    st.started = true;
+                    st.frames_in_sub += 1;
+                }
+                let rotate = st.frames_in_sub == sub_frames;
+                // Partly silent frames hold the gains (pass-through until the first measurement).
+                if measure {
+                    for k in 0..bins {
+                        let mut m = st.cur_min[k];
+                        for u in 0..MS_SUBWINDOWS {
+                            m = m.min(st.ring[u * bins + k]);
+                        }
+                        let noise = m * MS_BIAS;
+                        let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
+                        let g = &mut st.gains[k];
+                        let c = if target > *g { 0.7 } else { release };
+                        *g += (target - *g) * c;
+                        if rotate {
+                            st.ring[st.ring_pos * bins + k] = st.cur_min[k];
+                            st.cur_min[k] = f32::INFINITY;
+                        }
                     }
                 }
                 if rotate {
@@ -330,5 +348,24 @@ mod tests {
         assert!(red < -10.0, "noise reduction only {red} dB");
         let kept = db(tone_amplitude(&y[onn.clone()], 1000.0, SR as f64) / 0.3);
         assert!(kept.abs() < 1.0, "tone changed by {kept} dB");
+    }
+
+    /// Issue #4404: the reduction must work from the first second, both when the noise starts
+    /// at the very first sample and after leading digital silence (the render pre-roll at the
+    /// start of a clip).
+    #[test]
+    fn denoise_effective_from_first_second() {
+        let sec = SR as usize;
+        for pre in [0, sec] {
+            let mut d = DeNoise::new(SR, 1);
+            d.set_param("reduction", 20.0);
+            let lat = d.latency();
+            let mut rng = Rng::new(4404);
+            let x: Vec<f32> = (0..pre + 2 * sec).map(|i| if i < pre { 0.0 } else { rng.uniform() * 0.02 }).collect();
+            let mut y = x.clone();
+            d.process(&mut [&mut y]);
+            let red = db(rms(&y[pre + lat..pre + lat + sec]) / rms(&x[pre..pre + sec]));
+            assert!(red < -10.0, "pre={pre}: first second reduction only {red:.1} dB");
+        }
     }
 }
