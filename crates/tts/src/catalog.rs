@@ -245,6 +245,7 @@ pub fn find(id: &str) -> Option<&'static NeuralVoice> {
     VOICES.iter().chain(KOKORO_RU_VOICES.iter()).chain(PIPER_RU_VOICES.iter()).find(|v| v.info.id == id)
 }
 
+/// Returns the package ID responsible for downloading and managing the given neural voice ID.
 pub fn package_for_voice(voice_id: &str) -> Option<&'static str> {
     if VOICES.iter().any(|v| v.info.id == voice_id) {
         Some(PACKAGE_ID)
@@ -257,6 +258,7 @@ pub fn package_for_voice(voice_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Checks whether voice `voice_id` is installed and ready for local inference in `models_dir`.
 pub fn is_voice_installed(voice_id: &str, models_dir: &Path) -> bool {
     match package_for_voice(voice_id) {
         Some(PACKAGE_ID) => installed(models_dir) && cfg!(feature = "kokoro"),
@@ -271,6 +273,7 @@ pub fn size() -> u64 {
     FILES.iter().map(|f| f.size).sum()
 }
 
+/// Returns the package directory path under `models_dir` for English Kokoro-82M voices.
 pub fn package_dir(models_dir: &Path) -> PathBuf {
     models_dir.join(PACKAGE_ID)
 }
@@ -287,37 +290,45 @@ pub fn missing_bytes(models_dir: &Path) -> u64 {
     FILES.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum()
 }
 
+/// Returns the package directory path under `models_dir` for Piper Russian voices.
 pub fn piper_ru_package_dir(models_dir: &Path) -> PathBuf {
     models_dir.join(PIPER_RU_PACKAGE_ID)
 }
 
+/// Returns true when all required Piper Russian model and config files exist with correct size.
 pub fn piper_ru_installed(models_dir: &Path) -> bool {
     let d = piper_ru_package_dir(models_dir);
     PIPER_RU_FILES.iter().all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size))
 }
 
+/// Total package size in bytes for Piper Russian models.
 pub fn piper_ru_size() -> u64 {
     PIPER_RU_FILES.iter().map(|f| f.size).sum()
 }
 
+/// Remaining un-downloaded byte count for Piper Russian models.
 pub fn piper_ru_missing_bytes(models_dir: &Path) -> u64 {
     let d = piper_ru_package_dir(models_dir);
     PIPER_RU_FILES.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum()
 }
 
+/// Returns the package directory path under `models_dir` for Kokoro Russian models.
 pub fn kokoro_ru_package_dir(models_dir: &Path) -> PathBuf {
     models_dir.join(KOKORO_RU_PACKAGE_ID)
 }
 
+/// Returns true when all required Kokoro Russian weights and voice packs exist with correct size.
 pub fn kokoro_ru_installed(models_dir: &Path) -> bool {
     let d = kokoro_ru_package_dir(models_dir);
     KOKORO_RU_FILES.iter().all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size))
 }
 
+/// Total package size in bytes for Kokoro Russian models.
 pub fn kokoro_ru_size() -> u64 {
     KOKORO_RU_FILES.iter().map(|f| f.size).sum()
 }
 
+/// Remaining un-downloaded byte count for Kokoro Russian models.
 pub fn kokoro_ru_missing_bytes(models_dir: &Path) -> u64 {
     let d = kokoro_ru_package_dir(models_dir);
     KOKORO_RU_FILES.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum()

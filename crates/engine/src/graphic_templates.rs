@@ -825,6 +825,7 @@ fn char_stroke_width(k: &str, v: &Value) -> Result<f32> {
         .ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be a number from 0 to 1000")))
 }
 
+/// Parses stroke placement kind (outer, center, inner, or 0..2) from command parameter `v`.
 fn char_stroke_kind(k: &str, v: &Value) -> Result<u32> {
     let kind = match v {
         Value::Number(n) => n.as_u64().filter(|n| *n <= 2).map(|n| n as u32),

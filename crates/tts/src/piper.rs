@@ -62,11 +62,13 @@ pub struct PiperConfig {
 }
 
 impl PiperConfig {
+    /// Loads Piper JSON configuration containing audio rate, inference scales, and phoneme mapping.
     pub fn load(path: &Path) -> Result<Self, TtsError> {
         let bytes = std::fs::read(path).map_err(|e| TtsError::Model(format!("{}: {e}", path.display())))?;
         serde_json::from_slice(&bytes).map_err(|e| TtsError::Model(format!("failed to parse piper config: {e}")))
     }
 
+    /// Converts a phoneme character sequence into model token IDs with BOS, EOS, and inter-token pads.
     pub fn text_to_ids(&self, phonemes: &str) -> Vec<i64> {
         let pad = self.phoneme_id_map.get("_").and_then(|v| v.first().copied()).unwrap_or(0);
         let bos = self.phoneme_id_map.get("^").and_then(|v| v.first().copied()).unwrap_or(1);
@@ -95,6 +97,7 @@ pub struct PiperModel {
 }
 
 impl PiperModel {
+    /// Decodes the Piper ONNX protobuf and exposes frame count outputs for downstream trimming.
     pub fn load(onnx_path: &Path, json_path: &Path) -> Result<Self, TtsError> {
         let config = PiperConfig::load(json_path)?;
         let bytes = std::fs::read(onnx_path).map_err(|e| TtsError::Model(format!("{}: {e}", onnx_path.display())))?;
@@ -121,6 +124,7 @@ impl PiperModel {
         Ok(Self { config, raw_proto: model_proto, buckets: Mutex::new(HashMap::new()) })
     }
 
+    /// Compiles a static ONNX graph variant specialized to fixed input token count `bucket_len`.
     fn compile_bucket(&self, bucket_len: usize) -> Result<Arc<TypedRunnableModel>, TtsError> {
         let mut proto = self.raw_proto.clone();
         let graph = proto.graph.as_mut().ok_or_else(|| TtsError::Model("onnx graph missing".into()))?;
@@ -180,6 +184,7 @@ impl PiperModel {
         Ok(runnable)
     }
 
+    /// Retrieves an already-compiled runnable graph for `bucket_len` or compiles and caches it.
     fn get_or_compile_bucket(&self, bucket_len: usize) -> Result<Arc<TypedRunnableModel>, TtsError> {
         let mut guard = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(r) = guard.get(&bucket_len) {
@@ -190,6 +195,7 @@ impl PiperModel {
         Ok(runnable)
     }
 
+    /// Generates raw audio PCM float samples from token IDs at the requested speaking speed.
     pub fn speak(&self, ids: &[i64], speed: f64) -> Result<Vec<f32>, TtsError> {
         let n = ids.len();
         if n == 0 {
@@ -242,6 +248,7 @@ pub struct PiperVoice {
     model: Arc<PiperModel>,
 }
 
+/// Loads or caches a Piper ONNX voice from the model catalog directory.
 pub fn load(id: &str, models_dir: &Path) -> Result<PiperVoice, TtsError> {
     let v = catalog::find(id).ok_or_else(|| TtsError::UnknownVoice(id.to_string()))?;
     if !catalog::piper_ru_installed(models_dir) {
@@ -318,6 +325,7 @@ impl Voice for PiperVoice {
     }
 }
 
+/// Applies pitch shift in semitones to generated audio samples using a time-domain pitch shifter.
 fn pitch_shift(mut x: Vec<f32>, semitones: f64, rate: u32) -> Vec<f32> {
     let mut ps = filmcraft_audio_dsp::effects::PitchShifter::new(rate as f32, 1);
     ps.set_param("semitones", semitones as f32);

@@ -76,6 +76,7 @@ impl Default for TtsDraft {
 }
 
 impl TtsDraft {
+    /// Constructs a TTS draft restoring saved preferences for language, voice, pitch, and pace.
     pub fn from_prefs(prefs: &filmcraft_engine::autosave::TtsPrefs) -> Self {
         let lang = if prefs.last_language.is_empty() { "en-US".to_string() } else { prefs.last_language.clone() };
         let models = filmcraft_engine::transcript::models_dir();
@@ -102,6 +103,7 @@ impl TtsDraft {
     }
 }
 
+/// Selects the preferred default voice for `language`, preferring installed neural voices when available.
 pub fn default_voice_for_lang(language: &str, voices: &[filmcraft_tts::VoiceInfo]) -> String {
     if language == "en-US" && natural_installed() {
         return "kokoro-heart".into();

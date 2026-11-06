@@ -112,6 +112,7 @@ fn russian_to_kokoro_symbols(s: &str) -> String {
     s.replace("tɕ", "ʧ").replace("ts", "ʦ").replace("ɕː", "ɕ").replace('ʐ', "ʒ").replace('ʂ', "ʃ")
 }
 
+/// Applies pitch shift in semitones to Russian synthesized audio using a time-domain pitch shifter.
 fn pitch_shift(mut x: Vec<f32>, semitones: f64, rate: u32) -> Vec<f32> {
     let mut ps = filmcraft_audio_dsp::effects::PitchShifter::new(rate as f32, 1);
     ps.set_param("semitones", semitones as f32);

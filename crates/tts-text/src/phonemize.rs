@@ -442,6 +442,7 @@ pub fn normalize_russian_genitive(word: &str) -> String {
     normalize_russian_genitive_token(word)
 }
 
+/// Normalizes single Russian word token genitive `-ого`/`-его` endings to `-ово`/`-ево`.
 fn normalize_russian_genitive_token(lower: &str) -> String {
     if lower == "сегодня" {
         return "севодня".to_string();

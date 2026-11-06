@@ -107,10 +107,12 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, report: &mut Report) -> Result
     Ok(imported)
 }
 
+/// Extracts trimmed text content from the first immediate child matching `tag`.
 fn child_text(node: Node<'_, '_>, tag: &str) -> Option<String> {
     node.children().find(|c| c.tag_name().name() == tag).and_then(|c| c.text()).map(|t| t.trim().to_string())
 }
 
+/// Parses the sequence frame rate from a sequence node's `<Timebase>` or `<FrameRate>` tags.
 fn parse_frame_rate(node: Node<'_, '_>) -> FrameRate {
     if let Some(tb_str) = child_text(node, "Timebase")
         && let Ok(tb) = tb_str.parse::<u64>()
@@ -133,6 +135,7 @@ fn parse_frame_rate(node: Node<'_, '_>) -> FrameRate {
     FrameRate::FPS_24
 }
 
+/// Extracts sequence frame dimensions `(width, height)` from `VideoFrameSize` or `Width`/`Height`.
 fn parse_frame_dimensions(node: Node<'_, '_>) -> (u32, u32) {
     if let Some(dim_str) = child_text(node, "VideoFrameSize") {
         let parts: Vec<&str> = dim_str.split(',').map(str::trim).collect();
@@ -158,6 +161,7 @@ fn parse_frame_dimensions(node: Node<'_, '_>) -> (u32, u32) {
     (1920, 1080)
 }
 
+/// Resolves an `ObjectRef` or `ObjectURef` attribute to its target node in `id_map`.
 fn resolve_ref<'a, 'input>(node: Node<'a, 'input>, id_map: &HashMap<&'input str, Node<'a, 'input>>) -> Option<Node<'a, 'input>> {
     if let Some(r) = node.attribute("ObjectRef").or_else(|| node.attribute("ObjectURef")) { id_map.get(r).copied() } else { Some(node) }
 }
@@ -172,6 +176,7 @@ struct ParseContext<'a, 'input> {
     report: &'a mut Report,
 }
 
+/// Scans sequence children for video or audio track groups and populates the sequence tracks.
 fn parse_track_group(seq_node: Node<'_, '_>, kind: TrackKind, sequence: &mut Sequence, ctx: &mut ParseContext<'_, '_>) {
     let group_tag = match kind {
         TrackKind::Video => "VideoTrackGroup",
@@ -217,6 +222,7 @@ fn parse_track_group(seq_node: Node<'_, '_>, kind: TrackKind, sequence: &mut Seq
     }
 }
 
+/// Locates clip track items within a track node and adds them as clips in the timeline sequence.
 fn parse_track_items(track_node: Node<'_, '_>, kind: TrackKind, track_idx: usize, sequence: &mut Sequence, ctx: &mut ParseContext<'_, '_>) {
     let item_nodes: Vec<Node<'_, '_>> = track_node
         .descendants()
@@ -273,6 +279,7 @@ fn parse_track_items(track_node: Node<'_, '_>, kind: TrackKind, track_idx: usize
     }
 }
 
+/// Parses a timestamp or frame number string into exact timeline [`Tick`] duration.
 fn parse_time(node: Node<'_, '_>, tag: &str, rate: FrameRate) -> Tick {
     if let Some(s) = child_text(node, tag)
         && let Ok(v) = s.parse::<i64>()
@@ -285,6 +292,7 @@ fn parse_time(node: Node<'_, '_>, tag: &str, rate: FrameRate) -> Tick {
     Tick::ZERO
 }
 
+/// Resolves file path or media URI from clip track item or referenced media object.
 fn find_media_path(node: Node<'_, '_>, id_map: &HashMap<&str, Node<'_, '_>>) -> Option<String> {
     for desc in node.descendants() {
         for tag in ["ActualMediaFilePath", "FilePath", "Path", "URL"] {
