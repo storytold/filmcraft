@@ -576,3 +576,38 @@ mod selected_streams {
         assert!(files.writes.lock().unwrap().is_empty());
     }
 }
+
+/// An AAF whose sequence project load would refuse (here a frame wider than `MAX_FRAME_SIDE`)
+/// writes none of its embedded audio: the check runs before any file is extracted next to the
+/// document, so the refused import leaves nothing behind (#2786). OMF stores no frame size.
+#[test]
+fn a_refused_embedded_aaf_import_writes_no_audio_files() {
+    fn wav_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav")) {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+    let (mut s, _items, seq, dir) = setup("embedded-refused-aaf");
+    let mut p = (*s.project).clone();
+    p.sequence_mut(seq).unwrap().settings.width = filmcraft_project::MAX_FRAME_SIDE + 7_232;
+    s.project = Arc::new(p);
+    let path = dir.join("cut.aaf").to_string_lossy().into_owned();
+    s.execute("file.exportAaf", json!({"path": path, "audio": "embedded", "sequence": seq.0})).unwrap();
+    assert_eq!(wav_files(&dir), Vec::<std::path::PathBuf>::new(), "the embedded export wrote audio files");
+    let before = filmcraft_format::encode(&s.project, false);
+    let err = s.execute("file.import", json!({"paths": [path]})).unwrap_err().to_string();
+    assert!(err.contains("invalid imported sequence") && err.contains("frame size"), "{err}");
+    assert_eq!(wav_files(&dir), Vec::<std::path::PathBuf>::new(), "the refused import left audio files behind");
+    assert_eq!(filmcraft_format::encode(&s.project, false), before, "the refused import changed the project");
+    let _ = std::fs::remove_dir_all(dir);
+}
