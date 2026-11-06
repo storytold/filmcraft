@@ -371,3 +371,63 @@ fn authenticated_tcp_request_reaches_the_ui_queue() {
     server.join().unwrap();
     assert_eq!(serde_json::from_str::<Value>(&reply).unwrap(), json!({"id": 7, "ok": true}));
 }
+
+/// A scratch data folder, removed when the guard drops (also when the test panics).
+fn scratch_dir() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+#[test]
+fn settings_start_writes_an_owner_only_token_the_bridge_can_read() {
+    let tmp = scratch_dir();
+    let dir = tmp.path();
+    let token = create_token_file(dir).unwrap();
+    assert!(filmcraft_engine::autosave::is_control_token(&token), "{token}");
+    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(token.as_str()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    // A second token replaces the first (a damaged or deleted file gets a fresh one).
+    let again = create_token_file(dir).unwrap();
+    assert_ne!(again, token);
+    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(again.as_str()));
+}
+
+#[test]
+fn a_damaged_token_file_is_not_used() {
+    let tmp = scratch_dir();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE);
+    for junk in ["", "abc", &"g".repeat(64), &"a".repeat(65)] {
+        std::fs::write(&path, junk).unwrap();
+        assert_eq!(filmcraft_engine::autosave::read_control_token(dir), None, "{junk:?}");
+    }
+    std::fs::write(&path, vec![b'a'; 1_000_000]).unwrap();
+    assert_eq!(filmcraft_engine::autosave::read_control_token(dir), None);
+    std::fs::write(&path, format!("  {TOKEN}\r\n")).unwrap();
+    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(TOKEN));
+}
+
+#[test]
+fn the_settings_port_is_read_from_the_preferences_file() {
+    let tmp = scratch_dir();
+    let dir = tmp.path();
+    // No preferences file, or the setting off: no server.
+    assert_eq!(port_from_settings(dir), None);
+    let mut prefs = filmcraft_engine::autosave::Preferences::default();
+    prefs.control_server.port = 9911;
+    prefs.save(&dir.join(filmcraft_engine::autosave::PREFS_FILE)).unwrap();
+    assert_eq!(port_from_settings(dir), None);
+    prefs.control_server.start_at_launch = true;
+    prefs.save(&dir.join(filmcraft_engine::autosave::PREFS_FILE)).unwrap();
+    assert_eq!(port_from_settings(dir), Some(9911));
+    // A hand-edited port out of range is clamped by the schema on load.
+    std::fs::write(dir.join(filmcraft_engine::autosave::PREFS_FILE), r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":99999999}}"#).unwrap();
+    assert_eq!(port_from_settings(dir), Some(65_535));
+    std::fs::write(dir.join(filmcraft_engine::autosave::PREFS_FILE), r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":-5}}"#).unwrap();
+    assert_eq!(port_from_settings(dir), Some(1024));
+}

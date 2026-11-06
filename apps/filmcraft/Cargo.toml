@@ -31,6 +31,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 serde_json = { workspace = true }
 # Constant-time comparison of control-channel credentials.
 subtle = "2.6"
+getrandom = "0.3"
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
@@ -43,6 +44,8 @@ open = "5"
 
 [dev-dependencies]
 glob = "0.3"
+# control_server tests: scratch folders removed even when a test fails.
+tempfile = "3"
 # graphics.rs: enumerate the real adapters in a test.
 pollster = "1"
 

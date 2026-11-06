@@ -12,6 +12,24 @@ filmcraft --control 9876 &
 filmcraft-cli mcp --bridge 127.0.0.1:9876
 ```
 
+**Start with every launch (Settings ▸ Control Server).** Turn on *Start the control server when
+FilmCraft starts* and choose a *Port* (default 9876, 1024–65535) to get the server without
+`--control`, e.g. when FilmCraft is opened from the Dock, Start menu or a file. The setting is
+stored as `controlServer.startAtLaunch` / `controlServer.port` in `preferences.json` (also
+`prefs.set`) and takes effect at the next start; `--control` and `FILMCRAFT_CONTROL_PORT` override
+it. When `FILMCRAFT_CONTROL_TOKEN` is not set, the app then creates a random token in the file
+`control-token` in its data folder (owner-only on Unix; macOS `~/Library/Application Support/FilmCraft`,
+Windows `%APPDATA%\FilmCraft`, Linux `~/.local/share/filmcraft`, or `FILMCRAFT_DATA_DIR`) and keeps
+using it. `filmcraft-cli … --bridge` reads the same file when the variable is not set, so an MCP
+client only needs:
+
+```json
+{"mcpServers": {"filmcraft": {"command": "filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"]}}}
+```
+
+`FILMCRAFT_CONTROL_TOKEN`, when set, always wins over the file (on both sides). `--control` reads an
+existing token file too but never creates one. Delete the file to get a new token at the next start.
+
 The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
 command-line arguments, logs, checked-in MCP configuration, or shared files. Without a valid value,
 the desktop leaves the listener closed. Every raw JSON request must include the same top-level

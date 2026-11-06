@@ -31,14 +31,23 @@ pub struct BridgeClient {
 
 impl BridgeClient {
     /// `addr` such as `127.0.0.1:9876` (loopback only). Reads `FILMCRAFT_CONTROL_TOKEN`
-    /// from the environment; the desktop app requires this credential on every request.
+    /// from the environment, else the `control-token` file in the default data folder (written by
+    /// the app when Settings ▸ Control Server starts the server); the app requires it on every
+    /// request. See [`Self::with_data_dir`] for an app started with `--data-dir`.
     pub fn new(addr: impl Into<String>) -> Result<Self, AutomationError> {
+        Self::with_data_dir(addr, None)
+    }
+
+    /// [`Self::new`], looking for the `control-token` file in `data_dir` (the app's `--data-dir`)
+    /// instead of the default data folder when it is given. `FILMCRAFT_CONTROL_TOKEN` still wins.
+    pub fn with_data_dir(addr: impl Into<String>, data_dir: Option<&std::path::Path>) -> Result<Self, AutomationError> {
         let addr = addr.into();
         let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
         if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
             return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
         }
-        Ok(Self { addr, token: std::env::var("FILMCRAFT_CONTROL_TOKEN").ok(), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        let data_dir = data_dir.map(std::path::Path::to_path_buf).or_else(filmcraft_engine::autosave::default_data_dir);
+        Ok(Self { addr, token: filmcraft_engine::autosave::control_token(data_dir.as_deref()), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -124,7 +133,7 @@ impl BridgeClient {
             .await
             .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
             .map_err(|e| AutomationError::Bridge(format!(
-                "cannot connect to {} ({e}); start the app with `filmcraft --control <port>` and set FILMCRAFT_CONTROL_TOKEN to the same 64-hex-character value on both sides (see docs/control-protocol.md)",
+                "cannot connect to {} ({e}); start the app with `filmcraft --control <port>` (or turn on Settings ▸ Control Server) and set FILMCRAFT_CONTROL_TOKEN to the same 64-hex-character value on both sides, or leave it unset on both to use the control-token file in the data folder (see docs/control-protocol.md)",
                 self.addr
             )))?;
         let (r, w) = s.into_split();
@@ -301,6 +310,23 @@ mod tests {
         let seen = seen.lock().await;
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[1]["params"]["command"], "sequence.inspect");
+    }
+
+    /// An app started with `--data-dir` writes its `control-token` file there: the bridge given
+    /// that folder reads it instead of the default data folder's.
+    #[test]
+    fn the_token_file_is_read_from_the_given_data_dir() {
+        if std::env::var_os("FILMCRAFT_CONTROL_TOKEN").is_some() {
+            return; // the variable wins over any file; nothing to check here
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let token = "fedcba9876543210".repeat(4);
+        std::fs::write(dir.path().join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE), format!("{token}\n")).unwrap();
+        let b = BridgeClient::with_data_dir("127.0.0.1:9876", Some(dir.path())).unwrap();
+        assert_eq!(b.token.as_deref(), Some(token.as_str()));
+        // A folder without a usable token file gives no file credential.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(BridgeClient::with_data_dir("127.0.0.1:9876", Some(empty.path())).unwrap().token, None);
     }
 
     #[tokio::test]

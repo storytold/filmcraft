@@ -10,6 +10,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -64,15 +65,65 @@ impl DisabledWhy {
 /// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
 /// answer requests (until then they are rejected with a retryable error), and — when the server
 /// is *not* running — why (#3436), for the log and (for a bad token) the status bar.
-pub fn start(port: u16, ctx: egui::Context) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    start_with_token(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok())
+///
+/// The credential is `FILMCRAFT_CONTROL_TOKEN`, else the token file in `data_dir`
+/// ([`filmcraft_engine::autosave::CONTROL_TOKEN_FILE`]). `create_token` (the server was started by
+/// Settings ▸ Control Server, typically from a desktop launch without that variable) writes a fresh
+/// token file when there is no usable one, so the bridge can read the same credential.
+pub fn start(port: u16, ctx: egui::Context, data_dir: Option<&Path>, create_token: bool) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    let mut token = filmcraft_engine::autosave::control_token(data_dir);
+    if token.is_none()
+        && create_token
+        && let Some(dir) = data_dir
+    {
+        match create_token_file(dir) {
+            Ok(t) => token = Some(t),
+            Err(e) => log::warn!("could not write the control token file in {}: {e}", dir.display()),
+        }
+    }
+    start_with_token(port, ctx, token)
+}
+
+/// The control port from Settings ▸ Control Server, when "Start the control server when FilmCraft
+/// starts" is on. Read straight from the preferences file: the server starts before the session.
+pub fn port_from_settings(data_dir: &Path) -> Option<u16> {
+    filmcraft_engine::autosave::Preferences::load(&data_dir.join(filmcraft_engine::autosave::PREFS_FILE)).control_server.launch_port()
+}
+
+/// Write a new random credential to `<dir>/control-token` (owner-only on Unix) and return it.
+fn create_token_file(dir: &Path) -> std::io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    // An older file keeps its mode on open: make sure it is owner-only before the secret goes in.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(token.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    log::info!("control server token written to {}", path.display());
+    Ok(token)
 }
 
 fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
     let (tx, rx) = channel::<ControlRequest>();
-    // An inherited environment variable shares the credential with the owner's bridge process
-    // without exposing it in command-line arguments, logs, or a shared discovery file.
-    let Some(token) = token.filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
+    // An inherited environment variable (or the owner-only token file in the per-user data
+    // folder) shares the credential with the owner's bridge process without exposing it in
+    // command-line arguments or logs.
+    let Some(token) = token.filter(|t| filmcraft_engine::autosave::is_control_token(t)) else {
         // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
         // the app, which shows it in the status bar.
         log::warn!("control server disabled: {}", DisabledWhy::Token.reason());
