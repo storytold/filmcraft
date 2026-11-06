@@ -1450,6 +1450,10 @@ fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft:
 /// Lumetri ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
 /// then correct inside it (or show the mask).
 ///
+/// - **Correction** (Premiere's order: Temperature, Tint, Contrast, Sharpen, Saturation): Contrast
+///   is Basic Correction's S-curve around mid grey, Sharpen is Creative ▸ Sharpen's unsharp mask
+///   (negative values soften, the usual way to smooth skin), both mixed in by the key.
+///
 /// - **Denoise** removes speckle from the key: a median filter (radius 1–3 px at full
 ///   resolution, scaled with the playback resolution) mixed in by the amount.
 /// - **Blur** softens the key's edges: a Gaussian (σ up to 20 px at full resolution, three box
@@ -1467,6 +1471,11 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (htemp, htint, hsat, hshift) =
         (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
     let (denoise, blur) = (f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0, f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0);
+    let unit_param = |id: &str| {
+        let v = f(e, id, cx) / 100.0;
+        if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
+    };
+    let (contrast, sharpen) = (unit_param("hsl_contrast"), unit_param("hsl_sharpen"));
     let (w, h) = (img.w, img.h);
     let unit = |c: [f32; 3]| {
         let v = gs.encode(c);
@@ -1515,6 +1524,15 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 c2[0] *= 1.0 + 0.25 * htemp;
                 c2[2] *= 1.0 - 0.25 * htemp;
                 c2[1] *= 1.0 - 0.2 * htint;
+                // contrast: Basic Correction's S-curve around mid grey
+                if contrast.abs() > 1e-4 {
+                    let k = 1.0 + contrast;
+                    c2 = c2.map(|q| {
+                        let q = q.clamp(0.0, 1.0);
+                        let s = q * q * (3.0 - 2.0 * q);
+                        if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
+                    });
+                }
                 [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
             }
         };
@@ -1522,6 +1540,16 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
         gs.decode(out)
     });
+    // Sharpen: Creative ▸ Sharpen's unsharp mask, mixed in by the key
+    if show_mask == 0 && sharpen.abs() > 1e-3 {
+        let mut sharp = img.clone();
+        unsharp(&mut sharp, 1.2 * cx.px_scale.max(0.35), sharpen, 0.0);
+        img.px.par_chunks_mut(4).zip(sharp.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, s), &m)| {
+            for k in 0..3 {
+                p[k] += (s[k] - p[k]) * m;
+            }
+        });
+    }
 }
 
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges
