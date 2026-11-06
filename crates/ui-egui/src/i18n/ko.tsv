@@ -105,7 +105,7 @@
 	Add Lumetri Color to clip	클립에 Lumetri Color 추가
 	Add Marker	마커 추가
 	Add Marker (M)	마커 추가(M)
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일을 놓거나 아래에서 소스를 선택하세요.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일이나 폴더를 놓거나 아래에서 소스를 선택하세요.
 	Add New Caption Track…	새 자막 트랙 추가…
 	Add Property…	속성 추가…
 	Add Range Marker	범위 마커 추가
@@ -2580,6 +2580,7 @@
 	Reverse Field Dominance	필드 우선순위 반전
 	Reverse Match Frame	역방향 프레임 일치
 	Reverse Speed	역방향 속도
+	Maintain Audio Pitch	오디오 피치 유지
 	Reverse the order	순서 반대로
 	Revert	되돌리기
 	Revert Remix	리믹스 되돌리기
@@ -3690,3 +3691,13 @@
 	Previous	이전
 	Next	다음
 	Enter a valid HH:MM:SS:FF timecode	올바른 HH:MM:SS:FF 타임코드를 입력하세요
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10비트 색상
+	All Intra	올 인트라
+	Every frame a keyframe (edit-friendly, larger files)	모든 프레임을 키프레임으로(편집하기 쉬움, 파일 크기 증가)
+	H.264 High 10 Master	H.264 High 10 마스터
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10비트 4:2:0), 시퀀스 크기, 고정 품질 CRF 16, AAC 320 kbps, 10비트 마스터
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10비트 4:2:0, 모든 프레임이 키프레임), CRF 12, AAC 320 kbps, 편집하기 쉬운 중간 파일
