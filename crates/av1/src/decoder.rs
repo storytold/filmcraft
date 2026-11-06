@@ -270,6 +270,24 @@ impl Default for Decoder {
     }
 }
 
+/// Most pictures one `decode` chunk may show (a temporal unit shows one per spatial layer).
+const MAX_SHOWN_PER_CHUNK: usize = 256;
+
+fn shown_within_limit(n: usize) -> bool {
+    n <= MAX_SHOWN_PER_CHUNK
+}
+
+/// Add a shown picture to a chunk's outputs, refusing the chunk (and dropping everything it showed)
+/// before the list can grow past [`MAX_SHOWN_PER_CHUNK`].
+fn push_shown(out: &mut Vec<(Output, usize, u32)>, item: (Output, usize, u32)) -> Result<()> {
+    if !shown_within_limit(out.len() + 1) {
+        out.clear();
+        return Err(Error::Invalid("too many pictures shown by one chunk"));
+    }
+    out.push(item);
+    Ok(())
+}
+
 impl Decoder {
     /// A decoder using all available cores (with the `threads` feature).
     pub fn new() -> Decoder {
@@ -384,6 +402,9 @@ impl Decoder {
     fn parse(&mut self, data: &[u8]) -> Result<()> {
         // (output, temporal unit, spatial_id)
         let mut out: Vec<(Output, usize, u32)> = Vec::new();
+        // Each show_existing_frame costs a few bytes but a full picture copy once it is taken: one
+        // chunk may not ask for more displays than any real temporal unit holds (checked as each
+        // picture is added, so a malformed OBU after the limit cannot let them through either).
         let r = self.parse_obus(data, &mut out);
         // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
         // highest spatial layer present.
@@ -475,20 +496,20 @@ impl Decoder {
                     let mut r = BitReader::new(payload);
                     let shown = self.frame_header(&mut r, temporal_id, spatial_id)?;
                     if let Some(o) = shown {
-                        out.push((o, tu, spatial_id));
+                        push_shown(out, (o, tu, spatial_id))?;
                         continue;
                     }
                     if obu_type == OBU_FRAME_T {
                         r.byte_align();
                         let rest = payload.get(r.byte_pos()..).ok_or(Error::Truncated)?;
                         if let Some(o) = self.tile_group(rest)? {
-                            out.push((o, tu, spatial_id));
+                            push_shown(out, (o, tu, spatial_id))?;
                         }
                     }
                 }
                 OBU_TILE_GROUP_T => {
                     if let Some(o) = self.tile_group(payload)? {
-                        out.push((o, tu, spatial_id));
+                        push_shown(out, (o, tu, spatial_id))?;
                     }
                 }
                 OBU_METADATA_T | OBU_TILE_LIST_T => {}
@@ -1171,5 +1192,16 @@ mod tests {
         assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
         assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
         assert!(!frame_size_allowed(65536, 65536));
+    }
+}
+
+#[cfg(test)]
+mod shown_limit_tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_may_show_a_bounded_number_of_pictures() {
+        assert!(shown_within_limit(0) && shown_within_limit(MAX_SHOWN_PER_CHUNK));
+        assert!(!shown_within_limit(MAX_SHOWN_PER_CHUNK + 1));
     }
 }
