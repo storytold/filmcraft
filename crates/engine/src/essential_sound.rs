@@ -13,7 +13,7 @@
 //! | `essentialSound.set` | one setting by dotted key (`repair.noise.amount`), or several (`values`) |
 //! | `essentialSound.applyPreset` / `savePreset` / `deletePreset` | built-in and user presets |
 //! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770, mono clips as one channel) and set the match gain to the target |
-//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types |
+//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types, replacing the clip's earlier ones (`replacedKeyframes` counts them) |
 
 use serde_json::{Value, json};
 
@@ -420,6 +420,8 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
             "triggers": triggers.iter().map(|t| t.id.0).collect::<Vec<_>>(),
             "regions": abs.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
             "keyframes": ticks.iter().map(|(t, v)| json!({"time": t.0, "seconds": t.seconds(), "levelDb": v})).collect::<Vec<_>>(),
+            // the edit below replaces the clip's earlier level keyframes, as Premiere does: say how many
+            "replacedKeyframes": lvl.map_or(0, |p| p.keyframes.len()),
         }));
         plans.push((it.id, ticks, base));
     }
