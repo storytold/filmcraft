@@ -93,7 +93,7 @@ pub(crate) fn select_all_keyframes(app: &mut FilmcraftApp) -> bool {
                 keys.extend(p.keyframes.iter().map(|kf| key(param, None, kf.time)));
             }
             for (m, mask) in e.masks.iter().enumerate() {
-                for param in filmcraft_project::mask::MASK_PARAMS {
+                for param in filmcraft_project::mask::MASK_PARAMS.iter().chain(&filmcraft_project::mask::COLOR_PARAMS) {
                     keys.extend(mask.param(param).into_iter().flat_map(|p| &p.keyframes).map(|kf| key(param, Some(m), kf.time)));
                 }
             }

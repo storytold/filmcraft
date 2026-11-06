@@ -41,6 +41,8 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: colour ranges on effect masks (`Mask::color`). No-op step; older builds would drop
+//!   them when saving.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -63,7 +65,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 /// edit a shipped one.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
-    v15_to_v16, v16_to_v17,
+    v15_to_v16, v16_to_v17, v17_to_v18,
 ];
 
 /// The schema version this build writes (and the newest it reads).
@@ -406,13 +408,18 @@ fn v16_to_v17(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v17 → v18: masks have no colour range. Older builds must not silently drop saved ones.
+fn v17_to_v18(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
     }
 
     #[test]
