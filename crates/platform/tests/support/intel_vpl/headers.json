@@ -1,0 +1,91 @@
+{
+  "revision": "c45b5d786bf7cdabbe49ff1bab78693ad78feb78",
+  "tag": "v2.15.0",
+  "scope": "Unmodified public API headers and LICENSE only; no implementation source",
+  "license": "MIT",
+  "license_file": "LICENSE.intel-libvpl",
+  "files": [
+    {
+      "path": "include/vpl/mfxcommon.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxcommon.h",
+      "bytes": 45686,
+      "sha256": "c290e6ae15f35436097f0b605c02566fa67094cf449d090520d23c7e3fa194a8",
+      "includes": [
+        "mfxdefs.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxdefs.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxdefs.h",
+      "bytes": 16386,
+      "sha256": "1b3dd675af7927d74d716cef0a45e2079ffbc1e988290a6db558665bdc217bd6",
+      "includes": [
+        "mfxdispatcherprefixedfunctions.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxdispatcher.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxdispatcher.h",
+      "bytes": 11420,
+      "sha256": "19072d08daa7fc094d690c387be162fe4a8a5a30316886ac333deeedec67a0d8",
+      "includes": [
+        "mfxdefs.h",
+        "mfxcommon.h",
+        "mfxsession.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxdispatcherprefixedfunctions.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxdispatcherprefixedfunctions.h",
+      "bytes": 7611,
+      "sha256": "9db68ec1e3b852984e22971488abc5b5aad01728565a92290c18bd30612093bf",
+      "includes": []
+    },
+    {
+      "path": "include/vpl/mfxmemory.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxmemory.h",
+      "bytes": 15080,
+      "sha256": "4a3dc24bb3a925011157f17419c92d2ac951a9c72922637f5a4a49adeb498973",
+      "includes": [
+        "mfxsession.h",
+        "mfxstructures.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxsession.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxsession.h",
+      "bytes": 10780,
+      "sha256": "d9a3d568df1db1b6267e0992c71cbe2522566e7b16bb80f8e6c70a473a4598c7",
+      "includes": [
+        "mfxcommon.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxstructures.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxstructures.h",
+      "bytes": 314081,
+      "sha256": "d0d31b2006fa6053346338ae984708106d4b9df43a94f2e956d340e104e4dad5",
+      "includes": [
+        "mfxcommon.h"
+      ]
+    },
+    {
+      "path": "include/vpl/mfxvideo.h",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/api/vpl/mfxvideo.h",
+      "bytes": 60519,
+      "sha256": "242cf5ebedd0101c7867ad004c562e9db6364d98a4c905e28f622e02b5b39519",
+      "includes": [
+        "mfxsession.h",
+        "mfxstructures.h",
+        "mfxmemory.h"
+      ]
+    },
+    {
+      "path": "LICENSE.intel-libvpl",
+      "source": "https://raw.githubusercontent.com/intel/libvpl/c45b5d786bf7cdabbe49ff1bab78693ad78feb78/LICENSE",
+      "bytes": 1074,
+      "sha256": "bf1cfac2e2792b6e1e995ce103d70796aecaf2ec7e4c5fe5474f7acec7b4a677",
+      "includes": []
+    }
+  ]
+}
