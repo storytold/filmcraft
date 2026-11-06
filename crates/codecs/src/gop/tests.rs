@@ -611,14 +611,31 @@ impl VideoSamples for Big {
 }
 
 #[test]
-fn large_frames_cannot_enlarge_the_gop_cache_ceiling() {
+fn large_frames_raise_the_gop_cache_budget_no_further_than_the_large_frame_ceiling() {
     let mut c = GopCache::new(None);
     c.budget = usize::MAX;
-    assert_eq!(c.cache_budget(1), FRAME_CACHE_CEILING);
-    assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING);
+    assert_eq!(c.cache_budget(1, false), FRAME_CACHE_CEILING);
+    assert_eq!(c.cache_budget(FRAME_CACHE_CEILING, false), LARGE_FRAME_CEILING);
+    assert_eq!(c.cache_budget(usize::MAX, false), LARGE_FRAME_CEILING);
+    assert_eq!(c.cache_budget(usize::MAX, true), FRAME_CACHE_CEILING);
     c.budget = 0;
-    assert_eq!(c.cache_budget(4), MIN_FRAMES * 4, "small frames retain the playback reserve");
-    assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING, "large frames are capped instead of reserving 64 copies");
+    assert_eq!(c.cache_budget(4, false), MIN_FRAMES * 4, "small frames retain the playback reserve");
+    assert_eq!(c.cache_budget(FRAME_CACHE_CEILING, false), LARGE_FRAME_CEILING, "large frames are capped instead of reserving 64 copies");
+}
+
+#[test]
+fn an_8k_cache_has_room_for_the_frames_playback_keeps_ahead() {
+    let c = GopCache::new(None);
+    // 7680x4320 4:2:0, 8-bit and 10-bit (16-bit samples)
+    for frame in [7680 * 4320 * 3 / 2, 7680 * 4320 * 3] {
+        assert!(c.cache_budget(frame, false) >= PLAYBACK_FRAMES * frame, "{} MB for {} MB frames", c.cache_budget(frame, false) >> 20, frame >> 20);
+    }
+    // up to 8-bit 4K the ceiling still decides
+    assert_eq!(c.cache_budget(3840 * 2160 * 3 / 2, false), FRAME_CACHE_CEILING);
+    // and for intra-only sources at any size: 4K ProRes 4444 with alpha, 8K ProRes 422
+    for frame in [3840 * 2160 * 4 * 2, 7680 * 4320 * 2 * 2] {
+        assert_eq!(c.cache_budget(frame, true), FRAME_CACHE_CEILING);
+    }
 }
 
 #[test]

@@ -352,12 +352,15 @@ cargo xtask bench-playback --json target/bench-playback.json # machine-readable 
 | `stack3` | three 1080p H.264 clips on V1–V3; V2/V3 scaled, positioned, rotated, 70–85 % opacity |
 | `stack3-blend` | `stack3` with V2 in Screen and V3 in Overlay (blend modes on the GPU) |
 | `h264-2160` | one 2160p23.976 H.264 clip |
+| `hevc-4320` | one 4320p23.976 HEVC clip (8K; not in the default set, its fixture takes a minute to encode) |
 | `demo` | the built-in demo project (procedural footage, transitions, effects) |
 | `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render In to Out, then two plays of the green segment |
 | `seek-storm` | 40 jumps to random frames 150 ms apart (scrubbing), time until the exact frame shows |
 
 Options: `--res full,half,quarter`, `--cpu` (CPU compositor + texture conversion instead of the
-GPU path), `--seconds`, `--refresh` (display Hz), `--workers`, `--repeat`, `--json <file>`.
+GPU path), `--hw auto|off` (OS hardware decoders in front of FilmCraft's own, as the app and
+`cargo xtask bench`; default `auto`), `--seconds`, `--refresh` (display Hz), `--workers`, `--repeat`,
+`--json <file>`.
 Fixtures are made with ffmpeg in `target/fixtures/playback/` (set `FILMCRAFT_FIXTURES` to share one
 set between worktrees).
 
