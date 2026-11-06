@@ -358,7 +358,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let (mark_in, mark_out) = (seq.mark_in, seq.mark_out);
     let vo = s.prefs.voice_over.clone();
     let punch = mark_in.is_some() && mark_out.is_some_and(|o| Some(o) > mark_in);
-    let record_start = if punch { mark_in.unwrap_or_default() } else { time_p(s, p, "").unwrap_or(s.playhead()) };
+    let record_start = if punch { mark_in.unwrap_or_default() } else { time_p(s, p, "")?.unwrap_or(s.playhead()) };
     if record_start < Tick::ZERO {
         return Err(bad("audio.voiceover.start", "the record point cannot be negative"));
     }
@@ -393,7 +393,7 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
     if s.voiceover.rec.is_none() {
         return Err(bad("audio.voiceover.sync", "no voice-over is recording"));
     }
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     s.voiceover.input().discard();
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
@@ -449,7 +449,10 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.captured.clear();
         return Ok(json!({"recording": false, "placed": false}));
     }
-    let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));
+    let t_stop = match s.voiceover.pending_stop {
+        Some(t) => t,
+        None => time_p(s, p, "")?.unwrap_or(s.playhead()),
+    };
     let sr = rec.format.sample_rate.max(1) as i64;
     let c0 = rec.capture_start.to_units_floor(sr);
     let r0 = rec.record_start.to_units_floor(sr);

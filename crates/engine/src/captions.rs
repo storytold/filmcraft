@@ -438,12 +438,13 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"track":id|"C1"?,"text":str?,"time":ticks?,"seconds":f64?,"durationSeconds":f64=3}"#,
             has_seq,
             |s, p| {
+                // read before the track below is made: a failed command keeps what it did
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 // a caption track is created when the sequence has none
                 if s.active_sequence().is_some_and(|q| q.caption_tracks.is_empty()) {
                     s.execute("captions.newTrack", json!({}))?;
                 }
                 let tid = track_param(s, p).ok_or_else(|| bad("captions.add", "no such caption track"))?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
                 let rate = s.sequence_rate();
                 let dur = Tick::from_seconds_f64(f64_p(p, "durationSeconds").unwrap_or(edit::captions::DEFAULT_SECONDS as f64));
                 let dur = rate.snap_nearest(dur).max(rate.frame_duration());
@@ -459,7 +460,7 @@ pub fn commands() -> Vec<CommandSpec> {
             },
         ),
         spec("captions.split", "Split Caption", &[], None, r#"{"caption":id?,"time":ticks?}"#, has_captions, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = time_p(s, p, "")?.unwrap_or(s.playhead());
             let explicit = u64_p(p, "caption").map(ClipId);
             let ids = s.edit_sequence("Split Caption", |q, ctx, st| {
                 let ids = match explicit {
@@ -512,8 +513,8 @@ pub fn commands() -> Vec<CommandSpec> {
                     .map(|(_, c)| (c.start, c.end()))
                     .ok_or(EngineError::Edit(edit::EditError::NoItem(id)))?;
                 let rate = s.sequence_rate();
-                let start = time_p(s, p, "start").map(|t| rate.snap_nearest(t)).unwrap_or(cur.0);
-                let end = time_p(s, p, "end").map(|t| rate.snap_nearest(t)).unwrap_or(cur.1);
+                let start = time_p(s, p, "start")?.map(|t| rate.snap_nearest(t)).unwrap_or(cur.0);
+                let end = time_p(s, p, "end")?.map(|t| rate.snap_nearest(t)).unwrap_or(cur.1);
                 s.edit_sequence("Caption Timing", |q, ctx, _| Ok(edit::captions::set_caption_times(q, id, start, end, ctx)?))?;
                 Ok(json!({"start": start.0, "end": end.0}))
             },

@@ -735,7 +735,7 @@ fn audio_partners(q: &Sequence, video: &TrackItem) -> Vec<ClipId> {
 fn switch_angle(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "multicam.switchAngle";
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let video_only = bool_p(p, "videoOnly").unwrap_or(false);
     let audio_only = bool_p(p, "audioOnly").unwrap_or(false);
     let follows = s.state.multicam_audio_follows_video;
@@ -917,7 +917,7 @@ impl Recorder {
 const RECORD_LABEL: &str = "Record Multi-Camera";
 
 fn record_start(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let pass = s.mcrec.pass + 1;
     s.mcrec = Recorder { seq: s.state.active_sequence, start: t, pass, key: format!("multicam-record-{pass}"), ..Default::default() };
     Ok(json!({"recording": true, "start": t.0}))
@@ -946,7 +946,7 @@ fn apply_pass(s: &mut Session, end: Tick) -> Result<usize> {
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "multicam.cut";
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     if !s.mcrec.active() || s.mcrec.seq != s.state.active_sequence {
         // stopped: switch the clip at the playhead
         return switch_angle(s, p);
@@ -993,7 +993,7 @@ fn cut_to_camera(s: &mut Session, p: &Value) -> Result<Value> {
     if s.mcrec.active() && s.mcrec.seq == s.state.active_sequence {
         return cut(s, p);
     }
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let (_, clip) = multicam_clip_at(s, t).ok_or_else(|| EngineError::Other("no multi-camera clip at the playhead".into()))?;
     let angle = angle_p(s, p, clip.item, cmd)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -1015,7 +1015,7 @@ fn record_stop(s: &mut Session, p: &Value) -> Result<Value> {
     if !s.mcrec.active() {
         return Ok(json!({"recording": false, "cuts": 0}));
     }
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let n = s.mcrec.cuts.len();
     let mut points = 0;
     if n > 0 {
@@ -1162,7 +1162,7 @@ fn view_flag(s: &mut Session, p: &Value, f: Flag) -> Result<Value> {
 /// cell width in pixels), `playing` and `playbackScale` it also returns the decode scale the
 /// view uses (Auto-Adjust Multi-Camera Playback Quality).
 fn grid_info(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let v = s.state.multicam_view.clone();
     let Some((_, clip)) = multicam_clip_at(s, t) else {
         return Ok(json!({"clip": null, "view": v}));
@@ -1194,6 +1194,6 @@ fn grid_info(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     Ok(inspect_at(s, t))
 }
