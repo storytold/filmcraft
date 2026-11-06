@@ -127,6 +127,75 @@ fn time_expr(t: Tick, rate: Option<FrameRate>) -> String {
     }
 }
 
+/// Memoised "next occurrence of a quote byte" searches, so unterminated quotes are not rescanned.
+#[derive(Default)]
+struct QuoteCache {
+    found: [Option<(usize, Option<usize>)>; 2],
+}
+
+impl QuoteCache {
+    /// Index of the next `quote` byte at or after `from`.
+    fn next(&mut self, bytes: &[u8], quote: u8, from: usize) -> Option<usize> {
+        let slot = usize::from(quote == b'\'');
+        if let Some((searched, result)) = self.found[slot]
+            && searched <= from
+            && result.is_none_or(|r| r >= from)
+        {
+            return result;
+        }
+        let result = bytes.get(from..).and_then(|t| t.iter().position(|&c| c == quote)).map(|i| from + i);
+        self.found[slot] = Some((from, result));
+        result
+    }
+}
+
+/// Parses a tag starting at `bytes[start] == b'<'`: optional `/` (closing), a name of ASCII
+/// letters/digits starting with a letter immediately after, then whitespace-separated
+/// `name="value"` / `name='value'` attributes, optional `/` before `>`. A `>` inside a quoted
+/// value does not end the tag. Returns `(index after '>', closing, lowercase name)`; the name is empty for a self-closing tag.
+fn parse_tag(bytes: &[u8], start: usize, cache: &mut QuoteCache) -> Option<(usize, bool, String)> {
+    let mut i = start + 1;
+    let closing = bytes.get(i) == Some(&b'/');
+    if closing {
+        i += 1;
+    }
+    let name_start = i;
+    if !bytes.get(i)?.is_ascii_alphabetic() {
+        return None;
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii_alphanumeric) {
+        i += 1;
+    }
+    let name = String::from_utf8_lossy(bytes.get(name_start..i)?).to_ascii_lowercase();
+    loop {
+        let ws_start = i;
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        match bytes.get(i)? {
+            b'>' => return Some((i + 1, closing, name)),
+            // self-closing: no markup
+            b'/' if !closing && bytes.get(i + 1) == Some(&b'>') => return Some((i + 2, closing, String::new())),
+            _ => {}
+        }
+        if i == ws_start {
+            return None;
+        }
+        let key_start = i;
+        while bytes.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b':' | b'_')) {
+            i += 1;
+        }
+        if i == key_start || bytes.get(i) != Some(&b'=') {
+            return None;
+        }
+        let quote = *bytes.get(i + 1)?;
+        if quote != b'"' && quote != b'\'' {
+            return None;
+        }
+        i = cache.next(bytes, quote, i + 2)? + 1;
+    }
+}
+
 /// Caption text (`\n` lines, `<i>`/`<b>`/`<u>` tags) → TTML inline content.
 fn inline(text: &str) -> String {
     let mut out = String::new();
@@ -148,25 +217,12 @@ fn inline(text: &str) -> String {
         }
     };
     let mut rest = text;
-    // Once no `>` remains, no later `<` can start a tag either. Remember that instead of searching
-    // the shrinking suffix again after every literal `<`, which made `<<<<…` quadratic.
-    let mut closer_remains = true;
+    let mut cache = QuoteCache::default();
     while !rest.is_empty() {
-        let tag_end = match rest.strip_prefix('<') {
-            Some(after) if closer_remains => {
-                let end = after.find('>');
-                closer_remains = end.is_some();
-                end
-            }
-            _ => None,
-        };
-        if let Some(end) = tag_end {
-            let after = &rest[1..];
-            let tag = after[..end].trim().to_ascii_lowercase();
-            let (closing, name) = match tag.strip_prefix('/') {
-                Some(n) => (true, n.trim().to_string()),
-                None => (false, tag.split_whitespace().next().unwrap_or("").to_string()),
-            };
+        // Only a well-formed tag is markup; "1 < 2 and 3 > 2" and "a<b and c>d" are text.
+        if rest.starts_with('<')
+            && let Some((end, closing, name)) = parse_tag(text.as_bytes(), text.len() - rest.len(), &mut cache)
+        {
             let attr = match name.as_str() {
                 "i" => Some("tts:fontStyle=\"italic\""),
                 "b" => Some("tts:fontWeight=\"bold\""),
@@ -180,7 +236,7 @@ fn inline(text: &str) -> String {
                     active.push(a);
                 }
             }
-            rest = &after[end + 1..];
+            rest = text.get(end..).unwrap_or("");
             continue;
         }
         let Some(ch) = rest.chars().next() else { break };
