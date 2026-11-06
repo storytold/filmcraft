@@ -973,6 +973,126 @@ fn ripple_trim_to_playhead_q_w() {
     assert_eq!(s.playhead(), start2, "playhead parks on the new edit");
 }
 
+/// Just the first and third V1 clips, with the time between them empty on every track. Returns
+/// (first clip's end, second clip's start).
+fn demo_with_gap() -> (Session, Tick, Tick) {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    for t in q.video_tracks.iter_mut().skip(1).chain(q.audio_tracks.iter_mut()) {
+        t.items.clear();
+        t.transitions.clear();
+    }
+    q.caption_tracks.clear();
+    q.video_tracks[0].transitions.clear();
+    q.video_tracks[0].items.remove(1);
+    let (a, b) = (q.video_tracks[0].items[0].end(), q.video_tracks[0].items[1].start);
+    assert!(a < b, "the demo's clips leave a gap once the middle one is gone");
+    (s, a, b)
+}
+
+/// Q on empty space closes the gap back to the previous clip and parks on the join.
+#[test]
+fn ripple_trim_previous_closes_the_gap_left_of_the_playhead() {
+    let (mut s, a, b) = demo_with_gap();
+    let rate = s.sequence_rate();
+    let ph = a + rate.tick_of(5);
+    let d0 = s.active_sequence().unwrap().duration();
+    let clips = v1(&s).len();
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.ripplePrevious", json!({})).unwrap();
+    assert_eq!(v1(&s)[1].1, b - (ph - a), "later material moved left by what was removed");
+    assert_eq!(v1(&s).len(), clips, "no clip was cut");
+    assert_eq!(s.active_sequence().unwrap().duration(), d0 - (ph - a));
+    assert_eq!(s.playhead(), a, "the playhead touches the end of the previous clip");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(v1(&s)[1].1, b, "one undo step restores it");
+}
+
+/// W on empty space pulls the next clip to the playhead, which stays put.
+#[test]
+fn ripple_trim_next_closes_the_gap_right_of_the_playhead() {
+    let (mut s, a, b) = demo_with_gap();
+    let ph = a + s.sequence_rate().tick_of(5);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.rippleNext", json!({})).unwrap();
+    assert_eq!(v1(&s)[1].1, ph, "the next clip starts at the playhead");
+    assert_eq!(v1(&s)[0].2, a, "the previous clip is untouched");
+    assert_eq!(s.playhead(), ph, "the playhead stays");
+    assert_ne!(ph, b);
+}
+
+/// A gap before the first clip reaches back to the start of the sequence.
+#[test]
+fn ripple_trim_previous_closes_a_gap_at_the_sequence_start() {
+    let (mut s, a, _) = demo_with_gap();
+    let rate = s.sequence_rate();
+    let seq = s.state.active_sequence.unwrap();
+    let lead = rate.tick_of(20);
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items.iter_mut().for_each(|i| i.start += lead);
+    let ph = rate.tick_of(10);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    s.execute("trim.ripplePrevious", json!({})).unwrap();
+    assert_eq!(v1(&s)[0].1, lead - ph);
+    assert_eq!(v1(&s)[0].2, a + lead - ph);
+    assert_eq!(s.playhead(), Tick::ZERO);
+}
+
+/// On a clip's edge with nothing under the playhead, the "nearest edit" on that side is the far end
+/// of the clip: Q and W must refuse, not delete it.
+#[test]
+fn ripple_trim_on_a_clip_edge_never_deletes_the_clip() {
+    let (mut s, a, b) = demo_with_gap();
+    let before = v1(&s);
+    s.execute("playhead.set", json!({"time": a.0})).unwrap();
+    assert!(s.execute("trim.ripplePrevious", json!({})).is_err(), "Q at a clip's end would remove the clip");
+    s.execute("playhead.set", json!({"time": b.0})).unwrap();
+    assert!(s.execute("trim.rippleNext", json!({})).is_err(), "W at a clip's start would remove the clip");
+    assert_eq!(v1(&s), before);
+    // the other way each closes the gap beside the clip
+    s.execute("trim.ripplePrevious", json!({})).unwrap();
+    assert_eq!(v1(&s)[1].1, a, "Q at the next clip's start closes the whole gap");
+}
+
+/// Empty on the targeted tracks, but a sync-locked untargeted track has music there: closing the
+/// gap would cut it, so Q and W refuse and change nothing.
+#[test]
+fn ripple_trim_in_a_gap_refuses_to_cut_sync_locked_material() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let (a, b) = {
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        q.video_tracks[0].transitions.clear();
+        q.video_tracks[0].items.remove(1);
+        (q.video_tracks[0].items[0].end(), q.video_tracks[0].items[1].start)
+    };
+    s.execute("timeline.toggleAllAudioTargets", json!({})).unwrap();
+    let ph = a + s.sequence_rate().tick_of(5);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    let audio = |s: &Session| s.active_sequence().unwrap().audio_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>();
+    let before = audio(&s);
+    assert!(
+        s.active_sequence().unwrap().audio_tracks.iter().any(|t| t.sync_lock && t.items.iter().any(|i| i.start < b && a < i.end())),
+        "the demo has sound across the gap"
+    );
+    assert!(s.execute("trim.ripplePrevious", json!({})).is_err());
+    assert!(s.execute("trim.rippleNext", json!({})).is_err());
+    assert_eq!(audio(&s), before);
+    assert_eq!(v1(&s)[1].1, b);
+    assert_eq!(s.playhead(), ph);
+}
+
+/// Alt+Q / Alt+W lift, which leaves a gap: on empty space there is nothing for them to do.
+#[test]
+fn trim_without_ripple_still_needs_a_clip_under_the_playhead() {
+    let (mut s, a, b) = demo_with_gap();
+    let ph = a + s.sequence_rate().tick_of(5);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    assert!(s.execute("trim.previous", json!({})).is_err());
+    assert!(s.execute("trim.next", json!({})).is_err());
+    assert_eq!(v1(&s)[1].1, b);
+}
+
 #[test]
 fn interchange_roundtrip_through_files() {
     let dir = std::env::temp_dir().join(format!("fc-ix-{}", std::process::id()));
