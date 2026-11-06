@@ -42,6 +42,7 @@ fn slider(id: &str, name: &str, layer: u64, param: &str, min: f64, max: f64) -> 
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::enum_variant_names)]
 enum Direction {
     SlideLeft,
     SlideRight,

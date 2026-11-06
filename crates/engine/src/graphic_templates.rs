@@ -29,7 +29,7 @@ use filmcraft_render::graphic_clip::{item_layer_specs, layer_bounds};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::graphics::{layer_effect_index, place_video_clip, set_props, target_clip};
 use crate::{EngineError, Result, Session};
 
@@ -330,7 +330,79 @@ fn apply_template(s: &mut Session, p: &Value) -> Result<Value> {
     let (layers, meta) = t.instantiate((w, h));
     let before = s.history.undo.len();
     let dur = t.duration;
-    let clip = place_video_clip(s, "graphics.template.apply", &t.name, p, "Apply Graphics Template", layers, move |pr, (w, h, rate)| {
+
+    let is_bumper = t.id == "builtin:bumper-right-back";
+    let mut p_clip = p.clone();
+    if is_bumper {
+        let t_pos = time_p(s, p, "").unwrap_or_else(|| s.playhead());
+        let dur_secs = dur.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+        let want_track = u64_p(p, "track").map(|v| v as usize);
+        let target_video_clip = s.active_sequence().and_then(|q| {
+            if let Some(i) = want_track
+                && i < q.video_tracks.len()
+                && let Some(it) = q.video_tracks[i].item_at(t_pos)
+            {
+                return Some(it.id);
+            }
+            let tg = s.targeting().targeted;
+            for tr in &q.video_tracks {
+                if tg.contains(&tr.id)
+                    && !tr.locked
+                    && let Some(it) = tr.item_at(t_pos)
+                {
+                    return Some(it.id);
+                }
+            }
+            for tr in &q.video_tracks {
+                if !tr.locked
+                    && let Some(it) = tr.item_at(t_pos)
+                {
+                    return Some(it.id);
+                }
+            }
+            None
+        });
+
+        if let Some(target_clip) = target_video_clip {
+            if let Ok(hold_val) = s.execute("clip.insertFrameHoldSegment", json!({"clip": target_clip.0, "time": t_pos.0, "seconds": dur_secs}))
+                && let Some(held_id) = hold_val.get("clip").and_then(Value::as_u64)
+            {
+                let held_clip = ClipId(held_id);
+                let _ = s.edit_sequence("Deep Fry Hold Segment", |q, _, _| {
+                    let (_, it) = q.find_item_mut(held_clip).ok_or(filmcraft_edit::EditError::NoItem(held_clip))?;
+                    if let Some(m) = it.effect_mut("motion")
+                        && let Some(p) = m.param_mut("scale")
+                    {
+                        p.value = ParamValue::Float(120.0);
+                    }
+                    if let Some(def) = filmcraft_project::find_effect("lumetri") {
+                        let mut inst = def.instance();
+                        for (param, val) in [
+                            ("contrast", ParamValue::Float(90.0)),
+                            ("saturation", ParamValue::Float(200.0)),
+                            ("vibrance", ParamValue::Float(100.0)),
+                            ("temperature", ParamValue::Float(50.0)),
+                            ("exposure", ParamValue::Float(1.2)),
+                            ("sharpen", ParamValue::Float(100.0)),
+                        ] {
+                            if let Some(p) = inst.param_mut(param) {
+                                p.value = val;
+                            } else {
+                                inst.params.insert(param.to_string(), filmcraft_project::Param::new(val));
+                            }
+                        }
+                        it.effects.push(inst);
+                    }
+                    Ok(())
+                });
+            }
+            if let Some(obj) = p_clip.as_object_mut() {
+                obj.remove("track");
+            }
+        }
+    }
+
+    let clip = place_video_clip(s, "graphics.template.apply", &t.name, &p_clip, "Apply Graphics Template", layers, move |pr, (w, h, rate)| {
         let src = crate::graphics::graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(dur))
     })?;

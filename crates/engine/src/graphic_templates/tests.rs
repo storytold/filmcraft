@@ -618,3 +618,46 @@ fn gradient_stop_keeps_its_alpha() {
     assert!((start[3] - 128.0 / 255.0).abs() < 1e-3, "{start:?}");
     assert_eq!(col("gradient_end").unwrap()[3], 1.0);
 }
+
+#[test]
+fn bumper_right_back_freezes_fries_and_places_overlay() {
+    let mut s = demo("gt-bumper");
+    let t = filmcraft_time::Tick(2 * filmcraft_time::TICKS_PER_SECOND);
+    s.execute("playhead.set", json!({"time": t.0})).unwrap();
+
+    let before_undo = s.history.undo.len();
+    let r = s.execute("graphics.template.apply", json!({"template": "builtin:bumper-right-back", "time": t.0})).unwrap();
+    let gfx_clip = clip_of(&r);
+    assert_eq!(texts(&s, gfx_clip), vec!["We'll be right back"]);
+
+    // Verify held video clip on V1 at time t
+    let q = s.active_sequence().unwrap();
+    let v1_item = q.video_tracks[0].item_at(t).expect("held clip on V1");
+    assert!(v1_item.frame_hold.is_some(), "clip has frame hold");
+
+    // Check motion scale punch
+    let motion = v1_item.effect("motion").expect("motion effect");
+    assert_eq!(motion.param("scale").unwrap().value.as_f64(), Some(120.0));
+
+    // Check lumetri deep-fry parameters
+    let lumetri = v1_item.effect("lumetri").expect("lumetri deep fry effect");
+    assert_eq!(lumetri.param("contrast").unwrap().value.as_f64(), Some(90.0));
+    assert_eq!(lumetri.param("saturation").unwrap().value.as_f64(), Some(200.0));
+    assert_eq!(lumetri.param("vibrance").unwrap().value.as_f64(), Some(100.0));
+    assert_eq!(lumetri.param("temperature").unwrap().value.as_f64(), Some(50.0));
+    assert_eq!(lumetri.param("exposure").unwrap().value.as_f64(), Some(1.2));
+    assert_eq!(lumetri.param("sharpen").unwrap().value.as_f64(), Some(100.0));
+
+    // Graphic overlay is placed above V1 (e.g. V2)
+    let v2_item = q.video_tracks[1].item_at(t).expect("graphic clip on V2");
+    assert_eq!(v2_item.id, gfx_clip);
+    assert_eq!(v2_item.duration, v1_item.duration);
+
+    // Single undo reverts both the hold+fry and the graphic placement
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.history.undo.len(), before_undo);
+    let q_reverted = s.active_sequence().unwrap();
+    let item_after = q_reverted.video_tracks[0].item_at(t).unwrap();
+    assert!(item_after.frame_hold.is_none(), "reverted hold");
+    assert!(item_after.effect("lumetri").is_none(), "reverted deep fry");
+}
