@@ -346,8 +346,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             .and_then(|a| child(a, "format"))
             .and_then(|f| child(f, "samplecharacteristics"))
             .and_then(|s| child_i64(s, "samplerate"))
+            .filter(|&sr| sr > 0)
         {
-            settings.sample_rate = sr as u32;
+            settings.sample_rate = (sr as u32).clamp(8000, 384_000);
         }
         let id = self.b.reserve_sequence(&name, settings.clone(), bin);
         if let Some(l) = path_text(def, &["labels", "label2"]).and_then(label_from)

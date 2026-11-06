@@ -122,8 +122,8 @@ impl SequenceSettings {
         {
             return Err("frame rate must be positive, at most 1000 fps, with unsigned 32-bit rational components".into());
         }
-        if self.sample_rate == 0 || self.sample_rate > 384_000 {
-            return Err("sample rate must be between 1 and 384000 Hz".into());
+        if self.sample_rate < 8000 || self.sample_rate > 384_000 {
+            return Err("sample rate must be between 8000 and 384000 Hz".into());
         }
         if self.par.0 == 0 || self.par.1 == 0 {
             return Err("pixel aspect ratio must be positive".into());
