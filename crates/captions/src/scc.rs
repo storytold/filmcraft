@@ -350,10 +350,15 @@ pub fn wrap_rows(text: &str) -> Vec<String> {
     rows
 }
 
+/// The rows the CEA-608 writers (SCC, MCC field 1) load for caption `text`: its plain text in at
+/// most 15 rows of 32 columns. What does not fit is left out.
+pub fn caption_rows(text: &str) -> Vec<String> {
+    wrap_rows(&filmcraft_project::plain_text(text))
+}
+
 /// Byte pairs (without parity) that load `text` into non-displayed memory.
 fn load_pairs(text: &str) -> Vec<(u8, u8)> {
-    let plain = filmcraft_project::plain_text(text);
-    let rows = wrap_rows(&plain);
+    let rows = caption_rows(text);
     let mut out = vec![(0x14, misc::RCL), (0x14, misc::RCL), (0x14, misc::ENM), (0x14, misc::ENM)];
     let first_row = 16 - rows.len();
     for (i, row) in rows.iter().enumerate() {
