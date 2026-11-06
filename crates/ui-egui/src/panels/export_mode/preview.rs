@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
-    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params, format_bytes,
-    is_export_busy, json, output_path, pos2, vec2,
+    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, are_settings_locked,
+    export_params, format_bytes, json, output_path, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -42,7 +42,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         ui.painter().text(pic.center(), Align2::CENTER_CENTER, tl!("Audio only"), Tokens::ui(13.0), t.text_dim);
     }
     reg.add("export.preview", pic, "Preview");
-    let busy = is_export_busy(app);
+    let locked = are_settings_locked(app);
     let active_job = active_export_job(app);
     let queue_active = app.session.export_queue.is_active();
     // range + scaling
@@ -53,7 +53,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     );
     let ex = &mut app.ui.export;
     let has_work_area = q.work_area.is_some();
-    child.add_enabled_ui(!busy, |child| {
+    child.add_enabled_ui(!locked, |child| {
         child.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(tl!("Range")).color(t.text_dim));
             let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
@@ -150,15 +150,15 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if busy { Sense::hover() } else { Sense::click() });
-    let stroke_color = if busy {
+    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if locked { Sense::hover() } else { Sense::click() });
+    let stroke_color = if locked {
         t.text_faint
     } else if qresp.hovered() {
         t.text
     } else {
         t.text_dim
     };
-    let text_color = if busy { t.text_faint } else { t.text };
+    let text_color = if locked { t.text_faint } else { t.text };
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), text_color);
     reg.add("export.sendToQueue", queue, "Send to Queue");
@@ -197,7 +197,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             }
         }
     }
-    if qresp.clicked() && !busy {
+    if qresp.clicked() && !locked {
         let mut p = export_params(app);
         if app.ui.export.preset != CUSTOM {
             // the queue shows which preset an item came from
