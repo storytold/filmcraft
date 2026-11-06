@@ -1429,7 +1429,7 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
             && st.ripple_sequence_markers
             && let Some((a, b)) = span
         {
-            crate::sequence_tools::ripple_markers(&mut seq.markers, a, b - a);
+            crate::sequence_tools::ripple_markers(seq, a, b - a);
         }
         p.next_id = next;
         st.selection = ids.clone();
@@ -2115,7 +2115,7 @@ fn build() -> Vec<CommandSpec> {
                     let spans = edit::ripple_delete_items(q, &sel)?;
                     if st.ripple_sequence_markers {
                         for r in spans.iter().rev() {
-                            crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
+                            crate::sequence_tools::ripple_markers(q, r.end(), -r.duration);
                         }
                     }
                     st.selection.clear();
@@ -2160,7 +2160,7 @@ fn build() -> Vec<CommandSpec> {
                         let spans = edit::ripple_delete_items(q, &ids)?;
                         if st.ripple_sequence_markers {
                             for r in spans.iter().rev() {
-                                crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
+                                crate::sequence_tools::ripple_markers(q, r.end(), -r.duration);
                             }
                         }
                         continue;
@@ -2169,7 +2169,7 @@ fn build() -> Vec<CommandSpec> {
                     edit::ripple_trim_group(q, &ids, Edge::In, head, ctx)?;
                     if st.ripple_sequence_markers {
                         // the head [start, start + head) closes: later markers move back by it
-                        crate::sequence_tools::ripple_markers(&mut q.markers, start + head, Tick::ZERO - head);
+                        crate::sequence_tools::ripple_markers(q, start + head, Tick::ZERO - head);
                     }
                 }
                 Ok(())
@@ -2643,7 +2643,7 @@ fn build() -> Vec<CommandSpec> {
                 let cut = cut_range(q, &tg, r, ctx, st.copy_paste_sequence_markers);
                 edit::extract(q, &tg, r, ctx);
                 if st.ripple_sequence_markers {
-                    crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
+                    crate::sequence_tools::ripple_markers(q, r.end(), -r.duration);
                 }
                 q.mark_in = None;
                 q.mark_out = None;
@@ -3322,7 +3322,7 @@ fn build() -> Vec<CommandSpec> {
                                 Edge::In => (r.start, -dd),
                                 Edge::Out => (r.end(), dd),
                             };
-                            crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
+                            crate::sequence_tools::ripple_markers(q, from, shift);
                         }
                     } else {
                         for c in &clips {
@@ -4495,7 +4495,7 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
             t.sort();
         }
         if insert && st.ripple_sequence_markers {
-            crate::sequence_tools::ripple_markers(&mut q.markers, at, end - at);
+            crate::sequence_tools::ripple_markers(q, at, end - at);
         }
         for m in &markers {
             q.markers.push(Marker { id: MarkerId(ctx.alloc()), start: m.start + at, ..m.clone() });
@@ -4907,7 +4907,7 @@ fn close_gap(s: &mut Session, tr: TrackId, t: Tick) -> Result<()> {
                 .filter_map(|(id, old)| q.find_item(*id).filter(|(_, i)| i.start != *old).map(|(_, i)| (*old, *old - i.start)))
                 .min_by_key(|m| m.0);
             if let Some((end, len)) = moved {
-                crate::sequence_tools::ripple_markers(&mut q.markers, end, -len);
+                crate::sequence_tools::ripple_markers(q, end, -len);
             }
         }
         Ok(())
@@ -5176,6 +5176,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "in": q.mark_in.map(|t| t.0),
         "out": q.mark_out.map(|t| t.0),
         "split": q.split,
+        "markersLocked": q.markers_locked,
         "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color_value(), "author": m.author, "url": m.url})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),

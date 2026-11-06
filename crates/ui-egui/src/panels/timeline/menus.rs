@@ -164,12 +164,14 @@ pub(super) fn track_column_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picke
 }
 
 /// The menu of a right-clicked ruler (not on a marker): the In and Out points and the marker, at
-/// the playhead. Groups of (label, command id); automation ids `timeline.rulerMenu.<command>`.
+/// the playhead, and Lock Markers. Groups of (label, command id); automation ids
+/// `timeline.rulerMenu.<command>`. An on/off command shows its checkmark, and every row keeps the
+/// checkmark gutter so they line up.
 const RULER_MENU: &[&[(&str, &str)]] = &[
     &[("Mark In", "markers.markIn"), ("Mark Out", "markers.markOut"), ("Mark Clip", "markers.markClip"), ("Mark Selection", "markers.markSelection")],
     &[("Go to In", "markers.goToIn"), ("Go to Out", "markers.goToOut")],
     &[("Clear In", "markers.clearIn"), ("Clear Out", "markers.clearOut"), ("Clear In and Out", "markers.clearInOut")],
-    &[("Add Marker", "markers.add")],
+    &[("Add Marker", "markers.add"), ("Lock Markers", "markers.lock")],
 ];
 
 pub(super) fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -179,7 +181,7 @@ pub(super) fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut e
         }
         for &(label, cmd) in *group {
             let label = crate::i18n::t(label);
-            let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+            let r = crate::menus::checked_entry(ui, label, app.session.is_enabled(cmd), crate::menus::engine_toggle(&app.session, cmd));
             app.auto.add(&format!("timeline.rulerMenu.{cmd}"), r.rect, label);
             if r.clicked() {
                 if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {

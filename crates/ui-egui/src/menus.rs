@@ -961,7 +961,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
 
 /// Checkmark state of the engine's on/off menu commands (`{"on":bool?}`, toggled when invoked from a
 /// menu without parameters). None = not one of them.
-fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> {
+pub(crate) fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> {
     let st = &session.state;
     Some(match id {
         "sequence.snap" => st.snapping,
@@ -970,6 +970,7 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
         "sequence.showThroughEdits" => st.show_through_edits,
         "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
         "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        "markers.lock" => session.active_sequence().is_some_and(|q| q.markers_locked),
         _ => return None,
     })
 }

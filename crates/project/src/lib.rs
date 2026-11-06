@@ -387,6 +387,7 @@ impl Project {
             multicam: None,
             merged: None,
             split: SplitMarks::default(),
+            markers_locked: false,
         };
         for i in 0..v {
             let id = TrackId(self.alloc_id());
