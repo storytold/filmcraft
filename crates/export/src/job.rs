@@ -431,6 +431,12 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        // With encoded audio, a movie timescale that counts its samples lets the audio edit end on
+        // the last one rendered.
+        if let (Some(a), Some(_)) = (&self.audio, &self.aenc) {
+            opts.movie_timescale = a.sr.max(1);
+        }
+        let movie_ts = opts.movie_timescale;
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
@@ -439,7 +445,7 @@ impl Exporter {
             (None, _) => None,
             (Some(a), Some(enc)) => {
                 let mut c = TrackConfig::new(enc.sample_entry(), a.sr);
-                c.media_start = Some(enc.priming() as i64);
+                c.edits = crate::audio_out::encoded_audio_edits(enc.priming(), a.total(), a.sr, movie_ts);
                 Some(mux.add_track(c).map_err(|e| ExportError::Io(e.to_string()))?)
             }
             (Some(a), None) => {

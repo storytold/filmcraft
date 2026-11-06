@@ -10,11 +10,23 @@ use std::sync::Arc;
 
 use filmcraft_audio_dsp::AudioEffect;
 use filmcraft_audio_dsp::effects::Limiter;
+use filmcraft_isobmff::Edit;
 use filmcraft_project::{ItemId, Project, Sequence};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
 use crate::{ExportError, ExportSettings, Result};
+
+/// The edit list of an encoded audio track in an MPEG-4 file: skip the encoder's `priming`
+/// samples, then present the `samples` the range rendered and no more, so the padding an encoder
+/// adds to fill its last frame is not played and does not lengthen the movie. The duration is in
+/// the movie timescale `movie_ts`. The writers set that to the sample rate, so the edit ends on the
+/// last rendered sample; in another timescale it is rounded down, as the muxer rounds the other
+/// durations.
+pub(crate) fn encoded_audio_edits(priming: u32, samples: u64, sr: u32, movie_ts: u32) -> Vec<Edit> {
+    let segment = u128::from(samples) * u128::from(movie_ts) / u128::from(sr.max(1));
+    vec![Edit { segment_duration: u64::try_from(segment).unwrap_or(u64::MAX), media_time: i64::from(priming), media_rate: 0x10000 }]
+}
 
 /// What loudness normalization measured and did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
@@ -37,6 +49,8 @@ pub(crate) struct AudioOut {
     next_in: i64,
     /// Next sample handed out.
     pub out: i64,
+    /// First sample of the range.
+    start: i64,
     /// End of the range (samples); input past it is silence.
     end: i64,
     pub loudness: Option<LoudnessReport>,
@@ -61,7 +75,7 @@ impl AudioOut {
             l
         });
         let latency = limiter.as_ref().map(|l| l.latency() as i64).unwrap_or(0);
-        Ok(AudioOut { project, seq, sr, channels: r.channels as usize, gain: 1.0, limiter, latency, next_in: start, out: start, end, loudness: None })
+        Ok(AudioOut { project, seq, sr, channels: r.channels as usize, gain: 1.0, limiter, latency, next_in: start, out: start, start, end, loudness: None })
     }
 
     /// The loudness pass: measure the integrated loudness of the whole range and set the gain
@@ -200,6 +214,11 @@ impl AudioOut {
     /// Output samples still to come (per channel).
     pub fn remaining(&self) -> u64 {
         u64::try_from(self.end.saturating_sub(self.out)).unwrap_or(0)
+    }
+
+    /// Output samples in the whole range (per channel), however many have been handed out.
+    pub fn total(&self) -> u64 {
+        u64::try_from(self.end.saturating_sub(self.start)).unwrap_or(0)
     }
 
     /// Everything still to come (to the end of the range).

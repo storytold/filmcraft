@@ -12,7 +12,7 @@ use filmcraft_project::{ItemId, Project};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
-use crate::audio_out::AudioOut;
+use crate::audio_out::{AudioOut, encoded_audio_edits};
 use crate::{AudioEncoder, ExportError, ExportSettings, Format, Out, Progress, Result, audio_factories};
 
 /// Whether `path` asks for a raw ADTS stream rather than an MPEG-4 file.
@@ -134,9 +134,12 @@ pub(crate) fn export(
     } else {
         let mut opts = WriterOptions::new(Brand::Mp4);
         opts.metadata = settings.metadata.udta();
+        // a movie timescale that counts samples lets the audio edit end on the last one rendered
+        opts.movie_timescale = a.sr.max(1);
+        let movie_ts = opts.movie_timescale;
         let mut mux = Mp4Writer::new(Out::create(settings)?, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut track = TrackConfig::new(entry, a.sr);
-        track.media_start = Some(i64::from(enc.priming()));
+        track.edits = encoded_audio_edits(enc.priming(), a.total(), a.sr, movie_ts);
         let track = mux.add_track(track).map_err(|e| ExportError::Io(e.to_string()))?;
         Sink::Mp4 { mux, track, frame: enc.frame_size() }
     };
