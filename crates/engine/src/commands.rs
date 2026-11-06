@@ -324,11 +324,46 @@ pub(crate) fn tick_or_time_p(p: &Value, key: &str, rate: FrameRate, drop_frame: 
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
+
+fn resolve_effect_alias(name: &str) -> Option<&'static str> {
+    let lower = name.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "ae.adbe drop shadow" | "sombra paralela" | "drop shadow" | "drop_shadow" | "dropshadow" => Some("drop_shadow"),
+        "pr.adbe lens distortion" | "distorsión de lente" | "distorsion de lente" | "lens distortion" | "lens_distortion" => Some("lens_distortion"),
+        "ae.mettle skybox chromatic aberrations"
+        | "aberraciones cromáticas vr"
+        | "aberraciones cromaticas vr"
+        | "vr chromatic aberrations"
+        | "vr_chromatic_aberrations" => Some("vr_chromatic_aberrations"),
+        "ae.mettle skybox glow" | "resplandor vr" | "vr glow" | "vr_glow" => Some("vr_glow"),
+        "ae.mettle skybox digital glitch" | "vr digital glitch" | "vr_digital_glitch" => Some("vr_digital_glitch"),
+        "ae.adbe gaussian blur 2" | "ae.adbe gaussian blur" | "desenfoque gaussiano" | "gaussian blur" | "gaussian_blur" => Some("gaussian_blur"),
+        "ae.adbe directional blur" | "desenfoque direccional" | "directional blur" | "directional_blur" => Some("directional_blur"),
+        "ae.adbe geometry2" | "ae.adbe geometry" | "transformar" | "transform" => Some("transform"),
+        "ae.adbe basic 3d" | "3d básico" | "3d basico" | "basic 3d" | "basic_3d" => Some("basic_3d"),
+        "ae.adbe mirror" | "reflejar" | "mirror" => Some("mirror"),
+        "ae.adbe wave warp" | "deformación de onda" | "deformacion de onda" | "wave warp" | "wave_warp" => Some("wave_warp"),
+        "ae.adbe turbulent displace" | "desplazamiento turbulento" | "turbulent displace" | "turbulent_displace" => Some("turbulent_displace"),
+        "ae.adbe tint" | "teñir" | "tenir" | "tint" => Some("tint"),
+        "ae.adbe mosaic" | "mosaico" | "mosaic" => Some("mosaic"),
+        "ae.adbe roughen edges" | "bordes rugosos" | "roughen edges" | "roughen_edges" => Some("roughen_edges"),
+        "ae.adbe linear wipe" | "barrido lineal" | "linear wipe" | "linear_wipe" | "linear_wipe_legacy" => Some("linear_wipe_legacy"),
+        "ae.adbe circle" | "círculo" | "circulo" | "circle" => Some("circle"),
+        "ae.adbe ultra key" | "incrustación ultra" | "incrustacion ultra" | "ultra key" | "ultra_key" => Some("ultra_key"),
+        _ => None,
+    }
+}
+
 /// Effect by id or display name. Names shared by several definitions ("Invert", "Volume",
 /// "Channel Volume") resolve to an applicable (non-intrinsic) effect whose kind matches the
 /// target clips' tracks.
 fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static filmcraft_project::EffectDef> {
     if let Some(d) = filmcraft_project::find_effect(name) {
+        return Some(d);
+    }
+    if let Some(alias_id) = resolve_effect_alias(name)
+        && let Some(d) = filmcraft_project::find_effect(alias_id)
+    {
         return Some(d);
     }
     let n = name.to_ascii_lowercase();
@@ -421,8 +456,12 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
 /// with `copy`, and not with `insert`, which already carries the sync-locked caption tracks.
 fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.move";
+    let rate = s.sequence_rate();
+    let df = s.active_sequence().is_some_and(|q| q.settings.drop_frame);
     let mut listed: Vec<(ClipId, TrackId, Tick, bool)> = Vec::new();
-    for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
+    for (i, m) in p.get("moves").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        // ticks, or a time object at the sequence rate (as `sourceIn` of `timeline.place`)
+        let time = tick_or_time_p(m, "time", rate, df, CMD)?;
         let new_track = str_p(m, "track").is_some_and(|t| t.eq_ignore_ascii_case("new"));
         let track = if new_track {
             let clip = clip_p(m, "clip").ok_or_else(|| bad(CMD, "new track needs a clip"))?;
@@ -431,16 +470,17 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
             if q.track(source).is_some_and(|t| t.locked) {
                 return Err(edit::EditError::Locked.into());
             }
-            if m.get("time").and_then(Value::as_i64).is_none() {
-                return Err(bad(CMD, "new track needs a time"));
-            }
             Some(source)
         } else {
             track_p(s, m, "track", CMD)?
         };
-        if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
-            listed.push((clip, track, Tick(time), new_track));
-        }
+        // an entry the move cannot use is refused, never skipped: skipping it moved the rest of
+        // the list, or failed with "need `moves`" when it was the only entry
+        let needs = |what: &str| bad(CMD, format!("`moves[{i}]` needs {what}"));
+        let clip = clip_p(m, "clip").ok_or_else(|| needs("`clip`"))?;
+        let track = track.ok_or_else(|| needs("`track`"))?;
+        let time = time.ok_or_else(|| needs("`time`: ticks or a time object like {\"seconds\": n}, {\"frame\": n} or {\"timecode\": \"…\"}"))?;
+        listed.push((clip, track, time, new_track));
     }
     if listed.is_empty() {
         return Err(bad(CMD, "need `moves`"));
@@ -1466,6 +1506,7 @@ fn build() -> Vec<CommandSpec> {
         // ================= File =================
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            crate::masks::discard_jobs(s);
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1690,6 +1731,7 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             let mut image_sequences = Vec::new();
+            let mut preset_names = Vec::new();
             // Image Sequence: each path is the first frame of a numbered still sequence. With
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
@@ -1715,7 +1757,7 @@ fn build() -> Vec<CommandSpec> {
                     },
                     Ok(b) => {
                         if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
+                            match crate::captions::import(s, &path, &b, fmt, None, None) {
                                 Ok(r) => reports.push(r),
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
@@ -1723,6 +1765,16 @@ fn build() -> Vec<CommandSpec> {
                             match crate::interchange::import(s, &path, &b, fmt, bin) {
                                 Ok(r) => {
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                    reports.push(r);
+                                }
+                                Err(e) => errors.push(format!("{path}: {e}")),
+                            }
+                        } else if crate::presets::is_preset_file(std::path::Path::new(&path), &b) {
+                            match s.execute("presets.import", json!({"path": path})) {
+                                Ok(r) => {
+                                    if let Some(arr) = r["imported"].as_array() {
+                                        preset_names.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+                                    }
                                     reports.push(r);
                                 }
                                 Err(e) => errors.push(format!("{path}: {e}")),
@@ -1774,6 +1826,9 @@ fn build() -> Vec<CommandSpec> {
             };
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
+            }
+            if !preset_names.is_empty() {
+                out["presets"] = json!(preset_names);
             }
             // Newly imported files may resolve paths the project already listed as offline
             // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
@@ -1954,7 +2009,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -2271,12 +2326,13 @@ fn build() -> Vec<CommandSpec> {
             "Speed/Duration…",
             ["Clip"],
             Some("Cmd+R"),
-            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
+            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"maintainPitch":bool? (Maintain Audio Pitch; unchanged when left out),"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
             has_selection,
             |s, p| {
                 let speed = f64_p(p, "speed").unwrap_or(100.0) / 100.0;
                 let reverse = bool_p(p, "reverse").unwrap_or(false);
                 let ripple = bool_p(p, "ripple").unwrap_or(false);
+                let maintain_pitch = bool_p(p, "maintainPitch");
                 let interp = match str_p(p, "interpolation") {
                     Some(m) => Some(filmcraft_project::TimeInterpolation::from_name(m).ok_or_else(|| bad("clip.speedDuration", "unknown interpolation"))?),
                     None => None,
@@ -2308,8 +2364,16 @@ fn build() -> Vec<CommandSpec> {
                         edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
                     }
                     for c in &sel {
-                        if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
-                            it.time_interpolation = m;
+                        // a linked partner on a locked track keeps its speed (above) and how its sound
+                        // follows that speed
+                        let locked = q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked));
+                        if let Some((_, it)) = q.find_item_mut(*c) {
+                            if let Some(m) = interp {
+                                it.time_interpolation = m;
+                            }
+                            if let Some(keep) = maintain_pitch.filter(|_| !locked) {
+                                it.maintain_pitch = keep;
+                            }
                         }
                     }
                     Ok(())
@@ -3207,7 +3271,7 @@ fn build() -> Vec<CommandSpec> {
             "Move Clips",
             [],
             None,
-            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
+            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks|{"seconds":f}|{"frame":n}|{"timecode":str}}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
             has_seq,
             move_clips
         ),
@@ -3229,6 +3293,11 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links_p(s, p, c);
+                // a ripple trim's step records the ripple id, whichever command runs it
+                let outer = s.command_origin.clone();
+                if mode == TrimMode::Ripple {
+                    s.command_origin = Some(crate::trim::RIPPLE_TRIM_ORIGIN.to_string());
+                }
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
@@ -3265,8 +3334,9 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     Ok(dd)
-                })?;
-                Ok(json!({"delta": applied.0}))
+                });
+                s.command_origin = outer;
+                Ok(json!({"delta": applied?.0}))
             }
         ),
         // ================= Trim mode =================
@@ -4274,7 +4344,12 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
         ParamValue::Text(_) => ParamValue::Text(v.as_str()?.to_string()),
         ParamValue::Path(_) => ParamValue::Path(crate::masks::path_from_json(v)?),
         ParamValue::Curve(_) => {
-            ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect())
+            let pts: Vec<[f32; 2]> = v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect();
+            // a finite f64 such as 1e300 saturates to an infinite f32, which a saved project cannot reload
+            if !pts.iter().flatten().all(|x| x.is_finite()) {
+                return None;
+            }
+            ParamValue::Curve(pts)
         }
     })
 }
@@ -5081,7 +5156,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
             "label": t.label.map(|l| l.name()),
             "items": t.items.iter().map(|i| json!({
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
-                "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse,
+                "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse, "maintainPitch": i.maintain_pitch,
                 "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(), "customLabelColor": i.custom_label_color,
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
@@ -5171,7 +5246,7 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
@@ -5204,6 +5279,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
+    crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);

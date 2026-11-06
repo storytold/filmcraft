@@ -228,6 +228,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+/// The flat `h264Profile` / `h264IntraOnly` parameters (and the same keys in `settings`) choose
+/// High 10 and all-intra; a profile that does not exist is an error (#1221).
+#[test]
+fn h264_profile_and_intra_parameters() {
+    let mut s = demo();
+    let r = s.execute("export.resolve", json!({"format": "h264", "h264Profile": "high10", "h264IntraOnly": true})).unwrap();
+    assert_eq!((r["settings"]["h264Profile"].as_str(), r["settings"]["h264IntraOnly"].as_bool()), (Some("high10"), Some(true)));
+    let r = s.execute("export.resolve", json!({"format": "h264", "settings": {"h264Profile": "high10"}})).unwrap();
+    assert_eq!(r["settings"]["h264Profile"], "high10");
+    assert_eq!(r["settings"]["h264IntraOnly"], false);
+    for bad in [json!({"h264Profile": "high12"}), json!({"settings": {"h264Profile": "high444"}})] {
+        assert!(s.execute("export.resolve", bad.clone()).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn wav_resolve_honours_explicit_sample_rates() {
     let mut s = demo();
@@ -275,6 +290,37 @@ fn files_in(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
     v.sort();
     v
+}
+
+/// An image sequence writes numbered stills, never the path it is given: `file.exportMedia`, its
+/// job's result and `export.quick` name the first still as `path`, and the last as `lastPath`, and
+/// both exist (#4009). A single file keeps its path and has no `lastPath`.
+#[test]
+fn an_image_sequence_reports_the_stills_it_wrote() {
+    let mut s = demo();
+    let dir = Scratch::new("sequence-path");
+    let asked = dir.0.join("a.png");
+    let p = json!({"path": asked.to_string_lossy(), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "scale": 0.125, "wait": true});
+    let frames = s.execute("export.resolve", p.clone()).unwrap()["frames"].as_u64().unwrap();
+    let v = s.execute("file.exportMedia", p).unwrap();
+    let (first, last) = (v["path"].as_str().unwrap(), v["lastPath"].as_str().unwrap());
+    assert!(first.ends_with("a000.png") && last.ends_with(&format!("a{:03}.png", frames - 1)), "{v}");
+    assert!(Path::new(first).exists() && Path::new(last).exists() && !asked.exists(), "{v}");
+    assert_eq!(v["result"]["path"], v["path"], "{v}");
+    assert_eq!(v["basePath"], json!(asked.to_string_lossy()), "the name the stills are numbered from: {v}");
+    assert_eq!(files_in(&dir.0).len() as u64, frames);
+
+    let quick = dir.0.join("q.png");
+    let p = json!({"preset": "PNG Sequence", "path": quick.to_string_lossy(), "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("export.quick", p).unwrap();
+    assert!(v["path"].as_str().is_some_and(|f| f.ends_with("q000.png") && Path::new(f).exists()), "{v}");
+    assert!(v["lastPath"].as_str().is_some_and(|f| Path::new(f).exists()), "{v}");
+
+    let wav = dir.0.join("b.wav");
+    let p = json!({"path": wav.to_string_lossy(), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("file.exportMedia", p).unwrap();
+    assert_eq!(v["path"], json!(wav.to_string_lossy()), "{v}");
+    assert!(v.get("lastPath").is_none() && v.get("basePath").is_none() && wav.exists(), "{v}");
 }
 
 /// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported
@@ -423,7 +469,7 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     let video_bitrate = num(&video["bit_rate"]) / 1e6;
     let pixel_rate = (width * height) as f64 / (1920.0 * 1080.0) * (24000.0 / 1001.0) / 29.97;
     match format {
-        "h264" => verify_h264_preset(name, format_name, video, audio),
+        "h264" => verify_h264_preset(name, format_name, settings, video, audio),
         "prores" => verify_prores_preset(name, settings, video, audio, video_bitrate, pixel_rate, format_name),
         "dnxhr" => verify_dnx_preset(name, settings, video, audio, video_bitrate, pixel_rate),
         "apv" => verify_apv_preset(name, settings, video, audio, format_name),
@@ -432,10 +478,16 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     }
 }
 
-fn verify_h264_preset(name: &str, format_name: &str, video: &Value, audio: &Value) {
+fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
     assert!(format_name.contains("mp4"), "{name}: {format_name}");
     assert_eq!(video["codec_name"], "h264", "{name}");
-    assert_eq!(video["profile"], "High", "{name}");
+    let (profile, pix) = match (settings["h264Profile"].as_str(), settings["h264IntraOnly"].as_bool().unwrap_or(false)) {
+        (Some("high10"), true) => ("High 10 Intra", "yuv420p10le"),
+        (Some("high10"), false) => ("High 10", "yuv420p10le"),
+        _ => ("High", "yuv420p"),
+    };
+    assert_eq!(video["profile"], profile, "{name}");
+    assert_eq!(video["pix_fmt"], pix, "{name}");
     assert_eq!(audio["codec_name"], "aac", "{name}");
     assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
 }

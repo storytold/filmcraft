@@ -1,11 +1,12 @@
-//! In-loop deblocking filter (§8.7) for frame-coded 4:2:0 pictures without MBAFF.
+//! In-loop deblocking filter (§8.7) for frame-coded 4:2:0 pictures without MBAFF, 8 to 10 bits.
 //!
 //! Operates on a band of macroblock rows that begins at a slice boundary; the top edge of the band is
 //! never filtered (slices are MB-row aligned and either there is one slice, or
 //! `disable_deblocking_filter_idc = 2` is used).
 
 use crate::mbinfo::{MbInfo, Mv};
-use crate::tables::{ALPHA, BETA, TC0, chroma_qp};
+use crate::pixel::{Depth, Pixel};
+use crate::tables::{ALPHA, BETA, TC0, chroma_qp_prime};
 
 pub struct DeblockParams {
     pub alpha_offset: i32,
@@ -13,16 +14,17 @@ pub struct DeblockParams {
     pub chroma_qp_offset: i32,
     /// Picture identity for (list, ref_idx 0).
     pub ref_ids: [i32; 2],
+    pub depth: Depth,
 }
 
 /// A mutable band of rows of a padded plane: sample (x, y) with y relative to the band top.
-pub struct BandPlane<'a> {
-    pub data: &'a mut [u8],
+pub struct BandPlane<'a, P> {
+    pub data: &'a mut [P],
     pub stride: usize,
     pub pad: usize,
 }
 
-impl BandPlane<'_> {
+impl<P> BandPlane<'_, P> {
     #[inline]
     fn idx(&self, x: usize, y: usize) -> usize {
         y * self.stride + self.pad + x
@@ -94,67 +96,69 @@ fn bs_of(p: &MbInfo, ip: usize, q: &MbInfo, iq: usize, mb_edge: bool, ids: &[i32
 }
 
 #[inline]
-fn filter_luma(d: &mut [u8], q0i: usize, step: usize, bs: u8, alpha: i32, beta: i32, tc0: i32) {
-    let p0 = d[q0i - step] as i32;
-    let q0 = d[q0i] as i32;
-    let p1 = d[q0i - 2 * step] as i32;
-    let q1 = d[q0i + step] as i32;
+#[allow(clippy::too_many_arguments)]
+fn filter_luma<P: Pixel>(d: &mut [P], q0i: usize, step: usize, bs: u8, alpha: i32, beta: i32, tc0: i32, dep: Depth) {
+    let p0 = d[q0i - step].get();
+    let q0 = d[q0i].get();
+    let p1 = d[q0i - 2 * step].get();
+    let q1 = d[q0i + step].get();
     if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
         return;
     }
-    let p2 = d[q0i - 3 * step] as i32;
-    let q2 = d[q0i + 2 * step] as i32;
+    let p2 = d[q0i - 3 * step].get();
+    let q2 = d[q0i + 2 * step].get();
     let ap = (p2 - p0).abs();
     let aq = (q2 - q0).abs();
     if bs < 4 {
         let tc = tc0 + (ap < beta) as i32 + (aq < beta) as i32;
         let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
-        d[q0i - step] = (p0 + delta).clamp(0, 255) as u8;
-        d[q0i] = (q0 - delta).clamp(0, 255) as u8;
+        d[q0i - step] = P::clip(p0 + delta, dep);
+        d[q0i] = P::clip(q0 - delta, dep);
         if ap < beta {
-            d[q0i - 2 * step] = (p1 + ((p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1).clamp(-tc0, tc0)) as u8;
+            d[q0i - 2 * step] = P::of(p1 + ((p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1).clamp(-tc0, tc0));
         }
         if aq < beta {
-            d[q0i + step] = (q1 + ((q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1).clamp(-tc0, tc0)) as u8;
+            d[q0i + step] = P::of(q1 + ((q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1).clamp(-tc0, tc0));
         }
     } else {
-        let p3 = d[q0i - 4 * step] as i32;
-        let q3 = d[q0i + 3 * step] as i32;
+        let p3 = d[q0i - 4 * step].get();
+        let q3 = d[q0i + 3 * step].get();
         let strong = (p0 - q0).abs() < ((alpha >> 2) + 2);
         if ap < beta && strong {
-            d[q0i - step] = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3) as u8;
-            d[q0i - 2 * step] = ((p2 + p1 + p0 + q0 + 2) >> 2) as u8;
-            d[q0i - 3 * step] = ((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3) as u8;
+            d[q0i - step] = P::of((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3);
+            d[q0i - 2 * step] = P::of((p2 + p1 + p0 + q0 + 2) >> 2);
+            d[q0i - 3 * step] = P::of((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3);
         } else {
-            d[q0i - step] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+            d[q0i - step] = P::of((2 * p1 + p0 + q1 + 2) >> 2);
         }
         if aq < beta && strong {
-            d[q0i] = ((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3) as u8;
-            d[q0i + step] = ((p0 + q0 + q1 + q2 + 2) >> 2) as u8;
-            d[q0i + 2 * step] = ((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3) as u8;
+            d[q0i] = P::of((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3);
+            d[q0i + step] = P::of((p0 + q0 + q1 + q2 + 2) >> 2);
+            d[q0i + 2 * step] = P::of((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3);
         } else {
-            d[q0i] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+            d[q0i] = P::of((2 * q1 + q0 + p1 + 2) >> 2);
         }
     }
 }
 
 #[inline]
-fn filter_chroma(d: &mut [u8], q0i: usize, step: usize, bs: u8, alpha: i32, beta: i32, tc0: i32) {
-    let p0 = d[q0i - step] as i32;
-    let q0 = d[q0i] as i32;
-    let p1 = d[q0i - 2 * step] as i32;
-    let q1 = d[q0i + step] as i32;
+#[allow(clippy::too_many_arguments)]
+fn filter_chroma<P: Pixel>(d: &mut [P], q0i: usize, step: usize, bs: u8, alpha: i32, beta: i32, tc0: i32, dep: Depth) {
+    let p0 = d[q0i - step].get();
+    let q0 = d[q0i].get();
+    let p1 = d[q0i - 2 * step].get();
+    let q1 = d[q0i + step].get();
     if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
         return;
     }
     if bs < 4 {
         let tc = tc0 + 1;
         let delta = ((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3).clamp(-tc, tc);
-        d[q0i - step] = (p0 + delta).clamp(0, 255) as u8;
-        d[q0i] = (q0 - delta).clamp(0, 255) as u8;
+        d[q0i - step] = P::clip(p0 + delta, dep);
+        d[q0i] = P::clip(q0 - delta, dep);
     } else {
-        d[q0i - step] = ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
-        d[q0i] = ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+        d[q0i - step] = P::of((2 * p1 + p0 + q1 + 2) >> 2);
+        d[q0i] = P::of((2 * q1 + q0 + p1 + 2) >> 2);
     }
 }
 
@@ -162,22 +166,45 @@ struct EdgeQ {
     alpha: i32,
     beta: i32,
     idx_a: usize,
+    /// tC0 scale, 1 << (BitDepth - 8) (§8.7.2.3).
+    tc_scale: i32,
 }
 
+impl EdgeQ {
+    #[inline]
+    fn tc0(&self, bs: u8) -> i32 {
+        if bs < 4 { TC0[self.idx_a][bs as usize - 1] as i32 * self.tc_scale } else { 0 }
+    }
+}
+
+/// Edge thresholds from the unprimed QPs (QPY, or QPC for chroma) of the two macroblocks; α and β are
+/// scaled by 1 << (BitDepth - 8) (§8.7.2.2).
 fn edge_q(qp_p: i32, qp_q: i32, dp: &DeblockParams) -> EdgeQ {
     let qav = (qp_p + qp_q + 1) >> 1;
     let ia = (qav + dp.alpha_offset).clamp(0, 51) as usize;
     let ib = (qav + dp.beta_offset).clamp(0, 51) as usize;
-    EdgeQ { alpha: ALPHA[ia] as i32, beta: BETA[ib] as i32, idx_a: ia }
+    let sh = dp.depth.shift;
+    EdgeQ { alpha: (ALPHA[ia] as i32) << sh, beta: (BETA[ib] as i32) << sh, idx_a: ia, tc_scale: 1 << sh }
 }
 
 /// Deblock `rows` macroblock rows of a band. `mbs` holds the band's MbInfo (row-major, `mbw` wide).
-pub fn deblock_band<'a>(y: &mut BandPlane<'a>, u: &mut BandPlane<'a>, v: &mut BandPlane<'a>, mbs: &[MbInfo], mbw: usize, rows: usize, dp: &DeblockParams) {
+pub fn deblock_band<'a, P: Pixel>(
+    y: &mut BandPlane<'a, P>,
+    u: &mut BandPlane<'a, P>,
+    v: &mut BandPlane<'a, P>,
+    mbs: &[MbInfo],
+    mbw: usize,
+    rows: usize,
+    dp: &DeblockParams,
+) {
     let ids = &dp.ref_ids;
+    let off = dp.depth.qp_offset;
     for my in 0..rows {
         for mx in 0..mbw {
             let q = &mbs[my * mbw + mx];
-            let cqp = |m: &MbInfo| chroma_qp(m.qp as i32 + dp.chroma_qp_offset) as i32;
+            // MbInfo::qp is QP'Y; the filter works on QPY and QPC.
+            let yqp = |m: &MbInfo| m.qp as i32 - off;
+            let cqp = |m: &MbInfo| chroma_qp_prime(m.qp as i32, dp.chroma_qp_offset, off) as i32 - off;
             // ---- vertical edges (dir 0) then horizontal (dir 1)
             for dir in 0..2 {
                 let mut bs_all = [[0u8; 4]; 4];
@@ -204,7 +231,7 @@ pub fn deblock_band<'a>(y: &mut BandPlane<'a>, u: &mut BandPlane<'a>, v: &mut Ba
                     if bs == [0; 4] {
                         continue;
                     }
-                    let eq = edge_q(p_mb.qp as i32, q.qp as i32, dp);
+                    let eq = edge_q(yqp(p_mb), yqp(q), dp);
                     if eq.alpha == 0 || eq.beta == 0 {
                         continue;
                     }
@@ -213,9 +240,8 @@ pub fn deblock_band<'a>(y: &mut BandPlane<'a>, u: &mut BandPlane<'a>, v: &mut Ba
                         if b == 0 {
                             continue;
                         }
-                        let tc0 = if b < 4 { TC0[eq.idx_a][b as usize - 1] as i32 } else { 0 };
                         let (qi, step) = if dir == 0 { (y.idx(mx * 16 + e * 4, my * 16 + k), 1) } else { (y.idx(mx * 16 + k, my * 16 + e * 4), y.stride) };
-                        filter_luma(y.data, qi, step, b, eq.alpha, eq.beta, tc0);
+                        filter_luma(y.data, qi, step, b, eq.alpha, eq.beta, eq.tc0(b), dp.depth);
                     }
                 }
                 // chroma edges 0 and 2 (chroma sample offsets 0 and 4)
@@ -238,10 +264,9 @@ pub fn deblock_band<'a>(y: &mut BandPlane<'a>, u: &mut BandPlane<'a>, v: &mut Ba
                             if b == 0 {
                                 continue;
                             }
-                            let tc0 = if b < 4 { TC0[eq.idx_a][b as usize - 1] as i32 } else { 0 };
                             let (qi, step) =
                                 if dir == 0 { (plane.idx(mx * 8 + e * 2, my * 8 + k), 1) } else { (plane.idx(mx * 8 + k, my * 8 + e * 2), plane.stride) };
-                            filter_chroma(plane.data, qi, step, b, eq.alpha, eq.beta, tc0);
+                            filter_chroma(plane.data, qi, step, b, eq.alpha, eq.beta, eq.tc0(b), dp.depth);
                         }
                     }
                 }

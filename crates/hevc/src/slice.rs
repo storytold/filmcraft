@@ -180,7 +180,9 @@ impl SliceHeader {
         }
         let mut sh = if dependent {
             let Some(p) = prev else { return invalid("dependent slice segment without a preceding slice") };
-            let mut s = p.clone();
+            // entry points are the segment's own; sharing the clone's capacity let many short
+            // dependent segments each retain a copy of one large table
+            let mut s = SliceHeader { entry_points: Vec::new(), ..p.clone() };
             s.nal = nal;
             s
         } else {
