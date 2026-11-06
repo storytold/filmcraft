@@ -382,7 +382,7 @@ fn gpu_hook_scenarios() {
 
     // 2. Producing renderer: counters up and its picture reaches the export.
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
     mk(&tmp("fake-gpu.png"), Some(true));
     assert!(gpu_render_stats().frames >= 2, "gpu frames counted: {:?}", gpu_render_stats());
     assert_eq!(gpu_render_stats().fallbacks, 0);
@@ -453,16 +453,18 @@ fn gpu_hook_scenarios() {
     // at most one panic per pooled renderer (4): none is used again after it panicked
     assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
 
-    // 5. A frame the planner hands back as one CPU image (an adjustment layer over the clip from
-    //    frame 12) is rendered by the CPU without taking a pooled renderer: it counts as a
-    //    fallback, and the renderer's picture reaches only the frames before it.
+    // 5. A frame the planner hands back as one CPU image (an adjustment layer with an effect the
+    //    GPU doesn't run, over the clip from frame 12) is rendered by the CPU without taking a
+    //    pooled renderer: it counts as a fallback, and the renderer's picture reaches only the
+    //    frames before it.
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
     let (p, seq, m) = project();
     let mut p = Arc::unwrap_or_clone(p);
     let r = FrameRate::FPS_24;
     let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
     let v2 = filmcraft_project::TrackId(p.alloc_id());
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
@@ -482,6 +484,43 @@ fn gpu_hook_scenarios() {
         assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
+
+    // 6. An adjustment layer whose effect the GPU runs (Invert, over the clip from frame 12) is
+    //    handed to a renderer whose device runs adjustment layers, and never to one without an
+    //    effect stage: there those frames render on the export's thread, byte-equal to Off, and
+    //    count as fallbacks.
+    let (p, seq, m) = project();
+    let mut p = Arc::unwrap_or_clone(p);
+    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("invert").unwrap().instance());
+    let v2 = filmcraft_project::TrackId(p.alloc_id());
+    let q = p.sequence_mut(seq).unwrap();
+    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+    q.video_tracks[1].items.push(over);
+    let p = Arc::new(p);
+    let mk24 = |path: &String, gpu: crate::GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
+        s.gpu_rendering = gpu;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
+    mk24(&tmp("gpu-adj-off.png"), crate::GpuRendering::Off);
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::NONE)) as Box<dyn FrameRenderer>));
+    mk24(&tmp("gpu-adj-nofx.png"), crate::GpuRendering::Auto);
+    assert_ne!(frame("gpu-adj-off", "011"), frame("gpu-adj-nofx", "011"), "a frame without the adjustment layer goes to the renderer");
+    for f in ["012", "023"] {
+        assert_eq!(frame("gpu-adj-off", f), frame("gpu-adj-nofx", f), "frame {f}: no effect stage, the CPU renders it");
+    }
+    assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    mk24(&tmp("gpu-adj-fx.png"), crate::GpuRendering::Auto);
+    for f in ["012", "023"] {
+        assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
+    }
+    assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
     crate::reset_frame_renderers_for_tests();
 }
 
@@ -501,9 +540,14 @@ impl FrameRenderer for PanickingRenderer {
         PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         panic!("GPU renderer failure (test)");
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
 }
 
-struct FakeRenderer;
+/// Returns a blank picture for every frame it is given, on a device that runs these caps.
+struct FakeRenderer(filmcraft_render::plan::DeviceCaps);
 
 impl FrameRenderer for FakeRenderer {
     fn render(
@@ -515,6 +559,10 @@ impl FrameRenderer for FakeRenderer {
         _sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0
     }
 }
 
