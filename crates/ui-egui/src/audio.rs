@@ -12,11 +12,26 @@ pub const AUDIO_STALL_S: f64 = 1.0;
 pub const AUDIO_RETRY_S: f64 = 2.0;
 
 /// Effective sample rate for shuttle playback. The audio device still runs at `device_rate`,
-/// so at 2x its output samples represent twice the timeline duration. Reverse and
-/// extreme shuttle speeds remain silent rather than asking the mixer for invalid rates.
+/// so at 2x its output samples represent twice the timeline duration.
+///
+/// For **forward** speeds the mixer is asked to produce samples at a higher-than-normal rate so
+/// the device (which always runs at `device_rate`) plays them back faster.
+///
+/// For **reverse** speeds the mixer rate equals `device_rate` — the device still runs at its
+/// natural rate, and the reverse mixer reads blocks backward from the timeline then flips them.
+///
+/// Extreme speeds (abs > 4×) remain silent.
 pub(crate) fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
-    if device_rate == 0 || !speed.is_finite() || !(0.5..=4.0).contains(&speed) {
+    if device_rate == 0 || !speed.is_finite() {
         return None;
+    }
+    let abs = speed.abs();
+    if !(0.5..=4.0).contains(&abs) {
+        return None;
+    }
+    if speed < 0.0 {
+        // Reverse: device runs at its natural rate; the mixer closure handles reversal.
+        return Some(device_rate);
     }
     let rate = (f64::from(device_rate) / speed).round();
     if !(1.0..=f64::from(u32::MAX)).contains(&rate) {
