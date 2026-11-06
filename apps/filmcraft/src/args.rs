@@ -152,6 +152,15 @@ fn graphics_mode(name: &str) -> Result<crate::graphics::Mode, String> {
     Ok(mode)
 }
 
+/// Settings ▸ General ▸ At Startup ▸ Show Home (the default): when the command line asks for
+/// nothing, no project opens and the window starts on Home (the Import screen, with the recent
+/// projects). The demo opens only for `--demo` or a first run, one with no preferences file yet;
+/// with no data directory there is no first run to tell apart, so the demo does not come back at
+/// every launch (#2421).
+pub fn starts_on_home(files: &[String], startup_flag: bool, at_startup: &str, prefs_path: Option<&Path>) -> bool {
+    files.is_empty() && !startup_flag && at_startup == "showHome" && prefs_path.is_none_or(Path::exists)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +178,25 @@ mod tests {
             Ok(Cli::Run(l)) => l,
             other => panic!("{args:?} should start the app, got {other:?}"),
         }
+    }
+
+    /// #2421: Home, except on a first run, for `--demo` / `--empty` and when files are given.
+    #[test]
+    fn show_home_applies_to_a_later_run_that_asks_for_nothing() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (prefs, missing) = (manifest.join("Cargo.toml"), manifest.join("no-preferences-yet.json"));
+        let home = |args: &[&str], at_startup: &str, path: Option<&Path>| {
+            let l = launch(args);
+            starts_on_home(&l.files, l.startup_flag, at_startup, path)
+        };
+        assert!(home(&[], "showHome", Some(&prefs)), "a later run");
+        assert!(!home(&[], "showHome", Some(&missing)), "a first run");
+        assert!(home(&[], "showHome", None), "no data directory: not a first run every time");
+        assert!(!home(&["--demo"], "showHome", Some(&prefs)));
+        assert!(!home(&["--empty"], "showHome", Some(&prefs)));
+        assert!(!home(&["film.fcproj"], "showHome", Some(&prefs)));
+        assert!(!home(&["clip.mp4"], "showHome", Some(&prefs)));
+        assert!(!home(&[], "openMostRecent", Some(&prefs)));
     }
 
     /// `filmcraft --help` used to open the app with "--help" as a media file to import.

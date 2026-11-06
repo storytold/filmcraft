@@ -233,6 +233,9 @@ pub struct FilmcraftApp {
     pub(crate) ime_drawn_editor: Option<panels::graphics::DrawnImeEditor>,
     /// Project document generation last seen by the UI (the engine bumps it on replacement).
     ime_document_epoch: u64,
+    /// The same generation for the header mode: a project installed while Import is showing
+    /// switches to Edit (#2421).
+    mode_document_epoch: u64,
     /// Active sequence last seen by the UI; `sequence.close` need not emit `OpenSequence`.
     ime_active_sequence: Option<filmcraft_project::ItemId>,
     /// Viewports the Program monitor's editor published in, released when the app exits.
