@@ -261,6 +261,7 @@ fn is_vowel(c: char) -> bool {
     matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')
 }
 
+/// Returns true when `c` falls within the Unicode Cyrillic blocks.
 fn is_cyrillic(c: char) -> bool {
     matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0500}'..='\u{052F}')
 }
@@ -274,6 +275,7 @@ const RU_Y: [f32; 3] = [360.0, 1550.0, 2400.0];
 const RU_I: [f32; 3] = [280.0, 2250.0, 3000.0];
 const RU_J: [f32; 3] = [280.0, 2200.0, 2900.0];
 
+/// Generates rule-based formant acoustic phonemes for a Russian Cyrillic word.
 fn speak_russian_word(word: &str, out: &mut Vec<Phone>) {
     let chars: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
     let n = chars.len();
@@ -360,6 +362,7 @@ fn speak_russian_word(word: &str, out: &mut Vec<Phone>) {
     }
 }
 
+/// Synthesizes acoustic phone sequence for a word, detecting Cyrillic text or Russian language setting.
 fn speak_any_word(word: &str, lang: &str, out: &mut Vec<Phone>) {
     if word.chars().any(is_cyrillic) || lang == "ru-RU" {
         speak_russian_word(word, out);

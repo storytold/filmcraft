@@ -401,6 +401,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
 
 const SPEED_PRESETS: &[f64] = &[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0];
 
+/// Formats a playback speed multiplier into a short label (e.g. `1×`, `0.5×`, `-1×`).
 fn format_speed(speed: f64) -> String {
     let sign = if speed < 0.0 { "-" } else { "" };
     let abs = speed.abs();

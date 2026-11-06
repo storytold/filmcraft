@@ -611,6 +611,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 /// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
 /// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
 fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+    /// Recursively searches layout nodes for the tab or dock group containing `panel`.
     fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
         match node {
             Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),

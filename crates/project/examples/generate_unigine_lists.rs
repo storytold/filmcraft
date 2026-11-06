@@ -51,6 +51,7 @@ enum Direction {
 }
 
 impl Direction {
+    /// Identifier string for the template variant.
     fn id(self) -> &'static str {
         match self {
             Direction::SlideLeft => "unigine-list-slide-left",
@@ -60,6 +61,7 @@ impl Direction {
         }
     }
 
+    /// User-facing display name of the template variant.
     fn name(self) -> &'static str {
         match self {
             Direction::SlideLeft => "Unigine List – Slide Left",
@@ -69,6 +71,7 @@ impl Direction {
         }
     }
 
+    /// Summary description of the template's layout and animation behavior.
     fn description(self) -> &'static str {
         match self {
             Direction::SlideLeft => "Animated list: 5 rows slide in from left one by one with accent bars.",
@@ -89,6 +92,7 @@ struct RowGeometry {
     text_offscreen: Vec2,
 }
 
+/// Computes on-screen and off-screen positions for a row according to slide direction.
 fn compute_geometry(dir: Direction, row_idx: usize) -> RowGeometry {
     let row_y = 350.0 + (row_idx as f64 * 92.0);
 
@@ -136,6 +140,7 @@ fn compute_geometry(dir: Direction, row_idx: usize) -> RowGeometry {
     }
 }
 
+/// Creates a background plate shape layer with staggered slide and fade keyframes.
 fn make_plate_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInstance {
     let mut e = new_shape_layer(0, geom.plate_rest, Vec2::new(ROW_WIDTH, ROW_HEIGHT), vec![]);
     set_param(&mut e, "name", ParamValue::Text(format!("Plate Row {}", row_idx + 1)));
@@ -167,6 +172,7 @@ fn make_plate_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInsta
     e
 }
 
+/// Creates an accent vertical bar shape layer with staggered slide keyframes.
 fn make_accent_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInstance {
     let mut e = new_shape_layer(0, geom.accent_rest, Vec2::new(ACCENT_WIDTH, ACCENT_HEIGHT), vec![]);
     set_param(&mut e, "name", ParamValue::Text(format!("Accent Row {}", row_idx + 1)));
@@ -203,6 +209,7 @@ fn make_accent_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInst
     e
 }
 
+/// Creates a text title layer with position slide and opacity reveal keyframes.
 fn make_text_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInstance {
     let default_label = format!("Item {}", row_idx + 1);
     let mut e = new_text_layer(&default_label, geom.text_rest, 32.0);
@@ -246,6 +253,7 @@ fn make_text_layer(uid: u64, row_idx: usize, geom: &RowGeometry) -> EffectInstan
     e
 }
 
+/// Constructs a 5-row list graphics template for the given direction.
 fn build_template(dir: Direction) -> GraphicsTemplate {
     let mut layers = Vec::with_capacity(ROW_COUNT * 3);
     for row in 0..ROW_COUNT {

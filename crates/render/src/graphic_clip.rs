@@ -288,6 +288,7 @@ struct StrokePlan {
 }
 
 impl StrokeCoverage<'_> {
+    /// Produces a rasterized stroke mask for `source` with outer ring adjustment when fill is disabled.
     fn mask(&self, source: &Mask, stroke: &StrokeStyle) -> Mask {
         let mut sm = mask::stroke(source, stroke.width * self.scale, stroke_kind(stroke.kind));
         // Outer coverage includes the glyph for a seamless fill. With Fill off, retain only
@@ -298,6 +299,7 @@ impl StrokeCoverage<'_> {
         sm
     }
 
+    /// Prepares stroke rendering plan, coalescing matching character styles into batch groups.
     fn prepare(&self, stroke: &Stroke) -> StrokePlan {
         if self.text.is_none() || stroke.runs.iter().all(|s| *s == stroke.style) {
             return StrokePlan { groups: vec![StrokeGroup { style: stroke.style, runs: Vec::new() }], whole: Some(self.mask(self.cover, &stroke.style)) };

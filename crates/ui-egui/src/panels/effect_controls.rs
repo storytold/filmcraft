@@ -577,6 +577,7 @@ fn properties_nav(
     }
 }
 
+/// Handles click and double-click interactions on an animatable parameter's timeline lane row.
 #[allow(clippy::too_many_arguments)]
 fn lane_row_interact(
     app: &mut FilmcraftApp,

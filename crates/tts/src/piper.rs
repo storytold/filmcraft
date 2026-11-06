@@ -279,6 +279,7 @@ impl Voice for PiperVoice {
         self.info
     }
 
+    /// Synthesizes Russian speech from `text` using local Piper ONNX inference.
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError> {
         check_text(text)?;
         params.check()?;
