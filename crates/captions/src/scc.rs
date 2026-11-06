@@ -280,6 +280,8 @@ pub fn parse(text: &str) -> Result<Document> {
         let Some(frame) = parse_timecode(tc) else {
             return Err(Error::Syntax { line: n + 1, msg: format!("bad timecode \"{tc}\"") });
         };
+        // the first time code says how the file counts (drop-frame or not)
+        doc.labels.get_or_insert((RATE, tc.contains([';', '.', ','])));
         for (k, w) in it.enumerate() {
             let Ok(v) = u16::from_str_radix(w, 16) else {
                 doc.warnings.push(format!("line {}: bad code word \"{w}\"", n + 1));
@@ -468,6 +470,7 @@ pub fn code_word(p: (u8, u8)) -> u16 {
 
 pub fn write(doc: &Document, drop_frame: bool) -> String {
     let occ = schedule(doc);
+    let origin = crate::label_frame(doc.start_timecode, RATE, drop_frame); // time codes count from the start time code
     let mut out = String::from(HEADER);
     out.push_str("\n\n");
     let mut line: Option<(i64, Vec<String>)> = None;
@@ -476,13 +479,13 @@ pub fn write(doc: &Document, drop_frame: bool) -> String {
         if f != last + 1
             && let Some((start, words)) = line.take()
         {
-            out.push_str(&format!("{}\t{}\n\n", format_timecode(start, drop_frame), words.join(" ")));
+            out.push_str(&format!("{}\t{}\n\n", format_timecode(start.saturating_add(origin), drop_frame), words.join(" ")));
         }
         line.get_or_insert_with(|| (f, Vec::new())).1.push(format!("{:04x}", word(p)));
         last = f;
     }
     if let Some((start, words)) = line {
-        out.push_str(&format!("{}\t{}\n\n", format_timecode(start, drop_frame), words.join(" ")));
+        out.push_str(&format!("{}\t{}\n\n", format_timecode(start.saturating_add(origin), drop_frame), words.join(" ")));
     }
     out
 }
@@ -522,6 +525,35 @@ mod tests {
         assert_eq!(format_timecode(1800, true), "00:01:00;02");
         assert_eq!(format_timecode(1800, false), "00:01:00:00");
         assert_eq!(parse_timecode("00:10:00;00"), Some(17982));
+    }
+
+    /// Time codes count from the label of the document's start time code, drop-frame or not; the
+    /// code words do not change, and `Document::count_from` reads the cues back from it.
+    #[test]
+    fn time_codes_count_from_the_start_timecode() {
+        let doc = Document { cues: vec![cue(60, 120, "Hello")], ..Default::default() };
+        let hour = Tick(3600 * filmcraft_time::TICKS_PER_SECOND); // the label 01:00:00:00
+        let master = Document { start_timecode: hour, ..doc.clone() };
+        let lines = |text: &str| -> Vec<(i64, String)> {
+            text.lines().filter_map(|l| l.split_once('\t')).map(|(tc, words)| (parse_timecode(tc).unwrap(), words.to_string())).collect()
+        };
+        for (drop_frame, origin) in [(true, 107_892), (false, 108_000)] {
+            let plain = lines(&write(&doc, drop_frame));
+            let shifted: Vec<_> = plain.iter().map(|(f, words)| (f + origin, words.clone())).collect();
+            let text = write(&master, drop_frame);
+            assert_eq!(lines(&text), shifted);
+            assert!(text.contains("\n01:00:0"), "{text}");
+            let mut back = parse(&text).unwrap();
+            assert_eq!(back.labels, Some((RATE, drop_frame)));
+            assert_eq!(back.cues[0].start, RATE.tick_of(origin + 60));
+            assert!(back.count_from(hour));
+            assert_eq!(back.cues, parse(&write(&doc, drop_frame)).unwrap().cues, "read back from the start time code");
+            assert!(!back.count_from(hour), "a cue before the start time code keeps its time");
+        }
+        for t in [Tick(i64::MIN), Tick(-1)] {
+            assert_eq!(write(&Document { start_timecode: t, ..doc.clone() }, true), write(&doc, true), "a negative start counts from zero");
+        }
+        assert!(write(&Document { start_timecode: Tick(i64::MAX), ..doc }, true).contains('\t'));
     }
 
     #[test]
