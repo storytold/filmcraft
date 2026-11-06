@@ -6,8 +6,9 @@
 //! [`resolve`] maps a family + style name (as stored in projects) to a face and the synthetic
 //! bold/italic needed when the family lacks that style. Unknown families fall back to Inter.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
@@ -34,6 +35,28 @@ pub struct CraftFont {
 }
 
 include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
+
+#[cfg(test)]
+mod craft_wasm_tests {
+    use super::*;
+
+    /// The web build embeds the UI font and Noto Sans Thai, so Thai names draw on a browser
+    /// without a Thai font (#3374). Skipped without craft-fonts.
+    #[test]
+    fn web_build_embeds_the_ui_font_and_the_thai_face() {
+        if CRAFT_FONTS.is_empty() {
+            eprintln!("skipped: built without craft-fonts");
+            return;
+        }
+        assert!(CRAFT_WASM_FACES.contains(&("BIZ UDPGothic", "Regular")), "{CRAFT_WASM_FACES:?}");
+        assert!(CRAFT_WASM_FACES.contains(&("Noto Sans Thai", "Regular")), "{CRAFT_WASM_FACES:?}");
+        // every listed face is a real craft-fonts entry, and the Thai one carries the Thai script
+        for (family, style) in CRAFT_WASM_FACES {
+            assert!(CRAFT_FONTS.iter().any(|f| f.family == *family && f.style == *style), "{family} {style}");
+        }
+        assert!(CRAFT_FONTS.iter().any(|f| f.family == "Noto Sans Thai" && f.scripts.contains(&"Thai")));
+    }
+}
 
 /// The craft-fonts entries for Japanese (`Jpan`), in [`CRAFT_FONTS`] order. Empty when the app was
 /// built without craft-fonts.
@@ -88,16 +111,23 @@ impl DirectorySource {
     pub fn system() -> Self {
         let mut dirs: Vec<PathBuf> = Vec::new();
         let home = std::env::var_os("HOME").map(PathBuf::from);
+        // Fonts activated through Adobe Fonts (Creative Cloud) live in a CoreSync folder that the
+        // OS font manager lists but the standard folders don't hold (#1878); on Windows the files
+        // there have no extension.
         if cfg!(target_os = "macos") {
             dirs.extend(["/System/Library/Fonts", "/Library/Fonts"].map(PathBuf::from));
             if let Some(h) = &home {
                 dirs.push(h.join("Library/Fonts"));
+                dirs.push(h.join("Library/Application Support/Adobe/CoreSync/plugins/livetype"));
             }
         } else if cfg!(windows) {
             let win = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
             dirs.push(win.join("Fonts"));
             if let Some(l) = std::env::var_os("LOCALAPPDATA") {
                 dirs.push(PathBuf::from(l).join("Microsoft\\Windows\\Fonts"));
+            }
+            if let Some(a) = std::env::var_os("APPDATA") {
+                dirs.push(PathBuf::from(a).join("Adobe\\CoreSync\\plugins\\livetype"));
             }
         } else if cfg!(unix) && !cfg!(target_arch = "wasm32") {
             dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
@@ -114,13 +144,56 @@ fn walk(dir: &std::path::Path, depth: u32, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        let Ok(file_type) = e.file_type() else { continue };
+        // Font discovery is bounded to the configured folders: never follow a symlinked folder
+        // into a loop or an unrelated tree. Symlinked font files (NixOS, home-manager, Debian
+        // alternatives) still count.
+        let is_file = if file_type.is_symlink() { std::fs::metadata(&p).is_ok_and(|m| m.is_file()) } else { file_type.is_file() };
+        if file_type.is_dir() {
             if depth < 4 {
                 walk(&p, depth + 1, out);
             }
-        } else if p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc")) {
+        } else if is_file && is_font_file(&p) {
             out.push(p);
         }
+    }
+}
+
+/// A font file by extension, or an extensionless file that starts with an OpenType / TrueType /
+/// collection tag (Adobe Fonts stores its files without an extension on Windows).
+fn is_font_file(p: &std::path::Path) -> bool {
+    match p.extension().and_then(OsStr::to_str) {
+        Some(x) => matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc"),
+        None => {
+            let mut tag = [0u8; 4];
+            std::fs::File::open(p).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut tag)).is_ok()
+                && matches!(&tag, [0, 1, 0, 0] | b"OTTO" | b"ttcf" | b"true")
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod directory_tests {
+    use super::walk;
+
+    #[test]
+    fn directory_source_does_not_follow_symlinked_font_trees() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let configured = root.path().join("configured");
+        let foreign = root.path().join("foreign");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(configured.join("inside.ttf"), b"").unwrap();
+        std::fs::write(foreign.join("outside.ttf"), b"").unwrap();
+        symlink(&foreign, configured.join("loop")).unwrap();
+        symlink(foreign.join("outside.ttf"), configured.join("linked.ttf")).unwrap();
+
+        let mut found = Vec::new();
+        walk(&configured, 0, &mut found);
+        found.sort();
+        assert_eq!(found, vec![configured.join("inside.ttf"), configured.join("linked.ttf")]);
     }
 }
 
@@ -170,7 +243,7 @@ impl FaceBytes {
 }
 
 /// Vertical metrics at a pixel size (all positive distances, y down from the baseline for the
-/// underline position).
+/// underline and strikethrough positions, which are the top edges of their strokes).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VMetrics {
     pub ascent: f32,
@@ -180,6 +253,8 @@ pub struct VMetrics {
     pub x_height: f32,
     pub underline_pos: f32,
     pub underline_thickness: f32,
+    pub strikethrough_pos: f32,
+    pub strikethrough_thickness: f32,
 }
 
 impl Face {
@@ -253,18 +328,27 @@ impl Face {
                 x_height: px * 0.5,
                 underline_pos: px * 0.1,
                 underline_thickness: px * 0.06,
+                strikethrough_pos: -px * 0.28,
+                strikethrough_thickness: px * 0.06,
                 ..Default::default()
             };
         };
         let m = f.metrics(Size::new(px), LocationRef::default());
+        let x_height = m.x_height.unwrap_or(m.ascent * 0.5);
+        // OS/2 strikeout: offset of the stroke's top above the baseline. Fonts that leave it zero
+        // (or put it below the baseline) get a stroke centred on half the x-height.
+        let strike_t = m.strikeout.map_or(px * 0.06, |d| d.thickness).max(px * 0.03);
+        let strike_top = m.strikeout.map(|d| d.offset).filter(|o| *o > 0.0 && o.is_finite()).unwrap_or(x_height * 0.5 + strike_t * 0.5);
         VMetrics {
             ascent: m.ascent,
             descent: -m.descent,
             line_gap: m.leading,
             cap_height: m.cap_height.unwrap_or(m.ascent * 0.7),
-            x_height: m.x_height.unwrap_or(m.ascent * 0.5),
+            x_height,
             underline_pos: m.underline.map_or(px * 0.1, |u| -u.offset),
             underline_thickness: m.underline.map_or(px * 0.06, |u| u.thickness.max(px * 0.03)),
+            strikethrough_pos: -strike_top,
+            strikethrough_thickness: strike_t,
         }
     }
     /// Whether the face's GSUB offers an OpenType feature (e.g. `smcp`).
@@ -279,13 +363,25 @@ impl Face {
 
 struct Db {
     faces: Vec<Arc<Face>>,
+    /// Served by [`face`] if no face is registered (the bundled faces always are).
+    fallback: Arc<Face>,
     scanned: bool,
 }
 
 fn db() -> &'static RwLock<Db> {
     static DB: OnceLock<RwLock<Db>> = OnceLock::new();
     DB.get_or_init(|| {
-        let mut db = Db { faces: Vec::new(), scanned: false };
+        let info = FaceInfo {
+            family: "Inter".into(),
+            style: "Regular".into(),
+            weight: 400,
+            italic: false,
+            index: 0,
+            data: FaceData::Static(INTER_REGULAR),
+            origin: "bundled",
+        };
+        let fallback = Arc::new(Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() });
+        let mut db = Db { faces: Vec::new(), fallback, scanned: false };
         for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
             for n in read_faces_bytes(b) {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
@@ -312,7 +408,7 @@ fn push(db: &mut Db, info: FaceInfo) -> FaceId {
 /// added.
 pub fn add_source(src: &dyn FontSource) -> usize {
     let faces = src.faces();
-    let mut d = db().write().unwrap_or_else(|e| e.into_inner());
+    let mut d = db().write().unwrap_or_else(PoisonError::into_inner);
     let mut n = 0;
     for f in faces {
         let dup = d.faces.iter().any(|g| g.info.family.eq_ignore_ascii_case(&f.family) && g.info.style.eq_ignore_ascii_case(&f.style));
@@ -328,7 +424,7 @@ pub fn add_source(src: &dyn FontSource) -> usize {
 pub fn add_font_data(data: Vec<u8>) -> Vec<FaceId> {
     let data = Arc::new(data);
     let names = read_faces_bytes(&data);
-    let mut d = db().write().unwrap_or_else(|e| e.into_inner());
+    let mut d = db().write().unwrap_or_else(PoisonError::into_inner);
     names.into_iter().map(|n| push(&mut d, info_from(n, FaceData::Shared(data.clone()), "user"))).collect()
 }
 
@@ -338,31 +434,30 @@ pub fn scan_system() -> usize {
     // Held for the whole scan: a concurrent caller waits for the complete list instead of
     // returning early and resolving against a half-filled database.
     static SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _scan = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = SCAN.lock().unwrap_or_else(PoisonError::into_inner);
     if system_scanned() {
         return 0;
     }
     let n = if cfg!(target_arch = "wasm32") { 0 } else { add_source(&DirectorySource::system()) };
-    db().write().unwrap_or_else(|e| e.into_inner()).scanned = true;
+    db().write().unwrap_or_else(PoisonError::into_inner).scanned = true;
     n
 }
 
 pub fn system_scanned() -> bool {
-    db().read().unwrap_or_else(|e| e.into_inner()).scanned
+    db().read().unwrap_or_else(PoisonError::into_inner).scanned
 }
 
 /// A face by id (unknown ids give the default face).
 // The bundled faces are compiled in (`include_bytes!`) and registered when the database is
-// created, so `faces` is never empty.
-#[allow(clippy::expect_used)]
+// created, so `faces` is never empty; the fallback only covers a corrupt bundle.
 pub fn face(id: FaceId) -> Arc<Face> {
-    let d = db().read().unwrap_or_else(|e| e.into_inner());
-    d.faces.get(id).or_else(|| d.faces.first()).cloned().expect("bundled fonts present")
+    let d = db().read().unwrap_or_else(PoisonError::into_inner);
+    d.faces.get(id).or_else(|| d.faces.first()).unwrap_or(&d.fallback).clone()
 }
 
 /// All faces (bundled first).
 pub fn all_faces() -> Vec<Arc<Face>> {
-    db().read().unwrap_or_else(|e| e.into_inner()).faces.clone()
+    db().read().unwrap_or_else(PoisonError::into_inner).faces.clone()
 }
 
 /// Families with their style names, sorted by family; styles in weight order.
@@ -380,6 +475,13 @@ pub fn families() -> Vec<(String, Vec<String>)> {
             (k, v.into_iter().map(|(_, _, s)| s).collect())
         })
         .collect()
+}
+
+/// `families()` for a picker: scans the system fonts first (once), so the list taken on the first
+/// opening already holds the installed families.
+pub fn picker_families() -> Vec<(String, Vec<String>)> {
+    scan_system();
+    families()
 }
 
 /// The face chosen for a family/style request, plus synthetic emboldening / slant when the family
@@ -580,6 +682,32 @@ mod tests {
         assert!(f.has_char('A') && f.has_char('Ж'));
         assert!(!f.has_char('\u{5d0}'), "Inter has no Hebrew");
         assert!(f.has_feature(b"liga") || f.has_feature(b"calt"));
+    }
+
+    #[test]
+    fn adobe_fonts_folders_are_scanned() {
+        // #1878: macOS keeps activated fonts as hidden `.r/.<id>.otf`, Windows as `r/<id>` without an extension
+        let root = std::env::temp_dir().join(format!("filmcraft-livetype-{}", std::process::id()));
+        for d in [".r", "r"] {
+            std::fs::create_dir_all(root.join(d)).expect("temp dir");
+        }
+        std::fs::write(root.join(".r/.12345.otf"), INTER_REGULAR).expect("write");
+        std::fs::write(root.join("r/12346"), INTER_REGULAR).expect("write");
+        std::fs::write(root.join("r/12347"), b"not a font").expect("write");
+        let faces = DirectorySource { dirs: vec![root.clone()] }.faces();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(faces.iter().filter(|f| f.family == "Inter").count(), 2, "{:?}", faces.iter().map(|f| &f.data).collect::<Vec<_>>());
+        // and the system scan includes the whole CoreSync path
+        let expected = if cfg!(target_os = "macos") {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/Adobe/CoreSync/plugins/livetype"))
+        } else if cfg!(windows) {
+            std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Adobe\\CoreSync\\plugins\\livetype"))
+        } else {
+            None
+        };
+        if let Some(expected) = expected {
+            assert!(DirectorySource::system().dirs.contains(&expected), "{expected:?}");
+        }
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 use serde_json::{Map, Value};
 
+// Keep nested CLI params safely within the depth also accepted by JSON serialization.
+const MAX_PARAM_NESTING: usize = 64;
+
 /// Options that take a value (`--project p`); every other `--x` is a flag.
 const VALUED: &[&str] = &[
     "--project",
@@ -84,6 +87,9 @@ impl Args {
         let mut m = Map::new();
         for kv in rest {
             let (k, v) = kv.split_once('=').ok_or_else(|| format!("expected key=value, got `{kv}`"))?;
+            if k.bytes().filter(|&b| b == b'.').count() >= MAX_PARAM_NESTING {
+                return Err(format!("parameter key exceeds {MAX_PARAM_NESTING} nesting levels"));
+            }
             insert_dotted(&mut m, k, parse_value(v));
         }
         Ok(Value::Object(m))
@@ -139,6 +145,17 @@ mod tests {
         assert_eq!(a.params_from(2).unwrap(), json!({"seconds": 3.5, "name": "Selects", "on": true, "ids": [1, 2], "color": {"r": 1, "g": 0.5}, "s": "7"}));
         assert!(args("exec x novalue").params_from(2).is_err());
         assert_eq!(args("exec x").params_from(2).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn dotted_key_depth_is_bounded() {
+        let allowed = format!("{}leaf=1", "a.".repeat(MAX_PARAM_NESTING - 1));
+        let a = Args::parse(["exec".into(), "x".into(), allowed]);
+        assert!(a.params_from(2).is_ok());
+
+        let too_deep = format!("{}leaf=1", "a.".repeat(MAX_PARAM_NESTING));
+        let b = Args::parse(["exec".into(), "x".into(), too_deep]);
+        assert!(b.params_from(2).unwrap_err().contains("nesting levels"));
     }
 
     #[test]

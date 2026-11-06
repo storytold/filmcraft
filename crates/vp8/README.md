@@ -28,8 +28,8 @@ test oracles.
 
 Bit-exact with libvpx on the 62 libvpx VP8 test vectors checked (`vp80-00-comprehensive-001` to
 `018` and the `vp80-01` to `vp80-06` intra, inter, segmentation, partition, sharpness and small
-size vectors; `tests/vectors.rs` checks them when they are present) and on the generated fixtures
-of `tests/conformance.rs`.
+size vectors; `tests/it/vectors.rs` checks them when they are present) and on the generated fixtures
+of `tests/it/conformance.rs`.
 
 ## API
 

@@ -1,7 +1,10 @@
 //! Intra prediction (spec 7.11.2), palette prediction (7.11.4) and chroma from luma (7.11.5).
 
 use crate::frame::Plane;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    ANGLE_STEP, D67_PRED, DC_PRED, DR_INTRA_DERIVATIVE, INTRA_EDGE_KERNEL, INTRA_EDGE_TAPS, INTRA_FILTER_SCALE_BITS, INTRA_FILTER_TAPS, MODE_TO_ANGLE,
+    SM_WEIGHTS_TX_4X4, SM_WEIGHTS_TX_8X8, SM_WEIGHTS_TX_16X16, SM_WEIGHTS_TX_32X32, SM_WEIGHTS_TX_64X64, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, V_PRED,
+};
 use crate::transform::round2;
 
 /// Inputs of the intra prediction process that come from the block.
@@ -92,9 +95,9 @@ pub(crate) fn predict_intra(pl: &mut Plane, p: &IntraParams) {
     } else if is_directional_mode(p.mode) {
         directional(&mut above, &mut left, p, w, h, &mut pred);
     } else if p.mode == SMOOTH_PRED || p.mode == SMOOTH_V_PRED || p.mode == SMOOTH_H_PRED {
-        smooth(&above, &left, p.mode, p.log2w, p.log2h, w, h, &mut pred);
+        smooth(&above, &left, p, &mut pred);
     } else if p.mode == DC_PRED {
-        dc(&above, &left, p.have_left, p.have_above, p.log2w, p.log2h, w, h, bd, &mut pred);
+        dc(&above, &left, p, &mut pred);
     } else {
         // PAETH_PRED
         let tl = above[EDGE - 1];
@@ -170,8 +173,9 @@ fn sm_weights(log2: u32) -> &'static [u8] {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn smooth(above: &[i32], left: &[i32], mode: usize, log2w: u32, log2h: u32, w: usize, h: usize, pred: &mut [u16]) {
+fn smooth(above: &[i32], left: &[i32], p: &IntraParams, pred: &mut [u16]) {
+    let (mode, log2w, log2h) = (p.mode, p.log2w, p.log2h);
+    let (w, h) = (1usize << log2w, 1usize << log2h);
     let wx = sm_weights(log2w);
     let wy = sm_weights(log2h);
     for i in 0..h {
@@ -192,8 +196,9 @@ fn smooth(above: &[i32], left: &[i32], mode: usize, log2w: u32, log2h: u32, w: u
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn dc(above: &[i32], left: &[i32], have_left: bool, have_above: bool, log2w: u32, log2h: u32, w: usize, h: usize, bd: u32, pred: &mut [u16]) {
+fn dc(above: &[i32], left: &[i32], p: &IntraParams, pred: &mut [u16]) {
+    let (have_left, have_above, log2w, log2h, bd) = (p.have_left, p.have_above, p.log2w, p.log2h, p.bit_depth);
+    let (w, h) = (1usize << log2w, 1usize << log2h);
     let v = if have_left && have_above {
         let mut sum: i32 = left[EDGE..EDGE + h].iter().sum::<i32>() + above[EDGE..EDGE + w].iter().sum::<i32>();
         sum += ((w + h) >> 1) as i32;

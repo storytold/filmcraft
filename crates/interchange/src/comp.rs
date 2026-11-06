@@ -287,12 +287,12 @@ impl Exporter<'_> {
                 for c in 0..ch {
                     n += 1;
                     let items = self.track(t, TrackKind::Audio, Some(c));
-                    comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: 1, items });
+                    comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, Some(c)), number: n, channels: 1, items });
                 }
             } else {
                 n += 1;
                 let items = self.track(t, TrackKind::Audio, None);
-                comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: ch, items });
+                comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, None), number: n, channels: ch, items });
             }
         }
         self.seq_rate = outer_rate;
@@ -653,6 +653,9 @@ fn marker_out(m: &Marker) -> CMarker {
 
 fn marker_in(b: &mut Builder, m: &CMarker) -> Marker {
     Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(b.alloc()),
         start: m.start,
         duration: m.duration,
@@ -698,7 +701,10 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             None => groups.push((k, vec![i])),
         }
     }
-    let doc_stem = opts.name.clone().unwrap_or_else(|| "Imported".into());
+    // This becomes a directory name for embedded AAF/OMF audio. `ImportOptions::name` normally
+    // comes from the document filename, where backslashes are ordinary Unix filename characters;
+    // `resolve_path` deliberately treats them as separators, so retain only one safe component.
+    let doc_stem = safe_path_component(opts.name.as_deref().unwrap_or("Imported"));
     let mut used_paths = std::collections::HashSet::new();
     for ((_, path), members) in &groups {
         let srcs: Vec<&Source> = members.iter().map(|&i| &doc.sources[i]).collect();
@@ -755,7 +761,7 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             extracted.push(ExtractedMedia {
                 item: id,
                 path: resolved.clone(),
-                wav: crate::wav::wav_file(data, s.file_channels.max(1) as u16, s.sample_rate, s.bits),
+                wav: crate::wav::wav_file(data, u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX), s.sample_rate, s.bits),
             });
         }
         for &i in members {
@@ -788,6 +794,13 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
     Ok((b.finish(), extracted))
 }
 
+/// A display name used as a generated path component, never a caller-selected path fragment.
+fn safe_path_component(name: &str) -> String {
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
+    let safe = safe.trim();
+    if safe.is_empty() || matches!(safe, "." | "..") { "Imported".into() } else { safe.into() }
+}
+
 fn build_sequence(
     b: &mut Builder,
     comp: &Composition,
@@ -803,6 +816,14 @@ fn build_sequence(
         let kind = if t.kind == CKind::Picture { TrackKind::Video } else { TrackKind::Audio };
         let idx = seq.tracks(kind).len();
         let mut track = b.track(kind, idx);
+        // A name of its own (not the numbered `A1` / `V1` a writer gives an unnamed track) is
+        // kept: a sound editor's tracks are named after what they hold.
+        let name = t.name.trim();
+        let mut chars = name.chars();
+        let numbered = matches!(chars.next(), Some('A' | 'V')) && !chars.as_str().is_empty() && chars.all(|c| c.is_ascii_digit());
+        if !name.is_empty() && !numbered {
+            track.name = name.to_string();
+        }
         if kind == TrackKind::Audio {
             track.channels = match t.channels {
                 1 => AudioChannels::Mono,
@@ -1003,4 +1024,31 @@ pub(crate) fn ticks_to_units(t: Tick, num: i64, den: i64) -> (i64, bool) {
     let r = x.rem_euclid(d);
     let n = q + if r * 2 >= d { 1 } else { 0 };
     (n.clamp(i64::MIN as i128, i64::MAX as i128) as i64, r == 0)
+}
+
+/// The name an exported audio track gets: the track's own name (what an editor called it, e.g.
+/// a role such as `Dialogue.Dialogue-1`, which is what a sound editor's DAW shows), else `A<n>`;
+/// a track broken out to mono gets its channel after it (`L` / `R`, the 5.1 names, or a number).
+fn audio_track_name(name: &str, n: u32, channels: u32, channel: Option<u32>) -> String {
+    let base = if name.trim().is_empty() { format!("A{n}") } else { name.trim().to_string() };
+    let Some(c) = channel.filter(|_| channels > 1 && !name.trim().is_empty()) else { return base };
+    let label = match (channels, c) {
+        (2, 0) => "L".to_string(),
+        (2, 1) => "R".to_string(),
+        (6, k) => ["L", "R", "C", "LFE", "Ls", "Rs"].get(k as usize).map_or_else(|| (k + 1).to_string(), |s| (*s).to_string()),
+        (_, k) => (k + 1).to_string(),
+    };
+    format!("{base} {label}")
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::safe_path_component;
+
+    #[test]
+    fn generated_embedded_audio_folder_is_one_safe_component() {
+        for (input, expected) in [(r"..\escape", ".._escape"), ("../escape", ".._escape"), ("..", "Imported"), ("", "Imported")] {
+            assert_eq!(safe_path_component(input), expected, "{input:?}");
+        }
+    }
 }

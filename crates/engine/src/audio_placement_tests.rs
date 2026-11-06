@@ -60,7 +60,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
     let item = p.add_item(
         "two streams",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -70,7 +70,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let (vdest, adest) = {
@@ -79,9 +79,20 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
     };
     s.project = std::sync::Arc::new(p);
     s.state.active_sequence = Some(seq);
-    let ids =
-        crate::commands::place_item(&mut s, item, TimeRange::new(Tick::ZERO, rate.tick_of(24)), Tick::ZERO, Some(vdest), Some(adest), false, "test", None)
-            .unwrap();
+    let ids = crate::commands::place_item(
+        &mut s,
+        crate::commands::ItemPlacement {
+            item,
+            range: TimeRange::new(Tick::ZERO, rate.tick_of(24)),
+            at: Tick::ZERO,
+            vdest: Some(vdest),
+            adest: Some(adest),
+            insert: false,
+            label: "test",
+            audio_split: None,
+        },
+    )
+    .unwrap();
     assert_eq!(ids.len(), 3);
     let q = s.project.sequence(seq).unwrap();
     assert_eq!(q.audio_tracks.len(), 2);
@@ -106,7 +117,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
     let item = p.add_item(
         "two streams",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -116,7 +127,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let (vdest, adest) = {
@@ -125,9 +136,20 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
     };
     s.project = std::sync::Arc::new(p);
     s.state.active_sequence = Some(seq);
-    let ids =
-        crate::commands::place_item(&mut s, item, TimeRange::new(Tick::ZERO, rate.tick_of(24)), Tick::ZERO, Some(vdest), Some(adest), false, "test", None)
-            .unwrap();
+    let ids = crate::commands::place_item(
+        &mut s,
+        crate::commands::ItemPlacement {
+            item,
+            range: TimeRange::new(Tick::ZERO, rate.tick_of(24)),
+            at: Tick::ZERO,
+            vdest: Some(vdest),
+            adest: Some(adest),
+            insert: false,
+            label: "test",
+            audio_split: None,
+        },
+    )
+    .unwrap();
     let q = s.project.sequence(seq).unwrap();
     let (a, b) = (q.audio_tracks[0].items[0].id, q.audio_tracks[1].items[0].id);
     assert!(ids.contains(&a) && ids.contains(&b));
