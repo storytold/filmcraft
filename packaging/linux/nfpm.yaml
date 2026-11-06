@@ -71,8 +71,20 @@ contents:
   - src: ${STAGE}/usr/bin/filmcraft-cli
     dst: /usr/bin/filmcraft-cli
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/share/
-    dst: /usr/share/
+  # Named one by one rather than as a tree of /usr/share: a tree would also own shared directories
+  # such as /usr/share/mime, which openSUSE's filesystem package owns with other modes, and RPM
+  # refuses to install a package that conflicts with it.
+  - src: ${STAGE}/usr/share/applications/ai.storyteller.filmcraft.desktop
+    dst: /usr/share/applications/ai.storyteller.filmcraft.desktop
+  - src: ${STAGE}/usr/share/mime/packages/ai.storyteller.filmcraft.xml
+    dst: /usr/share/mime/packages/ai.storyteller.filmcraft.xml
+  - src: ${STAGE}/usr/share/metainfo/ai.storyteller.filmcraft.metainfo.xml
+    dst: /usr/share/metainfo/ai.storyteller.filmcraft.metainfo.xml
+  - src: ${STAGE}/usr/share/icons/hicolor/
+    dst: /usr/share/icons/hicolor/
+    type: tree
+  - src: ${STAGE}/usr/share/doc/filmcraft/
+    dst: /usr/share/doc/filmcraft/
     type: tree
 
 scripts:
