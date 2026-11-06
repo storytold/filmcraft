@@ -6,7 +6,7 @@
 //! the engine's `file.import`. A read that has to wait for the browser makes the import retry
 //! once the bytes are there, so imports never block the UI thread.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use filmcraft_engine::Services;
@@ -145,6 +145,51 @@ pub async fn open_project_bytes(path: String, bytes: Vec<u8>) -> Result<Value, S
     on_ui(move |w, _| w.app.session.execute("file.open", json!({ "path": path })).map_err(|e| e.to_string())).await
 }
 
+/// Open a `.fcproj` the user picked with File › Open or dropped on the page. With unsaved changes,
+/// the Save Project prompt asks first, as on the desktop
+/// ([`filmcraft_ui_egui::panels::clip_dialogs::open_chosen_project`]), and this returns once the
+/// prompt is answered. When the prompt was shown and the project did not open (Cancel, or it failed
+/// to load), its copy is removed from the file table again.
+async fn open_picked_project(file: web_sys::File) -> Result<(), String> {
+    use filmcraft_ui_egui::panels::clip_dialogs::{open_chosen_project, open_prompt_pending};
+    let buf = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
+    let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+    let name = file.name();
+    let (path, asked) = on_ui(move |w, _| {
+        let s = &w.app.session;
+        let save_target = s.is_dirty().then(|| crate::picked_project::save_target(s.path.as_deref(), &s.project.name));
+        let taken = |p: &str| fs::mem_bytes(p).is_some() || fs::blob(p).is_some();
+        let path = crate::picked_project::picked_project_path(&name, save_target.as_deref(), taken);
+        fs::put(&path, bytes);
+        open_chosen_project(&mut w.app, &path).map(|v| (path, v.get("dialog").is_some()))
+    })
+    .await?;
+    if !asked {
+        return Ok(());
+    }
+    loop {
+        let p = path.clone();
+        if !on_ui(move |w, _| open_prompt_pending(&w.app, &p)).await {
+            break;
+        }
+        fs::sleep(100).await;
+    }
+    on_ui(move |w, _| {
+        if w.app.session.path.as_deref() != Some(path.as_str()) {
+            fs::remove_mem(&path);
+        }
+    })
+    .await;
+    Ok(())
+}
+
+thread_local! {
+    /// [`take_files`] batches run one at a time, in the order they arrived, so that a later pick or
+    /// drop does not replace a Save Project prompt or import behind it: (next ticket, the ticket
+    /// whose turn it is).
+    static FILE_BATCHES: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+}
+
 /// Import a file handed over by a host (`filmcraft:open`): registered like a dropped file (a
 /// `Blob` under `/files`, never copied whole), the container index prefetched, then
 /// `file.import`. Media from the host is not kept for crash recovery: host sessions don't
@@ -165,18 +210,33 @@ pub async fn import_blob(name: String, blob: web_sys::Blob) {
     }
 }
 
-/// Handle files from a picker or a drop: projects open, everything else is imported.
+/// Handle files from a picker or a drop: projects open, everything else is imported. While a
+/// project's Save Project prompt is up, the rest of the files wait for the answer, and the media is
+/// then imported into the project that is open. A batch waits for the batches picked or dropped
+/// before it.
 pub fn take_files(files: Vec<web_sys::File>) {
+    let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+    let ticket = FILE_BATCHES.with(|b| {
+        let (next, turn) = b.get();
+        b.set((next.wrapping_add(1), turn));
+        next
+    });
     wasm_bindgen_futures::spawn_local(async move {
-        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+        while FILE_BATCHES.with(|b| b.get().1) != ticket {
+            fs::sleep(50).await;
+        }
         for p in projects {
-            if let Err(e) = open_project_file(p).await {
+            if let Err(e) = open_picked_project(p).await {
                 crate::post(move |w, _| w.app.status(e));
             }
         }
         if !media.is_empty() {
             import_files(media).await;
         }
+        FILE_BATCHES.with(|b| {
+            let (next, turn) = b.get();
+            b.set((next, turn.wrapping_add(1)));
+        });
     });
 }
 

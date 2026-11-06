@@ -12,6 +12,7 @@ use filmcraft_engine::project::{ClipId, Label};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::native_dialogs::FileDialog;
+use filmcraft_ui_egui::panels::clip_dialogs::{open_chosen_project, open_prompt_pending};
 use filmcraft_ui_egui::state::Mode;
 use serde_json::{Value, json};
 
@@ -335,6 +336,42 @@ fn open_project_save_waits_for_a_save_dialog_answered_later() {
     assert_eq!(d.path(), None);
     assert!(d.app().session.is_dirty());
     assert!(d.app().ui.clip_dialog.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A project chosen outside the menus (the web build's File ▸ Open picker, which answers after
+/// the menu command has returned, or a project dropped on its page) asks the same way, and
+/// `open_prompt_pending` reports the prompt until it is answered.
+#[test]
+fn a_project_chosen_outside_the_menus_asks_first() {
+    let mut d = Driver::new();
+    let (dir, current, other) = projects(&mut d, "chosen");
+    // nothing unsaved: it opens now
+    assert!(open_chosen_project(d.app(), &other).unwrap()["schemaVersion"].is_u64());
+    assert_eq!(d.path(), Some(other.clone()));
+    d.exec("file.open", json!({"path": current}));
+    // unsaved changes: nothing opens before an answer
+    let clip = d.edit();
+    assert_eq!(open_chosen_project(d.app(), &other), Ok(json!({"dialog": "openProject"})));
+    d.frames(3);
+    assert!(d.has("openProject.cancel"));
+    assert!(open_prompt_pending(d.app(), &other));
+    assert!(!open_prompt_pending(d.app(), &current), "the prompt is about the chosen project");
+    assert_eq!(d.path(), Some(current.clone()));
+    d.click("openProject.cancel");
+    assert!(!open_prompt_pending(d.app(), &other));
+    assert_eq!(d.path(), Some(current.clone()));
+    assert_eq!(d.label(clip), Label::Yellow, "Cancel keeps the change");
+    // Save: saved, then the chosen project opens
+    open_chosen_project(d.app(), &other).unwrap();
+    d.frames(3);
+    d.click("openProject.save");
+    assert!(!open_prompt_pending(d.app(), &other));
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.path(), Some(other));
+    assert!(!d.app().session.is_dirty());
+    d.exec("file.open", json!({"path": current}));
+    assert_eq!(d.label(clip), Label::Yellow, "the change was saved");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
