@@ -1,7 +1,7 @@
 use super::common::{item_rate, media_root};
 use super::{
     BTreeMap, ClipId, EngineError, FieldOptions, FieldProcessing, FrameRate, ParamValue, Result, Session, TICKS_PER_SECOND, Tick, TimeInterpolation, TrackItem,
-    Value, bad, bool_p, clips_p, edit, f64_p, json, parse_timecode, str_p, time_p,
+    Value, bad, bool_p, clips_p, edit, f64_p, json, media_timecode, str_p, time_p,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -56,7 +56,7 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
                     let (rate, start_tc) = rates[c];
                     match (&tc, raw_time) {
                         (Some(tc), _) => {
-                            let f = parse_timecode(tc, rate, false, 0).map_err(|e| bad("clip.frameHoldOptions", format!("timecode: {e:?}")))?;
+                            let (f, _) = media_timecode(tc, rate).map_err(|e| bad("clip.frameHoldOptions", format!("timecode: {e:?}")))?;
                             rate.tick_of(f - start_tc)
                         }
                         (None, Some(t)) => t,
