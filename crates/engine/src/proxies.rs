@@ -84,6 +84,8 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
+    /// `Session::document_epoch` when the job started; a different value means the project was replaced.
+    pub epoch: u64,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -333,7 +335,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, epoch: s.document_epoch });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -343,9 +345,19 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     Ok(id)
 }
 
-/// Apply the outputs of finished media jobs (attach proxies, switch to transcodes).
+/// Apply the outputs of finished media jobs (attach proxies, switch to transcodes). Called once per
+/// UI frame from [`Session::poll_persistence`], before each top-level [`Session::execute`]
+/// (headless sessions) and after synchronous runs.
 pub fn poll(s: &mut Session) {
     use std::sync::atomic::Ordering;
+    // a job started before the project was replaced: its files are written, but they belong to a
+    // document that is gone, so nothing is attached to the new one
+    let before = s.media_jobs.len();
+    let epoch = s.document_epoch;
+    s.media_jobs.retain(|pj| pj.epoch == epoch);
+    if s.media_jobs.len() < before {
+        s.error_toast("job", "the project was replaced; finished proxies and transcodes were not attached");
+    }
     let finished: Vec<usize> = s
         .media_jobs
         .iter()

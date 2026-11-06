@@ -152,6 +152,54 @@ fn background_job_reports_progress_and_cancel_changes_nothing() {
     assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
 }
 
+/// Run `jobs.list` until job `job` reports finished.
+fn wait_listed_finished(s: &mut Session, job: &serde_json::Value) {
+    let t0 = std::time::Instant::now();
+    while !s.execute("jobs.list", json!({})).unwrap().as_array().unwrap().iter().any(|j| j["id"] == *job && j["finished"] == true) {
+        assert!(t0.elapsed().as_secs() < 120, "job never finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn background_job_is_applied_without_a_ui_frame_loop() {
+    // headless sessions (CLI, MCP) never call `poll_persistence`: commands alone must apply the job (#4145)
+    let dir = tmp_dir("scene-headless");
+    let path = dir.join("headless.mov");
+    make_cut_movie(&path, &[(DemoScene::Dunes, 18), (DemoScene::Plasma, 18)], 128, 72);
+    let (mut s, items, _) = session_with(&[&path]);
+    select_v1(&mut s);
+    let job = s.execute("clip.sceneEditDetection", json!({"generateMarkers": true})).unwrap()["job"].clone();
+    wait_listed_finished(&mut s, &job);
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(s.scene_jobs.is_empty());
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 2, "cut applied by the next command");
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().markers.len(), 1);
+}
+
+#[test]
+fn reopening_the_project_drops_a_pending_job() {
+    // a job started on the old document must not cut the same clip in the reopened one (#4145)
+    let dir = tmp_dir("scene-epoch");
+    let path = dir.join("epoch.mov");
+    make_cut_movie(&path, &[(DemoScene::Dunes, 18), (DemoScene::Plasma, 18)], 128, 72);
+    let (mut s, _, _) = session_with(&[&path]);
+    let project = dir.join("epoch.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": project})).unwrap();
+    select_v1(&mut s);
+    let job = s.execute("clip.sceneEditDetection", json!({})).unwrap()["job"].clone();
+    s.execute("file.open", json!({"path": project})).unwrap();
+    s.execute("jobs.list", json!({})).unwrap();
+    assert!(s.scene_jobs.is_empty(), "stale job survived file.open");
+    let t0 = std::time::Instant::now();
+    while s.jobs.iter().any(|j| j.id == job.as_u64().unwrap() && !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
+        assert!(t0.elapsed().as_secs() < 120, "job never stopped");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1, "the reopened project is not cut");
+}
+
 fn ffmpeg_fixture() -> Option<PathBuf> {
     let ffmpeg = filmcraft_testkit::oracle::ffmpeg_or_skip("scene_detect")?;
     let out = filmcraft_testkit::fixtures_dir("engine/scene").join("three_shots.mp4");

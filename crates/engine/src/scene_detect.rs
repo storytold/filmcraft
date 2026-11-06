@@ -74,6 +74,8 @@ pub struct PendingScene {
     pub seq: ItemId,
     pub apply: SceneApply,
     pub results: Arc<Mutex<Option<Vec<ClipScenes>>>>,
+    /// `Session::document_epoch` when the job started; a different value means the project was replaced.
+    pub epoch: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -206,7 +208,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone() });
+    s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone(), epoch: s.document_epoch });
     let wait = bool_p(p, "wait").unwrap_or(false);
     let mut out = json!({"job": id, "frames": total});
     if wait || cfg!(target_arch = "wasm32") {
@@ -229,12 +231,22 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Apply finished jobs (one undo step each) and drop finished / cancelled ones. Called once per UI
-/// frame from [`Session::poll_persistence`] and after synchronous runs.
+/// frame from [`Session::poll_persistence`], before each top-level [`Session::execute`] (headless
+/// sessions) and after synchronous runs.
 pub fn poll(s: &mut Session) {
     use std::sync::atomic::Ordering;
     let mut i = 0;
     while i < s.scene_jobs.len() {
         let job = s.jobs.iter().find(|j| j.id == s.scene_jobs[i].job);
+        if s.scene_jobs[i].epoch != s.document_epoch {
+            // the project was replaced under the job: its cuts belong to a document that is gone
+            if let Some(j) = job {
+                j.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            s.scene_jobs.remove(i);
+            s.error_toast("clip.sceneEditDetection", "the project was replaced; Scene Edit Detection stopped");
+            continue;
+        }
         let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
         // cancelled before the results were applied: nothing changes
         let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
