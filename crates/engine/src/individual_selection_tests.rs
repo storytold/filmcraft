@@ -189,6 +189,37 @@ fn copies_of_a_group_do_not_join_the_original_group() {
     }
 }
 
+/// A copy of one half of a linked pair is not linked: it has no partner to follow. Option-drag
+/// copies came out that way; a pasted half carried a link of its own with no other member.
+#[test]
+fn a_copied_half_of_a_linked_pair_is_not_linked() {
+    for how in ["drag", "paste", "paste insert"] {
+        let (mut s, [(v0, a0), _]) = paired_sequence();
+        s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+        assert_eq!(s.state.selection, vec![v0]);
+        let end = s.active_sequence().unwrap().duration();
+        match how {
+            "drag" => {
+                let t = s.active_sequence().unwrap().find_item(v0).unwrap().0;
+                s.execute("timeline.move", json!({"moves": [{"clip": v0.0, "track": t.0, "time": end.0}], "copy": true, "linked": false})).unwrap();
+            }
+            _ => {
+                s.execute("edit.copy", json!({})).unwrap();
+                s.set_playhead(end);
+                s.execute(if how == "paste" { "edit.paste" } else { "edit.pasteInsert" }, json!({})).unwrap();
+            }
+        }
+        let q = s.active_sequence().unwrap();
+        let copies: Vec<_> = q.video_tracks[0].items.iter().filter(|i| i.start >= end).collect();
+        assert_eq!(copies.len(), 1, "{how}: one clip was copied");
+        assert_eq!(copies[0].link, None, "{how}: the copy has no partner to follow");
+        assert!(q.audio_tracks[0].items.iter().all(|i| i.end() <= end), "{how}: no sound was copied");
+        let link = |c| q.find_item(c).unwrap().1.link;
+        assert!(link(v0).is_some() && link(v0) == link(a0), "{how}: the original pair stays linked");
+    }
+}
+
 /// Toggling a partly selected group flips the whole group one way: the requested clip decides
 /// add or remove once, instead of each member flipping its own state.
 #[test]
