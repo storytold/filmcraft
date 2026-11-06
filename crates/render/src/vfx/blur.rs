@@ -3,7 +3,7 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::{Affine, FxCtx, Image, Vec2, bv, chv, enc, fv, luma, over, pv, smoothstep};
+use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, enc, fv, luma, over, pv, smoothstep};
 use crate::effects::gaussian;
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;
@@ -222,4 +222,143 @@ pub fn focus(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 pub fn interlace_flicker(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let s = fv(e, "softness", cx) * cx.px_scale.max(0.25);
     gaussian(img, 0.0, s, true);
+}
+
+/// Surface Blur: an edge-preserving blur that smooths surfaces and keeps edges.
+///
+/// A guided filter with the image as its own guide (He, Sun and Tang, "Guided Image Filtering",
+/// ECCV 2010, Algorithm 1): within Radius, variation below Threshold (texture, noise) averages
+/// out and variation above it (edges) stays. **Detail** adds the finest band of what was removed
+/// (below a 1 px Gaussian) back, so surfaces keep some fine texture.
+///
+/// Runs per channel on sRGB-encoded straight colour, where texture contrast is perceptual. The
+/// filter's statistics weigh every sample by its alpha, so transparent pixels (and the black of
+/// their straight colour) never pull visible edges. Each channel is written back as soon as it is
+/// done, so only a few full-frame planes are alive at once.
+pub fn surface(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let (w, h) = (img.w, img.h);
+    let scale = if cx.px_scale.is_finite() { cx.px_scale.max(0.0) } else { 1.0 };
+    let radius = fv(e, "radius", cx) * scale;
+    if w == 0 || h == 0 || radius.is_nan() || radius < 0.5 {
+        return;
+    }
+    let r = radius.round().min(w.max(h) as f32) as usize;
+    let sigma = 0.005 + 0.15 * unit(fv(e, "threshold", cx), 0.2);
+    let detail = unit(fv(e, "detail", cx), 0.0);
+
+    // alpha weights and their box sums, shared by the three channels
+    let wt: Vec<f32> = img.px.par_chunks(4).map(|p| if p[3].is_finite() && p[3] > 1e-6 { p[3].min(1.0) } else { 0.0 }).collect();
+    let wsum = box_mean(&wt, w, h, r);
+    for k in 0..3 {
+        // display value of channel k (0 where transparent: it has no weight)
+        let i: Vec<f32> = img
+            .px
+            .par_chunks(4)
+            .map(|p| {
+                let (c, a) = (p.get(k).copied().unwrap_or(0.0), p[3]);
+                if a.is_nan() || a <= 1e-6 {
+                    return 0.0;
+                }
+                let v = filmcraft_color::linear_to_srgb((c / a).max(0.0));
+                if v.is_finite() { v } else { 0.0 }
+            })
+            .collect();
+        let mut q = guided(&i, &wt, &wsum, w, h, r, sigma * sigma);
+        if detail > 0.0 {
+            let removed: Vec<f32> = i.par_iter().zip(&q).zip(&wt).map(|((a, b), wt)| if *wt > 0.0 { a - b } else { 0.0 }).collect();
+            let coarse = blur_plane(&removed, w, h, scale);
+            q.par_iter_mut().zip(&removed).zip(&coarse).for_each(|((q, d), c)| *q += detail * (d - c));
+        }
+        drop(i);
+        img.px.par_chunks_mut(4).zip(&q).for_each(|(p, &v)| {
+            let a = p[3];
+            if a.is_nan() || a <= 1e-6 {
+                return;
+            }
+            // no upper clamp: HDR values above 1.0 keep their headroom
+            let l = filmcraft_color::srgb_to_linear(v.max(0.0));
+            if let Some(c) = p.get_mut(k)
+                && l.is_finite()
+            {
+                *c = l * a;
+            }
+        });
+    }
+}
+
+/// A 0…100 parameter as 0…1; `default` when it is not a number.
+fn unit(v: f32, default: f32) -> f32 {
+    if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { default }
+}
+
+/// Self-guided filter of one plane (He, Sun and Tang 2010, Algorithm 1 with guide I = input p),
+/// with weighted statistics: per box, the `wt`-weighted mean and variance give
+/// `a = var / (var + eps)` and `b = mean · (1 − a)`; their `wt`-weighted averages over the boxes
+/// covering each sample give `q = a·I + b`. `wsum` is the box mean of `wt`. With every weight 1
+/// this is the paper's filter; a sample of weight 0 does not count at all.
+fn guided(i: &[f32], wt: &[f32], wsum: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
+    let wi: Vec<f32> = i.par_iter().zip(wt).map(|(v, k)| v * k).collect();
+    let wi2: Vec<f32> = wi.par_iter().zip(i).map(|(a, v)| a * v).collect();
+    let mut mean = box_mean(&wi, w, h, r);
+    drop(wi);
+    let mut mean_sq = box_mean(&wi2, w, h, r);
+    drop(wi2);
+    // a and b in place of the two means, already weighted for the second pass
+    mean.par_iter_mut().zip(mean_sq.par_iter_mut()).zip(wsum).zip(wt).for_each(|(((m, m2), &s), &k)| {
+        let (a, b) = if s > 1e-6 {
+            let (mu, mu2) = (*m / s, *m2 / s);
+            let var = (mu2 - mu * mu).max(0.0);
+            let a = var / (var + eps.max(1e-12));
+            (a, mu - a * mu)
+        } else {
+            (1.0, 0.0)
+        };
+        (*m, *m2) = (k * a, k * b);
+    });
+    let ma = box_mean(&mean, w, h, r);
+    drop(mean);
+    let mb = box_mean(&mean_sq, w, h, r);
+    drop(mean_sq);
+    i.par_iter().zip(&ma).zip(&mb).zip(wsum).map(|(((&v, &a), &b), &s)| if s > 1e-6 { (a * v + b) / s } else { v }).collect()
+}
+
+/// Mean of the (2r+1)² box around every sample of a `w`×`h` plane, edges clamped; running sums
+/// make it O(1) per sample for any radius.
+fn box_mean(p: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    if w == 0 || h == 0 || p.len() != w * h {
+        return p.to_vec();
+    }
+    let rows = box_rows_plane(p, w, r);
+    let t = transpose_plane(&rows, w, h);
+    drop(rows);
+    let cols = box_rows_plane(&t, h, r);
+    drop(t);
+    transpose_plane(&cols, h, w)
+}
+
+/// Mean of the `2r + 1` samples around every sample of each row of a plane `w` wide, edges clamped.
+fn box_rows_plane(p: &[f32], w: usize, r: usize) -> Vec<f32> {
+    let mut out = vec![0f32; p.len()];
+    let (last, ri) = (w as isize - 1, r as isize);
+    let n = (2 * r + 1) as f64;
+    out.par_chunks_mut(w).zip(p.par_chunks(w)).for_each(|(o, row)| {
+        let at = |x: isize| f64::from(row.get(x.clamp(0, last) as usize).copied().unwrap_or(0.0));
+        let mut acc: f64 = (-ri..=ri).map(at).sum();
+        for (x, v) in o.iter_mut().enumerate() {
+            *v = (acc / n) as f32;
+            acc += at(x as isize + ri + 1) - at(x as isize - ri);
+        }
+    });
+    out
+}
+
+/// The `h`×`w` transpose of a `w`×`h` plane.
+fn transpose_plane(p: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut t = vec![0f32; p.len()];
+    t.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
+        for (y, v) in col.iter_mut().enumerate() {
+            *v = p.get(y * w + x).copied().unwrap_or(0.0);
+        }
+    });
+    t
 }

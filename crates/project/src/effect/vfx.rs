@@ -267,6 +267,16 @@ pub(super) fn defs() -> Vec<EffectDef> {
             ],
         ),
         video("reduce_interlace_flicker", "Reduce Interlace Flicker", BLUR, vec![fs("softness", "Softness", 0.0, (0.0, 10.0), (0.0, 10.0), "", 2)]),
+        video(
+            "surface_blur",
+            "Surface Blur",
+            BLUR,
+            vec![
+                px("radius", "Radius", 5.0, 100.0, 30.0),
+                fs("threshold", "Threshold", 20.0, (0.0, 100.0), (0.0, 100.0), "", 0),
+                fs("detail", "Detail", 0.0, (0.0, 100.0), (0.0, 100.0), "", 0),
+            ],
+        ),
         // ---- Color Correction ----
         video(
             "asc_cdl",
@@ -1159,7 +1169,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
         let accel = match e.category.first().copied() {
             Some("Legacy") => !matches!(id, "camera_blur"),
             _ if folder == "Obsolete" => false,
-            _ => !matches!(id, "clone" | "stroke"),
+            // CPU only: no GPU op, so no Accelerated badge
+            _ => !matches!(id, "clone" | "stroke" | "surface_blur"),
         };
         e.accelerated = accel;
         e.float32 = a32;
@@ -1256,6 +1267,10 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
+    /// Effects FilmCraft adds beyond the catalogue above, as (folder, name). They sit in the folder
+    /// their kind belongs to; nothing else may.
+    const BEYOND_CATALOGUE: &[(&str, &str)] = &[("Blur & Sharpen", "Surface Blur")];
+
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;
@@ -1276,7 +1291,7 @@ mod tests {
             if f == "Obsolete" {
                 continue;
             }
-            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));
+            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name)) || BEYOND_CATALOGUE.contains(&(f, d.name));
             assert!(listed, "{} in {f} is not in Premiere's list", d.name);
         }
         for name in LEGACY_NAMES {
