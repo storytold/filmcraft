@@ -317,8 +317,95 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     let mut imported = imported;
-    bound_start_timecodes(&mut imported, &mut report);
+    finish_import(&mut imported, &mut report)?;
     Ok((imported, report))
+}
+
+/// The last step of every import ([`import_with`], [`aaf::import`], [`omf::import`]): bound what
+/// the frame arithmetic can't hold ([`bound_start_timecodes`]), then keep every sequence within the
+/// time range a saved project can be opened with ([`bound_sequence_times`]).
+pub(crate) fn finish_import(imported: &mut Imported, report: &mut Report) -> Result<()> {
+    bound_start_timecodes(imported, report);
+    bound_sequence_times(imported, report)
+}
+
+/// Project load refuses a sequence that fails `Sequence::check_bounds`, so an imported clip past
+/// the supported time range (an FCPXML `offset` of 10 000 000 s) was saved into a project that no
+/// longer opened (#2786). Repaired here, with a warning, as other out-of-range values are: marks
+/// and a work area outside the range are cleared, a clip, transition or caption that runs past it
+/// is shortened to end there, and one that starts outside it is left out (with the transitions into
+/// and out of it). A sequence that still
+/// fails the check (its settings: the host decides about those) refuses the import.
+pub(crate) fn bound_sequence_times(imported: &mut Imported, report: &mut Report) -> Result<()> {
+    use filmcraft_project::bounded_time_range as bounded;
+    // Shortened to end at Tick::MAX if it starts inside the range; None to leave it out.
+    let fit = |start: Tick, duration: Tick| -> Option<Tick> {
+        if bounded(start, duration) {
+            Some(duration)
+        } else if bounded(start, Tick::ZERO) && duration > Tick::ZERO {
+            let room = Tick(Tick::MAX.0.saturating_sub(start.0));
+            (room > Tick::ZERO).then_some(room)
+        } else {
+            None
+        }
+    };
+    for item in imported.project.items.values_mut() {
+        let name = item.name.clone();
+        let Some(seq) = item.as_sequence_mut() else { continue };
+        let mut changed = 0usize;
+        for mark in [&mut seq.mark_in, &mut seq.mark_out] {
+            if mark.is_some_and(|t| !bounded(t, Tick::ZERO)) {
+                *mark = None;
+                changed += 1;
+            }
+        }
+        if seq.work_area.is_some_and(|r| !bounded(r.start, r.duration)) {
+            seq.work_area = None;
+            changed += 1;
+        }
+        for track in seq.all_tracks_mut() {
+            let before = track.items.len() + track.transitions.len();
+            track.items.retain_mut(|it| match fit(it.start, it.duration) {
+                Some(d) => {
+                    changed += usize::from(d != it.duration);
+                    it.duration = d;
+                    true
+                }
+                None => false,
+            });
+            // A transition into or out of a clip left out goes with it.
+            let kept: std::collections::HashSet<ClipId> = track.items.iter().map(|it| it.id).collect();
+            track.transitions.retain(|t| t.from.is_none_or(|c| kept.contains(&c)) && t.to.is_none_or(|c| kept.contains(&c)));
+            track.transitions.retain_mut(|t| match fit(t.start, t.duration) {
+                Some(d) => {
+                    changed += usize::from(d != t.duration);
+                    t.duration = d;
+                    true
+                }
+                None => false,
+            });
+            changed += before - (track.items.len() + track.transitions.len());
+        }
+        for track in &mut seq.caption_tracks {
+            let before = track.captions.len();
+            track.captions.retain_mut(|c| match fit(c.start, c.duration) {
+                Some(d) => {
+                    changed += usize::from(d != c.duration);
+                    c.duration = d;
+                    true
+                }
+                None => false,
+            });
+            changed += before - track.captions.len();
+        }
+        if changed > 0 {
+            report.warn(format!("sequence \"{name}\": {changed} item(s) beyond the supported time range were shortened or left out"));
+        }
+        if seq.settings.validate().is_ok() {
+            seq.check_bounds().map_err(|e| Error::Other(format!("sequence \"{name}\" cannot be imported: {e}")))?;
+        }
+    }
+    Ok(())
 }
 
 /// Start timecodes beyond this many frames (about 100 hours at the highest accepted rate) are not

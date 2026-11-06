@@ -482,3 +482,20 @@ fn relative_media_urls_are_percent_decoded() {
     let boats = &p.sequence(only_seq(&imp)).unwrap().video_tracks[0].items[1];
     assert_eq!(media_key(p, boats.item), "/proj/media/boats b.mov");
 }
+
+/// #2786: a clip placed past the supported time range (about 105 days) was imported as is, and the
+/// project saved after the import failed its load-time bounds check: it no longer opened. The clip
+/// (with the clip connected to it and the dissolve into it) is left out, with a warning.
+#[test]
+fn clips_past_the_supported_time_range_are_left_out() {
+    let t72 = ft(86_400 + 72);
+    let d = doc().replacen(&format!("offset=\"{t72}\""), "offset=\"10000000s\"", 1);
+    assert_ne!(d, doc(), "the clip offset was replaced");
+    let (imp, rep) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert_eq!(s.check_bounds(), Ok(()));
+    let names: Vec<&str> = s.all_tracks().flat_map(|t| t.items.iter().map(|c| c.name.as_str())).collect();
+    assert!(!names.contains(&"Boats") && !names.contains(&"Pier Insert") && names.contains(&"Pier"), "{names:?}");
+    assert!(s.video_tracks[0].transitions.is_empty());
+    assert!(rep.mentions("beyond the supported time range"), "{rep}");
+}

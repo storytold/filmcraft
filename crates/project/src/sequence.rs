@@ -294,7 +294,7 @@ impl Sequence {
 /// end all stay within `Tick::MIN..=Tick::MAX`, leaving headroom for later edit math. Negative
 /// positions remain supported; the sign of the duration is a structural rule (track items and
 /// captions require a positive one in their own invariant checks), not a bound.
-pub(crate) fn bounded_time_range(start: Tick, duration: Tick) -> bool {
+pub fn bounded_time_range(start: Tick, duration: Tick) -> bool {
     let within = |t: i64| (Tick::MIN.0..=Tick::MAX.0).contains(&t);
     within(start.0) && within(duration.0) && start.0.checked_add(duration.0).is_some_and(within)
 }
