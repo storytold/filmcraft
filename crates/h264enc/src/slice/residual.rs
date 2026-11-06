@@ -1,6 +1,6 @@
 use super::{
-    BLK4_XY, Cand, Deadzone, Depth, Pixel, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, chroma_qp_prime, decimate_score, dequant_chroma_dc, dequant4, dequant8,
-    fdct4, fdct8, idct4, idct8, quant_chroma_dc, quant4, quant8, ssd,
+    BLK4_XY, CHROMA_DC422_SCAN, CMB, Cand, Deadzone, Depth, Pixel, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, chroma_qp_prime, decimate_score, dequant_chroma_dc,
+    dequant_chroma_dc422, dequant4, dequant8, fdct4, fdct8, idct4, idct8, quant_chroma_dc, quant_chroma_dc422, quant4, quant8, ssd,
 };
 
 /// The transform trial's bit estimate of a level `v`: `0.4` for zero, `3 + 2·log2|v|` otherwise.
@@ -19,8 +19,8 @@ fn level_bits_table() -> &'static [f64; 256] {
     T.get_or_init(|| std::array::from_fn(|a| if a == 0 { 0.4 } else { 3.0 + 2.0 * (a as f64).log2() }))
 }
 
-/// `rec = clamp(pred + residual(x, y))` for the 4x4 chroma block at (`bx`, `by`) of an 8x8 chroma plane.
-fn add_chroma_residual<P: Pixel>(rec: &mut [P], pred: &[P; 64], d: Depth, bx: usize, by: usize, residual: impl Fn(usize, usize) -> i32) {
+/// `rec = clamp(pred + residual(x, y))` for the 4x4 chroma block at (`bx`, `by`) of an 8-wide chroma plane.
+fn add_chroma_residual<P: Pixel>(rec: &mut [P], pred: &[P; CMB], d: Depth, bx: usize, by: usize, residual: impl Fn(usize, usize) -> i32) {
     for y in 0..4 {
         for x in 0..4 {
             let i = (by + y) * 8 + bx + x;
@@ -32,9 +32,9 @@ fn add_chroma_residual<P: Pixel>(rec: &mut [P], pred: &[P; 64], d: Depth, bx: us
 impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ residual coding helpers
 
-    /// Transform + quantise chroma 4x4 block `b` of a component. Returns (unquantised DC, quantised
-    /// coefficients in raster order, AC coefficients in scan order).
-    fn quant_chroma_ac_block(&self, s: &[P; 64], p: &[P; 64], b: usize, qpc: u8, dz: Deadzone) -> (i32, [i32; 16], [i16; 16]) {
+    /// Transform + quantise chroma 4x4 block `b` (raster, 2 wide) of a component. Returns (unquantised
+    /// DC, quantised coefficients in raster order, AC coefficients in scan order).
+    fn quant_chroma_ac_block(&self, s: &[P; CMB], p: &[P; CMB], b: usize, qpc: u8, dz: Deadzone) -> (i32, [i32; 16], [i16; 16]) {
         let (bx, by) = ((b & 1) * 4, (b >> 1) * 4);
         let mut d = [0i32; 16];
         for y in 0..4 {
@@ -58,45 +58,54 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     }
 
     /// Code chroma residual for prediction `pu`, `pv`; fills code/info and reconstruction. Returns chroma cbp.
-    pub(super) fn code_chroma(&self, src: &Src<P>, pu: &[P; 64], pv: &[P; 64], qp: u8, intra: bool, c: &mut Cand<P>) -> u8 {
+    pub(super) fn code_chroma(&self, src: &Src<P>, pu: &[P; CMB], pv: &[P; CMB], qp: u8, intra: bool, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
         let qpc = chroma_qp_prime(qp as i32, self.f.p.chroma_qp_offset, self.f.p.depth.qp_offset);
         let dz = if intra { Deadzone::INTRA } else { Deadzone::INTER };
+        let (c422, n) = (self.f.p.c422, self.f.p.nc4());
         let mut dc_any = false;
         let mut ac_any = false;
-        let mut coefs = [[[0i32; 16]; 4]; 2];
-        let mut dcl = [[0i32; 4]; 2];
+        let mut coefs = [[[0i32; 16]; 8]; 2];
+        // DC levels in raster order (2 wide)
+        let mut dcl = [[0i32; 8]; 2];
         for comp in 0..2 {
             let (s, p) = if comp == 0 { (&src.u, pu) } else { (&src.v, pv) };
-            let mut dc = [0i32; 4];
+            let mut dc = [0i32; 8];
             let mut ac_score = 0;
-            for b in 0..4 {
+            for b in 0..n {
                 let (dc_coef, t, scan) = self.quant_chroma_ac_block(s, p, b, qpc, dz);
                 dc[b] = dc_coef;
                 ac_score += decimate_score(&scan[1..]);
-                c.code.cac[comp * 4 + b] = scan;
+                c.code.cac[comp * 8 + b] = scan;
                 coefs[comp][b] = t;
             }
             if !intra && self.f.p.decimate && ac_score < 7 {
-                for b in 0..4 {
-                    c.code.cac[comp * 4 + b] = [0; 16];
+                for b in 0..n {
+                    c.code.cac[comp * 8 + b] = [0; 16];
                     for k in 1..16 {
                         coefs[comp][b][k] = 0;
                     }
                 }
             }
-            let (mut lv, _) = quant_chroma_dc(&dc, qt, qpc, dz);
+            let mut lv = [0i32; 8];
+            if c422 {
+                lv = quant_chroma_dc422(&dc, qt, qpc, dz).0;
+            } else {
+                let dc4 = [dc[0], dc[1], dc[2], dc[3]];
+                lv[..4].copy_from_slice(&quant_chroma_dc(&dc4, qt, qpc, dz).0);
+            }
             if self.f.p.cavlc_clamp {
                 for v in lv.iter_mut() {
                     *v = (*v).clamp(-cavlc::MAX_LEVEL, cavlc::MAX_LEVEL);
                 }
             }
             dcl[comp] = lv;
-            for b in 0..4 {
-                c.code.cdc[comp][b] = lv[b] as i16;
+            for i in 0..n {
+                let raster = if c422 { CHROMA_DC422_SCAN[i] } else { i };
+                c.code.cdc[comp][i] = lv[raster] as i16;
             }
             dc_any |= lv.iter().any(|&v| v != 0);
-            ac_any |= c.code.cac[comp * 4..comp * 4 + 4].iter().any(|b| b.iter().any(|&v| v != 0));
+            ac_any |= c.code.cac[comp * 8..comp * 8 + n].iter().any(|b| b.iter().any(|&v| v != 0));
         }
         let cbp = if ac_any {
             2
@@ -108,15 +117,21 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         c.info.dc_cbf &= 1;
         for comp in 0..2 {
             let p = if comp == 0 { pu } else { pv };
-            let dcq = dequant_chroma_dc(&dcl[comp], qt, qpc);
+            let dcq = if c422 {
+                dequant_chroma_dc422(&dcl[comp], qt, qpc)
+            } else {
+                let l = &dcl[comp];
+                let d = dequant_chroma_dc(&[l[0], l[1], l[2], l[3]], qt, qpc);
+                [d[0], d[1], d[2], d[3], 0, 0, 0, 0]
+            };
             if dcl[comp].iter().any(|&v| v != 0) {
                 c.info.dc_cbf |= 2 << comp;
             }
-            for b in 0..4 {
+            for b in 0..n {
                 let (bx, by) = ((b & 1) * 4, (b >> 1) * 4);
                 let mut t = coefs[comp][b];
                 let nz = if cbp == 2 { t.iter().skip(1).filter(|&&v| v != 0).count() as u8 } else { 0 };
-                c.info.nnz_c[comp * 4 + b] = nz;
+                c.info.nnz_c[comp * 8 + b] = nz;
                 if cbp != 2 {
                     t = [0; 16];
                 } else {
@@ -134,10 +149,10 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
             }
         }
         if cbp == 0 {
-            c.code.cdc = [[0; 4]; 2];
+            c.code.cdc = [[0; 8]; 2];
         }
         if cbp != 2 {
-            c.code.cac = [[0; 16]; 8];
+            c.code.cac = [[0; 16]; 16];
         }
         cbp
     }
@@ -269,7 +284,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     }
 
     /// Code an inter candidate's residual given its luma/chroma prediction.
-    pub(super) fn code_inter(&self, src: &Src<P>, py: &[P; 256], pu: &[P; 64], pv: &[P; 64], qp: u8, c: &mut Cand<P>) {
+    pub(super) fn code_inter(&self, src: &Src<P>, py: &[P; 256], pu: &[P; CMB], pv: &[P; CMB], qp: u8, c: &mut Cand<P>) {
         let t8_allowed = self.f.p.t8x8;
         let (use8, cbpl) = if t8_allowed {
             if self.f.p.adaptive_t8 {

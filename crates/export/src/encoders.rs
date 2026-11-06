@@ -350,8 +350,9 @@ pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
     })
 }
 
-/// H.264 (our encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
-/// (HDR frames from their float pixels), length-prefixed samples with the `avcC` in the sample entry.
+/// H.264 (our encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10 and
+/// 10-bit 4:2:2 for High 4:2:2 (HDR frames from their float pixels), length-prefixed samples with the
+/// `avcC` in the sample entry.
 struct H264Encoder {
     enc: filmcraft_h264enc::Encoder,
     w: u32,
@@ -360,7 +361,7 @@ struct H264Encoder {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
-    /// The 10-bit planes of High 10.
+    /// The 10-bit planes of High 10 and High 4:2:2.
     y16: Vec<u16>,
     u16: Vec<u16>,
     v16: Vec<u16>,
@@ -383,10 +384,34 @@ fn h264_input(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u8>, u: &mut Ve
     }
 }
 
-/// The High 10 encoder input of `f`: 10-bit limited-range 4:2:0 in the export's colour signal
-/// (HDR frames from their float pixels).
-fn h264_input10(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u16>, u: &mut Vec<u16>, v: &mut Vec<u16>) -> Result<()> {
+/// The High 10 / High 4:2:2 encoder input of `f`: 10-bit limited-range 4:2:0, or 4:2:2 (`c422`),
+/// in the export's colour signal (HDR frames from their float pixels).
+fn h264_input10(f: &EncoderFrame, signal: ColorSignal, c422: bool, y: &mut Vec<u16>, u: &mut Vec<u16>, v: &mut Vec<u16>) -> Result<()> {
     let (w, h) = (f.width as usize, f.height as usize);
+    if c422 {
+        let bad = || ExportError::Encode(format!("a {w}x{h} picture does not match its {} pixel values", f.hdr.map_or(f.rgba.len(), <[f32]>::len)));
+        let px = w.checked_mul(h).filter(|&p| p > 0).ok_or_else(bad)?;
+        let fits = match f.hdr {
+            Some(rgb) => px.checked_mul(3) == Some(rgb.len()),
+            None => px.checked_mul(4) == Some(f.rgba.len()),
+        };
+        if !fits {
+            return Err(bad());
+        }
+        let cn = w.div_ceil(2) * h;
+        for (p, n) in [(&mut *y, px), (&mut *u, cn), (&mut *v, cn)] {
+            p.clear();
+            p.resize(n, 0);
+        }
+        match f.hdr {
+            Some(rgb) => {
+                let (kr, kb) = signal.kr_kb();
+                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), y, u, v);
+            }
+            None => rgba_to_yuv422_10(f.rgba, w, h, y, u, v),
+        }
+        return Ok(());
+    }
     match f.hdr {
         Some(rgb) => {
             let (kr, kb) = signal.kr_kb();
@@ -401,10 +426,11 @@ impl H264Encoder {
         self.enc.config().bit_depth > 8
     }
 
-    /// Encode `f` at 10 bits (High 10), converting it on the encoder's threads.
+    /// Encode `f` at 10 bits (High 10, High 4:2:2), converting it on the encoder's threads.
     fn encode10(&mut self, f: &EncoderFrame) -> Result<Vec<filmcraft_h264enc::Packet>> {
+        let c422 = self.enc.config().profile.chroma_422();
         let (enc, y, u, v, signal) = (&self.enc, &mut self.y16, &mut self.u16, &mut self.v16, self.signal);
-        timed(Stage::Convert, || enc.install(|| h264_input10(f, signal, y, u, v)))?;
+        timed(Stage::Convert, || enc.install(|| h264_input10(f, signal, c422, y, u, v)))?;
         let cw = (f.width as usize).div_ceil(2);
         let frame = filmcraft_h264enc::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
         self.enc.encode16(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))
@@ -469,7 +495,7 @@ impl VideoEncoder for H264Encoder {
         self.enc.pass_stats()
     }
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
-        // High 10 converts in `encode`: the planes prepared ahead are 8-bit
+        // High 10 and High 4:2:2 convert in `encode`: the planes prepared ahead are 8-bit 4:2:0
         if self.deep() {
             return None;
         }
@@ -517,6 +543,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         H264Profile::Main => filmcraft_h264enc::Profile::Main,
         H264Profile::High => filmcraft_h264enc::Profile::High,
         H264Profile::High10 => filmcraft_h264enc::Profile::High10,
+        H264Profile::High422 => filmcraft_h264enc::Profile::High422,
     };
     cfg.bit_depth = s.h264_profile.bit_depth();
     cfg.intra_only = s.h264_intra_only;

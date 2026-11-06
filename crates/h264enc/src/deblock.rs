@@ -1,4 +1,4 @@
-//! In-loop deblocking filter (§8.7) for frame-coded 4:2:0 pictures without MBAFF, 8 to 10 bits.
+//! In-loop deblocking filter (§8.7) for frame-coded 4:2:0 and 4:2:2 pictures without MBAFF, 8 to 10 bits.
 //!
 //! Operates on a band of macroblock rows that begins at a slice boundary; the top edge of the band is
 //! never filtered (slices are MB-row aligned and either there is one slice, or
@@ -15,6 +15,8 @@ pub struct DeblockParams {
     /// Picture identity for (list, ref_idx 0).
     pub ref_ids: [i32; 2],
     pub depth: Depth,
+    /// 4:2:2 chroma: 16 chroma rows per macroblock and four horizontal chroma edges.
+    pub c422: bool,
 }
 
 /// A mutable band of rows of a padded plane: sample (x, y) with y relative to the band top.
@@ -187,6 +189,54 @@ fn edge_q(qp_p: i32, qp_q: i32, dp: &DeblockParams) -> EdgeQ {
     EdgeQ { alpha: (ALPHA[ia] as i32) << sh, beta: (BETA[ib] as i32) << sh, idx_a: ia, tc_scale: 1 << sh }
 }
 
+/// Filter the chroma edges of macroblock (`mx`, `my`) in direction `dir` with the bS of the luma
+/// edges (`bs_all`). Vertical: edges 0 and 2 (chroma columns 0 and 4); horizontal: edges 0 and 2
+/// (chroma rows 0 and 4) for 4:2:0, all four (chroma rows 0, 4, 8, 12) for 4:2:2.
+#[allow(clippy::too_many_arguments)]
+fn chroma_edges<'a, P: Pixel>(
+    u: &mut BandPlane<'a, P>,
+    v: &mut BandPlane<'a, P>,
+    mbs: &[MbInfo],
+    mbw: usize,
+    (mx, my): (usize, usize),
+    dir: usize,
+    bs_all: &[[u8; 4]; 4],
+    dp: &DeblockParams,
+) {
+    let off = dp.depth.qp_offset;
+    let cqp = |m: &MbInfo| chroma_qp_prime(m.qp as i32, dp.chroma_qp_offset, off) as i32 - off;
+    let q = &mbs[my * mbw + mx];
+    let (ch, cedges): (usize, &[usize]) = if dp.c422 { (16, if dir == 1 { &[0, 1, 2, 3] } else { &[0, 2] }) } else { (8, &[0, 2]) };
+    for &e in cedges {
+        if e == 0 && ((dir == 0 && mx == 0) || (dir == 1 && my == 0)) {
+            continue;
+        }
+        let bs = bs_all[e];
+        if bs == [0; 4] {
+            continue;
+        }
+        let p_mb = if e == 0 { if dir == 0 { &mbs[my * mbw + mx - 1] } else { &mbs[(my - 1) * mbw + mx] } } else { q };
+        let eq = edge_q(cqp(p_mb), cqp(q), dp);
+        if eq.alpha == 0 || eq.beta == 0 {
+            continue;
+        }
+        // the luma bS at the matching luma sample: 4:2:2 vertical edges have one chroma row per luma row
+        let (len, kshift) = if dir == 0 { (ch, if dp.c422 { 2 } else { 1 }) } else { (8, 1) };
+        // the edge's chroma offset across it: 4:2:2 horizontal edges sit at luma rows
+        let at = if dp.c422 && dir == 1 { e * 4 } else { e * 2 };
+        for plane in [&mut *u, &mut *v] {
+            for k in 0..len {
+                let b = bs[k >> kshift];
+                if b == 0 {
+                    continue;
+                }
+                let (qi, step) = if dir == 0 { (plane.idx(mx * 8 + at, my * ch + k), 1) } else { (plane.idx(mx * 8 + k, my * ch + at), plane.stride) };
+                filter_chroma(plane.data, qi, step, b, eq.alpha, eq.beta, eq.tc0(b), dp.depth);
+            }
+        }
+    }
+}
+
 /// Deblock `rows` macroblock rows of a band. `mbs` holds the band's MbInfo (row-major, `mbw` wide).
 pub fn deblock_band<'a, P: Pixel>(
     y: &mut BandPlane<'a, P>,
@@ -204,15 +254,19 @@ pub fn deblock_band<'a, P: Pixel>(
             let q = &mbs[my * mbw + mx];
             // MbInfo::qp is QP'Y; the filter works on QPY and QPC.
             let yqp = |m: &MbInfo| m.qp as i32 - off;
-            let cqp = |m: &MbInfo| chroma_qp_prime(m.qp as i32, dp.chroma_qp_offset, off) as i32 - off;
             // ---- vertical edges (dir 0) then horizontal (dir 1)
             for dir in 0..2 {
                 let mut bs_all = [[0u8; 4]; 4];
+                // 4:2:2 filters a horizontal chroma edge at every fourth chroma row, which are the luma
+                // rows of all four luma edges: their bS is derived even where an 8x8 transform leaves
+                // the luma edge unfiltered (§8.7, §8.7.2.1)
+                let chroma_all = dp.c422 && dir == 1;
                 for e in 0..4 {
                     if e == 0 && ((dir == 0 && mx == 0) || (dir == 1 && my == 0)) {
                         continue;
                     }
-                    if e & 1 == 1 && q.t8x8 {
+                    let luma_edge = !(e & 1 == 1 && q.t8x8);
+                    if !luma_edge && !chroma_all {
                         continue;
                     }
                     let p_mb = if e == 0 { if dir == 0 { &mbs[my * mbw + mx - 1] } else { &mbs[(my - 1) * mbw + mx] } } else { q };
@@ -228,7 +282,7 @@ pub fn deblock_band<'a, P: Pixel>(
                         bs[s] = bs_of(p_mb, ip, q, iq, e == 0, ids);
                     }
                     bs_all[e] = bs;
-                    if bs == [0; 4] {
+                    if bs == [0; 4] || !luma_edge {
                         continue;
                     }
                     let eq = edge_q(yqp(p_mb), yqp(q), dp);
@@ -244,32 +298,7 @@ pub fn deblock_band<'a, P: Pixel>(
                         filter_luma(y.data, qi, step, b, eq.alpha, eq.beta, eq.tc0(b), dp.depth);
                     }
                 }
-                // chroma edges 0 and 2 (chroma sample offsets 0 and 4)
-                for e in [0usize, 2] {
-                    if e == 0 && ((dir == 0 && mx == 0) || (dir == 1 && my == 0)) {
-                        continue;
-                    }
-                    let bs = bs_all[e];
-                    if bs == [0; 4] {
-                        continue;
-                    }
-                    let p_mb = if e == 0 { if dir == 0 { &mbs[my * mbw + mx - 1] } else { &mbs[(my - 1) * mbw + mx] } } else { q };
-                    let eq = edge_q(cqp(p_mb), cqp(q), dp);
-                    if eq.alpha == 0 || eq.beta == 0 {
-                        continue;
-                    }
-                    for plane in [&mut *u, &mut *v] {
-                        for k in 0..8 {
-                            let b = bs[k >> 1];
-                            if b == 0 {
-                                continue;
-                            }
-                            let (qi, step) =
-                                if dir == 0 { (plane.idx(mx * 8 + e * 2, my * 8 + k), 1) } else { (plane.idx(mx * 8 + k, my * 8 + e * 2), plane.stride) };
-                            filter_chroma(plane.data, qi, step, b, eq.alpha, eq.beta, eq.tc0(b), dp.depth);
-                        }
-                    }
-                }
+                chroma_edges(u, v, mbs, mbw, (mx, my), dir, &bs_all, dp);
             }
         }
     }

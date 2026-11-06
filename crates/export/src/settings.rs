@@ -53,6 +53,10 @@ pub enum H264Profile {
     /// rendered at 8 bits first, so this adds no banding of its own but cannot remove it.
     #[serde(rename = "high10")]
     High10,
+    /// High 4:2:2: 10-bit 4:2:2 encoding (chroma at full height, like camera and broadcast H.264 such
+    /// as XAVC Intra); otherwise as [`H264Profile::High10`].
+    #[serde(rename = "high422")]
+    High422,
 }
 
 impl H264Profile {
@@ -62,12 +66,18 @@ impl H264Profile {
             H264Profile::Main => "Main",
             H264Profile::High => "High",
             H264Profile::High10 => "High 10",
+            H264Profile::High422 => "High 4:2:2",
         }
     }
 
     /// Bits per sample of the coded pictures.
     pub fn bit_depth(self) -> u8 {
-        if self == H264Profile::High10 { 10 } else { 8 }
+        if matches!(self, H264Profile::High10 | H264Profile::High422) { 10 } else { 8 }
+    }
+
+    /// 4:2:2 chroma (half width, full height); every other profile codes 4:2:0.
+    pub fn chroma_422(self) -> bool {
+        self == H264Profile::High422
     }
 }
 
@@ -686,10 +696,11 @@ impl ExportSettings {
             match self.video_format() {
                 Format::H264 => {
                     v += &format!(
-                        ", {}{} ({}-bit) {}, {}",
+                        ", {}{} ({}-bit{}) {}, {}",
                         self.h264_profile.label(),
                         if self.h264_intra_only { " Intra" } else { "" },
                         self.h264_profile.bit_depth(),
+                        if self.h264_profile.chroma_422() { " 4:2:2" } else { "" },
                         self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into()),
                         self.bitrate_mode.label()
                     );

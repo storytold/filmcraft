@@ -1,7 +1,8 @@
 //! Clean-room, pure-Rust H.264/AVC encoder (ITU-T H.264), written from the public specification.
 //!
 //! - Profiles: Constrained Baseline (CAVLC, I/P), Main (CABAC, I/P/B) and High (CABAC, 8x8 transform, I/P/B), 4:2:0 8-bit;
-//!   High 10 (4:2:0, 8 to 10 bits, input via [`YuvFrame16`]) and the intra-only High 10 Intra.
+//!   High 10 (4:2:0, 8 to 10 bits, input via [`YuvFrame16`]) and the intra-only High 10 Intra; High 4:2:2
+//!   (4:2:2 chroma, 8 to 10 bits) and High 4:2:2 Intra.
 //! - Intra 16x16 / 4x4 / 8x8 mode decision, hexagon motion search with quarter-sample refinement,
 //!   16x16/16x8/8x16/8x8 partitions, P_Skip, B-frames with spatial direct/B_Skip, in-loop deblocking.
 //! - Rate control: constant QP, constant quality (CRF-like), 1-pass ABR with VBV, 2-pass VBR.
@@ -46,7 +47,7 @@ use deblock::{BandPlane, DeblockParams, deblock_band};
 use lookahead::{Complexity, LowRes};
 use mbinfo::MbInfo;
 use nal::{NAL_AUD, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, Pps, SliceHeader, SliceType, Sps, Vui};
-use picture::{CHROMA_PAD, Frame, LUMA_PAD, RefPic, build_hpel};
+use picture::{Frame, LUMA_PAD, RefPic, build_hpel};
 use pixel::{Depth, Pixel};
 use ratecontrol::RcKind;
 use slice::{Band, EncParams, FrameEnc, Lambdas, SliceEnc, SliceOut};
@@ -80,12 +81,19 @@ pub enum Profile {
     /// High 10 (profile_idc 110): High with 8- to 10-bit samples ([`EncoderConfig::bit_depth`]). With
     /// [`EncoderConfig::intra_only`] the stream is High 10 Intra (constraint_set3_flag).
     High10,
+    /// High 4:2:2 (profile_idc 122): 4:2:2 chroma (half width, full height) with 8- to 10-bit samples. With
+    /// [`EncoderConfig::intra_only`] the stream is High 4:2:2 Intra (constraint_set3_flag).
+    High422,
 }
 
 impl Profile {
     /// High-profile tools (8x8 transform, the PPS extension) are on.
     fn high(self) -> bool {
-        matches!(self, Profile::High | Profile::High10)
+        matches!(self, Profile::High | Profile::High10 | Profile::High422)
+    }
+    /// 4:2:2 chroma (chroma_format_idc 2); every other profile codes 4:2:0.
+    pub fn chroma_422(self) -> bool {
+        self == Profile::High422
     }
 }
 
@@ -181,7 +189,7 @@ pub struct EncoderConfig {
     /// Requested level_idc (41 = level 4.1); None = the lowest level that fits. A level too low
     /// for the stream is raised to the one it needs.
     pub level: Option<u8>,
-    /// Sample bit depth, 8 (default) to 10. Above 8 needs [`Profile::High10`] and input through
+    /// Sample bit depth, 8 (default) to 10. Above 8 needs [`Profile::High10`] or [`Profile::High422`] and input through
     /// [`Encoder::encode16`] (8-bit input is also accepted and scaled up exactly).
     pub bit_depth: u8,
     /// Every picture is an IDR (an all-intra intermediate): `keyint` and `bframes` are ignored, no
@@ -219,7 +227,8 @@ impl EncoderConfig {
     }
 }
 
-/// A planar 4:2:0 8-bit input picture of the configured size.
+/// A planar 8-bit input picture of the configured size: chroma planes are `width / 2` wide and
+/// `height / 2` (4:2:0) or `height` ([`Profile::High422`]) tall.
 #[derive(Clone, Copy, Debug)]
 pub struct YuvFrame<'a> {
     pub y: &'a [u8],
@@ -229,7 +238,7 @@ pub struct YuvFrame<'a> {
     pub uv_stride: usize,
 }
 
-/// A planar 4:2:0 input picture with samples at the configured [`EncoderConfig::bit_depth`] in the
+/// A planar input picture (chroma sized as for [`YuvFrame`]) with samples at the configured [`EncoderConfig::bit_depth`] in the
 /// low bits of each `u16` (0..=1023 at 10 bits; larger values are clipped). Strides are in samples.
 #[derive(Clone, Copy, Debug)]
 pub struct YuvFrame16<'a> {
@@ -276,7 +285,7 @@ pub struct Packet {
 
 /// A reconstructed (decoded) picture, available when [`Encoder::set_recon_capture`] is on. Planes are
 /// tightly packed bytes: one per sample at 8 bits, two little-endian ones above (the layout of ffmpeg's
-/// `yuv420p10le`).
+/// `yuv420p10le`, or `yuv422p10le` with full-height chroma for [`Profile::High422`]).
 #[derive(Clone, Debug)]
 pub struct ReconFrame {
     pub pts: i64,
@@ -383,6 +392,8 @@ impl<P: Pixel> Core<P> {
             Profile::High => "high",
             Profile::High10 if c.intra_only => "high10intra",
             Profile::High10 => "high10",
+            Profile::High422 if c.intra_only => "high422intra",
+            Profile::High422 => "high422",
         };
         let preset = match c.preset {
             Preset::Speed => "speed",
@@ -419,9 +430,10 @@ impl<P: Pixel> Core<P> {
         if !(8..=10).contains(&cfg.bit_depth) {
             return Err(Error::InvalidConfig(format!("bit depth {} is not supported (8 to 10)", cfg.bit_depth)));
         }
-        if cfg.bit_depth > 8 && cfg.profile != Profile::High10 {
-            return Err(Error::InvalidConfig(format!("bit depth {} needs the High 10 profile", cfg.bit_depth)));
+        if cfg.bit_depth > 8 && !matches!(cfg.profile, Profile::High10 | Profile::High422) {
+            return Err(Error::InvalidConfig(format!("bit depth {} needs the High 10 or High 4:2:2 profile", cfg.bit_depth)));
         }
+        let c422 = cfg.profile.chroma_422();
         if cfg.profile == Profile::Baseline || cfg.intra_only {
             cfg.bframes = 0;
         }
@@ -451,6 +463,7 @@ impl<P: Pixel> Core<P> {
                 always_intra: false,
                 cavlc_clamp: !cabac,
                 depth,
+                c422,
             },
             Preset::Balanced => EncParams {
                 mbw,
@@ -470,6 +483,7 @@ impl<P: Pixel> Core<P> {
                 always_intra: false,
                 cavlc_clamp: !cabac,
                 depth,
+                c422,
             },
             Preset::Quality => EncParams {
                 mbw,
@@ -489,6 +503,7 @@ impl<P: Pixel> Core<P> {
                 always_intra: true,
                 cavlc_clamp: !cabac,
                 depth,
+                c422,
             },
         };
         let max_refs = if cfg.intra_only {
@@ -519,11 +534,12 @@ impl<P: Pixel> Core<P> {
         if matches!(cfg.rate, RateControl::Cbr { kbps: 0 } | RateControl::Vbr { target_kbps: 0, .. }) {
             return Err(Error::InvalidConfig("bitrate must be non-zero".into()));
         }
-        // cpbBrVclFactor / 1000 (Table A-2): MaxBR scales by 1.25 for High and 3 for High 10.
+        // cpbBrVclFactor / 1000 (Table A-2): MaxBR scales by 1.25 for High, 3 for High 10 and 4 for High 4:2:2.
         let br_factor = match cfg.profile {
             Profile::Baseline | Profile::Main => 1000,
             Profile::High => 1250,
             Profile::High10 => 3000,
+            Profile::High422 => 4000,
         };
         let auto = nal::pick_level(mbw as u32, mbh as u32, fps, max_refs as u32, kbps_for_level, br_factor);
         let level = cfg.level.map_or(auto, |l| nal::level_at_least(l, auto));
@@ -533,6 +549,8 @@ impl<P: Pixel> Core<P> {
             Profile::High => (100, 0x00),
             // constraint_set3_flag marks High 10 Intra (A.2.8).
             Profile::High10 => (110, if cfg.intra_only { 0x10 } else { 0x00 }),
+            // constraint_set3_flag marks High 4:2:2 Intra (A.2.9).
+            Profile::High422 => (122, if cfg.intra_only { 0x10 } else { 0x00 }),
         };
         let reorder = if cfg.bframes > 0 { 1 } else { 0 };
         let sps = Sps {
@@ -547,6 +565,7 @@ impl<P: Pixel> Core<P> {
             log2_max_poc_lsb: LOG2_MAX_POC_LSB,
             max_num_ref_frames: max_refs as u32,
             bit_depth: cfg.bit_depth,
+            chroma_format_idc: if c422 { 2 } else { 1 },
             vui: Vui {
                 sar: cfg.sar,
                 video_full_range: cfg.color.full_range,
@@ -739,7 +758,7 @@ impl<P: Pixel> Core<P> {
 
     fn import(&mut self, f: Source) -> Result<Frame<P>, Error> {
         let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
-        let (cw, ch) = (w / 2, h / 2);
+        let (cw, ch) = (w / 2, if self.params.c422 { h } else { h / 2 });
         let (lens, ys, cs) = match f {
             Source::Eight(f) => ([f.y.len(), f.u.len(), f.v.len()], f.y_stride, f.uv_stride),
             Source::Deep(f) => ([f.y.len(), f.u.len(), f.v.len()], f.y_stride, f.uv_stride),
@@ -783,7 +802,7 @@ impl<P: Pixel> Core<P> {
     }
 
     fn new_frame(&mut self) -> Frame<P> {
-        self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16))
+        self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16, self.params.c422))
     }
 
     fn recycle(&mut self, f: Frame<P>) {
@@ -918,6 +937,7 @@ impl<P: Pixel> Core<P> {
                     chroma_qp_offset: this.params.chroma_qp_offset,
                     ref_ids: [j.l0.map_or(-1, |i| this.dpb[i].id as i32), j.l1.map_or(-1, |i| this.dpb[i].id as i32)],
                     depth: this.depth,
+                    c422: this.params.c422,
                 })
                 .collect();
             let deblock: Vec<bool> = jobs.iter().map(|j| j.hdr.slice_type != SliceType::B || capture).collect();
@@ -927,16 +947,17 @@ impl<P: Pixel> Core<P> {
                 let ys = rec.y.stride;
                 let cs = rec.u.stride;
                 let mut yrest = &mut rec.y.data[LUMA_PAD * ys..];
-                let mut urest = &mut rec.u.data[CHROMA_PAD * cs..];
-                let mut vrest = &mut rec.v.data[CHROMA_PAD * cs..];
+                let (cpad, cmb) = (this.params.cpad(), this.params.ch());
+                let mut urest = &mut rec.u.data[cpad * cs..];
+                let mut vrest = &mut rec.v.data[cpad * cs..];
                 let mut mrest = &mut mbs[..];
                 for (k, &(r0, r1)) in bounds.iter().enumerate() {
                     let rows = r1 - r0;
                     let (a, b) = std::mem::take(&mut yrest).split_at_mut(rows * 16 * ys);
                     yrest = b;
-                    let (ua, ub) = std::mem::take(&mut urest).split_at_mut(rows * 8 * cs);
+                    let (ua, ub) = std::mem::take(&mut urest).split_at_mut(rows * cmb * cs);
                     urest = ub;
-                    let (va, vb) = std::mem::take(&mut vrest).split_at_mut(rows * 8 * cs);
+                    let (va, vb) = std::mem::take(&mut vrest).split_at_mut(rows * cmb * cs);
                     vrest = vb;
                     let (ma, mb) = std::mem::take(&mut mrest).split_at_mut(rows * mbw);
                     mrest = mb;
@@ -944,13 +965,14 @@ impl<P: Pixel> Core<P> {
                 }
             }
             let ys = jobs_stride_y(mbw);
-            let cs = jobs_stride_c(mbw);
+            let cs = jobs_stride_c(mbw, this.params.c422);
+            let cpad = this.params.cpad();
             let run = |(pi, k, r0, r1, y, u, v, m): Task<P>| -> (usize, usize, SliceOut) {
                 let out = SliceEnc::new(&fencs[pi], Band { y: &mut *y, u: &mut *u, v: &mut *v, ys, cs }, &mut *m, r0, r1, k as u16).encode();
                 if deblock[pi] {
                     let mut by = BandPlane { data: y, stride: ys, pad: LUMA_PAD };
-                    let mut bu = BandPlane { data: u, stride: cs, pad: CHROMA_PAD };
-                    let mut bv = BandPlane { data: v, stride: cs, pad: CHROMA_PAD };
+                    let mut bu = BandPlane { data: u, stride: cs, pad: cpad };
+                    let mut bv = BandPlane { data: v, stride: cs, pad: cpad };
                     deblock_band(&mut by, &mut bu, &mut bv, m, mbw, r1 - r0, &dps[pi]);
                 }
                 (pi, k, out)
@@ -1023,11 +1045,12 @@ impl<P: Pixel> Core<P> {
             let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
             let bytes = std::mem::size_of::<P>();
             let mut y = Vec::with_capacity(w * h * bytes);
-            let mut u = Vec::with_capacity(w * h / 4 * bytes);
-            let mut v = Vec::with_capacity(w * h / 4 * bytes);
+            let ch = if self.params.c422 { h } else { h / 2 };
+            let mut u = Vec::with_capacity(w / 2 * ch * bytes);
+            let mut v = Vec::with_capacity(w / 2 * ch * bytes);
             rec.y.copy_out(w, h, &mut y);
-            rec.u.copy_out(w / 2, h / 2, &mut u);
-            rec.v.copy_out(w / 2, h / 2, &mut v);
+            rec.u.copy_out(w / 2, ch, &mut u);
+            rec.v.copy_out(w / 2, ch, &mut v);
             rv.push(ReconFrame { pts: input.pts, y, u, v });
         }
         if is_ref && self.max_refs > 0 {
@@ -1192,6 +1215,6 @@ fn jobs_stride_y(mbw: usize) -> usize {
     mbw * 16 + 2 * LUMA_PAD
 }
 
-fn jobs_stride_c(mbw: usize) -> usize {
-    mbw * 8 + 2 * CHROMA_PAD
+fn jobs_stride_c(mbw: usize, c422: bool) -> usize {
+    mbw * 8 + 2 * picture::chroma_pad(c422)
 }

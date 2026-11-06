@@ -50,6 +50,7 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
                 H264Profile::Main => 77,
                 H264Profile::High => 100,
                 H264Profile::High10 => 110,
+                H264Profile::High422 => 122,
             },
             intra: settings.h264_intra_only,
         },
@@ -58,6 +59,9 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
     let mut d = PictureDesc::new(coding, w, h);
     if matches!(coding, PictureCoding::Avc { .. }) {
         d.depth = u32::from(settings.h264_profile.bit_depth());
+        if settings.h264_profile.chroma_422() {
+            d.subsampling = (2, 1);
+        }
     }
     d.color = match settings.signal {
         s if s == ColorSignal::PQ => ColorSpace::Rec2020Pq,

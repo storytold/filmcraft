@@ -216,19 +216,21 @@ fn write_luma_residual(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
     }
 }
 
-/// Chroma DC / AC residual blocks of the macroblock.
+/// Chroma DC / AC residual blocks of the macroblock. CAVLC is only written for Baseline, which is
+/// always 4:2:0 (`Encoder::new` refuses anything else), so the 4:2:0 chroma DC tables suffice.
 fn write_chroma_residual(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
+    debug_assert!(!nb.c422, "CAVLC is 4:2:0 only");
     let chroma = c.cbp >> 4;
     if chroma != 0 {
         for comp in 0..2 {
-            write_residual(w, &c.cdc[comp], -1);
+            write_residual(w, &c.cdc[comp][..4], -1);
         }
     }
     if chroma == 2 {
         for comp in 0..2 {
             for b in 0..4 {
                 let ncv = nc_of(nb.chroma_nnz(comp, b, true), nb.chroma_nnz(comp, b, false));
-                write_residual(w, &c.cac[comp * 4 + b][1..16], ncv);
+                write_residual(w, &c.cac[comp * 8 + b][1..16], ncv);
             }
         }
     }

@@ -139,10 +139,12 @@ pub fn aq_offsets<P: Pixel>(f: &Frame<P>, mbw: usize, mbh: usize, strength: f32,
         for mx in 0..mbw {
             let i = f.y.idx((mx * 16) as isize, (my * 16) as isize);
             let vy = block_var(&f.y.data[i..], f.y.stride, 16, 16) as f32 / 256.0;
-            let iu = f.u.idx((mx * 8) as isize, (my * 8) as isize);
-            let vu = block_var(&f.u.data[iu..], f.u.stride, 8, 8) as f32 / 64.0;
-            let iv = f.v.idx((mx * 8) as isize, (my * 8) as isize);
-            let vv = block_var(&f.v.data[iv..], f.v.stride, 8, 8) as f32 / 64.0;
+            // 8x8 chroma per macroblock for 4:2:0, 8x16 for 4:2:2 (full-height chroma)
+            let ch = if f.u.h == f.y.h { 16 } else { 8 };
+            let iu = f.u.idx((mx * 8) as isize, (my * ch) as isize);
+            let vu = block_var(&f.u.data[iu..], f.u.stride, 8, ch) as f32 / (8 * ch) as f32;
+            let iv = f.v.idx((mx * 8) as isize, (my * ch) as isize);
+            let vv = block_var(&f.v.data[iv..], f.v.stride, 8, ch) as f32 / (8 * ch) as f32;
             e[mx] = ((vy + 0.5 * (vu + vv)) / norm + 1.0).log2();
         }
     };

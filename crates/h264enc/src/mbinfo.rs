@@ -84,8 +84,8 @@ pub struct MbInfo {
     pub chroma_mode: u8,
     /// Non-zero coefficient counts per luma 4x4 (raster y*4+x).
     pub nnz: [u8; 16],
-    /// Chroma AC non-zero counts: Cb raster 2x2 then Cr raster 2x2.
-    pub nnz_c: [u8; 8],
+    /// Chroma AC non-zero counts: Cb blocks in raster order (2 wide, 2 or 4 tall) at 0..8, Cr at 8..16.
+    pub nnz_c: [u8; 16],
     /// bit0 luma DC (Intra16x16), bit1 Cb DC, bit2 Cr DC.
     pub dc_cbf: u8,
     /// Intra 4x4/8x8 prediction modes per 4x4 (raster), -1 when the MB is not I_NxN.
@@ -107,7 +107,7 @@ impl Default for MbInfo {
             t8x8: false,
             chroma_mode: 0,
             nnz: [0; 16],
-            nnz_c: [0; 8],
+            nnz_c: [0; 16],
             dc_cbf: 0,
             imodes: [-1; 16],
             ref_idx: [[-1; 4]; 2],

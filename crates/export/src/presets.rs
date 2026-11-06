@@ -5,7 +5,7 @@
 use filmcraft_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, ExportEffects, H264Profile, LoudnessNormalization, MxfVideoCodec, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, ExportEffects, H264Profile, LoudnessNormalization, Multiplexer, MxfVideoCodec, Scaling};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -73,6 +73,18 @@ fn high10(crf: f32, intra: bool) -> ExportSettings {
         max_bitrate_kbps: None,
         render_at_max_depth: true,
         ..h264(None, 50_000, 0)
+    }
+}
+
+/// H.264 High 4:2:2 Intra in QuickTime with 24-bit PCM at the sequence's size and constant quality
+/// `crf`: a 10-bit 4:2:2 all-intra intermediate, like camera and broadcast all-intra H.264.
+fn high422_intra(crf: f32) -> ExportSettings {
+    ExportSettings {
+        h264_profile: H264Profile::High422,
+        h264_intra_only: true,
+        multiplexer: Multiplexer::Mov,
+        audio: AudioSettings { codec: AudioCodec::Pcm, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 24, ..Default::default() },
+        ..high10(crf, true)
     }
 }
 
@@ -183,6 +195,12 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             bc,
             "H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate",
             high10(12.0, true),
+        ),
+        p(
+            "H.264 High 4:2:2 Intra",
+            bc,
+            "QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate",
+            high422_intra(12.0),
         ),
         p("APV 422-10", bc, "QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-10")),
         p("APV 422-12", bc, "QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-12")),

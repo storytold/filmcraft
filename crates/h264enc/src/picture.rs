@@ -51,7 +51,13 @@ impl<P: Pixel> Plane<P> {
     }
 }
 
-/// A 4:2:0 frame with padded planes.
+/// The padding of the chroma planes: 4:2:2 chroma moves vertically as far as luma does, so it is
+/// padded as much as luma.
+pub const fn chroma_pad(c422: bool) -> usize {
+    if c422 { LUMA_PAD } else { CHROMA_PAD }
+}
+
+/// A 4:2:0 or 4:2:2 frame with padded planes.
 #[derive(Clone)]
 pub struct Frame<P> {
     pub y: Plane<P>,
@@ -60,8 +66,10 @@ pub struct Frame<P> {
 }
 
 impl<P: Pixel> Frame<P> {
-    pub fn new(w: usize, h: usize) -> Self {
-        Frame { y: Plane::new(w, h, LUMA_PAD), u: Plane::new(w / 2, h / 2, CHROMA_PAD), v: Plane::new(w / 2, h / 2, CHROMA_PAD) }
+    /// A `w x h` frame; chroma is `w/2 x h/2` (4:2:0) or `w/2 x h` (4:2:2, `c422`).
+    pub fn new(w: usize, h: usize, c422: bool) -> Self {
+        let (ch, pad) = (if c422 { h } else { h / 2 }, chroma_pad(c422));
+        Frame { y: Plane::new(w, h, LUMA_PAD), u: Plane::new(w / 2, ch, pad), v: Plane::new(w / 2, ch, pad) }
     }
     pub fn extend_edges(&mut self) {
         self.y.extend_edges();
@@ -272,7 +280,9 @@ impl<P: Pixel> RefPic<P> {
         }
     }
 
-    /// Chroma prediction (both planes) of a w x h chroma block at chroma position (x, y); mv in luma quarter units.
+    /// Chroma prediction (both planes) of a w x h chroma block at chroma position (x, y); `mv` in chroma
+    /// eighth-sample units: the luma quarter-sample mv for 4:2:0, with the vertical component doubled for
+    /// 4:2:2 (yIntC = mvCLX[1] >> 2, yFracC = (mvCLX[1] & 3) << 1, §8.4.2.2.2).
     pub fn mc_chroma(&self, blk: McBlock, mv: Mv, out: (&mut [P], &mut [P]), ostride: usize) {
         match blk.w {
             8 => self.mc_chroma_w(McBlock { w: 8, ..blk }, mv, out, ostride),
