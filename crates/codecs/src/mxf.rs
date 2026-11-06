@@ -301,9 +301,17 @@ impl MxfSource {
                 pixel_format = crate::video::mpeg2_pixel_format(info, fo);
                 mpeg2_header = header.clone();
             }
-            let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
-            if p.full_range() {
-                color.range = filmcraft_color::Range::Full;
+            // the descriptor's colour labels and range; what they don't give defaults by frame size
+            let (primaries, transfer, matrix) = p.color_codes();
+            const UNSPECIFIED: u8 = 2;
+            let labels = crate::stream_color::ColorCodes {
+                primaries: primaries.unwrap_or(UNSPECIFIED),
+                transfer: transfer.unwrap_or(UNSPECIFIED),
+                matrix: matrix.unwrap_or(UNSPECIFIED),
+                full_range: Some(p.full_range()),
+            };
+            let color = crate::stream_color::resolve(w, h, &[labels]);
+            if p.full_range() || primaries.or(transfer).or(matrix).is_some() {
                 explicit_color = Some(color);
             }
             let secs = vcount as f64 / rate.as_f64().max(1e-9);

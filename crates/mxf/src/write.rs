@@ -24,7 +24,7 @@
 //! (ST 381-3; Annex B access units with in-band SPS / PPS) with long-GOP index entries (temporal
 //! offsets, key-frame offsets, prediction flags), and Broadcast Wave PCM (ST 382, 8–32 bit).
 
-mod labels;
+pub(crate) mod labels;
 #[cfg(test)]
 mod tests;
 

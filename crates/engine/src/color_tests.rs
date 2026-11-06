@@ -195,6 +195,79 @@ fn interpret_footage_and_sequence_colour_settings() {
     assert!(s.execute("sequence.colorSettings", json!({"workingSpace": "xyz"})).is_err());
 }
 
+/// An MXF of `pipeline`'s working space exported by us: a 6-frame 320x180 DNxHR colour matte.
+fn export_mxf(path: &std::path::Path, pipeline: filmcraft_color::ColorPipeline) {
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{Generator, MediaSource};
+    use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, Tick, TimeRange};
+    let rate = FrameRate::FPS_25;
+    let dur = rate.tick_of(6);
+    let matte = Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] };
+    let src = GeneratorSource::new(matte.clone(), 320, 180, rate, dur);
+    let clip = MediaClip {
+        media: MediaRef::Generator(matte),
+        info: src.info().clone(),
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: None,
+    };
+    let mut p = Project::new("fixture");
+    let item = p.add_item("matte", Label::Iris, ItemKind::Media(Box::new(clip)), None);
+    let settings = SequenceSettings { width: 320, height: 180, frame_rate: rate, color: pipeline, ..Default::default() };
+    let seq = p.new_sequence("s", settings, 1, 0, None);
+    let v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    let settings = filmcraft_export::ExportSettings {
+        format: filmcraft_export::Format::MxfOp1a,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        ..Default::default()
+    };
+    let shared: filmcraft_media::SharedSource = std::sync::Arc::new(src);
+    let provider = move |id: ItemId| (id == item).then(|| shared.clone());
+    filmcraft_export::export(&std::sync::Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}
+
+/// An MXF says its colour with the picture descriptor's labels. HLG and PQ MXFs we export read
+/// back as HLG and PQ, not Rec. 709, and so does an ffmpeg-made HLG MXF when ffmpeg is installed.
+#[test]
+fn mxf_colour_labels_are_read() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    let dir = crate::media_test_util::tmp_dir("mxf-colour");
+    let mut files = Vec::new();
+    for (working, want) in [(WorkingSpace::Rec2100Hlg, "rec2100-hlg"), (WorkingSpace::Rec2100Pq, "rec2100-pq"), (WorkingSpace::Rec709, "rec709")] {
+        let path = dir.join(format!("{want}.mxf"));
+        export_mxf(&path, ColorPipeline { working, ..ColorPipeline::REC709 });
+        files.push((path, want));
+    }
+    if let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("mxf colour labels") {
+        let path = dir.join("ffmpeg-hlg.mxf");
+        let ok = std::process::Command::new(&ff)
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25:duration=0.2"])
+            .args(["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le"])
+            .args(["-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            files.push((path, "rec2100-hlg"));
+        }
+    }
+    for (path, want) in files {
+        let mut s = Session::default();
+        let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let info = s.execute("media.colorInfo", json!({"item": r["items"][0]})).unwrap();
+        assert_eq!(info["detected"], want, "{}: {info}", path.display());
+        assert_eq!(info["hdr"], want != "rec709", "{}: {info}", path.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn lumetri_presets_list_apply_and_thumbnails() {
     let mut s = demo();
