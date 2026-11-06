@@ -72,14 +72,15 @@ pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> B
     b
 }
 
-/// Paint the List view's offline icon and proxy chip from `at`, and register the offline badge.
-fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2, pre: &str, id: ItemId) {
+/// Paint the List view's offline icon and proxy chip from `at`, and register the offline badge of
+/// the row that lists item `id` in `bin`.
+fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2, pre: &str, bin: BinId, id: ItemId) {
     let t = app.tokens;
     let mut x = at.x;
     if b.offline {
         let r = Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0));
         icons::paint(ui.painter(), r, Icon::Offline, OFFLINE);
-        offline_badge(app, ui, r, pre, id, b);
+        offline_badge(app, ui, r, pre, Some(bin), id, b);
         x += 18.0;
     }
     if b.proxy {
@@ -109,11 +110,21 @@ fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
 }
 
 /// Register the offline badge drawn at `rect`. An Unreadable badge shows on hover why the file
-/// cannot be read, such as "no decoder for Apple Intermediate Codec video" (#3646).
-fn offline_badge(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, pre: &str, id: ItemId, badge: &Badge) {
+/// cannot be read, such as "no decoder for Apple Intermediate Codec video" (#3646). A screen
+/// reader finds the badge as a node named by its word, with the reason as its description. While
+/// egui's screen-reader option is on, the badge takes keyboard focus, like `widgets::tabular_label`.
+///
+/// `bin` is the bin whose List-view row draws the badge. A List view lists an item in its own bin
+/// and again in each expanded Search Bin that finds it, and egui tracks hover by id, so each of
+/// those badges gets an id of its own. Cards pass `None`: a view draws an item's card once.
+fn offline_badge(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, pre: &str, bin: Option<BinId>, id: ItemId, badge: &Badge) {
     app.auto.add(&format!("{pre}.item.{}.offline", id.0), rect, badge.offline_text);
     if let Some(why) = &badge.offline_reason {
-        ui.interact(rect, egui::Id::unique((pre, "offline", id.0)), Sense::hover()).on_hover_text(why);
+        let sense = if ui.memory(|m| m.options.screen_reader) { Sense::focusable_noninteractive() } else { Sense::hover() };
+        let resp = ui.interact(rect, egui::Id::unique((pre, "offline", bin.map(|b| b.0), id.0)), sense);
+        // the node first: the tooltip text then becomes its description
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), badge.offline_text));
+        resp.on_hover_text(why);
     }
 }
 
@@ -870,7 +881,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
                 resp.clone().on_hover_text(&it.name);
             }
             if badges {
-                paint_badges(app, ui, &badge, pos2(end.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
+                paint_badges(app, ui, &badge, pos2(end.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, bin.id, id);
             }
         }
         x += name_w;
@@ -991,7 +1002,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
         ui.painter().rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x10, 0x16, 230));
         icons::paint(ui.painter(), Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
         ui.painter().text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
-        offline_badge(app, ui, band, pre, id, &badge);
+        offline_badge(app, ui, band, pre, None, id, &badge);
     }
     if badge.proxy {
         let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0));

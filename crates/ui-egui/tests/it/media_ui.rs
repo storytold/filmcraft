@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{By, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_media::generators::GeneratorSource;
@@ -598,6 +599,115 @@ fn unreadable_badge_says_why_on_hover() {
         // off the badge before the next view draws its own
         d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
         d.frames(3);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A session holding [`aic_movie`] imported from `root/name`, and the imported item's id.
+fn aic_session(root: &Path, name: &str) -> (Session, u64) {
+    let file = root.join(name);
+    aic_movie(&file);
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [file.to_string_lossy()]})).unwrap();
+    let item = r["items"][0].as_u64().expect("imported item");
+    (s, item)
+}
+
+/// The centres of the rects registered as automation element `id`, once there are `n` of them.
+/// An offline badge appears after a thumbnail decode fails and the media pool marks the item
+/// unreadable.
+fn element_centres(d: &mut Driver, id: &str, n: usize) -> Vec<(f64, f64)> {
+    let t0 = std::time::Instant::now();
+    loop {
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        let at: Vec<(f64, f64)> = e
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["id"] == id)
+            .map(|e| {
+                let r = &e["rect"];
+                (r[0].as_f64().unwrap() + r[2].as_f64().unwrap() / 2.0, r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0)
+            })
+            .collect();
+        if at.len() >= n {
+            return at;
+        }
+        assert!(t0.elapsed().as_secs() < 120, "{n} elements `{id}`, found {at:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+}
+
+/// An Unreadable item that List view shows twice, in its own bin and in an expanded Search Bin
+/// that finds it, says why on hover in both rows: each badge has a hover id of its own.
+#[test]
+fn unreadable_badge_says_why_in_a_search_bin_too() {
+    let root = tmp_dir("aic-search-bin");
+    let (mut s, item) = aic_session(&root, "Coast.mov");
+    let r = s.execute("file.newSearchBin", json!({"column": "Name", "operator": "contains", "text": "Coast"})).unwrap();
+    assert_eq!(r["items"], json!([item]));
+    let bin = r["bin"].as_u64().expect("search bin");
+    let mut d = Driver::new(s);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    let why = "no decoder for Apple Intermediate Codec video";
+    let badge = format!("project.item.{item}.offline");
+    // Icon view's thumbnail decode fails first, and the item reads as unreadable
+    d.exec("project.view.set", json!({"view": "icon"}));
+    element_centres(&mut d, &badge, 1);
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.frames(3);
+    d.click(&format!("project.searchBin.{bin}"));
+    assert!(d.app().ui.expanded_bins.contains(&bin));
+    let at = element_centres(&mut d, &badge, 2);
+    assert_eq!(at.len(), 2, "a badge in the item's own row and one in its Search Bin row: {at:?}");
+    // the tooltip is a node of its own, with the reason as its label
+    let shown = |d: &Driver| d.harness.query_all_by_label(why).count();
+    for (row, (x, y)) in ["own bin", "Search Bin"].into_iter().zip(at) {
+        // off both badges first, so a tooltip that appears now is this badge's
+        d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
+        d.frames(3);
+        let before = shown(&d);
+        d.ok("ui.move", json!({"x": x, "y": y}));
+        for _ in 0..60 {
+            if shown(&d) > before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            d.frames(1);
+        }
+        assert!(shown(&d) > before, "{row} row: hovering the Unreadable badge shows why");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A screen reader learns why an item is unreadable without hovering it: in Icon view and in List
+/// view the Unreadable badge is a node named by its word, with the reason as its description, and
+/// while egui's screen-reader option is on, the badge takes focus.
+#[test]
+fn unreadable_badge_reason_reaches_screen_readers() {
+    let root = tmp_dir("aic-screen-reader");
+    let (s, item) = aic_session(&root, "Coast.mov");
+    let mut d = Driver::new(s);
+    d.harness.ctx.options_mut(|o| o.screen_reader = true);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    let why = "no decoder for Apple Intermediate Codec video";
+    let badge = format!("project.item.{item}.offline");
+    let node = || By::new().role(Role::Label).label("Unreadable").predicate(move |n| n.description().as_deref() == Some(why));
+    for view in ["icon", "list"] {
+        d.exec("project.view.set", json!({"view": view}));
+        element_centres(&mut d, &badge, 1);
+        // the pointer away from the badge, so no tooltip is involved
+        d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
+        d.frames(3);
+        assert_eq!(d.harness.query_all(node()).count(), 1, "{view} view: the badge's node, described by the reason");
+        d.harness.query_all(node()).next().expect("the badge's node").focus();
+        d.frames(3);
+        assert!(d.harness.query_all(node()).any(|n| n.is_focused()), "{view} view: a screen reader can move focus to the badge");
     }
     let _ = std::fs::remove_dir_all(&root);
 }
