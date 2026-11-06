@@ -71,10 +71,29 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 
 ## Numpad keys
 
-FilmCraft's shortcut engine runs on egui, which maps numpad digits to the same `Key::Num*` variants as the main keyboard row. This means **numpad digits cannot currently be bound independently** of their main-keyboard equivalents — binding `0` on the numpad binds `0` everywhere, and vice versa.
+FilmCraft uses [egui](https://github.com/emilk/egui) for its UI. egui reports
+numpad digit keys (Numpad 0–9) with the same key code as the corresponding row
+of digit keys on the main keyboard.  As a result, **FilmCraft cannot distinguish
+between `0` (main row) and `Numpad 0`, or between any other digit and its numpad
+equivalent.**
 
-This is because egui reports numpad digits as the main-row digit keys (it does not expose distinct `Key::Numpad*` variants).
+### What this means for shortcuts
 
-- `0` is bound to **Multi-Camera Record On/Off Toggle** in the Premiere-compatible preset; rebind it if you rely on numpad `0` for something else (Edit ▸ Keyboard Shortcuts…).
+- Any shortcut bound to a digit key (e.g. `0` to toggle playback loop, `1`–`9`
+  to set clip speed) will also fire when the matching numpad key is pressed.
+- It is not possible to bind a shortcut to a numpad digit key that does *not* also
+  fire for the main-row digit.
+- Non-digit numpad keys (`Numpad +`, `Numpad -`, `Numpad *`, `Numpad /`,
+  `Numpad Enter`, `Numpad .`) are reported with distinct key codes and *can* be
+  bound independently.
 
-See [#2645](https://github.com/storytold/filmcraft/issues/2645) for upstream egui tracking.
+### Workaround
+
+If you need a numpad-specific action (e.g. jog-and-shuttle transport controls on
+a dedicated numpad), bind it to a non-digit numpad key (`Numpad +`, `Numpad Enter`,
+etc.) rather than a digit.  These keys are available in the Keyboard Shortcuts
+editor (Edit > Keyboard Shortcuts…) and do not overlap with the main keyboard.
+
+This is a known egui limitation tracked upstream.  When egui adds numpad
+disambiguation, FilmCraft will expose the additional key codes in the shortcut
+editor without any project-file migration required.
