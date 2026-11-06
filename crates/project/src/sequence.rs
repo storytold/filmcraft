@@ -1,7 +1,6 @@
 use super::track::{AudioChannels, Marker, Track, TrackItem, TrackKind};
 use super::{
-    Caption, CaptionTrack, ClipId, Deserialize, EffectInstance, FrameRate, MergedClip, MixerStrip, MulticamSource, Serialize, TICKS_PER_SECOND, Tick,
-    TimeRange, TrackId,
+    Caption, CaptionTrack, ClipId, Deserialize, EffectInstance, FrameRate, MergedClip, MixerStrip, MulticamSource, Serialize, Tick, TimeRange, TrackId,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,13 +112,7 @@ pub fn conformed_size(size: (u32, u32), par: (u32, u32), frame_par: (u32, u32)) 
 impl SequenceSettings {
     pub fn validate(&self) -> Result<(), String> {
         validate_frame_size(self.width, self.height)?;
-        if self.frame_rate.num <= 0
-            || self.frame_rate.den <= 0
-            || self.frame_rate.as_f64() > 1000.0
-            || self.frame_rate.num > i64::from(u32::MAX)
-            || self.frame_rate.den > i64::from(u32::MAX)
-            || (i128::from(TICKS_PER_SECOND) * i128::from(self.frame_rate.den) / i128::from(self.frame_rate.num.max(1))) > i128::from(Tick::MAX.0)
-        {
+        if !self.frame_rate.is_usable() {
             return Err("frame rate must be positive, at most 1000 fps, with unsigned 32-bit rational components".into());
         }
         if self.sample_rate == 0 || self.sample_rate > 384_000 {
