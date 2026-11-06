@@ -144,6 +144,25 @@ pub enum FxOp {
         feather: f32,
     },
     Resample(Resample),
+    /// Camera Shake with motion blur: the mean of these resamples of the working image (each one
+    /// a shake position inside the shutter, `rect` u32::MAX for one the CPU minifies). Without
+    /// motion blur the shake is a single [`FxOp::Resample`].
+    ShakeBlur {
+        samples: Vec<Resample>,
+    },
+    /// RGB Split: red sampled `(ox, oy)` px before the pixel and blue after it (Linear), or
+    /// `(pixel − centre) / maxd × amount` in Radial; green stays where it is. Mixed back towards
+    /// the original by `blend`. `amount` below 1e-3: no-op.
+    RgbSplit {
+        radial: bool,
+        amount: f32,
+        ox: f32,
+        oy: f32,
+        cx: f32,
+        cy: f32,
+        maxd: f32,
+        blend: f32,
+    },
     HFlip,
     VFlip,
     Mirror {
@@ -259,6 +278,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "camera_shake",
+    "rgb_split",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -497,6 +518,22 @@ impl FxOp {
                 }
                 FxOp::Resample(resample(w, h, &m, op))
             }
+            "camera_shake" => FxOp::camera_shake(e, cx, w, h),
+            "rgb_split" => {
+                let amount = crate::vfx::fv(e, "amount", cx) * cx.px_scale;
+                let ang = crate::vfx::fv(e, "angle", cx).to_radians();
+                let c = crate::vfx::pv(e, "center", cx, &Image { w, h, px: Vec::new() });
+                FxOp::RgbSplit {
+                    radial: crate::vfx::chv(e, "mode") == 1,
+                    amount,
+                    ox: ang.cos() * amount,
+                    oy: ang.sin() * amount,
+                    cx: c.x as f32,
+                    cy: c.y as f32,
+                    maxd: ((w as f64).hypot(h as f64) / 2.0) as f32,
+                    blend: crate::vfx::fv(e, "blend", cx) / 100.0,
+                }
+            }
             "horizontal_flip" => FxOp::HFlip,
             "vertical_flip" => FxOp::VFlip,
             "mirror" => {
@@ -693,11 +730,12 @@ impl FxOp {
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
-            FxOp::Resample(r) => {
-                r.rect[0] != u32::MAX
-                    && r.opacity.is_finite()
-                    && r.inv.as_ref().is_none_or(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite() && v.abs() < 1e7))
+            FxOp::Resample(r) => resample_gpu_ok(r),
+            FxOp::ShakeBlur { samples } => {
+                // the GPU pass takes each sample as a similarity (c = −b, d = a), as the shake places it
+                samples.len() <= SHAKE_SAMPLES && samples.iter().all(|r| resample_gpu_ok(r) && r.inv.as_ref().is_some_and(is_similarity))
             }
+            FxOp::RgbSplit { amount, ox, oy, cx, cy, maxd, blend, .. } => fin(&[*amount, *ox, *oy, *cx, *cy, *maxd, *blend]),
             FxOp::Mirror { cx, cy, nx, ny } => fin(&[*cx, *cy, *nx, *ny]),
             FxOp::Offset { dx, dy, blend } => fin(&[*dx, *dy, *blend]),
             FxOp::AscCdl { slope, offset, power, sat } => fin(slope) && fin(offset) && fin(power) && sat.is_finite(),
@@ -900,14 +938,43 @@ impl FxOp {
             }
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
-            FxOp::Resample(r) => {
-                let out = match (&r.inv, r.rect[0]) {
-                    (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)
-                    (Some(inv), _) => resample_cpu(img, inv, r.rect),
-                    (None, _) => Image::new(img.w, img.h),
-                };
-                *img = out;
-                img.scale_alpha(r.opacity);
+            FxOp::Resample(r) => apply_resample(img, r),
+            FxOp::ShakeBlur { samples } => {
+                // `vfx::distort::motion_blurred`: every sample from the same source, then the mean
+                if samples.is_empty() {
+                    return;
+                }
+                let src = img.clone();
+                let parts: Vec<Image> = samples
+                    .par_iter()
+                    .map(|r| {
+                        let mut c = src.clone();
+                        apply_resample(&mut c, r);
+                        c
+                    })
+                    .collect();
+                let inv = 1.0 / parts.len() as f32;
+                img.px.par_iter_mut().enumerate().for_each(|(i, v)| *v = parts.iter().map(|p| p.px.get(i).copied().unwrap_or(0.0)).sum::<f32>() * inv);
+            }
+            FxOp::RgbSplit { radial, amount, ox, oy, cx, cy, maxd, blend } => {
+                if amount.abs() < 1e-3 {
+                    return;
+                }
+                let src = img.clone();
+                let w = img.w;
+                img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let (dx, dy) = if *radial { ((px - cx) / maxd * amount, (py - cy) / maxd * amount) } else { (*ox, *oy) };
+                        let r = src.sample_bilinear(px - dx, py - dy);
+                        let g = src.get(x, y);
+                        let b = src.sample_bilinear(px + dx, py + dy);
+                        let o = [r[0], g[1], b[2], r[3].max(g[3]).max(b[3])];
+                        for k in 0..4 {
+                            row[x * 4 + k] = o[k] + (g[k] - o[k]) * blend;
+                        }
+                    }
+                });
             }
             FxOp::HFlip => {
                 let w = img.w;
@@ -1193,6 +1260,83 @@ pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
         cr *= s;
     }
     to_rgb(y, cb, cr).map(|q| q.clamp(0.0, max))
+}
+
+/// Camera Shake positions per pass (the CPU's motion blur takes five).
+pub const SHAKE_SAMPLES: usize = 5;
+
+impl FxOp {
+    /// Camera Shake: the shake position at the frame (and, with motion blur, at five times across
+    /// the shutter), each placed about the centre as `vfx::place` does.
+    fn camera_shake(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> FxOp {
+        use crate::vfx::{fv, noise1};
+        let freq = fv(e, "frequency", cx) as f64;
+        let seed = fv(e, "seed", cx).max(0.0) as u64;
+        let amt = (fv(e, "amount", cx) * cx.px_scale) as f64;
+        let rot = fv(e, "rotation", cx) as f64;
+        let zoom = fv(e, "zoom", cx) as f64 / 100.0;
+        let octaves = fv(e, "complexity", cx).clamp(1.0, 6.0) as usize;
+        let blur = fv(e, "motion_blur", cx) as f64 / 100.0;
+        // the sequence rate (what `ItemEnv::frame_rate` answers), also without an environment
+        let fps = if cx.frame_rate.is_finite() && cx.frame_rate > 0.0 { cx.frame_rate } else { 30.0 };
+        let shake = |t: f64, ch: u64| -> f64 {
+            let (mut s, mut a, mut f, mut norm) = (0.0, 1.0, 1.0, 0.0);
+            for o in 0..octaves {
+                s += noise1(t * freq * f, ch * 10 + o as u64, seed) as f64 * a;
+                norm += a;
+                a *= 0.5;
+                f *= 2.0;
+            }
+            s / norm * 1.6
+        };
+        let (c_x, c_y) = (w as f64 / 2.0, h as f64 / 2.0);
+        let place = |k: f64| -> Resample {
+            let t = cx.seconds + k * blur / fps;
+            let (ox, oy) = (shake(t, 0) * amt, shake(t, 1) * amt);
+            // zoom in a little with the shake so edges stay covered
+            let s = 1.0 + zoom * (0.5 + 0.5 * shake(t, 3));
+            let m = Affine::translate(c_x + ox, c_y + oy)
+                .then_apply(&Affine::rotate_deg(shake(t, 2) * rot))
+                .then_apply(&Affine::scale(s, s))
+                .then_apply(&Affine::translate(-c_x, -c_y));
+            if minifies(&m, w, h) {
+                // `Image::transformed`'s mip path: CPU only (see `transform`)
+                Resample { inv: Some(m), rect: [u32::MAX; 4], opacity: 1.0 }
+            } else {
+                resample(w, h, &m, 1.0)
+            }
+        };
+        if blur > 0.0 {
+            let n = SHAKE_SAMPLES;
+            FxOp::ShakeBlur { samples: (0..n).map(|i| place(i as f64 / (n - 1) as f64 - 0.5)).collect() }
+        } else {
+            FxOp::Resample(place(0.0))
+        }
+    }
+}
+
+/// Whether the GPU's resample pass reproduces `r` (finite, not the CPU's mip path).
+fn resample_gpu_ok(r: &Resample) -> bool {
+    r.rect[0] != u32::MAX
+        && r.opacity.is_finite()
+        && r.inv.as_ref().is_none_or(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite() && v.abs() < 1e7))
+}
+
+/// Whether `m` rotates and scales uniformly (`c = −b`, `d = a`, up to rounding).
+fn is_similarity(m: &Affine) -> bool {
+    let k = m.a.abs().max(m.b.abs()).max(1e-12);
+    (m.c + m.b).abs() <= 1e-9 * k && (m.d - m.a).abs() <= 1e-9 * k
+}
+
+/// [`FxOp::Resample`] on the CPU.
+fn apply_resample(img: &mut Image, r: &Resample) {
+    let out = match (&r.inv, r.rect[0]) {
+        (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)
+        (Some(inv), _) => resample_cpu(img, inv, r.rect),
+        (None, _) => Image::new(img.w, img.h),
+    };
+    *img = out;
+    img.scale_alpha(r.opacity);
 }
 
 /// The body of `Image::transformed` (no mip path) for a precomputed inverse and rectangle.
