@@ -66,6 +66,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Fill frame", "clip.fillFrame"),
     ],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
+    &[("Export Clip…", "clip.export")],
 ];
 
 /// The cut right-clicked on a track (#219): the clip ending there and the clip starting there,
