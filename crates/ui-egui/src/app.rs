@@ -91,6 +91,7 @@ impl FilmcraftApp {
             monitor_inexact: false,
             monitor_asked: HashMap::new(),
             program_shown: None,
+            program_carry: None,
             timeline_still: 0,
             input_waiters: Vec::new(),
             styled: false,

@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-06 · **Change:** minor (G16: the Program monitor keeps the cached frames an edit left unchanged; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -299,7 +299,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   CDEF and loop restoration in parallel 64-row bands, bit-exact (#847; 1080p GOP 1.16–1.30×,
   low delay 1.28×, 2160p 1.14× at 16 threads). VP9 software decode loop-filters a frame as a
   wavefront over superblock rows on the decoder's pool instead of on one thread, bit-identical,
-  1.2–1.5× faster with 16 threads (#980).
+  1.2–1.5× faster with 16 threads (#980). After an edit, the Program monitor's cached frames and GPU plans whose render-bar segment is
+  unchanged (same content hash and place) are kept for the new revision instead of being rendered
+  again: a label or another clip's opacity left 0 of 25 cached frames to render, against 24
+  ([performance.md](performance.md#results-program-monitor-frames-kept-across-edits)).
 - **Estimate:** 30–60 h. Doc: [performance.md](performance.md).
 
 ## G17. Audio device and playback reliability
@@ -346,6 +349,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-06 | minor | G16: after an edit, the Program monitor keeps the cached frames and GPU plans of unchanged render-bar segments instead of rendering them again; estimate unchanged |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
