@@ -10,8 +10,13 @@ use super::{
 
 fn video_clips(s: &Session, p: &Value) -> Vec<ClipId> {
     let Some(q) = s.active_sequence() else { return Vec::new() };
-    clips_p(s, p).into_iter().filter(|c| q.video_tracks.iter().any(|t| t.item(*c).is_some())).collect()
+    // each clip once: a caller may repeat an id, and every repeat would redo the same work
+    let mut seen = std::collections::BTreeSet::new();
+    clips_p(s, p).into_iter().filter(|c| seen.insert(*c) && q.video_tracks.iter().any(|t| t.item(*c).is_some())).collect()
 }
+
+/// Longest timecode string a command takes (`hh:mm:ss:ff` and a sign, with room to spare).
+const MAX_TIMECODE_LEN: usize = 64;
 
 pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
     let clips = video_clips(s, p);
@@ -24,6 +29,9 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
     let ph = s.playhead();
     let seq_t = time_p(s, p, "");
     let tc = str_p(p, "timecode").map(str::to_string);
+    if tc.as_ref().is_some_and(|t| t.len() > MAX_TIMECODE_LEN) {
+        return Err(bad("clip.frameHoldOptions", "timecode is too long"));
+    }
     let rates: BTreeMap<ClipId, (FrameRate, i64)> = {
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
         clips
