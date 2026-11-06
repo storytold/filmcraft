@@ -499,6 +499,7 @@ fn digit_run(s: &str, start: usize, max: usize) -> Option<usize> {
     Some(start + end)
 }
 
+/// Formats hour and minute integer numbers as spoken time tokens in the requested language.
 fn time_words(h: u32, m: u32, lang: Lang) -> Vec<Token> {
     if lang == Lang::RuRu {
         let mut out = vec![Token::Word(russian_cardinal(u64::from(h)).join(" "))];
@@ -587,6 +588,7 @@ fn date_words(month: u64, day: u64, lang: Lang) -> Vec<Token> {
     out
 }
 
+/// Converts a day of month (1..=31) into neuter ordinal Russian word form (e.g. 5 → "пятое").
 fn russian_ordinal(day: u64) -> String {
     const ORDINALS: [&str; 21] = [
         "нулевое",
@@ -766,6 +768,7 @@ fn spoken_integer(value: u64, digits: &str, lang: Lang) -> Vec<String> {
     if has_leading_zero_str(digits) { digits.chars().map(|c| digit_word(c, lang).into()).collect() } else { cardinal_words(value, lang) }
 }
 
+/// Parses attached percent, decimal fraction, ordinal suffix, or phone number continuations after an integer.
 fn parse_continuation(rest: &str, used: usize, value: u64, digits: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     let after = rest.get(used..)?;
     if let Some(suffix_len) = percent_suffix_len(after) {
@@ -932,6 +935,7 @@ fn english_digit_word(c: char) -> &'static str {
 
 // ------------------------------------------------------------- cardinal numbers
 
+/// Expands an integer into cardinal number words in the target language.
 fn cardinal_words(value: u64, lang: Lang) -> Vec<String> {
     match lang {
         Lang::RuRu => russian_cardinal(value),
@@ -939,6 +943,7 @@ fn cardinal_words(value: u64, lang: Lang) -> Vec<String> {
     }
 }
 
+/// Spoken word for an individual digit character in the requested language.
 fn digit_word(c: char, lang: Lang) -> &'static str {
     match lang {
         Lang::RuRu => russian_digit_word(c),
@@ -946,6 +951,7 @@ fn digit_word(c: char, lang: Lang) -> &'static str {
     }
 }
 
+/// Spoken word for an individual Russian digit character ('0'..='9').
 fn russian_digit_word(c: char) -> &'static str {
     match c {
         '0' => "ноль",
@@ -962,6 +968,7 @@ fn russian_digit_word(c: char) -> &'static str {
     }
 }
 
+/// Converts an unsigned integer value into spelled Russian cardinal words with declension.
 fn russian_cardinal(value: u64) -> Vec<String> {
     if value == 0 {
         return vec!["ноль".into()];
@@ -1027,6 +1034,7 @@ fn russian_cardinal(value: u64) -> Vec<String> {
     words
 }
 
+/// Expands numbers 1..=999 into Russian words, applying feminine forms when `is_feminine` is true.
 fn russian_below_thousand(n: u64, is_feminine: bool) -> Vec<String> {
     let mut words: Vec<String> = Vec::new();
     let hundreds = n / 100;
@@ -1043,6 +1051,7 @@ fn russian_below_thousand(n: u64, is_feminine: bool) -> Vec<String> {
     words
 }
 
+/// Expands numbers 1..=99 into Russian words, applying feminine forms for 1 and 2 when `is_feminine` is true.
 fn russian_below_hundred(n: u64, is_feminine: bool) -> Vec<String> {
     const UNITS_MASC: [&str; 20] = [
         "ноль",
@@ -1381,6 +1390,7 @@ fn is_vowel(c: char) -> bool {
     matches!(c, 'A' | 'E' | 'I' | 'O' | 'U')
 }
 
+/// Returns spoken word representation for common punctuation symbols by language.
 fn symbol_word(c: char, lang: Lang) -> &'static str {
     match (lang, c) {
         (Lang::RuRu, '&') => "и",
