@@ -451,13 +451,6 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let src_out = child_i64(c, "pproTicksOut").map(Tick).unwrap_or_else(|| rate.tick_of(out_f));
         let remap = self.time_remap(c);
         let (mut speed, reverse, hold) = (remap.speed, remap.reverse, remap.hold);
-        // the handle before a transition-defined start: sequence frames, at the clip's speed
-        let (src_in, src_out) = if in_shift > 0 && !hold {
-            let d = Tick((seq_rate.tick_of(in_shift).0 as f64 * speed).round() as i64);
-            (src_in + d, src_out + d)
-        } else {
-            (src_in, src_out)
-        };
         let src_len = (src_out - src_in).abs();
         let (start_t, dur) = match (start >= 0, end >= 0) {
             (true, true) => (seq_rate.tick_of(start), seq_rate.tick_of(end) - seq_rate.tick_of(start)),
@@ -480,6 +473,20 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if !remap.has_remap && !hold && src_len != dur && src_len > Tick::ZERO {
             speed = (src_len.0 as f64 / dur.0 as f64 * 10_000.0).round() / 10_000.0;
         }
+        // the handle before a transition-defined start: sequence frames, at the clip's speed (only
+        // known here when it comes from the source span), and against the source's direction for a
+        // reversed clip, whose source runs down as the timeline runs on
+        let (src_in, src_out) = if in_shift > 0 && !hold {
+            let d = Tick((seq_rate.tick_of(in_shift).0 as f64 * speed).round() as i64);
+            if reverse {
+                let d = d.min(src_in.min(src_out));
+                (src_in - d, src_out - d)
+            } else {
+                (src_in + d, src_out + d)
+            }
+        } else {
+            (src_in, src_out)
+        };
         let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, start_t, dur, src_in.min(src_out));
         ti.speed = speed;
         ti.reverse = reverse;

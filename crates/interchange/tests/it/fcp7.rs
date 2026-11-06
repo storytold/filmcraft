@@ -791,3 +791,35 @@ fn transition_defined_clip_edges_come_from_the_neighbouring_transition() {
         assert_eq!((t.from, t.to), (Some(v1.items[i].id), Some(v1.items[i + 1].id)), "dissolve {i} joins takes {} and {}", i + 1, i + 2);
     }
 }
+
+/// #1687, the handle before a transition-defined start: at the clip's speed when the speed comes
+/// from the source span (no Time Remap filter), and against the source's direction when the clip
+/// plays in reverse. One 12-frame centred dissolve from 90, so the cut is at 96 and the handle is
+/// six sequence frames.
+#[test]
+fn a_transition_handle_follows_the_clips_speed_and_direction() {
+    const R: &str = "<rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate>";
+    let file = r#"<file id="file-1"><name>takes.mov</name><pathurl>file://localhost/Volumes/S/takes.mov</pathurl><rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><duration>3000</duration><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video></media></file>"#;
+    let clip = |id: usize, start: i64, end: i64, src_in: i64, src_out: i64, f: &str| {
+        format!(r#"<clipitem id="c{id}"><name>take {id}</name>{R}<start>{start}</start><end>{end}</end><in>{src_in}</in><out>{src_out}</out>{f}</clipitem>"#)
+    };
+    let dissolve = r#"<transitionitem><rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><start>90</start><end>102</end><alignment>center</alignment><effect><name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effecttype>transition</effecttype><mediatype>video</mediatype></effect></transitionitem>"#;
+    let reverse = r#"<filter><effect><name>Time Remap</name><effectid>timeremap</effectid><parameter><parameterid>speed</parameterid><value>-100</value></parameter></effect></filter>"#;
+    let second = |second: String| {
+        let track = [clip(1, 0, -1, 0, 96, file), dissolve.to_string(), second].concat();
+        let doc = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE xmeml><xmeml version="5"><project><name>Takes</name><children><sequence id="seq-1"><name>Cut</name>{R}<media><video><format><samplecharacteristics>{R}<width>1920</width><height>1080</height></samplecharacteristics></format><track>{track}</track></video></media></sequence></children></project></xmeml>"#
+        );
+        let (imp, rep) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+        assert!(!rep.mentions("skipped"), "{rep}");
+        let s = imp.project.sequence(imp.sequences[0]).unwrap();
+        let c = s.video_tracks[0].items[1].clone();
+        (c.start.0 / FrameRate::FPS_30.tick_of(1).0, c.source_in.0 / FrameRate::FPS_30.tick_of(1).0, c.speed, c.reverse)
+    };
+    // 208 source frames over the 104 visible ones (96..200): twice as fast, so the handle is 12 source frames
+    let fast = second(clip(2, -1, 200, 1000, 1208, r#"<file id="file-1"/>"#));
+    assert_eq!(fast, (96, 1012, 2.0, false), "sped up by its source span");
+    // reversed: the source runs down as the timeline runs on, so the visible part starts 6 frames lower
+    let back = second(clip(2, -1, 200, 1000, 1104, &format!(r#"<file id="file-1"/>{reverse}"#)));
+    assert_eq!(back, (96, 994, 1.0, true), "reversed");
+}
