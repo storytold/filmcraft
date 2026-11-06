@@ -520,6 +520,9 @@ async fn cli_export(a: &Args) {
             for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                 diag(format_args!("filmcraft-cli: warning: {warning} (CLI: --range entire)"));
             }
+            for warning in export_warnings(&v) {
+                diag(format_args!("filmcraft-cli: warning: {warning}"));
+            }
             check_offline(a, &offline_media(&v), &format!("export: {written}"));
             diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
         }
@@ -595,6 +598,14 @@ fn offline_media(result: &Value) -> Vec<Value> {
         }
     }
     out
+}
+
+/// What the exports in a result reported about how they ran (hardware encoding asked for, but the
+/// software encoder ran): the warnings of a direct export's report (`result`), or of each queued
+/// item's.
+fn export_warnings(result: &Value) -> Vec<&str> {
+    let reports = std::iter::once(result).chain(result.get("items").and_then(Value::as_array).into_iter().flatten()).filter_map(|r| r.get("result"));
+    reports.filter_map(|r| r.get("warnings").and_then(Value::as_array)).flatten().filter_map(Value::as_str).collect()
 }
 
 /// One stderr line per offline item that rendered as placeholder frames (#1054).
@@ -715,6 +726,28 @@ mod format_tests {
         assert!(super::offline_media(&json!({"path": "x.mp4"})).is_empty());
         let w = super::offline_warning(&[a, b]);
         assert!(w.contains("2 offline media item(s)") && w.contains("item 8 a.mp4 (missing): /m/a.mp4") && w.contains("item 9 b.mov (offline)"), "{w}");
+    }
+
+    #[test]
+    fn export_warnings_from_direct_and_queued_results() {
+        use serde_json::json;
+        let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+        let cases: [(&str, serde_json::Value, &[&str]); 6] = [
+            ("direct", json!({"path": "a.mp4", "result": {"encoder": "software", "warnings": [fell_back]}}), &[fell_back]),
+            ("direct, nothing to say", json!({"path": "a.mp4", "result": {"encoder": "NVENC"}}), &[]),
+            (
+                "queued, one of two",
+                json!({"items": [{"status": "done", "result": {"warnings": [fell_back]}}, {"status": "done", "result": {"encoder": "software"}}]}),
+                &[fell_back],
+            ),
+            ("queued, failed", json!({"items": [{"status": "failed", "result": null}]}), &[]),
+            // the range advisory is printed on its own, with its CLI hint
+            ("range warning only", json!({"warnings": ["In/Out range is 1 frame"], "result": {}}), &[]),
+            ("no result", json!({}), &[]),
+        ];
+        for (name, result, want) in cases {
+            assert_eq!(super::export_warnings(&result), want, "{name}");
+        }
     }
 
     #[test]
