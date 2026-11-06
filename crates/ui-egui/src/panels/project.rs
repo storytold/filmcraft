@@ -91,8 +91,18 @@ pub struct ProjectPanelUi {
     pub active_tab: Option<usize>,
     /// The bin selected in the panel (rename, open).
     pub selected_bin: Option<u64>,
+    /// Every selected bin. `selected_bin` remains the primary bin for commands that take one.
+    pub selected_bins: Vec<u64>,
     /// The item a Shift-click selects a range from: the last one clicked without Shift.
     pub anchor: Option<u64>,
+    /// Whether `anchor` names a bin rather than a project item.
+    pub anchor_bin: bool,
+    /// Selection changed from the keyboard and should be brought into view on the next frame.
+    pub scroll_to_item: Option<u64>,
+    pub scroll_to_bin: Option<u64>,
+    /// Moving end of a keyboard range selection; unlike `scroll_to_*`, drawing does not clear it.
+    pub keyboard_cursor_item: Option<u64>,
+    pub keyboard_cursor_bin: Option<u64>,
     pub rename: Option<Rename>,
     pub dialog: Option<ProjectDialog>,
     pub hover: Option<Hover>,
@@ -197,6 +207,7 @@ pub fn navigate(app: &mut FilmcraftApp, inst: Inst, bin: Option<u64>) {
         }
     }
     app.ui.project_panel.selected_bin = None;
+    app.ui.project_panel.selected_bins.clear();
 }
 
 /// Open a bin as Settings ▸ General ▸ Bins says (`how`: `openInPlace` | `openNewTab` |
@@ -266,15 +277,18 @@ pub fn visible_items(app: &FilmcraftApp, inst: Inst) -> Vec<ItemId> {
 /// bin, plus those of sub-bins twirled open in List view (`project.selectAll {bin, expanded}`).
 /// Items in closed bins and in bins of other tabs stay unselected, as in Premiere (#456). While a
 /// search filters the panel, exactly the rows it shows (`project.select {items}`).
-pub fn select_all_command(app: &FilmcraftApp) -> (String, Value) {
+pub fn select_all_command(app: &FilmcraftApp) -> (String, Value, Vec<u64>) {
     let inst = shown_inst(app);
     if !app.ui.project_search.is_empty() {
+        // Only the matching items: bins that merely hold hidden items must not be selected, or
+        // Clear would delete them with everything the search hid.
         let items: Vec<u64> = visible_items(app, inst).into_iter().map(|i| i.0).collect();
-        return ("project.select".into(), json!({"items": items}));
+        return ("project.select".into(), json!({"items": items}), Vec::new());
     }
     let v = view_of(app, inst);
+    let bins = crate::panels::project_views::bins_in_view(app, &v, "");
     let expanded: &[u64] = if v.mode == ViewMode::List { &app.ui.expanded_bins } else { &[] };
-    ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}))
+    ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}), bins)
 }
 
 // ------------------------------------------------------------------------------------ panel
@@ -634,7 +648,11 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let mut rx = bar.max.x - 6.0;
     // Clear needs a selection, and Automate to Sequence asks its command (an open sequence and a
     // selected clip), as the ≡ menu does (#2106)
-    let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
+    let clear = crate::panels::project_views::clear_params(
+        &app.session.state.project_selection,
+        app.ui.project_panel.selected_bin,
+        &app.ui.project_panel.selected_bins,
+    );
     let automate = app.session.is_enabled("clip.automateToSequence");
     for (icon, id, tip) in [
         (Icon::Trash, "project.delete", tl!("Clear (Delete)")),
@@ -743,8 +761,12 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
     let pp = app.session.prefs.project_panel.clone();
     let inst = shown_inst(app);
     let v = view_of(app, inst);
-    let has_sel = !app.session.state.project_selection.is_empty() || app.ui.project_panel.selected_bin.is_some();
-    let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
+    let has_sel = !app.session.state.project_selection.is_empty() || !app.ui.project_panel.selected_bins.is_empty();
+    let clear = crate::panels::project_views::clear_params(
+        &app.session.state.project_selection,
+        app.ui.project_panel.selected_bin,
+        &app.ui.project_panel.selected_bins,
+    );
     let has_project_path = app.session.path.is_some();
     let sc = |id: &str| app.session.shortcuts.primary(id);
     let (s_close, s_save, s_bin, s_find) = (sc("file.closeProject"), sc("file.save"), sc("file.newBin"), sc("edit.find"));
@@ -1052,6 +1074,7 @@ pub fn new_bin(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> 
     // must do the same: leftover clips would otherwise steal the trash button and Delete.
     let _ = app.session.execute("project.select", json!({"items": []}));
     app.ui.project_panel.selected_bin = Some(bin);
+    app.ui.project_panel.selected_bins = vec![bin];
     app.ui.project_panel.rename = Some(Rename { item: None, bin: Some(bin), text, panel });
     Ok(r)
 }

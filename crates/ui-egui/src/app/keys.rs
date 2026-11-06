@@ -149,10 +149,15 @@ impl FilmcraftApp {
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;
-                crate::panels::project_views::clear_params(&self.session.state.project_selection, self.ui.project_panel.selected_bin)
+                crate::panels::project_views::clear_params(
+                    &self.session.state.project_selection,
+                    self.ui.project_panel.selected_bin,
+                    &self.ui.project_panel.selected_bins,
+                )
             } else {
                 None
             };
+            let deletes_project_selection = clear.is_some();
             // Mark In/Out in the Source monitor when it has focus.
             let params = if let Some(p) = clear {
                 p
@@ -165,8 +170,14 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
-            if let Err(e) = menus::invoke(self, ctx, &id, params) {
-                self.ui.status = e;
+            match menus::invoke(self, ctx, &id, params) {
+                Ok(_) if deletes_project_selection => {
+                    // The deleted bins are gone; a later Delete must not send their stale ids.
+                    self.ui.project_panel.selected_bin = None;
+                    self.ui.project_panel.selected_bins.clear();
+                }
+                Ok(_) => {}
+                Err(e) => self.ui.status = e,
             }
         }
         // Only the paste action of this pass may consume the event's image.
