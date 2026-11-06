@@ -271,10 +271,10 @@ pub struct ExportSettings {
     #[serde(default)]
     pub part_of_batch: bool,
     /// Most CPU threads the export may use (0 = all of them, as before). Rendering, the software
-    /// encoders and the rest of the export's parallel work run on a pool of this size; a number
-    /// above what the machine has (or above the pool the export already runs in) changes nothing.
-    /// The output does not depend on it. Hardware encoders and the decoders' own threads are not
-    /// counted.
+    /// encoders and the rest of the parallel work run in a pool of this size, and the decoders and
+    /// the H.264 encoder size their own pools to it (#1216). A number above what the machine has
+    /// (or above the pool the export already runs in) changes nothing; the output does not depend
+    /// on it, and hardware encoders (which run on the GPU) are unaffected.
     #[serde(default)]
     pub max_threads: u32,
     /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
