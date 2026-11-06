@@ -137,7 +137,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let previous = index.and_then(|i| i.checked_sub(1)).and_then(|i| markers.get(i));
     let next = index.and_then(|i| i.checked_add(1)).and_then(|i| markers.get(i));
     let mut action = None;
-    let modal = egui::Modal::new(egui::Id::unique("marker-properties")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("marker-properties")).frame(crate::dialog_style::padded_frame(ctx, &app.tokens)).show(ctx, |ui| {
         let width = (ctx.content_rect().width() - 40.0).clamp(240.0, 560.0);
         let max_height = (ctx.content_rect().height() - 110.0).max(100.0);
         ui.set_width(width);
@@ -545,7 +545,7 @@ fn color_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, draft: &mut Draft) 
     let Some(editor) = &mut draft.color_editor else { return };
     let mut add = false;
     let mut cancel = false;
-    let modal = egui::Modal::new(egui::Id::unique("marker-custom-color")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("marker-custom-color")).frame(crate::dialog_style::padded_frame(ctx, &app.tokens)).show(ctx, |ui| {
         ui.set_width(360.0);
         ui.heading(tl!("Add Custom Color"));
         color_picker::show(ui, &mut app.auto, &mut app.hooks, "markerColor", editor);

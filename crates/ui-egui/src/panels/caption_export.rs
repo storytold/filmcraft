@@ -12,7 +12,6 @@
 //! Automation ids: `captionExport.format`, `captionExport.format.option.<ext>` (`srt`, `vtt`, `scc`,
 //! `mcc`, `stl`, `ttml`, `dfxp`), `captionExport.ok`, `captionExport.cancel`.
 
-use crate::widgets::CenteredDialog as _;
 use filmcraft_captions::Format;
 use serde_json::{Map, Value, json};
 
@@ -46,33 +45,38 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let shown = tl!("Caption Export Settings");
-    egui::Window::new(shown).id(egui::Id::unique("Caption Export Settings")).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
-        ui.set_min_width(340.0);
-        egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label(tl!("File Format"));
-            let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
-                for f in Format::ALL {
-                    let o = ui.selectable_value(&mut d.format, f, f.name());
-                    elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
+    crate::dialog_style::Window::new(&app.tokens, shown)
+        .id(egui::Id::unique("Caption Export Settings"))
+        .collapsible(false)
+        .resizable(false)
+        .centered(ctx)
+        .show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label(tl!("File Format"));
+                let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
+                    for f in Format::ALL {
+                        let o = ui.selectable_value(&mut d.format, f, f.name());
+                        elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
+                    }
+                });
+                elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
+                ui.end_row();
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("captionExport.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("captionExport.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
                 }
             });
-            elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
-            ui.end_row();
         });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button(tl!("Cancel"));
-            elems.push(("captionExport.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("captionExport.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
