@@ -368,6 +368,62 @@ fn close_gap_works() {
 }
 
 #[test]
+fn close_gap_skips_blocking_tracks_without_conflict() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let v2 = fx.v(1);
+    let a1 = fx.a(0);
+    let a2 = fx.a(1);
+
+    // V1 has clips at [0..10) and [25..35) with a gap at [10..25)
+    fx.put(v1, 0, 10, 0);
+    fx.put(v1, 25, 10, 0);
+
+    // A1 has corresponding clips at [0..10) and [25..35) (empty in gap [10..25))
+    fx.put(a1, 0, 10, 0);
+    fx.put(a1, 25, 10, 0);
+
+    // A2 has continuous background music spanning [0..50) across the gap
+    fx.put(a2, 0, 50, 0);
+
+    // V2 has an overlay clip at [25..35)
+    fx.put(v2, 25, 10, 0);
+
+    // Closing the gap on V1:
+    close_gap(&mut fx.seq, v1, f(15)).unwrap();
+
+    // V1 gap closed: [25..35) moved to [10..20)
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10)]);
+    // A1 was empty across gap, so it rippled in sync with V1:
+    assert_eq!(fx.spans(a1), vec![(0, 10), (10, 10)]);
+    // A2 had continuous music across the gap: stayed untouched in place:
+    assert_eq!(fx.spans(a2), vec![(0, 50)]);
+    // V2 was also empty in [10..25) with sync_lock on: rippled with the sequence
+    assert_eq!(fx.spans(v2), vec![(10, 10)]);
+}
+
+#[test]
+fn close_gap_on_overlay_track_leaves_continuous_base_tracks_untouched() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let v2 = fx.v(1);
+
+    // V1 has continuous video from 0 to 40
+    fx.put(v1, 0, 40, 0);
+
+    // V2 has a gap [0..20) and a clip at [20..30)
+    fx.put(v2, 20, 10, 0);
+
+    // Closing the gap on V2:
+    close_gap(&mut fx.seq, v2, f(10)).unwrap();
+
+    // V2 clip moved to start of track [0..10)
+    assert_eq!(fx.spans(v2), vec![(0, 10)]);
+    // V1 base track remained completely untouched:
+    assert_eq!(fx.spans(v1), vec![(0, 40)]);
+}
+
+#[test]
 fn reversed_trim_uses_the_handle_its_playback_direction_consumes() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);

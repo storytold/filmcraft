@@ -4,8 +4,8 @@ use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker
 use super::snap::{snap, snap_playhead};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, hit_secondary, json, marker_at,
+    marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -1263,65 +1263,53 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     let menu_clip_id = egui::Id::unique("timeline.clipMenu.clip");
     // right-clicking empty time between clips selects the gap and opens its menu (#648, #668)
     let gap_menu_id = egui::Id::unique("timeline.gapMenu.open");
+    let marker_menu_id = egui::Id::unique("timeline.markerMenu.target");
+    let ruler_menu_id = egui::Id::unique("timeline.rulerMenu.open");
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let on_gap = match hit(seq, layout, p) {
+        let hit_sec = hit_secondary(seq, layout, p);
+        let on_gap = match hit_sec {
             Hit::Empty { track } => app.session.execute("timeline.selectGap", json!({"track": track.0, "time": layout.tick_at(p.x).0})).is_ok(),
             _ => false,
         };
         ctx.data_mut(|d| d.insert_temp(gap_menu_id, on_gap));
-        if on_gap {
-            // not the edit point menu of a cut right-clicked before
-            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
-        }
-    }
-    // on a marker of the ruler, the marker menu instead (right-clicking a marker selects it first)
-    let marker_menu_id = egui::Id::unique("timeline.markerMenu.target");
-    if resp.secondary_clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
+
         let marker = marker_under_pointer(seq, layout, p);
         if let Some(m) = marker {
             app.session.set_playhead(m.start.max(Tick::ZERO));
         }
         ctx.data_mut(|d| d.insert_temp(marker_menu_id, marker.map(|m| m.id)));
-    }
-    // on the ruler away from a marker, the ruler's own menu, not the clip menu of an earlier press
-    let ruler_menu_id = egui::Id::unique("timeline.rulerMenu.open");
-    if resp.secondary_clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        let on_ruler = layout.ruler.contains(p) && marker_under_pointer(seq, layout, p).is_none();
+
+        let on_ruler = layout.ruler.contains(p) && marker.is_none();
         ctx.data_mut(|d| d.insert_temp(ruler_menu_id, on_ruler));
         if on_ruler {
-            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
             ctx.data_mut(|d| d.insert_temp(gap_menu_id, false));
         }
-    }
-    if resp.secondary_clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-        && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
-    {
-        ctx.data_mut(|d| d.insert_temp(menu_clip_id, clip));
-        let target = edge.and_then(|e| EditPointTarget::at(seq, track, clip, e).map(|t| (t, e)));
-        ctx.data_mut(|d| d.insert_temp(edit_point_menu_id, target.map(|(t, _)| t)));
-        if let Some((t, e)) = target {
-            let on_it = app.session.state.edit_points.iter().any(|ep| (ep.out && Some(ep.clip) == t.left) || (!ep.out && Some(ep.clip) == t.right));
-            if !on_it {
-                let kind = match tool {
-                    Tool::Rolling => "roll",
-                    Tool::Ripple => "ripple",
-                    _ => {
-                        let (dist, neighbour) = edge_geometry(seq, layout, track, clip, e, p.x);
-                        selection_trim_kind(app.session.prefs.trim.selection_tool_roll_ripple, false, false, dist, neighbour)
-                    }
-                };
-                let edge = if e == filmcraft_edit::Edge::In { "in" } else { "out" };
-                let _ = app.session.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": edge, "kind": kind}));
+
+        if let Hit::Clip { clip, edge, track } = hit_sec {
+            ctx.data_mut(|d| d.insert_temp(menu_clip_id, clip));
+            let target = edge.and_then(|e| EditPointTarget::at(seq, track, clip, e).map(|t| (t, e)));
+            ctx.data_mut(|d| d.insert_temp(edit_point_menu_id, target.map(|(t, _)| t)));
+            if let Some((t, e)) = target {
+                let on_it = app.session.state.edit_points.iter().any(|ep| (ep.out && Some(ep.clip) == t.left) || (!ep.out && Some(ep.clip) == t.right));
+                if !on_it {
+                    let kind = match tool {
+                        Tool::Rolling => "roll",
+                        Tool::Ripple => "ripple",
+                        _ => {
+                            let (dist, neighbour) = edge_geometry(seq, layout, track, clip, e, p.x);
+                            selection_trim_kind(app.session.prefs.trim.selection_tool_roll_ripple, false, false, dist, neighbour)
+                        }
+                    };
+                    let edge = if e == filmcraft_edit::Edge::In { "in" } else { "out" };
+                    let _ = app.session.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": edge, "kind": kind}));
+                }
+            } else if !app.session.state.selection.contains(&clip) {
+                let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
             }
-        } else if !app.session.state.selection.contains(&clip) {
-            let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+        } else {
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
         }
     }
     resp.context_menu(|ui| {

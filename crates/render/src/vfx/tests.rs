@@ -140,8 +140,10 @@ const NEW_IDS: &[&str] = &[
     "lens_flare",
     "track_matte",
     "simple_text",
+    "burning_text",
     "noise",
     "mosaic",
+    "tv_static",
 ];
 
 #[test]
@@ -260,6 +262,8 @@ fn neutral_parameters_are_identity() {
         ("light_leaks", vec![("intensity", ParamValue::Float(0.0))]),
         ("lens_flare", vec![("brightness", ParamValue::Float(0.0))]),
         ("simple_text", vec![("text", ParamValue::Text(String::new()))]),
+        ("burning_text", vec![("text", ParamValue::Text(String::new()))]),
+        ("tv_static", vec![("intensity", ParamValue::Float(0.0))]),
     ];
     for (id, params) in cases {
         let mut e = inst(id);
@@ -1473,4 +1477,116 @@ fn lengths_past_the_picture_keep_their_fade_and_weighting() {
     assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
     let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
     assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
+}
+
+#[test]
+fn tv_static_monochrome_vs_color() {
+    let mut flat = Image::new(16, 16);
+    for chunk in flat.px.as_chunks_mut::<4>().0 {
+        chunk.copy_from_slice(&[0.5, 0.5, 0.5, 1.0]);
+    }
+
+    // Monochrome: R == G == B on flat gray
+    let mut e_mono = inst("tv_static");
+    setf(&mut e_mono, "intensity", 80.0);
+    set(&mut e_mono, "monochrome", ParamValue::Bool(true));
+    setf(&mut e_mono, "scanlines", 0.0);
+    setf(&mut e_mono, "bar_intensity", 0.0);
+    setf(&mut e_mono, "jitter", 0.0);
+    let out_mono = run("tv_static", &e_mono, &flat, &cx());
+    for p in out_mono.px.as_chunks::<4>().0 {
+        assert!((p[0] - p[1]).abs() < 1e-5, "monochrome static must have R == G");
+        assert!((p[1] - p[2]).abs() < 1e-5, "monochrome static must have G == B");
+    }
+
+    // Color: non-zero chromatic differences exist
+    let mut e_color = inst("tv_static");
+    setf(&mut e_color, "intensity", 80.0);
+    set(&mut e_color, "monochrome", ParamValue::Bool(false));
+    setf(&mut e_color, "scanlines", 0.0);
+    setf(&mut e_color, "bar_intensity", 0.0);
+    setf(&mut e_color, "jitter", 0.0);
+    let out_color = run("tv_static", &e_color, &flat, &cx());
+    let mut chromatic_variation = false;
+    for p in out_color.px.as_chunks::<4>().0 {
+        if (p[0] - p[1]).abs() > 1e-3 || (p[1] - p[2]).abs() > 1e-3 {
+            chromatic_variation = true;
+            break;
+        }
+    }
+    assert!(chromatic_variation, "color static must have chromatic variation");
+}
+
+#[test]
+fn tv_static_temporal_variation() {
+    let img = picture(20, 20);
+    let mut e = inst("tv_static");
+    setf(&mut e, "intensity", 70.0);
+
+    let c1 = FxCtx { t: Tick(0), seconds: 0.0, ..cx() };
+    let c2 = FxCtx { t: Tick(100_000_000_000), seconds: 0.5, ..cx() };
+
+    let out1 = run("tv_static", &e, &img, &c1);
+    let out2 = run("tv_static", &e, &img, &c2);
+
+    assert_ne!(out1.px, out2.px, "tv static must vary over time/ticks");
+}
+
+#[test]
+fn burning_text_rendering_and_options() {
+    let img = Image::filled(200, 100, [0.0, 0.0, 0.0, 1.0]);
+    let mut e = inst("burning_text");
+
+    // Check defaults per spec
+    let def = find_effect("burning_text").unwrap();
+    assert_eq!(def.param("font").unwrap().default, ParamValue::Choice(0)); // Stalinist One
+    assert_eq!(def.param("progress").unwrap().default, ParamValue::Float(0.0));
+    assert_eq!(def.param("direction").unwrap().default, ParamValue::Choice(0)); // Up
+    assert_eq!(def.param("orange_glow").unwrap().default, ParamValue::Bool(true));
+
+    // Progress 0: text is visible
+    let out0 = run("burning_text", &e, &img, &cx());
+    assert_ne!(out0.px, img.px, "unburnt text must modify the image");
+
+    // Progress 100 with orange glow disabled: text is fully burnt away
+    setf(&mut e, "progress", 100.0);
+    set(&mut e, "orange_glow", ParamValue::Bool(false));
+    let out100 = run("burning_text", &e, &img, &cx());
+    assert_eq!(out100.px, img.px, "burnt text with no glow should match blank canvas");
+
+    // Orange glow toggle: with glow, pixels have higher energy at the burn edge
+    setf(&mut e, "progress", 50.0);
+    set(&mut e, "orange_glow", ParamValue::Bool(false));
+    let out_noglow = run("burning_text", &e, &img, &cx());
+
+    set(&mut e, "orange_glow", ParamValue::Bool(true));
+    let out_glow = run("burning_text", &e, &img, &cx());
+    assert_ne!(out_noglow.px, out_glow.px, "orange glow toggle must produce distinct visual output");
+
+    // Dynamic noise evolution over time
+    let c1 = FxCtx { t: Tick(0), seconds: 0.0, ..cx() };
+    let c2 = FxCtx { t: Tick(100_000_000_000), seconds: 1.0, ..cx() };
+    let out_t1 = run("burning_text", &e, &img, &c1);
+    let out_t2 = run("burning_text", &e, &img, &c2);
+    assert_ne!(out_t1.px, out_t2.px, "dynamic perlin noise must evolve over time");
+
+    // Test all position presets (Center, Up, Down, Left, Right)
+    for preset in 0..5 {
+        set(&mut e, "position_preset", ParamValue::Choice(preset));
+        let out_p = run("burning_text", &e, &img, &cx());
+        assert!(!out_p.px.is_empty());
+    }
+
+    // Test all directions (Up, Down, Left, Right)
+    for dir in 0..4 {
+        set(&mut e, "direction", ParamValue::Choice(dir));
+        let out_d = run("burning_text", &e, &img, &cx());
+        assert!(!out_d.px.is_empty());
+    }
+
+    // Hostile input: NaN / Infinite float values never crash (Rule 0)
+    setf(&mut e, "progress", f64::NAN);
+    setf(&mut e, "size", f64::INFINITY);
+    setf(&mut e, "noise_scale", -100.0);
+    let _ = run("burning_text", &e, &img, &cx());
 }

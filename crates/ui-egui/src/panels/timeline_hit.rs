@@ -140,6 +140,18 @@ pub fn transition_top(row: Rect) -> f32 {
 }
 
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
+    hit_opt(seq, layout, pos, false)
+}
+
+/// Hit testing for secondary click (right-click / context menu).
+///
+/// In empty track space (`tr.item_at(t).is_none()`), this yields [`Hit::Empty`] directly rather
+/// than letting an adjacent clip's 7px outer edge zone capture the click as a trim handle.
+pub fn hit_secondary(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
+    hit_opt(seq, layout, pos, true)
+}
+
+fn hit_opt(seq: &Sequence, layout: &Layout, pos: Pos2, secondary: bool) -> Hit {
     if layout.ruler.contains(pos) {
         if let Some(edge) = work_area_at(seq, layout, pos) {
             return Hit::WorkArea { edge };
@@ -167,7 +179,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
             return Hit::Transition { track: row.track, id: trn.id, edge };
         }
     }
-    if let Some((clip, edge)) = edge_at(tr, layout, pos.x) {
+    if let Some((clip, edge)) = edge_at(tr, layout, pos.x, !secondary) {
         return Hit::Clip { track: row.track, clip, edge: Some(edge) };
     }
     match tr.item_at(layout.tick_at(pos.x)) {
@@ -211,14 +223,15 @@ fn zone(w: f32) -> Option<f32> {
 }
 
 /// The clip edge on `tr` a pointer at `x` grabs (#259), whatever the order of `tr.items`.
-fn edge_at(tr: &Track, layout: &Layout, x: f32) -> Option<(ClipId, Edge)> {
+fn edge_at(tr: &Track, layout: &Layout, x: f32, allow_outer: bool) -> Option<(ClipId, Edge)> {
     let mut best: Option<Reach> = None;
     for it in &tr.items {
         let (x0, x1) = (layout.x_of(it.start), layout.x_of(it.end()));
         let Some(e) = zone(x1 - x0) else { continue };
         // the pointer's distance into the clip from each of its edges
         for (edge, d) in [(Edge::In, x - x0), (Edge::Out, x1 - x)] {
-            if !(-e..=e).contains(&d) {
+            let min_d = if allow_outer { -e } else { 0.0 };
+            if !(min_d..=e).contains(&d) {
                 continue;
             }
             let r = Reach { clip: it.id, edge, inside: d >= 0.0, dist: d.abs() };
@@ -624,5 +637,28 @@ pub(crate) mod tests {
         let (seq, l, tr) = fixture(clips());
         assert_eq!(grab(&seq, &l, Tool::Selection, 303.0, Modifiers::NONE, false).hit(), edge_hit(tr, 2, Edge::In));
         assert_eq!(grab(&seq, &l, Tool::Razor, 303.0, Modifiers::NONE, false).hit(), edge_hit(tr, 2, Edge::In));
+    }
+
+    #[test]
+    fn secondary_hit_prioritizes_gaps_over_trim_edge_zones() {
+        let (seq, l, tr) = fixture(clips());
+        let at = |x| pos2(x, TOP + 10.0);
+        // Primary hit grabs the edge zone even across the 4 px gap (500–504):
+        assert_eq!(hit(&seq, &l, at(501.0)), edge_hit(tr, 2, Edge::Out));
+        assert_eq!(hit(&seq, &l, at(503.0)), edge_hit(tr, 3, Edge::In));
+        assert_eq!(hit(&seq, &l, at(502.0)), edge_hit(tr, 3, Edge::In));
+
+        // Secondary hit (right-click / context menu) never lets the 7px outer margin absorb gaps:
+        assert_eq!(hit_secondary(&seq, &l, at(501.0)), Hit::Empty { track: tr });
+        assert_eq!(hit_secondary(&seq, &l, at(502.0)), Hit::Empty { track: tr });
+        assert_eq!(hit_secondary(&seq, &l, at(503.0)), Hit::Empty { track: tr });
+
+        // Abutting cuts retain the edit point edge:
+        assert_eq!(hit_secondary(&seq, &l, at(300.0)), edge_hit(tr, 2, Edge::In));
+        assert_eq!(hit_secondary(&seq, &l, at(297.0)), edge_hit(tr, 1, Edge::Out));
+        assert_eq!(hit_secondary(&seq, &l, at(303.0)), edge_hit(tr, 2, Edge::In));
+
+        // Empty space past the last clip is Hit::Empty:
+        assert_eq!(hit_secondary(&seq, &l, at(1000.0)), Hit::Empty { track: tr });
     }
 }
