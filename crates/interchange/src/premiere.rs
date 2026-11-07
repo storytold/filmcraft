@@ -124,6 +124,9 @@ pub struct Item {
     /// Media Premiere generates itself (black video, colour matte...), in place of a file path.
     #[serde(default)]
     pub synthetic: Option<SyntheticMedia>,
+    /// The `MasterClip` ObjectUID of an adjustment layer (`IsAdjustmentLayer`).
+    #[serde(default)]
+    pub adjustment_layer: Option<String>,
     /// Markers of the source media's master clip.
     #[serde(default)]
     pub media_markers: Vec<filmcraft_project::Marker>,
@@ -700,8 +703,16 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
                     let target = source_target(clip, &ids, &uids, &mut work_left)?;
                     let generated = target.filter(|n| n.has_tag_name("Media")).and_then(|n| Some((n, synthetic_code(n)?)));
+                    let master = referred(sub.and_then(|s| child(s, "MasterClip")), &uids, "ObjectURef");
+                    // An adjustment layer's master clip is flagged over generated black video.
+                    let adjustment_layer = master
+                        .filter(|_| kind == "video")
+                        .filter(|m| child_text(*m, "IsAdjustmentLayer").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"))
+                        .and_then(|m| m.attribute("ObjectUID"))
+                        .map(str::to_string);
                     let mut synthetic = None;
                     match &generated {
+                        _ if adjustment_layer.is_some() => {}
                         // A graphic's canvas; its text and shapes are read from the components.
                         Some((_, code)) if code == "GRFV" => graphic = true,
                         // The source of caption clips; their text is read with the caption track.
@@ -717,13 +728,24 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
                     let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
+                    if adjustment_layer.is_some() {
+                        media_path = None;
+                        nested_sequence = None;
+                    }
                     if graphic {
                         // Generated graphic media may have an internal numeric pseudo-path.
                         // It is a native canvas, not a missing filesystem asset.
                         media_path = None;
                         nested_sequence = None;
                     }
-                    if media_path.is_none() && nested_sequence.is_none() && generated.is_none() && kind != "caption" && !graphic && text.is_none() {
+                    if media_path.is_none()
+                        && nested_sequence.is_none()
+                        && generated.is_none()
+                        && adjustment_layer.is_none()
+                        && kind != "caption"
+                        && !graphic
+                        && text.is_none()
+                    {
                         let named_sequence = names.get(label.as_str()).copied().flatten();
                         let named_media = media.get(&label);
                         if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
@@ -739,7 +761,6 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     }
                     let mut media_markers = Vec::new();
                     if media_path.is_some() {
-                        let master = referred(sub.and_then(|s| child(s, "MasterClip")), &uids, "ObjectURef");
                         let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
                         if let Some(master_clip) = referred(first, &ids, "ObjectRef").and_then(|c| child(c, "Clip")) {
                             spend(&mut work_left, master_clip)?;
@@ -756,6 +777,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         motion_keys,
                         media_path,
                         synthetic,
+                        adjustment_layer,
                         media_markers,
                         nested_sequence,
                         label,
@@ -903,8 +925,26 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
             let mut transition_ids = BTreeMap::new();
             for item in &track.items {
                 let nested = item.nested_sequence.as_ref().and_then(|n| sequences.get(n)).copied();
+                let adjustment_key = item.adjustment_layer.as_ref().map(|master| format!("premiere-adjustment-layer:{master}"));
                 let source = if let Some(id) = nested {
                     id
+                } else if let Some(key) = &adjustment_key {
+                    // Clips of one adjustment layer share its project item, long enough for each use.
+                    let needed = item.source_out.max(fps.frame_duration());
+                    match b.find_media(key) {
+                        Some(id) => {
+                            if let Some(ItemKind::AdjustmentLayer { duration, .. }) = b.p.item_mut(id).map(|i| &mut i.kind) {
+                                *duration = (*duration).max(needed);
+                            }
+                            id
+                        }
+                        None => {
+                            let kind = ItemKind::AdjustmentLayer { width: src.width, height: src.height, rate: fps, duration: needed };
+                            let id = b.p.add_item(&item.label, Label::Lavender, kind, None);
+                            b.register_media(key, id);
+                            id
+                        }
+                    }
                 } else if item.graphic || item.text.is_some() {
                     if item.text.is_some() {
                         warning(&mut report, "text graphic imported with default font/style; source styling retained in original snapshot");
@@ -1408,6 +1448,7 @@ mod tests {
             speed: 1.0,
             media_path: None,
             synthetic: None,
+            adjustment_layer: None,
             media_markers: Vec::new(),
             nested_sequence: Some(name),
             text: None,
@@ -1670,6 +1711,28 @@ mod tests {
         assert!(report.mentions("ZZZZ"), "{report:?}");
         let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
         assert!(fragment.project.item(clip.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline));
+    }
+    #[test]
+    fn adjustment_layers_import_as_adjustment_layers() {
+        // Hand-written: an adjustment layer is a master clip flagged IsAdjustmentLayer over black video.
+        let xml = generator_fixture(u32::from_be_bytes(*b"BLAK"), "Capa de ajuste")
+            .replace(r#"<Name>camera.mov</Name><Clip ObjectRef="22"/>"#, r#"<Name>Grade</Name><MasterClip ObjectURef="layer"/><Clip ObjectRef="22"/>"#)
+            .replace("</PremiereData>", r#"<MasterClip ObjectUID="layer"><Clips><Clip Index="0" ObjectRef="22"/></Clips><Name>Grade</Name><IsAdjustmentLayer>true</IsAdjustmentLayer></MasterClip></PremiereData>"#);
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let item = &tree.sequences[0].tracks[0].items[0];
+        assert!(item.synthetic.is_none() && item.media_path.is_none());
+        let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
+        let layer = fragment.project.item(clip.item).unwrap();
+        assert_eq!(layer.name, "Grade");
+        let ItemKind::AdjustmentLayer { width, height, duration, .. } = layer.kind else { panic!("{:?} {report:?}", layer.kind) };
+        assert_eq!((width, height), (1080, 1920), "the sequence frame");
+        assert!(duration >= clip.source_in + clip.duration, "covers the clip's source range");
+        assert!(!report.mentions("unresolved") && !report.mentions("offline"), "{report:?}");
+        // The same master clip without the flag is plain black video.
+        let plain = xml.replace("<IsAdjustmentLayer>true", "<IsAdjustmentLayer>false");
+        let (fragment, _, _) = import(plain.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
+        assert!(fragment.project.item(clip.item).and_then(|i| i.as_media()).is_some_and(|m| matches!(m.media, filmcraft_project::MediaRef::Generator(_))));
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
