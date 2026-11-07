@@ -131,12 +131,7 @@ impl Encoder {
     /// mix both codings; every decoder reads the coding from each frame's header.
     pub fn encode_with(&mut self, f: &Frame, mut backend: Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
         match self.encode_once(f, &mut backend) {
-            Err(Error::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => {
-                self.cfg.alpha = Some(AlphaCoding::Dct);
-                let done = self.encode_once(f, &mut backend);
-                self.cfg.alpha = Some(AlphaCoding::Lossless);
-                done
-            }
+            Err(Error::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => DctAlphaRetry::new(self).0.encode_once(f, &mut backend),
             done => done,
         }
     }
@@ -152,10 +147,9 @@ impl Encoder {
         match self.encode_on_backend(Input::Resident(frame), backend, self.budget_bits()) {
             Ok(out) => Some(out),
             Err(Missed::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => {
-                self.cfg.alpha = Some(AlphaCoding::Dct);
-                let done = self.encode_on_backend(Input::Resident(frame), backend, self.budget_bits());
-                self.cfg.alpha = Some(AlphaCoding::Lossless);
-                done.ok()
+                let retry = DctAlphaRetry::new(self);
+                let budget = retry.0.budget_bits();
+                retry.0.encode_on_backend(Input::Resident(frame), backend, budget).ok()
             }
             Err(_) => None,
         }
@@ -169,10 +163,14 @@ impl Encoder {
     fn encode_once(&mut self, f: &Frame, backend: &mut Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
         self.validate(f)?;
         let budget_bits = self.budget_bits();
-        if let Some(backend) = backend.as_deref_mut()
-            && let Ok(out) = self.encode_on_backend(Input::Planes(f), backend, budget_bits)
-        {
-            return Ok((out, true));
+        if let Some(backend) = backend.as_deref_mut() {
+            match self.encode_on_backend(Input::Planes(f), backend, budget_bits) {
+                Ok(out) => return Ok((out, true)),
+                // The backend measured the frame at every quantiser: lossless alpha cannot fit,
+                // and a CPU encode would only find the same. `encode_with` retries with DCT alpha.
+                Err(Missed::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => return Err(Error::DoesNotFit),
+                Err(_) => {}
+            }
         }
         let prep = self.prepare(f);
         let coder = Coder::new(&self.cfg, self.info, &prep, f.rgb);
@@ -436,6 +434,24 @@ pub trait MacroblockBackend: Send {
     fn choose(&mut self, hint: u32, budget: u64) -> Option<Vec<u32>> {
         let _ = (hint, budget);
         None
+    }
+}
+
+/// The encoder coding with DCT alpha (the retry of a frame whose lossless alpha does not fit)
+/// until this is dropped, which configures lossless alpha again: also when a backend panics in
+/// the retry and the export catches it, so the next frame is not left on DCT alpha.
+struct DctAlphaRetry<'a>(&'a mut Encoder);
+
+impl<'a> DctAlphaRetry<'a> {
+    fn new(enc: &'a mut Encoder) -> DctAlphaRetry<'a> {
+        enc.cfg.alpha = Some(AlphaCoding::Dct);
+        DctAlphaRetry(enc)
+    }
+}
+
+impl Drop for DctAlphaRetry<'_> {
+    fn drop(&mut self) {
+        self.0.cfg.alpha = Some(AlphaCoding::Lossless);
     }
 }
 
@@ -1093,6 +1109,11 @@ mod backend_tests {
         FailWrite,
         /// `load` declines.
         Decline,
+        /// `bits` measures far more than the budget while the alpha coding is lossless (so the
+        /// backend reports that the frame does not fit); honest with DCT alpha.
+        LosslessDoesNotFit,
+        /// As `LosslessDoesNotFit`, and `load` panics with DCT alpha (a device fault in the retry).
+        LosslessDoesNotFitDctPanics,
     }
 
     #[derive(Default, Clone)]
@@ -1125,7 +1146,17 @@ mod backend_tests {
 
     impl MacroblockBackend for CpuMbBackend {
         fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool {
+            if self.lie == Lie::LosslessDoesNotFitDctPanics && cfg.alpha == Some(AlphaCoding::Dct) {
+                panic!("device fault in the DCT alpha retry");
+            }
             self.lie != Lie::Decline && self.inner.load(cfg, frame)
+        }
+        /// Takes no handle (as a backend without resident frames), except for the alpha lies.
+        fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any) -> bool {
+            match frame.downcast_ref::<Frame>() {
+                Some(frame) if matches!(self.lie, Lie::LosslessDoesNotFit | Lie::LosslessDoesNotFitDctPanics) => self.load(cfg, frame),
+                _ => false,
+            }
         }
         fn bits(&mut self, q: u32) -> Option<Vec<u32>> {
             self.bits_calls += 1;
@@ -1133,6 +1164,10 @@ mod backend_tests {
                 return None;
             }
             let mut v = self.inner.bits(q)?;
+            let lossless = self.inner.enc.as_ref().is_some_and(|e| e.cfg.alpha == Some(AlphaCoding::Lossless));
+            if matches!(self.lie, Lie::LosslessDoesNotFit | Lie::LosslessDoesNotFitDctPanics) && lossless {
+                v.iter_mut().for_each(|b| *b = b.saturating_add(1 << 20));
+            }
             if self.lie == Lie::ShortBits {
                 v.pop();
             }
@@ -1302,6 +1337,47 @@ mod backend_tests {
                 let (again, _) = enc.encode_with(&f, None).unwrap();
                 assert!(again == cpu, "{name}: next frame");
             }
+        }
+    }
+
+    /// A backend that measures lossless alpha as not fitting is believed: the frame is coded with
+    /// DCT alpha on the backend straight away, without a CPU encode of the lossless frame first
+    /// (here the CPU would fit it, so a CPU encode would show as lossless alpha and `used == false`).
+    #[test]
+    fn a_backend_that_says_lossless_alpha_does_not_fit_goes_straight_to_dct_alpha() {
+        let cfg = EncoderConfig { alpha: Some(AlphaCoding::Lossless), ..EncoderConfig::new(Profile::Hq, 64, 48) };
+        let f = test_frame(&cfg, 5);
+        assert!(probe(&cpu_frame(&cfg, &f)).unwrap().lossless_alpha, "the CPU fits this frame with lossless alpha");
+        let mut b = CpuMbBackend::lying(Lie::LosslessDoesNotFit);
+        let mut enc = Encoder::with_config(cfg.clone()).unwrap();
+        let (out, used) = enc.encode_with(&f, Some(&mut b)).unwrap();
+        assert!(used, "the backend coded the frame (with DCT alpha); no CPU encode ran");
+        assert!(!probe(&out).unwrap().lossless_alpha, "coded with DCT alpha");
+        let dct = EncoderConfig { alpha: Some(AlphaCoding::Dct), ..cfg.clone() };
+        assert!(out == cpu_frame(&dct, &f), "the backend's DCT-alpha frame is the CPU's");
+        assert!(enc.config().alpha == cfg.alpha, "the configured alpha coding is kept");
+    }
+
+    /// A panic in the DCT-alpha retry (caught further up, as an export does) leaves the encoder
+    /// on its configured lossless alpha for the next frame.
+    #[test]
+    fn a_panic_in_the_dct_alpha_retry_keeps_lossless_alpha_configured() {
+        let cfg = EncoderConfig { alpha: Some(AlphaCoding::Lossless), ..EncoderConfig::new(Profile::Hq, 64, 48) };
+        let f = test_frame(&cfg, 5);
+        let mut enc = Encoder::with_config(cfg.clone()).unwrap();
+        for resident in [true, false] {
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut b = CpuMbBackend::lying(Lie::LosslessDoesNotFitDctPanics);
+                if resident {
+                    let _ = enc.encode_resident(&f, &mut b);
+                } else {
+                    let _ = enc.encode_with(&f, Some(&mut b));
+                }
+            }));
+            assert!(caught.is_err(), "resident={resident}: the retry panicked");
+            assert!(enc.config().alpha == cfg.alpha, "resident={resident}: lossless alpha is configured again");
+            let (out, used) = enc.encode_with(&f, None).unwrap();
+            assert!(!used && probe(&out).unwrap().lossless_alpha, "resident={resident}: the next frame has lossless alpha");
         }
     }
 
