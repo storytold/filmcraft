@@ -36,6 +36,7 @@ use crate::i18n::t;
 use crate::state::SequenceSettingsDraft;
 
 const NOT_YET: &str = "Not supported in FilmCraft yet";
+const LINEAR: &str = "Off: transitions mix the encoded pictures (Rec. 709 sequences). Opacity and blend modes still composite in linear light.";
 
 /// The Timebase list (frames per second as num/den), Premiere's common rates.
 const TIMEBASES: [(i64, i64); 15] = [
@@ -427,7 +428,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let r = ui.checkbox(&mut d.max_render_quality, tl!("Maximum Render Quality"));
             elems.push(("sequenceSettings.maxRenderQuality".into(), r.rect, d.max_render_quality.to_string()));
         });
-        let r = ui.checkbox(&mut d.linear_color, tl!("Composite in Linear Color"));
+        let r = ui.checkbox(&mut d.linear_color, tl!("Composite in Linear Color")).on_hover_text(t(LINEAR));
         elems.push(("sequenceSettings.linearColor".into(), r.rect, d.linear_color.to_string()));
     });
 }

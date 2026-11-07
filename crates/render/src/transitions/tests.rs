@@ -540,6 +540,19 @@ fn encoded_mixing_is_linear_in_the_signal() {
         assert!((got - (1.0 - 2.0 * p)).abs() < 1e-4, "dip p {p}: {got}");
     }
     let (fa, fb) = (frame_a(), frame_b());
+    // a colour parameter is used as stored in the encoded mix: Dip to Color holds its colour's code values
+    let mut dip_col = filmcraft_project::find_effect("dip_to_color").unwrap().instance();
+    let c = [0.6f32, 0.3, 0.1, 1.0];
+    dip_col.params.get_mut("color").unwrap().value = ParamValue::Color(c);
+    let held = apply_scaled_encoded(&dip_col, &a, &b, 0.5, 1.0);
+    let linear = apply_scaled(&dip_col, &a, &b, 0.5, 1.0);
+    for ch in 0..3 {
+        assert!((from_linear(held.px[ch], Transfer::Bt709) - c[ch]).abs() < 1e-4, "encoded dip colour {:?}", &held.px[..4]);
+        assert!((linear.px[ch] - filmcraft_color::srgb_to_linear(c[ch])).abs() < 1e-4, "linear dip colour {:?}", &linear.px[..4]);
+    }
+    // half-way into the dip the encoded mix is linear in the code values: (A' + colour) / 2
+    let quarter = enc(&apply_scaled_encoded(&dip_col, &a, &b, 0.25, 1.0));
+    assert!((quarter - (1.0 + c[0]) / 2.0).abs() < 1e-3, "{quarter}");
     // Film Dissolve has its own blend space: the same picture with or without linear colour
     let film = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
     assert_eq!(apply_scaled_encoded(&film, &fa, &fb, 0.3, 1.0), apply_scaled(&film, &fa, &fb, 0.3, 1.0));

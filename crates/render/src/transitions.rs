@@ -47,6 +47,11 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
 /// Render transition `e` at progress `p`; `scale` converts pixel parameters (border width, blur
 /// length, centre) from sequence pixels to working-image pixels (½ for half-resolution playback).
 pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
+    mixed(e, a, b, p, scale, false)
+}
+
+/// [`apply_scaled`] on layers that are linear light (`encoded` false) or encoded (true).
+fn mixed(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32, encoded: bool) -> Image {
     let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
     if a.w == 0 || a.h == 0 || (a.w, a.h) != (b.w, b.h) {
         return if p < 0.5 { a.clone() } else { b.clone() };
@@ -60,7 +65,7 @@ pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32
     if let Some(img) = legacy::apply(e, a, b, p) {
         return img;
     }
-    let t = Tx { e, a, b, p, w: a.w, h: a.h, wf: a.w as f32, hf: a.h as f32, scale: if scale.is_finite() && scale > 0.0 { scale } else { 1.0 } };
+    let t = Tx { e, a, b, p, w: a.w, h: a.h, wf: a.w as f32, hf: a.h as f32, scale: if scale.is_finite() && scale > 0.0 { scale } else { 1.0 }, encoded };
     let id = e.effect.as_str();
     dissolve::apply(id, &t)
         .or_else(|| wipe::apply(id, &t))
@@ -74,7 +79,8 @@ pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32
 /// [`apply_scaled`] for a sequence that composites without linear colour (#4477): the pictures are
 /// mixed as encoded, with the Rec. 709 curve FilmCraft decodes and encodes them with, so a dissolve
 /// is linear in the signal, as in Premiere with Composite in Linear Color off. The colour is
-/// converted unpremultiplied; alpha mixes as it does in linear light. Film Dissolve mixes in its own
+/// converted unpremultiplied; alpha mixes as it does in linear light, and colour parameters (Dip to
+/// Color, border colours) are used as encoded too. Film Dissolve mixes in its own
 /// gamma space either way, so it renders as in a linear sequence.
 pub fn apply_scaled_encoded(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
     if matches!(e.effect.as_str(), "film_dissolve" | "film_dissolve_legacy") {
@@ -82,8 +88,8 @@ pub fn apply_scaled_encoded(e: &EffectInstance, a: &Image, b: &Image, p: f32, sc
     }
     let encode = |v: f32| filmcraft_color::from_linear(v, filmcraft_color::Transfer::Bt709);
     let decode = |v: f32| filmcraft_color::to_linear(v, filmcraft_color::Transfer::Bt709);
-    let mixed = apply_scaled(e, &recoded(a, encode), &recoded(b, encode), p, scale);
-    recoded(&mixed, decode)
+    let out = mixed(e, &recoded(a, encode), &recoded(b, encode), p, scale, true);
+    recoded(&out, decode)
 }
 
 /// `img` with `f` applied to every pixel's unpremultiplied colour.
@@ -123,6 +129,9 @@ pub(crate) struct Tx<'a> {
     pub wf: f32,
     pub hf: f32,
     pub scale: f32,
+    /// The layers are encoded, not linear light (Composite in Linear Color off, #4477): colour
+    /// parameters are used as stored.
+    pub encoded: bool,
 }
 
 impl Tx<'_> {
@@ -151,13 +160,15 @@ impl Tx<'_> {
     pub fn flag(&self, id: &str) -> bool {
         matches!(self.value(id), Some(ParamValue::Bool(true)))
     }
-    /// A colour parameter as opaque linear-light RGBA (colour params are stored display-encoded).
+    /// A colour parameter as opaque RGBA in the layers' space: linear light, or as stored
+    /// (display-encoded) when the layers are encoded.
     pub fn color(&self, id: &str) -> [f32; 4] {
         let c = match self.value(id) {
             Some(ParamValue::Color(c)) => c,
             _ => [1.0; 4],
         };
-        let l = |v: f32| filmcraft_color::srgb_to_linear(v.clamp(0.0, 1.0));
+        let encoded = self.encoded;
+        let l = |v: f32| if encoded { v.clamp(0.0, 1.0) } else { filmcraft_color::srgb_to_linear(v.clamp(0.0, 1.0)) };
         [l(c[0]), l(c[1]), l(c[2]), 1.0]
     }
     /// The `center` point in working pixels (NaN components = frame centre).
