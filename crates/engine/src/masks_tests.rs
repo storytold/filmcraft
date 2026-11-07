@@ -159,6 +159,50 @@ fn merged_drag_is_one_undo_step_and_project_round_trips() {
     assert!(s.execute("masks.add", json!({"effect": "motion"})).is_err(), "Motion has no masks");
 }
 
+/// A colour range mask: created over the whole frame, its parameters set like any mask
+/// parameter, added to and removed from a mask with `masks.set`, undoable and saved.
+#[test]
+fn color_range_mask_limits_an_effect_to_a_colour() {
+    let (mut s, clip) = demo();
+    let plain = s.render_program(0.25).unwrap();
+    s.execute("effects.apply", json!({"effect": "invert"})).unwrap();
+    let inverted = s.render_program(0.25).unwrap();
+    let r = s.execute("masks.add", json!({"effect": "invert", "shape": "color"})).unwrap();
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][0]["colorRange"]["color_hue_range"], 30.0);
+    assert_eq!(l["masks"][0]["feather"], 0.0);
+    // an empty range (Luma Min above Luma Max) covers nothing; inverted, it covers everything
+    let set = |s: &mut Session, k: &str, v: f64| {
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": "invert", "mask": r["mask"], "param": k, "value": v})).unwrap()
+    };
+    set(&mut s, "color_luma_min", 100.0);
+    set(&mut s, "color_luma_max", 0.0);
+    let none = s.render_program(0.25).unwrap();
+    for (fx, fy) in [(0.1, 0.1), (0.5, 0.5), (0.9, 0.8)] {
+        assert!(dist(px(&none, fx, fy), px(&plain, fx, fy)) < 1e-4, "({fx}, {fy})");
+    }
+    s.execute("masks.set", json!({"inverted": true})).unwrap();
+    let all = s.render_program(0.25).unwrap();
+    for (fx, fy) in [(0.1, 0.1), (0.5, 0.5), (0.9, 0.8)] {
+        assert!(dist(px(&all, fx, fy), px(&inverted, fx, fy)) < 1e-4, "({fx}, {fy})");
+    }
+    let bytes = filmcraft_format::encode(&s.project, false);
+    assert_eq!(&filmcraft_format::decode(&bytes).unwrap().project, &*s.project);
+    // removing the range leaves the whole-frame shape, inverted: nothing
+    s.execute("masks.set", json!({"colorRange": false})).unwrap();
+    assert!(s.execute("masks.list", json!({})).unwrap()["masks"][0]["colorRange"].is_null());
+    assert!(
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": "invert", "mask": 0, "param": "color_hue", "value": 10.0})).is_err(),
+        "no colour range, no colour parameters"
+    );
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.execute("masks.list", json!({})).unwrap()["masks"][0]["colorRange"]["color_luma_min"], 100.0);
+    // any mask takes a colour range
+    s.execute("masks.add", json!({"effect": "invert", "shape": "ellipse"})).unwrap();
+    s.execute("masks.set", json!({"colorRange": true})).unwrap();
+    assert_eq!(s.execute("masks.list", json!({})).unwrap()["masks"][1]["colorRange"]["color_luma_max"], 95.0);
+}
+
 // ---------------------------------------------------------------- tracking
 
 /// A 320×240 24 fps clip of a textured disc moving under a known similarity motion over a static

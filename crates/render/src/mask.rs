@@ -19,8 +19,12 @@
 //! Masks combine top to bottom with their [`MaskMode`]. All of this runs in linear light on the
 //! premultiplied working image: a masked effect is `lerp(original, effected, coverage)` per
 //! channel, an opacity mask scales the layer's premultiplied pixels.
+//!
+//! A mask with a colour range multiplies `c` (before inversion) by the HSL Secondary key of the
+//! picture the effect receives (display-encoded, as Lumetri keys an SDR picture), Gaussian
+//! blurred by Blur (σ up to 20 px at full resolution). Its colour range runs on the CPU only.
 
-use filmcraft_project::{EffectInstance, Mask, MaskMode};
+use filmcraft_project::{ColorRange, EffectInstance, Mask, MaskMode};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
 
@@ -87,18 +91,20 @@ fn seg_dist2(px: f32, py: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
     ex * ex + ey * ey
 }
 
-/// Coverage of one mask for row `y` into `out` (length = width). Reference per-row algorithm:
-/// winding from the row's sorted edge crossings, distance only against edges within the band.
-fn mask_row(m: &FlatMask, y: usize, out: &mut [f32]) {
+/// Coverage of one mask for row `y` into `out` (length = width), times its colour key row if it
+/// has one. Reference per-row algorithm: winding from the row's sorted edge crossings, distance
+/// only against edges within the band.
+fn mask_row(m: &FlatMask, y: usize, out: &mut [f32], key: Option<&[f32]>) {
     let n = m.pts.len();
     let py = y as f32 + 0.5;
     let b = band(m);
-    let value = |sd: f32| {
-        let c = falloff(sd + m.expansion, m.feather);
+    let value = |sd: f32, x: usize| {
+        let c = falloff(sd + m.expansion, m.feather) * key.map_or(1.0, |k| k.get(x).copied().unwrap_or(0.0));
         m.opacity * if m.inverted { 1.0 - c } else { c }
     };
     if n < 3 {
-        out.fill(value(-b));
+        let v = value(-b, 0);
+        out.fill(v);
         return;
     }
     // crossings of the scanline with the polygon edges (x, direction)
@@ -134,13 +140,18 @@ fn mask_row(m: &FlatMask, y: usize, out: &mut [f32]) {
             }
         }
         let d = d2.sqrt();
-        *o = value(if inside { d } else { -d });
+        *o = value(if inside { d } else { -d }, x);
     }
 }
 
 /// Combined coverage of `masks` over a `w`×`h` image, or `None` when there is no active mask
 /// (the effect applies everywhere).
 pub fn coverage(masks: &[FlatMask], w: usize, h: usize) -> Option<Vec<f32>> {
+    keyed(masks, &[], w, h)
+}
+
+/// [`coverage`] with `keys[i]`, when present, the colour key (`w`×`h`) of `masks[i]`.
+fn keyed(masks: &[FlatMask], keys: &[Option<Vec<f32>>], w: usize, h: usize) -> Option<Vec<f32>> {
     let first = masks.iter().find(|m| m.mode != MaskMode::None)?;
     let start = first.mode.start();
     let mut acc = vec![start; w * h];
@@ -149,8 +160,9 @@ pub fn coverage(masks: &[FlatMask], w: usize, h: usize) -> Option<Vec<f32>> {
     }
     acc.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let mut tmp = vec![0.0f32; w];
-        for m in masks.iter().filter(|m| m.mode != MaskMode::None) {
-            mask_row(m, y, &mut tmp);
+        for (i, m) in masks.iter().enumerate().filter(|(_, m)| m.mode != MaskMode::None) {
+            let key = keys.get(i).and_then(Option::as_deref).map(|k| k.get(y * w..(y + 1) * w).unwrap_or(&[]));
+            mask_row(m, y, &mut tmp, key);
             for (a, v) in row.iter_mut().zip(&tmp) {
                 *a = m.mode.combine(*a, *v).clamp(0.0, 1.0);
             }
@@ -159,12 +171,52 @@ pub fn coverage(masks: &[FlatMask], w: usize, h: usize) -> Option<Vec<f32>> {
     Some(acc)
 }
 
-/// Coverage of an effect's masks on a working image (`px_scale` working px per clip px).
+/// Coverage of an effect's mask shapes on a working image (`px_scale` working px per clip px);
+/// colour ranges need the picture ([`picture_coverage`]) and are left out.
 pub fn effect_coverage(masks: &[Mask], t: Tick, px_scale: f32, w: usize, h: usize) -> Option<Vec<f32>> {
     if masks.is_empty() {
         return None;
     }
     coverage(&prepare(masks, t, px_scale), w, h)
+}
+
+/// Coverage of an effect's masks, colour ranges keyed on `src` (the picture the effect receives).
+pub fn picture_coverage(masks: &[Mask], t: Tick, px_scale: f32, src: &Image) -> Option<Vec<f32>> {
+    if masks.is_empty() {
+        return None;
+    }
+    let keys: Vec<Option<Vec<f32>>> =
+        masks.iter().filter(|m| m.mode != MaskMode::None).map(|m| m.color.as_deref().map(|c| color_key(src, c, t, px_scale))).collect();
+    keyed(&prepare(masks, t, px_scale), &keys, src.w, src.h)
+}
+
+/// The colour key (0…1 per pixel) of a colour range on `src`. Values from the project are
+/// clamped to the parameter ranges; a non-number takes the default.
+pub fn color_key(src: &Image, c: &ColorRange, t: Tick, px_scale: f32) -> Vec<f32> {
+    let v = |p: &filmcraft_project::Param, lo: f64, hi: f64, def: f64| {
+        let x = p.f64_at(t);
+        (if x.is_finite() { x.clamp(lo, hi) } else { def }) as f32
+    };
+    let hue = c.hue.f64_at(t);
+    let hc = (if hue.is_finite() { hue.rem_euclid(360.0) } else { 0.0 }) as f32 / 360.0;
+    let hr = v(&c.hue_range, 1.0, 180.0, 30.0) / 360.0;
+    let (smin, lmin, lmax) = (v(&c.sat_min, 0.0, 100.0, 10.0) / 100.0, v(&c.luma_min, 0.0, 100.0, 5.0) / 100.0, v(&c.luma_max, 0.0, 100.0, 95.0) / 100.0);
+    let soft = (v(&c.soften, 0.0, 100.0, 20.0) / 100.0 * 0.3).max(0.01);
+    let key: Vec<f32> = src
+        .px
+        .par_chunks(4)
+        .map(|p| {
+            if p[3] <= 1e-6 {
+                return 0.0;
+            }
+            let u = crate::effects::enc(Image::unpremul([p[0], p[1], p[2], p[3]])).map(|q| if q.is_finite() { q.clamp(0.0, 1.0) } else { 0.0 });
+            let k = crate::effects::hsl_key(u, hc, hr, smin, lmin, lmax, soft);
+            if k.is_finite() { k.clamp(0.0, 1.0) } else { 0.0 }
+        })
+        .collect();
+    let scale = if px_scale.is_finite() { px_scale.max(0.0) } else { 1.0 };
+    let sigma = v(&c.blur, 0.0, 100.0, 0.0) / 100.0 * 20.0 * scale;
+    if sigma >= 0.3 { crate::vfx::blur_plane(&key, src.w, src.h, sigma) } else { key }
 }
 
 /// `img = lerp(original, img, cov)` on premultiplied pixels.
@@ -191,7 +243,7 @@ pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::Fx
         crate::effects::apply(img, e, cx);
         return;
     }
-    let Some(cov) = effect_coverage(&e.masks, cx.t, cx.px_scale, img.w, img.h) else {
+    let Some(cov) = picture_coverage(&e.masks, cx.t, cx.px_scale, img) else {
         crate::effects::apply(img, e, cx);
         return;
     };
@@ -200,10 +252,12 @@ pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::Fx
     mix(img, &original, &cov);
 }
 
-/// Apply the masks of an item's Opacity effect to its layer (before Motion), if any.
-pub fn apply_opacity_masks(img: &mut Image, item: &filmcraft_project::TrackItem, t: Tick, px_scale: f32) {
+/// Apply the masks of an item's Opacity effect to its layer (before Motion), if any. Colour
+/// ranges key on `key_src`, or on the layer itself when it is `None`.
+pub fn apply_opacity_masks(img: &mut Image, key_src: Option<&Image>, item: &filmcraft_project::TrackItem, t: Tick, px_scale: f32) {
     let Some(op) = item.effect("opacity").filter(|e| e.enabled && !e.masks.is_empty()) else { return };
-    if let Some(cov) = effect_coverage(&op.masks, t, px_scale, img.w, img.h) {
+    let src = key_src.filter(|s| (s.w, s.h) == (img.w, img.h)).unwrap_or(&*img);
+    if let Some(cov) = picture_coverage(&op.masks, t, px_scale, src) {
         scale_by(img, &cov);
     }
 }
@@ -320,6 +374,114 @@ mod tests {
                 let r = coverage_at(&flat, x as f32 + 0.5, y as f32 + 0.5).unwrap();
                 assert!((r - c[y * w + x]).abs() < 1e-5, "({x},{y}) {r} vs {}", c[y * w + x]);
             }
+        }
+    }
+
+    /// Left half red, right half blue (opaque), `w`×`h`.
+    fn red_blue(w: usize, h: usize) -> Image {
+        let mut img = Image::new(w, h);
+        let (red, blue) = (crate::effects::dec([0.8, 0.1, 0.1]), crate::effects::dec([0.1, 0.2, 0.8]));
+        for y in 0..h {
+            for x in 0..w {
+                let c = if x < w / 2 { red } else { blue };
+                img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], 1.0]);
+            }
+        }
+        img
+    }
+
+    /// A colour range mask (default range: red) whose shape covers a `w`×`h` frame and well past it.
+    fn whole(w: f64, h: f64) -> Mask {
+        let mut m = mask(MaskPath::rect(-w, -h, 2.0 * w, 2.0 * h), 0.0);
+        m.color = Some(Box::default());
+        m
+    }
+
+    /// A colour range keeps its mask to matching pixels: alone, inverted, on another hue, inside a
+    /// shape, intersected with a plain shape, and softened by Blur; shapes alone ignore it.
+    #[test]
+    fn color_range_limits_a_mask_to_matching_pixels() {
+        let img = red_blue(20, 10);
+        let at = |c: &[f32], x: usize, y: usize| c[y * 20 + x];
+        // the default range is centred on red
+        let m = whole(20.0, 10.0);
+        let c = picture_coverage(std::slice::from_ref(&m), Tick(0), 1.0, &img).unwrap();
+        assert_eq!((at(&c, 2, 5), at(&c, 17, 5)), (1.0, 0.0));
+        // the shapes alone ignore the colour range
+        assert_eq!(at(&effect_coverage(std::slice::from_ref(&m), Tick(0), 1.0, 20, 10).unwrap(), 17, 5), 1.0);
+        // inverted: everything but the range
+        let mut inv = m.clone();
+        inv.inverted = true;
+        let c = picture_coverage(&[inv], Tick(0), 1.0, &img).unwrap();
+        assert_eq!((at(&c, 2, 5), at(&c, 17, 5)), (0.0, 1.0));
+        // a blue range
+        let mut b = m.clone();
+        b.param_mut("color_hue").unwrap().value = filmcraft_project::ParamValue::Float(225.0);
+        let c = picture_coverage(&[b], Tick(0), 1.0, &img).unwrap();
+        assert_eq!((at(&c, 2, 5), at(&c, 17, 5)), (0.0, 1.0));
+        // a shape with a colour range: the top of the frame, red only
+        let mut top = mask(MaskPath::rect(-20.0, -10.0, 40.0, 5.0), 0.0);
+        top.color = Some(Box::default());
+        let c = picture_coverage(&[top], Tick(0), 1.0, &img).unwrap();
+        assert_eq!((at(&c, 2, 2), at(&c, 2, 8), at(&c, 17, 2)), (1.0, 0.0, 0.0));
+        // combined with a plain shape: the left quarter, intersected with red
+        let mut quarter = mask(MaskPath::rect(0.0, -10.0, 5.0, 20.0), 0.0);
+        quarter.mode = MaskMode::Add;
+        let mut red = m.clone();
+        red.mode = MaskMode::Intersect;
+        let c = picture_coverage(&[quarter, red], Tick(0), 1.0, &img).unwrap();
+        assert_eq!((at(&c, 2, 5), at(&c, 7, 5), at(&c, 17, 5)), (1.0, 0.0, 0.0));
+        // Blur softens the key edge
+        let mut soft = m;
+        soft.param_mut("color_blur").unwrap().value = filmcraft_project::ParamValue::Float(10.0);
+        let c = picture_coverage(&[soft], Tick(0), 1.0, &img).unwrap();
+        assert!(at(&c, 9, 5) < 1.0 && at(&c, 9, 5) > 0.5 && at(&c, 10, 5) > 0.0 && at(&c, 10, 5) < 0.5, "{} {}", at(&c, 9, 5), at(&c, 10, 5));
+    }
+
+    /// A masked effect with a colour range changes only the matching pixels.
+    #[test]
+    fn color_range_masks_an_effect() {
+        let img = red_blue(8, 4);
+        let mut e = filmcraft_project::find_effect("black_white").unwrap().instance();
+        e.masks.push(whole(8.0, 4.0));
+        let cx = crate::effects::FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "01:00:00:00",
+            clip_name: "clip",
+            project: None,
+            env: None,
+            frame_rate: 25.0,
+            working: Default::default(),
+        };
+        let mut out = img.clone();
+        apply_effect(&mut out, &e, &cx);
+        let p = out.get(1, 1);
+        assert!((p[0] - p[1]).abs() < 1e-4 && (p[1] - p[2]).abs() < 1e-4, "red turns grey: {p:?}");
+        assert_eq!(out.get(6, 1), img.get(6, 1), "blue stays");
+    }
+
+    /// Hostile colour range values, scales and pictures: no panic, coverage in 0…1.
+    #[test]
+    fn color_range_survives_hostile_input() {
+        let mut img = red_blue(5, 3);
+        img.px[0] = f32::NAN;
+        img.px[7] = 0.0;
+        img.px[5] = f32::INFINITY;
+        for id in filmcraft_project::mask::COLOR_PARAMS {
+            for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e300, 1e300] {
+                let mut m = whole(5.0, 3.0);
+                m.param_mut(id).unwrap().value = filmcraft_project::ParamValue::Float(v);
+                for s in [1.0, 0.0, 1e6] {
+                    let c = picture_coverage(std::slice::from_ref(&m), Tick(0), s, &img).unwrap();
+                    assert!(c.iter().all(|q| (0.0..=1.0).contains(q)), "{id}={v} at {s}: {c:?}");
+                }
+            }
+        }
+        for (w, h) in [(0, 0), (1, 1), (0, 4)] {
+            let c = picture_coverage(&[whole(1.0, 1.0)], Tick(0), 1.0, &Image::new(w, h)).unwrap();
+            assert_eq!(c.len(), w * h);
         }
     }
 }
