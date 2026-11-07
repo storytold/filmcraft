@@ -103,7 +103,8 @@ fn negative_contrast_is_continuous_across_hdr_white_in_pq_and_hlg() {
             let k = 1.0 + contrast as f32 / 100.0;
             let want: Vec<f32> = src_signals.iter().map(|&q| gs.nits_of_signal(if q > 1.0 { top + (q - 1.0) } else { 0.5 + (q - 0.5) * k })).collect();
             close(&got, &want, 3e-3);
-            assert!(got[0] < got[1] && got[1] < got[2] && got[2] < got[3], "{working:?} contrast {contrast}: non-monotonic {got:?}");
+            let below_ok = if k > 0.0 { got[0] < got[1] } else { got[0] <= got[1] };
+            assert!(below_ok && got[1] < got[2] && got[2] < got[3], "{working:?} contrast {contrast}: non-monotonic {got:?}");
         }
     }
 }
