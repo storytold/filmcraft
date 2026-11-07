@@ -37,6 +37,8 @@ impl FilmcraftApp {
     /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
     /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
     fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        // Only drops made while editing may also place media on the Timeline.
+        let started_in_edit = self.ui.mode == crate::state::Mode::Edit;
         let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
         if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
             // one project is open at a time: the rest of the drop is not imported into either
@@ -72,6 +74,7 @@ impl FilmcraftApp {
             self.ui.mode = crate::state::Mode::Edit;
         }
         if let Ok(v) = imported
+            && started_in_edit
             && let Some((pos, viewport)) = pointer
             && self.session.prefs.timeline.drop_import_to_timeline
         {

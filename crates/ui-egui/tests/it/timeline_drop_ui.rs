@@ -181,6 +181,23 @@ fn with_drop_import_off_empty_timeline_does_not_create_a_sequence() {
 }
 
 #[test]
+fn home_drop_does_not_place_on_the_timeline_when_it_opens_edit() {
+    let mut h = empty_harness();
+    // Use a coordinate that the Timeline occupies after leaving Home. A Home drop
+    // must import the media without becoming a Timeline placement on the same frame.
+    let at = control_rect(&h, "panel.Timeline").center();
+    h.state_mut().ui.mode = filmcraft_ui_egui::state::Mode::Import;
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().ui.mode, filmcraft_ui_egui::state::Mode::Import);
+    drop_at(&mut h, at, &still("drop_still_from_home.png"));
+    assert_eq!(h.state().ui.mode, filmcraft_ui_egui::state::Mode::Edit);
+    assert_eq!(h.state().session.project.items.len(), 1, "the still was imported to the bin");
+    assert!(h.state().session.active_sequence().is_none(), "the Home drop must not create a sequence");
+}
+
+#[test]
 fn with_drop_import_off_the_file_is_only_imported() {
     let mut h = harness();
     h.state_mut().session.prefs.timeline.drop_import_to_timeline = false;
