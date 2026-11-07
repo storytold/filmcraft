@@ -229,6 +229,13 @@ fn shortcuts_give_the_general_paths_bits() {
     check("banner at zero opacity", &[cam(), Spec { opacity: 0.0, ..ban(bar) }], 1.0);
     // not placed as it is, or with effects: the general path
     check("moved camera", &[Spec { motion_scale: Some(50.0), ..cam() }, ban(bar)], 1.0);
+    // enlarged: only the window the resampler reads is converted
+    check("enlarged camera", &[Spec { motion_scale: Some(177.78), ..cam() }, ban(bar)], 1.0);
+    check("enlarged camera at half scale", &[Spec { motion_scale: Some(177.78), ..cam() }, ban(corner)], 0.5);
+    check("camera enlarged past its edges", &[Spec { motion_scale: Some(250.0), ..cam() }, ban(bar)], 1.0);
+    check("enlarged banner over the camera", &[cam(), Spec { motion_scale: Some(140.0), ..ban(corner) }], 1.0);
+    check("enlarged card", &[Spec { motion_scale: Some(130.0), ..crd() }, ban(bar)], 1.0);
+    check("enlarged sticker over the camera", &[cam(), Spec { motion_scale: Some(150.0), ..Spec::new(sticker(W, H, corner)) }], 1.0);
     check("scaled banner", &[cam(), Spec { motion_scale: Some(60.0), ..ban(corner) }], 1.0);
     check("camera with an effect", &[Spec { effect: Some("brightness_contrast"), ..cam() }, ban(bar)], 1.0);
     check("banner with an effect", &[cam(), Spec { effect: Some("gaussian_blur"), ..ban(bar) }], 1.0);
@@ -286,8 +293,12 @@ fn which_layers_take_a_shortcut() {
         Some(Layer::Region { image, .. }) => assert_eq!((image.w, image.h, image.px.len()), (0, 0, 0)),
         _ => panic!("a transparent banner is an empty region"),
     }
-    // an effect or a move keeps the clip on the general path
-    for spec in [Spec { effect: Some("brightness_contrast"), ..Spec::new(camera(W, H)) }, Spec { motion_scale: Some(50.0), ..Spec::new(camera(W, H)) }] {
+    // an enlarged camera is converted only in the window it shows, a whole layer that is not opaque
+    assert!(
+        matches!(first_layer(Spec { motion_scale: Some(177.78), ..Spec::new(camera(W, H)) }), Some(Layer::Full { opaque: false, ref image, .. }) if (image.w, image.h) == (W, H))
+    );
+    // an effect or a strong shrink keeps the clip on the general path
+    for spec in [Spec { effect: Some("brightness_contrast"), ..Spec::new(camera(W, H)) }, Spec { motion_scale: Some(40.0), ..Spec::new(camera(W, H)) }] {
         let (p, seq, map) = scene(&[spec]);
         let s = p.sequence(seq).expect("sequence");
         assert!(matches!(
