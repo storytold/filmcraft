@@ -1041,3 +1041,17 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn a_host_budget_is_a_hard_cap() {
+    // A player sets a small window (e.g. 16 MB) around the playhead.
+    let mut c = GopCache::new(None);
+    c.budget = 16 << 20;
+    c.hard_cap = true;
+    assert_eq!(c.cache_budget(1), 16 << 20);
+    // Large frames would reserve 64 copies without the cap.
+    assert_eq!(c.cache_budget(4 << 20), 16 << 20);
+    // The built-in ceiling still wins over a larger host budget.
+    c.budget = usize::MAX;
+    assert_eq!(c.cache_budget(1), FRAME_CACHE_CEILING);
+}
