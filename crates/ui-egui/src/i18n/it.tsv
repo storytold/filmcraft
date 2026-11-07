@@ -454,7 +454,7 @@
 	Replace	Sostituisci
 	Yes	Sì
 	No	No
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file o le cartelle in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
 	Browse files…	Sfoglia file…
 	Movies, audio and stills from disk	Filmati, audio e immagini fisse dal disco
 	Demo footage	Filmati demo
@@ -3460,6 +3460,7 @@
 	Clip Speed / Duration	Velocità / durata clip
 	Speed:	Velocità:
 	Reverse Speed	Velocità inversa
+	Maintain Audio Pitch	Mantieni intonazione audio
 	Ripple Edit, Shifting Trailing Clips	Modifica a scorrimento, sposta le clip successive
 	About	Informazioni
 	Contributors	Contributori
@@ -3695,3 +3696,13 @@
 	Previous	Precedente
 	Next	Successivo
 	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Colore a 10 bit
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Ogni fotogramma è un fotogramma chiave (facile da montare, file più grandi)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bit 4:2:0) alla dimensione della sequenza, qualità costante CRF 16, AAC 320 kbps; un master a 10 bit
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, ogni fotogramma è un fotogramma chiave), CRF 12, AAC 320 kbps; un intermedio facile da montare

@@ -13,6 +13,8 @@ use crate::{Services, Session};
 #[derive(Default)]
 struct FakeFs {
     dirs: Vec<String>,
+    /// Folders that are listed in their parent but cannot be listed themselves.
+    denied: Vec<String>,
     files: Mutex<BTreeMap<String, Vec<u8>>>,
 }
 
@@ -39,6 +41,7 @@ impl FakeFs {
                 .iter()
                 .map(|d| d.to_string())
                 .collect(),
+            denied: Vec::new(),
             files: Mutex::new(files),
         }
     }
@@ -58,6 +61,9 @@ impl Services for FakeFs {
     fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<DirEntry>>> {
         if !self.dirs.iter().any(|d| d == dir) {
             return Some(Err(std::io::Error::new(std::io::ErrorKind::NotFound, dir.to_string())));
+        }
+        if self.denied.iter().any(|d| d == dir) {
+            return Some(Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied")));
         }
         let prefix = if dir == "/" { "/".to_string() } else { format!("{dir}/") };
         let direct = |p: &str| p.strip_prefix(&prefix).filter(|r| !r.is_empty() && !r.contains('/')).map(str::to_string);
@@ -385,4 +391,45 @@ fn every_interchange_document_the_importer_reads_is_listed() {
     assert_eq!(names(&l), ["Selects", "cut.aaf", "edit.edl", "mix.omf"]);
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "aaf"})).unwrap();
     assert_eq!(names(&l), ["Selects", "cut.aaf"]);
+}
+
+/// Files dropped together with a folder that holds no media import, and the folder is reported
+/// rather than silently skipped (#2632).
+#[test]
+fn importing_files_with_an_empty_folder_reports_the_folder() {
+    let mut fs = FakeFs::new();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    fs.dirs.extend(["/Shoot", "/Shoot/Empty"].map(String::from));
+    fs.files.get_mut().unwrap().insert("/Shoot/slate.wav".into(), wav);
+    let mut s = Session::new(Arc::new(fs));
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot/slate.wav", "/Shoot/Empty"], "imageSequence": false})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 1, "{r}");
+    let errors = r["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e.as_str().unwrap().contains("/Shoot/Empty: no media files")), "{r}");
+}
+
+/// A dropped folder whose sub-folder cannot be listed imports what it can and reports the
+/// sub-folder, rather than silently leaving its media out (#2632).
+#[test]
+fn importing_a_folder_reports_a_sub_folder_it_cannot_list() {
+    let mut fs = FakeFs::new();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    fs.dirs.extend(["/Shoot", "/Shoot/Locked"].map(String::from));
+    fs.denied.push("/Shoot/Locked".into());
+    fs.files.get_mut().unwrap().insert("/Shoot/slate.wav".into(), wav);
+    let mut s = Session::new(Arc::new(fs));
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot"], "imageSequence": false})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 1, "{r}");
+    let errors = r["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e.as_str().unwrap().starts_with("/Shoot/Locked: ")), "{r}");
+}
+
+/// When none of the dropped files import, the error still names the folders without media.
+#[test]
+fn a_failed_file_import_still_reports_the_empty_folders() {
+    let mut fs = FakeFs::new();
+    fs.dirs.extend(["/Shoot", "/Shoot/Empty"].map(String::from));
+    let mut s = Session::new(Arc::new(fs));
+    let e = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot/missing.wav", "/Shoot/Empty"], "imageSequence": false})).unwrap_err();
+    assert!(e.to_string().contains("/Shoot/Empty: no media files"), "{e}");
 }

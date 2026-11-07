@@ -449,7 +449,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Opravdu chcete zahodit změny v souboru „{file}“?
 	Yes	Ano
 	No	Ne
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Přidejte média do projektu. Přetáhněte soubory kamkoli do okna nebo vyberte zdroj níže.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Přidejte média do projektu. Přetáhněte soubory nebo složky kamkoli do okna nebo vyberte zdroj níže.
 	Browse files…	Procházet soubory…
 	Movies, audio and stills from disk	Video, zvuk a statické obrázky z disku
 	Demo footage	Ukázkové záběry
@@ -3446,6 +3446,7 @@
 	Clip Speed / Duration	Rychlost / doba trvání klipu
 	Speed:	Rychlost:
 	Reverse Speed	Obrátit směr přehrávání
+	Maintain Audio Pitch	Zachovat výšku tónu
 	Ripple Edit, Shifting Trailing Clips	Úprava s posunem následujících klipů
 	About	O aplikaci
 	Contributors	Přispěvatelé
@@ -3769,3 +3770,13 @@
 
 # Control server status.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Ovládací server je vypnutý: FILMCRAFT_CONTROL_TOKEN musí obsahovat 64 náhodných šestnáctkových znaků (viz docs/control-protocol.md)
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10bitová barva
+	All Intra	Pouze intra
+	Every frame a keyframe (edit-friendly, larger files)	Každý snímek klíčový (vhodné pro střih, větší soubory)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10bitové 4:2:0) ve velikosti sekvence, konstantní kvalita CRF 16, AAC 320 kb/s; 10bitový master
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10bitové 4:2:0, každý snímek klíčový), CRF 12, AAC 320 kb/s; mezilehlý formát vhodný pro střih
