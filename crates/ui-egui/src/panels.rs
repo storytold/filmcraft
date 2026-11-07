@@ -378,7 +378,7 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             let scroll =
                 egui::ScrollArea::vertical().id_salt("panel-menu-scroll").max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
                     // a small window (a floated panel can be narrower than the menu) takes the menu at its width
-                    let width = ui.ctx().content_rect().width() - 16.0;
+                    let width = (ui.ctx().content_rect().width() - 16.0).min(360.0);
                     ui.set_min_width(190.0_f32.min(width.max(0.0)));
                     ui.set_max_width(width.max(0.0));
                     // the Timeline's tabs are its open sequences: Close Panel closes the active one and
