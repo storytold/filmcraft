@@ -62,7 +62,9 @@ and left in the original snapshot; unreadable records are skipped with a warning
 disabled clips (`ClipTrackItem/IsMuted`), generated media (black video, colour matte, bars and tone,
 transparent video, counting leader) by the four-character code Premiere stores as its file path,
 as FilmCraft generators that never pass the document-path policy or probe (a colour matte's colour
-is not read: it imports black, with a warning; unknown codes stay offline placeholders and are reported), exact tick ranges, constant positive speed, nested
+is not read: it imports black, with a warning; unknown codes stay offline placeholders and are reported), adjustment
+layers (a video clip whose `SubClip/MasterClip` has `IsAdjustmentLayer`, over generated black video) as
+one FilmCraft adjustment layer per master clip, exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, editable Motion scale/position/rotation,
 intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
 records without absolute timing retain clip-edge fades. Unknown effects remain
