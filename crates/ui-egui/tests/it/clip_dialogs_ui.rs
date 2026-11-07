@@ -431,17 +431,21 @@ fn scene_edit_detection_from_the_clip_menu_opens_the_dialog() {
 fn quitting_with_unsaved_changes_asks_to_save() {
     let mut d = Driver::new();
     d.edit();
-    // the close is cancelled and the prompt asks instead
+    // the close is cancelled, the window is raised/focused, and the modal prompt asks instead
     d.request_close();
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "the window must stay open");
+    assert!(d.sent(&egui::ViewportCommand::Focus), "the window must be raised and focused for the prompt");
     d.frames(2);
     assert!(d.has("quit.save") && d.has("quit.dontSave") && d.has("quit.cancel"));
+    assert!(d.harness.ctx.memory(|m| m.top_modal_layer().is_some()), "the save prompt is drawn as a modal");
     // Cancel keeps the app and the changes
     d.click("quit.cancel");
     assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.harness.ctx.memory(|m| m.top_modal_layer().is_none()));
     assert!(d.app().session.is_dirty() && !d.app().quit_confirmed);
     d.request_close();
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "asks again");
+    assert!(d.sent(&egui::ViewportCommand::Focus), "focuses again");
     d.frames(2);
     // Don't Save discards the changes (and their recovery snapshot) and closes the window
     d.click("quit.dontSave");

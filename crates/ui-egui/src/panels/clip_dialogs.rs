@@ -370,6 +370,23 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     });
 }
 
+fn draw_dialog(ctx: &egui::Context, id: egui::Id, title: &str, is_modal: bool, t: &crate::theme::Tokens, add_contents: impl FnOnce(&mut egui::Ui)) {
+    if is_modal {
+        egui::Modal::new(id).frame(super::file_dialogs::modal_frame(t)).show(ctx, |ui| {
+            ui.set_width(460.0);
+            egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
+                ui.label(RichText::new(title).size(18.0).strong().color(t.text));
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+                add_contents(ui);
+            });
+        });
+    } else {
+        egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, add_contents);
+    }
+}
+
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
@@ -391,7 +408,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
+    let is_save_prompt = matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open");
+    let tokens = app.tokens;
+    draw_dialog(ctx, id, title, is_save_prompt, &tokens, |ui| {
         let p = &mut d.params;
         let mut valid = true;
         match d.command.as_str() {
