@@ -571,4 +571,12 @@ fn zoom_in_and_out_keep_clips_before_the_playhead_in_view() {
         prev_scroll = scroll;
     }
     assert_eq!(prev_scroll, 0.0, "scroll returns to the start without waiting for minimum zoom");
+
+    // In an already-scrolled view, a playhead in the left half preserves its screen position when zooming.
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 20.0}}));
+    d.exec("playhead.set", json!({"time": 21 * 254_016_000_000_i64}));
+    d.frames(4);
+    d.ok("ui.menu.invoke", json!({"id": "view.zoomIn"}));
+    let (scroll, pps, ..) = d.view();
+    assert!(((21.0 - scroll) * pps - 100.0).abs() < 0.5, "playhead in left half of scrolled view stays at x=100: scroll={scroll}, pps={pps}");
 }

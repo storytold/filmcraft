@@ -1358,5 +1358,11 @@ mod waveform_zone_tests {
         assert!(v.target_scroll < 15.0, "clips before the playhead stay in view: {}", v.target_scroll);
         zoom_about(&mut v, 1.0 / 1.6, ph, width, seq_s);
         assert_eq!(v.target_scroll, 0.0, "zooming back out returns scroll to 0");
+
+        // In an already-scrolled view, a playhead in the left half preserves its screen x.
+        let mut scrolled = TimelineView { pps: 100.0, target_pps: 100.0, scroll: 35.0, target_scroll: 35.0, ..TimelineView::default() };
+        zoom_about(&mut scrolled, 1.6, 36.0, width, seq_s);
+        let scrolled_x = (36.0 - scrolled.target_scroll) * scrolled.target_pps;
+        assert!((scrolled_x - 100.0).abs() < 1e-4, "playhead in left half of scrolled view keeps x=100: {scrolled_x}");
     }
 }
