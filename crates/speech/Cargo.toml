@@ -22,13 +22,13 @@ filmcraft-project = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-candle-core = { version = "0.9", default-features = false, optional = true }
-candle-nn = { version = "0.9", default-features = false, optional = true }
+candle-core = { version = "0.11", default-features = false, optional = true }
+candle-nn = { version = "0.11", default-features = false, optional = true }
 rayon = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
-sha2 = "0.10"
+sha2 = "0.11"
 
 [[example]]
 name = "transcribe"
