@@ -196,3 +196,25 @@ fn opcode_lists_are_ignored_unless_asked_for() {
     assert!(same_bits(&filmcraft_dng::decode(&f).unwrap().rgba, &plain.rgba), "default ignores the lists");
     assert!(!same_bits(&decode(&f).unwrap().rgba, &plain.rgba), "apply_opcodes uses them");
 }
+
+#[test]
+fn process_develop_ignores_the_lists_of_its_params() {
+    // `Dng::params` reads every list; `process::develop` has no opt-in, so it must not apply them
+    let (w, h) = (16, 12);
+    let px = picture(w, h, 9);
+    let table: Vec<u8> = (0..4096u32).flat_map(|v| ((v / 2) as u16).to_be_bytes()).collect();
+    let list = encode(&[(7, 0, [u(&[0, 0, h as u32, w as u32, 0, 1, 1, 1, 4096]), table].concat())]);
+    let run = |bytes: &[u8]| {
+        let dng = Dng::parse(bytes).unwrap();
+        let (p, raw) = (dng.params().unwrap(), dng.raw().unwrap());
+        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let plain = filmcraft_dng::process::develop(&raw, &p, &[1.0; 3], &id).unwrap();
+        let on = ProcessOptions { apply_opcodes: true, ..Default::default() };
+        let used = filmcraft_dng::process::develop_with(&raw, &p, &[1.0; 3], &id, &on).unwrap();
+        (plain.rgba, used.rgba)
+    };
+    let (with_list, used) = run(&bayer(&px, w, h, &[(tags::OPCODE_LIST_2, list)]));
+    let (without, _) = run(&bayer(&px, w, h, &[]));
+    assert!(same_bits(&with_list, &without), "develop ignores the lists");
+    assert!(!same_bits(&used, &without), "develop_with applies them on request");
+}

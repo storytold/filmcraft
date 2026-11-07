@@ -214,7 +214,7 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     let need = c.w * c.h * l.samples_per_pixel;
     match l.compression {
         1 => unpack(c.bytes, c.w, c.h, l.samples_per_pixel, l.bits, big_endian),
-        34892 => lossy_jpeg(c.bytes, need),
+        34892 => lossy_jpeg(c.bytes, need, l.samples_per_pixel),
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
@@ -234,7 +234,7 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
 /// Decode a baseline (lossy) JPEG tile or strip (Compression 34892) into `need` 8-bit samples:
 /// one component (greyscale) or three (colour, converted from YCbCr by the JPEG decoder as the
 /// JPEG says), in raster order.
-fn lossy_jpeg(bytes: &[u8], need: usize) -> Result<Vec<u16>> {
+fn lossy_jpeg(bytes: &[u8], need: usize, spp: usize) -> Result<Vec<u16>> {
     use image::ImageDecoder;
     let bad = |_| Error::Malformed("lossy JPEG tile");
     let decode = || -> Result<Vec<u16>> {
@@ -244,6 +244,9 @@ fn lossy_jpeg(bytes: &[u8], need: usize) -> Result<Vec<u16>> {
             image::ColorType::Rgb8 => 3,
             c => return Err(Error::Unsupported(format!("lossy JPEG DNG tile of colour type {c:?}"))),
         };
+        if channels != spp {
+            return Err(Error::Malformed("lossy JPEG components differ from SamplesPerPixel"));
+        }
         let (w, h) = d.dimensions();
         let total = (w as usize).checked_mul(h as usize).and_then(|v| v.checked_mul(channels)).ok_or(Error::TooLarge)?;
         if total < need {
