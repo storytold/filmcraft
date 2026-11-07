@@ -6,7 +6,8 @@
 //! | `file.newSearchBin` | File ▸ New ▸ Search Bin (`project.searchBinItems`, `project.editSearchBin`, `project.deleteSearchBin`) |
 //! | `file.close` | File ▸ Close (⌘W): closes the active sequence |
 //! | `file.closeAllProjects` / `file.closeAllOtherProjects` | File ▸ Close All Projects / Close All Other Projects |
-//! | `file.saveAsTemplate` | File ▸ Save as Template… (`file.templates`, `file.newProjectFromTemplate`) |
+//! | `file.newProjectFromTemplate` | File ▸ New ▸ Project from Template… (`file.templates` lists them) |
+//! | `file.saveAsTemplate` | File ▸ Save as Template… |
 //! | `file.importFromMediaBrowser` | File ▸ Import from Media Browser (⌥⌘I) |
 //! | `file.exportSelectionProject` | File ▸ Export ▸ Selection as FilmCraft Project… |
 //! | `file.exportAle` | File ▸ Export ▸ Avid Log Exchange… |
@@ -92,7 +93,15 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         }),
         spec("file.saveAsTemplate", "Save as Template…", &["File"], None, r#"{"name":str?,"path":str?}"#, always, save_as_template),
         query("file.templates", "List Project Templates", &[], None, "{}", always, list_templates),
-        spec("file.newProjectFromTemplate", "New Project from Template", &[], None, r#"{"template":name|path,"name":str?}"#, always, new_from_template),
+        spec(
+            "file.newProjectFromTemplate",
+            "Project from Template…",
+            &["File", "New"],
+            None,
+            r#"{"template":name|path,"name":str?,"force":bool?}"#,
+            always,
+            new_from_template,
+        ),
         spec(
             "file.importFromMediaBrowser",
             "Import from Media Browser",
@@ -226,6 +235,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
         c.menu = &["File", "Project Settings"];
     }
     let layout: Vec<(At, Vec<&'static str>)> = vec![
+        (At::After("file.newProject"), vec!["file.newProjectFromTemplate"]),
         (At::After("file.newBinFromSelection"), vec!["file.newSearchBin"]),
         (At::Before("file.closeProject"), vec!["file.close"]),
         (At::After("file.closeProject"), vec!["file.closeAllProjects", "file.closeAllOtherProjects"]),
