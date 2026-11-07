@@ -1,9 +1,10 @@
-//! ProRes frame encoding (progressive) with per-slice quantiser rate control.
+//! ProRes frame encoding (progressive, or interlaced as two field pictures) with per-slice
+//! quantiser rate control.
 
 use crate::bits::{Counter, Sink, Writer};
 use crate::dct::fdct8x8;
 use crate::header::{FRAME_ID, FrameHeader, PictureHeader, row_slice_widths};
-use crate::tables::{AC_ROUND, DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_PROGRESSIVE, qscale};
+use crate::tables::{AC_ROUND, DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, ColorInfo, Error, Frame, Interlace, Profile, Result};
 
 /// Encoder configuration.
@@ -25,6 +26,9 @@ pub struct EncoderConfig {
     pub threads: bool,
     /// Four-character encoder identifier written into the frame header.
     pub encoder_id: [u8; 4],
+    /// Progressive frames (the default), or interlaced: each frame coded as two field pictures,
+    /// the first coded one the temporally first field (top: the even lines, bottom: the odd lines).
+    pub interlace: Interlace,
 }
 
 impl EncoderConfig {
@@ -41,11 +45,12 @@ impl EncoderConfig {
             encode_alpha: true,
             threads: true,
             encoder_id: *b"fmcr",
+            interlace: Interlace::Progressive,
         }
     }
 }
 
-/// ProRes encoder for one stream of same-sized progressive frames.
+/// ProRes encoder for one stream of same-sized frames.
 #[derive(Debug, Clone)]
 pub struct Encoder {
     cfg: EncoderConfig,
@@ -91,37 +96,43 @@ impl Encoder {
     pub fn encode_with(&mut self, frame: &Frame, backend: Option<&mut dyn SliceBackend>) -> Result<(Vec<u8>, bool)> {
         let with_alpha = self.validate(frame)?;
         let jobs = self.slice_jobs();
-        let src = Source::new(&self.cfg, frame, with_alpha);
+        let srcs = Source::pictures(&self.cfg, frame, with_alpha);
         if let Some(backend) = backend
-            && let Some((out, qg)) = self.encode_on_backend(&src, backend, &jobs)
+            && let Some((out, qg)) = self.encode_on_backend(frame, &srcs, backend, &jobs)
         {
             self.last_q = qg;
             return Ok((out, true));
         }
         let threads = self.cfg.threads;
-        let prepared: Vec<SliceData> = par_map(threads, &jobs, |j| prepare_slice(&src, j.mb_x as usize, j.mb_y as usize, j.mbs as usize));
+        let prepared = prepare_slices(threads, &srcs, &jobs).ok_or(Error::Invalid("slice outside the frame's pictures"))?;
         let limits: Vec<u64> = prepared.iter().map(SliceData::limit_bits).collect();
-        let budget = frame_budget(prepared.len(), slice_header_size(with_alpha), src.bits_per_mb, src.mb_count());
+        let budget = frame_budget(prepared.len(), slice_header_size(with_alpha), self.bits_per_mb(), &jobs, srcs.len());
         let mut bits_at = |q: u8| Some(par_map(threads, &prepared, |sd| slice_bits(sd, q)));
         let (qs, qg) = choose_quantisers(budget, &limits, self.last_q, &mut bits_at).ok_or(Error::Invalid("rate control failed"))?;
         self.last_q = qg;
         let items: Vec<(&SliceData, u8)> = prepared.iter().zip(qs).collect();
         let slices: Option<Vec<Vec<u8>>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q)).into_iter().collect();
         let slices = slices.ok_or(Error::Invalid("slice larger than its 16-bit size field"))?;
-        Ok((self.assemble_frame(&slices, with_alpha)?, false))
+        Ok((self.assemble_frame(&slices, with_alpha, srcs.len())?, false))
     }
 
-    /// The slices of a frame of this encoder's size, in coded order.
+    /// The slices of a frame of this encoder's size, in coded order: picture by picture (one, or
+    /// an interlaced frame's two fields, each `ceil(height / 32)` macroblock rows), row by row.
     pub fn slice_jobs(&self) -> Vec<SliceJob> {
         let mb_width = (self.cfg.width as usize).div_ceil(16);
-        let mb_height = (self.cfg.height as usize).div_ceil(16);
+        let (pictures, mb_height) = match self.cfg.interlace {
+            Interlace::Progressive => (1u32, (self.cfg.height as usize).div_ceil(16)),
+            _ => (2, (self.cfg.height as usize).div_ceil(32)),
+        };
         let widths = row_slice_widths(mb_width, self.cfg.log2_slice_mbs.min(3));
-        let mut jobs = Vec::with_capacity(widths.len() * mb_height);
-        for row in 0..mb_height {
-            let mut x = 0usize;
-            for &sw in &widths {
-                jobs.push(SliceJob { mb_x: x as u32, mb_y: row as u32, mbs: sw as u32 });
-                x += sw;
+        let mut jobs = Vec::with_capacity(widths.len() * mb_height * pictures as usize);
+        for picture in 0..pictures {
+            for row in 0..mb_height {
+                let mut x = 0usize;
+                for &sw in &widths {
+                    jobs.push(SliceJob { mb_x: x as u32, mb_y: row as u32, mbs: sw as u32, picture });
+                    x += sw;
+                }
             }
         }
         jobs
@@ -158,26 +169,36 @@ impl Encoder {
         if cfg.log2_slice_mbs > 3 {
             return Err(Error::Input("log2_slice_mbs must be 0..=3".into()));
         }
+        if cfg.interlace != Interlace::Progressive && h < 2 {
+            return Err(Error::Input("an interlaced frame needs at least two lines".into()));
+        }
         Ok(with_alpha)
     }
 
     /// The frame coded with the backend's per-block work, and its uniform quantiser. `None` when
     /// the backend declines, fails, or its answers do not agree with each other.
-    fn encode_on_backend(&self, src: &Source, backend: &mut dyn SliceBackend, jobs: &[SliceJob]) -> Option<(Vec<u8>, u8)> {
+    fn encode_on_backend(&self, frame: &Frame, srcs: &[Source], backend: &mut dyn SliceBackend, jobs: &[SliceJob]) -> Option<(Vec<u8>, u8)> {
         let n = jobs.len();
-        if n == 0 || !backend.load(&self.cfg, src.frame, jobs) {
+        let with_alpha = srcs.first()?.alpha;
+        if n == 0 || !backend.load(&self.cfg, frame, jobs) {
             return None;
         }
-        let alpha: Vec<Option<Vec<u8>>> = if src.alpha {
+        let alpha: Vec<Option<Vec<u8>>> = if with_alpha {
             match backend.alpha() {
                 Some(a) if a.len() == n => a.into_iter().map(Some).collect(),
-                _ => jobs.iter().map(|j| Some(encode_alpha_slice(src, j.mb_x as usize * 16, j.mb_y as usize * 16, j.mbs as usize))).collect(),
+                _ => jobs
+                    .iter()
+                    .map(|j| srcs.get(j.picture as usize).map(|src| encode_alpha_slice(src, j.mb_x as usize * 16, j.mb_y as usize * 16, j.mbs as usize)))
+                    .collect::<Option<Vec<Vec<u8>>>>()?
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
             }
         } else {
             vec![None; n]
         };
-        let limits: Vec<u64> = alpha.iter().map(|a| slice_limit_bits(src.alpha, a.as_ref().map_or(0, Vec::len))).collect();
-        let budget = frame_budget(n, slice_header_size(src.alpha), src.bits_per_mb, src.mb_count());
+        let limits: Vec<u64> = alpha.iter().map(|a| slice_limit_bits(with_alpha, a.as_ref().map_or(0, Vec::len))).collect();
+        let budget = frame_budget(n, slice_header_size(with_alpha), self.bits_per_mb(), jobs, srcs.len());
         let mut measured: Vec<(u8, Vec<[u32; 3]>)> = Vec::new();
         let (qs, qg) = backend_quantisers(backend, budget, &limits, self.last_q, &mut measured)?;
         if qs.len() != n {
@@ -200,7 +221,7 @@ impl Encoder {
         if written.len() != n {
             return None;
         }
-        let hsize = slice_header_size(src.alpha);
+        let hsize = slice_header_size(with_alpha);
         let mut slices = Vec::with_capacity(n);
         for (((comps, &q), bits), a) in written.iter().zip(&qs).zip(&want).zip(&alpha) {
             if comps.iter().zip(bits).any(|(c, &b)| c.len() as u64 * 8 != b as u64) {
@@ -208,16 +229,20 @@ impl Encoder {
             }
             slices.push(assemble_slice(hsize, q, [&comps[0], &comps[1], &comps[2]], a.as_deref())?);
         }
-        let out = self.assemble_frame(&slices, src.alpha).ok()?;
+        let out = self.assemble_frame(&slices, with_alpha, srcs.len()).ok()?;
         Some((out, qg))
     }
 
-    /// The frame header, picture header, slice table and slices.
-    fn assemble_frame(&self, slices: &[Vec<u8>], with_alpha: bool) -> Result<Vec<u8>> {
+    /// The frame header, then per picture (`pictures` of them, each with the same number of
+    /// slices, in coded order) the picture header, slice table and slices.
+    fn assemble_frame(&self, slices: &[Vec<u8>], with_alpha: bool, pictures: usize) -> Result<Vec<u8>> {
         let cfg = &self.cfg;
         let chroma = cfg.profile.chroma();
         if slices.iter().any(|s| s.len() > 65535) {
             return Err(Error::Invalid("slice larger than its 16-bit size field"));
+        }
+        if pictures == 0 || !slices.len().is_multiple_of(pictures) {
+            return Err(Error::Invalid("pictures of unequal slice counts"));
         }
         let hdr = FrameHeader {
             header_size: 0,
@@ -226,7 +251,7 @@ impl Encoder {
             width: cfg.width as u16,
             height: cfg.height as u16,
             chroma,
-            interlace: Interlace::Progressive,
+            interlace: cfg.interlace,
             aspect_ratio: cfg.aspect_ratio & 15,
             frame_rate_code: cfg.frame_rate_code & 15,
             color: cfg.color,
@@ -237,31 +262,51 @@ impl Encoder {
             chroma_matrix_present: false,
         };
         let fh = hdr.write();
-        let slice_bytes: usize = slices.iter().map(Vec::len).sum();
-        let pic_size = 8 + 2 * slices.len() + slice_bytes;
-        let total = 8 + fh.len() + pic_size;
+        let per_picture = (slices.len() / pictures).max(1);
+        let picture_size = |ps: &[Vec<u8>]| 8 + 2 * ps.len() + ps.iter().map(Vec::len).sum::<usize>();
+        let total = 8 + fh.len() + slices.chunks(per_picture).map(picture_size).sum::<usize>();
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&(total as u32).to_be_bytes());
         out.extend_from_slice(&FRAME_ID);
         out.extend_from_slice(&fh);
-        PictureHeader { header_size: 8, picture_size: pic_size, num_slices: slices.len(), log2_slice_mbs: cfg.log2_slice_mbs }.write(&mut out);
-        for s in slices {
-            out.extend_from_slice(&(s.len() as u16).to_be_bytes());
-        }
-        for s in slices {
-            out.extend_from_slice(s);
+        for ps in slices.chunks(per_picture) {
+            PictureHeader { header_size: 8, picture_size: picture_size(ps), num_slices: ps.len(), log2_slice_mbs: cfg.log2_slice_mbs }.write(&mut out);
+            for s in ps {
+                out.extend_from_slice(&(s.len() as u16).to_be_bytes());
+            }
+            for s in ps {
+                out.extend_from_slice(s);
+            }
         }
         debug_assert_eq!(out.len(), total);
         Ok(out)
     }
 }
 
-/// Where one slice lies, in coded order (row-major, `row_slice_widths` per row).
+/// Where one slice lies, in coded order (picture by picture, row-major, `row_slice_widths` per
+/// row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SliceJob {
     pub mb_x: u32,
+    /// Macroblock row within the slice's picture.
     pub mb_y: u32,
     pub mbs: u32,
+    /// The coded picture: 0, or 1 for an interlaced frame's second field. A picture's lines are
+    /// [`picture_lines`] of the frame (an interlaced frame's fields: every second line), and its
+    /// slices use the interlaced scan when the frame is interlaced.
+    pub picture: u32,
+}
+
+/// The frame lines coded picture `picture` holds: the first one and the step to the next. An
+/// interlaced frame's picture 0 is the temporally first field (top: the even lines from 0, bottom:
+/// the odd lines from 1), picture 1 the other; a progressive frame's one picture is every line.
+pub fn picture_lines(interlace: Interlace, picture: u32) -> (u32, u32) {
+    let first = picture & 1;
+    match interlace {
+        Interlace::Progressive => (0, 1),
+        Interlace::TopFieldFirst => (first, 2),
+        Interlace::BottomFieldFirst => (first ^ 1, 2),
+    }
 }
 
 /// The per-block work of an encode on other hardware: forward DCT, quantisation, entropy coding
@@ -321,10 +366,13 @@ fn slice_limit_bits(alpha: bool, alpha_len: usize) -> u64 {
     65535usize.saturating_sub(slice_header_size(alpha) + alpha_len) as u64 * 8
 }
 
-/// The DCT payload budget of a frame in bits (after the fixed headers).
-fn frame_budget(slices: usize, hsize: usize, bits_per_mb: u32, total_mbs: usize) -> u64 {
-    let fixed = 8 * (8 + 20 + 8 + slices * (2 + hsize)) as u64;
-    (bits_per_mb as u64 * total_mbs as u64).saturating_sub(fixed)
+/// The DCT payload budget of a frame in bits (after the fixed headers): `bits_per_mb` for every
+/// macroblock `jobs` code (both fields of an interlaced frame), less the frame header, the
+/// `pictures` picture headers and the slice tables and headers.
+fn frame_budget(slices: usize, hsize: usize, bits_per_mb: u32, jobs: &[SliceJob], pictures: usize) -> u64 {
+    let total_mbs: u64 = jobs.iter().map(|j| u64::from(j.mbs)).sum();
+    let fixed = 8 * (8 + 20 + 8 * pictures + slices * (2 + hsize)) as u64;
+    (u64::from(bits_per_mb).saturating_mul(total_mbs)).saturating_sub(fixed)
 }
 
 /// A slice from its three payloads: header, payloads, alpha. `None` when a size does not fit its
@@ -350,51 +398,70 @@ fn assemble_slice(hsize: usize, q: u8, comps: [&[u8]; 3], alpha: Option<&[u8]>) 
     Some(out)
 }
 
+/// One coded picture of a frame: the frame, or one of its fields (every second line).
 struct Source<'a> {
     frame: &'a Frame,
     w: usize,
+    /// Lines of the picture.
     h: usize,
+    /// The frame line of the picture's line 0, and the step between its lines.
+    first: usize,
+    step: usize,
     cw: usize,
     chroma444: bool,
     /// Multiplier from input sample values to the 12-bit domain.
     scale: f32,
     alpha: bool,
-    bits_per_mb: u32,
+    /// The scan order of the picture's coefficients.
+    scan: &'static [u8; 64],
 }
 
 impl<'a> Source<'a> {
-    fn new(cfg: &EncoderConfig, frame: &'a Frame, alpha: bool) -> Source<'a> {
+    /// The coded pictures of `frame` (validated), in coded order.
+    fn pictures(cfg: &EncoderConfig, frame: &'a Frame, alpha: bool) -> Vec<Source<'a>> {
         let chroma = cfg.profile.chroma();
-        Source {
-            frame,
-            w: cfg.width as usize,
-            h: cfg.height as usize,
-            cw: chroma.chroma_width(cfg.width) as usize,
-            chroma444: chroma == ChromaFormat::Yuv444,
-            scale: (2f32).powi(12 - frame.bit_depth as i32),
-            alpha,
-            bits_per_mb: cfg.bits_per_mb.unwrap_or_else(|| cfg.profile.nominal_bits_per_mb()),
-        }
+        let count = if cfg.interlace == Interlace::Progressive { 1 } else { 2 };
+        let scan = if count == 1 { &SCAN_PROGRESSIVE } else { &SCAN_INTERLACED };
+        (0..count)
+            .map(|picture| {
+                let (first, step) = picture_lines(cfg.interlace, picture);
+                let (first, step) = (first as usize, step as usize);
+                Source {
+                    frame,
+                    w: cfg.width as usize,
+                    h: (cfg.height as usize).saturating_sub(first).div_ceil(step).max(1),
+                    first,
+                    step,
+                    cw: chroma.chroma_width(cfg.width) as usize,
+                    chroma444: chroma == ChromaFormat::Yuv444,
+                    scale: (2f32).powi(12 - frame.bit_depth as i32),
+                    alpha,
+                    scan,
+                }
+            })
+            .collect()
     }
 
-    fn mb_count(&self) -> usize {
-        self.w.div_ceil(16) * self.h.div_ceil(16)
+    /// The frame line of picture line `y`, edge-replicated below the picture's last line.
+    fn line(&self, y: usize) -> usize {
+        self.first + y.min(self.h - 1) * self.step
     }
-}
 
-/// Load an 8×8 block (edge-replicated) into the 12-bit signed domain and transform it.
-fn load_block(plane: &[u16], stride: usize, height: usize, x0: usize, y0: usize, scale: f32) -> [f32; 64] {
-    let mut b = [0f32; 64];
-    for yy in 0..8 {
-        let y = (y0 + yy).min(height - 1);
-        let row = &plane[y * stride..(y + 1) * stride];
-        for xx in 0..8 {
-            let x = (x0 + xx).min(stride - 1);
-            b[yy * 8 + xx] = row[x] as f32 * scale - 2048.0;
+    /// Load an 8×8 block of `plane` at picture position (`x0`, `y0`), edge-replicated, into the
+    /// 12-bit signed domain and transform it.
+    fn load_block(&self, plane: &[u16], stride: usize, x0: usize, y0: usize) -> [f32; 64] {
+        let mut b = [0f32; 64];
+        for yy in 0..8 {
+            let y = self.line(y0 + yy);
+            let row = &plane[y * stride..(y + 1) * stride];
+            for xx in 0..8 {
+                let x = (x0 + xx).min(stride - 1);
+                b[yy * 8 + xx] = row[x] as f32 * self.scale - 2048.0;
+            }
         }
+        fdct8x8(&mut b);
+        b
     }
-    fdct8x8(&mut b);
-    b
 }
 
 fn quantise(coeffs: &[[f32; 64]], qmat_inv: &[f32; 64], out: &mut Vec<[i32; 64]>) {
@@ -461,16 +528,17 @@ fn encode_component<S: Sink>(s: &mut S, levels: &[[i32; 64]], scan: &[u8; 64]) {
     }
 }
 
-fn component_bits(levels: &[[i32; 64]]) -> u64 {
+fn component_bits(levels: &[[i32; 64]], scan: &[u8; 64]) -> u64 {
     let mut c = Counter::default();
-    encode_component(&mut c, levels, &SCAN_PROGRESSIVE);
+    encode_component(&mut c, levels, scan);
     c.0.div_ceil(8) * 8
 }
 
-/// A slice's transformed blocks (Y, Cb, Cr) and its coded alpha.
+/// A slice's transformed blocks (Y, Cb, Cr), its coded alpha and its picture's scan order.
 struct SliceData {
     comps: [Vec<[f32; 64]>; 3],
     alpha: Option<Vec<u8>>,
+    scan: &'static [u8; 64],
 }
 
 impl SliceData {
@@ -493,6 +561,13 @@ fn par_map<T: Sync, R: Send>(threads: bool, items: &[T], f: impl Fn(&T) -> R + S
     items.iter().map(f).collect()
 }
 
+/// Every job's slice, from its picture of `srcs`; `None` for a job outside them.
+fn prepare_slices(threads: bool, srcs: &[Source], jobs: &[SliceJob]) -> Option<Vec<SliceData>> {
+    par_map(threads, jobs, |j| srcs.get(j.picture as usize).map(|src| prepare_slice(src, j.mb_x as usize, j.mb_y as usize, j.mbs as usize)))
+        .into_iter()
+        .collect()
+}
+
 fn prepare_slice(src: &Source, mb_x: usize, mb_y: usize, mbs: usize) -> SliceData {
     let f = src.frame;
     let x0 = mb_x * 16;
@@ -500,7 +575,7 @@ fn prepare_slice(src: &Source, mb_x: usize, mb_y: usize, mbs: usize) -> SliceDat
     let mut luma = Vec::with_capacity(4 * mbs);
     for mb in 0..mbs {
         for i in 0..4 {
-            luma.push(load_block(&f.y, src.w, src.h, x0 + mb * 16 + (i & 1) * 8, y0 + (i >> 1) * 8, src.scale));
+            luma.push(src.load_block(&f.y, src.w, x0 + mb * 16 + (i & 1) * 8, y0 + (i >> 1) * 8));
         }
     }
     let mut chroma = [Vec::with_capacity(4 * mbs), Vec::with_capacity(4 * mbs)];
@@ -509,18 +584,18 @@ fn prepare_slice(src: &Source, mb_x: usize, mb_y: usize, mbs: usize) -> SliceDat
             if src.chroma444 {
                 // 4:4:4 chroma block order within a macroblock: TL, BL, TR, BR.
                 for i in 0..4 {
-                    chroma[k].push(load_block(plane, src.cw, src.h, x0 + mb * 16 + (i >> 1) * 8, y0 + (i & 1) * 8, src.scale));
+                    chroma[k].push(src.load_block(plane, src.cw, x0 + mb * 16 + (i >> 1) * 8, y0 + (i & 1) * 8));
                 }
             } else {
                 for i in 0..2 {
-                    chroma[k].push(load_block(plane, src.cw, src.h, mb_x * 8 + mb * 8, y0 + i * 8, src.scale));
+                    chroma[k].push(src.load_block(plane, src.cw, mb_x * 8 + mb * 8, y0 + i * 8));
                 }
             }
         }
     }
     let [cb, cr] = chroma;
     let alpha = src.alpha.then(|| encode_alpha_slice(src, x0, y0, mbs));
-    SliceData { comps: [luma, cb, cr], alpha }
+    SliceData { comps: [luma, cb, cr], alpha, scan: src.scan }
 }
 
 fn quantise_all(sd: &SliceData, q: u8, lv: &mut [Vec<[i32; 64]>; 3]) {
@@ -534,7 +609,7 @@ fn quantise_all(sd: &SliceData, q: u8, lv: &mut [Vec<[i32; 64]>; 3]) {
 fn slice_comp_bits(sd: &SliceData, q: u8) -> [u64; 3] {
     let mut lv = [Vec::new(), Vec::new(), Vec::new()];
     quantise_all(sd, q, &mut lv);
-    lv.map(|l| component_bits(&l))
+    lv.map(|l| component_bits(&l, sd.scan))
 }
 
 /// Coded DCT payload bits of a slice at quantiser `q` (components padded to bytes).
@@ -703,9 +778,17 @@ pub struct ReferenceBackend {
 impl SliceBackend for ReferenceBackend {
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob]) -> bool {
         let alpha = cfg.encode_alpha && cfg.profile.chroma() == ChromaFormat::Yuv444 && frame.alpha.is_some();
-        let src = Source::new(cfg, frame, alpha);
-        self.slices = jobs.iter().map(|j| prepare_slice(&src, j.mb_x as usize, j.mb_y as usize, j.mbs as usize)).collect();
-        true
+        let srcs = Source::pictures(cfg, frame, alpha);
+        match prepare_slices(false, &srcs, jobs) {
+            Some(slices) => {
+                self.slices = slices;
+                true
+            }
+            None => {
+                self.slices.clear();
+                false
+            }
+        }
     }
     fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
         Some(self.slices.iter().map(|sd| slice_comp_bits(sd, q).map(|b| b as u32)).collect())
@@ -724,7 +807,7 @@ fn write_components(sd: &SliceData, q: u8) -> [Vec<u8>; 3] {
     quantise_all(sd, q, &mut lv);
     lv.map(|l| {
         let mut w = Writer::new();
-        encode_component(&mut w, &l, &SCAN_PROGRESSIVE);
+        encode_component(&mut w, &l, sd.scan);
         w.finish()
     })
 }
@@ -735,7 +818,8 @@ fn write_slice(sd: &SliceData, q: u8) -> Option<Vec<u8>> {
     assemble_slice(sd.header_size(), q, [&y, &cb, &cr], sd.alpha.as_deref())
 }
 
-/// Encode the slice's alpha samples (16-bit coding) in raster order over its 16 lines.
+/// Encode the slice's alpha samples (16-bit coding) in raster order over its 16 lines of its
+/// picture.
 fn encode_alpha_slice(src: &Source, x0: usize, y0: usize, mbs: usize) -> Vec<u8> {
     let Some(a) = src.frame.alpha.as_ref() else { return Vec::new() };
     let d = src.frame.bit_depth as u32;
@@ -746,7 +830,7 @@ fn encode_alpha_slice(src: &Source, x0: usize, y0: usize, mbs: usize) -> Vec<u8>
     let sw = mbs * 16;
     let mut vals = Vec::with_capacity(sw * 16);
     for yy in 0..16 {
-        let y = (y0 + yy).min(src.h - 1);
+        let y = src.line(y0 + yy);
         for xx in 0..sw {
             let x = (x0 + xx).min(src.w - 1);
             vals.push(to16(a[y * src.w + x]));
@@ -811,8 +895,9 @@ mod rate_tests {
     #[test]
     fn at_measures_an_untried_quantiser() {
         let block = |v: f32| std::array::from_fn::<f32, 64, _>(|i| v * (64 - i) as f32);
-        let slices: Vec<SliceData> =
-            (1..=3).map(|k| SliceData { comps: [vec![block(40.0 * k as f32); 4], vec![block(10.0); 2], vec![block(5.0); 2]], alpha: None }).collect();
+        let slices: Vec<SliceData> = (1..=3)
+            .map(|k| SliceData { comps: [vec![block(40.0 * k as f32); 4], vec![block(10.0); 2], vec![block(5.0); 2]], alpha: None, scan: &SCAN_PROGRESSIVE })
+            .collect();
         let want = |q| slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>();
         assert!(want(4).iter().all(|&b| b > 0));
         let mut bits_at = |q| Some(slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>());
@@ -1024,7 +1109,7 @@ mod alpha_conformance_tests {
 mod backend_tests {
     use super::*;
     use crate::layout::frame_layout;
-    use crate::{SliceBackend, SliceJob, decode_frame};
+    use crate::{SliceBackend, SliceJob, decode_frame, picture_lines};
 
     /// Deterministic busy planes: gradient + checkerboard + xorshift noise; alpha ramp for 4444.
     fn test_frame(profile: Profile, w: u32, h: u32, seed: u32) -> Frame {
@@ -1163,13 +1248,51 @@ mod backend_tests {
         }
     }
 
+    /// An interlaced frame's two field pictures go through the backend too, with the CPU's bytes.
+    #[test]
+    fn a_backend_doing_the_cpus_work_gives_the_cpus_interlaced_frame() {
+        for interlace in [Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+            for profile in Profile::ALL {
+                for (w, h) in [(16, 2), (17, 13), (64, 48), (1920, 1080)] {
+                    let f = test_frame(profile, w, h, 7);
+                    let cfg = EncoderConfig { interlace, ..EncoderConfig::new(profile, w, h) };
+                    let cpu = Encoder::with_config(cfg.clone()).encode(&f).unwrap();
+                    assert_eq!(frame_layout(&cpu).unwrap().header.interlace, interlace);
+                    let mut b = CpuBackend::default();
+                    let (gpu, used) = Encoder::with_config(cfg.clone()).encode_with(&f, Some(&mut b)).unwrap();
+                    assert!(used, "{interlace:?} {profile:?} {w}x{h}");
+                    assert_eq!(gpu, cpu, "{interlace:?} {profile:?} {w}x{h}");
+                    let mut b = CpuBackend { choose: ChooseMode::Cpu, ..Default::default() };
+                    let (gpu, used) = Encoder::with_config(cfg).encode_with(&f, Some(&mut b)).unwrap();
+                    assert!(used && gpu == cpu, "{interlace:?} {profile:?} {w}x{h}: the backend's rate control");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interlaced_slice_jobs_are_two_field_pictures() {
+        assert_eq!(picture_lines(Interlace::Progressive, 0), (0, 1));
+        assert_eq!((picture_lines(Interlace::TopFieldFirst, 0), picture_lines(Interlace::TopFieldFirst, 1)), ((0, 2), (1, 2)));
+        assert_eq!((picture_lines(Interlace::BottomFieldFirst, 0), picture_lines(Interlace::BottomFieldFirst, 1)), ((1, 2), (0, 2)));
+        let enc = Encoder::with_config(EncoderConfig { interlace: Interlace::BottomFieldFirst, ..EncoderConfig::new(Profile::Hq, 333, 201) });
+        let jobs = enc.slice_jobs();
+        let rows = 201u32.div_ceil(32);
+        for picture in 0..2 {
+            let pic: Vec<&SliceJob> = jobs.iter().filter(|j| j.picture == picture).collect();
+            assert_eq!(pic.iter().map(|j| j.mbs).sum::<u32>(), 333u32.div_ceil(16) * rows);
+            assert_eq!(pic.last().map(|j| j.mb_y), Some(rows - 1));
+        }
+        assert!(jobs.windows(2).all(|p| p[0].picture <= p[1].picture), "picture by picture");
+    }
+
     #[test]
     fn slice_jobs_cover_the_frame_in_coded_order() {
         let enc = Encoder::new(Profile::Hq, 333, 201);
         let jobs = enc.slice_jobs();
         let mbs: u32 = jobs.iter().map(|j| j.mbs).sum();
         assert_eq!(mbs, 333u32.div_ceil(16) * 201u32.div_ceil(16));
-        assert_eq!(jobs.first(), Some(&SliceJob { mb_x: 0, mb_y: 0, mbs: 8 }));
+        assert_eq!(jobs.first(), Some(&SliceJob { mb_x: 0, mb_y: 0, mbs: 8, picture: 0 }));
     }
 
     #[test]

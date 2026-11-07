@@ -24,7 +24,7 @@ pub use decode::{DecodeOptions, decode_frame, decode_frame_into, decode_frame_wi
 pub use encode::ReferenceBackend;
 #[doc(hidden)]
 pub use encode::rate_control_for_tests;
-pub use encode::{Encoder, EncoderConfig, SliceBackend, SliceJob};
+pub use encode::{Encoder, EncoderConfig, SliceBackend, SliceJob, picture_lines};
 pub use header::{FrameHeader, PictureHeader};
 pub use layout::{FrameLayout, SliceLayout, frame_layout};
 

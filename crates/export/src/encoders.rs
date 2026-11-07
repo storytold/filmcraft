@@ -147,6 +147,16 @@ impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
+        // two fields, coded as two pictures, the temporally first one first: `fiel` 2/9 for top
+        // field first and 2/14 for bottom field first, as Apple and ffmpeg write ProRes 1080i
+        let detail = match self.enc.config().interlace {
+            filmcraft_prores::Interlace::Progressive => None,
+            filmcraft_prores::Interlace::TopFieldFirst => Some(9),
+            filmcraft_prores::Interlace::BottomFieldFirst => Some(14),
+        };
+        if let (Some(v), Some(detail)) = (e.video.as_mut(), detail) {
+            v.field_info = Some(filmcraft_isobmff::FieldInfo { fields: 2, detail });
+        }
         e
     }
     fn timescale(&self) -> u32 {
@@ -222,6 +232,7 @@ pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s:
         }
         let alpha = s.keeps_alpha();
         cfg.encode_alpha = alpha;
+        cfg.interlace = s.prores_interlace();
         let enc = filmcraft_prores::Encoder::with_config(cfg);
         let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_prores_backend).flatten();
         Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)

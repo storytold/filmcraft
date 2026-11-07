@@ -21,7 +21,8 @@ pub enum Scaling {
     StretchToFill,
 }
 
-/// Field order of the encoded video. FilmCraft's encoders write progressive frames.
+/// Field order of the encoded video: progressive frames, or interlaced ones (ProRes, either field
+/// first; see [`ExportSettings::supports_field_order`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FieldOrder {
@@ -521,6 +522,25 @@ impl ExportSettings {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
             _ => false,
+        }
+    }
+
+    /// Whether the video can be written with field order `order`: progressive always; interlaced
+    /// as ProRes (QuickTime or MXF, either field first, two field pictures per frame).
+    pub fn supports_field_order(&self, order: FieldOrder) -> bool {
+        match order {
+            FieldOrder::Progressive => true,
+            FieldOrder::UpperFirst | FieldOrder::LowerFirst => self.video_format() == Format::ProRes,
+        }
+    }
+
+    /// How the ProRes encoder codes the output's frames: progressive, or two field pictures in
+    /// the setting's field order.
+    pub fn prores_interlace(&self) -> filmcraft_prores::Interlace {
+        match self.field_order {
+            FieldOrder::Progressive => filmcraft_prores::Interlace::Progressive,
+            FieldOrder::UpperFirst => filmcraft_prores::Interlace::TopFieldFirst,
+            FieldOrder::LowerFirst => filmcraft_prores::Interlace::BottomFieldFirst,
         }
     }
 

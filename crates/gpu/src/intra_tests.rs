@@ -118,6 +118,34 @@ fn gpu_prores_matches_the_cpu_decoder_on_our_frames() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Our encoder's interlaced frames (two field pictures, either field first, odd heights, alpha)
+/// decode on the GPU like on the CPU.
+#[test]
+fn gpu_prores_matches_the_cpu_decoder_on_our_interlaced_frames() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    if !crate::intra::supported(&dev) {
+        eprintln!("no compute support; skipping");
+        return;
+    }
+    let mut stage = IntraStage::new(&dev);
+    stage.raw_codes = true;
+    let mut failures = Vec::new();
+    for order in [filmcraft_prores::Interlace::TopFieldFirst, filmcraft_prores::Interlace::BottomFieldFirst] {
+        for (profile, w, h, log2, alpha) in
+            [(Profile::Hq, 1920, 1080, 3, false), (Profile::Lt, 333, 201, 2, false), (Profile::Standard, 70, 37, 1, false), (Profile::P4444, 640, 361, 3, true)]
+        {
+            let frame = busy(w, h, profile.chroma(), alpha);
+            let cfg = EncoderConfig { log2_slice_mbs: log2, encode_alpha: alpha, interlace: order, ..EncoderConfig::new(profile, w, h) };
+            let sample = Encoder::with_config(cfg).encode(&frame).unwrap();
+            check(&mut stage, &dev, &q, &format!("{order:?} {profile:?} {w}x{h} slices {}", 1 << log2), &sample, &mut failures);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn ffmpeg_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, enc: &[&str]) -> Vec<Vec<u8>> {
     let dir = filmcraft_testkit::fixtures_dir("gpu-prores");
     let mov = dir.join(format!("{name}.mov"));

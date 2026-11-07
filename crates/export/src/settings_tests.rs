@@ -1196,9 +1196,10 @@ fn metadata_and_quicktime_multiplexer() {
 #[test]
 fn interlaced_output_is_rejected_honestly() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
-    let s = ExportSettings { format: Format::ProRes, path: "unused.mov".into(), field_order: FieldOrder::UpperFirst, ..Default::default() };
+    // (ProRes and DNxHD 1080i code fields; H.264 does not)
+    let s = ExportSettings { format: Format::H264, path: "unused.mp4".into(), field_order: FieldOrder::UpperFirst, ..Default::default() };
     let e = export(&p, seq, &s, &m, &Progress::default()).unwrap_err();
-    assert!(e.to_string().contains("progressive"), "{e}");
+    assert!(e.to_string().contains("progressive") && e.to_string().contains("ProRes"), "{e}");
 }
 
 #[test]

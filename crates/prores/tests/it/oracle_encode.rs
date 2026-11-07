@@ -136,3 +136,50 @@ fn odd_geometry_encodes() {
         assert!(l.max <= 1 && c.max <= 1, "{profile:?} {w}x{h}: {l:?} {c:?}");
     }
 }
+
+/// Interlaced frames (two field pictures, top or bottom field first, odd heights, 4:2:2 and 4:4:4
+/// with alpha) decode in ffmpeg as in our decoder, and ffmpeg sees the field order we code.
+#[test]
+fn interlaced_output_decodes_in_ffmpeg() {
+    use filmcraft_prores::{EncoderConfig, Interlace};
+    let Some(ff) = ffmpeg() else { return };
+    for (profile, w, h) in [(Profile::Hq, 1920u32, 1080u32), (Profile::Lt, 720, 487), (Profile::P4444, 333, 201)] {
+        let chroma = profile.chroma();
+        let alpha = chroma == ChromaFormat::Yuv444;
+        let lav = if alpha {
+            format!("testsrc2=s={w}x{h}:r=25,format=yuva444p10le,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='mod(5*X+Y,1024)'")
+        } else {
+            format!("testsrc2=s={w}x{h}:r=25,format=yuv422p10le,noise=alls=10:allf=t")
+        };
+        let name = format!("src_il_{w}x{h}");
+        let src = source_frames(&ff, SourceFrameSpec { name: &name, lavfi: &lav, frames: 2, width: w, height: h, chroma, alpha });
+        for (order, tff) in [(Interlace::TopFieldFirst, "1"), (Interlace::BottomFieldFirst, "0")] {
+            let mut enc = Encoder::with_config(EncoderConfig { interlace: order, ..EncoderConfig::new(profile, w, h) });
+            let coded: Vec<Vec<u8>> = src.iter().map(|f| enc.encode(f).unwrap()).collect();
+            let mov = fixture_dir().join(format!("enc_il_{w}x{h}_{order:?}.mov"));
+            write_mov(&mov, &profile.fourcc(), w as u16, h as u16, if alpha { 32 } else { 24 }, &coded);
+            let (ffraw, err) = ffmpeg_decode(&ff, &mov, native_fmt(chroma, alpha));
+            assert!(err.trim().is_empty(), "{order:?} {w}x{h}: {err}");
+            let per = frame_samples(w as usize, h as usize, chroma, alpha);
+            assert_eq!(ffraw.len(), per * coded.len());
+            for (i, c) in coded.iter().enumerate() {
+                let (l, cc) = compare(&decode_frame(c).unwrap(), &ffraw[i * per..(i + 1) * per]);
+                assert!(l.max <= 1 && cc.max <= 1, "{order:?} {profile:?} {w}x{h}: {l:?} {cc:?}");
+            }
+            // ffmpeg's decoder reports the frame header's field order on every frame
+            if let Some(Ok(out)) = filmcraft_testkit::ffprobe().map(|probe| {
+                std::process::Command::new(probe)
+                    .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=interlaced_frame,top_field_first", "-of", "csv=p=0"])
+                    .arg(&mov)
+                    .output()
+            }) {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                assert_eq!(lines.len(), coded.len(), "{text}");
+                for l in lines {
+                    assert_eq!(l.trim(), format!("1,{tff}"), "{order:?} {w}x{h}");
+                }
+            }
+        }
+    }
+}

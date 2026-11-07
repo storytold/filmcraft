@@ -488,9 +488,11 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     });
     row(ui, t, tl!("Field Order"), |ui| {
         let o = [FieldOrder::Progressive, FieldOrder::UpperFirst, FieldOrder::LowerFirst];
-        let labels: Vec<(String, bool)> = o.iter().map(|f| (f.label().to_string(), *f == FieldOrder::Progressive)).collect();
-        if let Some(i) = combo(ui, reg, "export.video.fieldOrder", s.field_order.label(), &labels, 160.0) {
-            s.field_order = o[i];
+        let labels: Vec<(String, bool)> = o.iter().map(|f| (f.label().to_string(), s.supports_field_order(*f))).collect();
+        if let Some(i) = combo(ui, reg, "export.video.fieldOrder", s.field_order.label(), &labels, 160.0)
+            && let Some(&f) = o.get(i)
+        {
+            s.field_order = f;
         }
     });
     row(ui, t, tl!("Aspect"), |ui| {
