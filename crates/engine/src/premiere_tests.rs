@@ -432,3 +432,23 @@ fn premiere_missing_absolute_media_falls_back_to_the_relative_path_through_polic
         }
     }
 }
+
+#[test]
+fn premiere_generated_media_is_not_probed_as_a_file() {
+    // Hand-written: black video stores its four-character code (`BLAK`) as its file path.
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let xml = std::fs::read_to_string(&doc).unwrap();
+    let code = u32::from_be_bytes(*b"BLAK");
+    let edited = xml
+        .replace("<SubClip ObjectID=\"3\"><Name>source.png</Name></SubClip>", "<SubClip ObjectID=\"3\"><Name>Vídeo negro</Name><Clip ObjectRef=\"4\"/></SubClip><VideoClip ObjectID=\"4\"><Clip><Source ObjectRef=\"5\"/></Clip></VideoClip><VideoMediaSource ObjectID=\"5\"><MediaSource><Media ObjectURef=\"m\"/></MediaSource></VideoMediaSource>")
+        .replace(&format!("<Media><Title>source.png</Title><FilePath>{}</FilePath></Media>", fixture.0.join("source.png").display()), &format!("<Media ObjectUID=\"m\"><Title>Vídeo negro</Title><FilePath>{code}</FilePath></Media>"));
+    assert_ne!(edited, xml);
+    std::fs::write(&doc, edited).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("generated")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    assert!(s.project.workflow.as_ref().unwrap().imports[0].media.is_empty(), "no file reference is recorded");
+    assert!(s.project.items.values().any(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m)
+        if m.media == filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BlackVideo))));
+}
