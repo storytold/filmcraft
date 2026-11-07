@@ -80,9 +80,9 @@ fn stream_config(hw: &AudioHardwarePrefs, document_rate: Option<u32>, dev: &cpal
         return Ok(default);
     }
     let exact = dev.supported_output_configs().ok().and_then(|it| {
-        it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&want))
+        it.filter(|c| c.channels() > 0 && (c.min_sample_rate()..=c.max_sample_rate()).contains(&want))
             .max_by_key(|c| (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32, c.sample_format() == default.sample_format()))
-            .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
+            .and_then(|c| c.try_with_sample_rate(want))
     });
     Ok(exact.unwrap_or(default))
 }
@@ -384,6 +384,10 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
 fn stream_error(health: &Health, e: cpal::StreamError) {
     match e {
         cpal::StreamError::DeviceNotAvailable => health.lost.store(true, Ordering::SeqCst),
+        // The device changed its configuration: rebuild the stream on the new one.
+        cpal::StreamError::StreamInvalidated => health.errored.store(true, Ordering::SeqCst),
+        // A single glitch: cpal keeps the stream alive, so it is only worth reporting.
+        cpal::StreamError::BufferUnderrun => {}
         cpal::StreamError::BackendSpecific { .. } => health.errored.store(true, Ordering::SeqCst),
     }
     if !health.reported.swap(true, Ordering::SeqCst) {

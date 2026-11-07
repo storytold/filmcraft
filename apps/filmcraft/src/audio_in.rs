@@ -152,9 +152,9 @@ impl AudioInput for CpalIn {
                             .supported_input_configs()
                             .ok()
                             .and_then(|it| {
-                                it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&sample_rate))
+                                it.filter(|c| c.channels() > 0 && (c.min_sample_rate()..=c.max_sample_rate()).contains(&sample_rate))
                                     .max_by_key(|c| (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32))
-                                    .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(sample_rate)))
+                                    .and_then(|c| c.try_with_sample_rate(sample_rate))
                             })
                             .unwrap_or(default);
                         if cfg.channels() == 0 || cfg.channels() > 256 || cfg.sample_rate().0 == 0 {
