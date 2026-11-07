@@ -153,6 +153,11 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         });
         return Ok(v);
     }
+    // formats only a platform runtime decodes (Blackmagic RAW): through it, never read whole here
+    if let Some(r) = filmcraft_codecs::open_by_path(path) {
+        let src = r.map_err(|e| format!("{path}: {e}"))?;
+        return Ok(serde_json::to_value(filmcraft_media::MediaSource::info(&*src)).unwrap_or_default());
+    }
     let bytes: Arc<[u8]> = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?.into();
     let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let head = &bytes[..bytes.len().min(70_000)];

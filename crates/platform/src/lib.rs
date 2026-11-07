@@ -34,6 +34,8 @@
 mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 mod biplanar;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+pub mod braw;
 pub mod cursor;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
@@ -68,6 +70,10 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    // Blackmagic RAW through Blackmagic's runtime, looked for when the first .braw file opens (so
+    // nothing is loaded at startup)
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    filmcraft_codecs::register_path_opener(braw::open_path);
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]

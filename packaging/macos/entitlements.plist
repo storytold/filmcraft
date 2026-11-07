@@ -9,5 +9,11 @@
        this (Info.plist.in carries the matching NSMicrophoneUsageDescription). -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- Blackmagic RAW: .braw files are decoded by Blackmagic's runtime (BlackmagicRawAPI.framework),
+       which the user installs and Blackmagic signs. Library validation only lets the hardened
+       runtime load code signed by FilmCraft's own team or Apple, so it refuses that framework
+       without this (docs/adr/0001-platform-ffi.md, crates/platform/src/braw). -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
 </dict>
 </plist>
