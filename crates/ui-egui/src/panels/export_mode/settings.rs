@@ -690,6 +690,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             AudioCodec::Aac => "AAC",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             AudioCodec::Opus => "Opus",
+            AudioCodec::Vorbis => "Vorbis",
             _ => tl!("Uncompressed (PCM)"),
         };
         // MP4 takes AAC, FLAC or Opus; QuickTime any of the four
@@ -735,7 +736,16 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
-    if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Opus) {
+    if s.audio_codec() == AudioCodec::Vorbis {
+        // variable bit rate: the quality sets the precision, the material the size
+        row(ui, t, tl!("Quality"), |ui| {
+            let mut q = f64::from(s.vorbis_quality());
+            if drag(ui, reg, "export.audio.vorbisQuality", &mut q, DragOptions { range: -1.0..=10.0, speed: 0.02, suffix: "", decimals: 1 }) {
+                s.audio.vorbis_quality = q as f32;
+            }
+            ui.label(egui::RichText::new(tl!("-1 smallest, 10 best")).size(12.0));
+        });
+    } else if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Opus) {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
             let rates: &[u32] = if opus { &[32, 64, 96, 128, 160, 192, 256, 320, 510] } else { &[128, 160, 192, 256, 320] };
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();

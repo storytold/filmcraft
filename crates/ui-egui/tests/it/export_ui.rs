@@ -674,6 +674,30 @@ fn opus_is_an_audio_format_with_a_bit_rate_and_no_surround() {
     d.frames(4);
     assert!(!d.has("export.audio.codec"), "the Opus format has one audio format");
     assert!(d.has("export.audio.bitrate"));
-    assert_eq!(d.app().ui.export.settings.summary(1920, 1080, filmcraft_time::FrameRate::FPS_24, 48_000, filmcraft_time::Tick(1)).audio, "Opus, 96 kbps, 48000 Hz, Stereo");
+    assert_eq!(
+        d.app().ui.export.settings.summary(1920, 1080, filmcraft_time::FrameRate::FPS_24, 48_000, filmcraft_time::Tick(1)).audio,
+        "Opus, 96 kbps, 48000 Hz, Stereo"
+    );
     d.snapshot("export-opus");
+}
+
+/// Ogg Vorbis: the audio format is fixed, a quality replaces bit rate and sample size, and the
+/// sample rate and 5.1 stay available.
+#[test]
+fn vorbis_has_a_quality_instead_of_a_bit_rate() {
+    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format};
+    let mut d = Driver::new("vorbis");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.click("export.section.video");
+    d.app().ui.export.settings = ExportSettings { format: Format::Vorbis, ..Default::default() };
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Vorbis);
+    assert!(d.has("export.audio.vorbisQuality"));
+    assert!(!d.has("export.audio.codec") && !d.has("export.audio.bitrate") && !d.has("export.audio.bits"));
+    assert!(d.has("export.audio.sampleRate"));
+    d.click("export.audio.channels");
+    d.click("export.audio.channels.option.2");
+    assert_eq!(d.app().ui.export.settings.audio.channels, 6, "Vorbis takes 5.1");
+    d.snapshot("export-vorbis");
 }

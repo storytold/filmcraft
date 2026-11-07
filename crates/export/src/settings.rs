@@ -223,6 +223,8 @@ pub enum AudioCodec {
     Flac,
     /// Opus (RFC 6716) at [`AudioSettings::bitrate_kbps`]: always 48 kHz, mono or stereo.
     Opus,
+    /// Vorbis at [`AudioSettings::vorbis_quality`]: the Ogg Vorbis format only.
+    Vorbis,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -241,11 +243,13 @@ pub struct AudioSettings {
     pub float: bool,
     /// FLAC compression level, 0 (fastest) to 8 (smallest). Every level is lossless.
     pub flac_level: u8,
+    /// Vorbis quality, -1 (smallest) to 10 (best); the bit rate follows the material.
+    pub vorbis_quality: f32,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, float: false, flac_level: 5 }
+        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, float: false, flac_level: 5, vorbis_quality: 6.0 }
     }
 }
 
@@ -588,7 +592,7 @@ impl ExportSettings {
     /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
-            AudioCodec::Aac | AudioCodec::Opus => false,
+            AudioCodec::Aac | AudioCodec::Opus | AudioCodec::Vorbis => false,
             AudioCodec::Flac => !f.is_float(),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
@@ -601,11 +605,21 @@ impl ExportSettings {
         (bps + 200) / 400 * 400
     }
 
+    /// The Vorbis quality, -1 to 10 (NaN reads as the default, 6).
+    pub fn vorbis_quality(&self) -> f32 {
+        let q = self.audio.vorbis_quality;
+        if q.is_finite() { (q * 10.0).round().clamp(-10.0, 100.0) / 10.0 } else { 6.0 }
+    }
+
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
             (Format::Opus, _) => AudioCodec::Opus,
+            (Format::Vorbis, _) => AudioCodec::Vorbis,
+            // Vorbis is the Ogg Vorbis format's alone
+            (_, AudioCodec::Vorbis) if self.format.is_mp4_video() => AudioCodec::Aac,
+            (_, AudioCodec::Vorbis) => AudioCodec::Pcm,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
             // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`) and Opus (`Opus` + `dOps`)
@@ -675,13 +689,14 @@ impl ExportSettings {
                 px * if self.keeps_alpha() { 8.0 } else { 6.0 } * 8.0 * fps * k
             }
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff | Format::Flac | Format::Opus | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
+            Format::Wav | Format::Aiff | Format::Flac | Format::Opus | Format::Vorbis | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
         let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
                 AudioCodec::Opus => f64::from(self.opus_bitrate()),
+                AudioCodec::Vorbis => f64::from(vorbis_kbps(self.vorbis_quality())) * 1000.0 * r.channels as f64 / 2.0,
                 // typical of music and dialogue; noise compresses less, silence far more
                 AudioCodec::Flac => pcm * 0.6,
                 _ => pcm,
@@ -783,6 +798,7 @@ impl ExportSettings {
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
                 AudioCodec::Opus => format!("Opus, {} kbps, {} Hz, {ch}", self.opus_bitrate() / 1000, r.sample_rate),
+                AudioCodec::Vorbis => format!("Vorbis, quality {}, {} Hz, {ch}", self.vorbis_quality(), r.sample_rate),
                 AudioCodec::Flac => {
                     format!("FLAC (lossless) {}-bit, level {}, {} Hz, {ch}", self.audio.sample_format().bits(), self.audio.flac_level.min(8), r.sample_rate)
                 }
@@ -828,4 +844,11 @@ pub fn format_bytes(b: u64) -> String {
     } else {
         format!("{:.0} KB", (b / 1e3).max(1.0))
     }
+}
+
+/// Typical stereo bit rate (kbps) of a Vorbis export at `quality`, for the size estimate.
+pub(crate) fn vorbis_kbps(quality: f32) -> u32 {
+    const BY_QUALITY: [u32; 12] = [45, 55, 70, 85, 110, 135, 160, 190, 215, 240, 260, 280];
+    let at = ((quality + 1.0).clamp(0.0, 11.0)).round() as usize;
+    BY_QUALITY.get(at).copied().unwrap_or(190)
 }

@@ -3601,6 +3601,7 @@
 	Couldn't open your web browser	Nepodařilo se otevřít webový prohlížeč
 	FLAC stores whole-number samples only	FLAC ukládá pouze celočíselné vzorky
 	Opus export writes mono or stereo	Export do Opus zapisuje mono nebo stereo
+	-1 smallest, 10 best	-1 nejmenší, 10 nejlepší
 	MXF export writes integer PCM only	Export MXF zapisuje pouze celočíselné PCM
 	Open this address in your browser yourself:	Otevřete tuto adresu ručně ve svém prohlížeči:
 	Opens in your web browser: {url}	Otevře odkaz ve webovém prohlížeči: {url}

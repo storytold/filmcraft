@@ -38,6 +38,7 @@ filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }
+filmcraft-vorbis = { path = "crates/vorbis" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
@@ -142,6 +143,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-flac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vorbis]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.

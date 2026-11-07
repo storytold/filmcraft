@@ -239,7 +239,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
   (audio-only `.m4a`, or ADTS `.aac`; #814); Opus (audio-only Ogg `.opus`, or the audio of MP4 /
-  MOV; our CELT encoder, constant bit rate, mono or stereo); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
+  MOV; our CELT encoder, constant bit rate, mono or stereo); Ogg Vorbis (`.ogg`; our encoder,
+  quality −1 to 10, up to 5.1); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
   High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a (10-bit SDR and HDR,
   #1221; High 4:2:2, High 4:4:4 Predictive and lossless H.264 are still missing).
 - **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an
@@ -347,6 +348,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-07 | minor | G13: Ogg Vorbis export from our own encoder; estimates unchanged |
 | 2026-11-07 | minor | G13: Opus export (`.opus`, and Opus audio in MP4 / MOV) from our own CELT encoder; estimates unchanged |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |

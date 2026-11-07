@@ -442,3 +442,4 @@
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
 	Opus export writes mono or stereo	Експорт в Opus записує лише моно або стерео
+	-1 smallest, 10 best	-1 — найменший, 10 — найкращий

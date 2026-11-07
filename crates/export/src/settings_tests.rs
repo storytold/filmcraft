@@ -1043,6 +1043,87 @@ fn opus_settings_round_trip_and_summary() {
 }
 
 #[test]
+fn vorbis_audio_is_an_ogg_vorbis_file() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("vorbis");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
+    let (wav, ogg) = (dir.path("ref.wav"), dir.path("a.ogg"));
+    let pcm = AudioSettings { channels: 2, bits: 24, ..Default::default() };
+    export(&p, seq, &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio: pcm, ..Default::default() }, &m, &Progress::default()).unwrap();
+    let metadata = ExportMetadata { title: "Vorbis test".into(), ..Default::default() };
+    let audio = AudioSettings { vorbis_quality: 6.0, ..Default::default() };
+    let s = ExportSettings { format: Format::Vorbis, path: ogg.clone(), range, audio, metadata, ..Default::default() };
+    assert_eq!((s.audio_codec(), s.extension()), (AudioCodec::Vorbis, "ogg"));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 72_000);
+    let bytes = std::fs::read(&ogg).unwrap();
+
+    // Vorbis I §A: three headers, then audio pages; the last granule position is the length
+    let file = filmcraft_ogg::open(&bytes).unwrap();
+    assert!(file.warnings.is_empty(), "{:?}", file.warnings);
+    let st = &file.streams[0];
+    assert_eq!((st.codec, st.headers.len(), st.saw_eos), (filmcraft_ogg::Codec::Vorbis, 3, true));
+    let info = filmcraft_ogg::VorbisInfo::parse(&st.headers[0]).unwrap();
+    assert_eq!((info.channels, info.sample_rate), (2, 48_000));
+    assert!(String::from_utf8_lossy(&st.headers[1]).contains("TITLE=Vorbis test"));
+    assert_eq!(st.last_granule, Some(72_000));
+
+    // FilmCraft's own importer (symphonia's Vorbis decoder), then both of ffmpeg's decoders
+    let decode = |name: &str, bytes: Vec<u8>| filmcraft_codecs::open_bytes(name, bytes.into()).unwrap().audio(0, 72_000, 48_000).unwrap();
+    let reference = decode("ref.wav", std::fs::read(&wav).unwrap());
+    let ours = decode("a.ogg", bytes);
+    for (a, b) in reference.channels.iter().zip(&ours.channels) {
+        assert_eq!(b.len(), 72_000);
+        let snr = snr_db(a, b);
+        assert!(snr > 20.0, "own import: {snr:.1} dB");
+    }
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("vorbis export") {
+        for decoder in ["vorbis", "libvorbis"] {
+            let pcm = ffmpeg_f32(&ffmpeg, decoder, &ogg);
+            assert_eq!(pcm.len(), 2 * 72_000, "{decoder}: end trimming");
+            let l: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+            let snr = snr_db(&reference.channels[0], &l);
+            assert!(snr > 20.0, "{decoder}: {snr:.1} dB");
+        }
+    }
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &ogg) {
+        let a = &j["streams"][0];
+        assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("vorbis"), Some("48000"), Some(2)));
+        assert_eq!(a["tags"]["TITLE"].as_str(), Some("Vorbis test"));
+    }
+}
+
+#[test]
+fn vorbis_settings_round_trip_and_summary() {
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "vorbis"})).unwrap();
+    assert_eq!((s.format, s.audio_codec(), s.vorbis_quality(), s.has_video()), (Format::Vorbis, AudioCodec::Vorbis, 6.0, false));
+    assert_eq!(
+        (Format::from_name("Ogg Vorbis"), Format::from_name("ogg"), Format::Vorbis.id(), Format::Vorbis.label()),
+        (Some(Format::Vorbis), Some(Format::Vorbis), "vorbis", "Ogg Vorbis")
+    );
+    // settings saved before Vorbis read the default quality
+    let old: AudioSettings = serde_json::from_value(serde_json::json!({"bits": 24})).unwrap();
+    assert_eq!(old.vorbis_quality, 6.0);
+    // the quality is clamped, rounded to a tenth, and NaN reads as the default
+    for (q, want) in [(-5.0f32, -1.0f32), (3.24, 3.2), (11.0, 10.0), (f32::NAN, 6.0)] {
+        let s = ExportSettings { format: Format::Vorbis, audio: AudioSettings { vorbis_quality: q, ..Default::default() }, ..Default::default() };
+        assert_eq!(s.vorbis_quality(), want, "{q}");
+        assert!(s.validate().is_ok());
+    }
+    // any sample rate, and 5.1
+    let s = ExportSettings {
+        format: Format::Vorbis,
+        audio: AudioSettings { channels: 6, sample_rate: Some(44_100), vorbis_quality: 3.0, ..Default::default() },
+        ..Default::default()
+    };
+    assert_eq!(s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio, "Vorbis, quality 3, 44100 Hz, 5.1");
+    // a video format does not take Vorbis
+    let v = ExportSettings { format: Format::H264, audio: AudioSettings { codec: AudioCodec::Vorbis, ..Default::default() }, ..Default::default() };
+    assert_eq!(v.audio_codec(), AudioCodec::Aac);
+    assert!(presets::builtin_presets().iter().any(|p| p.settings.format == Format::Vorbis));
+}
+
+#[test]
 fn invalid_export_allocations_are_rejected_before_rendering() {
     let (project, sequence, _) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
     for size in [(0, 36), (64, 0), (u32::MAX, u32::MAX), (32768, 16384), (40000, 16)] {
@@ -1507,7 +1588,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 23);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");

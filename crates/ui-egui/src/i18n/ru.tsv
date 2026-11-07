@@ -2925,6 +2925,7 @@
 	32 bit float	32 бит с плавающей точкой
 	FLAC stores whole-number samples only	FLAC хранит только целочисленные отсчёты
 	Opus export writes mono or stereo	Экспорт в Opus записывает только моно или стерео
+	-1 smallest, 10 best	-1 — наименьший, 10 — наилучший
 	MXF export writes integer PCM only	Экспорт MXF записывает только целочисленный PCM
 	Size / Opacity	Размер / непрозрачность
 	Image Overlay	Наложение изображения

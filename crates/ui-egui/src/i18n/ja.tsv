@@ -2941,6 +2941,7 @@
 	32 bit float	32 ビット浮動小数点
 	FLAC stores whole-number samples only	FLAC は整数サンプルのみ保存できます
 	Opus export writes mono or stereo	Opus の書き出しはモノラルかステレオのみです
+	-1 smallest, 10 best	-1 最小、10 最高
 	MXF export writes integer PCM only	MXF 書き出しは整数 PCM のみです
 	Size / Opacity	サイズ / 不透明度
 	Image Overlay	画像のオーバーレイ

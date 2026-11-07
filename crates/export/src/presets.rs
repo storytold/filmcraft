@@ -247,6 +247,16 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 ..Default::default()
             },
         ),
+        p(
+            "Ogg Vorbis 48 kHz quality 6",
+            "Audio Only",
+            "Ogg Vorbis (.ogg), stereo 48 kHz at quality 6",
+            ExportSettings {
+                format: Format::Vorbis,
+                audio: AudioSettings { codec: AudioCodec::Vorbis, sample_rate: Some(48_000), channels: 2, vorbis_quality: 6.0, ..Default::default() },
+                ..Default::default()
+            },
+        ),
     ]
 }
 

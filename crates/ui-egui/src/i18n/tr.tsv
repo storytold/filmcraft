@@ -2931,6 +2931,7 @@
 	32 bit float	32 bit kayan nokta
 	FLAC stores whole-number samples only	FLAC yalnızca tam sayılı örnekleri depolar
 	Opus export writes mono or stereo	Opus dışa aktarımı mono veya stereo yazar
+	-1 smallest, 10 best	-1 en küçük, 10 en iyi
 	MXF export writes integer PCM only	MXF dışa aktarımı yalnızca tamsayı PCM yazar
 	Size / Opacity	Boyut / Opaklık
 	Image Overlay	Görüntü Bindirme

@@ -425,6 +425,7 @@ fn verify_special_preset(name: &str, format: &str, format_name: &str, output: &s
     match format {
         "aac" => verify_aac_preset(name, format_name, output, probe_result, start, end),
         "opus" => verify_opus_preset(name, format_name, output, probe_result, start, end),
+        "vorbis" => verify_vorbis_preset(name, format_name, output, probe_result, start, end),
         "gif" => verify_gif_preset(probe_result),
         "mxf-opatom" => verify_opatom_preset(name, format_name, output, probe_result),
         _ => false,
@@ -439,6 +440,16 @@ fn verify_opus_preset(name: &str, format_name: &str, output: &str, probe_result:
     assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
     let audio = stream(probe_result, "audio").unwrap();
     assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("opus"), Some("48000"), Some(2)), "{name}");
+    assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", probe_result["format"]["duration"]);
+    true
+}
+
+/// Ogg Vorbis: one 48 kHz stereo Vorbis stream, as long as the range (the last granule position).
+fn verify_vorbis_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    assert!(output.ends_with(".ogg"), "{name}: {output}");
+    assert!(format_name.contains("ogg"), "{name}: {format_name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("vorbis"), Some("48000"), Some(2)), "{name}");
     assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", probe_result["format"]["duration"]);
     true
 }

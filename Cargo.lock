@@ -2174,6 +2174,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-vorbis",
  "image",
  "rayon",
  "serde",
@@ -2583,6 +2584,13 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "unicode-bidi",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-vorbis"
+version = "0.17.0"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

@@ -46,7 +46,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
 | MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | **none** | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | 10–20 h (MP3 encoder) |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | own CELT-only encoder: fullband, 20 ms, constant bit rate 6–510 kbps, mono / stereo, in Ogg (`.opus`), MP4 and MOV; no SILK / hybrid speech modes, short blocks, VBR or surround yet | conformance vectors; encoder: libopus and ffmpeg decode every export (`-xerror`), sample-exact length, SNR floors | ahead | 10–20 h (short blocks, VBR, surround) |
-| FLAC, ALAC, Vorbis | partial | decode (symphonia), also FLAC in MP4 / MOV (#603) | none | — | 70% | 3–6 h |
+| FLAC, ALAC, Vorbis | partial | decode (symphonia), also FLAC in MP4 / MOV (#603) | FLAC; Vorbis: own encoder in Ogg (`.ogg`), quality −1 to 10, 1–8 channels, long blocks only, no coupling | Vorbis: ffmpeg's decoder and libvorbis read every export (`-xerror`), sample-exact length, SNR floors and bit-rate bounds per quality | 70% | 3–6 h |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |
 
 ## Summary
