@@ -3,6 +3,7 @@
 //! compensation, scaling and inverse transforms. In-loop filters and row publication live in
 //! `filter.rs`.
 
+use crate::ChromaFormat;
 use crate::cabac::{Cabac, Contexts, init_contexts};
 use crate::error::{Result, ensure, invalid};
 use crate::inter;
@@ -15,7 +16,7 @@ use crate::spec_tables::{
     LAST_X_PREFIX, LAST_Y_PREFIX, MERGE_FLAG, MERGE_IDX, MVP_FLAG, PART_MODE, PRED_MODE, PREV_INTRA_LUMA, REF_IDX, RQT_ROOT_CBF, SAO_MERGE, SAO_TYPE,
     SIG_COEFF, SPLIT_CU, SPLIT_TRANSFORM, TRANSFORM_SKIP,
 };
-use crate::tables::{CTX_IDX_MAP, LEVEL_SCALE, SCAN_4, qpc_420, scan_order};
+use crate::tables::{CTX_IDX_MAP, INTRA_CHROMA_MODE_422, LEVEL_SCALE, SCAN_4, qpc, scan_order};
 use crate::transform;
 use std::sync::Arc;
 
@@ -114,6 +115,7 @@ pub struct PicState<S> {
     pub height: usize,
     pub cwidth: usize,
     pub cheight: usize,
+    pub chroma: ChromaFormat,
     pub w4: usize,
     pub h4: usize,
     pub log2_ctb: u32,
@@ -147,7 +149,8 @@ pub struct PicState<S> {
 impl<S: Sample> PicState<S> {
     pub fn new(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>) -> Self {
         let (width, height) = (sps.width as usize, sps.height as usize);
-        let (cwidth, cheight) = (width / 2, height / 2);
+        let chroma = frame.chroma;
+        let (cwidth, cheight) = (frame.cwidth, frame.cheight);
         let (w4, h4) = (width.div_ceil(4), height.div_ceil(4));
         let log2_ctb = sps.log2_ctb;
         let (wctb, hctb) = (sps.pic_width_in_ctbs() as usize, sps.pic_height_in_ctbs() as usize);
@@ -164,6 +167,7 @@ impl<S: Sample> PicState<S> {
             height,
             cwidth,
             cheight,
+            chroma,
             w4,
             h4,
             log2_ctb,
