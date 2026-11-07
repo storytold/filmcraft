@@ -416,9 +416,11 @@ mod tests {
         assert_eq!(bounds(&w), [(0.0, 0.4), (1.4, 1.8)]);
     }
 
-    /// Unvoiced sound (white noise) at `db` dBFS over `(from, to)`, added to `a`.
+    /// Unvoiced sound (uniform white noise) with an RMS of `db` dBFS over `(from, to)`, added to
+    /// `a`. The tone in `audio` has an RMS of about −13.5 dBFS.
     fn add_noise(a: &mut [f32], from: f64, to: f64, db: f32) {
-        let amp = 10f32.powf(db / 20.0) * 1.7;
+        // uniform noise of width `w` has an RMS of `w / sqrt(12)`
+        let amp = 10f32.powf(db / 20.0) * 12f32.sqrt();
         let mut rng = 12345u32;
         for v in a.iter_mut().take((to * SAMPLE_RATE as f64) as usize).skip((from * SAMPLE_RATE as f64) as usize) {
             rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -428,7 +430,7 @@ mod tests {
 
     #[test]
     fn a_breath_after_the_last_word_is_not_the_word() {
-        // "yeah." sounds 0.0–0.5, then a 0.4 s breath (noise 20 dB under it), then silence
+        // "yeah." sounds 0.0–0.5, then a 0.4 s breath (noise about 25 dB under it), then silence
         let mut a = audio(1.5, &[(0.0, 0.5)]);
         add_noise(&mut a, 0.5, 0.9, -40.0);
         let mut w = vec![word("yeah.", 0.0, 0.9)];
@@ -439,7 +441,7 @@ mod tests {
 
     #[test]
     fn a_breath_before_the_first_word_is_not_the_word() {
-        // a 0.3 s breath (noise 25 dB under the voice), a 40 ms dip, then "so" sounds 0.34–0.8
+        // a 0.3 s breath (noise about 30 dB under the voice), a 40 ms dip, then "so" sounds 0.34–0.8
         let mut a = audio(1.2, &[(0.34, 0.8)]);
         add_noise(&mut a, 0.0, 0.3, -45.0);
         let mut w = vec![word("so", 0.0, 0.8)];
@@ -450,7 +452,7 @@ mod tests {
 
     #[test]
     fn a_breath_running_into_the_word_leaves_room_for_a_first_consonant() {
-        // a 0.3 s breath (noise 25 dB under the voice) straight into "fun" sounding 0.3–0.8
+        // a 0.3 s breath (noise about 30 dB under the voice) straight into "fun" sounding 0.3–0.8
         let mut a = audio(1.2, &[(0.3, 0.8)]);
         add_noise(&mut a, 0.0, 0.3, -45.0);
         let mut w = vec![word("fun", 0.0, 0.8)];
@@ -464,14 +466,26 @@ mod tests {
 
     #[test]
     fn a_consonant_release_and_a_loud_onset_stay() {
-        // 60 ms of unvoiced release after the vowel and a 120 ms unvoiced onset (an "s") at the
-        // word's own level: both inside the word
+        // 60 ms of unvoiced release (16 dB under the vowel) and a 120 ms unvoiced onset (an "s") at
+        // the word's own level: both inside the word. The onset is shorter than ONSET_FRAMES, so its
+        // level is not what keeps it; `a_long_unvoiced_lead_at_the_word_level_stays` covers that.
         let mut a = audio(1.2, &[(0.12, 0.6)]);
-        add_noise(&mut a, 0.0, 0.12, -22.0);
+        add_noise(&mut a, 0.0, 0.12, -14.0);
         add_noise(&mut a, 0.6, 0.66, -30.0);
         let mut w = vec![word("stops", 0.0, 0.66)];
         tighten_words(&a, &mut w);
         assert_eq!(bounds(&w), [(0.0, 0.66)]);
+    }
+
+    #[test]
+    fn a_long_unvoiced_lead_at_the_word_level_stays() {
+        // a 0.3 s unvoiced lead as loud as the word (a drawn-out "sh", not a breath) straight into
+        // the voice of "shore" sounding 0.3–0.8: longer than ONSET_FRAMES, but not quiet, so it stays
+        let mut a = audio(1.2, &[(0.3, 0.8)]);
+        add_noise(&mut a, 0.0, 0.3, -14.0);
+        let mut w = vec![word("shore", 0.0, 0.8)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.8)]);
     }
 
     #[test]
