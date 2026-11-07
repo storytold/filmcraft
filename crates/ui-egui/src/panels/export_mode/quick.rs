@@ -168,7 +168,10 @@ pub(super) fn list_row(ui: &mut egui::Ui, t: &Tokens, selected: bool, text: &str
     };
     ui.painter().rect_filled(r, 3.0, bg);
     let col = if selected { Color32::WHITE } else { t.text };
-    let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(r.shrink2(vec2(6.0, 0.0))));
-    p.text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.5), col);
-    resp
+    let padded = r.shrink2(vec2(6.0, 0.0));
+    let font = Tokens::ui(12.5);
+    let clipped = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), col).size().x > padded.width());
+    let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(padded));
+    p.text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, font, col);
+    if clipped { resp.on_hover_text(text) } else { resp }
 }

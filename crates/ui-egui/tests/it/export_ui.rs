@@ -88,6 +88,14 @@ impl Driver {
         v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
     }
 
+    /// Bounding rectangle `[x, y, w, h]` of the registered UI element `id`.
+    fn rect(&mut self, id: &str) -> [f32; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
+        let r = e["rect"].as_array().unwrap();
+        [0, 1, 2, 3].map(|k| r[k].as_f64().unwrap() as f32)
+    }
+
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()
     }
@@ -647,10 +655,10 @@ fn preset_manager_russian_rows_fit_without_overlapping_format() {
     let preset = "Match Source – Adaptive High Bitrate";
     let ru_label = filmcraft_ui_egui::i18n::Language::Ru.tr(preset);
     let font = filmcraft_ui_egui::theme::Tokens::ui(12.5);
-    let text_w = d.ctx.fonts_mut(|f| f.layout_no_wrap(ru_label.to_string(), font, egui::Color32::WHITE).size().x);
+    let text_w = d.harness.ctx.fonts_mut(|f| f.layout_no_wrap(ru_label.to_string(), font, egui::Color32::WHITE).size().x);
     let item_rect = d.rect(&format!("presetManager.item.{preset}"));
     let fmt_rect = d.rect(&format!("presetManager.format.{preset}"));
-    assert!(item_rect.width() >= text_w + 10.0, "Russian preset row ({:.1} pt) fits `{ru_label}` ({:.1} pt)", item_rect.width(), text_w);
-    assert!(item_rect.max.x <= fmt_rect.min.x, "preset row ({item_rect:?}) does not overlap adjacent format label ({fmt_rect:?})");
+    assert!(item_rect[2] >= text_w + 10.0, "Russian preset row ({:.1} pt) fits `{ru_label}` ({:.1} pt)", item_rect[2], text_w);
+    assert!(item_rect[0] + item_rect[2] <= fmt_rect[0], "preset row ({item_rect:?}) does not overlap adjacent format label ({fmt_rect:?})");
     d.ok("ui.menu.invoke", json!({"id": "app.language.english"}));
 }
