@@ -40,9 +40,16 @@ pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
 
 /// The filtered 8x8 blocks of the 64x64 filter block at (r, c): bit `(i << 3) | j` is set for
 /// block row `i`, column `j` when it is not skipped. None when the filter block is off
-/// (cdef_idx -1) or every block in it is skipped.
+/// (cdef_idx -1), its strengths are all zero or every block in it is skipped.
 fn fb_skip_mask(fs: &FrameState, r: usize, c: usize) -> Option<u64> {
-    if fs.cdef_idx(r, c) < 0 {
+    let idx = fs.cdef_idx(r, c);
+    if idx < 0 {
+        return None;
+    }
+    // Zero strengths filter nothing (as in `cdef_fb`; the shift by coeff_shift keeps zero zero).
+    let cp = &fs.fh.cdef;
+    let i = idx as usize;
+    if cp.y_pri[i] == 0 && cp.y_sec[i] == 0 && (fs.num_planes <= 1 || (cp.uv_pri[i] == 0 && cp.uv_sec[i] == 0)) {
         return None;
     }
     let mi = &fs.mi;
