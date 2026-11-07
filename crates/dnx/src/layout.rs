@@ -119,6 +119,27 @@ pub mod tables {
         Some(CidTables { weights: info.weights, p: info.p, amp: lut(&v.amp), run: lut(&v.run), dc: lut(&v.dc) })
     }
 
+    /// The encode side of a compression ID's VLC tables: what an encoder elsewhere writes.
+    #[derive(Debug, Clone)]
+    pub struct EncodeVlc {
+        /// `amp_code[frun][findex][amp - 1]` = (codeword, length): the amplitude code with its
+        /// run-follows (`frun`) and escape (`findex`) flags.
+        pub amp_code: [[[(u16, u8); 64]; 2]; 2],
+        /// The end-of-block code.
+        pub eob: (u16, u8),
+        /// `run_code[run]` for runs 1..=62 (index 0 unused).
+        pub run_code: [(u16, u8); 63],
+        /// `dc_code[eta]` for a DC difference of `eta` bits.
+        pub dc_code: Vec<(u16, u8)>,
+    }
+
+    /// The encode tables of compression ID `cid`. The decode side, the weights and `p` are in
+    /// [`cid`].
+    pub fn encode_vlc(cid: u32) -> Option<EncodeVlc> {
+        let v = crate::tables::vlc(super::cid_info(cid)?.vlc);
+        Some(EncodeVlc { amp_code: v.amp_code, eob: v.eob, run_code: v.run_code, dc_code: v.dc_code.clone() })
+    }
+
     /// The blocks of a colour macroblock in coded order: (plane, x, y) inside the macroblock.
     pub fn blocks(chroma: ChromaFormat) -> &'static [(u8, u8, u8)] {
         match chroma {
@@ -189,5 +210,15 @@ mod tests {
             assert!(frame_layout(t).is_err(), "truncated at {cut}");
             assert!(crate::decode_frame(t).is_err());
         }
+    }
+
+    #[test]
+    fn encode_tables_are_there_for_every_encodable_cid() {
+        for p in [Profile::Lb, Profile::Sq, Profile::Hq, Profile::Hqx, Profile::R444] {
+            let t = tables::encode_vlc(p.cid()).unwrap_or_else(|| panic!("{p:?}"));
+            assert!(t.eob.1 > 0 && t.dc_code.len() > 8 && t.run_code[1].1 > 0 && t.amp_code[0][0][0].1 > 0);
+            assert!(tables::cid(p.cid()).is_some_and(|c| c.p == 8 || c.p == 32));
+        }
+        assert!(tables::encode_vlc(1).is_none());
     }
 }

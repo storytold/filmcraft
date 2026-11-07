@@ -117,6 +117,31 @@ impl Encoder {
     /// Encode one frame. Its geometry and chroma format must match the configuration; samples
     /// at another depth are rescaled to the coded depth.
     pub fn encode(&mut self, f: &Frame) -> Result<Vec<u8>> {
+        self.encode_with(f, None).map(|(out, _)| out)
+    }
+
+    /// `encode`, with the per-macroblock work on `backend` when it takes the frame. Returns the
+    /// frame and whether the backend coded it. When the backend declines, fails or answers
+    /// inconsistently, the whole frame is coded here instead.
+    pub fn encode_with(&mut self, f: &Frame, backend: Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
+        self.validate(f)?;
+        let budget_bits = (self.frame_size as u64 - self.header_size as u64 - 4) * 8;
+        if let Some(backend) = backend
+            && let Some(out) = self.encode_on_backend(f, backend, budget_bits)
+        {
+            return Ok((out, true));
+        }
+        let prep = self.prepare(f);
+        let coder = Coder::new(&self.cfg, self.info, &prep, f.rgb);
+        let (qs, q) = rate_control(self.last_q, prep.nw, prep.ns, budget_bits, &mut |q| Some(coder.all_bits(q)))
+            .ok_or_else(|| Error::Input("rate control failed".into()))?;
+        self.last_q = q;
+        let rows = par_rows(prep.ns, |s| coder.write_row(s, &qs));
+        Ok((self.assemble(rows, f.rgb)?, false))
+    }
+
+    /// Check the frame against the configuration.
+    fn validate(&self, f: &Frame) -> Result<()> {
         let cfg = &self.cfg;
         if f.width != cfg.width || f.height != cfg.height {
             return Err(Error::Input(format!("frame is {}x{}, encoder is {}x{}", f.width, f.height, cfg.width, cfg.height)));
@@ -135,32 +160,46 @@ impl Encoder {
         if cfg.alpha.is_some() && f.alpha.as_ref().is_none_or(|a| a.len() != n) {
             return Err(Error::Input("alpha coding needs an alpha plane of the frame's size".into()));
         }
-        let prep = self.prepare(f);
-        let vlc = vlc(self.info.vlc);
-        let budget_bits = (self.frame_size as u64 - self.header_size as u64 - 4) * 8;
-        let q = self.rate_control(&prep, vlc, budget_bits);
-        self.write(&prep, vlc, &q, f.rgb)
+        Ok(())
     }
 
-    fn mb_layout(&self) -> &'static [(u8, u8, u8)] {
-        match self.cfg.chroma() {
-            ChromaFormat::Yuv444 => {
-                &[(0, 0, 0), (0, 8, 0), (1, 0, 0), (1, 8, 0), (2, 0, 0), (2, 8, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (1, 8, 8), (2, 0, 8), (2, 8, 8)]
-            }
-            _ => &[(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (2, 0, 8)],
+    /// The frame coded with the backend's per-macroblock work. `None` when the backend declines,
+    /// fails, or its answers do not agree with each other (every length is checked against the
+    /// bits it measured, and every macroblock header against its quantiser).
+    fn encode_on_backend(&mut self, f: &Frame, backend: &mut dyn MacroblockBackend, budget_bits: u64) -> Option<Vec<u8>> {
+        let nw = self.cfg.width.div_ceil(16) as usize;
+        let ns = self.cfg.height.div_ceil(16) as usize;
+        if !backend.load(&self.cfg, f) {
+            return None;
         }
+        let mut measured: Vec<(u32, Vec<u32>)> = Vec::new();
+        let (qs, q) = backend_quantisers(backend, self.last_q, nw, ns, budget_bits, &mut measured)?;
+        // the bits of every macroblock at the quantiser it will be written at
+        let want = bits_at_qs(backend, &mut measured, &qs)?;
+        if padded_frame_bits(&want, nw) > budget_bits {
+            // the search found no quantiser that fits: the CPU reports it
+            return None;
+        }
+        let written = backend.write(&qs)?;
+        let alpha = self.cfg.alpha;
+        let ycbcr444 = self.cfg.chroma() == ChromaFormat::Yuv444 && !f.rgb;
+        let check = Stitch { nw, ns, parts: if alpha.is_some() { 2 } else { 1 }, dct_alpha: alpha == Some(AlphaCoding::Dct), ycbcr444 };
+        let rows = check.rows(&written, &qs, &want)?;
+        let out = self.assemble(rows, f.rgb).ok()?;
+        self.last_q = q;
+        Some(out)
     }
 
     fn prepare(&self, f: &Frame) -> Prepared {
         let cfg = &self.cfg;
         let nw = cfg.width.div_ceil(16) as usize;
         let ns = cfg.height.div_ceil(16) as usize;
-        let ncol = self.mb_layout().len();
+        let ncol = mb_layout(cfg.chroma()).len();
         // DCT-coded alpha: four more blocks per macroblock (plane 3, coded after the colour)
         let layout: Vec<(u8, u8, u8)> = if cfg.alpha == Some(AlphaCoding::Dct) {
-            self.mb_layout().iter().chain(&crate::decode::LAYOUT_ALPHA).copied().collect()
+            mb_layout(cfg.chroma()).iter().chain(&crate::decode::LAYOUT_ALPHA).copied().collect()
         } else {
-            self.mb_layout().to_vec()
+            mb_layout(cfg.chroma()).to_vec()
         };
         let nblk = layout.len();
         let depth = cfg.bit_depth as i32;
@@ -259,139 +298,12 @@ impl Encoder {
         Prepared { nw, ns, nblk, ncol, t, dc_bits, rle }
     }
 
-    /// Per-macroblock qsf values whose coded frame fits `budget_bits`.
-    fn rate_control(&mut self, prep: &Prepared, vlc: &VlcSet, budget_bits: u64) -> Vec<u32> {
-        let p_bits = if self.cfg.bit_depth == 8 { 4 } else { 6 };
-        let max_amp = if p_bits == 4 { 1024 } else { 4096 };
-        let nmb = prep.nw * prep.ns;
-        // macroblock headers: colour, and DCT-coded alpha's own
-        let headers = if prep.nblk > prep.ncol { 24 } else { 12 };
-        let mb_bits = |mb: usize, q: u32| -> u32 {
-            let mut bits = headers + prep.dc_bits[mb];
-            for k in 0..prep.nblk {
-                bits += ac_bits(&prep.t[mb * prep.nblk + k], q as f32, vlc, p_bits, max_amp);
-            }
-            bits
-        };
-        let frame_bits = |q: u32| -> u64 {
-            let row = |s: usize| -> u64 { row_bytes((0..prep.nw).map(|m| mb_bits(s * prep.nw + m, q) as u64).sum()) * 8 };
-            #[cfg(feature = "threads")]
-            {
-                use rayon::prelude::*;
-                (0..prep.ns).into_par_iter().map(row).sum()
-            }
-            #[cfg(not(feature = "threads"))]
-            {
-                (0..prep.ns).map(row).sum()
-            }
-        };
-        // smallest feasible uniform q (bits are non-increasing in q)
-        let (mut lo, mut hi) = (1u32, 2047u32);
-        if frame_bits(1) <= budget_bits {
-            hi = 1;
-        } else {
-            // bracket around the previous frame's choice first
-            let g = self.last_q.clamp(2, 2047);
-            if frame_bits(g) <= budget_bits {
-                hi = g;
-                let g2 = (g / 2).max(1);
-                if g2 > 1 && frame_bits(g2) > budget_bits {
-                    lo = g2;
-                }
-            } else {
-                lo = g;
-            }
-            while hi - lo > 1 {
-                let m = (lo + hi) / 2;
-                if frame_bits(m) <= budget_bits { hi = m } else { lo = m }
-            }
-        }
-        let q = hi;
-        self.last_q = q;
-        let mut qs = vec![q; nmb];
-        if q > 1 {
-            // refine: one finer step per macroblock while the budget allows
-            let mut row_bits: Vec<u64> = (0..prep.ns).map(|s| (0..prep.nw).map(|m| mb_bits(s * prep.nw + m, q) as u64).sum()).collect();
-            let mut total: u64 = row_bits.iter().map(|&b| row_bytes(b) * 8).sum();
-            let cur: Vec<u32> = (0..nmb).map(|mb| mb_bits(mb, q)).collect();
-            let finer: Vec<u32> = (0..nmb).map(|mb| mb_bits(mb, q - 1)).collect();
-            // spread the refinement evenly over the frame: visit macroblocks in a strided order
-            let stride = 7919usize;
-            let mut idx = 0usize;
-            for _ in 0..nmb {
-                idx = (idx + stride) % nmb;
-                let s = idx / prep.nw;
-                let extra = finer[idx] as u64 - cur[idx].min(finer[idx]) as u64;
-                let nb = row_bits[s] + extra;
-                let nt = total - row_bytes(row_bits[s]) * 8 + row_bytes(nb) * 8;
-                if nt <= budget_bits {
-                    row_bits[s] = nb;
-                    total = nt;
-                    qs[idx] = q - 1;
-                }
-            }
-        }
-        qs
-    }
-
-    fn write(&self, prep: &Prepared, vlc: &VlcSet, qs: &[u32], rgb: bool) -> Result<Vec<u8>> {
+    /// The frame header, scan index table and the scan lines (each padded to 4 bytes) of a frame.
+    fn assemble(&self, rows: Vec<Vec<u8>>, rgb: bool) -> Result<Vec<u8>> {
         let cfg = &self.cfg;
-        let p_bits = if cfg.bit_depth == 8 { 4 } else { 6 };
-        let max_amp = if p_bits == 4 { 1024 } else { 4096 };
-        let layout = self.mb_layout();
         // 4:4:4 signalling as ffmpeg writes and reads it (see `FrameHeader::rgb_planes`): RGB is
         // CLF = 0 with ACF = 0; Y'CbCr is CLF = 1 with ACF = 1 on every macroblock.
         let ycbcr444 = cfg.chroma() == ChromaFormat::Yuv444 && !rgb;
-        let write_row = |s: usize| -> Vec<u8> {
-            let mut w = Writer::new();
-            let mut pred = [0i32; 4];
-            let mut block = |w: &mut Writer, m: usize, k: usize, pl: u8, q: u32| {
-                let t = &prep.t[m * prep.nblk + k];
-                let dc = t[0] as i32;
-                let e = dc - pred[pl as usize];
-                pred[pl as usize] = dc;
-                let eta = dc_eta(e);
-                let (c, l) = vlc.dc_code[eta as usize];
-                w.put(c as u32, l as u32);
-                if eta > 0 {
-                    let rho = if e > 0 { e } else { e + (1 << eta) - 1 };
-                    w.put(rho as u32, eta);
-                }
-                write_ac(w, t, q as f32, vlc, p_bits, max_amp);
-            };
-            for mb in 0..prep.nw {
-                let m = s * prep.nw + mb;
-                let q = qs[m];
-                w.put(q, 11);
-                w.put(ycbcr444 as u32, 1);
-                for (k, &(pl, _, _)) in layout.iter().enumerate() {
-                    block(&mut w, m, k, pl, q);
-                }
-            }
-            // the line's alpha after its colour
-            for mb in 0..prep.nw {
-                let m = s * prep.nw + mb;
-                if prep.nblk > prep.ncol {
-                    w.put(qs[m], 11);
-                    w.put(0, 1);
-                    for k in prep.ncol..prep.nblk {
-                        block(&mut w, m, k, 3, qs[m]);
-                    }
-                }
-                for &(v, n) in prep.rle.get(m).map_or(&[][..], |r| r.as_slice()) {
-                    w.put(v, n);
-                }
-            }
-            w.finish_aligned(4)
-        };
-        #[cfg(feature = "threads")]
-        let rows: Vec<Vec<u8>> = {
-            use rayon::prelude::*;
-            (0..prep.ns).into_par_iter().map(write_row).collect()
-        };
-        #[cfg(not(feature = "threads"))]
-        let rows: Vec<Vec<u8>> = (0..prep.ns).map(write_row).collect();
-
         let h = FrameHeader {
             header_size: self.header_size,
             version: 3,
@@ -413,14 +325,14 @@ impl Encoder {
             rgb: ycbcr444,
             color_volume: cfg.color_volume,
             timecode: None,
-            mb_rows: prep.ns as u32,
+            mb_rows: rows.len() as u32,
         };
         let mut out = header::write(&h);
-        out.reserve(self.frame_size as usize - out.len());
+        out.reserve((self.frame_size as usize).saturating_sub(out.len()));
         let mut off = 0u32;
         for (s, r) in rows.iter().enumerate() {
             let o = SCAN_INDEX_OFFSET + 4 * s;
-            out[o..o + 4].copy_from_slice(&off.to_be_bytes());
+            out.get_mut(o..o + 4).ok_or_else(|| Error::Input("scan index outside the header".into()))?.copy_from_slice(&off.to_be_bytes());
             off += r.len() as u32;
         }
         for r in rows {
@@ -433,6 +345,370 @@ impl Encoder {
         out.resize(end, 0);
         out.extend_from_slice(&EOF_SIGNATURE);
         Ok(out)
+    }
+}
+
+/// The per-macroblock work of an encode on other hardware: forward DCT, bit counting at a
+/// quantiser and entropy coding of every macroblock, exactly as this crate's encoder does them.
+/// Macroblocks are in raster order (`mb_width` per scan line).
+///
+/// With alpha ([`EncoderConfig::alpha`]) a macroblock's coded bits are its colour part and its
+/// alpha part: for DCT alpha a second macroblock header (11-bit qsf, a zero flag) and four alpha
+/// blocks, for lossless alpha its run-length (or raw) codes.
+pub trait MacroblockBackend: Send {
+    /// Take `frame` (already validated by the encoder, alpha plane included when alpha is
+    /// coded) for `cfg`. `false`: this backend cannot encode it (size, profile, a device error);
+    /// the encoder then uses its own code.
+    fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool;
+    /// Every macroblock's coded bits at quantiser scale factor `q`: the 11-bit qsf, the flag,
+    /// DC and AC of its colour blocks (DC predicted along its scan line per component), plus its
+    /// alpha part when alpha is coded.
+    fn bits(&mut self, q: u32) -> Option<Vec<u32>>;
+    /// Every macroblock part's bit string at the quantiser `qs[i]` of macroblock `i`, MSB first
+    /// (the last byte zero-padded), and its length in bits. Without alpha: one entry per
+    /// macroblock in raster order. With alpha: two entries per macroblock, scan line by scan
+    /// line, each line's colour parts first and then its alpha parts, the order the stream
+    /// holds them: `[line 0 colour mb 0..N, line 0 alpha mb 0..N, line 1 colour mb 0..N, ...]`.
+    /// A macroblock's two lengths add up to its `bits`.
+    fn write(&mut self, qs: &[u32]) -> Option<Vec<(Vec<u8>, u32)>>;
+    /// The rate control (the quantiser of every macroblock for a frame of `budget` bits, given
+    /// the previous frame's uniform quantiser as `hint`), run where the bits are: one value in
+    /// `1..=2047` per macroblock. `None`: the encoder runs its search over `bits`. An answer is
+    /// used only when it is in range, the frame then fits `budget`, and it uses at most 16
+    /// distinct values (each distinct value costs the encoder one `bits` call to check the
+    /// fit; the CPU algorithm and its GPU port use at most 2). Any other answer is ignored,
+    /// however well it would fit, and the encoder runs its search.
+    fn choose(&mut self, hint: u32, budget: u64) -> Option<Vec<u32>> {
+        let _ = (hint, budget);
+        None
+    }
+}
+
+/// The most distinct quantisers a backend's `choose` answer may use (each costs a `bits` call).
+const MAX_CHOSEN_LEVELS: usize = 16;
+
+/// `bits(q)` of the backend, remembered in `measured` and checked for one entry per macroblock.
+fn measure(backend: &mut dyn MacroblockBackend, measured: &mut Vec<(u32, Vec<u32>)>, q: u32, nmb: usize) -> Option<Vec<u32>> {
+    if let Some((_, v)) = measured.iter().find(|(mq, _)| *mq == q) {
+        return Some(v.clone());
+    }
+    let v = backend.bits(q)?;
+    if v.len() != nmb {
+        return None;
+    }
+    measured.push((q, v.clone()));
+    Some(v)
+}
+
+/// Every macroblock's bits at its own quantiser.
+fn bits_at_qs(backend: &mut dyn MacroblockBackend, measured: &mut Vec<(u32, Vec<u32>)>, qs: &[u32]) -> Option<Vec<u32>> {
+    let mut levels: Vec<u32> = qs.to_vec();
+    levels.sort_unstable();
+    levels.dedup();
+    for &q in &levels {
+        measure(backend, measured, q, qs.len())?;
+    }
+    qs.iter().enumerate().map(|(i, q)| measured.iter().find(|(mq, _)| mq == q).and_then(|(_, v)| v.get(i).copied())).collect()
+}
+
+/// The quantisers of a frame from the backend: its own rate control when it has one and its
+/// answer is in range and fits the budget, else the encoder's over the bits the backend
+/// measures (kept in `measured`). With the uniform quantiser the frame was coded at.
+fn backend_quantisers(
+    backend: &mut dyn MacroblockBackend,
+    hint: u32,
+    nw: usize,
+    ns: usize,
+    budget_bits: u64,
+    measured: &mut Vec<(u32, Vec<u32>)>,
+) -> Option<(Vec<u32>, u32)> {
+    let nmb = nw * ns;
+    if let Some(qs) = backend.choose(hint, budget_bits)
+        && qs.len() == nmb
+        && qs.iter().all(|q| (1..=2047).contains(q))
+        && let Some(want) =
+            (qs.iter().collect::<std::collections::BTreeSet<_>>().len() <= MAX_CHOSEN_LEVELS).then(|| bits_at_qs(backend, measured, &qs)).flatten()
+        && padded_frame_bits(&want, nw) <= budget_bits
+    {
+        let q = qs.iter().copied().max()?;
+        return Some((qs, q));
+    }
+    rate_control(hint, nw, ns, budget_bits, &mut |q| measure(backend, measured, q, nmb))
+}
+
+/// What a backend's macroblock bit strings must look like to be stitched into scan lines.
+struct Stitch {
+    nw: usize,
+    ns: usize,
+    /// Entries per macroblock in the backend's answer: 1, or 2 with alpha.
+    parts: usize,
+    dct_alpha: bool,
+    ycbcr444: bool,
+}
+
+impl Stitch {
+    /// The scan lines from the backend's `written` strings, or `None` if anything disagrees with
+    /// the measured `want` bits or the quantisers `qs`.
+    fn rows(&self, written: &[(Vec<u8>, u32)], qs: &[u32], want: &[u32]) -> Option<Vec<Vec<u8>>> {
+        let nmb = self.nw * self.ns;
+        if written.len() != nmb * self.parts || qs.len() != nmb || want.len() != nmb {
+            return None;
+        }
+        for s in 0..self.ns {
+            for mb in 0..self.nw {
+                let m = s * self.nw + mb;
+                let (colour, alpha) = self.parts_of(written, s, mb)?;
+                if !self.part_ok(colour, qs[m], Some(self.ycbcr444)) {
+                    return None;
+                }
+                let mut bits = colour.1 as u64;
+                if let Some(alpha) = alpha {
+                    if !self.part_ok(alpha, qs[m], self.dct_alpha.then_some(false)) {
+                        return None;
+                    }
+                    bits += alpha.1 as u64;
+                }
+                if bits != *want.get(m)? as u64 {
+                    return None;
+                }
+            }
+        }
+        let row = |s: usize| -> Vec<u8> {
+            let mut w = Writer::new();
+            for part in 0..self.parts {
+                for mb in 0..self.nw {
+                    let entry = written.get((s * self.parts + part) * self.nw + mb);
+                    if let Some((bytes, bits)) = entry {
+                        put_bits(&mut w, bytes, *bits);
+                    }
+                }
+            }
+            w.finish_aligned(4)
+        };
+        Some(par_rows(self.ns, row))
+    }
+
+    /// The colour entry and, with alpha, the alpha entry of macroblock `mb` of line `s`.
+    fn parts_of<'a>(&self, written: &'a [(Vec<u8>, u32)], s: usize, mb: usize) -> Option<(&'a (Vec<u8>, u32), Option<&'a (Vec<u8>, u32)>)> {
+        let line = s * self.parts * self.nw;
+        let colour = written.get(line + mb)?;
+        let alpha = if self.parts == 2 { Some(written.get(line + self.nw + mb)?) } else { None };
+        Some((colour, alpha))
+    }
+
+    /// A part has as many bytes as its bits need; when `flag` is set it starts with the
+    /// macroblock header (11-bit qsf `q`, then that flag).
+    fn part_ok(&self, (bytes, bits): &(Vec<u8>, u32), q: u32, flag: Option<bool>) -> bool {
+        if bytes.len() as u64 != (*bits as u64).div_ceil(8) {
+            return false;
+        }
+        let Some(flag) = flag else { return true };
+        let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else { return false };
+        let head = (u32::from(b0) << 4) | u32::from(b1 >> 4);
+        *bits >= 12 && head >> 1 == q && head & 1 == flag as u32
+    }
+}
+
+/// Append the first `bits` bits of `bytes` (MSB first).
+fn put_bits(w: &mut Writer, bytes: &[u8], bits: u32) {
+    let full = (bits / 8) as usize;
+    for &b in bytes.iter().take(full) {
+        w.put(b as u32, 8);
+    }
+    let rem = bits % 8;
+    if rem > 0
+        && let Some(&b) = bytes.get(full)
+    {
+        w.put((b >> (8 - rem)) as u32, rem);
+    }
+}
+
+/// `f(0..n)` in order, on all cores with the `threads` feature.
+fn par_rows<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync + Send) -> Vec<T> {
+    #[cfg(feature = "threads")]
+    {
+        use rayon::prelude::*;
+        (0..n).into_par_iter().map(f).collect()
+    }
+    #[cfg(not(feature = "threads"))]
+    {
+        (0..n).map(f).collect()
+    }
+}
+
+/// The blocks of a colour macroblock in coded order: (plane, x, y) inside the macroblock.
+fn mb_layout(chroma: ChromaFormat) -> &'static [(u8, u8, u8)] {
+    match chroma {
+        ChromaFormat::Yuv444 => {
+            &[(0, 0, 0), (0, 8, 0), (1, 0, 0), (1, 8, 0), (2, 0, 0), (2, 8, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (1, 8, 8), (2, 0, 8), (2, 8, 8)]
+        }
+        _ => &[(0, 0, 0), (0, 8, 0), (1, 0, 0), (2, 0, 0), (0, 0, 8), (0, 8, 8), (1, 0, 8), (2, 0, 8)],
+    }
+}
+
+/// Bits of every scan line (macroblock bits summed, padded to 4 bytes), added up.
+fn padded_frame_bits(mb_bits: &[u32], nw: usize) -> u64 {
+    mb_bits.chunks(nw.max(1)).map(|row| row_bytes(row.iter().map(|&b| b as u64).sum()) * 8).sum()
+}
+
+/// Smallest uniform quantiser whose frame fits `budget_bits` (bits are non-increasing in `q`),
+/// searched from the previous frame's `hint`.
+fn search_q(hint: u32, fits: &mut dyn FnMut(u32) -> Option<bool>) -> Option<u32> {
+    let (mut lo, mut hi) = (1u32, 2047u32);
+    if fits(1)? {
+        return Some(1);
+    }
+    // bracket around the previous frame's choice first
+    let g = hint.clamp(2, 2047);
+    if fits(g)? {
+        hi = g;
+        let g2 = (g / 2).max(1);
+        if g2 > 1 && !fits(g2)? {
+            lo = g2;
+        }
+    } else {
+        lo = g;
+    }
+    while hi - lo > 1 {
+        let m = (lo + hi) / 2;
+        if fits(m)? { hi = m } else { lo = m }
+    }
+    Some(hi)
+}
+
+/// Per-macroblock qsf values whose coded frame fits `budget_bits`, and the uniform quantiser
+/// they refine: `mb_bits_at(q)` gives every macroblock's bits at `q` (`None` or a wrong count:
+/// no answer).
+fn rate_control(hint: u32, nw: usize, ns: usize, budget_bits: u64, mb_bits_at: &mut dyn FnMut(u32) -> Option<Vec<u32>>) -> Option<(Vec<u32>, u32)> {
+    let nmb = nw * ns;
+    let mut at = |q: u32| mb_bits_at(q).filter(|v| v.len() == nmb);
+    let q = search_q(hint, &mut |q| Some(padded_frame_bits(&at(q)?, nw) <= budget_bits))?;
+    let mut qs = vec![q; nmb];
+    if q > 1 {
+        // refine: one finer step per macroblock while the budget allows
+        let cur = at(q)?;
+        let finer = at(q - 1)?;
+        let mut row_bits: Vec<u64> = cur.chunks(nw).map(|r| r.iter().map(|&b| b as u64).sum()).collect();
+        let mut total: u64 = row_bits.iter().map(|&b| row_bytes(b) * 8).sum();
+        // spread the refinement evenly over the frame: visit macroblocks in a strided order
+        let stride = 7919usize;
+        let mut idx = 0usize;
+        for _ in 0..nmb {
+            idx = (idx + stride) % nmb;
+            let s = idx / nw;
+            let extra = *finer.get(idx)? as u64 - (*cur.get(idx)?).min(*finer.get(idx)?) as u64;
+            let nb = row_bits[s] + extra;
+            let nt = total - row_bytes(row_bits[s]) * 8 + row_bytes(nb) * 8;
+            if nt <= budget_bits {
+                row_bits[s] = nb;
+                total = nt;
+                qs[idx] = q - 1;
+            }
+        }
+    }
+    Some((qs, q))
+}
+
+/// The entropy coding of macroblocks: bits and bit strings from the transformed blocks.
+struct Coder<'a> {
+    prep: &'a Prepared,
+    vlc: &'static VlcSet,
+    p_bits: u32,
+    max_amp: u32,
+    layout: &'static [(u8, u8, u8)],
+    ycbcr444: bool,
+}
+
+impl<'a> Coder<'a> {
+    fn new(cfg: &EncoderConfig, info: &'static CidInfo, prep: &'a Prepared, rgb: bool) -> Coder<'a> {
+        let p_bits = if cfg.bit_depth == 8 { 4 } else { 6 };
+        Coder {
+            prep,
+            vlc: vlc(info.vlc),
+            p_bits,
+            max_amp: if p_bits == 4 { 1024 } else { 4096 },
+            layout: mb_layout(cfg.chroma()),
+            ycbcr444: cfg.chroma() == ChromaFormat::Yuv444 && !rgb,
+        }
+    }
+
+    /// Coded bits of macroblock `m` (colour and alpha) at quantiser `q`.
+    fn mb_bits(&self, m: usize, q: u32) -> u32 {
+        let prep = self.prep;
+        // macroblock headers: colour, and DCT-coded alpha's own
+        let headers = if prep.nblk > prep.ncol { 24 } else { 12 };
+        let mut bits = headers + prep.dc_bits.get(m).copied().unwrap_or(0);
+        for k in 0..prep.nblk {
+            if let Some(t) = prep.t.get(m * prep.nblk + k) {
+                bits += ac_bits(t, q as f32, self.vlc, self.p_bits, self.max_amp);
+            }
+        }
+        bits
+    }
+
+    /// Every macroblock's bits at `q`, raster order.
+    fn all_bits(&self, q: u32) -> Vec<u32> {
+        let rows = par_rows(self.prep.ns, |s| (0..self.prep.nw).map(|mb| self.mb_bits(s * self.prep.nw + mb, q)).collect::<Vec<u32>>());
+        rows.into_iter().flatten().collect()
+    }
+
+    /// One block: DC difference to the line's prediction for its plane, then the AC run/levels.
+    fn put_block(&self, w: &mut Writer, m: usize, k: usize, pl: u8, q: u32, pred: &mut [i32; 4]) {
+        let Some(t) = self.prep.t.get(m * self.prep.nblk + k) else { return };
+        let dc = t[0] as i32;
+        let e = dc - pred[pl as usize & 3];
+        pred[pl as usize & 3] = dc;
+        let eta = dc_eta(e);
+        if let Some(&(c, l)) = self.vlc.dc_code.get(eta as usize) {
+            w.put(c as u32, l as u32);
+        }
+        if eta > 0 {
+            let rho = if e > 0 { e } else { e + (1 << eta) - 1 };
+            w.put(rho as u32, eta);
+        }
+        write_ac(w, t, q as f32, self.vlc, self.p_bits, self.max_amp);
+    }
+
+    /// The colour part of macroblock `m`: header and colour blocks.
+    fn put_colour(&self, w: &mut Writer, m: usize, q: u32, pred: &mut [i32; 4]) {
+        w.put(q, 11);
+        w.put(self.ycbcr444 as u32, 1);
+        for (k, &(pl, _, _)) in self.layout.iter().enumerate() {
+            self.put_block(w, m, k, pl, q, pred);
+        }
+    }
+
+    /// The alpha part of macroblock `m`: DCT alpha's own header and blocks, or its lossless codes.
+    fn put_alpha(&self, w: &mut Writer, m: usize, q: u32, pred: &mut [i32; 4]) {
+        let prep = self.prep;
+        if prep.nblk > prep.ncol {
+            w.put(q, 11);
+            w.put(0, 1);
+            for k in prep.ncol..prep.nblk {
+                self.put_block(w, m, k, 3, q, pred);
+            }
+        }
+        for &(v, n) in prep.rle.get(m).map_or(&[][..], |r| r.as_slice()) {
+            w.put(v, n);
+        }
+    }
+
+    /// Macroblock scan line `s`: its colour macroblocks, then its alpha, padded to 4 bytes.
+    fn write_row(&self, s: usize, qs: &[u32]) -> Vec<u8> {
+        let prep = self.prep;
+        let mut w = Writer::new();
+        let mut pred = [0i32; 4];
+        let q_of = |m: usize| qs.get(m).copied().unwrap_or(1);
+        for mb in 0..prep.nw {
+            let m = s * prep.nw + mb;
+            self.put_colour(&mut w, m, q_of(m), &mut pred);
+        }
+        // the line's alpha after its colour
+        for mb in 0..prep.nw {
+            let m = s * prep.nw + mb;
+            self.put_alpha(&mut w, m, q_of(m), &mut pred);
+        }
+        w.finish_aligned(4)
     }
 }
 
@@ -595,5 +871,420 @@ mod tests {
         }
         let n = rle_alpha(&noise, 8);
         assert_eq!((n[0], n.len(), bits(&n)), ((0, 4), 257, 4 + 256 * 8));
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+    use crate::probe;
+
+    const PROFILES: [Profile; 5] = [Profile::Lb, Profile::Sq, Profile::Hq, Profile::Hqx, Profile::R444];
+
+    /// Busy planes (gradient, checkerboard, xorshift noise) at the coded depth; an alpha ramp
+    /// with a noisy corner when alpha is coded.
+    fn test_frame(cfg: &EncoderConfig, seed: u32) -> Frame {
+        let (w, h) = (cfg.width as usize, cfg.height as usize);
+        let mut f = Frame::new(cfg.width, cfg.height, cfg.chroma(), cfg.bit_depth, cfg.alpha.is_some());
+        let mut s = seed.max(1);
+        let mut noise = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        let max = (1u32 << cfg.bit_depth) - 1;
+        let sh = cfg.bit_depth as u32 - 8;
+        let cw = f.chroma_width() as usize;
+        for y in 0..h {
+            for x in 0..w {
+                let check = if (x / 4 + y / 4) % 2 == 0 { 15 } else { 0 };
+                f.y[y * w + x] = ((((16 + (x * 3 + y * 2) % 150 + check) as u32) << sh) + noise() % (10 << sh)).min(max) as u16;
+                if let Some(a) = f.alpha.as_mut() {
+                    let v = (x * max as usize) / w.max(1);
+                    a[y * w + x] = if x > w * 3 / 4 && y > h * 3 / 4 { (noise() & max) as u16 } else { v as u16 };
+                }
+            }
+            for x in 0..cw {
+                f.cb[y * cw + x] = (((100 + (x + y) % 50) << sh) as u32 + noise() % (8 << sh)).min(max) as u16;
+                f.cr[y * cw + x] = (((120 + (x * 5 + y) % 30) << sh) as u32 + noise() % (8 << sh)).min(max) as u16;
+            }
+        }
+        f
+    }
+
+    /// The configurations under test: every profile at the depths it allows, with and without alpha.
+    fn configs(w: u32, h: u32) -> Vec<EncoderConfig> {
+        let mut v = Vec::new();
+        for profile in PROFILES {
+            let depths: &[u8] = match profile {
+                Profile::Hqx | Profile::R444 => &[10, 12],
+                _ => &[8],
+            };
+            for &bit_depth in depths {
+                for alpha in [None, Some(AlphaCoding::Dct), Some(AlphaCoding::Lossless)] {
+                    v.push(EncoderConfig { bit_depth, alpha, ..EncoderConfig::new(profile, w, h) });
+                }
+            }
+        }
+        v
+    }
+
+    /// How a test double misbehaves.
+    #[derive(Default, Clone, Copy, PartialEq)]
+    enum Lie {
+        #[default]
+        Honest,
+        /// `write` answers with one more byte (and bit count) than `bits` measured, in this entry.
+        ExtraByte(usize),
+        /// `write`'s byte count does not fit its bit count.
+        ShortBytes,
+        /// The colour part of macroblock 1 starts with another quantiser.
+        WrongQsf,
+        /// Right lengths, nonsense bytes.
+        Garbage,
+        /// One entry missing.
+        MissingEntry,
+        /// `bits` answers one entry short.
+        ShortBits,
+        /// `bits` fails.
+        FailBits,
+        /// `write` fails.
+        FailWrite,
+        /// `load` declines.
+        Decline,
+    }
+
+    #[derive(Default, Clone)]
+    enum Choose {
+        #[default]
+        Default,
+        /// The CPU algorithm's own answer over this backend's bits.
+        Cpu,
+        Fixed(Vec<u32>),
+    }
+
+    /// The crate's own CPU functions behind the backend trait.
+    #[derive(Default)]
+    struct CpuMbBackend {
+        enc: Option<Encoder>,
+        prep: Option<Prepared>,
+        rgb: bool,
+        lie: Lie,
+        choose: Choose,
+        choose_calls: usize,
+        bits_calls: usize,
+    }
+
+    impl CpuMbBackend {
+        fn lying(lie: Lie) -> Self {
+            CpuMbBackend { lie, ..Default::default() }
+        }
+        fn with_choose(choose: Choose) -> Self {
+            CpuMbBackend { choose, ..Default::default() }
+        }
+    }
+
+    impl MacroblockBackend for CpuMbBackend {
+        fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool {
+            if self.lie == Lie::Decline {
+                return false;
+            }
+            let Ok(enc) = Encoder::with_config(cfg.clone()) else { return false };
+            self.prep = Some(enc.prepare(frame));
+            self.enc = Some(enc);
+            self.rgb = frame.rgb;
+            true
+        }
+        fn bits(&mut self, q: u32) -> Option<Vec<u32>> {
+            self.bits_calls += 1;
+            if self.lie == Lie::FailBits {
+                return None;
+            }
+            let (enc, prep) = (self.enc.as_ref()?, self.prep.as_ref()?);
+            let mut v = Coder::new(&enc.cfg, enc.info, prep, self.rgb).all_bits(q);
+            if self.lie == Lie::ShortBits {
+                v.pop();
+            }
+            Some(v)
+        }
+        fn write(&mut self, qs: &[u32]) -> Option<Vec<(Vec<u8>, u32)>> {
+            if self.lie == Lie::FailWrite {
+                return None;
+            }
+            let (enc, prep) = (self.enc.as_ref()?, self.prep.as_ref()?);
+            let coder = Coder::new(&enc.cfg, enc.info, prep, self.rgb);
+            let finish = |w: Writer| w.finish_bits();
+            let mut out = Vec::new();
+            for s in 0..prep.ns {
+                let mut pred = [0i32; 4];
+                for mb in 0..prep.nw {
+                    let m = s * prep.nw + mb;
+                    let mut w = Writer::new();
+                    coder.put_colour(&mut w, m, *qs.get(m)?, &mut pred);
+                    out.push(finish(w));
+                }
+                if enc.cfg.alpha.is_some() {
+                    for mb in 0..prep.nw {
+                        let m = s * prep.nw + mb;
+                        let mut w = Writer::new();
+                        coder.put_alpha(&mut w, m, *qs.get(m)?, &mut pred);
+                        out.push(finish(w));
+                    }
+                }
+            }
+            match self.lie {
+                Lie::ExtraByte(i) => {
+                    let e = out.get_mut(i)?;
+                    e.0.push(0);
+                    e.1 += 8;
+                }
+                Lie::ShortBytes => out.get_mut(1)?.0.pop().map(|_| ())?,
+                Lie::WrongQsf => {
+                    let e = out.get_mut(1)?;
+                    e.0[0] ^= 0x10;
+                }
+                Lie::MissingEntry => {
+                    out.pop();
+                }
+                Lie::Garbage => {
+                    for (bytes, _) in &mut out {
+                        for (i, b) in bytes.iter_mut().enumerate().skip(2) {
+                            *b = (i as u8).wrapping_mul(97) ^ 0x5a;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            Some(out)
+        }
+        fn choose(&mut self, hint: u32, budget: u64) -> Option<Vec<u32>> {
+            self.choose_calls += 1;
+            match self.choose.clone() {
+                Choose::Default => None,
+                Choose::Fixed(qs) => Some(qs),
+                Choose::Cpu => {
+                    let (enc, prep) = (self.enc.as_ref()?, self.prep.as_ref()?);
+                    let coder = Coder::new(&enc.cfg, enc.info, prep, self.rgb);
+                    rate_control(hint, prep.nw, prep.ns, budget, &mut |q| Some(coder.all_bits(q))).map(|(qs, _)| qs)
+                }
+            }
+        }
+    }
+
+    fn cpu_frame(cfg: &EncoderConfig, f: &Frame) -> Vec<u8> {
+        Encoder::with_config(cfg.clone()).unwrap().encode(f).unwrap()
+    }
+
+    fn label(cfg: &EncoderConfig, w: u32, h: u32) -> String {
+        format!("{:?} {}-bit {:?} {w}x{h}", cfg.profile, cfg.bit_depth, cfg.alpha)
+    }
+
+    #[test]
+    fn a_backend_doing_the_cpus_work_gives_the_cpus_frame() {
+        let (mut checked, mut refused) = (0, 0);
+        for (w, h) in [(16, 16), (18, 13), (200, 120), (1920, 1080), (3840, 2160)] {
+            for cfg in configs(w, h) {
+                // the large sizes with the busiest combinations only, to keep the run short
+                if w > 1920 && (cfg.alpha.is_some() || cfg.bit_depth == 12) {
+                    continue;
+                }
+                if w == 1920 && cfg.alpha == Some(AlphaCoding::Lossless) {
+                    continue;
+                }
+                let f = test_frame(&cfg, 7);
+                let mut b = CpuMbBackend::default();
+                let got = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b));
+                match (Encoder::with_config(cfg.clone()).unwrap().encode(&f), got) {
+                    (Ok(cpu), Ok((out, used))) => {
+                        assert!(used, "{}", label(&cfg, w, h));
+                        assert!(out == cpu, "{}", label(&cfg, w, h));
+                        checked += 1;
+                    }
+                    // lossless alpha is not rate controlled and can overflow: both refuse
+                    (Err(_), Err(_)) => refused += 1,
+                    (c, g) => panic!("{}: cpu {:?}, backend {:?}", label(&cfg, w, h), c.map(|v| v.len()), g.map(|v| v.0.len())),
+                }
+            }
+        }
+        assert!(checked > 60 && refused <= checked / 4, "{checked} compared, {refused} refused");
+    }
+
+    #[test]
+    fn odd_sizes_and_444_widths_go_through_the_backend() {
+        // 4:4:4 takes any width; 4:2:2 an even one
+        for (w, h) in [(1, 1), (17, 13)] {
+            let cfg = EncoderConfig::new(Profile::R444, w, h);
+            for alpha in [None, Some(AlphaCoding::Dct), Some(AlphaCoding::Lossless)] {
+                let cfg = EncoderConfig { alpha, ..cfg.clone() };
+                let f = test_frame(&cfg, 3);
+                let cpu = cpu_frame(&cfg, &f);
+                let mut b = CpuMbBackend::default();
+                let (out, used) = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+                assert!(used && out == cpu, "{}", label(&cfg, w, h));
+            }
+        }
+    }
+
+    #[test]
+    fn frames_keep_their_rgb_signalling_through_the_backend() {
+        let cfg = EncoderConfig::new(Profile::R444, 48, 32);
+        let mut f = test_frame(&cfg, 9);
+        f.rgb = true;
+        let cpu = cpu_frame(&cfg, &f);
+        let mut b = CpuMbBackend::default();
+        let (out, used) = Encoder::with_config(cfg).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+        assert!(used && out == cpu);
+    }
+
+    #[test]
+    fn a_backend_that_declines_or_fails_leaves_the_frame_to_the_cpu() {
+        for cfg in [EncoderConfig::new(Profile::Hq, 64, 48), EncoderConfig { alpha: Some(AlphaCoding::Dct), ..EncoderConfig::new(Profile::R444, 64, 48) }] {
+            let f = test_frame(&cfg, 3);
+            let cpu = cpu_frame(&cfg, &f);
+            for (name, lie) in [("declining", Lie::Decline), ("fails bits", Lie::FailBits), ("fails write", Lie::FailWrite), ("short bits", Lie::ShortBits)] {
+                let mut b = CpuMbBackend::lying(lie);
+                let mut enc = Encoder::with_config(cfg.clone()).unwrap();
+                let (out, used) = enc.encode_with(&f, Some(&mut b)).unwrap();
+                assert!(!used, "{} {name}", label(&cfg, 64, 48));
+                assert!(out == cpu, "{} {name}", label(&cfg, 64, 48));
+                // and the next frame is coded as if nothing had happened
+                let (again, _) = enc.encode_with(&f, None).unwrap();
+                assert!(again == cpu, "{name}: next frame");
+            }
+        }
+    }
+
+    #[test]
+    fn a_backend_whose_bytes_do_not_match_its_bits_is_not_trusted() {
+        for cfg in [
+            EncoderConfig::new(Profile::Hq, 128, 64),
+            EncoderConfig { alpha: Some(AlphaCoding::Dct), ..EncoderConfig::new(Profile::R444, 128, 64) },
+            EncoderConfig { alpha: Some(AlphaCoding::Lossless), ..EncoderConfig::new(Profile::Hqx, 128, 64) },
+        ] {
+            let f = test_frame(&cfg, 5);
+            let cpu = cpu_frame(&cfg, &f);
+            let parts = if cfg.alpha.is_some() { 2 } else { 1 };
+            let nmb = 8 * 4;
+            let lies = [
+                ("one colour byte too many", Lie::ExtraByte(3)),
+                ("one last-entry byte too many", Lie::ExtraByte(nmb * parts - 1)),
+                ("bytes short of the bits", Lie::ShortBytes),
+                ("wrong qsf in a header", Lie::WrongQsf),
+                ("entry missing", Lie::MissingEntry),
+            ];
+            for (name, lie) in lies {
+                let mut b = CpuMbBackend::lying(lie);
+                let (out, used) = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+                assert!(!used, "{} {name}", label(&cfg, 128, 64));
+                assert!(out == cpu, "{} {name}", label(&cfg, 128, 64));
+            }
+            // Garbage of the right lengths (and headers) is the backend's own frame: it must
+            // still parse and decode without a panic; only the shader tests can judge its content.
+            let mut b = CpuMbBackend::lying(Lie::Garbage);
+            let (out, _) = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+            assert!(crate::frame_layout(&out).is_ok() && probe(&out).is_ok(), "{}: garbage frame parses", label(&cfg, 128, 64));
+            let _ = crate::decode_frame(&out);
+        }
+    }
+
+    #[test]
+    fn a_valid_choose_answer_is_used() {
+        for cfg in [EncoderConfig::new(Profile::Hq, 128, 64), EncoderConfig { alpha: Some(AlphaCoding::Dct), ..EncoderConfig::new(Profile::R444, 128, 64) }] {
+            let f = test_frame(&cfg, 11);
+            let cpu = cpu_frame(&cfg, &f);
+            let mut b = CpuMbBackend::with_choose(Choose::Cpu);
+            let (out, used) = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+            assert_eq!(b.choose_calls, 1);
+            assert!(used && out == cpu, "{}", label(&cfg, 128, 64));
+            // no search ran: bits only at the (at most two) levels chosen
+            assert!(b.bits_calls <= 2, "{} bits calls", b.bits_calls);
+        }
+    }
+
+    #[test]
+    fn a_choose_answer_that_does_not_fit_or_is_out_of_range_is_ignored() {
+        let (w, h) = (128, 64);
+        let cfg = EncoderConfig::new(Profile::Hq, w, h);
+        let nmb = 8 * 4;
+        let f = test_frame(&cfg, 13);
+        let cpu = cpu_frame(&cfg, &f);
+        // 32 distinct, fairly coarse levels: this answer fits the budget (checked below), so
+        // only the cap on distinct levels can make the encoder ignore it
+        let many: Vec<u32> = (0..nmb as u32).map(|i| 60 + i).collect();
+        {
+            let mut probe = CpuMbBackend::default();
+            assert!(probe.load(&cfg, &f));
+            let want = bits_at_qs(&mut probe, &mut Vec::new(), &many).unwrap();
+            let budget = (Encoder::with_config(cfg.clone()).unwrap().frame_size() as u64 - header::header_size_for(h) as u64 - 4) * 8;
+            assert!(padded_frame_bits(&want, 8) <= budget, "the many-levels answer must fit without the cap");
+        }
+        let cases = [
+            ("q = 0", Choose::Fixed(vec![0; nmb])),
+            ("q = 2048", Choose::Fixed(vec![2048; nmb])),
+            ("one q = 0", Choose::Fixed((0..nmb).map(|i| if i == 5 { 0 } else { 40 }).collect())),
+            ("too few", Choose::Fixed(vec![40; nmb - 1])),
+            ("too many", Choose::Fixed(vec![40; nmb + 1])),
+            ("empty", Choose::Fixed(Vec::new())),
+            ("too fine for the budget", Choose::Fixed(vec![1; nmb])),
+            ("too many distinct levels", Choose::Fixed(many)),
+        ];
+        for (name, choose) in cases {
+            let mut b = CpuMbBackend::with_choose(choose);
+            let (out, used) = Encoder::with_config(cfg.clone()).unwrap().encode_with(&f, Some(&mut b)).unwrap();
+            assert_eq!(b.choose_calls, 1, "{name}");
+            assert!(used, "{name}: the backend still codes it, over the CPU's rate control");
+            assert!(out == cpu, "{name}");
+        }
+    }
+
+    #[test]
+    fn content_extremes_hold_through_the_backend() {
+        // full-scale noise at LB, where the rate control hits its coarsest quantiser, and black
+        for (profile, noise) in [(Profile::Lb, true), (Profile::Lb, false), (Profile::Hq, false)] {
+            let cfg = EncoderConfig::new(profile, 96, 64);
+            let mut f = Frame::new(96, 64, ChromaFormat::Yuv422, 8, false);
+            let mut s = 12345u32;
+            if noise {
+                for v in f.y.iter_mut().chain(f.cb.iter_mut()).chain(f.cr.iter_mut()) {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    *v = (s % 256) as u16;
+                }
+            }
+            let cpu = Encoder::with_config(cfg.clone()).unwrap().encode(&f);
+            let mut b = CpuMbBackend::default();
+            let got = Encoder::with_config(cfg).unwrap().encode_with(&f, Some(&mut b));
+            match (cpu, got) {
+                (Ok(c), Ok((out, used))) => assert!(used && out == c, "{profile:?} noise={noise}"),
+                (Err(_), Ok((_, used))) => assert!(!used, "an overflowing frame must not come out of the backend"),
+                (c, g) => panic!("{profile:?} noise={noise}: cpu {:?} backend {:?}", c.map(|v| v.len()), g.map(|v| v.0.len())),
+            }
+        }
+    }
+
+    #[test]
+    fn the_quantiser_hint_follows_a_backend_frame_like_a_cpu_frame() {
+        let cfg = EncoderConfig::new(Profile::Sq, 128, 64);
+        let (f1, f2) = (test_frame(&cfg, 1), test_frame(&cfg, 2));
+        let mut cpu = Encoder::with_config(cfg.clone()).unwrap();
+        let want = [cpu.encode(&f1).unwrap(), cpu.encode(&f2).unwrap()];
+        let mut enc = Encoder::with_config(cfg).unwrap();
+        let mut b = CpuMbBackend::default();
+        let first = enc.encode_with(&f1, Some(&mut b)).unwrap().0;
+        let second = enc.encode_with(&f2, None).unwrap().0;
+        assert!(first == want[0] && second == want[1]);
+        assert_eq!(enc.last_q, cpu.last_q);
+    }
+
+    #[test]
+    fn stitching_strings_that_are_not_byte_aligned() {
+        let mut w = Writer::new();
+        put_bits(&mut w, &[0b1010_1100, 0b1110_0000], 11);
+        put_bits(&mut w, &[0b1000_0000], 1);
+        put_bits(&mut w, &[], 0);
+        // 10101100 111 1 + padding to 4 bytes
+        assert_eq!(w.finish_aligned(4), vec![0b1010_1100, 0b1111_0000, 0, 0]);
     }
 }

@@ -113,6 +113,17 @@ impl Writer {
         self.acc &= (1u64 << self.n) - 1;
     }
 
+    /// The bits written so far, padded with zeros to whole bytes, and their count.
+    #[cfg(test)]
+    pub fn finish_bits(mut self) -> (Vec<u8>, u32) {
+        let bits = self.buf.len() as u32 * 8 + self.n;
+        if self.n > 0 {
+            let pad = 8 - self.n;
+            self.put(0, pad);
+        }
+        (self.buf, bits)
+    }
+
     /// Pad with zero bits to a multiple of `align` bytes and return the bytes.
     pub fn finish_aligned(mut self, align: usize) -> Vec<u8> {
         if self.n > 0 {

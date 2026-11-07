@@ -24,7 +24,7 @@ mod spec_tables;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
-pub use encode::{AlphaCoding, Encoder, EncoderConfig};
+pub use encode::{AlphaCoding, Encoder, EncoderConfig, MacroblockBackend};
 pub use header::{FieldCode, FrameHeader};
 pub use layout::frame_layout;
 pub use tables::ri_frame_size;
