@@ -621,21 +621,18 @@ fn file_stem(name: &str) -> String {
 }
 
 /// `<dir>/<name> <nnn>.<ext>`, the first number not taken: no file, no `.part` in flight, and
-/// not `held` by an in-memory download.
-fn version_path(services: &dyn crate::Services, dir: &str, name: &str, ext: &str, held: &BTreeSet<String>) -> String {
+/// not `held` by an in-memory download. None when every number is taken.
+fn version_path(services: &dyn crate::Services, dir: &str, name: &str, ext: &str, held: &BTreeSet<String>) -> Option<String> {
     let stem = file_stem(name);
     let ext: String = ext.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
-    let mut n = 1u32;
-    loop {
-        let path = std::path::Path::new(dir).join(format!("{stem} {n:03}.{ext}")).to_string_lossy().into_owned();
+    (1..=MAX_VERSIONS).map(|n| std::path::Path::new(dir).join(format!("{stem} {n:03}.{ext}")).to_string_lossy().into_owned()).find(|path| {
         // a `.part` is a file another job is still downloading under this name
-        let taken = held.contains(&path) || services.file_size(&path).is_ok() || services.file_size(&format!("{path}.part")).is_ok();
-        if !taken || n >= 99_999 {
-            return path;
-        }
-        n += 1;
-    }
+        !(held.contains(path) || services.file_size(path).is_ok() || services.file_size(&format!("{path}.part")).is_ok())
+    })
 }
+
+/// The most versions of one clip's output in one folder (`<name> 001` … `<name> 99999`).
+const MAX_VERSIONS: u32 = 99_999;
 
 /// A new seed for the `k`-th seed input (below 2^50: exact in JSON readers).
 fn new_seed(salt: u64, k: usize) -> u64 {
@@ -705,7 +702,7 @@ impl OutputFiles<'_> {
         if self.in_memory {
             let mut held = lock(self.held);
             if held.contains(&path) || self.services.file_size(&path).is_ok() {
-                path = version_path(self.services, self.dir, self.name, ext, &held);
+                path = version_path(self.services, self.dir, self.name, ext, &held).ok_or_else(|| self.no_free_name())?;
             }
             held.insert(path.clone());
             drop(held);
@@ -725,7 +722,7 @@ impl OutputFiles<'_> {
             match create_new(&path) {
                 Ok(_) => {}
                 Err(e) if taken(&e) => {
-                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held));
+                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held)).ok_or_else(|| self.no_free_name())?;
                     continue;
                 }
                 Err(e) => return Err(format!("{path}: {e}")),
@@ -738,12 +735,17 @@ impl OutputFiles<'_> {
                     if !taken(&e) {
                         return Err(format!("{part}: {e}"));
                     }
-                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held));
+                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held)).ok_or_else(|| self.no_free_name())?;
                 }
             }
         };
         self.current = path;
         Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
+    }
+
+    /// The error when every version name of this clip in the output folder is taken.
+    fn no_free_name(&self) -> String {
+        format!("{}: no free file name for {} (all {MAX_VERSIONS} versions are taken)", self.dir, file_stem(self.name))
     }
 
     /// Remove the files written so far: a run that failed or was stopped leaves nothing behind.
@@ -761,7 +763,7 @@ impl comfy::Sink for OutputFiles<'_> {
     /// file first (or to a buffer for hosts that save through their services).
     fn create(&mut self, o: &comfy::Output) -> std::result::Result<Box<dyn Write + '_>, String> {
         let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1).to_string();
-        let path = version_path(self.services, self.dir, self.name, &ext, &lock(self.held));
+        let path = version_path(self.services, self.dir, self.name, &ext, &lock(self.held)).ok_or_else(|| self.no_free_name())?;
         self.claim(path, &ext)
     }
 

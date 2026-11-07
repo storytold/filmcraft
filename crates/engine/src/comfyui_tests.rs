@@ -668,7 +668,7 @@ fn same_named_clips_never_share_a_file() {
     let d = dir.to_string_lossy().into_owned();
     let services = crate::FsServices;
     std::fs::write(dir.join("Shot 001.png.part"), b"in flight").unwrap();
-    assert!(version_path(&services, &d, "Shot", "png", &Default::default()).ends_with("Shot 002.png"));
+    assert!(version_path(&services, &d, "Shot", "png", &Default::default()).unwrap().ends_with("Shot 002.png"));
     let cancel = AtomicBool::new(false);
     let held = Mutex::default();
     let out = filmcraft_comfyui::Output {
@@ -934,7 +934,7 @@ fn a_chosen_name_published_by_another_job_is_not_overwritten() {
         };
         let (mut a, mut b) = (files(), files());
         // A chooses 001 and pauses before claiming it
-        let chosen = version_path(&services, &d, "Shot", "png", &lock(&held));
+        let chosen = version_path(&services, &d, "Shot", "png", &lock(&held)).unwrap();
         assert!(chosen.ends_with("Shot 001.png"));
         // B claims, downloads and publishes 001
         b.create(&out).unwrap().write_all(b"from B").unwrap();
@@ -979,5 +979,48 @@ fn unlinked_audio_follows_a_shorter_result() {
     assert_eq!(clips.len(), 2, "{clips:?}");
     let half = Tick::from_seconds_f64(0.5);
     assert!(clips.iter().all(|c| c.2 == half), "{clips:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// When every version name is taken, no name is handed out: the claim is refused (in memory a
+/// taken name would be overwritten), and it works again once a name is free.
+#[test]
+fn no_name_is_handed_out_when_every_version_is_taken() {
+    use filmcraft_comfyui::Sink;
+    let dir = tmp_dir("comfy-full");
+    let d = dir.to_string_lossy().into_owned();
+    let services = crate::FsServices;
+    let cancel = AtomicBool::new(false);
+    let held: Mutex<BTreeSet<String>> = Mutex::new((1..=MAX_VERSIONS).map(|n| dir.join(format!("Shot {n:03}.png")).to_string_lossy().into_owned()).collect());
+    assert_eq!(version_path(&services, &d, "Shot", "png", &lock(&held)), None);
+    let out = filmcraft_comfyui::Output {
+        node: "9".into(),
+        key: "images".into(),
+        kind: OutputKind::Image,
+        file: Some(filmcraft_comfyui::FileRef { filename: "x.png".into(), subfolder: String::new(), folder: "output".into() }),
+        text: None,
+    };
+    for in_memory in [true, false] {
+        let mut f = OutputFiles {
+            services: &services,
+            dir: &d,
+            name: "Shot",
+            in_memory,
+            held: &held,
+            cancel: &cancel,
+            current: String::new(),
+            buffer: Vec::new(),
+            written: Vec::new(),
+        };
+        let e = f.create(&out).err().unwrap_or_default();
+        assert!(e.contains("no free file name"), "in_memory={in_memory}: {e}");
+        // in memory, a stale choice of a held name is refused too (on disk the files decide)
+        if in_memory {
+            let e = f.claim(dir.join("Shot 007.png").to_string_lossy().into_owned(), "png").err().unwrap_or_default();
+            assert!(e.contains("no free file name"), "{e}");
+        }
+    }
+    lock(&held).remove(&dir.join("Shot 050.png").to_string_lossy().into_owned());
+    assert!(version_path(&services, &d, "Shot", "png", &lock(&held)).unwrap().ends_with("Shot 050.png"));
     std::fs::remove_dir_all(dir).ok();
 }
