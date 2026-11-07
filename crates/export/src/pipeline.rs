@@ -204,17 +204,21 @@ impl Drop for Pipeline {
 }
 
 impl Pipeline {
-    /// Bound outer frame tasks before spawning them, not inside a Rayon job. A renderer can
-    /// invoke nested parallel decoding/conversion; those joins may steal another frame task.
-    /// With at most one active batch and no more tasks than the initial renderer capacity,
-    /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
-    /// Keep the immutable capacity even after a failed renderer retires the pool.
     /// Whether [`Pipeline::frame`] returns the RGBA8 picture next to the floats: an SDR float frame
     /// with alpha keeps it for the alpha channel; so does an HDR frame (its floats are straight colour).
     pub(crate) fn keeps_rgba_with_floats(&self) -> bool {
         self.float_frames && self.alpha
     }
 
+    /// Bound outer frame tasks before spawning them, not inside a Rayon job. A renderer can
+    /// invoke nested parallel decoding/conversion; those joins may steal another frame task.
+    /// With at most one active batch and no more tasks than the initial renderer capacity,
+    /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
+    /// Keep the immutable capacity even after a failed renderer retires the pool.
+    /// The encode side's re-render of a resident frame the encoder refused (`self.pipe.frame` in
+    /// the job's `encode`) is one more frame task outside this count; that is safe because it runs
+    /// on the export's own std thread (the `in_place_scope` caller), not on a Rayon worker, so its
+    /// wait for a renderer cannot hold up a frame task that would return one.
     pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
         let requested = requested.max(1);
         self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
