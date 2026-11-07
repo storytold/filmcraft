@@ -522,7 +522,9 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if self.app.ui.focused == *panel {
             // The outline's top edge would run under the whole tab strip: clip it away and redraw it
             // across the selected tab only (#4432). The other three edges stay one rect for #1075.
-            let below_top = Rect::from_min_max(frame.min + vec2(0.0, 1.0), frame.max);
+            // One extra physical pixel: at fractional scales the stroke's feathering reaches past the 1 pt edge.
+            let ppp = ui.ctx().pixels_per_point().max(1.0);
+            let below_top = Rect::from_min_max(frame.min + vec2(0.0, 1.0 + 1.0 / ppp), frame.max);
             ui.painter().with_clip_rect(below_top.intersect(ui.clip_rect())).rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
             let tab = DockArea::<PanelKind>::hit_rects(ui.ctx(), area_id()).into_iter().find_map(|(hit, r)| (hit == Hit::Tab(*panel)).then_some(r));
             if let Some(edge) = focus_tab_edge(frame, tab) {
