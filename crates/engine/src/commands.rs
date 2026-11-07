@@ -3720,6 +3720,13 @@ fn build() -> Vec<CommandSpec> {
                                 .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
                             json!(i)
                         }
+                        // Simple Text's Font still takes the index it had when it was a choice (#3841)
+                        (Some(filmcraft_project::ParamKind::Text), Value::Number(n))
+                            if e.effect == "simple_text" && pid == "font" && matches!(n.as_u64(), Some(0 | 1)) =>
+                        {
+                            let i = if n.as_u64() == Some(1) { 1 } else { 0 };
+                            json!(filmcraft_project::effect::simple_text_font(Some(&ParamValue::Choice(i))))
+                        }
                         _ => val.clone(),
                     };
                     if keyframe && def.is_some_and(|d| !d.animatable) {
@@ -3733,6 +3740,14 @@ fn build() -> Vec<CommandSpec> {
                         && let Some(d) = e.def().and_then(|d| d.param(&pid))
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
+                    }
+                    // a choice saved before the parameter took free text (Simple Text's Font, #3841)
+                    // starts over from the definition
+                    if let Some(d) = def
+                        && let Some(prm) = e.params.get_mut(&pid)
+                        && matches!((&prm.value, &d.default), (ParamValue::Choice(_), ParamValue::Text(_)))
+                    {
+                        *prm = filmcraft_project::Param::new(d.default.clone());
                     }
                     let (keyframes, v) = {
                         let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;

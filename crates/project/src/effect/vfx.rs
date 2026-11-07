@@ -20,6 +20,16 @@ pub(super) const OBSOLETE: &[&str] = &["Video Effects", "Obsolete"];
 /// The Effects panel's Legacy bin.
 pub(super) const LEGACY: &[&str] = &["Legacy", "Video Effects"];
 
+/// The font family a Simple Text value names. Projects saved before the Font picker listed the
+/// installed fonts (#3841) stored an index into Inter / JetBrains Mono instead of a name.
+pub fn simple_text_font(v: Option<&ParamValue>) -> &str {
+    match v {
+        Some(ParamValue::Text(f)) if !f.is_empty() => f,
+        Some(ParamValue::Choice(1..)) => "JetBrains Mono",
+        _ => "Inter",
+    }
+}
+
 /// Track choices for effects that read another video track (Track Matte Key, Compound Blur…).
 pub const TRACK_CHOICES: &[&str] = &["None", "Video 1", "Video 2", "Video 3", "Video 4", "Video 5", "Video 6", "Video 7", "Video 8"];
 /// Equirectangular frame layouts for the Immersive Video effects.
@@ -1107,7 +1117,7 @@ pub(super) fn extend_core(v: &mut [EffectDef]) {
                 ParamDef { default: ParamValue::Text("Simple Text".into()), ..txt("text", "Text") },
                 pt("position", "Position", f64::NAN, f64::NAN),
                 fs("size", "Size", 64.0, (1.0, 1000.0), (4.0, 300.0), "", 0),
-                ch("font", "Font", &["Inter", "JetBrains Mono"], 0),
+                ParamDef { default: ParamValue::Text("Inter".into()), ..txt("font", "Font") },
                 ch("alignment", "Alignment", &["Left", "Center", "Right"], 1),
                 col("color", "Color", [1.0, 1.0, 1.0, 1.0]),
                 pct("bg_opacity", "Background Opacity", 0.0),

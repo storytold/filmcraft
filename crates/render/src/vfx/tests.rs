@@ -1474,3 +1474,25 @@ fn lengths_past_the_picture_keep_their_fade_and_weighting() {
     let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
     assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
 }
+
+#[test]
+fn simple_text_draws_in_the_chosen_font() {
+    let img = solid(240, 120, [0.0, 0.0, 0.0]);
+    let with = |font: ParamValue| {
+        let mut e = inst("simple_text");
+        set(&mut e, "text", ParamValue::Text("Wig".into()));
+        set(&mut e, "font", font);
+        run("simple_text", &e, &img, &cx())
+    };
+    let inter = with(ParamValue::Text("Inter".into()));
+    let serif = with(ParamValue::Text("Noto Serif".into()));
+    let mono = with(ParamValue::Text("JetBrains Mono".into()));
+    assert!(max_diff(&inter, &serif) > 0.1, "Noto Serif renders like Inter");
+    assert!(max_diff(&inter, &mono) > 0.1, "JetBrains Mono renders like Inter");
+    // a font that is not installed falls back to Inter
+    assert_eq!(max_diff(&inter, &with(ParamValue::Text("No Such Font 3841".into()))), 0.0);
+    // projects saved when Font was a choice of Inter / JetBrains Mono
+    assert_eq!(max_diff(&inter, &with(ParamValue::Choice(0))), 0.0);
+    assert_eq!(max_diff(&mono, &with(ParamValue::Choice(1))), 0.0);
+    assert_eq!(max_diff(&mono, &with(ParamValue::Choice(2))), 0.0);
+}
