@@ -768,6 +768,7 @@ fn parse_digit_groups(rest: &str, used: usize) -> Option<(Vec<Token>, usize)> {
             let mut words = english_cardinal(a);
             words.push("to".into());
             words.extend(english_cardinal(b));
+            let end = push_percent(rest, end, &mut words);
             return Some((words.into_iter().map(Token::Word).collect(), end));
         }
         let mut words: Vec<Token> = Vec::new();
@@ -813,9 +814,21 @@ fn parse_digit_groups(rest: &str, used: usize) -> Option<(Vec<Token>, usize)> {
             words.push("to".into());
             words.extend(english_cardinal(n));
         }
+        let end = push_percent(rest, end, &mut words);
         return Some((words.into_iter().map(Token::Word).collect(), end));
     }
     None
+}
+
+/// Appends "percent" and returns the extended end when a percent sign follows `end`.
+fn push_percent(rest: &str, end: usize, words: &mut Vec<String>) -> usize {
+    match rest.get(end..).and_then(percent_suffix_len) {
+        Some(len) => {
+            words.push("percent".into());
+            end + len
+        }
+        None => end,
+    }
 }
 
 fn is_ordinal_suffix(suffix: &str) -> bool {
