@@ -668,3 +668,21 @@ fn relative_target_urls_are_percent_decoded() {
     let clip = &p.sequence(imp.sequences[0]).unwrap().video_tracks[0].items[0];
     assert_eq!(media_key(p, clip.item), "/proj/media/Clip A.mov");
 }
+
+#[test]
+fn low_sample_rate_otio_settings_are_clamped_with_warning() {
+    let settings = serde_json::to_value(filmcraft_project::SequenceSettings { sample_rate: 7999, ..Default::default() }).unwrap();
+    let doc = serde_json::json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "name": "LowSR",
+        "metadata": { "filmcraft": { "settings": settings } },
+        "tracks": { "OTIO_SCHEMA": "Stack.1", "children": [] }
+    });
+    let (imp, report) = import(&serde_json::to_vec(&doc).unwrap(), Format::Otio, None).unwrap();
+    assert!(report.to_string().contains("sample rate 7999 Hz") && report.to_string().contains("8000 Hz"), "expected warning, got: {report}");
+    let mut target = Project::new("Host");
+    let seqs = filmcraft_interchange::merge_into(&mut target, imp, None);
+    let seq = target.sequence(seqs[0]).unwrap();
+    assert_eq!(seq.settings.sample_rate, 8000);
+    assert!(seq.check_bounds().is_ok());
+}
