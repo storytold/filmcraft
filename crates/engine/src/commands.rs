@@ -79,6 +79,18 @@ pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() { Err("no clips selected".into()) } else { Ok(()) }
 }
+/// At least one linked clip (for Unlink) or two clips (for Link) selected.
+fn can_link(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    let Some(q) = s.active_sequence() else { return Err("no sequence is open".into()) };
+    if s.state.selection.iter().any(|c| q.find_item(*c).is_some_and(|(_, i)| i.link.is_some())) {
+        return Ok(());
+    }
+    let mut u: Vec<ClipId> = s.state.selection.iter().copied().filter(|c| q.find_item(*c).is_some()).collect();
+    u.sort();
+    u.dedup();
+    if u.len() >= 2 { Ok(()) } else { Err("select at least two clips to link".into()) }
+}
 /// Clips or captions selected (Copy / Cut work on either).
 fn has_clips_or_captions(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -2399,12 +2411,24 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
+        cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, can_link, |s, p| {
             let explicit = p.get("clips").is_some() || p.get("clip").is_some();
             let sel = clips_p(s, p);
             // Unlink when any selected clip is linked, as the Timeline's context menu says (#1103):
             // a title or a music clip among the selection must not turn Unlink into a re-link
             let linked = sel.iter().any(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
+            let valid_count = s
+                .active_sequence()
+                .map(|q| {
+                    let mut u: Vec<ClipId> = sel.iter().copied().filter(|c| q.find_item(*c).is_some()).collect();
+                    u.sort();
+                    u.dedup();
+                    u.len()
+                })
+                .unwrap_or(0);
+            if !linked && valid_count < 2 {
+                return Err(EngineError::Disabled("clip.link".into(), "select at least two clips to link".into()));
+            }
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, st| {
                 if linked {
                     let first_link = sel.first().and_then(|c| q.find_item(*c)).and_then(|(_, i)| i.link);

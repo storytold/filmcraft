@@ -455,10 +455,12 @@ fn deletion_commands_fall_back_to_the_selection_only_when_no_target_is_named() {
     assert!(clip(&s, b.id).is_none(), "timeline.delete ripple falls back to the selection");
 }
 
-/// Unlinking a single linked pair via `clip.link` keeps only the primary selected clip (#4377).
+/// Unlinking a single linked pair via `clip.link` keeps only the primary selected clip (#4377),
+/// rejects a one-clip Link request, and restores the linked selection on undo.
 #[test]
 fn unlinking_selected_pair_keeps_only_primary_clip_selected() {
     let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
     let (v, au) = (v1(&s)[0].clone(), a1(&s)[0].clone());
     assert!(v.link.is_some() && v.link == au.link);
 
@@ -468,5 +470,20 @@ fn unlinking_selected_pair_keeps_only_primary_clip_selected() {
     s.execute("clip.link", json!({})).unwrap();
     assert_eq!(clip(&s, v.id).unwrap().link, None);
     assert_eq!(clip(&s, au.id).unwrap().link, None);
+    assert_eq!(s.state.selection, vec![v.id]);
+
+    // A repeated Link with only one unlinked clip selected is rejected rather than creating a one-clip link.
+    assert!(s.execute("clip.link", json!({})).is_err());
+    assert_eq!(clip(&s, v.id).unwrap().link, None);
+
+    // Undoing the unlink restores the link and re-expands the selection to the linked pair.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(clip(&s, v.id).unwrap().link.is_some());
+    assert_eq!(clip(&s, v.id).unwrap().link, clip(&s, au.id).unwrap().link);
+    assert_eq!(s.state.selection, vec![v.id, au.id]);
+
+    // Redoing the unlink narrows the selection back to the primary clip.
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(clip(&s, v.id).unwrap().link, None);
     assert_eq!(s.state.selection, vec![v.id]);
 }

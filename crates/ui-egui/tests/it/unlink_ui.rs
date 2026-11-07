@@ -144,6 +144,7 @@ fn unlinking_with_shortcut_keeps_clicked_clip_selected_and_drags_immediately() {
     d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
     d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
     assert!(d.item(v).link.is_some() && d.item(v).link == d.item(a).link, "undo restores the link");
+    assert_eq!(d.selection(), both, "undo restores the linked selection");
     let a_id = format!("timeline.clip.{}", a.0);
     d.ok("ui.click", json!({"id": &a_id}));
     d.frames(2);
