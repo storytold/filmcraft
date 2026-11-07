@@ -1,14 +1,15 @@
 //! ProRes encoding on the GPU: [`ProResGpuEncoder`] is a [`SliceBackend`] of the CPU encoder
 //! (`filmcraft_prores::Encoder::encode_with`) that runs the per-block work in compute shaders
 //! (`prores_enc.wgsl`): forward DCT, quantisation, bit counting, entropy coding and the alpha
-//! channel's run-length coding. The CPU encoder keeps the rate control (over the bits measured
-//! here), the headers and the frame assembly, and encodes a frame itself whenever this backend
-//! declines or fails.
+//! channel's run-length coding, and the rate control (`choose`, the CPU's algorithm step for step).
+//! The CPU encoder keeps the headers and the frame assembly, checks every answer, and encodes a
+//! frame itself whenever this backend declines or fails.
 //!
-//! `load` uploads the planes and transforms every block once; `bits(q)` measures every slice at `q`
-//! and its two neighbours in one dispatch (the rate control's next question is nearly always one
-//! of them) and keeps the answers for the frame; `write` codes every component into its own
-//! word-aligned range and reads back only those ranges.
+//! `load` uploads the planes and transforms every block once; `choose` runs the whole rate control
+//! in one submission and reads back only the quantisers (and the bits measured at the two it
+//! chose, for `bits`); `bits(q)` measures every slice at `q` and its two neighbours in one dispatch
+//! and keeps the answers for the frame; `write` codes every component into its own word-aligned
+//! range and reads back only those ranges.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -18,6 +19,15 @@ use filmcraft_prores::{ChromaFormat, EncoderConfig, Frame, Interlace, SliceBacke
 
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
 use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
+
+/// Rounds of measurement the rate control runs on the GPU: the most distinct quantisers the CPU's
+/// `choose_quantisers` measures before its size guard. The search from a hint at 1 to a frame that
+/// first fits at 130 measures 16 (the hint, eight widening steps, seven bisection steps). The
+/// refinement adds none: it reads the finer quantiser only when the uniform one fits, and then the
+/// finer one is the bracket's `lo`, already measured (the shader's `PH_FINER` stays as a guard);
+/// `the_rate_control_rounds_cover_every_cpu_search` checks every hint against every place the frame
+/// can start to fit. (The size guard raises each slice on its own, in one pass after the rounds.)
+pub(crate) const RC_ROUNDS: usize = 16;
 
 /// Words of the constants (see `prores_enc.wgsl`): basis, scan, codebooks, AC rounding and
 /// contexts, then `1 / (4 qscale(q))` for every quantiser index from `C_INV`.
@@ -30,6 +40,20 @@ const CONST_WORDS: usize = C_INV + 225;
 const Q_RANGE: std::ops::RangeInclusive<u8> = 1..=224;
 /// Worst-case words of a macroblock's coded alpha: 256 values of at most 18 bits each.
 const ALPHA_WORDS_PER_MB: u64 = 144;
+/// Words of the rate control's buffer (`prores_enc.wgsl`): the state, the uniform quantiser, the
+/// done flag, the kept rows' quantisers, then from `R_QS` the answer.
+const R_Q: usize = 1;
+const R_QG: usize = 5;
+const R_DONE: usize = 6;
+const R_ROW0_Q: usize = 8;
+const R_ROW1_Q: usize = 10;
+const R_QS: usize = 64;
+/// Slots of the rate control's table: one per quantiser it measures.
+const RC_SLOTS: u64 = 16;
+
+/// The rate control's answer: every slice's quantiser, the uniform one, and the rows it measured
+/// at the uniform quantiser and the finer one (for the cache of `bits`).
+type Choice = (Vec<u8>, u8, Vec<(u8, Vec<[u32; 3]>)>);
 
 /// `Params` in `prores_enc.wgsl` (24 words).
 #[derive(Clone, Copy, Default)]
@@ -192,6 +216,7 @@ fn slice_table(jobs: &[SliceJob], mb_w: u32, mb_h: u32, bpm: u32) -> Option<(Vec
 
 struct Pipes {
     fdct: wgpu::ComputePipeline,
+    rc: [wgpu::ComputePipeline; 4],
     bits: wgpu::ComputePipeline,
     write: wgpu::ComputePipeline,
     alpha: wgpu::ComputePipeline,
@@ -236,7 +261,8 @@ impl Pipes {
                 cache: None,
             })
         };
-        Pipes { fdct: pipeline("fdct"), bits: pipeline("bits"), write: pipeline("write"), alpha: pipeline("alpha"), pack: pipeline("alpha_pack"), bgl }
+        let rc = [pipeline("rc_bits"), pipeline("rc_pick"), pipeline("rc_refine"), pipeline("rc_final")];
+        Pipes { fdct: pipeline("fdct"), rc, bits: pipeline("bits"), write: pipeline("write"), alpha: pipeline("alpha"), pack: pipeline("alpha_pack"), bgl }
     }
 }
 
@@ -269,6 +295,7 @@ struct Pools {
     aux: Pooled,
     alpha: Pooled,
     alpha_out: Pooled,
+    rc: Pooled,
 }
 
 /// ProRes encoding's per-block work in compute shaders (a [`SliceBackend`]).
@@ -319,6 +346,7 @@ impl ProResGpuEncoder {
             aux: Pooled::new("prores-enc-aux", storage_dst),
             alpha: Pooled::new("prores-enc-alpha", storage_src),
             alpha_out: Pooled::new("prores-enc-alpha-out", storage_src),
+            rc: Pooled::new("prores-enc-rc", storage_src | wgpu::BufferUsages::COPY_DST),
         };
         Some(ProResGpuEncoder { gpu, pipes, consts, status, pools, frame: None, staging: Vec::new() })
     }
@@ -517,6 +545,48 @@ impl ProResGpuEncoder {
         lens.iter().zip(&dst).map(|(&len, &o)| data.get(o as usize * 4..o as usize * 4 + len as usize).map(<[u8]>::to_vec).ok_or(Fail::Decline)).collect()
     }
 
+    /// Bytes of the rate control's buffer for `n` slices, `None` beyond the device's limits.
+    fn rc_bytes(&self, n: usize) -> Option<u64> {
+        let n = n as u64;
+        let bytes = (R_QS as u64 + n * (8 + 3 * RC_SLOTS)) * 4;
+        let aux = (4 + n) * 4;
+        let max = max_binding(&self.gpu.device.limits());
+        // (the shaders address the buffer with 32-bit word indices)
+        let ok = bytes <= max && bytes / 4 <= u64::from(u32::MAX) && aux <= max && groups(n * 3, self.maxg()).is_some();
+        ok.then_some(bytes)
+    }
+
+    /// `choose_quantisers` in compute passes: `RC_ROUNDS` rounds of measuring and picking, the
+    /// refinement and the size guard, in one submission with one read-back.
+    fn rate_control(&mut self, f: &Loaded, hint: u8, budget: u64, limits: &[u64]) -> Result<Choice, Fail> {
+        let n = f.n;
+        let bytes = self.rc_bytes(n).ok_or(Fail::Decline)?;
+        let mut aux = vec![budget as u32, (budget >> 32) as u32, u32::from(hint), 0];
+        // (a slice's bits never pass 32 bits on the GPU, so a larger limit compares the same)
+        aux.extend(limits.iter().map(|&l| u32::try_from(l).unwrap_or(u32::MAX)));
+        let mut state = [0u32; R_QS];
+        state[R_Q] = u32::from(hint.clamp(*Q_RANGE.start(), *Q_RANGE.end()));
+        let device = &self.gpu.device;
+        let rc = self.pools.rc.get(device, bytes);
+        let aux_buf = self.pools.aux.get(device, aux.len() as u64 * 4);
+        self.gpu.queue.write_buffer(&rc, 0, &le_bytes(&state));
+        self.gpu.queue.write_buffer(&aux_buf, 0, &le_bytes(&aux));
+        let maxg = self.maxg();
+        let (comps, slices) = (groups(n as u64 * 3, maxg).ok_or(Fail::Decline)?, groups(n as u64, maxg).ok_or(Fail::Decline)?);
+        let [bits, pick, refine, last] = &self.pipes.rc;
+        let mut passes = Vec::with_capacity(RC_ROUNDS * 2 + 2);
+        for _ in 0..RC_ROUNDS {
+            passes.extend([(bits, "prores-enc-rc-bits", comps), (pick, "prores-enc-rc-pick", (1, 1))]);
+        }
+        passes.extend([(refine, "prores-enc-rc-refine", (1, 1)), (last, "prores-enc-rc-final", slices)]);
+        let mut enc = self.encoder();
+        enc.clear_buffer(&self.status, 0, Some(4));
+        let bg = self.bind_group(f, &f.params, &f.coeffs, &rc, &aux_buf);
+        dispatch(&mut enc, &passes, &bg);
+        let data = self.gpu.read(enc, &[(&self.status, 0, 16), (&rc, 0, (R_QS + 7 * n) as u64 * 4)])?;
+        parse_choice(&words_of(&data), n)
+    }
+
     /// Run `step` on the loaded frame inside error scopes; any failure drops the frame.
     fn step<T>(&mut self, what: &str, step: impl FnOnce(&mut Self, &Loaded) -> Result<T, Fail>) -> Option<T> {
         let f = self.frame.take()?;
@@ -538,6 +608,32 @@ fn split_components(data: &[u8], aux: &[u32], want: &[[u32; 3]]) -> Result<Vec<[
         data.get(at..at + bits as usize / 8).map(<[u8]>::to_vec).ok_or(Fail::Decline)
     };
     want.iter().enumerate().map(|(s, [y, cb, cr])| Ok([comp(s * 3, *y)?, comp(s * 3 + 1, *cb)?, comp(s * 3 + 2, *cr)?])).collect()
+}
+
+/// A quantiser index the rate control wrote, checked.
+fn q_of(w: u32) -> Result<u8, Fail> {
+    u8::try_from(w).ok().filter(|q| Q_RANGE.contains(q)).ok_or(Fail::Decline)
+}
+
+/// The rate control's answer from the read-back (the status words, then its buffer up to the kept
+/// rows); `Decline` unless the shaders finished without a fault and every quantiser is in range.
+fn parse_choice(words: &[u32], n: usize) -> Result<Choice, Fail> {
+    let rc = words.get(4..).ok_or(Fail::Decline)?;
+    if words.first() != Some(&0) || rc.get(R_DONE) != Some(&1) {
+        return Err(Fail::Decline);
+    }
+    let qg = q_of(*rc.get(R_QG).ok_or(Fail::Decline)?)?;
+    let qs = rc.get(R_QS..R_QS + n).ok_or(Fail::Decline)?.iter().map(|&q| q_of(q)).collect::<Result<Vec<u8>, Fail>>()?;
+    let rows = rc.get(R_QS + n..R_QS + 7 * n).ok_or(Fail::Decline)?;
+    let mut kept = Vec::with_capacity(2);
+    for (r, at) in [(R_ROW0_Q, 0), (R_ROW1_Q, 3 * n)] {
+        let q = *rc.get(r).ok_or(Fail::Decline)?;
+        if q != 0 {
+            let row = rows.get(at..at + 3 * n).ok_or(Fail::Decline)?;
+            kept.push((q_of(q)?, row.as_chunks::<3>().0.to_vec()));
+        }
+    }
+    Ok((qs, qg, kept))
 }
 
 /// The constants `prores_enc.wgsl` reads (see the shader).
@@ -610,6 +706,23 @@ impl SliceBackend for ProResGpuEncoder {
             want.push(*self.frame.as_ref()?.measured(q)?.get(i)?);
         }
         self.step("writing ProRes slices", |me, f| me.code(f, qs, &want))
+    }
+
+    fn choose(&mut self, hint: u8, budget: u64, limits: &[u64]) -> Option<(Vec<u8>, u8)> {
+        let n = self.frame.as_ref()?.n;
+        // (a frame too large for the rate control's buffer keeps its rate control on the CPU)
+        if limits.len() != n || self.rc_bytes(n).is_none() {
+            return None;
+        }
+        let (qs, qg, kept) = self.step("ProRes rate control", |me, f| me.rate_control(f, hint, budget, limits))?;
+        // the rows the encoder asks for next, measured on the way
+        let f = self.frame.as_mut()?;
+        for (q, v) in kept {
+            if v.len() == f.n && f.measured(q).is_none() {
+                f.measured.push((q, v));
+            }
+        }
+        Some((qs, qg))
     }
 
     fn alpha(&mut self) -> Option<Vec<Vec<u8>>> {

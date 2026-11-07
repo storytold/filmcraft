@@ -609,6 +609,19 @@ fn rate_control(hint: u32, nw: usize, ns: usize, budget_bits: u64, mb_bits_at: &
     Some((qs, q))
 }
 
+/// The encoder's rate control (`rate_control`) over `mb_bits_at`, for tests of a backend's
+/// `choose` in other crates: its answer must be this one over the same measurements.
+#[doc(hidden)]
+pub fn rate_control_for_tests(
+    hint: u32,
+    nw: usize,
+    ns: usize,
+    budget_bits: u64,
+    mb_bits_at: &mut dyn FnMut(u32) -> Option<Vec<u32>>,
+) -> Option<(Vec<u32>, u32)> {
+    rate_control(hint, nw, ns, budget_bits, mb_bits_at)
+}
+
 /// The entropy coding of macroblocks: bits and bit strings from the transformed blocks.
 struct Coder<'a> {
     prep: &'a Prepared,

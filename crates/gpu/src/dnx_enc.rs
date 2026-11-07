@@ -1,11 +1,13 @@
 //! DNxHR encoding on the GPU: [`DnxGpuEncoder`] is a [`MacroblockBackend`] of the CPU encoder
 //! (`filmcraft_dnx::Encoder::encode_with`) that runs the per-macroblock work in compute shaders
 //! (`dnx_enc.wgsl`): forward DCT and weighting, bit counting at a quantiser, entropy coding, and
-//! alpha (DCT-coded like luma, or lossless run-length coding). The CPU encoder keeps the rate
-//! control (over the bits measured here), the headers and the frame assembly, and encodes a frame
-//! itself whenever this backend declines or fails.
+//! alpha (DCT-coded like luma, or lossless run-length coding), and the rate control (`choose`, the
+//! CPU's algorithm step for step). The CPU encoder keeps the headers and the frame assembly, checks
+//! every answer, and encodes a frame itself whenever this backend declines or fails.
 //!
-//! `load` uploads the planes, transforms every block once and counts the lossless alpha; `bits(q)`
+//! `load` uploads the planes, transforms every block once and counts the lossless alpha; `choose`
+//! runs the whole rate control in one submission and reads back only the quantisers (and the bits
+//! measured at the two it chose, for `bits`); `bits(q)`
 //! measures every macroblock at `q` and its two neighbours in one dispatch and keeps the answers for
 //! the frame; `write` codes every macroblock part into its own word-aligned range and reads back
 //! only those ranges. Field-coded (interlaced) frames are declined: the CPU encoder writes
@@ -19,6 +21,14 @@ use filmcraft_dnx::{AlphaCoding, ChromaFormat, EncoderConfig, Frame, Interlace, 
 
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
 use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
+
+/// Rounds of measurement the rate control runs on the GPU: the most distinct quantisers the CPU's
+/// `rate_control` measures. Its search measures 1, the hint, half the hint and then bisects (at
+/// most 11 steps over 1..=2047); the refinement reads the uniform quantiser (not measured when the
+/// search ends at 2047 without having asked) and the one finer. A hint at 0 against a frame that
+/// first fits at 2047 takes 14; `the_rate_control_rounds_cover_every_cpu_search` checks hints
+/// across the range against every place the frame can start to fit.
+pub(crate) const RC_ROUNDS: usize = 14;
 
 /// Words of the constants (see `dnx_enc.wgsl`).
 const C_ZIG: usize = 64;
@@ -34,6 +44,20 @@ const CONST_WORDS: usize = 612;
 const Q_RANGE: std::ops::RangeInclusive<u32> = 1..=2047;
 /// Words `write` takes per macroblock in `aux`.
 const AUX_WORDS: usize = 5;
+/// Words of the rate control's buffer (`dnx_enc.wgsl`): the state, the uniform quantiser, the
+/// done flag, the kept rows' quantisers, then from `R_QS` the answer.
+const R_Q: usize = 1;
+const R_QG: usize = 5;
+const R_DONE: usize = 6;
+const R_ROW0_Q: usize = 8;
+const R_ROW1_Q: usize = 10;
+const R_QS: usize = 64;
+/// Slots of the rate control's table: one per quantiser it measures.
+const RC_SLOTS: u64 = 16;
+
+/// The rate control's answer: every macroblock's quantiser and the rows it measured at the
+/// uniform quantiser and the finer one (for the cache of `bits`).
+type Choice = (Vec<u32>, Vec<(u32, Vec<[u32; 2]>)>);
 
 /// `Params` in `dnx_enc.wgsl` (32 words).
 #[derive(Clone, Copy, Default)]
@@ -228,8 +252,36 @@ fn consts(cfg: &EncoderConfig) -> Option<Vec<u32>> {
     Some(c)
 }
 
+/// A quantiser scale factor the rate control wrote, checked.
+fn q_of(w: u32) -> Result<u32, Fail> {
+    Some(w).filter(|q| Q_RANGE.contains(q)).ok_or(Fail::Decline)
+}
+
+/// The rate control's answer from the read-back (the status words, then its buffer up to the kept
+/// rows); `Decline` unless the shaders finished without a fault and every quantiser is in range.
+fn parse_choice(words: &[u32], nmb: usize) -> Result<Choice, Fail> {
+    let rc = words.get(4..).ok_or(Fail::Decline)?;
+    // (word 1: the lossless alpha counted at load)
+    if words.get(..2) != Some(&[0, 0]) || rc.get(R_DONE) != Some(&1) {
+        return Err(Fail::Decline);
+    }
+    q_of(*rc.get(R_QG).ok_or(Fail::Decline)?)?;
+    let qs = rc.get(R_QS..R_QS + nmb).ok_or(Fail::Decline)?.iter().map(|&q| q_of(q)).collect::<Result<Vec<u32>, Fail>>()?;
+    let rows = rc.get(R_QS + nmb..R_QS + 5 * nmb).ok_or(Fail::Decline)?;
+    let mut kept = Vec::with_capacity(2);
+    for (r, at) in [(R_ROW0_Q, 0), (R_ROW1_Q, 2 * nmb)] {
+        let q = *rc.get(r).ok_or(Fail::Decline)?;
+        if q != 0 {
+            let row = rows.get(at..at + 2 * nmb).ok_or(Fail::Decline)?;
+            kept.push((q_of(q)?, row.as_chunks::<2>().0.to_vec()));
+        }
+    }
+    Ok((qs, kept))
+}
+
 struct Pipes {
     transform: wgpu::ComputePipeline,
+    rc: [wgpu::ComputePipeline; 5],
     rle: wgpu::ComputePipeline,
     bits: wgpu::ComputePipeline,
     write: wgpu::ComputePipeline,
@@ -264,7 +316,8 @@ impl Pipes {
                 cache: None,
             })
         };
-        Pipes { transform: pipeline("transform"), rle: pipeline("rle"), bits: pipeline("bits"), write: pipeline("write"), bgl }
+        let rc = [pipeline("rc_bits"), pipeline("rc_lines"), pipeline("rc_pick"), pipeline("rc_refine"), pipeline("rc_final")];
+        Pipes { transform: pipeline("transform"), rc, rle: pipeline("rle"), bits: pipeline("bits"), write: pipeline("write"), bgl }
     }
 }
 
@@ -294,6 +347,7 @@ struct Pools {
     coeffs: Pooled,
     out: Pooled,
     aux: Pooled,
+    rc: Pooled,
 }
 
 /// DNxHR encoding's per-macroblock work in compute shaders (a [`MacroblockBackend`]).
@@ -340,6 +394,7 @@ impl DnxGpuEncoder {
             coeffs: Pooled::new("dnx-enc-coeffs", wgpu::BufferUsages::STORAGE),
             out: Pooled::new("dnx-enc-out", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC),
             aux: Pooled::new("dnx-enc-aux", storage_dst),
+            rc: Pooled::new("dnx-enc-rc", storage_dst | wgpu::BufferUsages::COPY_SRC),
         };
         Some(DnxGpuEncoder { gpu, pipes, status, pools, frame: None, staging: Vec::new() })
     }
@@ -514,6 +569,46 @@ impl DnxGpuEncoder {
             .collect()
     }
 
+    /// Bytes of the rate control's buffer for `p`'s frame, `None` beyond the device's limits.
+    fn rc_bytes(&self, p: &Params) -> Option<u64> {
+        let (nmb, ns) = (u64::from(p.nmb), u64::from(p.ns));
+        let bytes = (R_QS as u64 + nmb * (5 + 2 * RC_SLOTS) + ns * 2 * RC_SLOTS) * 4;
+        // (the shaders address the buffer with 32-bit word indices; the refinement keeps the scan
+        // lines in workgroup memory and walks with 32-bit products)
+        let addressable = bytes <= max_binding(&self.gpu.device.limits()) && bytes / 4 <= u64::from(u32::MAX);
+        let ok = addressable && groups(nmb, self.maxg()).is_some() && ns <= 1024 && nmb <= 1 << 20;
+        ok.then_some(bytes)
+    }
+
+    /// `rate_control` in compute passes: `RC_ROUNDS` rounds of measuring, adding up and picking, and the
+    /// refinement, in one submission with one read-back.
+    fn rate_control(&mut self, f: &Loaded, hint: u32, budget: u64) -> Result<Choice, Fail> {
+        let nmb = f.nmb();
+        let bytes = self.rc_bytes(&f.params).ok_or(Fail::Decline)?;
+        let mut state = [0u32; R_QS];
+        state[R_Q] = 1;
+        let device = &self.gpu.device;
+        let rc = self.pools.rc.get(device, bytes);
+        let aux = self.pools.aux.get(device, 16);
+        self.gpu.queue.write_buffer(&rc, 0, &le_bytes(&state));
+        self.gpu.queue.write_buffer(&aux, 0, &le_bytes(&[budget as u32, (budget >> 32) as u32, hint, 0]));
+        let mbs = groups(nmb as u64, self.maxg()).ok_or(Fail::Decline)?;
+        // (one workgroup per scan line: `rc_bytes` keeps them within a dimension's 1024)
+        let lines = (f.params.ns, 1);
+        let [bits, sums, pick, refine, last] = &self.pipes.rc;
+        let mut passes = Vec::with_capacity(RC_ROUNDS * 3 + 2);
+        for _ in 0..RC_ROUNDS {
+            passes.extend([(bits, "dnx-enc-rc-bits", mbs), (sums, "dnx-enc-rc-lines", lines), (pick, "dnx-enc-rc-pick", (1, 1))]);
+        }
+        passes.extend([(refine, "dnx-enc-rc-refine", (1, 1)), (last, "dnx-enc-rc-final", mbs)]);
+        let mut enc = self.encoder();
+        enc.clear_buffer(&self.status, 0, Some(4));
+        let bg = self.bind_group(f, &f.params, &rc, &aux);
+        dispatch(&mut enc, &passes, &bg);
+        let data = self.gpu.read(enc, &[(&self.status, 0, 16), (&rc, 0, (R_QS + 5 * nmb) as u64 * 4)])?;
+        parse_choice(&words_of(&data), nmb)
+    }
+
     /// Run `step` on the loaded frame inside error scopes; any failure drops the frame.
     fn step<T>(&mut self, what: &str, step: impl FnOnce(&mut Self, &Loaded) -> Result<T, Fail>) -> Option<T> {
         let f = self.frame.take()?;
@@ -566,6 +661,21 @@ impl MacroblockBackend for DnxGpuEncoder {
     fn bits(&mut self, q: u32) -> Option<Vec<u32>> {
         let parts = self.parts_at(q)?;
         parts.iter().map(|[c, a]| c.checked_add(*a)).collect()
+    }
+
+    fn choose(&mut self, hint: u32, budget: u64) -> Option<Vec<u32>> {
+        // (a frame too large for the rate control's buffer keeps its rate control on the CPU)
+        self.rc_bytes(&self.frame.as_ref()?.params)?;
+        let (qs, kept) = self.step("DNxHR rate control", |me, f| me.rate_control(f, hint, budget))?;
+        // the rows the encoder asks for next, measured on the way
+        let f = self.frame.as_mut()?;
+        let nmb = f.nmb();
+        for (q, v) in kept {
+            if v.len() == nmb && f.measured(q).is_none() {
+                f.measured.push((q, v));
+            }
+        }
+        Some(qs)
     }
 
     fn write(&mut self, qs: &[u32]) -> Option<Vec<(Vec<u8>, u32)>> {

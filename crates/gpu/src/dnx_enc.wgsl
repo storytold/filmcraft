@@ -421,8 +421,13 @@ fn bits(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     if idx >= P.nmb * P.nq {
         return;
     }
-    let q = P.qv[idx / P.nmb];
-    let m = idx % P.nmb;
+    let parts = mb_parts(idx % P.nmb, P.qv[idx / P.nmb]);
+    outp[idx * 2u] = parts.x;
+    outp[idx * 2u + 1u] = parts.y;
+}
+
+// Macroblock `m`'s (colour, alpha) bits at `q`; a fault counts in `status[0]`.
+fn mb_parts(m: u32, q: u32) -> vec2<u32> {
     w_bad = false;
     start_pred(m);
     sink(false, 0u, 0u);
@@ -439,8 +444,7 @@ fn bits(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     if w_bad {
         atomicAdd(&status[0], 1u);
     }
-    outp[idx * 2u] = colour;
-    outp[idx * 2u + 1u] = alpha;
+    return vec2<u32>(colour, alpha);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -618,5 +622,576 @@ fn write(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
     }
     if w_bad {
         atomicAdd(&status[0], 1u);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rate control (`rate_control`), with no read-back until the answer
+// ---------------------------------------------------------------------------------------------
+//
+// `rc_bits` measures every macroblock at the quantiser the state asks for into the next slot of
+// the slot table; `rc_lines` (one workgroup per scan line) adds each line up; `rc_pick` (one
+// workgroup) adds the lines up (each padded to 4 bytes) and runs `search_q` as a state machine until it needs a quantiser not measured yet (or has the
+// answer, and then the uniform and the one finer quantiser the refinement reads). The host
+// alternates the three as often as the CPU search can measure (`RC_ROUNDS`); once the state is done
+// the later rounds return at once. `rc_refine` (one workgroup) is the one-step-finer refinement
+// in the CPU's strided order (stride 7919), `rc_final` (one invocation per macroblock) copies the
+// rows the host keeps (the uniform quantiser's and the finer one's).
+//
+// `outp` holds the state words (R_*), the slots' quantisers and 64-bit totals, the answer (one
+// qsf per macroblock), the kept rows (2 words per macroblock each), every slot's scan line bits
+// (64-bit), then the slot table (2 words per macroblock per slot). `aux` holds the budget (low,
+// high word) and the hint. Anything the CPU algorithm would not survive (a slot table overflow, a
+// macroblock's or a line's bits beyond what 32-bit sums hold, a state that never finishes) counts
+// in `status[0]`.
+
+const R_PHASE: u32 = 0u;
+// the quantiser `rc_bits` measures next
+const R_Q: u32 = 1u;
+const R_LO: u32 = 2u;
+const R_HI: u32 = 3u;
+// the bracket's first guess
+const R_G: u32 = 4u;
+const R_QG: u32 = 5u;
+const R_DONE: u32 = 6u;
+const R_SLOTS: u32 = 7u;
+// the kept rows: quantiser (0: none) and slot
+const R_ROW0_Q: u32 = 8u;
+const R_ROW0_K: u32 = 9u;
+const R_ROW1_Q: u32 = 10u;
+const R_ROW1_K: u32 = 11u;
+const R_SLOT_Q: u32 = 16u;
+const R_SLOT_TOT: u32 = 32u;
+const R_QS: u32 = 64u;
+const MAX_SLOTS: u32 = 16u;
+
+const PH_ONE: u32 = 0u;
+const PH_G: u32 = 1u;
+const PH_G2: u32 = 2u;
+const PH_BISECT: u32 = 3u;
+const PH_REFINE: u32 = 4u;
+
+const Q_MAX: u32 = 2047u;
+const STRIDE: u32 = 7919u;
+
+fn rows_base() -> u32 {
+    return R_QS + P.nmb;
+}
+
+fn lines_base() -> u32 {
+    return rows_base() + P.nmb * 4u;
+}
+
+fn table_base() -> u32 {
+    return lines_base() + MAX_SLOTS * P.ns * 2u;
+}
+
+fn fail() {
+    atomicAdd(&status[0], 1u);
+}
+
+// 64-bit unsigned values as (low, high) words
+fn add64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    let lo = a.x + b.x;
+    return vec2<u32>(lo, a.y + b.y + select(0u, 1u, lo < a.x));
+}
+
+fn sub64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    return vec2<u32>(a.x - b.x, a.y - b.y - select(0u, 1u, a.x < b.x));
+}
+
+fn le64(a: vec2<u32>, b: vec2<u32>) -> bool {
+    return a.y < b.y || (a.y == b.y && a.x <= b.x);
+}
+
+// `row_bytes(bits) * 8`: up to whole 32-bit words
+fn pad64(a: vec2<u32>) -> vec2<u32> {
+    let r = add64(a, vec2<u32>(31u, 0u));
+    return vec2<u32>(r.x & ~31u, r.y);
+}
+
+fn budget() -> vec2<u32> {
+    return vec2<u32>(aux[0], aux[1]);
+}
+
+fn slot_total(k: u32) -> vec2<u32> {
+    return vec2<u32>(outp[R_SLOT_TOT + k * 2u], outp[R_SLOT_TOT + k * 2u + 1u]);
+}
+
+// The slot holding quantiser `q`, MAX_SLOTS when it was not measured.
+fn slot_of(q: u32) -> u32 {
+    let n = min(outp[R_SLOTS], MAX_SLOTS);
+    for (var k = 0u; k < n; k = k + 1u) {
+        if outp[R_SLOT_Q + k] == q {
+            return k;
+        }
+    }
+    return MAX_SLOTS;
+}
+
+var<private> rc_bad: bool;
+
+// Macroblock `m`'s bits in slot `k` (colour and alpha added); `rc_bad` when they pass 32 bits.
+fn slot_mb(k: u32, m: u32) -> u32 {
+    let at = table_base() + (k * P.nmb + m) * 2u;
+    let c = outp[at];
+    let s = c + outp[at + 1u];
+    if s < c {
+        rc_bad = true;
+    }
+    return s;
+}
+
+@compute @workgroup_size(64)
+fn rc_bits(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let m = index(gid, nwg);
+    let k = outp[R_SLOTS];
+    if m >= P.nmb || outp[R_DONE] != 0u || k >= MAX_SLOTS {
+        return;
+    }
+    let parts = mb_parts(m, outp[R_Q]);
+    let at = table_base() + (k * P.nmb + m) * 2u;
+    outp[at] = parts.x;
+    outp[at + 1u] = parts.y;
+}
+
+// The refinement reads the uniform quantiser and the finer one: ask for whichever is not measured.
+fn rc_refine_next() {
+    let q = outp[R_QG];
+    if slot_of(q) == MAX_SLOTS {
+        outp[R_Q] = q;
+    } else if slot_of(q - 1u) == MAX_SLOTS {
+        outp[R_Q] = q - 1u;
+    } else {
+        outp[R_DONE] = 1u;
+    }
+}
+
+// The search's answer `q` (`hi`, measured or not).
+fn rc_found(q: u32) {
+    outp[R_QG] = q;
+    if q > 1u {
+        outp[R_PHASE] = PH_REFINE;
+        rc_refine_next();
+        return;
+    }
+    outp[R_DONE] = 1u;
+}
+
+fn rc_bisect() {
+    let lo = outp[R_LO];
+    let hi = outp[R_HI];
+    if hi - lo > 1u {
+        outp[R_PHASE] = PH_BISECT;
+        outp[R_Q] = (lo + hi) / 2u;
+        return;
+    }
+    rc_found(hi);
+}
+
+// The answer to the question `q`: whether its frame fits (`search_q`'s steps).
+fn rc_step(q: u32, fit: bool) {
+    let phase = outp[R_PHASE];
+    if phase == PH_ONE {
+        if fit {
+            rc_found(1u);
+            return;
+        }
+        outp[R_LO] = 1u;
+        outp[R_HI] = Q_MAX;
+        let g = clamp(aux[2], 2u, Q_MAX);
+        outp[R_G] = g;
+        outp[R_PHASE] = PH_G;
+        outp[R_Q] = g;
+    } else if phase == PH_G {
+        if !fit {
+            outp[R_LO] = q;
+            rc_bisect();
+            return;
+        }
+        outp[R_HI] = q;
+        let g2 = max(q / 2u, 1u);
+        if g2 > 1u {
+            outp[R_PHASE] = PH_G2;
+            outp[R_Q] = g2;
+            return;
+        }
+        rc_bisect();
+    } else if phase == PH_G2 {
+        if !fit {
+            outp[R_LO] = q;
+        }
+        rc_bisect();
+    } else if phase == PH_BISECT {
+        if fit {
+            outp[R_HI] = q;
+        } else {
+            outp[R_LO] = q;
+        }
+        rc_bisect();
+    } else {
+        rc_refine_next();
+    }
+}
+
+// Run the state machine while its question is answered by a slot.
+fn rc_advance() {
+    for (var i = 0u; i < 64u; i = i + 1u) {
+        if outp[R_DONE] != 0u {
+            return;
+        }
+        let q = outp[R_Q];
+        let k = slot_of(q);
+        if k == MAX_SLOTS {
+            return;
+        }
+        rc_step(q, le64(slot_total(k), budget()));
+    }
+    fail();
+    outp[R_DONE] = 1u;
+}
+
+var<workgroup> wg_word: u32;
+var<workgroup> wg_sum: array<vec2<u32>, 64>;
+
+// One workgroup per scan line: the line's bits in the newest slot (64-bit, unpadded).
+@compute @workgroup_size(64)
+fn rc_lines(@builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>) {
+    if lid == 0u {
+        wg_word = select(0u, 1u, outp[R_DONE] != 0u || outp[R_SLOTS] >= MAX_SLOTS);
+    }
+    if workgroupUniformLoad(&wg_word) != 0u {
+        return;
+    }
+    let s = wid.x;
+    let k = outp[R_SLOTS];
+    var acc = vec2<u32>(0u, 0u);
+    rc_bad = false;
+    if s < P.ns {
+        for (var x = lid; x < P.nw; x = x + 64u) {
+            acc = add64(acc, vec2<u32>(slot_mb(k, s * P.nw + x), 0u));
+        }
+    }
+    if rc_bad {
+        fail();
+    }
+    wg_sum[lid] = acc;
+    for (var w = 32u; w > 0u; w = w / 2u) {
+        workgroupBarrier();
+        if lid < w {
+            wg_sum[lid] = add64(wg_sum[lid], wg_sum[lid + w]);
+        }
+    }
+    if lid == 0u && s < P.ns {
+        let at = lines_base() + (k * P.ns + s) * 2u;
+        outp[at] = wg_sum[0].x;
+        outp[at + 1u] = wg_sum[0].y;
+    }
+}
+
+@compute @workgroup_size(64)
+fn rc_pick(@builtin(local_invocation_index) lid: u32) {
+    if lid == 0u {
+        wg_word = select(0u, 1u, outp[R_DONE] != 0u);
+    }
+    if workgroupUniformLoad(&wg_word) != 0u {
+        return;
+    }
+    let k = outp[R_SLOTS];
+    var acc = vec2<u32>(0u, 0u);
+    if k < MAX_SLOTS {
+        // the frame: every line padded to 32 bits (`rc_lines` added the lines up)
+        for (var s = lid; s < P.ns; s = s + 64u) {
+            let at = lines_base() + (k * P.ns + s) * 2u;
+            acc = add64(acc, pad64(vec2<u32>(outp[at], outp[at + 1u])));
+        }
+    }
+    wg_sum[lid] = acc;
+    for (var w = 32u; w > 0u; w = w / 2u) {
+        workgroupBarrier();
+        if lid < w {
+            wg_sum[lid] = add64(wg_sum[lid], wg_sum[lid + w]);
+        }
+    }
+    if lid != 0u {
+        return;
+    }
+    if k >= MAX_SLOTS {
+        fail();
+        outp[R_DONE] = 1u;
+        return;
+    }
+    outp[R_SLOT_Q + k] = outp[R_Q];
+    outp[R_SLOT_TOT + k * 2u] = wg_sum[0].x;
+    outp[R_SLOT_TOT + k * 2u + 1u] = wg_sum[0].y;
+    outp[R_SLOTS] = k + 1u;
+    rc_advance();
+}
+
+// `rate_control` after the search: every macroblock at the uniform quantiser, then one step finer
+// wherever the budget still allows it, visiting the macroblocks with stride 7919. A macroblock goes
+// finer when the growth of its scan line's padded size fits the bits the budget has left
+// (`nt <= budget` is `growth <= left`). One workgroup keeps the lines' bits in workgroup memory and
+// works through the walk a chunk at a time, everything it can in parallel:
+// - the chunk's macroblocks, their extra bits, and the growth of each line for its first
+//   macroblock in the chunk;
+// - a chunk whose extra bits (plus a word of padding per macroblock) fit what is left goes finer
+//   as a whole, line by line;
+// - otherwise one invocation takes the decisions in order, skipping the macroblocks whose growth
+//   cannot fit (at least their extra bits less 31), and works out the growth itself only for a
+//   line's later macroblocks in the chunk.
+const RF_CHUNK: u32 = 256u;
+// scan lines a frame may have (16384 lines)
+const MAX_LINES: u32 = 1024u;
+// a line's bits from here on count as a fault (they never come near it)
+const RF_WIDE: u32 = 0x80000000u;
+// extra bits from here on take a chunk the one-by-one way (and keep the sums within 32 bits)
+const RF_BIG: u32 = 0x400000u;
+const RF_SEEN: u32 = 0xffffffffu;
+var<workgroup> rf_lines: array<u32, 1024>;
+var<workgroup> rf_first: array<atomic<u32>, 1024>;
+var<workgroup> rf_add: array<atomic<u32>, 1024>;
+// the chunk's macroblocks: index | line << 20, extra bits, the growth of its line (RF_SEEN: not
+// the line's first macroblock in the chunk)
+var<workgroup> rf_at: array<u32, 256>;
+var<workgroup> rf_extra: array<u32, 256>;
+var<workgroup> rf_grow: array<u32, 256>;
+// one bit per macroblock of the chunk: whether it may go finer, then whether it does
+var<workgroup> rf_mask: array<atomic<u32>, 8>;
+// the chunk's extra bits (bounded), then the growth of a chunk taken as a whole
+var<workgroup> rf_sum: atomic<u32>;
+var<workgroup> rf_big: atomic<u32>;
+// what is left plus 31 (saturated): the largest extra bits that may still fit
+var<workgroup> rf_lim: u32;
+
+// The (i + 1)-th macroblock of the CPU's walk, `(i + 1) · 7919 mod nmb` (nmb ≤ 2^20, 7919 =
+// 2 · 3959 + 1, so no product passes 32 bits).
+fn visit(i: u32) -> u32 {
+    let a = (i + 1u) % P.nmb;
+    return ((a * 3959u) % P.nmb * 2u + a) % P.nmb;
+}
+
+// `row_bytes(bits) * 8` of a line below RF_WIDE
+fn pad32(x: u32) -> u32 {
+    return (x + 31u) & ~31u;
+}
+
+// The kept rows; whether the refinement runs (1), not (0: the uniform quantiser is 1, or its frame
+// does not fit and no finer step can), or the search failed (2).
+fn refine_mode() -> u32 {
+    let q = outp[R_QG];
+    if outp[R_DONE] == 0u || q < 1u || q > Q_MAX || P.ns > MAX_LINES || P.nmb > (1u << 20u) {
+        fail();
+        outp[R_DONE] = 0u;
+        return 2u;
+    }
+    let kq = slot_of(q);
+    let kf = slot_of(q - 1u);
+    outp[R_ROW0_Q] = select(0u, q, kq != MAX_SLOTS);
+    outp[R_ROW0_K] = kq;
+    outp[R_ROW1_Q] = select(0u, q - 1u, kf != MAX_SLOTS);
+    outp[R_ROW1_K] = kf;
+    if q == 1u {
+        return 0u;
+    }
+    if kq == MAX_SLOTS || kf == MAX_SLOTS {
+        fail();
+        outp[R_DONE] = 0u;
+        return 2u;
+    }
+    return select(0u, 1u, le64(slot_total(kq), budget()));
+}
+
+// One chunk's macroblocks, extra bits, candidates and first-of-line growth (every invocation its
+// share); the macroblocks in the chunk.
+fn refine_load(lid: u32, base: u32, kq: u32, kf: u32) -> u32 {
+    let count = min(RF_CHUNK, P.nmb - base);
+    if lid < 8u {
+        atomicStore(&rf_mask[lid], 0u);
+    }
+    if lid == 0u {
+        atomicStore(&rf_sum, 0u);
+        atomicStore(&rf_big, 0u);
+    }
+    for (var j = lid; j < count; j = j + 64u) {
+        let idx = visit(base + j);
+        let f = slot_mb(kf, idx);
+        let s = idx / P.nw;
+        let e = f - min(slot_mb(kq, idx), f);
+        // (`refine_each` and `refine_all` add it to a line below RF_WIDE: no wrap)
+        if e >= RF_WIDE {
+            rc_bad = true;
+        }
+        rf_at[j] = idx | (s << 20u);
+        rf_extra[j] = e;
+        atomicStore(&rf_first[s], RF_SEEN);
+        atomicStore(&rf_add[s], 0u);
+    }
+    workgroupBarrier();
+    let lim = rf_lim;
+    for (var j = lid; j < count; j = j + 64u) {
+        let s = rf_at[j] >> 20u;
+        let e = rf_extra[j];
+        atomicMin(&rf_first[s], j);
+        atomicAdd(&rf_sum, min(e, RF_BIG) + 31u);
+        if e >= RF_BIG {
+            atomicOr(&rf_big, 1u);
+        } else {
+            atomicAdd(&rf_add[s], e);
+        }
+        if e <= lim {
+            atomicOr(&rf_mask[j / 32u], 1u << (j % 32u));
+        }
+    }
+    workgroupBarrier();
+    for (var j = lid; j < count; j = j + 64u) {
+        let s = rf_at[j] >> 20u;
+        var grow = RF_SEEN;
+        if atomicLoad(&rf_first[s]) == j {
+            let old = rf_lines[s];
+            grow = pad32(old + rf_extra[j]) - pad32(old);
+        }
+        rf_grow[j] = grow;
+    }
+    workgroupBarrier();
+    return count;
+}
+
+// The whole chunk one step finer: every line's bits, the growth added up in `rf_sum`.
+fn refine_all(lid: u32, count: u32, q: u32) {
+    for (var j = lid; j < count; j = j + 64u) {
+        let a = rf_at[j];
+        let s = a >> 20u;
+        if rf_grow[j] != RF_SEEN {
+            let old = rf_lines[s];
+            let nb = old + atomicLoad(&rf_add[s]);
+            if nb >= RF_WIDE {
+                rc_bad = true;
+            }
+            rf_lines[s] = nb;
+            atomicAdd(&rf_sum, pad32(nb) - pad32(old));
+        }
+        outp[R_QS + (a & 0xfffffu)] = q - 1u;
+    }
+}
+
+// The candidates of the chunk in order, against `left`: the taken ones' bits in `rf_mask`; what is
+// left then.
+fn refine_each(count: u32, left0: vec2<u32>) -> vec2<u32> {
+    var left = left0;
+    for (var w = 0u; w * 32u < count; w = w + 1u) {
+        var m = atomicLoad(&rf_mask[w]);
+        var took = 0u;
+        loop {
+            if m == 0u {
+                break;
+            }
+            let b = countTrailingZeros(m);
+            m = m & (m - 1u);
+            let j = w * 32u + b;
+            let s = rf_at[j] >> 20u;
+            let old = rf_lines[s];
+            let nb = old + rf_extra[j];
+            var grow = rf_grow[j];
+            if grow == RF_SEEN {
+                grow = pad32(nb) - pad32(old);
+            }
+            if left.y == 0u && grow > left.x {
+                continue;
+            }
+            left = sub64(left, vec2<u32>(grow, 0u));
+            if nb >= RF_WIDE {
+                rc_bad = true;
+            }
+            rf_lines[s] = nb;
+            took = took | (1u << b);
+        }
+        atomicStore(&rf_mask[w], took);
+    }
+    return left;
+}
+
+@compute @workgroup_size(64)
+fn rc_refine(@builtin(local_invocation_index) lid: u32) {
+    if lid == 0u {
+        wg_word = refine_mode();
+    }
+    let mode = workgroupUniformLoad(&wg_word);
+    if mode == 2u {
+        return;
+    }
+    let q = outp[R_QG];
+    for (var m = lid; m < P.nmb; m = m + 64u) {
+        outp[R_QS + m] = q;
+    }
+    if mode == 0u {
+        return;
+    }
+    let kq = slot_of(q);
+    let kf = slot_of(q - 1u);
+    rc_bad = false;
+    for (var s = lid; s < P.ns; s = s + 64u) {
+        let at = lines_base() + (kq * P.ns + s) * 2u;
+        if outp[at + 1u] != 0u || outp[at] >= RF_WIDE {
+            rc_bad = true;
+        }
+        rf_lines[s] = outp[at];
+    }
+    // (thread 0's: the bits the budget has left over the padded frame, as the search added it up)
+    var left = sub64(budget(), slot_total(kq));
+    storageBarrier();
+    for (var base = 0u; base < P.nmb; base = base + RF_CHUNK) {
+        if lid == 0u {
+            rf_lim = select(left.x + 31u, 0xffffffffu, left.y != 0u || left.x > 0xffffffe0u);
+        }
+        workgroupBarrier();
+        let count = refine_load(lid, base, kq, kf);
+        if lid == 0u {
+            let all = atomicLoad(&rf_big) == 0u && (left.y != 0u || atomicLoad(&rf_sum) <= left.x);
+            wg_word = select(0u, 1u, all);
+            if all {
+                atomicStore(&rf_sum, 0u);
+            }
+        }
+        if workgroupUniformLoad(&wg_word) == 1u {
+            refine_all(lid, count, q);
+            workgroupBarrier();
+            if lid == 0u {
+                left = sub64(left, vec2<u32>(atomicLoad(&rf_sum), 0u));
+            }
+        } else {
+            if lid == 0u {
+                left = refine_each(count, left);
+            }
+            workgroupBarrier();
+            for (var j = lid; j < count; j = j + 64u) {
+                if (atomicLoad(&rf_mask[j / 32u]) & (1u << (j % 32u))) != 0u {
+                    outp[R_QS + (rf_at[j] & 0xfffffu)] = q - 1u;
+                }
+            }
+        }
+        workgroupBarrier();
+    }
+    if rc_bad {
+        fail();
+    }
+}
+
+// The kept rows (each macroblock's colour and alpha bits at the two quantisers).
+@compute @workgroup_size(64)
+fn rc_final(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let m = index(gid, nwg);
+    if m >= P.nmb || outp[R_DONE] == 0u {
+        return;
+    }
+    let table = table_base();
+    let rows = rows_base();
+    for (var c = 0u; c < 2u; c = c + 1u) {
+        if outp[R_ROW0_Q] != 0u {
+            outp[rows + m * 2u + c] = outp[table + (outp[R_ROW0_K] * P.nmb + m) * 2u + c];
+        }
+        if outp[R_ROW1_Q] != 0u {
+            outp[rows + (P.nmb + m) * 2u + c] = outp[table + (outp[R_ROW1_K] * P.nmb + m) * 2u + c];
+        }
     }
 }

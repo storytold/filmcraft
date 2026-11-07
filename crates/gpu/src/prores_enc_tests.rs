@@ -4,10 +4,12 @@
 
 use std::process::Command;
 
-use filmcraft_prores::{ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, SliceBackend, decode_frame, decode_frame_with, frame_layout};
+use filmcraft_prores::{
+    ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, SliceBackend, decode_frame, decode_frame_with, frame_layout, rate_control_for_tests,
+};
 
 use crate::intra_enc::fits;
-use crate::prores_enc::ProResGpuEncoder;
+use crate::prores_enc::{ProResGpuEncoder, RC_ROUNDS};
 
 fn encoder(test: &str) -> Option<ProResGpuEncoder> {
     let e = ProResGpuEncoder::new();
@@ -191,6 +193,97 @@ fn noise_and_black_frames_stay_within_the_profile_limits() {
         eprintln!("{name}: GPU {} bytes, CPU {} bytes, target {target}, identical {}", gpu.len(), cpu.len(), gpu == cpu);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The CPU's rate control over the bits `enc` measures (its `bits`, never its `choose`).
+fn cpu_choice(enc: &mut ProResGpuEncoder, budget: u64, limits: &[u64], hint: u8) -> Option<(Vec<u8>, u8)> {
+    rate_control_for_tests(budget, limits, hint, &mut |q| Some(enc.bits(q)?.iter().map(|c| c.iter().map(|&b| u64::from(b)).sum()).collect()))
+}
+
+/// Every slice's coded bits at `q`, as the rate control adds them.
+fn slice_bits(enc: &mut ProResGpuEncoder, q: u8) -> Vec<u64> {
+    enc.bits(q).unwrap().iter().map(|c| c.iter().map(|&b| u64::from(b)).sum()).collect()
+}
+
+#[test]
+fn gpu_rate_control_picks_the_cpus_quantisers() {
+    let Some(mut enc) = encoder("gpu_rate_control_picks_the_cpus_quantisers") else { return };
+    let (mut failures, mut runs, mut guarded) = (Vec::new(), 0usize, 0usize);
+    for c in cases() {
+        let e = Encoder::with_config(c.cfg.clone());
+        let jobs = e.slice_jobs();
+        let n = jobs.len();
+        assert!(enc.load(&c.cfg, &c.frame, &jobs), "{}: not loaded", c.name);
+        // the encoder's own budget and 16-bit slice limits
+        let hsize = if c.cfg.encode_alpha { 8 } else { 6 };
+        let alpha: Vec<usize> = if c.cfg.encode_alpha { enc.alpha().unwrap().iter().map(Vec::len).collect() } else { vec![0; n] };
+        let limits: Vec<u64> = alpha.iter().map(|a| (65535 - hsize - a) as u64 * 8).collect();
+        let mbs = u64::from(c.cfg.width.div_ceil(16)) * u64::from(c.cfg.height.div_ceil(16));
+        let budget = (u64::from(e.bits_per_mb()) * mbs).saturating_sub(8 * (36 + n * (2 + hsize)) as u64);
+        let (_, right) = cpu_choice(&mut enc, budget, &limits, 4).unwrap();
+        // a budget exactly the frame at the right quantiser
+        let exact: u64 = slice_bits(&mut enc, right).iter().sum();
+        // the size guard: limits at the bits five and two steps coarser (those slices are raised a
+        // few quantisers), no limit on the rest; on small frames also no slice fitting at all on
+        // every third slice (it ends at Q_MAX: a round of whole-frame bits per quantiser on the CPU)
+        let coarser = |enc: &mut ProResGpuEncoder, by: u8| slice_bits(enc, right.saturating_add(by).min(224));
+        let (five, two) = (coarser(&mut enc, 5), coarser(&mut enc, 2));
+        let tight: Vec<u64> = (0..n).map(|i| [five[i], two[i], u64::MAX][i % 3]).collect();
+        let none_fit: Vec<u64> = (0..n).map(|i| [0, two[i], u64::MAX][i % 3]).collect();
+        let mut questions: Vec<(u8, u64, &[u64])> = vec![
+            (0, budget, &limits),
+            (1, budget, &limits),
+            (right, budget, &limits),
+            (224, budget, &limits),
+            (255, budget, &limits),
+            (right, exact, &limits),
+            (right.saturating_sub(1).max(1), exact.saturating_sub(1), &limits),
+            // nothing fits
+            (right, 0, &limits),
+            (224, 1, &limits),
+            // everything fits at Q_MIN
+            (224, u64::MAX, &limits),
+            (right, budget, &tight),
+            (1, budget, &tight),
+            (right, exact, &tight),
+        ];
+        if c.cfg.width <= 64 {
+            questions.extend([(right, budget, &none_fit[..]), (right, u64::MAX, &none_fit[..])]);
+        }
+        for (hint, budget, limits) in questions {
+            let gpu = enc.choose(hint, budget, limits);
+            let cpu = cpu_choice(&mut enc, budget, limits, hint);
+            runs += 1;
+            match (&gpu, &cpu) {
+                (Some(g), Some(_)) if gpu == cpu => guarded += usize::from(g.0.iter().any(|&q| q > g.1)),
+                _ => failures.push(format!("{}: hint {hint}, budget {budget}: GPU {gpu:?}, CPU {cpu:?}", c.name)),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} of {runs} differ:\n{}", failures.len(), failures.join("\n"));
+    assert!(guarded > 0, "the size guard never raised a slice");
+}
+
+#[test]
+fn the_rate_control_rounds_cover_every_cpu_search() {
+    // every hint against every place the frame starts to fit: the distinct quantisers the CPU
+    // measures (the search and the one finer step) are at most the GPU's rounds
+    let mut most = 0usize;
+    for hint in 0..=255u8 {
+        for first_fit in 1..=225u32 {
+            let mut asked = Vec::new();
+            let mut bits = |q: u8| {
+                if !asked.contains(&q) {
+                    asked.push(q);
+                }
+                Some(vec![if u32::from(q) >= first_fit { 10 } else { 1000 }])
+            };
+            rate_control_for_tests(100, &[u64::MAX], hint, &mut bits).unwrap();
+            most = most.max(asked.len());
+        }
+    }
+    assert!(most <= RC_ROUNDS, "the CPU measures up to {most} quantisers, the GPU runs {RC_ROUNDS} rounds");
+    assert_eq!(most, RC_ROUNDS, "the bound is tight");
 }
 
 #[test]

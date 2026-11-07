@@ -510,3 +510,414 @@ fn alpha_pack(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         outp[dst + k] = work[region + k];
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rate control (`choose_quantisers`), with no read-back until the answer
+// ---------------------------------------------------------------------------------------------
+//
+// `rc_bits` measures every slice component at the quantiser the state asks for into the next slot
+// of the slot table; `rc_pick` (one workgroup) adds the slot up and runs `smallest_fitting`'s
+// search as a state machine until it needs a quantiser not measured yet (or has the answer, and
+// then the one finer quantiser the refinement reads). The host alternates the two as often as the
+// CPU search can measure (`RC_ROUNDS`); once the state is done the later rounds return at once.
+// `rc_refine` (one workgroup) is the greedy one-step-finer refinement in slice order, `rc_final`
+// (one invocation per slice) the 16-bit size guard, each slice raised until it fits, and copies
+// the rows the host keeps (the uniform quantiser's and the finer one's).
+//
+// `outp` holds the state words (R_*), the slots' quantisers and 64-bit totals, the answer (one
+// quantiser per slice), the kept rows (3 words per slice each), every slice's current bits, then
+// the slot table (3 words per slice per slot). `aux` holds the budget (low, high word), the hint,
+// and every slice's limit in bits. Anything the CPU algorithm would not survive (a slot table
+// overflow, a slice's bits beyond 32 bits, a state that never finishes) counts in `status[0]`.
+
+const R_PHASE: u32 = 0u;
+// the quantiser `rc_bits` measures next
+const R_Q: u32 = 1u;
+const R_LO: u32 = 2u;
+const R_HI: u32 = 3u;
+const R_STEP: u32 = 4u;
+const R_QG: u32 = 5u;
+const R_DONE: u32 = 6u;
+const R_SLOTS: u32 = 7u;
+// the kept rows: quantiser (0: none) and slot
+const R_ROW0_Q: u32 = 8u;
+const R_ROW0_K: u32 = 9u;
+const R_ROW1_Q: u32 = 10u;
+const R_ROW1_K: u32 = 11u;
+const R_SLOT_Q: u32 = 16u;
+const R_SLOT_TOT: u32 = 32u;
+const R_QS: u32 = 64u;
+const MAX_SLOTS: u32 = 16u;
+
+const PH_FIRST: u32 = 0u;
+const PH_DOWN: u32 = 1u;
+const PH_UP: u32 = 2u;
+const PH_BISECT: u32 = 3u;
+const PH_FINER: u32 = 4u;
+
+const Q_MAX: u32 = 224u;
+
+fn rows_base() -> u32 {
+    return R_QS + P.n_slices;
+}
+
+fn cur_base() -> u32 {
+    return rows_base() + P.n_slices * 6u;
+}
+
+fn table_base() -> u32 {
+    return cur_base() + P.n_slices;
+}
+
+fn fail() {
+    atomicAdd(&status[0], 1u);
+}
+
+// 64-bit unsigned values as (low, high) words
+fn add64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    let lo = a.x + b.x;
+    return vec2<u32>(lo, a.y + b.y + select(0u, 1u, lo < a.x));
+}
+
+fn sub64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    return vec2<u32>(a.x - b.x, a.y - b.y - select(0u, 1u, a.x < b.x));
+}
+
+fn le64(a: vec2<u32>, b: vec2<u32>) -> bool {
+    return a.y < b.y || (a.y == b.y && a.x <= b.x);
+}
+
+fn budget() -> vec2<u32> {
+    return vec2<u32>(aux[0], aux[1]);
+}
+
+fn slot_total(k: u32) -> vec2<u32> {
+    return vec2<u32>(outp[R_SLOT_TOT + k * 2u], outp[R_SLOT_TOT + k * 2u + 1u]);
+}
+
+// The slot holding quantiser `q`, MAX_SLOTS when it was not measured.
+fn slot_of(q: u32) -> u32 {
+    let n = min(outp[R_SLOTS], MAX_SLOTS);
+    for (var k = 0u; k < n; k = k + 1u) {
+        if outp[R_SLOT_Q + k] == q {
+            return k;
+        }
+    }
+    return MAX_SLOTS;
+}
+
+// Slice `s`'s bits in slot `k` (its components added); `rc_bad` when they pass 32 bits.
+var<private> rc_bad: bool;
+
+fn slot_slice(k: u32, s: u32) -> u32 {
+    let at = table_base() + (k * P.n_slices + s) * 3u;
+    return add_bits(add_bits(outp[at], outp[at + 1u]), outp[at + 2u]);
+}
+
+fn add_bits(a: u32, b: u32) -> u32 {
+    let c = a + b;
+    if c < a {
+        rc_bad = true;
+    }
+    return c;
+}
+
+@compute @workgroup_size(64)
+fn rc_bits(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let idx = index(gid, nwg);
+    let per = P.n_slices * 3u;
+    let k = outp[R_SLOTS];
+    if idx >= per || outp[R_DONE] != 0u || k >= MAX_SLOTS {
+        return;
+    }
+    let range = comp_range(idx / 3u, idx % 3u);
+    sink(false, 0u, 0u);
+    encode_component(range.x, range.y, inv_q(outp[R_Q]));
+    if w_bad {
+        fail();
+    }
+    outp[table_base() + k * per + idx] = (w_bits + 7u) / 8u * 8u;
+}
+
+// The search's answer `qg`: then the finer quantiser, if the refinement reads it and it was not
+// measured yet (a guard: when the refinement reads it, it is the bracket's `lo`, measured).
+fn rc_found(qg: u32) {
+    outp[R_QG] = qg;
+    let k = slot_of(qg);
+    if k == MAX_SLOTS {
+        fail();
+        outp[R_DONE] = 1u;
+        return;
+    }
+    if qg > 1u && !le64(budget(), slot_total(k)) && slot_of(qg - 1u) == MAX_SLOTS {
+        outp[R_PHASE] = PH_FINER;
+        outp[R_Q] = qg - 1u;
+        return;
+    }
+    outp[R_DONE] = 1u;
+}
+
+// `smallest_fitting`'s steps: towards finer quantisers, towards coarser ones, bisection.
+fn rc_down() {
+    let hi = outp[R_HI];
+    if hi == 1u {
+        rc_found(1u);
+        return;
+    }
+    let by = outp[R_STEP];
+    outp[R_Q] = select(1u, hi - by, hi > by);
+}
+
+fn rc_up() {
+    let lo = outp[R_LO];
+    if lo == Q_MAX {
+        rc_found(Q_MAX);
+        return;
+    }
+    outp[R_Q] = min(lo + outp[R_STEP], Q_MAX);
+}
+
+fn rc_bisect() {
+    let lo = outp[R_LO];
+    let hi = outp[R_HI];
+    if hi - lo > 1u {
+        outp[R_PHASE] = PH_BISECT;
+        outp[R_Q] = lo + (hi - lo) / 2u;
+        return;
+    }
+    rc_found(hi);
+}
+
+// The answer to the question `q`: whether its frame fits.
+fn rc_step(q: u32, fit: bool) {
+    let phase = outp[R_PHASE];
+    let wider = min(outp[R_STEP] * 2u, 255u);
+    if phase == PH_FIRST {
+        outp[R_STEP] = 1u;
+        if fit {
+            outp[R_HI] = q;
+            outp[R_PHASE] = PH_DOWN;
+            rc_down();
+        } else {
+            outp[R_LO] = q;
+            outp[R_PHASE] = PH_UP;
+            rc_up();
+        }
+    } else if phase == PH_DOWN {
+        if fit {
+            outp[R_HI] = q;
+            outp[R_STEP] = wider;
+            rc_down();
+        } else {
+            outp[R_LO] = q;
+            rc_bisect();
+        }
+    } else if phase == PH_UP {
+        if fit {
+            outp[R_HI] = q;
+            rc_bisect();
+        } else {
+            outp[R_LO] = q;
+            outp[R_STEP] = wider;
+            rc_up();
+        }
+    } else if phase == PH_BISECT {
+        if fit {
+            outp[R_HI] = q;
+        } else {
+            outp[R_LO] = q;
+        }
+        rc_bisect();
+    } else {
+        outp[R_DONE] = 1u;
+    }
+}
+
+// Run the state machine while its question is answered by a slot.
+fn rc_advance() {
+    for (var i = 0u; i < 64u; i = i + 1u) {
+        if outp[R_DONE] != 0u {
+            return;
+        }
+        let q = outp[R_Q];
+        let k = slot_of(q);
+        if k == MAX_SLOTS {
+            return;
+        }
+        rc_step(q, le64(slot_total(k), budget()));
+    }
+    fail();
+    outp[R_DONE] = 1u;
+}
+
+var<workgroup> wg_word: u32;
+var<workgroup> wg_sum: array<vec2<u32>, 64>;
+
+@compute @workgroup_size(64)
+fn rc_pick(@builtin(local_invocation_index) lid: u32) {
+    if lid == 0u {
+        wg_word = select(0u, 1u, outp[R_DONE] != 0u);
+    }
+    if workgroupUniformLoad(&wg_word) != 0u {
+        return;
+    }
+    let k = outp[R_SLOTS];
+    let per = P.n_slices * 3u;
+    var acc = vec2<u32>(0u, 0u);
+    if k < MAX_SLOTS {
+        let at = table_base() + k * per;
+        for (var i = lid; i < per; i = i + 64u) {
+            acc = add64(acc, vec2<u32>(outp[at + i], 0u));
+        }
+    }
+    wg_sum[lid] = acc;
+    for (var w = 32u; w > 0u; w = w / 2u) {
+        workgroupBarrier();
+        if lid < w {
+            wg_sum[lid] = add64(wg_sum[lid], wg_sum[lid + w]);
+        }
+    }
+    if lid != 0u {
+        return;
+    }
+    if k >= MAX_SLOTS {
+        fail();
+        outp[R_DONE] = 1u;
+        return;
+    }
+    outp[R_SLOT_Q + k] = outp[R_Q];
+    outp[R_SLOT_TOT + k * 2u] = wg_sum[0].x;
+    outp[R_SLOT_TOT + k * 2u + 1u] = wg_sum[0].y;
+    outp[R_SLOTS] = k + 1u;
+    rc_advance();
+}
+
+// `choose_quantisers` after the search: every slice at the uniform quantiser, then one step finer
+// on as many slices as the budget left allows, in slice order. One workgroup: the slices' bits are
+// read in parallel, a chunk at a time, and one invocation takes the decisions in order.
+const RF_CHUNK: u32 = 512u;
+var<workgroup> rf_cur: array<u32, 512>;
+var<workgroup> rf_finer: array<u32, 512>;
+var<workgroup> rf_take: array<u32, 512>;
+
+// The kept rows; whether the refinement runs (1), not (0), or the search failed (2).
+fn refine_mode() -> u32 {
+    let qg = outp[R_QG];
+    let kg = slot_of(qg);
+    if outp[R_DONE] == 0u || kg == MAX_SLOTS || qg < 1u || qg > Q_MAX {
+        fail();
+        outp[R_DONE] = 0u;
+        return 2u;
+    }
+    let kf = slot_of(qg - 1u);
+    outp[R_ROW0_Q] = qg;
+    outp[R_ROW0_K] = kg;
+    outp[R_ROW1_Q] = select(0u, qg - 1u, kf != MAX_SLOTS);
+    outp[R_ROW1_K] = kf;
+    if qg == 1u || le64(budget(), slot_total(kg)) {
+        return 0u;
+    }
+    if kf == MAX_SLOTS {
+        fail();
+        outp[R_DONE] = 0u;
+        return 2u;
+    }
+    return 1u;
+}
+
+@compute @workgroup_size(64)
+fn rc_refine(@builtin(local_invocation_index) lid: u32) {
+    if lid == 0u {
+        wg_word = refine_mode();
+    }
+    let mode = workgroupUniformLoad(&wg_word);
+    if mode == 2u {
+        return;
+    }
+    let n = P.n_slices;
+    let qg = outp[R_QG];
+    let kg = slot_of(qg);
+    let kf = slot_of(qg - 1u);
+    let cur = cur_base();
+    // (thread 0's: the bits the refinement may still spend)
+    var left = sub64(budget(), slot_total(kg));
+    rc_bad = false;
+    for (var base = 0u; base < n; base = base + RF_CHUNK) {
+        for (var j = lid; j < RF_CHUNK && base + j < n; j = j + 64u) {
+            let s = base + j;
+            rf_cur[j] = slot_slice(kg, s);
+            rf_take[j] = 0u;
+            if mode == 1u {
+                let f = slot_slice(kf, s);
+                rf_finer[j] = f;
+                rf_take[j] = select(0u, 1u, f <= aux[4u + s]);
+            }
+        }
+        workgroupBarrier();
+        if lid == 0u && mode == 1u {
+            for (var j = 0u; j < RF_CHUNK && base + j < n; j = j + 1u) {
+                let f = rf_finer[j];
+                let c = rf_cur[j];
+                let d = vec2<u32>(select(0u, f - c, f > c), 0u);
+                if rf_take[j] == 1u && le64(d, left) {
+                    left = sub64(left, d);
+                } else {
+                    rf_take[j] = 0u;
+                }
+            }
+        }
+        workgroupBarrier();
+        for (var j = lid; j < RF_CHUNK && base + j < n; j = j + 64u) {
+            let take = rf_take[j] == 1u;
+            outp[R_QS + base + j] = select(qg, qg - 1u, take);
+            outp[cur + base + j] = select(rf_cur[j], rf_finer[j], take);
+        }
+        workgroupBarrier();
+    }
+    if rc_bad {
+        fail();
+    }
+}
+
+// The kept rows, then the size guard: a slice over its limit is raised one quantiser at a time
+// until it fits (or reaches Q_MAX), as the CPU's rounds raise it.
+@compute @workgroup_size(64)
+fn rc_final(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    let s = index(gid, nwg);
+    let n = P.n_slices;
+    if s >= n || outp[R_DONE] == 0u {
+        return;
+    }
+    let table = table_base();
+    let rows = rows_base();
+    for (var c = 0u; c < 3u; c = c + 1u) {
+        outp[rows + s * 3u + c] = outp[table + (outp[R_ROW0_K] * n + s) * 3u + c];
+        if outp[R_ROW1_Q] != 0u {
+            outp[rows + (n + s) * 3u + c] = outp[table + (outp[R_ROW1_K] * n + s) * 3u + c];
+        }
+    }
+    let limit = aux[4u + s];
+    var q = outp[R_QS + s];
+    var have = outp[cur_base() + s];
+    rc_bad = false;
+    loop {
+        if have <= limit || q >= Q_MAX {
+            break;
+        }
+        q = q + 1u;
+        have = 0u;
+        for (var c = 0u; c < 3u; c = c + 1u) {
+            let range = comp_range(s, c);
+            sink(false, 0u, 0u);
+            encode_component(range.x, range.y, inv_q(q));
+            if w_bad {
+                rc_bad = true;
+            }
+            have = add_bits(have, (w_bits + 7u) / 8u * 8u);
+        }
+    }
+    if rc_bad {
+        fail();
+    }
+    outp[R_QS + s] = q;
+}

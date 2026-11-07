@@ -20,6 +20,8 @@ pub mod layout;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_into, decode_frame_with, probe};
+#[doc(hidden)]
+pub use encode::rate_control_for_tests;
 pub use encode::{Encoder, EncoderConfig, SliceBackend, SliceJob};
 pub use header::{FrameHeader, PictureHeader};
 pub use layout::{FrameLayout, SliceLayout, frame_layout};

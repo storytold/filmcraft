@@ -685,6 +685,13 @@ fn choose_quantisers(budget: u64, limits: &[u64], hint: u8, bits_at: &mut dyn Fn
     Some((qs, qg))
 }
 
+/// The encoder's rate control (`choose_quantisers`) over `bits_at`, for tests of a backend's
+/// `choose` in other crates: its answer must be this one over the same measurements.
+#[doc(hidden)]
+pub fn rate_control_for_tests(budget: u64, limits: &[u64], hint: u8, bits_at: &mut dyn FnMut(u8) -> Option<Vec<u64>>) -> Option<(Vec<u8>, u8)> {
+    choose_quantisers(budget, limits, hint, bits_at)
+}
+
 /// The Y, Cb and Cr payloads of a slice at quantiser `q`.
 fn write_components(sd: &SliceData, q: u8) -> [Vec<u8>; 3] {
     let mut lv = [Vec::new(), Vec::new(), Vec::new()];

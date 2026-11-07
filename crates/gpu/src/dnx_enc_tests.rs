@@ -6,9 +6,11 @@
 
 use std::process::Command;
 
-use filmcraft_dnx::{AlphaCoding, ChromaFormat, Encoder, EncoderConfig, Frame, Interlace, MacroblockBackend, Profile, decode_frame, frame_layout};
+use filmcraft_dnx::{
+    AlphaCoding, ChromaFormat, Encoder, EncoderConfig, Frame, Interlace, MacroblockBackend, Profile, decode_frame, frame_layout, rate_control_for_tests,
+};
 
-use crate::dnx_enc::DnxGpuEncoder;
+use crate::dnx_enc::{DnxGpuEncoder, RC_ROUNDS};
 use crate::intra_enc::fits;
 
 fn encoder(test: &str) -> Option<DnxGpuEncoder> {
@@ -259,6 +261,79 @@ fn noise_and_black_frames_stay_within_the_profile_limits() {
     // lossless noise does not fit any frame: both refuse it, and the GPU never hands one out
     let cfg = with(Profile::Lb, 256, 64, 8, Some(AlphaCoding::Lossless));
     assert!(both(&mut enc, &cfg, &noise_frame(Profile::Lb, 256, 64, 8, true)).is_none(), "lossless alpha noise fitted an LB frame");
+}
+
+/// Bits of every scan line (macroblock bits summed, padded to 4 bytes), added up.
+fn padded_frame_bits(mb_bits: &[u32], nw: usize) -> u64 {
+    mb_bits.chunks(nw).map(|row| row.iter().map(|&b| u64::from(b)).sum::<u64>().div_ceil(32) * 32).sum()
+}
+
+#[test]
+fn gpu_rate_control_picks_the_cpus_quantisers() {
+    let Some(mut enc) = encoder("gpu_rate_control_picks_the_cpus_quantisers") else { return };
+    let (mut failures, mut runs, mut refined) = (Vec::new(), 0usize, 0usize);
+    for c in cases() {
+        assert!(enc.load(&c.cfg, &c.frame), "{}: not loaded", c.name);
+        let (nw, ns) = (c.cfg.width.div_ceil(16) as usize, c.cfg.height.div_ceil(16) as usize);
+        let e = Encoder::with_config(c.cfg.clone()).unwrap();
+        // the encoder's own budget
+        let budget = (u64::from(e.frame_size()) - u64::from(filmcraft_dnx::header::header_size_for(c.cfg.height)) - 4) * 8;
+        let cpu_choice = |enc: &mut DnxGpuEncoder, hint: u32, budget: u64| rate_control_for_tests(hint, nw, ns, budget, &mut |q| enc.bits(q));
+        let Some((_, right)) = cpu_choice(&mut enc, 8, budget) else {
+            failures.push(format!("{}: no CPU answer", c.name));
+            continue;
+        };
+        // a budget exactly the frame at the right quantiser
+        let exact = padded_frame_bits(&enc.bits(right).unwrap(), nw);
+        let questions: [(u32, u64); 10] = [
+            (0, budget),
+            (1, budget),
+            (right, budget),
+            (2047, budget),
+            (u32::MAX, budget),
+            (right, exact),
+            (right + 1, exact.saturating_sub(1)),
+            // nothing fits (the CPU answers Q_MAX without measuring it)
+            (right, 0),
+            (1, 1),
+            // everything fits at 1
+            (2047, u64::MAX),
+        ];
+        for (hint, budget) in questions {
+            let gpu = enc.choose(hint, budget);
+            let cpu = cpu_choice(&mut enc, hint, budget).map(|(qs, _)| qs);
+            runs += 1;
+            match &gpu {
+                Some(g) if gpu == cpu => refined += usize::from(g.windows(2).any(|w| w[0] != w[1])),
+                _ => failures.push(format!("{}: hint {hint}, budget {budget}: GPU {gpu:?}, CPU {cpu:?}", c.name)),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} of {runs} differ:\n{}", failures.len(), failures.join("\n"));
+    assert!(refined > 0, "no answer refined a macroblock");
+}
+
+#[test]
+fn the_rate_control_rounds_cover_every_cpu_search() {
+    // hints against every place the frame starts to fit: the distinct quantisers the CPU measures
+    // (the search, the uniform one and the one finer step) are at most the GPU's rounds
+    let hints = (0..=40u32).chain((41..2010).step_by(7)).chain(2010..=2049).chain([u32::MAX]);
+    let mut most = 0usize;
+    for hint in hints {
+        for first_fit in 1..=2048u32 {
+            let mut asked = Vec::new();
+            let mut bits = |q: u32| {
+                if !asked.contains(&q) {
+                    asked.push(q);
+                }
+                Some(vec![if q >= first_fit { 10 } else { 1000 }])
+            };
+            rate_control_for_tests(hint, 1, 1, 100, &mut bits).unwrap();
+            most = most.max(asked.len());
+        }
+    }
+    assert!(most <= RC_ROUNDS, "the CPU measures up to {most} quantisers, the GPU runs {RC_ROUNDS} rounds");
+    assert_eq!(most, RC_ROUNDS, "the bound is tight");
 }
 
 /// A device on the same adapter with small limits (a 2048 texture, 64 MiB buffers).
