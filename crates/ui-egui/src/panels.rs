@@ -190,38 +190,60 @@ fn payload_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-payload")
 }
 
-pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Source(source)))));
+/// Temp-store key recording the frame number on which the drag owner's pointer was released.
+fn release_frame_id() -> egui::Id {
+    egui::Id::unique("drag-release-frame")
 }
+
+/// Record `payload` as the active drag owned by `ui`'s viewport.
+fn start_drag(ui: &egui::Ui, payload: DragPayload) {
+    let owner = ui.ctx().viewport_id();
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(payload_id(), Some(DragPayloadBox { payload, owner }));
+        d.remove::<u64>(release_frame_id());
+    });
+}
+
+/// Start dragging a clip or sub-range from the Source Monitor.
+pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
+    start_drag(ui, DragPayload::Source(source));
+}
+/// The Source Monitor drag payload currently in flight, if any.
 pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
     match payload(ui) {
         Some(DragPayload::Source(s)) => Some(s),
         _ => None,
     }
 }
+/// Start dragging a project media item.
 pub fn start_drag_item(ui: &egui::Ui, item: ItemId) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Item(item)))));
+    start_drag(ui, DragPayload::Item(item));
 }
+/// Start dragging a project bin.
 pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
+    start_drag(ui, DragPayload::Bin(bin));
 }
+/// The project bin id currently being dragged, if any.
 pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
     match payload(ui) {
         Some(DragPayload::Bin(b)) => Some(b),
         _ => None,
     }
 }
+/// Start dragging a motion-graphics template.
 pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
+    start_drag(ui, DragPayload::Template(id.to_string(), name.to_string()));
 }
+/// The template id currently being dragged, if any.
 pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
     match payload(ui) {
         Some(DragPayload::Template(id, _)) => Some(id),
         _ => None,
     }
 }
+/// Start dragging an effect or preset by id.
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
+    start_drag(ui, DragPayload::Effect(id.to_string()));
 }
 /// Prefix of a dragged effect payload that names a Lumetri preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
@@ -231,15 +253,19 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
     start_drag_effect(ui, &format!("{LUMETRI_PRESET_PREFIX}{name}"));
 }
 #[derive(Clone, Debug)]
-struct DragPayloadBox(DragPayload);
+struct DragPayloadBox {
+    payload: DragPayload,
+    owner: egui::ViewportId,
+}
 
 /// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
 pub(crate) fn dragging(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
 }
 
+/// The active drag payload, if any.
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
-    ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
+    ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.payload)
 }
 pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
     match payload(ui) {
@@ -269,8 +295,12 @@ pub fn dragged_effect(ui: &egui::Ui) -> Option<String> {
         _ => None,
     }
 }
+/// Clear the active drag payload and any pending release-frame marker.
 pub fn clear_drag(ui: &egui::Ui) {
-    ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
+    ui.ctx().data_mut(|d| {
+        d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None);
+        d.remove::<u64>(release_frame_id());
+    });
 }
 
 /// Temp-store key marking a cancelled drag until the button is released, so it cannot restart immediately.
@@ -281,22 +311,33 @@ fn cancelled_id() -> egui::Id {
 /// Abandon the drag in progress (Escape, #580): nothing is dropped, and nothing restarts it until
 /// the button comes up.
 pub fn cancel_drag(ui: &egui::Ui) {
+    let ctx = ui.ctx();
+    let owner = ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map_or_else(|| ctx.viewport_id(), |b| b.owner);
     clear_drag(ui);
-    ui.ctx().data_mut(|d| d.insert_temp(cancelled_id(), true));
+    craft_ui::docking::cancel_drag(ctx, crate::dock_ui::area_id());
+    ctx.data_mut(|d| d.insert_temp(cancelled_id(), owner));
 }
 
 /// Whether the press in progress had its drag cancelled with Escape.
 pub fn drag_cancelled(ui: &egui::Ui) -> bool {
-    ui.ctx().data(|d| d.get_temp::<bool>(cancelled_id())).unwrap_or(false)
+    ui.ctx().data(|d| d.get_temp::<egui::ViewportId>(cancelled_id())).is_some()
 }
 
-/// Draw the drag ghost near the pointer and clear the payload after release. Escape cancels it.
+/// Draw the drag ghost near the pointer and clear the payload after release in the owning viewport. Escape cancels it.
 pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
-    if !ui.ctx().input(|i| i.pointer.any_down()) {
-        ui.ctx().data_mut(|d| d.remove::<bool>(cancelled_id()));
-    }
-    let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
+    let viewport = ctx.viewport_id();
+    if let Some(owner) = ctx.data(|d| d.get_temp::<egui::ViewportId>(cancelled_id())) {
+        let gone = owner != egui::ViewportId::ROOT && !app.auto.windows.iter().any(|(v, _)| *v == owner);
+        if gone || (viewport == owner && !ctx.input(|i| i.pointer.any_down())) {
+            ctx.data_mut(|d| d.remove::<egui::ViewportId>(cancelled_id()));
+        }
+    }
+    let Some(DragPayloadBox { payload: pl, owner }) = ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten() else { return };
+    if owner != egui::ViewportId::ROOT && !app.auto.windows.iter().any(|(v, _)| *v == owner) {
+        clear_drag(ui);
+        return;
+    }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         cancel_drag(ui);
         return;
@@ -329,14 +370,16 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
         painter.rect_filled(r, 4.0, Color32::from_black_alpha(200));
         painter.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), Color32::WHITE);
     }
+    if viewport != owner {
+        return;
+    }
     if ctx.input(|i| i.pointer.any_released()) {
         // cleared next frame so drop targets see the release this frame
         let f = ctx.cumulative_frame_nr();
-        let k = egui::Id::unique("drag-release-frame");
+        let k = release_frame_id();
         match ctx.data(|d| d.get_temp::<u64>(k)) {
             Some(prev) if prev < f => {
                 clear_drag(ui);
-                ctx.data_mut(|d| d.remove::<u64>(k));
             }
             None => {
                 ctx.data_mut(|d| d.insert_temp(k, f));
