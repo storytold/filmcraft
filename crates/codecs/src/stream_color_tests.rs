@@ -286,8 +286,13 @@ fn a_full_range_bitstream_beats_a_limited_colr() {
     }
     // only the range: a PQ full-range VUI under a BT.709 box is BT.709, full range
     let pq_full = Signal { codes: Some((9, 16, 9)), full_range: true };
-    let c = mp4_color(hevc(hevc_sps(1920, 1080, Some(pq_full))), 1920, 1080, Some(phone));
+    let c = mp4_color(hevc(hevc_sps(1920, 1080, Some(pq_full))), 1920, 1080, Some(phone.clone()));
     assert_eq!(c, ColorInfo { range: Range::Full, ..ColorInfo::REC709 });
+    // the same for an AV1 sequence header that says full range (its color_range is always explicit)
+    let av1_full = av1(av1_sequence_header(1920, 1080, Some((1, 1, 1)), true));
+    assert_eq!(mp4_color(av1_full, 1920, 1080, Some(phone.clone())), ColorInfo { range: Range::Full, ..ColorInfo::REC709 });
+    let av1_limited = av1(av1_sequence_header(1920, 1080, Some((1, 1, 1)), false));
+    assert_eq!(mp4_color(av1_limited, 1920, 1080, Some(phone.clone())).range, Range::Limited);
     // a box that says full range keeps it whatever the VUI says
     let full_box = Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: true };
     assert_eq!(mp4_color(avc(h264_sps(80, 45, None)), 1280, 720, Some(full_box)).range, Range::Full);
