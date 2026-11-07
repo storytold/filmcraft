@@ -5,7 +5,7 @@
 use filmcraft_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, MxfVideoCodec, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, ExportEffects, H264Profile, LoudnessNormalization, MxfVideoCodec, Scaling};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -46,8 +46,34 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
     }
 }
 
+/// Integrated loudness of the short-form presets: the level the video platforms play speech and
+/// music at, so they neither turn the export down nor squash it.
+pub const SHORT_FORM_LUFS: f64 = -14.0;
+/// True-peak ceiling of the short-form presets, headroom for the platforms' own AAC encode.
+pub const SHORT_FORM_PEAK_DBTP: f64 = -1.0;
+
+/// H.264 1080×1920 (9:16) at the sequence's frame rate, scaled to fill, loudness normalized.
+fn short_form(kbps: u32, max_kbps: u32) -> ExportSettings {
+    let loudness = LoudnessNormalization { enabled: true, target_lufs: SHORT_FORM_LUFS, true_peak_dbtp: SHORT_FORM_PEAK_DBTP };
+    ExportSettings { scaling: Scaling::ScaleToFill, effects: ExportEffects { loudness, ..Default::default() }, ..h264(Some((1080, 1920)), kbps, max_kbps) }
+}
+
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
+}
+
+/// H.264 High 10 at the sequence's size and constant quality `crf`: a 10-bit master or (all-intra)
+/// intermediate.
+fn high10(crf: f32, intra: bool) -> ExportSettings {
+    ExportSettings {
+        h264_profile: H264Profile::High10,
+        h264_intra_only: intra,
+        bitrate_mode: BitrateMode::Crf,
+        crf,
+        max_bitrate_kbps: None,
+        render_at_max_depth: true,
+        ..h264(None, 50_000, 0)
+    }
 }
 
 fn mov(format: Format, profile: &str) -> ExportSettings {
@@ -118,6 +144,19 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h264(Some((3840, 2160)), 50_000, 65_000) },
         ),
         p("Social Vertical 1080×1920", web, "H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps", vertical),
+        p("TikTok 1080×1920", web, "H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS", short_form(10_000, 12_000)),
+        p(
+            "Instagram Reels 1080×1920",
+            web,
+            "H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS",
+            short_form(8_000, 10_000),
+        ),
+        p(
+            "YouTube Shorts 1080×1920",
+            web,
+            "H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS",
+            short_form(12_000, 16_000),
+        ),
         p("Apple ProRes 422 HQ", bc, "QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM", mov(Format::ProRes, "hq")),
         p("Apple ProRes 422", bc, "QuickTime, ProRes 422, 24-bit 48 kHz PCM", mov(Format::ProRes, "standard")),
         p("Apple ProRes 422 LT", bc, "QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM", mov(Format::ProRes, "lt")),
@@ -133,6 +172,18 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Avid DNxHR HQ", bc, "QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "hq")),
         p("Avid DNxHR SQ", bc, "QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "sq")),
         p("Avid DNxHR LB", bc, "QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "lb")),
+        p(
+            "H.264 High 10 Master",
+            bc,
+            "H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master",
+            high10(16.0, false),
+        ),
+        p(
+            "H.264 High 10 Intra",
+            bc,
+            "H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate",
+            high10(12.0, true),
+        ),
         p("APV 422-10", bc, "QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-10")),
         p("APV 422-12", bc, "QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-12")),
         p("MXF OP1a DNxHR HQ", bc, "MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode", mxf(Format::MxfOp1a, MxfVideoCodec::Dnxhr, "hq")),
