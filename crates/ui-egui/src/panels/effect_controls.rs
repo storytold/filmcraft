@@ -2046,8 +2046,18 @@ mod frame_hold_tests {
         let param = srgba_param(picked, 1.0);
         assert_eq!(srgba_color32(param), picked);
 
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "rectangle"})).unwrap();
+        let effect = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "rectangle").unwrap();
+        let armed = crate::state::EyedropperTarget { clip: clip.0, effect, param: "color".into(), mask: None };
+        s.execute("effects.setParam", crate::panels::monitor::eyedropper_set_param(&armed, [66, 66, 66])).unwrap();
+        let stored = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[effect].params["color"].color_at(Tick::ZERO);
+        assert_eq!(srgba_color32(stored), picked);
+
         let mut shape = filmcraft_project::graphic::new_shape_layer(0, Vec2::new(8.0, 8.0), Vec2::new(16.0, 16.0), Vec::new());
-        shape.params.get_mut("fill_color").unwrap().value = ParamValue::Color(param);
+        shape.params.get_mut("fill_color").unwrap().value = ParamValue::Color(stored);
         let mut img = filmcraft_render::Image::new(16, 16);
         filmcraft_render::graphic_clip::render_graphic_layers(&[shape], Tick::ZERO, (16, 16), &filmcraft_geom::Affine::IDENTITY, &mut img);
         let px = img.over_black_rgba8();
