@@ -1,8 +1,8 @@
 //! Caption layout and burn-in.
 //!
 //! [`overlay`] lays out the caption showing on a track at a time with the track's
-//! [`CaptionStyle`] (font style, size relative to a 1080-line frame, colour, background box, outline,
-//! alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
+//! [`CaptionStyle`] (font style, size relative to a 1080-line frame, colour, background box, outline, wrap
+//! width, alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
 //! and rasterises it into a small premultiplied linear-light RGBA [`Overlay`] positioned in the
 //! frame. Renderers composite overlays over the finished picture.
 
@@ -119,7 +119,16 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     }
     let scale = h as f32 / 1080.0;
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
-    let max_w = w as f32 * 0.9;
+    // a hostile wrap width (NaN, negative, huge) falls back to or is clamped near the 90 % default
+    let wrap_at = if style.max_width.is_finite() { style.max_width.clamp(0.05, 1.0) } else { 0.9 };
+    let (line_override, align_override) = vtt_overrides(&c.settings);
+    let align = align_override.unwrap_or(style.align);
+    let pad_x = (px * 0.3).round();
+    let side = w as f32 * 0.05;
+    // past the default 90 %, a left- or right-aligned line also has to leave room for the side
+    // inset and its box; up to 90 % it wraps where it always did
+    let room = if wrap_at > 0.9 && align != CaptionAlign::Center { (w as f32 - side - 2.0 * pad_x).max(w as f32 * 0.9) } else { f32::MAX };
+    let max_w = (w as f32 * wrap_at).min(room);
     let ts = caption_style(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
@@ -133,10 +142,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.clamp(0.8, 4.0);
-    let pad_x = (px * 0.3).round();
     let block_h = lh * lines.len() as f32;
-    let (line_override, align_override) = vtt_overrides(&c.settings);
-    let align = align_override.unwrap_or(style.align);
     let margin = style.margin.clamp(0.0, 0.45) * h as f32;
     let top = match (line_override, style.anchor) {
         (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
@@ -146,7 +152,6 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     }
     .max(0.0)
     .round();
-    let side = w as f32 * 0.05;
     let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
     let xs: Vec<f32> = widths
         .iter()
@@ -599,6 +604,60 @@ mod tests {
         for (c, st, w, h) in reference_cases() {
             assert_eq!(render_caption(&c, &st, w, h), reference_render_caption(&c, &st, w, h), "{:?} {w}x{h} {st:?}", c.text);
         }
+    }
+
+    #[test]
+    fn max_width_sets_where_lines_wrap() {
+        let text = "a caption that wraps to a few lines on a vertical frame";
+        let lines = |st: &CaptionStyle| {
+            let o = render_caption(&cap(text), st, 1080, 1920).unwrap();
+            let lh = (st.size * 1920.0 / 1080.0 * st.line_spacing) as usize;
+            (o, lh)
+        };
+        let ts = caption_style(&CaptionStyle::default().font, "SemiBold", 54.0 * 1920.0 / 1080.0);
+        for frac in [0.9_f32, 0.52, 0.4] {
+            let st = CaptionStyle { max_width: frac, ..Default::default() };
+            let (o, lh) = lines(&st);
+            // every wrapped line fits the width: the box (text + 0.3 × size a side) is at most that
+            // wide, and the caption has as many lines as greedy wrapping at that width gives
+            let pad = (54.0 * 1920.0 / 1080.0 * 0.3_f32).round();
+            assert!(o.w as f32 - 2.0 * pad - 2.0 <= frac * 1080.0 + 1.0, "{frac}: {} px wide", o.w);
+            let want = wrap(text, &ts, frac * 1080.0).len();
+            assert_eq!(o.h.saturating_sub(2) / lh, want, "{frac}: {} px tall, {want} lines", o.h);
+        }
+        // a line break typed into the caption is kept however wide the wrap is
+        let full = CaptionStyle { max_width: 1.0, ..Default::default() };
+        let one = render_caption(&cap("One"), &full, 1080, 1920).unwrap();
+        let two = render_caption(&cap("One\nTwo"), &full, 1080, 1920).unwrap();
+        let lh = (54.0 * 1920.0 / 1080.0 * full.line_spacing) as usize;
+        assert!(two.h.abs_diff(one.h + lh) <= 2, "typed break: {} vs {} + {lh}", two.h, one.h);
+    }
+
+    #[test]
+    fn wide_aligned_lines_stay_inside_the_frame() {
+        // at 100 %, centred lines may use the full width, but left- and right-aligned ones start
+        // from the side inset and need room for their box
+        let (w, px) = (640.0_f32, 54.0_f32 / 3.0);
+        let ts = caption_style(&CaptionStyle::default().font, "SemiBold", px);
+        let room = w - w * 0.05 - 2.0 * (px * 0.3).round();
+        // the shortest text that wraps differently at the two widths
+        let text = (1..200).map(|n| "word ".repeat(n)).find(|t| wrap(t.trim(), &ts, w).len() != wrap(t.trim(), &ts, room).len()).unwrap();
+        let (full, inset) = (wrap(text.trim(), &ts, w).len(), wrap(text.trim(), &ts, room).len());
+        for (align, want) in [(CaptionAlign::Center, full), (CaptionAlign::Left, inset), (CaptionAlign::Right, inset)] {
+            let st = CaptionStyle { align, max_width: 1.0, anchor: CaptionAnchor::Top, margin: 0.0, line_spacing: 1.0, ..Default::default() };
+            let o = render_caption(&cap(&text), &st, 640, 360).unwrap();
+            let lines = (o.h as f32 / px) as usize;
+            assert_eq!(lines, want, "{align:?}: {} px tall", o.h);
+        }
+    }
+
+    #[test]
+    fn hostile_wrap_widths_are_clamped() {
+        let at = |f: f32| render_caption(&cap("Hello world, a longer caption"), &CaptionStyle { max_width: f, ..Default::default() }, 640, 360);
+        assert_eq!(at(f32::NAN), at(0.9), "NaN is the default");
+        assert_eq!(at(f32::INFINITY), at(0.9), "infinity is the default");
+        assert_eq!(at(-3.0), at(0.05), "negative clamps to the narrowest");
+        assert_eq!(at(1e30), at(1.0), "huge clamps to the frame");
     }
 
     #[test]
