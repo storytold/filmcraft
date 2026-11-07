@@ -95,6 +95,34 @@ pub fn hot_number_numeric(ui: &mut Ui, label: &str, id: egui::Id, value: f64, op
     hot_number_display(ui, id, value, options)
 }
 
+/// Normalize decimal commas in numeric hot-number input and reject malformed or oversized text.
+/// Keeping invalid text intact lets the user correct it without silently changing its value.
+fn normalize_hot_number_input(input: &str, allow_negative: bool, suffix: &str) -> Option<String> {
+    const MAX_INPUT_CHARS: usize = 128;
+    let input = input.trim_end();
+    let suffix = suffix.trim();
+    let input = input.strip_suffix(suffix).unwrap_or(input);
+    if input.chars().take(MAX_INPUT_CHARS + 1).count() > MAX_INPUT_CHARS {
+        return None;
+    }
+    let mut normalized = String::with_capacity(input.len());
+    let mut decimal_seen = false;
+    for (index, ch) in input.chars().enumerate() {
+        let ch = if ch == ',' { '.' } else { ch };
+        if ch.is_ascii_digit() {
+            normalized.push(ch);
+        } else if ch == '.' && !decimal_seen {
+            decimal_seen = true;
+            normalized.push(ch);
+        } else if ch == '-' && allow_negative && index == 0 {
+            normalized.push(ch);
+        } else {
+            return None;
+        }
+    }
+    Some(normalized)
+}
+
 /// The single-line text editor shown after a click on a hot number.
 #[allow(clippy::too_many_arguments)]
 fn hot_number_editor(
@@ -112,49 +140,25 @@ fn hot_number_editor(
     let select_all_id = id.with("select-all");
     arrows_start_from_the_end(ui, edit_id, buf);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
+    let mut numeric_input_valid = true;
     if numeric_only {
-        // A decimal comma is a decimal point in many locales: normalise it instead of eating it
-        // ("1,5" must never become "15"). A leading minus survives for signed ranges. Then only
-        // digits and one decimal point remain, and the cursor moves back over whatever was
-        // removed so typing in the middle of a number cannot make it jump to the end.
-        let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
-        let cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
-            .and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index)))
-            .unwrap_or(0);
-        let mut decimal_seen = false;
-        let mut kept = String::with_capacity(before.len());
-        let mut kept_before_cursor = 0usize;
-        for (i, ch) in before.chars().enumerate() {
-            let ok = if ch.is_ascii_digit() {
-                true
-            } else if ch == '.' && !decimal_seen {
-                decimal_seen = true;
-                true
-            } else if ch == '-' && range.0 < 0.0 && kept.is_empty() {
-                true
-            } else {
-                false
-            };
-            if ok {
-                if i < cursor {
-                    kept_before_cursor += 1;
+        // A decimal comma is a decimal point in many locales. Keep invalid text visible so
+        // characters between two digits are not silently removed and merged into a new value.
+        match normalize_hot_number_input(buf, range.0 < 0.0, suffix) {
+            Some(normalized) => {
+                if normalized != *buf {
+                    *buf = normalized;
                 }
-                kept.push(ch);
             }
-        }
-        if kept != *buf {
-            *buf = kept;
-            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
-                st.store(ui.ctx(), edit_id);
-            }
+            None => numeric_input_valid = false,
         }
     }
     let mut out = None;
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
-        let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
-        if let Some(v) = crate::calc::eval(&typed, value) {
+        let unit = suffix.trim();
+        let typed = buf.trim_end().strip_suffix(unit).unwrap_or(buf).to_string();
+        if numeric_input_valid && let Some(v) = crate::calc::eval(&typed, value) {
             out = Some(v.clamp(range.0, range.1));
         }
         ui.data_mut(|d| d.remove::<String>(editing_id));
@@ -634,6 +638,20 @@ pub(crate) fn zoom_thumb_cursor(ui: &Ui, resp: &Response, thumb: Rect, handle_gr
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    #[test]
+    fn numeric_input_rejects_merged_digits_and_bounds_length() {
+        assert_eq!(normalize_hot_number_input("1,5", false, "x").as_deref(), Some("1.5"));
+        assert_eq!(normalize_hot_number_input("1x5", false, "x"), None);
+        assert_eq!(normalize_hot_number_input(&"1".repeat(129), false, ""), None);
+    }
+
+    #[test]
+    fn signed_numeric_input_only_keeps_a_leading_minus() {
+        assert_eq!(normalize_hot_number_input("-1.5", true, "s").as_deref(), Some("-1.5"));
+        assert_eq!(normalize_hot_number_input("1-5", true, "s"), None);
+        assert_eq!(normalize_hot_number_input("-1", false, "s"), None);
+    }
 
     /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
     /// drawn at the top of the Ui (its centre is at y = 11).
