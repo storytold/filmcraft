@@ -4,6 +4,165 @@ use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_project::{Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
 
+#[test]
+fn effects_graphic_raster_stays_within_working_image_budget() {
+    for (source, want) in
+        [((32_768, 8_192), 1.0), ((8_192, 32_768), 1.0), ((u32::MAX, u32::MAX), 1.0), ((1, u32::MAX), 1.0), ((u32::MAX, 1), 1.0), ((3_840, 2_160), 1.0)]
+    {
+        let (w, h) = graphic_raster_dimensions(source, want);
+        assert!(w >= 1 && h >= 1);
+        assert!((w as u64) * (h as u64) <= MAX_EFFECT_GRAPHIC_PIXELS);
+        let side = filmcraft_project::MAX_FRAME_SIDE as usize;
+        assert!(w <= side, "{source:?}: {w} wide exceeds a frame side");
+    }
+    // metadata outside a valid graphic's bounds: a wide source is held to one legal side, which
+    // cuts nothing at the width-derived scale; a tall one keeps its height within the budget,
+    // since a height bound would cut the picture off; only a source too tall for a one-pixel
+    // raster gets a single side
+    let side = filmcraft_project::MAX_FRAME_SIDE as usize;
+    assert_eq!(graphic_raster_dimensions((u32::MAX, 1), 1.0), (side, 1));
+    assert_eq!(graphic_raster_dimensions((10_000_000, 3), 1.0), (side, 1));
+    assert_eq!(graphic_raster_dimensions((2, 10_000_000), 1.0), (1, 5_000_000));
+    assert_eq!(graphic_raster_dimensions((1, u32::MAX), 1.0), (1, side));
+    assert_eq!(graphic_raster_dimensions((3_840, 2_160), 1.0), (3_840, 2_160));
+    assert_eq!(graphic_raster_dimensions((1_920, 1_080), 0.5), (960, 540));
+    let (w, h) = graphic_raster_dimensions((32_768, 8_192), 1.0);
+    assert!((w as f64 / h as f64 - 4.0).abs() < 0.01);
+    let odd = graphic_raster_dimensions((3, 2), 0.5);
+    assert_eq!(odd, (2, 2));
+    let m = graphic_raster_matrix((3, 2), odd);
+    assert_eq!((m.a, m.d), (2.0 / 3.0, 2.0 / 3.0), "graphic and downstream width-derived scales must agree");
+}
+
+#[test]
+fn actual_effect_path_uses_a_bounded_graphic_working_image() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("graphic budget");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 4096, height: 2049, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings::default(), 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.effects.push(new_shape_layer(0, Vec2::new(2048.0, 1024.0), Vec2::new(100.0, 50.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    assert!(graphic_needs_raster(&item, true));
+    let working = base_layer(&project, project.sequence(sequence).unwrap(), &item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert!((working.w as u64) * (working.h as u64) <= MAX_EFFECT_GRAPHIC_PIXELS);
+    assert!(working.get(working.w / 2, working.h / 2)[3] > 0.9);
+}
+
+#[test]
+fn disabled_standard_effect_keeps_a_graphic_on_the_vector_path() {
+    let mut project = Project::new("graphic path");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    let mut effect = filmcraft_project::find_effect("invert").unwrap().instance();
+    effect.enabled = false;
+    item.effects.push(effect);
+    assert!(item.has_standard_effects(), "the model still reports disabled effects in the fx badge");
+    assert!(!graphic_needs_raster(&item, true), "a disabled effect must not reduce vector detail");
+    item.effects.last_mut().unwrap().enabled = true;
+    assert!(graphic_needs_raster(&item, true));
+    assert!(!graphic_needs_raster(&item, false));
+}
+
+#[test]
+fn graphic_with_effect_renders_through_the_bounded_working_image() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("graphic effect");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 640, height: 360, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = true;
+    item.effects.push(new_shape_layer(0, Vec2::new(320.0, 180.0), Vec2::new(200.0, 100.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    assert!(item.has_standard_effects());
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    assert_eq!((output.w, output.h), (320, 180));
+    assert!(output.get(160, 90)[3] > 0.9, "the effect path must still draw the graphic");
+    let plain = render_sequence(&project, sequence, Tick::ZERO, RenderOptions { effects: false, ..RenderOptions::default() }, &SourceMap::default());
+    assert!((output.get(160, 90)[0] - plain.get(160, 90)[0]).abs() > 0.1, "the standard effect must change the graphic's colour");
+}
+
+/// A graphic larger than the working-image budget, rendered at its own scale: the capped
+/// working image is placed with the scale it was drawn at, so a shape keeps its size and place
+/// in the output instead of shrinking with the raster.
+#[test]
+fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("capped placement");
+    let rate = FrameRate::FPS_24;
+    // 7680×4320 is four times the budget; a 320×180 sequence shows its centre at 1:1
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = false;
+    // a 100×60 shape at the graphic's centre: output x 110..210, y 60..120
+    item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    // the working image is the 3840×2160 budget, half the graphic's scale, not the graphic's size
+    let seq = project.sequence(sequence).unwrap();
+    let item = &seq.video_tracks[0].items[0];
+    let working = base_layer(&project, seq, item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert_eq!((working.w, working.h), (3840, 2160));
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    assert_eq!((output.w, output.h), (320, 180));
+    let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
+    let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
+    assert!(drawn(160, 90), "the shape's centre");
+    // inside the 100×60 shape, a pixel or two from each edge and well within it, and outside it,
+    // just past each edge and well beyond: a raster placed at its halved scale leaves the inner
+    // probes clear, one placed at double scale fills the outer
+    assert!(drawn(111, 90) && drawn(208, 90) && drawn(160, 61) && drawn(160, 118), "the shape keeps its full extent");
+    assert!(drawn(120, 90) && drawn(200, 90) && drawn(160, 65) && drawn(160, 115), "and is filled");
+    assert!(clear(108, 90) && clear(211, 90) && clear(160, 58) && clear(160, 121), "and nothing lies just outside its edges");
+    assert!(clear(100, 90) && clear(220, 90) && clear(160, 50) && clear(160, 130), "or further out");
+}
+
+/// A graphic over the working-image budget under an opacity mask and no effect: the mask is
+/// applied at the raster's scale, so its edges land where they were drawn on the graphic.
+#[test]
+fn capped_working_image_applies_an_opacity_mask_at_the_graphics_scale() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+    use filmcraft_project::mask::{Mask, MaskPath};
+
+    let mut project = Project::new("capped mask");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = false;
+    // a 100×60 shape (output x 110..210, y 60..120) under an 80×50 ellipse mask at the same
+    // centre: output x 120..200 on the centre row, y 65..115 on the centre column
+    item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
+    item.effect_mut("opacity").unwrap().masks.push(Mask::new("m", MaskPath::ellipse(Vec2::new(3840.0, 2160.0), Vec2::new(40.0, 25.0))));
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    let seq = project.sequence(sequence).unwrap();
+    let item = &seq.video_tracks[0].items[0];
+    assert!(item.has_opacity_masks() && !item.has_standard_effects(), "the mask alone sends the graphic through the working raster");
+    let working = base_layer(&project, seq, item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert_eq!((working.w, working.h), (3840, 2160));
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
+    let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
+    assert!(drawn(160, 90), "the shape's centre");
+    // five pixels inside and outside the ellipse, at the ends of the mask's default feather (10
+    // source pixels, 10 output pixels here); a mask applied at the raster's halved scale would
+    // hide the inner probes, one at double scale would show the outer
+    assert!(drawn(125, 90) && drawn(195, 90) && drawn(160, 70) && drawn(160, 110), "the shape shows inside the mask");
+    assert!(clear(115, 90) && clear(205, 90) && clear(160, 60) && clear(160, 120), "and is hidden outside it");
+}
+
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
     let mut p = Project::new("r");
     let mut map = SourceMap::default();

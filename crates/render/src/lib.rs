@@ -550,7 +550,7 @@ pub(crate) fn item_layer_ex(
     let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
     let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
     let pi = project.item(item.item)?;
-    if matches!(pi.kind, ItemKind::Graphic { .. }) && !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
+    if matches!(pi.kind, ItemKind::Graphic { .. }) && !graphic_needs_raster(item, opts.effects) {
         // vectors straight to the output: no resampling, crisp at any Motion scale
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
         let mut canvas = Image::new(w, h);
@@ -685,6 +685,62 @@ fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, mf:
     }
 }
 
+/// Whether a graphic's picture goes through a working raster. A disabled effect does not count
+/// (unlike `has_standard_effects`), so toggling one off cannot silently reduce the detail of a
+/// large graphic drawn on the vector path.
+fn graphic_needs_raster(item: &TrackItem, effects_enabled: bool) -> bool {
+    item.has_opacity_masks()
+        || effects_enabled && item.effects.iter().any(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e))
+}
+
+/// Pixel ceiling of the float working image a graphic is rasterised into for its effects or
+/// opacity masks. Graphics on the vector path draw directly into the output frame.
+const MAX_EFFECT_GRAPHIC_PIXELS: u64 = 3840 * 2160;
+
+fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) {
+    let source_w = u64::from(src_size.0.max(1));
+    let source_h = u64::from(src_size.1.max(1));
+    let scale = if want.is_finite() { f64::from(want).clamp(1.0 / 64.0, 1.0) } else { 1.0 / 64.0 };
+    let desired_w = (source_w as f64 * scale).ceil() as u64;
+    // The downstream Motion, effects and mask pipeline derives its pixel scale from raster width;
+    // the height follows that scale, rounded up, so the raster holds the whole picture.
+    let height_for = |w: u64| (u128::from(w) * u128::from(source_h)).div_ceil(u128::from(source_w)).max(1);
+    let budget = u128::from(MAX_EFFECT_GRAPHIC_PIXELS);
+    // A graphic made in the app has its sequence's canvas, within a frame's bounds; a project
+    // file may claim more. A wider source is held to a frame side, which cuts nothing (the scale
+    // follows the width); its height is held by the budget alone, because a height bound at a
+    // width-derived scale would cut the picture off.
+    let side = u64::from(filmcraft_project::MAX_FRAME_SIDE);
+    let fits = |w: u64| u128::from(w) * height_for(w) <= budget;
+    if !fits(1) {
+        // A source this tall for its width is outside any graphic made in the app. It gets one
+        // legal side, not the whole budget as height: the picture is cut off either way, and a
+        // raster of millions of rows for malformed metadata buys nothing.
+        return (1, side as usize);
+    }
+    // The widest raster within the bounds. It is not the closed-form square root: `height_for`
+    // rounds up, so a width from the closed form can land one row over the budget.
+    let (mut lo, mut hi) = (1, desired_w.max(1).min(side));
+    while lo < hi {
+        // the upper midpoint: with (hi - lo) / 2, hi == lo + 1 and fits(lo) would loop forever
+        let mid = lo + (hi - lo).div_ceil(2);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    (lo as usize, height_for(lo) as usize)
+}
+
+fn graphic_raster_matrix(src_size: (u32, u32), raster_size: (usize, usize)) -> Affine {
+    // One uniform scale from the raster's width, the scale item_layer_ex derives for Motion,
+    // opacity masks and effects. It does not scale height by raster_size.1 / src_size.1: the
+    // height is this scale rounded up, and a separate factor would warp the picture.
+    let scale = raster_size.0 as f64 / f64::from(src_size.0.max(1));
+    Affine::scale(scale, scale)
+}
+
 /// A track item's picture at timeline `t` before any effect (decoded, colour managed, frame
 /// blended; nested sequences rendered; graphics rasterised), at `want` of its source size.
 pub(crate) fn base_layer(
@@ -724,10 +780,13 @@ pub(crate) fn base_layer(
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
-            // standard effects work on the graphic at source resolution, then Motion places it
-            let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
+            let (gw, gh) = graphic_raster_dimensions(src_size, want);
             let mut img = Image::new(gw, gh);
-            graphic_clip::render_graphic(item, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
+            // The vectors draw at the raster's own scale, not at `want`: placement enlarges a
+            // budget-capped raster by src width / gw (the inverse of its px_scale), so drawing
+            // at `want` would scale the picture twice.
+            let raster_matrix = graphic_raster_matrix(src_size, (gw, gh));
+            graphic_clip::render_graphic(item, mt, src_size, &raster_matrix, &mut img);
             img
         }
     })
