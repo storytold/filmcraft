@@ -294,3 +294,101 @@ fn only_a_left_button_drag_moves_or_resizes_a_panel() {
     drag_with(&mut h, PointerButton::Primary, corner, corner + vec2(36.0, 24.0));
     assert_ne!(h.state().ui.dock.floating[0].rect, floated, "a left-button drag on the corner left the window as it was");
 }
+
+/// The Effects panel beside the Timeline with a search that makes its list overflow, so it has a
+/// scrollbar along its right edge, which is the divider's edge.
+fn effects_beside_timeline() -> Harness<'static, FilmcraftApp> {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    app.ui.effects_search = "e".into();
+    let mut h = Harness::builder().with_size(vec2(1400.0, 500.0)).with_max_steps(10_000).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Effects], active: 0 }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    frames(&mut h, 4);
+    h
+}
+
+fn effects_width(h: &mut Harness<'_, FilmcraftApp>) -> f32 {
+    frames(h, 2);
+    h.state().auto.find("panel.Effects").unwrap().rect[2]
+}
+
+fn first_effect_top(h: &Harness<'_, FilmcraftApp>) -> f32 {
+    h.state().auto.query("effects.").iter().map(|e| e.rect[1]).fold(f32::INFINITY, f32::min)
+}
+
+/// The grab zone of a divider is wide, reaches into the panel beside it, and a scrollbar along
+/// that panel's edge sits outside it: a press on the scrollbar scrolls and does not resize, a
+/// press in the gap or just inside the panel's edge resizes and does not scroll.
+#[test]
+fn a_divider_beside_a_scrollbar_grabs_without_taking_the_scrollbar() {
+    let mut h = effects_beside_timeline();
+    let gutter = h.state().auto.find("dock.gutter.").unwrap().rect;
+    let panel = h.state().auto.find("panel.Effects").unwrap().rect;
+    let edge = panel[0] + panel[2];
+    assert!(gutter[2] >= 13.0, "the grab zone is only {} wide", gutter[2]);
+    assert!(gutter[0] <= edge - 2.0 && gutter[0] + gutter[2] >= edge + 7.0, "the grab zone {gutter:?} does not cover the gap after {edge}");
+
+    let y = panel[1] + 60.0;
+    let (rows, size) = (first_effect_top(&h), effects_width(&mut h));
+    // On the scrollbar: the list scrolls, the divider stays.
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, y), pos2(edge - 12.0, y + 120.0));
+    assert!(first_effect_top(&h) < rows - 1.0, "dragging the scrollbar did not scroll the list");
+    assert_near(effects_width(&mut h), size);
+    // Sideways on the scrollbar: still no resize.
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, y), pos2(edge + 20.0, y));
+    assert_near(effects_width(&mut h), size);
+    // Just inside the panel's edge and in the middle of the gap: the divider moves, the list does not.
+    let rows = first_effect_top(&h);
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 1.5, y), pos2(edge + 18.5, y + 80.0));
+    assert_near(effects_width(&mut h), size + 20.0);
+    drag_with(&mut h, PointerButton::Primary, pos2(edge + 23.0, y), pos2(edge + 13.0, y));
+    assert_near(effects_width(&mut h), size + 10.0);
+    assert_eq!(first_effect_top(&h), rows, "a divider drag scrolled the list");
+}
+
+/// Where two dividers meet, the corner handle reaches further into the panel than a divider
+/// does: a scrollbar beside it still scrolls, and the corner still moves both dividers.
+#[test]
+fn a_divider_junction_beside_a_scrollbar_grabs_without_taking_the_scrollbar() {
+    let mut h = effects_beside_timeline();
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Split {
+                axis: craft_ui::layout::SplitAxis::Vertical,
+                size: craft_ui::layout::SplitSize::FixedFirst(250.0),
+                first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Effects], active: 0 }),
+                second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    frames(&mut h, 4);
+    let panel = h.state().auto.find("panel.Effects").unwrap().rect;
+    let (edge, bottom) = (panel[0] + panel[2], panel[1] + panel[3]);
+    let corner = h.state().auto.query("dock.corner.").first().map(|e| e.rect).expect("the dividers meet in a corner handle");
+    assert!(corner[0] <= edge - 6.0, "the corner handle {corner:?} does not reach into the panel at {edge}");
+
+    let (rows, size) = (first_effect_top(&h), effects_width(&mut h));
+    // On the scrollbar beside the corner, 12 points inside the edge: the list scrolls.
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, bottom - 6.0), pos2(edge - 12.0, bottom - 60.0));
+    assert!(first_effect_top(&h) < rows - 1.0, "dragging the scrollbar beside the corner did not scroll the list");
+    assert_near(effects_width(&mut h), size);
+    // Inside the corner handle: both dividers move, the list stays.
+    let rows = first_effect_top(&h);
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 2.0, bottom + 2.0), pos2(edge + 18.0, bottom + 2.0));
+    assert_near(effects_width(&mut h), size + 20.0);
+    assert_eq!(first_effect_top(&h), rows, "a corner drag scrolled the list");
+}

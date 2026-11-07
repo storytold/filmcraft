@@ -17,6 +17,17 @@ use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{FilmcraftApp, panels};
 
+/// How close to the window's right or bottom edge counts as against it: the dock area's inset
+/// and the status bar under it.
+const EDGE_SLACK: f32 = 40.0;
+
+/// How far a divider's grab zone reaches into the panels on either side of it: the resize
+/// handle's 3 points, or at a junction of two dividers the corner handle, three gaps wide and
+/// at least 12 points. A panel's scrollbars stay clear of it.
+fn divider_reach(gap: f32) -> f32 {
+    (((gap * 3.0).max(12.0) - gap) / 2.0).max(3.0)
+}
+
 /// The dock area's egui id; `DockArea::hit_rects` and `float_space` read by it.
 pub fn area_id() -> egui::Id {
     egui::Id::unique("filmcraft-docking")
@@ -501,6 +512,13 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        // A divider's grab zone reaches into the panel beside it; keep the scrollbars out of it.
+        // A panel in the window's bottom right corner has no divider beside or below it.
+        let window = ui.ctx().content_rect();
+        if rect.max.x < window.max.x - EDGE_SLACK || rect.max.y < window.max.y - EDGE_SLACK {
+            let spacing = &mut child.style_mut().spacing.scroll;
+            spacing.bar_outer_margin = spacing.bar_outer_margin.max(divider_reach(t.gap));
+        }
         panels::show(self.app, &mut child, *panel, rect);
         // FilmCraft's drag payload lives in context data, not egui's drag-and-drop, so craft-ui
         // routes it to the native window under the pointer only when asked, each frame.
