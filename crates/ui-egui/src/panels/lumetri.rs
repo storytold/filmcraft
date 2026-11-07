@@ -29,6 +29,12 @@ fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)
     })
 }
 
+/// Resolve the Lumetri instance shown by the Color panel. When a Lumetri effect is selected in
+/// Effect Controls, follow that selection; otherwise keep the historical first-instance default.
+fn lumetri_index(clip: ClipId, effects: &[EffectInstance], selected: Option<&filmcraft_engine::EffectSel>) -> Option<usize> {
+    selected.filter(|s| s.clip == clip && s.effect == "lumetri").and_then(|s| s.index(effects)).or_else(|| effects.iter().position(|e| e.effect == "lumetri"))
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected(app) else {
@@ -36,7 +42,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("lumetri2"));
-    let Some(idx) = it.effects.iter().position(|e| e.effect == "lumetri") else {
+    let Some(idx) = lumetri_index(clip, &it.effects, app.session.state.selected_effect.as_ref()) else {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
@@ -739,7 +745,7 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
 
 #[cfg(test)]
 mod tests {
-    use super::without_point;
+    use super::{ClipId, lumetri_index, without_point};
 
     #[test]
     fn a_curve_point_is_removed_by_position_not_by_list_order() {
@@ -751,5 +757,28 @@ mod tests {
         // hue curves wrap around: any point can go
         assert_eq!(without_point(&pts, 0, true), Some(vec![[1.0, 1.0], [0.5, 0.7]]));
         assert_eq!(without_point(&pts, 7, false), None);
+    }
+
+    #[test]
+    fn color_panel_follows_the_selected_lumetri_instance() {
+        let clip = ClipId(17);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let effects = vec![lumetri.instance(), lumetri.instance()];
+        let selected = filmcraft_engine::EffectSel::of(clip, &effects, 1).unwrap();
+
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected)), Some(1));
+    }
+
+    #[test]
+    fn color_panel_keeps_first_instance_as_the_fallback() {
+        let clip = ClipId(17);
+        let other_clip = ClipId(18);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let effects = vec![lumetri.instance(), lumetri.instance()];
+        let selected_on_other_clip = filmcraft_engine::EffectSel::of(other_clip, &effects, 1).unwrap();
+
+        assert_eq!(lumetri_index(clip, &effects, None), Some(0));
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected_on_other_clip)), Some(0));
+        assert_eq!(lumetri_index(clip, &[], None), None);
     }
 }
