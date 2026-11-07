@@ -111,6 +111,7 @@ struct NoiseState {
     frames_in_sub: usize,
     gains: Vec<f32>,
     started: bool,
+    after_gap: bool,
 }
 
 impl NoiseState {
@@ -123,6 +124,7 @@ impl NoiseState {
             frames_in_sub: 0,
             gains: vec![1.0; bins],
             started: false,
+            after_gap: false,
         }
     }
     fn reset(&mut self) {
@@ -133,6 +135,7 @@ impl NoiseState {
         self.ring_pos = 0;
         self.frames_in_sub = 0;
         self.started = false;
+        self.after_gap = false;
     }
 }
 
@@ -201,7 +204,6 @@ impl AudioEffect for DeNoise {
         self.stft.iter_mut().for_each(StftChannel::reset);
         self.noise.iter_mut().for_each(NoiseState::reset);
     }
-    /// Run the STFT minimum-statistics spectral gate across `channels` in place.
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
         let nch = channels.len().min(self.stft.len());
@@ -231,7 +233,7 @@ impl AudioEffect for DeNoise {
                     let first_full = full && !st.cur_min[0].is_finite() && !st.ring[0].is_finite();
                     for k in 0..bins {
                         let p = (spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k]) * norm;
-                        st.psd[k] = if st.started && !first_full { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
+                        st.psd[k] = if st.started && !first_full && !st.after_gap { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
                         if full {
                             st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
                         }
@@ -265,10 +267,13 @@ impl AudioEffect for DeNoise {
                         }
                     }
                     st.started = true;
+                    st.after_gap = false;
                     if rotate {
                         st.ring_pos = (st.ring_pos + 1) % MS_SUBWINDOWS;
                         st.frames_in_sub = 0;
                     }
+                } else {
+                    st.after_gap = true;
                 }
                 // Frequency smoothing (3-tap) to reduce musical noise.
                 for k in 0..bins {
@@ -334,6 +339,7 @@ mod tests {
         }
     }
 
+    /// Stationary broadband noise is attenuated from the first half-second while tone bursts pass through.
     #[test]
     fn denoise_reduces_noise_and_keeps_bursts() {
         let mut d = DeNoise::new(SR, 1);
@@ -363,6 +369,7 @@ mod tests {
         assert!(kept.abs() < 1.0, "tone changed by {kept} dB");
     }
 
+    /// A silent pre-roll before signal onset does not delay noise attenuation on the first segment (#4404).
     #[test]
     fn denoise_no_initial_ramp_up_after_silent_preroll() {
         let mut d = DeNoise::new(SR, 1);
