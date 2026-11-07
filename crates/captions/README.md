@@ -10,8 +10,10 @@ and writes caption files, converts them to and from caption tracks, and draws ca
 ### Literal text and style markup
 
 Stored cue text can combine style tags with character entities. The STL reader escapes
-literal `<` and `&` text while keeping generated style tags distinct; its writer converts
-text entities back to literal characters.
+literal `<` and `&` text while keeping generated style tags distinct. Its writer converts
+only the eight named entities recognized by `entity_at`: `&amp;`, `&lt;`, `&gt;`, `&nbsp;`,
+`&quot;`, `&apos;`, `&lrm;` and `&rlm;`. Other named entities and numeric references, such as
+`&eacute;` and `&#60;`, remain literal sequences.
 The SRT writer retains stored entities alongside genuine style tags, so reimport does not turn
 a literal bracket into markup. Repeated exports must preserve both plain text and supported styles.
 
