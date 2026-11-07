@@ -435,3 +435,86 @@ fn move_vertex_moves_a_list_of_vertices_together() {
     s.undo();
     assert_eq!(pts(&mut s), before);
 }
+
+#[test]
+fn background_tracking_is_applied_without_a_ui_frame_loop() {
+    // headless sessions (CLI, MCP) never call `poll_persistence`: commands alone must apply the job (#3302)
+    let (mut s, _) = tracking_session();
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    let r = s.execute("masks.track", json!({"direction": "forward", "frames": 6})).unwrap();
+    let job = r["job"].clone();
+    let t0 = std::time::Instant::now();
+    loop {
+        let jobs = s.execute("jobs.list", json!({})).unwrap();
+        let done = jobs.as_array().unwrap().iter().any(|j| j["id"] == job && j["finished"] == true);
+        if done || t0.elapsed().as_secs() > 60 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let l = s.execute("masks.list", json!({})).unwrap();
+    let keys = l["masks"][0]["pathKeyframes"].as_array().unwrap().len();
+    assert_eq!(keys, 7, "{l}");
+    assert!(s.mask_jobs.is_empty());
+    s.execute("masks.track", json!({"direction": "forward", "frames": 2, "wait": true})).unwrap();
+}
+
+#[test]
+fn replacing_the_project_drops_pending_tracking_jobs() {
+    // a job started on the old project must not write into the new one
+    let (mut s, _) = tracking_session();
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    let job = s.execute("masks.track", json!({"direction": "forward"})).unwrap()["job"].clone();
+    assert_eq!(s.mask_jobs.len(), 1);
+    s.execute("file.newProject", json!({"name": "Fresh"})).unwrap();
+    assert!(s.mask_jobs.is_empty(), "stale job survived file.newProject");
+    for _ in 0..20 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(s.mask_jobs.is_empty());
+    let h = s.execute("history.list", json!({})).unwrap();
+    assert!(!h["undo"].as_array().unwrap().iter().any(|v| v == "Track Mask"), "{h}");
+    // the new project has no masks and no Mask Path keyframes
+    if let Ok(l) = s.execute("masks.list", json!({})) {
+        assert!(l["masks"].as_array().is_none_or(|m| m.is_empty()), "{l}");
+    }
+    let project = serde_json::to_string(&*s.project).unwrap().to_lowercase();
+    assert!(!project.contains("mask"), "stale mask data in new project");
+    // the discarded job was told to stop (the worker may not have noticed yet on a slow machine,
+    // so its `finished` flag is not waited for)
+    let j = s.jobs.iter().find(|j| json!(j.id) == job).expect("the tracking job is listed");
+    assert!(j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed), "{}", j.to_json());
+}
+
+#[test]
+fn every_project_replacing_path_drops_pending_tracking_jobs() {
+    // the epoch check covers paths that never call `discard_jobs`: recover (`install_project`), demo, close, template
+    let tpl = std::env::temp_dir().join(format!("filmcraft-mask-epoch-{}.fcproj", std::process::id())).to_string_lossy().to_string();
+    for path in ["recover", "demo", "close", "template"] {
+        let (mut s, _) = tracking_session();
+        s.execute("file.saveAsTemplate", json!({"path": tpl})).unwrap();
+        let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+        s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+        s.execute("masks.track", json!({"direction": "forward"})).unwrap();
+        assert_eq!(s.mask_jobs.len(), 1);
+        match path {
+            "recover" => crate::commands::install_project(&mut s, filmcraft_project::Project::new("Recovered"), None, false),
+            "demo" => drop(s.execute("file.openDemoProject", json!({})).unwrap()),
+            "close" => drop(s.execute("file.closeProject", json!({"force": true})).unwrap()),
+            _ => drop(s.execute("file.newProjectFromTemplate", json!({"template": tpl, "force": true})).unwrap()),
+        }
+        for _ in 0..20 {
+            s.poll_persistence();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(s.mask_jobs.is_empty(), "stale job survived {path}");
+        let h = s.execute("history.list", json!({})).unwrap();
+        assert!(!h["undo"].as_array().unwrap().iter().any(|v| v == "Track Mask"), "{path}: {h}");
+        let project = serde_json::to_string(&*s.project).unwrap();
+        assert!(!project.contains("pathKeyframes") && !project.to_lowercase().contains("\"masks\":[{"), "{path}: stale mask data");
+    }
+    let _ = std::fs::remove_file(&tpl);
+}

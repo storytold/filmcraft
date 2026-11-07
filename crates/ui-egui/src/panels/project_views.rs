@@ -36,13 +36,18 @@ pub fn item_icon(k: &ItemKind) -> Icon {
 pub struct Badge {
     pub offline: bool,
     pub offline_text: &'static str,
+    /// Why an Unreadable item cannot be read: the error the media pool recorded, shown on hover.
+    pub offline_reason: Option<String>,
     pub proxy: bool,
     /// Proxies are enabled (the badge is lit).
     pub proxy_on: bool,
 }
 
+/// An item's badges in the Project panel, read from its media (a subclip reads its parent's):
+/// offline, with the word the badge shows and, for an Unreadable file, the error the media pool
+/// recorded; then whether a proxy is attached and whether proxies are on.
 pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Badge {
-    let mut b = Badge { offline: false, offline_text: "", proxy: false, proxy_on: false };
+    let mut b = Badge { offline: false, offline_text: "", offline_reason: None, proxy: false, proxy_on: false };
     let target = match &it.kind {
         ItemKind::Subclip { parent, .. } => app.session.project.item(*parent),
         _ => Some(it),
@@ -55,23 +60,60 @@ pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> B
         (b.offline, b.offline_text) = (true, tl!("Media missing"));
     } else if let Some(st) = app.session.media.offline_status(id) {
         b.offline = true;
-        b.offline_text = if st.reason == filmcraft_render::offline::OfflineReason::Unreadable { tl!("Unreadable") } else { tl!("Media missing") };
+        if st.reason == filmcraft_render::offline::OfflineReason::Unreadable {
+            b.offline_text = tl!("Unreadable");
+            b.offline_reason = Some(st.error).filter(|e| !e.is_empty());
+        } else {
+            b.offline_text = tl!("Media missing");
+        }
     }
     b.proxy = m.proxy.is_some();
     b.proxy_on = app.session.media.use_proxies();
     b
 }
 
-fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
+/// Paint the List view's offline icon and proxy chip from `at`, and register the offline badge.
+fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2, pre: &str, id: ItemId) {
+    let t = app.tokens;
     let mut x = at.x;
     if b.offline {
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0)), Icon::Offline, OFFLINE);
+        let r = Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0));
+        icons::paint(ui.painter(), r, Icon::Offline, OFFLINE);
+        offline_badge(app, ui, r, pre, id, b);
         x += 18.0;
     }
     if b.proxy {
         let pr = Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0));
         ui.painter().rect_filled(pr, 2.0, if b.proxy_on { t.accent } else { Color32::from_gray(70) });
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+    }
+}
+
+/// The part of a List-view name column `name_r` the item's name may use, and whether its badges
+/// get the rest. The badges (6 px after the name, then the offline icon's 18 px and the proxy chip's
+/// 16 px, as [`paint_badges`] draws them) keep their room at the column's end and a long name is cut
+/// short before them, so the name never hides an Unreadable badge and its reason. Only a column too
+/// narrow for the badges leaves them out.
+fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
+    let mut w = 6.0;
+    if b.offline {
+        w += 18.0;
+    }
+    if b.proxy {
+        w += 16.0;
+    }
+    // the name starts 2 px into the column
+    let fits = (b.offline || b.proxy) && name_r.width() >= w + 2.0;
+    let text_r = if fits { Rect::from_min_max(name_r.min, pos2(name_r.max.x - w, name_r.max.y)) } else { name_r };
+    (text_r, fits)
+}
+
+/// Register the offline badge drawn at `rect`. An Unreadable badge shows on hover why the file
+/// cannot be read, such as "no decoder for Apple Intermediate Codec video" (#3646).
+fn offline_badge(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, pre: &str, id: ItemId, badge: &Badge) {
+    app.auto.add(&format!("{pre}.item.{}.offline", id.0), rect, badge.offline_text);
+    if let Some(why) = &badge.offline_reason {
+        ui.interact(rect, egui::Id::unique((pre, "offline", id.0)), Sense::hover()).on_hover_text(why);
     }
 }
 
@@ -538,8 +580,14 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     {
         c.width = *w;
     }
+    let row_h = if thumbs { list_thumb_row_height(v.icon_size, f) } else { (f * 2.0).max(22.0) };
+    // a zoomed thumbnail keeps room for the name beside it: the Name column is drawn wide enough
+    // (its saved width is unchanged)
+    if thumbs && let Some(name) = cols.first_mut() {
+        name.width = name.width.max(list_name_width(row_h));
+    }
     let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
-    let lc = ListCtx { row_h: if thumbs { (f * 3.6).max(44.0) } else { (f * 2.0).max(22.0) }, font: f, thumbs, width: width.max(rect.width()), cols };
+    let lc = ListCtx { row_h, font: f, thumbs, width: width.max(rect.width()), cols };
     let header_h = (f * 1.8).max(20.0);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt((&v.prefix, "list-body")));
@@ -810,15 +858,19 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let name_r = Rect::from_min_max(pos2(icon_x + 18.0, r.min.y + 2.0), pos2(x + name_w - 4.0, r.max.y - 2.0));
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
-            let nr = ui.painter().with_clip_rect(name_r).text(
-                pos2(name_r.min.x + 2.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &it.name,
-                Tokens::ui(lc.font),
-                if badge.offline { OFFLINE } else { t.text },
-            );
-            if nr.max.x + 40.0 < name_r.max.x {
-                paint_badges(ui, &badge, pos2(nr.max.x + 6.0, r.center().y), &t);
+            let (text_r, badges) = name_room(&badge, name_r);
+            // a name cut short ends in "…" and shows in full on hover, as on the cards
+            let color = if badge.offline { OFFLINE } else { t.text };
+            let g = elided_name(ui, &it.name, Tokens::ui(lc.font), color, text_r.max.x - name_r.min.x - 2.0);
+            let elided = g.elided;
+            let at = pos2(name_r.min.x + 2.0, r.center().y - g.size().y / 2.0);
+            let end = at.x + g.size().x;
+            ui.painter().with_clip_rect(text_r).galley(at, g, color);
+            if elided && ui.rect_contains_pointer(text_r) {
+                resp.clone().on_hover_text(&it.name);
+            }
+            if badges {
+                paint_badges(app, ui, &badge, pos2(end.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
             }
         }
         x += name_w;
@@ -939,7 +991,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
         ui.painter().rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x10, 0x16, 230));
         icons::paint(ui.painter(), Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
         ui.painter().text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
-        app.auto.add(&format!("{pre}.item.{}.offline", id.0), band, badge.offline_text);
+        offline_badge(app, ui, band, pre, id, &badge);
     }
     if badge.proxy {
         let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0));
@@ -971,7 +1023,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     Some(resp)
 }
 
-/// A one-line tile name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
+/// A one-line item name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
 /// so the caller can show the full name on hover.
 fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, color));
@@ -1002,9 +1054,13 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
         let cg = ui.painter().layout_no_wrap(tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
         let cw = cg.size().x;
         ui.painter().galley(pos2(th.max.x - cw, th.max.y + 11.0 - cg.size().y / 2.0), cg, t.text_dim);
-        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, nr.width() - cw - 6.0);
-        let elided = g.elided;
-        ui.painter().galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
+        // The name gets only what is left beside the count. At the smallest icon sizes that can be
+        // narrower than one letter and "…", which the layout still emits, so the name is also
+        // clipped to its slot and never runs into the count (#2632).
+        let slot = Rect::from_min_max(nr.min, pos2((nr.max.x - cw - 6.0).max(nr.min.x), nr.max.y));
+        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, slot.width());
+        let elided = g.elided || g.size().x > slot.width();
+        ui.painter().with_clip_rect(slot).galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
         if elided {
             resp = resp.on_hover_text(&b.name);
         }
@@ -1083,7 +1139,11 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let t = app.tokens;
     let opts = app.session.prefs.project_panel.freeform.clone();
-    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
+    // the footer's Zoom scales the canvas (#3774); cards keep their positions and sizes unscaled
+    let z = freeform_zoom(v.icon_size);
+    // the canvas width the cards wrap at, unscaled: the layout commands below get the same one
+    let width = rect.width() / z;
+    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, width);
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
@@ -1095,7 +1155,8 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             c.item == d || (sel.contains(&d) && sel.contains(&c.item)) || (stack_of_d.is_some() && c.stack == stack_of_d)
         })
     };
-    let extent = cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max(c.x + c.size + 40.0), e.y.max(c.y + c.size * 9.0 / 16.0 + 60.0)));
+    let extent =
+        cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max((c.x + c.size + 40.0) * z), e.y.max((c.y + c.size * 9.0 / 16.0 + 60.0) * z)));
     // a middle-button drag anywhere on the canvas pans it, the content following the pointer, as in
     // the Timeline and the monitors (#579); cards move only with the primary button
     let (offset_key, pan_key) = (egui::Id::unique((&v.prefix, "ff-offset")), egui::Id::unique((&v.prefix, "ff-pan")));
@@ -1118,7 +1179,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         let (canvas, bg) = ui.allocate_exact_size(extent, Sense::click_and_drag());
         app.auto.add(&format!("{}.freeform", v.prefix), canvas, "Freeform canvas");
         if opts.snap {
-            let g = opts.grid.max(4.0);
+            let g = opts.grid.max(4.0) * z;
             let mut x = canvas.min.x;
             while x < canvas.max.x {
                 ui.painter().line_segment([pos2(x, canvas.min.y), pos2(x, canvas.max.y)], Stroke::new(0.5, t.separator.gamma_multiply(0.5)));
@@ -1144,7 +1205,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         for i in order {
             let c = cards[i].clone();
             let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
-            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) + off, vec2(c.size, c.size * 9.0 / 16.0 + 20.0));
+            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some(resp) = card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag()) else { continue };
             note_hit(ui, v, ItemId(c.item), r);
@@ -1185,7 +1246,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             if stopped && !crate::panels::drag_cancelled(ui) {
                 released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
             }
-            resp.context_menu(|ui| card_menu(app, ui, v, c.item, actions));
+            resp.context_menu(|ui| card_menu(app, ui, v, c.item, width, actions));
         }
         marquee(app, ui, v, &bg, canvas.min, actions);
         if let Some((item, off)) = released {
@@ -1207,9 +1268,10 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                         items.insert(0, s);
                     }
                     let lead = cards.iter().find(|x| x.item == items[0]).cloned().unwrap_or(c);
+                    // the drag moved on screen, the cards live on the unscaled canvas
                     actions.push((
                         "project.freeform.move".into(),
-                        json!({"items": items, "x": (lead.x + off.x).max(0.0), "y": (lead.y + off.y).max(0.0), "width": rect.width()}),
+                        json!({"items": items, "x": (lead.x + off.x / z).max(0.0), "y": (lead.y + off.y / z).max(0.0), "width": width}),
                     ));
                 }
             }
@@ -1222,40 +1284,61 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             actions.push(("file.import".into(), json!({})));
         }
         let bin = Some(v.bin.0);
-        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, actions));
+        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, width, actions));
     });
     ui.ctx().data_mut(|d| d.insert_temp(offset_key, out.state.unclamped_offset()));
+}
+
+/// The Freeform canvas scale for the footer's Zoom: 1 at the default size, as Icon view's card size.
+pub(crate) fn freeform_zoom(icon_size: f32) -> f32 {
+    if icon_size.is_finite() { (icon_size / pp::ViewSettings::default().icon_size).clamp(0.25, 4.0) } else { 1.0 }
+}
+
+/// The List view row height with thumbnails for the footer's Zoom: the thumbnail follows it
+/// (#3774), never smaller than a row without one.
+fn list_thumb_row_height(icon_size: f32, font: f32) -> f32 {
+    let plain = (font * 2.0).max(22.0);
+    if icon_size.is_finite() { (icon_size * 0.4).max(plain) } else { (font * 3.6).max(44.0) }
+}
+
+/// The narrowest Name column that shows a row's thumbnail and still 120 points of its name, for
+/// items one bin deep (the row draws the thumbnail 16:9 at the row height less 6).
+fn list_name_width(row_h: f32) -> f32 {
+    (row_h - 6.0).max(0.0) * 16.0 / 9.0 + 14.0 * 2.0 + 18.0 + 120.0
 }
 
 fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
     cards.iter().find(|c| c.item == item).and_then(|c| c.stack)
 }
 
-fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, actions: &mut Actions) {
+fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, width: f32, actions: &mut Actions) {
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
-    let items: Vec<u64> = if sel.contains(&item) { sel.clone() } else { vec![item] };
+    // the selection's cards in this bin: its width lays them out, not another bin's cards
+    let here = |i: &u64| app.session.project.root.parent_of(ItemId(*i)) == Some(v.bin);
+    let items: Vec<u64> = if sel.contains(&item) { sel.iter().copied().filter(here).collect() } else { vec![item] };
     let b = ui.add_enabled(items.len() > 1, egui::Button::new(tl!("Stack")));
     app.auto.add(&format!("{}.cardMenu.stack", v.prefix), b.rect, "Stack");
     if b.clicked() {
-        actions.push(("project.freeform.stack".into(), json!({"items": items})));
+        actions.push(("project.freeform.stack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     let stacked = app.session.project.item(ItemId(item)).is_some_and(|i| i.metadata.contains_key(pp::FREEFORM_STACK));
     let b = ui.add_enabled(stacked, egui::Button::new(tl!("Unstack")));
     app.auto.add(&format!("{}.cardMenu.unstack", v.prefix), b.rect, "Unstack");
     if b.clicked() {
-        actions.push(("project.freeform.unstack".into(), json!({"items": items})));
+        actions.push(("project.freeform.unstack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     ui.menu_button(tl!("Clip Size"), |ui| {
         for (label, step) in [(tl!("Larger"), 1), (tl!("Smaller"), -1)] {
             if ui.button(label).clicked() {
-                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step})));
+                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step, "width": width})));
                 ui.close();
             }
         }
         if ui.button(tl!("Default")).clicked() {
-            actions.push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size})));
+            actions
+                .push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size, "width": width})));
             ui.close();
         }
     });
@@ -1266,7 +1349,7 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
     }
 }
 
-fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
+fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, width: f32, actions: &mut Actions) {
     fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, (cmd, p): (&str, serde_json::Value)) {
         let b = ui.button(label);
         app.auto.add(&format!("{}.canvasMenu.{id}", v.prefix), b.rect, label);
@@ -1275,10 +1358,10 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
             ui.close();
         }
     }
-    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin})));
+    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin, "width": width})));
     entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({})));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({"bin": bin, "width": width})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))
