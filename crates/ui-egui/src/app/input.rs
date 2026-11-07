@@ -84,8 +84,10 @@ impl FilmcraftApp {
     /// pointer position), else the last pointer position egui saw in the main window.
     fn drop_pointer(&self, ctx: &egui::Context, viewport: egui::ViewportId, last: Option<egui::Pos2>) -> Option<egui::Pos2> {
         let in_points = self.hooks.cursor_in_points;
+        // OS points (macOS) are native points; egui's UI points are those divided by the UI zoom.
+        let zoom = ctx.zoom_factor();
         let os_pointer = self.hooks.cursor_screen_position.as_ref().and_then(|f| f()).and_then(|px| {
-            ctx.input_for(viewport, |i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, if in_points { 1.0 } else { i.pixels_per_point }, r.min)))
+            ctx.input_for(viewport, |i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, if in_points { zoom } else { i.pixels_per_point }, r.min)))
         });
         let fallback = || if viewport == egui::ViewportId::ROOT { ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) } else { None };
         os_pointer.or(last).or_else(fallback)
@@ -157,6 +159,13 @@ mod screen_px_tests {
     #[test]
     fn points_are_not_divided_by_the_display_scale() {
         let p = screen_px_to_ui((650, 450), 1.0, egui::pos2(100.0, 50.0));
+        assert_eq!((p.x, p.y), (550.0, 400.0));
+    }
+
+    // At a UI zoom of 2 a native point is half a UI point, so the scale handed over is the zoom (#4296 review).
+    #[test]
+    fn points_are_divided_by_the_ui_zoom() {
+        let p = screen_px_to_ui((1300, 900), 2.0, egui::pos2(100.0, 50.0));
         assert_eq!((p.x, p.y), (550.0, 400.0));
     }
 
