@@ -11,6 +11,101 @@ fn recovery_scan_stops_when_its_shared_budget_is_spent() {
     assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), Some(4));
 }
 
+#[test]
+fn recovery_scan_finds_a_capture_pattern_at_any_distance_and_charges_about_that_distance() {
+    // distances around the window sizes 4 KiB, 8 KiB, 16 KiB … so a pattern straddling two windows is found too
+    let mut distances = vec![0usize, 1, 2, 3, 4, 100, 5000, 100_000, 1 << 20, (1 << 20) + 5000];
+    for edge in [4096usize, 12_288, 28_672, 61_440] {
+        distances.extend(edge - 5..=edge + 2);
+    }
+    for d in distances {
+        let mut source = vec![0x55u8; d];
+        source.extend_from_slice(b"OggS");
+        source.extend_from_slice(&[0x55; 10]);
+        let mut budget = 64 << 20;
+        assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), Some(d as u64), "distance {d}");
+        let charged = (64usize << 20) - budget;
+        assert!(charged <= 2 * d + 4096 + 4, "distance {d} charged {charged}");
+    }
+    // not found: the whole source is scanned once, plus the overlap of three bytes per window
+    let source = vec![0x55u8; 300_000];
+    let mut budget = 64 << 20;
+    assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), None);
+    assert!((64usize << 20) - budget < 300_000 + 3 * 16, "charged {}", (64usize << 20) - budget);
+}
+
+/// An Ogg Opus file of whole pages of about 64 KB (one packet each), `pages` data pages; the packet of data page
+/// `i` is `pkt(i, 64_000)`.
+fn big_page_file(pages: usize) -> Vec<u8> {
+    let mut f = Vec::new();
+    let head = opus_head(0);
+    let (l, b) = lace(&[&head], false);
+    page(&mut f, 0x02, 0, 9, 0, &l, &b);
+    let (l, b) = lace(&[b"OpusTags"], false);
+    page(&mut f, 0, 0, 9, 1, &l, &b);
+    for i in 0..pages {
+        let p = pkt(i, 64_000);
+        let (l, b) = lace(&[&p], false);
+        let last = i + 1 == pages;
+        page(&mut f, if last { 0x04 } else { 0 }, (i as i64 + 1) * 960, 9, 2 + i as u32, &l, &b);
+    }
+    f
+}
+
+/// Offsets of the pages of `f`.
+fn page_offsets(f: &[u8]) -> Vec<usize> {
+    let mut v = Vec::new();
+    let mut pos = 0;
+    while pos + 27 <= f.len() {
+        v.push(pos);
+        let nseg = usize::from(f[pos + 26]);
+        let body: usize = f[pos + 27..pos + 27 + nseg].iter().map(|&b| usize::from(b)).sum();
+        pos += 27 + nseg + body;
+    }
+    v
+}
+
+#[test]
+fn many_damaged_pages_far_apart_do_not_exhaust_the_recovery_budget() {
+    // 70 damaged pages, each more than 1 MiB after the previous one: with a fixed 1 MiB scan window per
+    // resynchronisation the 64 MiB budget ran out after about 64 of them and the rest of the file was dropped
+    let pages = 1200;
+    let mut f = big_page_file(pages);
+    let offsets = page_offsets(&f);
+    assert_eq!(offsets.len(), pages + 2);
+    let damaged: Vec<usize> = (0..70).map(|k| 3 + k * 17).collect();
+    assert!(damaged.last().is_some_and(|&d| d < pages));
+    for &d in &damaged {
+        f[offsets[2 + d] + 1000] ^= 0xFF;
+    }
+    let o = open(&f).unwrap();
+    assert!(!o.warnings.iter().any(|w| w.contains("gave up")), "{:?}", o.warnings.last());
+    let st = &o.streams[0];
+    // every undamaged packet is kept
+    assert_eq!(st.packets.len(), pages - damaged.len());
+    assert_eq!(o.warnings.iter().filter(|w| w.contains("bad CRC")).count(), damaged.len());
+    assert_eq!(o.read_packet(&f, 0, st.packets.len() - 1).unwrap(), pkt(pages - 1, 64_000));
+    assert_eq!(o.read_packet(&f, 0, 0).unwrap(), pkt(0, 64_000));
+    assert!(st.saw_eos);
+}
+
+#[test]
+fn running_out_of_recovery_budget_in_the_scan_is_reported() {
+    // one valid page, then more bytes without a capture pattern than the budget allows
+    let mut f = opus_file(3, 0, 0);
+    let valid = f.len();
+    f.resize(valid + (65 << 20), 0x55);
+    let o = open(&f).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 3);
+    assert!(o.warnings.last().is_some_and(|w| w.starts_with("gave up resynchronising after byte ")), "{:?}", o.warnings);
+    // a short tail of junk is not a failure to resynchronise
+    let mut g = opus_file(3, 0, 0);
+    g.extend_from_slice(&[0x55; 5000]);
+    let o = open(&g).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 3);
+    assert!(!o.warnings.iter().any(|w| w.contains("gave up")), "{:?}", o.warnings);
+}
+
 /// A source that counts the bytes read from it.
 struct Counting<'a> {
     data: &'a [u8],
