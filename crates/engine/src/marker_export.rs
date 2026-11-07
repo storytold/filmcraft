@@ -66,7 +66,9 @@ pub(crate) fn export(s: &mut Session, p: &Value) -> Result<Value> {
             marker_color_name(s, m),
             tc(m.start)?,
             tc(Tick(end))?,
-            rate.frame_at(m.duration).to_string(),
+            // the frames between the start and end timecodes: `frame_at(duration)` reads one short
+            // when a frame is not a whole number of ticks (11 fps, #4283)
+            rate.frame_at(Tick(end)).saturating_sub(rate.frame_at(m.start)).to_string(),
             m.start.0.to_string(),
             m.duration.0.to_string(),
             format!("{}/{}", rate.num, rate.den),
@@ -196,6 +198,27 @@ mod tests {
         s.undo();
         s.redo();
         assert_eq!(*s.project, *before);
+    }
+
+    /// A marker running from one frame boundary to another at 11 fps (imported, say) counts the
+    /// frames between its start and end timecodes, not one fewer.
+    #[test]
+    fn duration_frames_match_the_timecodes_at_fractional_tick_rates() {
+        let files = Arc::new(Files::default());
+        let mut s = session(files.clone());
+        let rate = FrameRate::new(11, 1);
+        s.edit_sequence("Timing", |q, _, _| {
+            q.settings.frame_rate = rate;
+            Ok(())
+        })
+        .unwrap();
+        let span = |a: i64, b: i64| (rate.tick_of(a), Tick(rate.tick_of(b).0 - rate.tick_of(a).0));
+        let (a, b) = (span(1, 2), span(6, 10));
+        set_markers(&mut s, vec![marker(100, a.0, a.1, "A"), marker(101, b.0, b.1, "B")]);
+        s.execute(CMD, json!({"path":"eleven.csv"})).unwrap();
+        let csv = written(&files);
+        assert!(csv.contains("\"00:00:00:01\",\"00:00:00:02\",\"1\""), "{csv}");
+        assert!(csv.contains("\"00:00:00:06\",\"00:00:00:10\",\"4\""), "{csv}");
     }
 
     #[test]
