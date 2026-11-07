@@ -881,6 +881,10 @@ impl Exp<'_, '_> {
             self.w.empty("sequence", &[("id", &sid)]);
             return;
         };
+        // Report once per populated source track, even when a nest is referenced repeatedly.
+        for _ in seq.caption_tracks.iter().filter(|track| !track.captions.is_empty()) {
+            self.report.warn("Caption tracks are not carried by this FCP7 XML exporter; export captions separately as SRT (text and timing only)");
+        }
         self.writing.insert(id);
         let rate = seq.settings.frame_rate;
         let df = seq.settings.drop_frame && rate.supports_drop_frame();
@@ -1058,6 +1062,9 @@ impl Exp<'_, '_> {
     }
 
     fn write_clip(&mut self, c: &TrackItem, kind: TrackKind, seq: &Sequence, xid: &str, links: &[(String, TrackKind, usize, usize)]) {
+        if c.multicam.is_some_and(|selection| selection.enabled) {
+            self.report.warn("Multicam camera selection is not exported to FCP7 XML; flatten multicam clips before exporting to preserve the selected picture");
+        }
         let rate = seq.settings.frame_rate;
         if !on_frame(rate, c.start) || !on_frame(rate, c.duration) {
             self.report.warn("sub-frame clip positions were rounded to frames");
