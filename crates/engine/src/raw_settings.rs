@@ -183,14 +183,9 @@ fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
     // a string) is set, so `apply` rejects it with a type error
     let is_set = |k: &&str| p.get(*k).is_some_and(|v| !v.is_null() && !(*k == "reset" && *v == Value::Bool(false)));
     if !SETTING_KEYS.iter().any(is_set) {
-        // describe the first item; `items` lists every selected camera raw item, the ones an
-        // edit with these parameters would reach
+        // describe the first item
         let first = all.first().copied().ok_or_else(|| bad(CMD, "select a clip"))?;
-        let mut d = describe(s, first)?;
-        if d["raw"] == true {
-            d["items"] = json!(all.iter().filter(|i| is_raw(s, **i)).map(|i| i.0).collect::<Vec<_>>());
-        }
-        return Ok(d);
+        return describe(s, first);
     }
     if all.is_empty() {
         return Err(bad(CMD, "select a clip"));

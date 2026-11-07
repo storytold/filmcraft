@@ -588,6 +588,12 @@ impl<W: Write + Seek> MxfWriter<W> {
             // CinemaDNG §7.1.1: a TIFF dataset has no length field, so DNG pictures can't be clip wrapped
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "CinemaDNG pictures are frame wrapped only (this writer's OP-Atom is clip wrapped)"));
         }
+        if let Some(p) = &cfg.picture {
+            // CinemaDNG §7.2.2.3 fixes the decoded image at 16 bits per component
+            if matches!(p.coding, PictureCoding::CinemaDng { .. }) && p.depth != 16 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "CinemaDNG pictures are described at 16 bits per component"));
+            }
+        }
         let mut tracks = Vec::new();
         let mut id = cfg.first_track_id.max(2);
         if let Some(p) = &cfg.picture {
@@ -1003,7 +1009,7 @@ impl<W: Write + Seek> MxfWriter<W> {
                     if rgba {
                         // RGBA descriptor (ST 377-1 G.2.40): pixel layout R, G, B of 16 bits each and
                         // the component reference levels. CinemaDNG §7.2.2.3 fixes the decoded
-                        // image at 16 bits, whatever `PictureDesc::depth` says.
+                        // image at 16 bits; `MxfWriter::new` rejects any other `PictureDesc::depth`.
                         let mut layout = [0u8; 16];
                         layout[..6].copy_from_slice(&[b'R', 16, b'G', 16, b'B', 16]);
                         let max = u32::from(u16::MAX);
