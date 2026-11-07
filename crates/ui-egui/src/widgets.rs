@@ -427,6 +427,13 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     resp
 }
 
+/// Width of a `dropdown_text` box that fits `text` beside the chevron, at least `min`.
+pub fn dropdown_text_width(ui: &Ui, text: &str, min: f32) -> f32 {
+    let w = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), Tokens::ui(12.0), Color32::WHITE).size().x);
+    // 9 pt left padding, the text, then the chevron (9 pt wide, centred 11 pt from the edge) and a gap
+    (w + 9.0 + 20.0).max(min)
+}
+
 /// Premiere-style dropdown text ("Fit ▾").
 pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::Id) -> Response {
     // Premiere: 24 pt, #0e0e0e fill, 1 pt #303030 border, radius 4, chevron at the right.
