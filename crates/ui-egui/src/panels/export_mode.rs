@@ -265,5 +265,23 @@ mod location_tests {
         })
         .textures_delta
         .clear();
+
+        let prev_locale = crate::i18n::locale();
+        crate::i18n::set_locale(crate::i18n::Locale::Ru);
+        let mut app = FilmcraftApp::default();
+        app.session.execute("file.openDemoProject", json!({})).expect("demo project opens");
+        let seq_id = app.session.state.active_sequence.expect("active sequence");
+        let mut ru_text_w = 0.0;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ru_label = crate::i18n::t("Send to Queue");
+            ru_text_w = ui.painter().layout_no_wrap(ru_label.to_string(), Tokens::semibold(12.5), Color32::WHITE).size().x;
+            preview::preview_column(&mut app, ui, col, seq_id);
+        })
+        .textures_delta
+        .clear();
+        crate::i18n::set_locale(prev_locale);
+        let send_el = app.auto.elements.iter().find(|e| e.id == "export.sendToQueue").expect("export.sendToQueue registered");
+        let send_w = send_el.rect[2];
+        assert!(send_w >= ru_text_w + 28.0, "registered export.sendToQueue width ({send_w} pt) fits Russian label ({ru_text_w} pt)");
     }
 }

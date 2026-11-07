@@ -10,6 +10,8 @@ use super::{
 
 pub(crate) const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Source In/Out"), ("workArea", "Work Area"), ("custom", "Custom")];
 
+/// Renders the right-hand export preview column, including the output frame preview, range and
+/// scaling controls, export summary, and the "Send to Queue" / "Export" action buttons.
 pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: filmcraft_engine::project::ItemId) {
     let t = app.tokens;
     let mut reg = Reg::default();
