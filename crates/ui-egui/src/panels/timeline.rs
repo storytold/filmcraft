@@ -751,7 +751,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
         v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
-        let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
+        let k = if app.session.prefs.appearance.animations && app.session.state.timeline_ui.smooth_animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
         // video thumbnails keep the layout of the zoom a gesture or animation started at (#1094)
         if zooming || matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. })) {
