@@ -263,6 +263,77 @@ fn point_text_handles_scale_it_about_its_anchor() {
     assert_eq!(num(&d.layer(clip)["scale"]), s);
 }
 
+/// A pen path begun in a selected graphic starts again when that graphic's track is locked: its
+/// points are in that graphic's canvas, and the next shape goes into a new graphic (#4162).
+#[test]
+fn a_pen_path_starts_again_when_its_graphic_is_locked() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    d.ok("ui.set", json!({"tool": "Pen"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    for (fx, fy) in [(0.2, 0.2), (0.4, 0.2)] {
+        d.ok("ui.click", json!({"x": pic[0] + pic[2] * fx, "y": pic[1] + pic[3] * fy}));
+        d.frames(2);
+    }
+    assert_eq!(d.harness.state().ui.pen_points.len(), 2, "two points while the graphic is unlocked");
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.frames(2);
+    assert!(d.harness.state().ui.pen_points.is_empty(), "the path in the locked graphic's canvas is dropped");
+
+    // the target changing on the very pass of a click: the click starts the new path
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": false}));
+    d.frames(2);
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.2, "y": pic[1] + pic[3] * 0.2}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.pen_into, Some(clip));
+    d.harness.state_mut().session.execute("timeline.setTrack", json!({"track": track.0, "locked": true})).unwrap();
+    let at = egui::pos2((pic[0] + pic[2] * 0.4) as f32, (pic[1] + pic[3] * 0.2) as f32);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.harness.input_mut().events.extend([egui::Event::PointerMoved(at), button(true), button(false)]);
+    d.frames(1);
+    assert_eq!(d.harness.state().ui.pen_points.len(), 1, "the click is the first point of a new path");
+    assert_eq!(d.harness.state().ui.pen_into, None, "in the sequence frame");
+}
+
+/// The Type tool does not add a layer to a selected graphic on a locked track: the text goes into
+/// a new graphic instead (#4162).
+#[test]
+fn the_type_tool_leaves_a_locked_graphic_alone() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "Other"}));
+    d.ok("ui.key", json!({"key": "Escape"}));
+    let locked = d.exec("graphics.list", json!({"clip": clip}));
+    assert_eq!(locked["layers"].as_array().map(Vec::len), Some(1), "the locked graphic keeps its one layer");
+    let list = d.exec("graphics.list", json!({}));
+    assert_ne!(list["clip"], json!(clip), "a new graphic takes the text");
+    assert_eq!(list["layers"][0]["text"], "Other");
+}
+
+/// A layer on a locked track shows on the Program monitor but has no box to take hold of (#4162).
+#[test]
+fn a_locked_tracks_layer_stays_put_on_the_monitor() {
+    let mut d = Driver::new();
+    let (clip, pre) = d.point_text();
+    let body = d.rect(pre.trim_end_matches('.'));
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.frames(4);
+    let left = d.ok("ui.elements", json!({"prefix": pre.trim_end_matches('.')}));
+    assert_eq!(left, json!([]), "no box or handles on a locked track");
+    let position = d.layer(clip)["position"].clone();
+    d.drag((body[0] + body[2] / 2.0, body[1] + body[3] / 2.0), (60.0, 40.0));
+    assert_eq!(d.layer(clip)["position"], position, "a drag leaves the layer where it is");
+}
+
 #[test]
 fn the_anchor_point_can_be_dragged_without_moving_the_layer() {
     let mut d = Driver::new();

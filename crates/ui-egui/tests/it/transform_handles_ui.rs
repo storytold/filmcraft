@@ -376,6 +376,68 @@ fn transform_effect_handles_and_double_click_selection() {
     assert_eq!(d.selected_effect(), json!({"clip": under, "effect": "motion", "instance": 0}));
 }
 
+/// A pen mask draft on a clip whose track gets locked waits without holding the monitor: a
+/// double-click selects the unlocked clip under it, and Escape still drops the draft (#4162).
+#[test]
+fn a_pen_draft_on_a_locked_track_leaves_the_monitor_to_the_other_tools() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let overlay = seq["video"][1]["items"][0]["clip"].as_u64().unwrap();
+    let start = seq["video"][1]["items"][0]["start"].as_i64().unwrap();
+    d.exec("playhead.set", json!({"time": start + filmcraft_time::TICKS_PER_SECOND}));
+    d.exec("timeline.select", json!({"clips": [overlay]}));
+    d.frames(3);
+    for fx in ["motion", "time_remap"] {
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
+    }
+    d.click("effectControls.opacity.mask.pen");
+    assert!(d.harness.state().ui.mask_pen.is_some(), "drawing a pen mask on the overlay");
+    d.exec("timeline.setTrack", json!({"track": "V2", "locked": true}));
+    // half a second after the click on the pen, or egui counts the double-click's clicks as a triple click
+    d.frames(30);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.8, "y": pic[1] + pic[3] * 0.76, "count": 2}));
+    d.frames(3);
+    let sel = d.selected_effect();
+    assert_ne!(sel["clip"], json!(overlay), "the locked clip is not selected: {sel}");
+    assert_eq!(sel["effect"], "motion", "the clip under it is: {sel}");
+    assert!(d.harness.state().ui.mask_pen.is_some(), "the draft waits");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.mask_pen.is_none(), "Escape drops it");
+}
+
+/// A clip on a locked track stays put on the Program monitor (#4162): its Motion has no handles, a
+/// drag on its picture leaves it where it is, and a double-click selects the clip under it.
+#[test]
+fn a_locked_tracks_clip_stays_put_on_the_monitor() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let overlay = seq["video"][1]["items"][0]["clip"].as_u64().unwrap();
+    let start = seq["video"][1]["items"][0]["start"].as_i64().unwrap();
+    d.exec("playhead.set", json!({"time": start + filmcraft_time::TICKS_PER_SECOND}));
+    d.exec("timeline.select", json!({"clips": [overlay]}));
+    d.exec("effects.select", json!({"clip": overlay, "effect": "motion"}));
+    d.frames(3);
+    d.rect("program.transform.box");
+    d.exec("timeline.setTrack", json!({"track": "V2", "locked": true}));
+    d.frames(3);
+    assert!(d.find("program.transform.box").is_none(), "no handles on a locked track");
+    let (p0, undo) = (d.point(overlay, "motion", "position"), d.undo_len());
+    let pic = d.rect("program.picture");
+    let at = (pic[0] + pic[2] * 0.8, pic[1] + pic[3] * 0.76);
+    d.drag_from(at, 40.0, 20.0);
+    assert_eq!(d.point(overlay, "motion", "position"), p0, "a drag leaves the picture where it is");
+    assert_eq!(d.undo_len(), undo);
+    // half a second later, or egui counts the double-click's clicks as a triple click
+    d.frames(30);
+    d.ok("ui.click", json!({"x": at.0, "y": at.1, "count": 2}));
+    d.frames(3);
+    let sel = d.selected_effect();
+    assert_ne!(sel["clip"], json!(overlay), "the locked clip is not selected: {sel}");
+    assert_eq!(sel["effect"], "motion", "the clip under it is: {sel}");
+}
+
 /// Only the left button takes hold of the box: a middle or right drag leaves the picture alone.
 #[test]
 fn only_the_left_button_drags_the_handles() {

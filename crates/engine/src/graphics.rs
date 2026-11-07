@@ -175,11 +175,15 @@ pub(crate) fn place_video_clip(
     })
 }
 
-/// Add a layer to an existing graphic clip; returns the new layer index.
+/// Add a layer to an existing graphic clip, which a locked track refuses; returns the new layer index.
 fn add_layer(s: &mut Session, clip: ClipId, mut layer: filmcraft_project::EffectInstance) -> Result<usize> {
     let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
     filmcraft_project::resolve_auto_points(&mut layer, frame, frame);
     s.edit_sequence("Add Graphic Layer", |q, _, st| {
+        let (track, _) = q.find_item(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        if q.track(track).is_some_and(|t| t.locked) {
+            return Err(filmcraft_edit::EditError::Locked.into());
+        }
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         // new layers go in front: after the last graphic layer
         let pos = layer_indices(&it.effects).last().map_or(it.effects.len(), |l| l + 1);
