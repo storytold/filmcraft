@@ -646,6 +646,9 @@ pub(crate) fn lift_scale(l: f32, nl: f32) -> (f32, f32) {
     (k, nl - l.max(0.0) * k)
 }
 
+/// Lumetri Color: Basic Correction, Creative, Curves, Color Wheels, HSL Secondary, Vignette and
+/// Creative ▸ Sharpen, in Premiere's order, on the grading signal (normalised to HDR White in PQ /
+/// HLG working spaces, so highlights above it are values above 1).
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -698,21 +701,25 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let (k, add) = lift_scale(l, nl);
         v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
-        // keep their distance from white)
+        // keep their distance from white: they continue from the curve's value at 1 with slope 1,
+        // unchanged for positive contrast, moved with white for negative, with no step at white)
+        // `white`: where HDR White ends up (1 unless negative contrast moves it down)
+        let mut white = 1.0f32;
         if contrast.abs() > 1e-4 {
             let k = 1.0 + contrast;
-            v = v.map(|q| {
-                if hdr && q > 1.0 {
-                    return q;
-                }
-                let q = q.clamp(0.0, 1.0);
+            let curve = |q: f32| {
                 let s = q * q * (3.0 - 2.0 * q);
                 if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
-            });
+            };
+            let top = curve(1.0);
+            if hdr {
+                white = top;
+            }
+            v = v.map(|q| if hdr && q > 1.0 { top + (q - 1.0) } else { curve(q.clamp(0.0, 1.0)) });
         }
-        // HDR Specular: brightness of the highlights above HDR White
+        // HDR Specular: brightness of the highlights above (the graded) HDR White
         if specular.abs() > 1e-4 {
-            v = v.map(|q| if q > 1.0 { 1.0 + (q - 1.0) * (1.0 + specular).max(0.0) } else { q });
+            v = v.map(|q| if q > white { white + (q - white) * (1.0 + specular).max(0.0) } else { q });
         }
         // faded film: lift blacks and compress
         if faded > 0.0 {
