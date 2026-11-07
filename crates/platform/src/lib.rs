@@ -40,6 +40,7 @@ pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
+pub mod monitors;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]

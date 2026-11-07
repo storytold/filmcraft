@@ -17,7 +17,7 @@ In order. Each item links to its gap entry, which says what "done" means.
 4. **Fidelity harness against Premiere** ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)) and **`cargo xtask parity`** ([G7](gaps.md#g7-no-measured-parity-tool-in-ci)): turns estimates into measurements. 50–90 h.
 5. **Real-world media corpus and workflow tests** ([G6](gaps.md#g6-no-real-world-media-corpus-or-workflow-acceptance-tests)). 40–70 h.
 6. **Hardware acceleration, continued** (#30, [G5](gaps.md#g5-hardware-acceleration-is-partial)): zero-copy upload, Lumetri curves / wheels / HSL and keys on the GPU, VideoToolbox Main 10, Quick Sync / AMF encoders. 120–200 h.
-7. **UI fidelity issues** ([G8](gaps.md#g8-ui-fidelity-monitor-handles-effect-controls-docking)): Program monitor transform handles, Effect Controls, docking. 120–200 h.
+7. **UI fidelity issues** ([G8](gaps.md#g8-ui-fidelity-monitor-handles-effect-controls-docking)): Program monitor transform handles, Effect Controls, docking.  Floating panels know the connected displays on Windows ([multi-monitor.md](multi-monitor.md)). 120–200 h.
 
 ## Alpha gate
 

@@ -248,11 +248,14 @@ impl FilmcraftApp {
             active: self.session.state.active_sequence.map(|id| id.0),
         };
         let style = dock_style(ui, &t);
-        // No `monitors`: the monitor list comes with the egui fork's `ViewportInfo::monitors`.
+        // The fork reports no monitor list and eframe hides winit's, so ask the OS (`monitors.rs`).
+        self.monitors.refresh(ctx.input(|i| i.time), self.hooks.display_list.as_deref());
+        let monitors = self.monitors.points(ctx.pixels_per_point());
         let control_input_only = self.control_input_only;
         let armed = std::sync::Arc::clone(&self.native_ctrl_click_armed);
         let mut area = DockArea::new(area_id())
             .float_bounds(self.float_bounds(&ctx))
+            .monitors(monitors)
             .maximized(self.ui.keys.maximized.filter(|panel| self.ui.dock.is_docked(*panel)))
             .input_blocked(self.modal_open(&ctx))
             .native_input_hook(move |_ctx, raw_input| crate::rewrite_native_window_input(control_input_only, &armed, raw_input));

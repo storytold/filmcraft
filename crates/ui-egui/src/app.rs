@@ -81,6 +81,7 @@ impl FilmcraftApp {
             test_now: None,
             mac_ctrl_click_armed: false,
             native_ctrl_click_armed: Arc::default(),
+            monitors: Default::default(),
             value_press: None,
             escape_cancel: false,
             loudness: None,

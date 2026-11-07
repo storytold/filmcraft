@@ -512,6 +512,12 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let hits: Vec<Value> = hits.iter().map(|(hit, r)| json!({"hit": hit, "rect": [r.left(), r.top(), r.width(), r.height()]})).collect();
             ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
+        "ui.monitors" => {
+            app.monitors.refresh(ctx.input(|i| i.time), app.hooks.display_list.as_deref());
+            let displays: Vec<Value> =
+                app.monitors.displays().iter().map(|d| json!({"name": d.name, "rect": [d.x, d.y, d.width, d.height], "dpiScale": d.dpi_scale})).collect();
+            ok(json!({"displays": displays, "monitors": app.monitors.points(ctx.pixels_per_point())}))
+        }
         "perf.stats" => ok(crate::perf::stats(app)),
         "ui.elements" => {
             if app.timeline_still < 2 {

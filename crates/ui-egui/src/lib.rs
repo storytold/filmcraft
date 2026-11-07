@@ -60,6 +60,7 @@ pub mod icons;
 mod ime_reset;
 pub mod links;
 pub mod menus;
+pub mod monitors;
 pub mod native_dialogs;
 pub mod panels;
 pub mod perf;
@@ -298,6 +299,8 @@ pub struct FilmcraftApp {
     /// [`Self::mac_ctrl_click_armed`] for each dock panel's own OS window, shared with the dock
     /// area's input hook.
     pub(crate) native_ctrl_click_armed: Arc<Mutex<HashMap<egui::ViewportId, bool>>>,
+    /// The connected displays, for keeping floating panel windows reachable (`monitors.rs`).
+    pub(crate) monitors: monitors::Monitors,
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,

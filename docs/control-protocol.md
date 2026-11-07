@@ -224,7 +224,8 @@ geometry handles; `dock.gutter.<path>`
 locates a split divider (`a`/`b` per split level), `dock.corner.<outer path>.<inner path>` the
 four-way handle where two dividers meet, `panel.float.<index>.gutter.<path>` and
 `panel.float.<index>.corner.<outer path>.<inner path>` the same inside a floating window;
-`ui.docking` lists every docking gesture source. Named workspace saves include floating windows.
+`ui.docking` lists every docking gesture source. `ui.monitors` lists the connected displays the dock
+keeps floating windows on ([multi-monitor.md](multi-monitor.md)). Named workspace saves include floating windows.
 
 The panels use craft-ui's shared docking with its split-tree settings. Its control commands
 (`window.panel.move`, `.float`, `.dock`, `.activate`, `.close`, `.closeGroup`, `.closeOthers`,

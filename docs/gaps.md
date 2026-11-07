@@ -163,6 +163,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
   drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
+- **Have (multi-monitor):** panels float into their own OS windows and move across displays; the
+  connected displays are enumerated (Windows) so a window saved on an unplugged monitor lands on the
+  main window's ([multi-monitor.md](multi-monitor.md), #1537, #1951, #2028, #2997). Missing: macOS and
+  Linux enumeration.
 - **Estimate:** 120–200 h. Doc: [ui-parity.md](ui-parity.md).
 
 ## G9. Windows and Linux at run time
