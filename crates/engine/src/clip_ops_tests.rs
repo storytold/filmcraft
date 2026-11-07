@@ -1406,3 +1406,55 @@ fn rename_takes_several_clips() {
     s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// Speed/Duration with a duration gives every selected clip that duration (each at its own speed),
+/// as one undo step. Before, the dialog derived one speed from the first clip and applied it to all.
+#[test]
+fn speed_duration_with_a_duration_sets_every_selected_clip() {
+    let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let clips = v1(&s);
+    assert_ne!(clips[0].duration, clips[1].duration, "the demo clips must differ in length for this test");
+    let ids = [clips[0].id.0, clips[1].id.0, clips[2].id.0];
+    select(&mut s, &ids);
+    let target = s.sequence_rate().tick_of(10);
+    let before = s.project.clone();
+    s.execute("clip.speedDuration", json!({"duration": target.0})).unwrap();
+    s.active_sequence().unwrap().check().unwrap();
+    for id in ids {
+        assert_eq!(clip(&s, id).duration, target, "clip {id} has the typed duration");
+    }
+    assert_ne!(clip(&s, ids[0]).speed, clip(&s, ids[1]).speed, "each clip got the speed that gives it that duration");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before, "one undo restores every clip");
+}
+
+/// A longer duration with Ripple Edit moves the later clips once and leaves no overlap.
+#[test]
+fn speed_duration_with_a_longer_duration_ripples_later_clips() {
+    let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let clips = v1(&s);
+    let ids = [clips[0].id.0, clips[1].id.0];
+    select(&mut s, &ids);
+    let target = clips[0].duration.max(clips[1].duration) + s.sequence_rate().tick_of(24);
+    s.execute("clip.speedDuration", json!({"duration": target.0, "ripple": true})).unwrap();
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    let after = v1(&s);
+    assert_eq!((after[0].duration, after[1].duration), (target, target));
+    assert!(after[1].start >= after[0].end() && after[2].start >= after[1].end(), "no clip overlaps the next");
+}
+
+/// A duration that is not positive is refused and changes nothing.
+#[test]
+fn speed_duration_refuses_a_duration_that_is_not_positive() {
+    let mut s = demo();
+    let c = v1(&s)[0].id.0;
+    select(&mut s, &[c]);
+    let before = s.project.clone();
+    for bad in [json!(0), json!(-5), json!("x")] {
+        assert!(s.execute("clip.speedDuration", json!({"duration": bad})).is_err(), "{bad}");
+        assert_eq!(*s.project, *before);
+    }
+}

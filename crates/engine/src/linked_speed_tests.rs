@@ -196,3 +196,39 @@ fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
     assert!(flag(&s, picture), "the picture's own setting changes");
     assert!(!flag(&s, sound), "the locked sound keeps its setting");
 }
+
+/// A duration reaches each selected picture and its sound, which end together.
+#[test]
+fn a_duration_applies_to_every_picture_and_its_sound() {
+    let mut s = Session::default();
+    let [(picture1, sound1), (picture2, sound2), _] = three_clips(&mut s);
+    let target = s.sequence_rate().tick_of(24);
+    s.execute("clip.speedDuration", json!({"clips": [picture1.0, picture2.0], "duration": target.0, "ripple": true})).unwrap();
+    s.active_sequence().unwrap().check().unwrap();
+    for c in [picture1, sound1, picture2, sound2] {
+        let (start, end) = range(&s, c);
+        assert_eq!(end - start, target, "clip {} has the duration", c.0);
+    }
+}
+
+/// A split edit given a duration: the picture asked for gets it, and its longer sound keeps the
+/// same speed, so the two stay in sync instead of both ending up the same length.
+#[test]
+fn a_duration_on_a_split_edit_sets_the_picture_and_keeps_the_sound_in_sync() {
+    let mut s = Session::default();
+    let [_, (picture2, sound2), (_, sound3)] = three_clips(&mut s);
+    let f = |n: i64| s.sequence_rate().tick_of(n);
+    let (f24, f30) = (f(24), f(30));
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.trim", json!({"clip": sound3.0, "edge": "in", "mode": "regular", "deltaFrames": 12})).unwrap();
+    s.execute("timeline.trim", json!({"clip": sound2.0, "edge": "out", "mode": "regular", "deltaFrames": 12})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    // the sound first in the request: the picture's length is still the one typed
+    s.execute("clip.speedDuration", json!({"clips": [sound2.0, picture2.0], "duration": f24.0, "ripple": true})).unwrap();
+    s.active_sequence().unwrap().check().unwrap();
+    let len = |s: &Session, c| {
+        let (a, b) = range(s, c);
+        b - a
+    };
+    assert_eq!((len(&s, picture2), len(&s, sound2)), (f24, f30), "picture 48 to 24 frames, sound 60 to 30");
+}
