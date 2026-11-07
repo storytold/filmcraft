@@ -294,6 +294,7 @@ struct Input<P> {
 }
 
 struct Pool {
+    /// Built for every thread count, also 1: rayon calls outside `install` run on the global pool (all cores).
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
 }
@@ -337,6 +338,7 @@ struct Core<P> {
     held: Vec<Packet>,
     frame_pool: Vec<Frame<P>>,
     hpel_pool: Vec<[picture::Plane<P>; 3]>,
+    mbs_pool: Vec<Vec<MbInfo>>,
     sei_sent: bool,
     slices: usize,
     pool: Pool,
@@ -565,7 +567,7 @@ impl<P: Pixel> Core<P> {
         let threads = if cfg.threads == 0 { std::thread::available_parallelism().map_or(1, |n| n.get()) } else { cfg.threads };
         let slices = if cfg.slices > 0 { cfg.slices.min(mbh) } else { threads.min(mbh.div_ceil(4)).max(1) };
         #[cfg(feature = "threads")]
-        let pool = Pool { pool: if threads > 1 { rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok() } else { None } };
+        let pool = Pool { pool: rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok() };
         #[cfg(not(feature = "threads"))]
         let pool = Pool {};
         let record_pass1 = cfg.pass == Pass::First;
@@ -597,6 +599,7 @@ impl<P: Pixel> Core<P> {
             held: Vec::new(),
             frame_pool: Vec::new(),
             hpel_pool: Vec::new(),
+            mbs_pool: Vec::new(),
             sei_sent: false,
             slices,
             pool,
@@ -786,6 +789,17 @@ impl<P: Pixel> Core<P> {
         self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16))
     }
 
+    fn new_mbs(&mut self) -> Vec<MbInfo> {
+        let n = self.params.mbw * self.params.mbh;
+        match self.mbs_pool.pop() {
+            Some(mut m) => {
+                m.fill(MbInfo::default());
+                m
+            }
+            None => vec![MbInfo::default(); n],
+        }
+    }
+
     fn recycle(&mut self, f: Frame<P>) {
         if self.frame_pool.len() < 8 {
             self.frame_pool.push(f);
@@ -874,7 +888,7 @@ impl<P: Pixel> Core<P> {
             beta_offset_div2: 0,
         };
         let rec = self.new_frame();
-        let mbs = vec![MbInfo::default(); self.params.mbw * self.params.mbh];
+        let mbs = self.new_mbs();
         Job { input, st, idr, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() }
     }
 
@@ -1050,6 +1064,7 @@ impl<P: Pixel> Core<P> {
             self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
         } else {
             self.recycle(rec);
+            self.recycle_mbs(mbs);
         }
         if idr {
             self.idr_count += 1;
@@ -1076,6 +1091,13 @@ impl<P: Pixel> Core<P> {
         self.recycle(r.frame);
         if self.hpel_pool.len() < 4 {
             self.hpel_pool.push(r.hpel);
+        }
+        self.recycle_mbs(r.mbs);
+    }
+
+    fn recycle_mbs(&mut self, m: Vec<MbInfo>) {
+        if self.mbs_pool.len() < 8 {
+            self.mbs_pool.push(m);
         }
     }
 }
