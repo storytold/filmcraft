@@ -359,10 +359,20 @@ struct R<'a> {
     cf: CompoundFile<'a>,
     paths: Vec<Vec<u16>>,
     objects: usize,
+    materialized_stream_bytes: usize,
+    /// Storages already read: a storage is owned by one parent, so a second strong reference to it
+    /// (which would rebuild its whole subtree again) is refused.
+    owned: std::collections::HashSet<usize>,
+    /// Bytes of weak-reference target paths copied into the tree so far.
+    path_bytes: usize,
 }
 
 const MAX_DEPTH: usize = 200;
 const MAX_OBJECTS: usize = 2_000_000;
+const MAX_MATERIALIZED_STREAM_BYTES: usize = 256 << 20;
+/// Each weak reference carries its own copy of its target path (real paths are a handful of
+/// property ids); the copies together may not exceed this.
+const MAX_PATH_BYTES: usize = 64 << 20;
 
 /// Parse the object tree of an AAF compound file (the root object).
 pub(crate) fn read(bytes: &[u8]) -> Result<Obj, String> {
@@ -385,7 +395,7 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Obj, String> {
             }
         }
     }
-    let mut r = R { cf, paths, objects: 0 };
+    let mut r = R { cf, paths, objects: 0, materialized_stream_bytes: 0, owned: Default::default(), path_bytes: 0 };
     r.obj(0, 0)
 }
 
@@ -401,14 +411,33 @@ impl R<'_> {
         self.cf.child(parent, name).ok_or_else(|| bad(format!("missing storage or stream \"{name}\"")))
     }
 
-    fn stream(&self, parent: usize, name: &str) -> Result<Vec<u8>, String> {
+    fn stream(&mut self, parent: usize, name: &str) -> Result<Vec<u8>, String> {
         let id = self.child(parent, name)?;
-        self.cf.read(id).map_err(|e| e.to_string())
+        let data = self.cf.read(id).map_err(|e| e.to_string())?;
+        self.materialized_stream_bytes = self
+            .materialized_stream_bytes
+            .checked_add(data.len())
+            .filter(|&n| n <= MAX_MATERIALIZED_STREAM_BYTES)
+            .ok_or_else(|| bad("AAF materialized stream data exceeds the memory limit"))?;
+        Ok(data)
+    }
+
+    /// A copy of weak-reference path `tag`, counted against [`MAX_PATH_BYTES`].
+    fn path(&mut self, tag: u16) -> Result<Vec<u16>, String> {
+        let path = self.paths.get(tag as usize).cloned().unwrap_or_default();
+        self.path_bytes = self.path_bytes.saturating_add(path.len() * 2);
+        if self.path_bytes > MAX_PATH_BYTES {
+            return Err(bad("weak reference paths exceed the memory limit"));
+        }
+        Ok(path)
     }
 
     fn obj(&mut self, entry: usize, depth: usize) -> Result<Obj, String> {
         if depth > MAX_DEPTH {
             return Err(bad("objects nested too deeply"));
+        }
+        if !self.owned.insert(entry) {
+            return Err(bad("a storage is owned by more than one reference"));
         }
         self.objects += 1;
         if self.objects > MAX_OBJECTS {
@@ -435,6 +464,9 @@ impl R<'_> {
             let (Some(pid), Some(sf), Some(len)) = (rd_u16(&props, 4 + i * 6), rd_u16(&props, 6 + i * 6), rd_u16(&props, 8 + i * 6)) else {
                 return Err(bad("truncated property index"));
             };
+            if o.props.iter().any(|(previous, _)| *previous == pid) {
+                return Err(bad("duplicate property id"));
+            }
             let v = props.get(at..at + len as usize).ok_or_else(|| bad("truncated property value"))?;
             at += len as usize;
             let value = match sf {
@@ -471,7 +503,7 @@ impl R<'_> {
                         return Err(bad("short weak reference"));
                     };
                     let key = v.get(5..5 + size as usize).ok_or_else(|| bad("short weak reference"))?.to_vec();
-                    Value::Weak(self.paths.get(tag as usize).cloned().unwrap_or_default(), key_pid, key)
+                    Value::Weak(self.path(tag)?, key_pid, key)
                 }
                 SF_WEAK_VECTOR | SF_WEAK_SET => {
                     let name = utf16_of(v);
@@ -491,7 +523,7 @@ impl R<'_> {
                     for k in 0..count as usize {
                         keys.push(idx.get(9 + k * size..9 + (k + 1) * size).ok_or_else(|| bad("short weak collection index"))?.to_vec());
                     }
-                    Value::WeakVec(self.paths.get(tag as usize).cloned().unwrap_or_default(), key_pid, keys)
+                    Value::WeakVec(self.path(tag)?, key_pid, keys)
                 }
                 SF_DATA_STREAM => {
                     let name = utf16_of(v.get(1..).unwrap_or(&[]));

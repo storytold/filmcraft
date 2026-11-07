@@ -311,6 +311,7 @@
 	Show Active Caption Tracks Only	Показати лише активні доріжки субтитрів
 	Show All Caption Tracks	Показати всі доріжки субтитрів
 	Show All Marker Colors	Показати всі кольори маркерів
+	Show Duplicate Frame Markers	Показати маркери повторюваних кадрів
 	Show Guides	Показати напрямні
 	Show Rulers	Показати лінійки
 	Show Through Edits	Показати розрізи без зміни кадру
@@ -320,6 +321,7 @@
 	Source	Джерело
 	Source Settings…	Налаштування джерела…
 	Speed/Duration…	Швидкість/тривалість…
+	Maintain Audio Pitch	Зберігати висоту звуку
 	Synchronize…	Синхронізувати…
 	System Compatibility Report…	Звіт про сумісність системи…
 	Tan	Світло-коричневий
@@ -363,4 +365,126 @@
 	ComfyUI…	ComfyUI…
 	Generate ComfyUI Clip	Згенерувати кліп ComfyUI
 	Project Notes	Нотатки проєкту
+	A project can come from anyone: its files are sent to the server only after you allow them	Проєкт може надійти від будь-кого: його файли надсилаються на сервер лише після вашого дозволу
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Робочий процес, збережений у ComfyUI командою Workflow ▸ Export (API)
+	All Inputs ({count})	Усі входи ({count})
+	Allow Uploads	Дозволити вивантаження
+	Applied	Застосовано
+	Apply	Застосувати
+	Back to the workflow's value	Повернути значення з робочого процесу
+	Choose a file to upload	Вибрати файл для вивантаження
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Параметри кліпу ComfyUI
+	ComfyUI Settings	Параметри ComfyUI
+	ComfyUI workflow (API)	Робочий процес ComfyUI (API)
+	Connected (ComfyUI {ver})	Під’єднано (ComfyUI {ver})
+	Create & Generate	Створити й згенерувати
+	Create Clip	Створити кліп
+	Created {name}	Створено: {name}
+	Expose ComfyUI Inputs	Винести входи ComfyUI
+	Expose: show this input first for this workflow	Винести: показувати цей вхід першим для цього робочого процесу
+	Exposed	Винесені
+	Exposed {input}	Вхід винесено: {input}
+	Exposed: shown first for this workflow (click to stop)	Винесено: показується першим для цього робочого процесу (натисніть, щоб прибрати)
+	Generate	Згенерувати
+	Generate again with new random seeds	Згенерувати знову з новими випадковими сідами
+	Generating…	Генерування…
+	Inspect ComfyUI Workflow	Переглянути робочий процес ComfyUI
+	Load Workflow…	Завантажити робочий процес…
+	Load a workflow, or select a ComfyUI clip	Завантажте робочий процес або виберіть кліп ComfyUI
+	Media	Медіа
+	Named by the project file: uploaded only after Allow Uploads	Вказано у файлі проєкту: вивантажується лише після «Дозволити вивантаження»
+	New ComfyUI Clip	Новий кліп ComfyUI
+	New Seeds	Нові сіди
+	New clip	Новий кліп
+	Selected ComfyUI clip	Вибраний кліп ComfyUI
+	Send these files to the ComfyUI server when the clip is generated	Надіслати ці файли на сервер ComfyUI під час генерування кліпу
+	Server	Сервер
+	Test	Перевірити
+	Text output	Текстовий вихід
+	This clip uploads files named by the project file: {files}	Цей кліп вивантажує файли, вказані у файлі проєкту: {files}
+	not reachable	недоступний
+	select a ComfyUI clip	виберіть кліп ComfyUI
+	{input} no longer exposed	Вхід більше не винесено: {input}
+	{n} file(s) allowed	Дозволено файлів: {n}
+	{n} inputs	Входів: {n}
 
+# Marker editing and shared custom colors
+	A range marker needs a positive duration	Тривалість маркера діапазону має бути додатною
+	Add Custom Color	Додати власний колір
+	Add and apply	Додати й застосувати
+	Add color	Додати колір
+	Add custom color	Додати власний колір
+	Add custom color…	Додати власний колір…
+	Author	Автор
+	Chapter	Розділ
+	Choose Color…	Вибрати колір…
+	Choose color with system picker	Вибрати колір у системному вікні
+	Color picker	Вибір кольору
+	Color selected markers	Змінити колір вибраних маркерів
+	Custom Color	Власний колір
+	Custom Color…	Власний колір…
+	Delete Marker	Видалити маркер
+	Delete selected markers	Видалити вибрані маркери
+	Edit Custom Color	Змінити власний колір
+	Edit Marker	Редагувати маркер
+	Edit Marker…	Редагувати маркер…
+	Edit color	Змінити колір
+	Editing or removing a swatch leaves assigned colors unchanged.	Зміна або видалення зразка не змінює призначені кольори.
+	Enter six hex digits, for example FF80C0.	Введіть шість шістнадцяткових цифр, наприклад FF80C0.
+	Hex	HEX
+	Hex color	Колір у форматі HEX
+	Manage Colors	Керування кольорами
+	Manage Colors…	Керування кольорами…
+	Marker owner is unavailable	Об’єкт, якому належить маркер, недоступний
+	No markers	Немає маркерів
+	No matching markers	Немає відповідних маркерів
+	No saved colors	Немає збережених кольорів
+	No sequence open	Немає відкритої секвенції
+	No source clip open	Немає відкритого вихідного кліпу
+	Notes	Примітки
+	Project Colors	Кольори проєкту
+	Range marker	Маркер діапазону
+	Remove saved color	Видалити збережений колір
+	Save color	Зберегти колір
+	Search markers	Пошук маркерів
+	Search name, notes, author	Пошук за назвою, примітками й автором
+	Select all	Вибрати все
+	Select all visible markers	Вибрати всі видимі маркери
+	Sequence: {name}	Секвенція: {name}
+	Source: {name}	Джерело: {name}
+	Source: {name} (shared source markers)	Джерело: {name} (спільні вихідні маркери)
+	System color picker unavailable: {error}	Системне вікно вибору кольору недоступне: {error}
+	Time is outside the supported range	Час за межами підтримуваного діапазону
+	{count} selected	Вибрано: {count}
+	Cancel	Скасувати
+	Color	Колір
+	Delete	Видалити
+	Done	Готово
+	Duration	Тривалість
+	Name	Назва
+	Range	Діапазон
+	Time	Час
+	Marker	Маркер
+	Remove	Вилучити
+	Remove Custom Color	Видалити власний колір
+	Edit Markers	Редагувати маркери
+	Delete Markers	Видалити маркери
+	Marker changed or was removed. Reopen it to continue.	Маркер змінено або видалено. Відкрийте його знову, щоб продовжити.
+
+# Marker editing controls
+	Comment Marker	Маркер коментаря
+	Chapter Marker	Маркер розділу
+	Segmentation Marker	Маркер сегментації
+	Web Link	Вебпосилання
+	Flash Cue Point	Точка сигналу Flash
+
+# Web Link marker editing.
+	URL	URL
+	Open Link	Відкрити посилання
+	Opens this address in your web browser	Відкриває цю адресу у веббраузері
+	Enter a valid HTTP or HTTPS URL without credentials	Введіть дійсну URL-адресу HTTP або HTTPS без облікових даних
+	Previous	Попередній
+	Next	Наступний
+	Options	Параметри
+	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)

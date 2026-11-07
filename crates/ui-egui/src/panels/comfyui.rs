@@ -77,7 +77,7 @@ struct Draft {
 }
 
 fn draft_id() -> egui::Id {
-    egui::Id::new("comfyui-window")
+    egui::Id::unique("comfyui-window")
 }
 
 /// Menu route: `window.comfyui` opens the window.
@@ -296,7 +296,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let tokens = app.tokens;
     let (accent, danger) = (tokens.accent, tokens.danger);
     let running = job_status(app);
-    egui::Window::new("ComfyUI").id(egui::Id::new("comfyui-window-ui")).open(&mut open).collapsible(true).resizable(true).default_width(440.0).show(
+    egui::Window::new("ComfyUI").id(egui::Id::unique("comfyui-window-ui")).open(&mut open).collapsible(true).resizable(true).default_width(440.0).show(
         ctx,
         |ui| {
             ui.horizontal(|ui| {
