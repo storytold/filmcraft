@@ -59,7 +59,10 @@ track names (`MZ.TrackName`; unnamed tracks keep generated names) and locks (`Is
 sequence markers and master-clip markers on their media (type, colour, duration, name and comment
 from each `DVAMarker` record; FilmCraft markers have no URL field, so a web link's URL is reported
 and left in the original snapshot; unreadable records are skipped with a warning),
-disabled clips (`ClipTrackItem/IsMuted`), exact tick ranges, constant positive speed, nested
+disabled clips (`ClipTrackItem/IsMuted`), generated media (black video, colour matte, bars and tone,
+transparent video, counting leader) by the four-character code Premiere stores as its file path,
+as FilmCraft generators that never pass the document-path policy or probe (a colour matte's colour
+is not read: it imports black, with a warning; unknown codes stay offline placeholders and are reported), exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, editable Motion scale/position/rotation,
 intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
 records without absolute timing retain clip-edge fades. Unknown effects remain
