@@ -89,6 +89,26 @@ fn whites_and_contrast_scale_with_hdr_white() {
     assert!((got[0] - 1000.0).abs() < 4.0, "{got:?}");
 }
 
+/// Negative Contrast in PQ and HLG continues smoothly across HDR White with slope 1 in signal
+/// space so speculars keep their distance from the new white instead of stepping at HDR White.
+#[test]
+fn negative_contrast_is_continuous_across_hdr_white_in_pq_and_hlg() {
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let gs = GradeSpace::new(working, 1000.0);
+        for (contrast, top) in [(-50.0, 0.75f32), (-100.0, 0.5f32)] {
+            let e = lumetri(&[("contrast", F(contrast))]);
+            let src_signals = [0.99f32, 1.0, 1.01, 1.2];
+            let src_nits: Vec<f32> = src_signals.iter().map(|&q| gs.nits_of_signal(q)).collect();
+            let got = grade(working, &src_nits, &e);
+            let k = 1.0 + contrast as f32 / 100.0;
+            let want: Vec<f32> = src_signals.iter().map(|&q| gs.nits_of_signal(if q > 1.0 { top + (q - 1.0) } else { 0.5 + (q - 0.5) * k })).collect();
+            close(&got, &want, 3e-3);
+            let below_ok = if k > 0.0 { got[0] < got[1] } else { got[0] <= got[1] };
+            assert!(below_ok && got[1] < got[2] && got[2] < got[3], "{working:?} contrast {contrast}: non-monotonic {got:?}");
+        }
+    }
+}
+
 #[test]
 fn hdr_specular_sets_highlights_above_hdr_white() {
     let e = lumetri(&[("hdr_specular", F(-100.0))]);

@@ -646,6 +646,8 @@ pub(crate) fn lift_scale(l: f32, nl: f32) -> (f32, f32) {
     (k, nl - l.max(0.0) * k)
 }
 
+/// Apply the Lumetri Color grade (Basic Correction, Creative split-tone/saturation, Vignette,
+/// Curves/Color Wheels via [`lumetri_advanced`], HSL Secondary, and Creative Sharpen).
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -698,17 +700,15 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let (k, add) = lift_scale(l, nl);
         v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
-        // keep their distance from white)
+        // continue from the curve's end at 1 with slope 1 so they keep their distance from white)
         if contrast.abs() > 1e-4 {
             let k = 1.0 + contrast;
-            v = v.map(|q| {
-                if hdr && q > 1.0 {
-                    return q;
-                }
-                let q = q.clamp(0.0, 1.0);
+            let curve = |q: f32| {
                 let s = q * q * (3.0 - 2.0 * q);
                 if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
-            });
+            };
+            let top = curve(1.0);
+            v = v.map(|q| if hdr && q > 1.0 { top + (q - 1.0) } else { curve(q.clamp(0.0, 1.0)) });
         }
         // HDR Specular: brightness of the highlights above HDR White
         if specular.abs() > 1e-4 {
