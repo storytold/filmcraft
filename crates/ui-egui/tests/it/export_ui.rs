@@ -88,6 +88,14 @@ impl Driver {
         v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
     }
 
+    /// Bounding rectangle `[x, y, w, h]` of the registered UI element `id`.
+    fn rect(&mut self, id: &str) -> [f32; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
+        let r = e["rect"].as_array().unwrap();
+        [0, 1, 2, 3].map(|k| r[k].as_f64().unwrap() as f32)
+    }
+
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()
     }
@@ -631,4 +639,26 @@ fn the_export_range_follows_the_sequence_marks() {
     d.exec("markers.markOut", json!({"seconds": 3.0}));
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
+}
+
+/// #3927: Russian Match Source adaptive-bitrate preset names are wider than 300 pt; Preset Manager
+/// widens the preset column to fit them so their labels do not bleed over the adjacent format text.
+#[test]
+fn preset_manager_russian_rows_fit_without_overlapping_format() {
+    let mut d = Driver::new("manager_ru");
+    d.ok("ui.menu.invoke", json!({"id": "app.language.russian"}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    d.click("export.preset.more");
+    d.frames(2);
+
+    let preset = "Match Source – Adaptive High Bitrate";
+    let ru_label = filmcraft_ui_egui::i18n::Language::Ru.tr(preset);
+    let font = filmcraft_ui_egui::theme::Tokens::ui(12.5);
+    let text_w = d.harness.ctx.fonts_mut(|f| f.layout_no_wrap(ru_label.to_string(), font, egui::Color32::WHITE).size().x);
+    let item_rect = d.rect(&format!("presetManager.item.{preset}"));
+    let fmt_rect = d.rect(&format!("presetManager.format.{preset}"));
+    assert!(item_rect[2] >= text_w + 10.0, "Russian preset row ({:.1} pt) fits `{ru_label}` ({:.1} pt)", item_rect[2], text_w);
+    assert!(item_rect[0] + item_rect[2] <= fmt_rect[0], "preset row ({item_rect:?}) does not overlap adjacent format label ({fmt_rect:?})");
+    d.ok("ui.menu.invoke", json!({"id": "app.language.english"}));
 }
