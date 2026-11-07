@@ -230,7 +230,7 @@ pub fn adjust_runs(old: &str, new: &str, runs: &[StyleRun]) -> Vec<StyleRun> {
 }
 
 /// What a pinned layer follows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PinTarget {
     /// The video frame (the graphic's canvas).
@@ -238,6 +238,8 @@ pub enum PinTarget {
     Frame,
     /// Another layer of the same clip, by [`LayerExtra::uid`].
     Layer(u64),
+    /// The union bounding box of several layers of the same clip, by [`LayerExtra::uid`].
+    Layers(Vec<u64>),
 }
 
 /// Responsive Design – Position: which edges of this layer follow the same edges of the target,
@@ -253,6 +255,10 @@ pub struct Pin {
     pub bottom: bool,
     /// Distances `[left, top, right, bottom]`.
     pub offsets: [f64; 4],
+    /// When true, the layer keeps its own top-left corner `(x0, y0)` (preserving slide animations)
+    /// and only expands its width and height when the target's padded span exceeds its own size.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub size_only: bool,
 }
 
 impl Pin {
@@ -268,6 +274,7 @@ impl Pin {
             right: edges[2],
             bottom: edges[3],
             offsets: [own[0] - target[0], own[1] - target[1], own[2] - target[2], own[3] - target[3]],
+            size_only: false,
         }
     }
 }
@@ -300,9 +307,22 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
             return own; // cycle: this pin is ignored
         }
         visiting.push(i);
-        let target = match pin.to {
+        let target = match &pin.to {
             PinTarget::Frame => Some(frame),
-            PinTarget::Layer(uid) => nodes.iter().position(|m| m.uid == uid && uid != 0).filter(|&j| j != i).map(|j| solve(j, nodes, frame, out, visiting)),
+            PinTarget::Layer(uid) => nodes.iter().position(|m| m.uid == *uid && *uid != 0).filter(|&j| j != i).map(|j| solve(j, nodes, frame, out, visiting)),
+            PinTarget::Layers(uids) => {
+                let mut u: Option<[f64; 4]> = None;
+                for &uid in uids {
+                    if let Some(j) = nodes.iter().position(|m| m.uid == uid && uid != 0).filter(|&j| j != i) {
+                        let b = solve(j, nodes, frame, out, visiting);
+                        u = Some(match u {
+                            Some(a) => [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+                            None => b,
+                        });
+                    }
+                }
+                u
+            }
         };
         visiting.pop();
         let Some(t) = target else {
@@ -311,6 +331,15 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
         };
         let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
             let size = own[hi] - own[lo];
+            if pin.size_only {
+                return match (lo_on, hi_on) {
+                    (true, true) if n.resizable => {
+                        let needed = (t[hi] + pin.offsets[hi]) - (t[lo] + pin.offsets[lo]);
+                        (own[lo], own[lo] + size.max(needed))
+                    }
+                    _ => (own[lo], own[hi]),
+                };
+            }
             match (lo_on, hi_on) {
                 (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
                 (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
@@ -608,6 +637,28 @@ mod tests {
         let f = Pin::new(PinTarget::Frame, [false, false, true, true], [1700.0, 900.0, 1820.0, 1000.0], [0.0, 0.0, 1920.0, 1080.0]);
         let n = [PinNode { uid: 1, pin: Some(f), bounds: [1700.0, 900.0, 1820.0, 1000.0], resizable: false }];
         assert_eq!(resolve_pins(&n, [0.0, 0.0, 1280.0, 720.0])[0], [1060.0, 540.0, 1180.0, 640.0]);
+        // multi-layer size_only pin keeps top-left corner fixed (preserving slide animations) and expands only beyond minimum size
+        let plate_pin = Pin {
+            to: PinTarget::Layers(vec![3, 4]),
+            left: true,
+            top: true,
+            right: true,
+            bottom: true,
+            offsets: [-32.0, -14.0, 32.0, 24.0],
+            size_only: true,
+        };
+        let short_nodes = vec![
+            PinNode { uid: 1, pin: Some(plate_pin.clone()), bounds: [-540.0, 840.0, 380.0, 1000.0], resizable: true },
+            PinNode { uid: 3, pin: None, bounds: [132.0, 854.0, 600.0, 890.0], resizable: false },
+            PinNode { uid: 4, pin: None, bounds: [132.0, 913.0, 800.0, 955.0], resizable: false },
+        ];
+        assert_eq!(resolve_pins(&short_nodes, [0.0, 0.0, 1920.0, 1080.0])[0], [-540.0, 840.0, 380.0, 1000.0]);
+        let tall_wide_nodes = vec![
+            PinNode { uid: 1, pin: Some(plate_pin), bounds: [100.0, 840.0, 1020.0, 1000.0], resizable: true },
+            PinNode { uid: 3, pin: None, bounds: [132.0, 854.0, 1132.0, 890.0], resizable: false },
+            PinNode { uid: 4, pin: None, bounds: [132.0, 913.0, 800.0, 1054.0], resizable: false },
+        ];
+        assert_eq!(resolve_pins(&tall_wide_nodes, [0.0, 0.0, 1920.0, 1080.0])[0], [100.0, 840.0, 1164.0, 1078.0]);
     }
 
     #[test]

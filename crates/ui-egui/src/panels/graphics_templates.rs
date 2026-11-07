@@ -537,20 +537,29 @@ pub fn responsive_position(
     let idx = layer_indices(&it.effects);
     let Some(&ei) = idx.get(layer) else { return };
     let pin = it.effects[ei].layer.as_ref().and_then(|x| x.pin.clone());
-    let target_name = match pin.as_ref().map(|p| p.to) {
+    let target_name = match pin.as_ref().map(|p| &p.to) {
         None => tl!("None").to_string(),
         Some(filmcraft_project::PinTarget::Frame) => tl!("Video Frame").to_string(),
         Some(filmcraft_project::PinTarget::Layer(uid)) => (0..idx.len())
-            .find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == uid)
+            .find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == *uid)
             .map(|i| layer_display_name(&it.effects[idx[i]], i))
             .unwrap_or_default(),
+        Some(filmcraft_project::PinTarget::Layers(uids)) => uids
+            .iter()
+            .filter_map(|&uid| {
+                (0..idx.len())
+                    .find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == uid)
+                    .map(|i| layer_display_name(&it.effects[idx[i]], i))
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
     };
     let mut vui = row_label(ui, tl!("Pin To"), &t);
     let r = craft_ui::ComboBox::from_id_salt(("gfx-pin", clip.0, layer)).selected_text(&target_name).width(150.0).show_ui(&mut vui, |ui| {
         if ui.selectable_label(pin.is_none(), tl!("None")).clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "none"})));
         }
-        let on_frame = matches!(pin.as_ref().map(|p| p.to), Some(filmcraft_project::PinTarget::Frame));
+        let on_frame = matches!(pin.as_ref().map(|p| &p.to), Some(filmcraft_project::PinTarget::Frame));
         if ui.selectable_label(on_frame, tl!("Video Frame")).clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "frame"})));
         }
@@ -567,10 +576,17 @@ pub fn responsive_position(
     let Some(p) = pin else { return };
     let mut vui = row_label(ui, tl!("Pinned Edges"), &t);
     let mut edges = [p.left, p.top, p.right, p.bottom];
-    let to = match p.to {
+    let to = match &p.to {
         filmcraft_project::PinTarget::Frame => json!("frame"),
         filmcraft_project::PinTarget::Layer(uid) => {
-            json!((0..idx.len()).find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == uid).unwrap_or(0))
+            json!((0..idx.len()).find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == *uid).unwrap_or(0))
+        }
+        filmcraft_project::PinTarget::Layers(uids) => {
+            json!(
+                uids.iter()
+                    .filter_map(|&uid| (0..idx.len()).find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == uid))
+                    .collect::<Vec<_>>()
+            )
         }
     };
     let mut changed = false;

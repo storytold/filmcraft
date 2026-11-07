@@ -438,8 +438,15 @@ fn shape(uid: u64, name: &str, kind: u32, pos: (f64, f64), size: (f64, f64), col
 }
 
 fn pin(e: &mut EffectInstance, to: u64, edges: [bool; 4], offsets: [f64; 4]) {
-    let p =
-        Pin { to: if to == 0 { PinTarget::Frame } else { PinTarget::Layer(to) }, left: edges[0], top: edges[1], right: edges[2], bottom: edges[3], offsets };
+    let p = Pin {
+        to: if to == 0 { PinTarget::Frame } else { PinTarget::Layer(to) },
+        left: edges[0],
+        top: edges[1],
+        right: edges[2],
+        bottom: edges[3],
+        offsets,
+        size_only: false,
+    };
     e.layer.get_or_insert_with(Default::default).pin = Some(p);
 }
 

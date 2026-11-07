@@ -190,6 +190,8 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 tx("name", "Layer Name", "", false, ""),
                 chc("shape", "Shape", SHAPE_OPTS, 0, S),
                 p("size", "Size", ParamKind::Point, ParamValue::Vec2(Vec2::new(400.0, 200.0)), true, S),
+                fl("size_w", "Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", S),
+                fl("size_h", "Height", 0.0, (0.0, 100_000.0), (0.0, 2160.0), "", S),
                 fl("sides", "Polygon Sides", 6.0, (3.0, 64.0), (3.0, 16.0), "", S),
                 fl("corner_radius", "Corner Radius", 0.0, (0.0, 10_000.0), (0.0, 200.0), "", S),
                 p("points", "Path Points", ParamKind::Curve { hue: false }, ParamValue::Curve(vec![]), false, S),
@@ -384,6 +386,10 @@ fn vv(e: &EffectInstance, id: &str, t: Tick) -> Vec2 {
 /// Evaluate a layer at clip (media) time `t`. `frame` is the graphic's canvas size; a NaN position
 /// means the canvas centre.
 pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<LayerSpec> {
+    let pos = vv(e, "position", t);
+    let mut position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
+    let s = ff(e, "scale", t) as f64 / 100.0;
+    let sw = if bb(e, "uniform_scale", t) { s } else { ff(e, "scale_width", t) as f64 / 100.0 };
     let content = match e.effect.as_str() {
         TEXT_LAYER => LayerContent::Text({
             let text = ss(e, "text", t);
@@ -412,9 +418,21 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         }),
         SHAPE_LAYER => {
             let sz = vv(e, "size", t);
+            let base_w = sz.x.max(0.0) as f32;
+            let base_h = sz.y.max(0.0) as f32;
+            let sw_override = ff(e, "size_w", t);
+            let sh_override = ff(e, "size_h", t);
+            let w = if sw_override > 0.0 { sw_override } else { base_w };
+            let h = if sh_override > 0.0 { sh_override } else { base_h };
+            if sw_override > 0.0 {
+                position.x += (w - base_w) as f64 * 0.5 * sw;
+            }
+            if sh_override > 0.0 {
+                position.y += (h - base_h) as f64 * 0.5 * s;
+            }
             LayerContent::Shape(ShapeProps {
                 shape: ch(e, "shape", t),
-                size: (sz.x.max(0.0) as f32, sz.y.max(0.0) as f32),
+                size: (w, h),
                 sides: ff(e, "sides", t).round().clamp(3.0, 64.0) as u32,
                 corner_radius: ff(e, "corner_radius", t).max(0.0),
                 points: val(e, "points", t).as_curve().map(<[_]>::to_vec).unwrap_or_default(),
@@ -446,10 +464,6 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         let d = ff(e, "shadow_distance", t);
         Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: ff(e, "shadow_size", t).max(0.0), blur: ff(e, "shadow_blur", t).max(0.0) }
     });
-    let pos = vv(e, "position", t);
-    let position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
-    let s = ff(e, "scale", t) as f64 / 100.0;
-    let sw = if bb(e, "uniform_scale", t) { s } else { ff(e, "scale_width", t) as f64 / 100.0 };
     Some(LayerSpec {
         name: ss(e, "name", t),
         enabled: e.enabled,
@@ -538,7 +552,7 @@ pub fn new_vertical_text_layer(text: &str, position: Vec2, size: f64) -> EffectI
 /// Reset a layer's parameters to their defaults, keeping its content (name, text, shape kind,
 /// geometry and path) — Graphics ▸ Reset All Parameters.
 pub fn reset_layer_params(e: &mut EffectInstance) {
-    const KEEP: &[&str] = &["name", "text", "shape", "size", "sides", "points", "vertical", "box_width", "box_height"];
+    const KEEP: &[&str] = &["name", "text", "shape", "size", "size_w", "size_h", "sides", "points", "vertical", "box_width", "box_height"];
     let Some(def) = crate::effect::find_effect(&e.effect) else { return };
     let mut fresh = def.instance();
     for k in KEEP {

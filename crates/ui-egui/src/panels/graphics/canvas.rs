@@ -1,5 +1,5 @@
 use super::{
-    Affine, ClipId, FilmcraftApp, ItemKind, LayerView, Pos2, Rect, Vec2, eval_layer, layer_indices, layer_local_bounds, layer_matrix, pos2, selected_graphic,
+    Affine, ClipId, FilmcraftApp, ItemKind, LayerView, Pos2, Rect, Vec2, layer_indices, layer_local_bounds, layer_matrix, pos2, selected_graphic,
 };
 
 pub(super) fn sp(a: &Affine, x: f32, y: f32) -> Pos2 {
@@ -38,8 +38,11 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
         let mt = it.source_time_at(t);
         let base = screen.then_apply(&filmcraft_render::motion_matrix(seq, it, size, None, mt));
         let idx = layer_indices(&it.effects);
-        for (li, &ei) in idx.iter().enumerate().rev() {
-            if let Some(spec) = eval_layer(&it.effects[ei], mt, size).filter(|s| s.enabled) {
+        let evaluated = filmcraft_render::graphic_clip::item_layer_specs(it, mt, size);
+        for (ei, spec) in evaluated.into_iter().rev() {
+            if spec.enabled
+                && let Some(li) = idx.iter().position(|&x| x == ei)
+            {
                 let local = layer_local_bounds(&spec);
                 out.push(LayerView { clip: it.id, layer: li, to_screen: base.then_apply(&layer_matrix(&spec)), canvas_to_screen: base, spec, local });
             }
