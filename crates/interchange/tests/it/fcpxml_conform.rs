@@ -96,3 +96,27 @@ proptest::proptest! {
         proptest::prop_assert_eq!(got_t, exp, "{}", text);
     }
 }
+
+#[test]
+fn a_conform_on_the_inner_video_of_a_clip_is_honoured() {
+    let d = doc("").replace(
+        r#"<asset-clip ref="a1" name="UHD" offset="0s" duration="2s"><adjust-transform scale="1.5 1.5"/></asset-clip>"#,
+        r#"<clip name="UHD" offset="0s" duration="2s"><video ref="a1" offset="0s" duration="2s"><adjust-conform type="none"/></video></clip>"#,
+    );
+    assert!(d.contains("<clip "), "fixture replace did not apply");
+    let (imp, _) = import(d.as_bytes(), Format::Fcpxml, None).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert!(!s.tracks(TrackKind::Video)[0].items[0].scale_to_frame);
+}
+
+#[test]
+fn a_conform_on_the_clip_overrides_the_inner_video() {
+    let d = doc("").replace(
+        r#"<asset-clip ref="a1" name="UHD" offset="0s" duration="2s"><adjust-transform scale="1.5 1.5"/></asset-clip>"#,
+        r#"<clip name="UHD" offset="0s" duration="2s"><adjust-conform type="fit"/><video ref="a1" offset="0s" duration="2s"><adjust-conform type="none"/></video></clip>"#,
+    );
+    assert!(d.contains("<clip "), "fixture replace did not apply");
+    let (imp, _) = import(d.as_bytes(), Format::Fcpxml, None).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert!(s.tracks(TrackKind::Video)[0].items[0].scale_to_frame);
+}

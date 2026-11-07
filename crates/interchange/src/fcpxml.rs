@@ -561,12 +561,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let _ = ctx.seq_rate;
         // no `adjust-conform` means `fit`: the picture is scaled into the frame before any transform
         let mut conform = true;
+        // a `<clip>` wraps the video it plays, which may carry its own conform; the clip's own overrides it
+        if kind == TrackKind::Video
+            && el.has_tag_name("clip")
+            && let Some(inner) = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "asset-clip") && c.attribute("ref").is_some())
+            && let Some(a) = elements(inner).find(|a| a.has_tag_name("adjust-conform"))
+        {
+            conform = a.attribute("type").unwrap_or("fit") != "none";
+        }
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
                 ("adjust-conform", TrackKind::Video) => match a.attribute("type").unwrap_or("fit") {
                     "none" => conform = false,
-                    "fill" => self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead"),
-                    _ => {}
+                    "fill" => {
+                        conform = true;
+                        self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+                    }
+                    _ => conform = true,
                 },
                 ("adjust-transform", TrackKind::Video) => {
                     let to_px = move |v: &str| {
