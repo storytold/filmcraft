@@ -34,6 +34,7 @@ use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
 pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub(crate) use text::film_time_format;
 
 /// What an effect may know about the clip beyond its own pixels.
 pub trait FxEnv: Sync {
@@ -158,7 +159,10 @@ impl FxEnv for ItemEnv<'_> {
     }
     fn media_time(&self, display: TimeDisplay) -> Option<String> {
         let s = &self.seq.settings;
-        Some(format_time(self.item.source_time_at(self.t), s.frame_rate, s.drop_frame, display, s.sample_rate as i64))
+        // frames of the clip's own media: counted at the source's frame rate (the sequence's when
+        // the source has no video rate)
+        let rate = self.sources.source(self.item.item).map(|src| src.info().frame_rate()).filter(|r| r.num > 0 && r.den > 0).unwrap_or(s.frame_rate);
+        Some(format_time(self.item.source_time_at(self.t), rate, s.drop_frame, display, s.sample_rate as i64))
     }
     fn file_name(&self) -> String {
         self.project.item(self.item.item).map(|p| p.name.clone()).unwrap_or_default()

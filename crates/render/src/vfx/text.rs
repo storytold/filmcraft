@@ -69,6 +69,12 @@ pub fn simple_text(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// The burn-in's Time Format choices, in the order of the effect's `time_format` list.
 const TIME_FORMATS: [TimeDisplay; 4] = [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames];
 
+/// The film time format (not Timecode) of a burn-in's timecode sources, which the host formats.
+pub(crate) fn film_time_format(e: &EffectInstance) -> Option<TimeDisplay> {
+    let display = TIME_FORMATS[(chv(e, "time_format") as usize).min(TIME_FORMATS.len() - 1)];
+    (e.effect == "metadata_burnin" && display != TimeDisplay::Timecode && matches!(chv(e, "source"), 0 | 1)).then_some(display)
+}
+
 /// The text a Metadata & Timecode Burn-in shows.
 pub(crate) fn burnin_text(e: &EffectInstance, cx: &FxCtx) -> String {
     // Time Format applies to the two timecode sources; Timecode keeps the precomputed string
