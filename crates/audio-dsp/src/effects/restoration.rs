@@ -201,6 +201,7 @@ impl AudioEffect for DeNoise {
         self.stft.iter_mut().for_each(StftChannel::reset);
         self.noise.iter_mut().for_each(NoiseState::reset);
     }
+    /// Run the STFT minimum-statistics spectral gate across `channels` in place.
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
         let nch = channels.len().min(self.stft.len());
@@ -212,34 +213,62 @@ impl AudioEffect for DeNoise {
             let spec = &mut self.spec;
             let sg = &mut self.smoothed_gains;
             let mut frame = |input: &[f32], out: &mut [f32]| {
+                let b = (n / 16).max(1);
+                let mut w_active = 0.0f32;
+                let mut active_blocks = 0usize;
+                for (blk, w_blk) in input.chunks(b).zip(spec.window.chunks(b)) {
+                    let e: f32 = blk.iter().map(|&v| v * v).sum();
+                    if e > 1e-12 * blk.len() as f32 {
+                        w_active += w_blk.iter().map(|&w| w * w).sum::<f32>();
+                        active_blocks += 1;
+                    }
+                }
+                let full = active_blocks * b >= n;
                 spec.analyse(input);
                 let bins = n / 2 + 1;
-                for k in 0..bins {
-                    let p = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
-                    st.psd[k] = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
-                    st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
-                }
-                st.started = true;
-                st.frames_in_sub += 1;
-                let rotate = st.frames_in_sub == sub_frames;
-                for k in 0..bins {
-                    let mut m = st.cur_min[k];
-                    for u in 0..MS_SUBWINDOWS {
-                        m = m.min(st.ring[u * bins + k]);
+                if w_active > 0.0 {
+                    let norm = (n as f32 * 0.5) / w_active;
+                    let first_full = full && !st.cur_min[0].is_finite() && !st.ring[0].is_finite();
+                    for k in 0..bins {
+                        let p = (spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k]) * norm;
+                        st.psd[k] = if st.started && !first_full { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
+                        if full {
+                            st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
+                        }
                     }
-                    let noise = m * MS_BIAS;
-                    let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
-                    let g = &mut st.gains[k];
-                    let c = if target > *g { 0.7 } else { release };
-                    *g += (target - *g) * c;
+                    let rotate = if full {
+                        st.frames_in_sub += 1;
+                        st.frames_in_sub == sub_frames
+                    } else {
+                        false
+                    };
+                    for k in 0..bins {
+                        let mut m = st.cur_min[k];
+                        for u in 0..MS_SUBWINDOWS {
+                            m = m.min(st.ring[u * bins + k]);
+                        }
+                        if !m.is_finite() {
+                            m = st.psd[k];
+                        }
+                        let noise = m * MS_BIAS;
+                        let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
+                        let g = &mut st.gains[k];
+                        if st.started {
+                            let c = if target > *g { 0.7 } else { release };
+                            *g += (target - *g) * c;
+                        } else {
+                            *g = target;
+                        }
+                        if rotate {
+                            st.ring[st.ring_pos * bins + k] = st.cur_min[k];
+                            st.cur_min[k] = f32::INFINITY;
+                        }
+                    }
+                    st.started = true;
                     if rotate {
-                        st.ring[st.ring_pos * bins + k] = st.cur_min[k];
-                        st.cur_min[k] = f32::INFINITY;
+                        st.ring_pos = (st.ring_pos + 1) % MS_SUBWINDOWS;
+                        st.frames_in_sub = 0;
                     }
-                }
-                if rotate {
-                    st.ring_pos = (st.ring_pos + 1) % MS_SUBWINDOWS;
-                    st.frames_in_sub = 0;
                 }
                 // Frequency smoothing (3-tap) to reduce musical noise.
                 for k in 0..bins {
@@ -325,10 +354,38 @@ mod tests {
             let s = k * half + lat + half / 4;
             s..s + half / 2
         };
-        let (off, onn) = (seg(14), seg(15));
+        let (first_off, off, onn) = (seg(0), seg(14), seg(15));
+        let first_red = db(rms(&y[first_off.clone()]) / rms(&x[first_off.start - lat..first_off.end - lat]));
+        assert!(first_red < -10.0, "initial noise reduction only {first_red} dB");
         let red = db(rms(&y[off.clone()]) / rms(&x[off.start - lat..off.end - lat]));
         assert!(red < -10.0, "noise reduction only {red} dB");
         let kept = db(tone_amplitude(&y[onn.clone()], 1000.0, SR as f64) / 0.3);
         assert!(kept.abs() < 1.0, "tone changed by {kept} dB");
+    }
+
+    #[test]
+    fn denoise_no_initial_ramp_up_after_silent_preroll() {
+        let mut d = DeNoise::new(SR, 1);
+        d.set_param("reduction", 20.0);
+        let lat = d.latency();
+        let preroll = SR as usize;
+        let body = SR as usize * 2;
+        let mut rng = Rng::new(21);
+        let noise: Vec<f32> = (0..body).map(|_| rng.uniform() * 0.02).collect();
+        let tone = sine(1000.0, 0.3, SR as f64, body, 0.0);
+        let half = SR as usize / 2;
+        let mut x = vec![0.0f32; preroll + body];
+        for i in 0..body {
+            let on = (i / half) % 2 == 1;
+            x[preroll + i] = noise[i] + if on { tone[i] } else { 0.0 };
+        }
+        let mut y = x.clone();
+        d.process(&mut [&mut y]);
+        let off = (preroll + lat + half / 4)..(preroll + lat + 3 * half / 4);
+        let onn = (preroll + half + lat + half / 4)..(preroll + half + lat + 3 * half / 4);
+        let red = db(rms(&y[off.clone()]) / rms(&x[off.start - lat..off.end - lat]));
+        assert!(red < -10.0, "noise reduction in first segment after silent pre-roll only {red} dB");
+        let kept = db(tone_amplitude(&y[onn], 1000.0, SR as f64) / 0.3);
+        assert!(kept.abs() < 1.0, "first tone burst changed by {kept} dB");
     }
 }
