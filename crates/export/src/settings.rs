@@ -211,7 +211,7 @@ impl ExrCompression {
 }
 
 /// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC.
-/// MP4 and QuickTime can also carry FLAC; MXF is always PCM.
+/// MP4 and QuickTime can also carry FLAC and ALAC; MXF is always PCM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioCodec {
@@ -221,6 +221,8 @@ pub enum AudioCodec {
     Pcm,
     /// Lossless compression (the FLAC format).
     Flac,
+    /// Lossless compression (Apple Lossless, ALAC).
+    Alac,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -565,11 +567,13 @@ impl ExportSettings {
     }
 
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
-    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC none.
+    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; ALAC 16 and
+    /// 24 bit (32-bit ALAC decodes inconsistently across players); AAC none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
             AudioCodec::Aac => false,
             AudioCodec::Flac => !f.is_float(),
+            AudioCodec::Alac => matches!(f, SampleFormat::Int16 | SampleFormat::Int24),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
     }
@@ -578,10 +582,12 @@ impl ExportSettings {
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
+            (Format::Alac, _) => AudioCodec::Alac,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
-            // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`)
+            // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`) and ALAC (`alac` + its cookie)
             (_, AudioCodec::Flac) => AudioCodec::Flac,
+            (_, AudioCodec::Alac) => AudioCodec::Alac,
             (f, _) if f.is_mp4_with(self.multiplexer) => AudioCodec::Aac,
             (_, AudioCodec::Auto) if self.format.is_mp4_video() => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
@@ -646,14 +652,14 @@ impl ExportSettings {
                 px * if self.keeps_alpha() { 8.0 } else { 6.0 } * 8.0 * fps * k
             }
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff | Format::Flac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
+            Format::Wav | Format::Aiff | Format::Flac | Format::Alac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
         let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
                 // typical of music and dialogue; noise compresses less, silence far more
-                AudioCodec::Flac => pcm * 0.6,
+                AudioCodec::Flac | AudioCodec::Alac => pcm * 0.6,
                 _ => pcm,
             }
         } else {
@@ -755,6 +761,7 @@ impl ExportSettings {
                 AudioCodec::Flac => {
                     format!("FLAC (lossless) {}-bit, level {}, {} Hz, {ch}", self.audio.sample_format().bits(), self.audio.flac_level.min(8), r.sample_rate)
                 }
+                AudioCodec::Alac => format!("ALAC (Apple Lossless) {}-bit, {} Hz, {ch}", self.audio.sample_format().bits(), r.sample_rate),
                 _ => {
                     let f = self.audio.sample_format();
                     format!("Uncompressed {}-bit{} PCM, {} Hz, {ch}", f.bits(), if f.is_float() { " float" } else { "" }, r.sample_rate)

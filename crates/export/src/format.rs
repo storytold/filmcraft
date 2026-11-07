@@ -69,6 +69,9 @@ pub enum Format {
     /// FLAC (RFC 9639): lossless compressed audio.
     #[serde(rename = "flac", alias = "Flac")]
     Flac,
+    /// Apple Lossless: the mix alone, ALAC in an MPEG-4 audio file (`.m4a`).
+    #[serde(rename = "alac", alias = "Alac")]
+    Alac,
     /// MXF OP1a (SMPTE ST 378): frame-wrapped DNxHR, ProRes or H.264 ([`MxfVideoCodec`]) + PCM.
     #[serde(rename = "mxf-op1a", alias = "MxfOp1a")]
     MxfOp1a,
@@ -103,6 +106,7 @@ impl Format {
             "aif" | "aiff" | "aifc" => Format::Aiff,
             "aac" | "aacaudio" | "m4a" | "adts" => Format::Aac,
             "flac" | "fla" => Format::Flac,
+            "alac" | "applelossless" | "applelosslessalac" => Format::Alac,
             _ => return None,
         })
     }
@@ -128,6 +132,7 @@ impl Format {
             Format::Aiff => "aiff",
             Format::Aac => "aac",
             Format::Flac => "flac",
+            Format::Alac => "alac",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
         }
@@ -146,7 +151,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aif",
-            Format::Aac => "m4a",
+            Format::Aac | Format::Alac => "m4a",
             Format::Flac => "flac",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
@@ -172,6 +177,7 @@ impl Format {
             Format::Aiff => "AIFF",
             Format::Aac => "AAC Audio",
             Format::Flac => "FLAC",
+            Format::Alac => "Apple Lossless (ALAC)",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
         }
@@ -198,9 +204,9 @@ impl Format {
     pub fn has_builtin_encoder(self) -> bool {
         !matches!(self, Format::Hevc | Format::Av1)
     }
-    /// Sound without picture: Waveform Audio, AIFF, AAC Audio and FLAC.
+    /// Sound without picture: Waveform Audio, AIFF, AAC Audio, FLAC and Apple Lossless.
     pub fn is_audio_only(self) -> bool {
-        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Flac)
+        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Flac | Format::Alac)
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
@@ -214,7 +220,7 @@ impl Format {
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
-    pub const ALL: [Format; 21] = [
+    pub const ALL: [Format; 22] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -234,6 +240,7 @@ impl Format {
         Format::Aiff,
         Format::Aac,
         Format::Flac,
+        Format::Alac,
         Format::MxfOp1a,
         Format::MxfOpAtom,
     ];
@@ -487,8 +494,12 @@ impl ExportSettings {
         }
         let sample_format = self.audio.sample_format();
         if (self.has_audio() || self.format.is_audio_only()) && self.audio_codec() != AudioCodec::Aac && !self.supports_sample_format(sample_format) {
-            let codec = if self.audio_codec() == AudioCodec::Flac { "FLAC" } else { self.format.label() };
-            return Err(ExportError::Unsupported(format!("{codec} audio has no {} samples: choose 16, 24 or 32 bit", sample_format.label())));
+            let (codec, choices) = match self.audio_codec() {
+                AudioCodec::Flac => ("FLAC", "16, 24 or 32 bit"),
+                AudioCodec::Alac => ("ALAC", "16 or 24 bit"),
+                _ => (self.format.label(), "16, 24 or 32 bit"),
+            };
+            return Err(ExportError::Unsupported(format!("{codec} audio has no {} samples: choose {choices}", sample_format.label())));
         }
         Ok(())
     }

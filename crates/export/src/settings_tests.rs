@@ -1330,7 +1330,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1710,4 +1710,144 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
             }
         }
     }
+}
+
+/// Apple Lossless (`.m4a`) at 16, 24 and 32 bits decodes to the WAV export's samples exactly,
+/// through FilmCraft's own import and through ffmpeg; the cookie records the largest frame and the
+/// bitrate, and the last frame's duration ends the file on the last sample.
+#[test]
+fn alac_m4a_is_lossless_against_wav() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("alac");
+    // 1.5 s at 48 kHz: 17 frames of 4096 and a last one of 2368
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
+    for bits in [16u16, 24] {
+        let audio = AudioSettings { channels: 2, bits, ..Default::default() };
+        let (wav, m4a) = (dir.path(&format!("a{bits}.wav")), dir.path(&format!("a{bits}.m4a")));
+        export(
+            &p,
+            seq,
+            &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio: audio.clone(), ..Default::default() },
+            &m,
+            &Progress::default(),
+        )
+        .unwrap();
+        let s = ExportSettings { format: Format::Alac, path: m4a.clone(), range, audio, ..Default::default() };
+        assert_eq!((s.audio_codec(), s.extension(), s.has_video()), (AudioCodec::Alac, "m4a", false));
+        let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert_eq!(r.frames, 72_000, "1.5 s at 48 kHz");
+        let (wb, ab) = (std::fs::read(&wav).unwrap(), std::fs::read(&m4a).unwrap());
+        // a tone compresses to under half the WAV
+        assert!(ab.len() < wb.len() / 2, "{bits}-bit: ALAC {} bytes, WAV {}", ab.len(), wb.len());
+        // the final cookie: frame length 4096, the depth, and a known largest frame and bitrate
+        let at = ab.windows(4).rposition(|w| w == b"alac").unwrap() + 8;
+        let cookie = &ab[at..at + 24];
+        assert_eq!((u32::from_be_bytes(cookie[..4].try_into().unwrap()), cookie[5], cookie[9]), (4096, bits as u8, 2));
+        assert!(u32::from_be_bytes(cookie[12..16].try_into().unwrap()) > 0 && u32::from_be_bytes(cookie[16..20].try_into().unwrap()) > 0);
+        // the same samples through FilmCraft's own readers
+        let decode = |name: &str, bytes: Vec<u8>| filmcraft_codecs::open_bytes(name, bytes.into()).unwrap().audio(0, 72_000, 48_000).unwrap();
+        let (a, b) = (decode("a.wav", wb), decode("a.m4a", ab));
+        assert_eq!(b.channels.len(), 2);
+        for (ca, cb) in a.channels.iter().zip(&b.channels) {
+            assert_eq!(ca.len(), cb.len());
+            // the same integer samples (the readers scale both formats alike)
+            assert!(ca == cb, "{bits}-bit: ALAC must decode to the WAV's samples exactly");
+            assert!(ca.iter().any(|v| v.abs() > 0.1), "the tone is there");
+        }
+        // and bit for bit through ffmpeg
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("alac export") {
+            let raw = |path: &str| {
+                let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-i", path, "-f", "s32le", "-c:a", "pcm_s32le", "-"]).output().unwrap();
+                assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+                out.stdout
+            };
+            let (a, b) = (raw(&wav), raw(&m4a));
+            assert_eq!(a.len(), 72_000 * 2 * 4);
+            assert!(a == b, "{bits}-bit: ALAC must decode to the WAV's samples exactly");
+        }
+        if let Some(j) = ffprobe_json(&["-show_streams", "-count_packets"], &m4a) {
+            let st = &j["streams"][0];
+            assert_eq!((st["codec_name"].as_str(), st["sample_rate"].as_str(), st["channels"].as_u64()), (Some("alac"), Some("48000"), Some(2)));
+            assert_eq!(st["bits_per_raw_sample"].as_str(), Some(bits.to_string().as_str()));
+            assert_eq!(st["nb_read_packets"].as_str(), Some("18"), "one ALAC frame per packet");
+            assert_eq!(st["duration_ts"].as_u64(), Some(72_000), "the short last frame is timed exactly");
+        }
+    }
+}
+
+/// ALAC is also an audio format of the movie formats: MP4 (H.264) and QuickTime (H.264, ProRes)
+/// carry it losslessly; MXF stays PCM.
+#[test]
+fn alac_audio_in_mp4_and_mov() {
+    let (p, seq, m) = matte([0.2, 0.4, 0.6, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("alac-in");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
+    let audio = AudioSettings { codec: AudioCodec::Alac, bits: 24, ..Default::default() };
+    let wav = dir.path("ref.wav");
+    export(&p, seq, &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio: audio.clone(), ..Default::default() }, &m, &Progress::default())
+        .unwrap();
+    for (format, mux, name) in
+        [(Format::H264, Multiplexer::Mp4, "a.mp4"), (Format::H264, Multiplexer::Mov, "b.mov"), (Format::ProRes, Multiplexer::Mp4, "c.mov")]
+    {
+        let path = dir.path(name);
+        let s = ExportSettings { format, multiplexer: mux, path: path.clone(), range, audio: audio.clone(), ..Default::default() };
+        assert_eq!(s.audio_codec(), AudioCodec::Alac, "{name}");
+        let sum = s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio;
+        assert!(sum.starts_with("ALAC (Apple Lossless) 24-bit, 48000 Hz"), "{name}: {sum}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let src = filmcraft_codecs::open_bytes(name, bytes.into()).unwrap();
+        let a = src.audio(0, 72_000, 48_000).unwrap();
+        assert!(a.channels.iter().all(|c| c.len() == 72_000) && a.channels[0].iter().any(|v| v.abs() > 0.1), "{name}");
+        if let Some(j) = ffprobe_json(&["-show_streams"], &path) {
+            let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "audio").unwrap().clone();
+            assert_eq!((st["codec_name"].as_str(), st["sample_rate"].as_str(), st["channels"].as_u64()), (Some("alac"), Some("48000"), Some(2)), "{name}");
+        }
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("alac in containers") {
+            let raw = |path: &str| {
+                let out = std::process::Command::new(&ffmpeg)
+                    .args(["-v", "error", "-i", path, "-map", "0:a", "-f", "s32le", "-c:a", "pcm_s32le", "-"])
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+                out.stdout
+            };
+            assert!(raw(&path) == raw(&wav), "{name}: ALAC must decode to the WAV's samples exactly");
+        }
+    }
+    let mxf = ExportSettings { format: Format::MxfOp1a, audio, ..Default::default() };
+    assert_eq!(mxf.audio_codec(), AudioCodec::Pcm);
+}
+
+#[test]
+fn alac_settings_round_trip_preset_and_refusals() {
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "alac"})).unwrap();
+    assert_eq!((s.format, s.audio_codec(), s.has_video()), (Format::Alac, AudioCodec::Alac, false));
+    assert_eq!(
+        (s.extension(), Format::from_name("Apple Lossless"), Format::from_name("ALAC"), Format::Alac.id()),
+        ("m4a", Some(Format::Alac), Some(Format::Alac), "alac")
+    );
+    assert_eq!(Format::from_name("m4a"), Some(Format::Aac), "a bare .m4a stays AAC Audio");
+    let movie: ExportSettings = serde_json::from_value(serde_json::json!({"format": "prores", "audio": {"codec": "alac"}})).unwrap();
+    assert_eq!(movie.audio_codec(), AudioCodec::Alac);
+    // 16 and 24 bit only: not 32-bit integer (players decode it inconsistently), not float
+    for (format, codec) in [(Format::Alac, AudioCodec::Auto), (Format::ProRes, AudioCodec::Alac), (Format::H264, AudioCodec::Alac)] {
+        let s = ExportSettings { format, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+        let ok: Vec<SampleFormat> = SampleFormat::ALL.iter().copied().filter(|&f| s.supports_sample_format(f)).collect();
+        assert_eq!(ok, [SampleFormat::Int16, SampleFormat::Int24], "{format:?}");
+        for refused in [SampleFormat::Int32, SampleFormat::Float32] {
+            let mut t = s.clone();
+            t.audio.set_sample_format(refused);
+            let msg = t.validate().err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(msg.contains("ALAC") && msg.ends_with("choose 16 or 24 bit"), "{format:?} {refused:?}: {msg}");
+        }
+    }
+    let preset = crate::presets::builtin_presets().into_iter().find(|x| x.name == "Apple Lossless 48 kHz 24-bit").unwrap().settings;
+    assert_eq!((preset.format, preset.audio.bits, preset.audio.sample_rate), (Format::Alac, 24, Some(48_000)));
+    let sum = preset.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    assert!(sum.audio.starts_with("ALAC (Apple Lossless) 24-bit, 48000 Hz, Stereo"), "{}", sum.audio);
+    assert_eq!(sum.video, "No video");
+    let pcm = ExportSettings { format: Format::Wav, ..Default::default() }.estimate_bytes(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    let alac = ExportSettings { format: Format::Alac, ..Default::default() }.estimate_bytes(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    assert!(alac < pcm, "{alac} < {pcm}");
 }

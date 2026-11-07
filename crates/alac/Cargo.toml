@@ -1,0 +1,17 @@
+[package]
+name = "filmcraft-alac"
+description = "Clean-room ALAC (Apple Lossless) encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-bitstream = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+filmcraft-testkit = { workspace = true }

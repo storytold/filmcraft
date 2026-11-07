@@ -224,3 +224,36 @@ fn stereo_export_of_a_51_mix_is_the_bs775_downmix() {
         assert!((at(i, 0) - l).abs() < 2e-6 && (at(i, 1) - r).abs() < 2e-6, "frame {i}");
     }
 }
+
+/// Apple Lossless 5.1 (`.m4a`, and in QuickTime): the mix's L R C LFE Ls Rs go into ALAC's C L R
+/// Ls Rs LFE elements, and every decoder puts each tone back in its place, sample for sample.
+#[test]
+fn alac_51_keeps_every_channel_in_place_and_exact() {
+    let (p, seq, m) = surround();
+    for (name, format, codec) in [("s51.m4a", Format::Alac, AudioCodec::Auto), ("s51-alac.mov", Format::ProRes, AudioCodec::Alac)] {
+        let path = out_path(name);
+        let mut s = settings(format, &path);
+        s.audio.codec = codec;
+        assert_eq!(s.audio_codec(), AudioCodec::Alac, "{name}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        // FilmCraft's own import (symphonia) gives the channels back in the mix's order
+        let src = filmcraft_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
+        let a = src.audio(0, SR as usize, SR).unwrap();
+        assert_eq!(a.channels.len(), 6, "{name}");
+        for (c, v) in a.channels.iter().enumerate() {
+            for (i, &x) in v.iter().enumerate() {
+                // the mix's 24-bit quantisation (in f32, as the export does it)
+                let want = (tone(c, i as i64).clamp(-1.0, 1.0) * 8_388_607.0).round() as i64;
+                let got = (f64::from(x) * 8_388_608.0).round() as i64;
+                assert_eq!(got, want, "{name}: channel {c} sample {i}");
+            }
+        }
+        if let Some((n, layout)) = probe(&path) {
+            assert_eq!(n, 6, "{name}");
+            assert!(is_51(&layout), "{name}: {layout}");
+        }
+        if let Some(ch) = decode(&path) {
+            assert_sample_exact(&ch, SR as usize);
+        }
+    }
+}
