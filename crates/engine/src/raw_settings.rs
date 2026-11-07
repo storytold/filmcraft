@@ -21,7 +21,7 @@ use filmcraft_media::raw::{self, DemosaicQuality, Highlights, OutputSpace, RawSe
 use filmcraft_project::{ItemId, ItemKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, item_p, str_p};
+use crate::commands::{CommandSpec, NamedKeys, always, bad, bool_p, f64_p, item_p, str_p};
 use crate::{Result, Session};
 
 const CMD: &str = "clip.sourceSettings";
@@ -41,6 +41,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: has_footage,
             run: source_settings,
             journal: true,
+            named: NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.rawInfo",
@@ -51,6 +52,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: raw_info,
             journal: false,
+            named: NamedKeys::NONE,
         },
     ]
 }
