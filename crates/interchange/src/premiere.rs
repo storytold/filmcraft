@@ -121,6 +121,9 @@ pub struct Item {
     pub source_out: Tick,
     pub speed: f64,
     pub media_path: Option<String>,
+    /// Media Premiere generates itself (black video, colour matte...), in place of a file path.
+    #[serde(default)]
+    pub synthetic: Option<SyntheticMedia>,
     /// Markers of the source media's master clip.
     #[serde(default)]
     pub media_markers: Vec<filmcraft_project::Marker>,
@@ -134,6 +137,13 @@ pub struct Item {
     pub transitions: Vec<SourceTransition>,
 }
 
+/// Generated media: the four-character code Premiere stores as its file path (`BLAK` is stored
+/// as 1112293707), and the `Media` object it belongs to. Titles are UI-language text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyntheticMedia {
+    pub code: String,
+    pub media: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceTransition {
     #[serde(default)]
@@ -231,6 +241,9 @@ fn source_target<'a, 'i>(
 /// The stored absolute path, or the project-relative `RelativePath` when the absolute path was
 /// saved on another system (a macOS project opened on Windows, or the reverse).
 fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
+    if synthetic_code(n).is_some() {
+        return None;
+    }
     let stored = child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).filter(|p| !p.is_empty())?;
     if let (Some(base), Some(relative)) = (base_dir, relative_media_path(n, base_dir))
         && foreign_absolute(stored, base)
@@ -238,6 +251,29 @@ fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
         return Some(relative);
     }
     Some(crate::resolve_path(stored, base_dir))
+}
+
+/// The four-character code generated media stores as its decimal "file path", if it has one.
+fn synthetic_code(n: Node<'_, '_>) -> Option<String> {
+    let stored = child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath"))?.trim();
+    if stored.is_empty() || !stored.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let code = stored.parse::<u32>().ok()?.to_be_bytes();
+    code.iter().all(u8::is_ascii_alphanumeric).then(|| code.iter().map(|&b| char::from(b)).collect())
+}
+
+/// FilmCraft's generator for a Premiere generated-media code. A colour matte's colour is not read.
+fn generator(code: &str) -> Option<filmcraft_media::Generator> {
+    use filmcraft_media::Generator;
+    match code {
+        "BLAK" => Some(Generator::BlackVideo),
+        "COLR" => Some(Generator::ColorMatte { color: [0.0, 0.0, 0.0, 1.0] }),
+        "TRNV" => Some(Generator::TransparentVideo),
+        "LEAD" => Some(Generator::CountingLeader),
+        "BARS" => Some(Generator::BarsAndTone),
+        _ => None,
+    }
 }
 
 fn relative_media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
@@ -663,6 +699,22 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     let disabled =
                         child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
                     let target = source_target(clip, &ids, &uids, &mut work_left)?;
+                    let generated = target.filter(|n| n.has_tag_name("Media")).and_then(|n| Some((n, synthetic_code(n)?)));
+                    let mut synthetic = None;
+                    match &generated {
+                        // A graphic's canvas; its text and shapes are read from the components.
+                        Some((_, code)) if code == "GRFV" => graphic = true,
+                        // The source of caption clips; their text is read with the caption track.
+                        Some((_, code)) if code == "SCPF" => {}
+                        Some((media, code)) => {
+                            if generator(code).is_none() {
+                                warning(report, format!("{label}: generated media {code} is not supported; kept offline placeholder"));
+                            }
+                            let media = media.attribute("ObjectUID").or_else(|| media.attribute("ObjectID")).unwrap_or("").to_string();
+                            synthetic = Some(SyntheticMedia { code: code.clone(), media });
+                        }
+                        None => {}
+                    }
                     let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
                     let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
                     if graphic {
@@ -671,7 +723,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         media_path = None;
                         nested_sequence = None;
                     }
-                    if media_path.is_none() && nested_sequence.is_none() && kind != "caption" && !graphic && text.is_none() {
+                    if media_path.is_none() && nested_sequence.is_none() && generated.is_none() && kind != "caption" && !graphic && text.is_none() {
                         let named_sequence = names.get(label.as_str()).copied().flatten();
                         let named_media = media.get(&label);
                         if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
@@ -703,6 +755,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         disabled,
                         motion_keys,
                         media_path,
+                        synthetic,
                         media_markers,
                         nested_sequence,
                         label,
@@ -857,6 +910,15 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                         warning(&mut report, "text graphic imported with default font/style; source styling retained in original snapshot");
                     }
                     b.p.add_item(&item.label, Label::Lavender, ItemKind::Graphic { width: src.width, height: src.height, rate: fps }, None)
+                } else if let Some((synthetic, g)) = item.synthetic.as_ref().and_then(|s| Some((s, generator(&s.code)?))) {
+                    // Generated media is not a file: it never reaches the document-path policy or probe.
+                    let key = format!("premiere-generator:{}:{}", synthetic.code, synthetic.media);
+                    if b.find_media(&key).is_none() && matches!(g, filmcraft_media::Generator::ColorMatte { .. }) {
+                        warning(&mut report, format!("{}: colour matte imported black (its colour is not read)", item.label));
+                    }
+                    let audio = matches!(g, filmcraft_media::Generator::BarsAndTone | filmcraft_media::Generator::CountingLeader);
+                    let spec = MediaSpec { video: Some((src.width, src.height, fps)), audio: audio.then_some((48000, 2)), ..Default::default() };
+                    b.generator_media(&key, &item.label, g, &spec, None)
                 } else {
                     let path = item.media_path.clone().unwrap_or_else(|| format!("__missing_premiere__/{}", item.object_id));
                     let spec = MediaSpec {
@@ -1345,6 +1407,7 @@ mod tests {
             source_out: Tick(TPS),
             speed: 1.0,
             media_path: None,
+            synthetic: None,
             media_markers: Vec::new(),
             nested_sequence: Some(name),
             text: None,
@@ -1561,6 +1624,52 @@ mod tests {
         assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/missing/camera.mov"));
         let long = media("/Users/editor/camera.mov", &"r".repeat(16385));
         assert!(read(long.as_bytes(), Some("/x"), &mut Report::default()).unwrap_err().to_string().contains("too long"));
+    }
+    // Hand-written: generated media stores a four-character code as its file path, so its title
+    // is UI-language text (here Spanish) and never a file to probe.
+    fn generator_fixture(code: u32, title: &str) -> String {
+        fixture().replace("<PlaybackSpeed>2</PlaybackSpeed>", "<PlaybackSpeed>1</PlaybackSpeed><Source ObjectRef=\"23\"/>").replace(
+            "<Media><Title>camera.mov</Title><ActualMediaFilePath>/missing/camera.mov</ActualMediaFilePath></Media>",
+            &format!(
+                r#"<VideoMediaSource ObjectID="23"><MediaSource><Media ObjectURef="generated"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="generated"><FilePath>{code}</FilePath><Title>{title}</Title><ActualMediaFilePath>{code}</ActualMediaFilePath></Media>"#
+            ),
+        )
+    }
+    #[test]
+    fn generated_media_imports_by_four_character_code() {
+        use filmcraft_media::Generator;
+        let code = |c: &[u8; 4]| u32::from_be_bytes(*c);
+        let cases = [
+            (b"BLAK", Generator::BlackVideo),
+            (b"COLR", Generator::ColorMatte { color: [0.0, 0.0, 0.0, 1.0] }),
+            (b"BARS", Generator::BarsAndTone),
+            (b"TRNV", Generator::TransparentVideo),
+            (b"LEAD", Generator::CountingLeader),
+        ];
+        for (fourcc, expected) in cases {
+            let xml = generator_fixture(code(fourcc), "Vídeo generado");
+            let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions { base_dir: Some("/project".into()), ..Default::default() }, None).unwrap();
+            let item = &tree.sequences[0].tracks[0].items[0];
+            assert_eq!(item.media_path, None, "a code is not a file path");
+            assert!(tree.media.is_empty() && tree.relative_media.is_empty());
+            let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
+            let ItemKind::Media(media) = &fragment.project.item(clip.item).unwrap().kind else { panic!("{report:?}") };
+            assert_eq!(media.media, filmcraft_project::MediaRef::Generator(expected.clone()));
+            assert!(!media.offline);
+            assert!(!report.mentions("unresolved"), "{report:?}");
+            assert_eq!(report.mentions("colour is not read"), matches!(expected, Generator::ColorMatte { .. }), "{report:?}");
+        }
+        // A graphic's canvas is a native graphic, not media.
+        let (fragment, _, _) = import(generator_fixture(code(b"GRFV"), "Gráfico").as_bytes(), &ImportOptions::default(), None).unwrap();
+        let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
+        assert!(matches!(fragment.project.item(clip.item).unwrap().kind, ItemKind::Graphic { .. }));
+        // An unknown code stays a visible offline placeholder and is reported, never probed as a path.
+        let (fragment, tree, report) = import(generator_fixture(code(b"ZZZZ"), "Unknown").as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items[0].media_path, None);
+        assert!(report.mentions("ZZZZ"), "{report:?}");
+        let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
+        assert!(fragment.project.item(clip.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline));
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
