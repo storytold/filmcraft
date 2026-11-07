@@ -988,6 +988,23 @@ fn track_height_of(len: f32, bar_h: f32) -> f32 {
     22.0 * (220.0f32 / 22.0).powf(1.0 - f)
 }
 
+fn vertical_track_thumb_height(track_h: f32, bar: Rect) -> f32 {
+    let bar_h = bar.height().max(0.0);
+    let min_thumb_h = (bar.width() + 4.0).min(bar_h);
+    track_thumb(track_h, bar_h).clamp(min_thumb_h, bar_h)
+}
+
+#[cfg(test)]
+mod track_thumb_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn a_short_vertical_bar_keeps_its_thumb_inside_the_bar() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 8.0));
+        assert_eq!(vertical_track_thumb_height(220.0, bar), bar.height());
+    }
+}
+
 /// How far a Shift drag on a track slider moves per point of pointer motion, as a fraction of an
 /// ordinary 1:1 drag: about 0.075 at one track in view up to 0.125 at the full view (the Alternate
 /// Drag Speed setting multiplies on top; its 1x default is half as slow again as the 1x before it).
@@ -2014,7 +2031,7 @@ pub(super) fn vertical_scrollbar(
     p.rect_filled(bar, bar.width() / 2.0, t.separator);
     // with nothing to scroll the thumb fills the track -- the slider is always there, it never
     // just disappears at the ends of the A/V divider's range
-    let h = track_thumb(*track_h, bar.height()).max(bar.width() + 4.0);
+    let h = vertical_track_thumb_height(*track_h, bar);
     let travel = (bar.height() - h).max(1.0);
     // with nothing to scroll the thumb sits in the MIDDLE of the track: pinned to an end it
     // could never collapse about its middle (the dragged edge then barely moved while the other
