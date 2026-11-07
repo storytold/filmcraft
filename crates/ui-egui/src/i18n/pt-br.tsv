@@ -3594,6 +3594,8 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	Export blocked: enable the renderer for linked composition {name} in this session, or bake it to ordinary media.	Exportação bloqueada: ative o renderizador da composição vinculada {name} nesta sessão ou converta-a em mídia comum.
+	Configure linked projects…	Configurar projetos vinculados…
 	Enter a positive duration within the supported speed range.	Insira uma duração positiva dentro do intervalo de velocidade compatível.
 	Show Video Names	Mostrar nomes de vídeo
 	Show Audio Names	Mostrar nomes de áudio
@@ -3673,6 +3675,16 @@
 	Previous	Anterior
 	Next	Próximo
 	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
+	Replace With EffectCraft Composition	Substituir por composição do EffectCraft
+	Edit in EffectCraft	Editar no EffectCraft
+	Files from an earlier replacement of this clip already exist:	Já existem arquivos de uma substituição anterior deste clipe:
+	Overwrite them, or keep them and write new files beside them (numbered -2, -3, …)?	Sobrescrevê-los ou mantê-los e gravar novos arquivos ao lado (numerados -2, -3, …)?
+	Keep Old	Manter antigos
+	Rendering the EffectCraft composition… the clip is replaced when it is done	Renderizando a composição do EffectCraft… o clipe é substituído ao terminar
+	Replaced the clip with the EffectCraft composition	Clipe substituído pela composição do EffectCraft
+	Imported the EffectCraft composition	Composição do EffectCraft importada
+	EffectCraft: preparing…	EffectCraft: preparando…
+	EffectCraft: rendering {pct}%	EffectCraft: renderizando {pct}%
 
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10

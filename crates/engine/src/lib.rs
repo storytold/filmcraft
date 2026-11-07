@@ -18,6 +18,13 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod effectcraft_link;
+#[cfg(not(target_arch = "wasm32"))]
+mod effectcraft_process;
+#[cfg(not(target_arch = "wasm32"))]
+mod effectcraft_resident;
+#[cfg(not(target_arch = "wasm32"))]
+mod effectcraft_source;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -25,6 +32,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+mod linked_cache;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
@@ -43,6 +51,7 @@ pub mod perf;
 pub mod presets;
 pub mod previews;
 pub mod prfpset;
+pub mod project_links;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -115,6 +124,16 @@ pub trait Services: Send + Sync {
     fn write_file_new(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "exclusive file creation is unavailable on this host"))
     }
+    /// Publish a bounded streamed copy without replacing an occupied destination.
+    fn copy_file_new(&self, _source: &str, _destination: &str, _max_bytes: u64) -> std::io::Result<u64> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "streamed exclusive copies are unavailable on this host"))
+    }
+    fn copy_file_new_cancellable(&self, source: &str, destination: &str, max_bytes: u64, cancel: &std::sync::atomic::AtomicBool) -> std::io::Result<u64> {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(std::io::Error::other("media copy cancelled"));
+        }
+        self.copy_file_new(source, destination, max_bytes)
+    }
     /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
     /// default reads the whole file.
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
@@ -165,6 +184,18 @@ pub trait Services: Send + Sync {
 /// Native filesystem services.
 pub struct FsServices;
 impl Services for FsServices {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file_new(&self, source: &str, destination: &str, max_bytes: u64) -> std::io::Result<u64> {
+        self.copy_file_new_cancellable(source, destination, max_bytes, &Default::default())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file_new_cancellable(&self, source: &str, destination: &str, max_bytes: u64, cancel: &std::sync::atomic::AtomicBool) -> std::io::Result<u64> {
+        let destination = std::path::Path::new(destination);
+        if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        filmcraft_format::atomic::atomic_copy_new_cancellable(std::path::Path::new(source), destination, max_bytes, Some(cancel))
+    }
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         std::fs::read(path)
     }
@@ -521,6 +552,22 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// Clips whose footage is the render of an EffectCraft composition ([`effectcraft_link`]).
+    pub ec_links: Vec<effectcraft_link::EcLink>,
+    /// Renders of changed EffectCraft projects running on a worker thread.
+    pub ec_sync: Option<effectcraft_link::EcSync>,
+    /// Clip replacements rendering on worker threads.
+    pub ec_jobs: Vec<effectcraft_link::EcJob>,
+    /// EffectCraft projects imported as items whose composition is still rendering.
+    pub ec_imports: Vec<effectcraft_link::EcImport>,
+    /// Movies still being rendered for imported projects (their items aren't "missing").
+    pub ec_pending: std::collections::BTreeSet<String>,
+    /// The host polls [`Session::poll_effectcraft_jobs`]: importing an EffectCraft project then
+    /// renders in the background. Off (the default), it finishes the render before returning.
+    pub ec_background: bool,
+    /// The progress of the projects being rendered again, by project file (for the clip overlay).
+    pub ec_progress: Vec<(String, Arc<filmcraft_export::Progress>)>,
+    pub project_links: project_links::Runtime,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -616,6 +663,14 @@ impl Session {
             command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
+            ec_links: Vec::new(),
+            ec_sync: None,
+            ec_jobs: Vec::new(),
+            ec_imports: Vec::new(),
+            ec_pending: Default::default(),
+            ec_background: false,
+            ec_progress: Vec::new(),
+            project_links: Default::default(),
         }
     }
 
@@ -700,6 +755,7 @@ impl Session {
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
+        project_links::poll(self);
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
@@ -1111,6 +1167,7 @@ impl Session {
 
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev, origin) = self.history.undo.pop()?;
+        self.drop_effectcraft_document_state();
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
         self.history.redo.push((label.clone(), cur, origin));
@@ -1121,6 +1178,7 @@ impl Session {
 
     pub fn redo(&mut self) -> Option<String> {
         let (label, next, origin) = self.history.redo.pop()?;
+        self.drop_effectcraft_document_state();
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
         self.history.undo.push((label.clone(), cur, origin));

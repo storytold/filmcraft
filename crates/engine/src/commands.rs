@@ -1510,6 +1510,7 @@ fn build() -> Vec<CommandSpec> {
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
+            s.drop_effectcraft_document_state();
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -1527,6 +1528,7 @@ fn build() -> Vec<CommandSpec> {
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
+            s.drop_effectcraft_document_state();
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -1731,12 +1733,27 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             let mut image_sequences = Vec::new();
+            // Items of EffectCraft projects: their movie is rendered (or still rendering) where the
+            // link tracks it, so Ingest leaves them alone (a copy would not be the link's render).
+            let mut effectcraft_items: Vec<u64> = Vec::new();
             let mut preset_names = Vec::new();
             // Image Sequence: each path is the first frame of a numbered still sequence. With
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                // An EffectCraft project: an item now, its composition rendered in the background.
+                if crate::effectcraft_link::is_project(&path) {
+                    let background = bool_p(p, "background").unwrap_or(s.ec_background);
+                    match crate::effectcraft_link::import_project(s, &path, bin, background) {
+                        Ok(id) => {
+                            ids.push(id.0);
+                            effectcraft_items.push(id.0);
+                        }
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -1794,7 +1811,11 @@ fn build() -> Vec<CommandSpec> {
             }
             // Project Settings ▸ Ingest: copy / transcode / create proxies
             // (image sequences are many files: ingest copies and transcodes single files only)
-            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
+            let item_ids: Vec<ItemId> = ids
+                .iter()
+                .filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i)) && !effectcraft_items.contains(i))
+                .map(|i| ItemId(*i))
+                .collect();
             // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
             let ma = &s.prefs.media_analysis;
             if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
@@ -3987,6 +4008,7 @@ fn build() -> Vec<CommandSpec> {
                 }
                 for i in &gone {
                     pr.items.remove(i);
+                    pr.project_links.remove(i);
                     pr.root.remove_item(*i);
                 }
                 let seq_ids: Vec<ItemId> = pr.sequences().map(|q| q.id).collect();
@@ -4098,6 +4120,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::graphic_templates::commands());
     v.extend(crate::shortcuts::commands());
     v.extend(crate::relink::commands());
+    v.extend(crate::effectcraft_link::commands());
+    v.extend(crate::project_links::commands());
     v.extend(crate::proxies::commands());
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
@@ -5256,6 +5280,7 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.project = std::sync::Arc::new(proj);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
+    s.drop_effectcraft_document_state();
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;

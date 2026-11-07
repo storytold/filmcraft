@@ -272,6 +272,12 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if let Ok(executable) = std::env::var("EFFECTCRAFT_CLI")
+            && !executable.trim().is_empty()
+            && let Err(error) = app.session.execute("linkedProject.configure", json!({"executable":executable}))
+        {
+            app.session.error_toast("project link", error.to_string());
+        }
         app.set_startup_update_check(true);
         app.graphics_notice = notice;
         if recover == Some(false) {

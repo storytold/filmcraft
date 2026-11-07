@@ -74,6 +74,57 @@ pub fn atomic_write_new(path: &Path, data: &[u8]) -> io::Result<()> {
     atomic_write_new_with(path, |file| file.write_all(data).and_then(|_| file.sync_all()))
 }
 
+/// Stream a new immutable media snapshot without exposing a partial or overwriting a destination.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn atomic_copy_new(source: &Path, destination: &Path, max_bytes: u64) -> io::Result<u64> {
+    atomic_copy_new_cancellable(source, destination, max_bytes, None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn atomic_copy_new_cancellable(source: &Path, destination: &Path, max_bytes: u64, cancel: Option<&std::sync::atomic::AtomicBool>) -> io::Result<u64> {
+    use std::io::Read;
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "destination already exists")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut input = File::open(source)?;
+    let before = input.metadata()?;
+    let expected = before.len();
+    if !before.is_file() || expected > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "media exceeds the copy limit or is not a file"));
+    }
+    let mut copied = 0;
+    let started = std::time::Instant::now();
+    atomic_write_new_with(destination, |output| {
+        let mut buffer = [0; 64 * 1024];
+        while copied <= expected {
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) || started.elapsed() > std::time::Duration::from_secs(600) {
+                return Err(io::Error::other("media copy cancelled or timed out"));
+            }
+            let limit = expected.saturating_add(1).saturating_sub(copied).min(buffer.len() as u64) as usize;
+            let chunk = buffer.get_mut(..limit).ok_or_else(|| io::Error::other("invalid copy buffer range"))?;
+            let read = input.read(chunk)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(chunk.get(..read).ok_or_else(|| io::Error::other("invalid copy read length"))?)?;
+            copied = copied.saturating_add(read as u64);
+        }
+        let after = input.metadata()?;
+        if copied != expected || after.len() != expected || before.modified().ok() != after.modified().ok() {
+            return Err(io::Error::other("media changed during copy"));
+        }
+        output.set_permissions(before.permissions())?;
+        output.sync_all()?;
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(io::Error::other("media copy cancelled"));
+        }
+        Ok(())
+    })?;
+    Ok(copied)
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn atomic_write_new(_path: &Path, _data: &[u8]) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "native exclusive file creation is unavailable in the browser"))
@@ -107,6 +158,53 @@ fn sync_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn streaming_copy_is_complete_exclusive_and_bounded() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = tmpdir("streamed-copy");
+        let source = dir.join("source.mov");
+        let target = dir.join("baked.mov");
+        let size = 128 * 1024 * 1024 + 1;
+        let mut input = File::create(&source).unwrap();
+        input.set_len(size).unwrap();
+        input.write_all(b"head").unwrap();
+        input.seek(SeekFrom::End(-4)).unwrap();
+        input.write_all(b"tail").unwrap();
+        drop(input);
+        assert_eq!(atomic_copy_new(&source, &target, size).unwrap(), size);
+        let mut output = File::open(&target).unwrap();
+        assert_eq!(output.metadata().unwrap().len(), size);
+        let mut marker = [0; 4];
+        output.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"head");
+        output.seek(SeekFrom::End(-4)).unwrap();
+        output.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"tail");
+        drop(output);
+        assert_eq!(atomic_copy_new(&source, &target, size).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        let refused = dir.join("too-small.mov");
+        assert!(atomic_copy_new(&source, &refused, size - 1).is_err());
+        assert!(!refused.exists());
+        fs::remove_file(source).unwrap();
+        fs::remove_file(target).unwrap();
+        fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancelled_copy_publishes_nothing_and_keeps_source() {
+        let dir = tmpdir("cancelled-copy");
+        let source = dir.join("source.mov");
+        let destination = dir.join("baked.mov");
+        fs::write(&source, b"keep the original").unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        assert!(atomic_copy_new_cancellable(&source, &destination, 1024, Some(&cancel)).unwrap_err().to_string().contains("cancelled"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(source).unwrap(), b"keep the original");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "no staging file is left");
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("filmcraft-atomic-{tag}-{}", std::process::id()));

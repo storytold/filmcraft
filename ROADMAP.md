@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+Experimental integration (2026-11-07, #388): persistent EffectCraft links support relink, bake/restore, revisioned cache, and on-demand rendering through a resident MCP process with four-frame prefetch. Saved edits update the timeline automatically. Unsaved editor state, direct GPU frame sharing, web/Flatpak renderer packaging and other app adapters remain out of scope. This does not change readiness or parity scores. See [linked-projects](docs/linked-projects.md).
+
 - M3: Markers and clips share the existing sixteen clip presets plus a project-local custom hex palette. A reusable wheel/hex editor defines colors separately from marker editing; timeline markers expose Edit Marker with Name, Author and Notes. Marker/clip colors, palette edits and authors persist with undo and project saves. AVB marker import remains separate.
 
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.

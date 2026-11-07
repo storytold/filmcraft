@@ -107,12 +107,13 @@ repository; each screenshot's sidecar lists exactly which appear.
 
 ## Assets drawn or generated in code
 
-These are original work by FilmCraft contributors under the project licence (MIT OR Apache-2.0). None
+Unless separately credited below, these are original work by FilmCraft contributors under the project licence (MIT OR Apache-2.0). None
 is traced or derived from Adobe artwork.
 
 | Asset | Where |
 |---|---|
 | UI icons (tools, transport, panels, header) | `crates/ui-egui/src/icons.rs`: vector paths on a 16×16 grid |
+| EffectCraft composition icon | `crates/ui-egui/src/icons.rs` (`Composition`): the original `Icon::Comp` drawing by EffectCraft contributors, reused under MIT OR Apache-2.0 from [storytold/effectcraft at eb510878](https://github.com/storytold/effectcraft/blob/eb5108786b90bf994a6abe4e6c0b2614c6aeaa29/crates/ui-egui/src/icons.rs#L473); three rectangles on its 16-by-16 grid, no Adobe artwork |
 | Source and Program range braces and trim hover cues | `crates/ui-egui/src/panels/monitor.rs` and `source_range.rs`: original generic vector shapes by FilmCraft contributors, MIT OR Apache-2.0; no third-party artwork |
 | Align / distribute / paragraph-alignment glyphs in the graphics panel | `crates/ui-egui/src/panels/graphics.rs` (`align_glyph`): bars and lines drawn with the egui painter |
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |

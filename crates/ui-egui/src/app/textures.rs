@@ -86,6 +86,10 @@ impl FilmcraftApp {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 filmcraft_engine::media_pool::media_key(m).hash(&mut h);
+                // A restored virtual source can become available without changing its saved path.
+                if p.project_links.get(&target).is_some_and(|link| link.on_demand && !link.baked) {
+                    self.session.media.linked_source(p, target).is_some().hash(&mut h);
+                }
                 (m.proxy.is_some() && self.session.media.use_proxies()).hash(&mut h);
                 h.finish()
             }
@@ -141,5 +145,51 @@ impl FilmcraftApp {
     /// The number of thumbnail textures held (tests, diagnostics).
     pub fn thumbnail_textures(&self) -> usize {
         self.textures.keys().filter(|n| n.starts_with("thumb-")).count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linked_thumbnail_revision_changes_when_the_same_saved_source_becomes_available() {
+        use filmcraft_project::{MediaRef, project_link::ProjectLink};
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let item = app.session.active_sequence().unwrap().video_tracks[0].items[0].item;
+        let path = "linked-thumbnail.ecstream";
+        {
+            let project = Arc::make_mut(&mut app.session.project);
+            project.item_mut(item).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: path.into() };
+            project.project_links.insert(
+                item,
+                ProjectLink {
+                    version: 1,
+                    provider: "effectcraft".into(),
+                    project_path: "Source.ecproj".into(),
+                    object: "1".into(),
+                    object_name: "Source".into(),
+                    revision: "fixture".into(),
+                    cache_generation: 0,
+                    baked: false,
+                    on_demand: true,
+                },
+            );
+        }
+        app.session.media.remove(item);
+        let pending = app.item_revision(item);
+        let source = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::TransparentVideo,
+            64,
+            36,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick::from_seconds_f64(1.0),
+        );
+        app.session.media.insert_file(item, path, Arc::new(source));
+        let ready = app.item_revision(item);
+        assert_ne!(pending, ready, "a cached offline slate must not survive source registration after reopening or Undo");
+        assert_eq!(ready, app.item_revision(item), "unrelated paints keep the same thumbnail revision");
     }
 }

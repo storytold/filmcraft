@@ -191,7 +191,7 @@ impl MediaPool {
             Some(MediaRef::File { path }) => Some(path.clone()),
             _ => None,
         });
-        self.add_stored_paths(paths, document);
+        self.add_stored_paths(paths.chain(p.project_links.values().map(|link| link.project_path.clone())), document);
     }
 
     /// [`Self::add_stored`] for single paths.
@@ -314,6 +314,9 @@ impl MediaPool {
     fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let it = p.item(item)?;
+        if p.project_links.get(&item).is_some_and(|link| !link.baked) && matches!(&m.media,MediaRef::File{path} if path.ends_with(".ecstream")) && !m.offline {
+            return self.linked_source(p, item).or_else(|| Some(Arc::new(SlateSource::new(m.info.clone(), &it.name, OfflineReason::Missing))));
+        }
         if proxies
             && !m.offline
             && let Some(MediaRef::File { path }) = &m.proxy
@@ -372,6 +375,9 @@ impl MediaPool {
     /// the slate and says why, so the job shows what the monitors show).
     pub fn own_source(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
+        if p.project_links.get(&item).is_some_and(|link| !link.baked) && matches!(&m.media,MediaRef::File{path} if path.ends_with(".ecstream")) {
+            return self.linked_source(p, item);
+        }
         let MediaRef::File { path } = &m.media else { return None };
         if m.offline || m.info.kind == filmcraft_media::MediaKind::ImageSequence || self.offline_status(item).is_some() {
             return None;
@@ -381,6 +387,18 @@ impl MediaPool {
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         let src = filmcraft_media::reader::open_reader_within(&file_name(&file), reader, &filmcraft_codecs::reader_openers(), &openers, 0).ok()?;
         Some(self.unsupported_as_slate(item, path, src))
+    }
+
+    /// The exact immutable on-demand revision registered by the authorized runtime.
+    pub fn linked_source(&self, p: &Project, item: ItemId) -> Option<SharedSource> {
+        let media = p.item(item)?.as_media()?;
+        let MediaRef::File { path } = &media.media else { return None };
+        if media.offline || !path.ends_with(".ecstream") {
+            return None;
+        }
+        let sources = self.sources.read().unwrap_or_else(PoisonError::into_inner);
+        let (key, source) = sources.get(&item)?;
+        (key == &media_key(media)).then(|| source.clone())
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
