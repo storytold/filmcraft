@@ -1386,6 +1386,54 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
     }
 }
 
+/// Extend a short edge run to the semicircle tangent instead of flattening its cap.
+fn minimap_indicator_bounds(
+    mut xa: f32,
+    mut xb: f32,
+    left_tangent: f32,
+    right_tangent: f32,
+    hug_left: bool,
+    hug_right: bool,
+) -> (f32, f32) {
+    if hug_left {
+        xb = xb.max(left_tangent);
+    }
+    if hug_right {
+        xa = xa.min(right_tangent);
+    }
+    (xa, xb)
+}
+
+fn minimap_indicator_filled(
+    fill_clips: bool,
+    width: f32,
+    min_outline_width: f32,
+    hug_left: bool,
+    hug_right: bool,
+) -> bool {
+    fill_clips || (width < min_outline_width && !hug_left && !hug_right)
+}
+
+#[cfg(test)]
+mod minimap_indicator_tests {
+    use super::{minimap_indicator_bounds, minimap_indicator_filled};
+
+    #[test]
+    fn edge_caps_keep_a_full_semicircle_for_short_runs() {
+        assert_eq!(minimap_indicator_bounds(20.0, 20.2, 24.0, 76.0, true, false), (20.0, 24.0));
+        assert_eq!(minimap_indicator_bounds(79.8, 80.0, 24.0, 76.0, false, true), (76.0, 80.0));
+        assert_eq!(minimap_indicator_bounds(40.0, 45.0, 24.0, 76.0, false, false), (40.0, 45.0));
+    }
+
+    #[test]
+    fn narrow_semicircles_stay_outlined_unless_fill_clips_is_enabled() {
+        assert!(!minimap_indicator_filled(false, 0.5, 3.0, true, false));
+        assert!(!minimap_indicator_filled(false, 0.5, 3.0, false, true));
+        assert!(minimap_indicator_filled(true, 0.5, 3.0, true, false));
+        assert!(minimap_indicator_filled(false, 0.5, 3.0, false, false));
+    }
+}
+
 #[cfg(test)]
 mod zoom_drag_scale_tests {
     use super::{shift_drag_base, shift_edge_speed_multiplier};
@@ -1640,8 +1688,8 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let outline = |x0: f32, x1: f32, inset: f32, hug_left: bool, hug_right: bool| -> Vec<Pos2> {
             let top = y0 + inset;
             let bot = y1 - inset;
-            let xa = x0 + inset;
-            let xb = x1 - inset;
+            let mut xa = x0 + inset;
+            let mut xb = x1 - inset;
             // a cap edge never sits ON the pill's boundary: the outline stroke is half outside
             // its path and the fill antialiases outward -- `inset + px` is what makes the two
             // modes land their edges on the SAME x (the stroke's outer edge == the fill's edge)
@@ -1650,10 +1698,18 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the semicircle sits exactly 2 device pixels in from the slider's edge (the 1 px
             // stroke inset plus this 1 px), the same clearance the runs in the middle keep
             let sh = 1.0 * px;
-            let cap_r = ((bot - top) / 2.0).min((xb - (bar.min.x + ins + sh)).max(2.0 * px));
+            let cap_r = (bot - top) / 2.0;
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
-            let cap_rr = ((bot - top) / 2.0).min(((bar.max.x - ins - sh) - x0).max(2.0 * px));
+            let cap_rr = (bot - top) / 2.0;
+            (xa, xb) = minimap_indicator_bounds(
+                xa,
+                xb,
+                bar.min.x + ins + sh + cap_r,
+                bar.max.x - ins - sh - cap_rr,
+                hug_left,
+                hug_right,
+            );
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1698,7 +1754,13 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             let hug_left = x0 - bar.min.x < rad;
             let hug_right = bar.max.x - x1 < rad;
             let col = color_for(k);
-            if fill || x1 - x0 < 5.0 * px {
+            if minimap_indicator_filled(
+                fill,
+                x1 - x0,
+                5.0 * px,
+                hug_left,
+                hug_right,
+            ) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
