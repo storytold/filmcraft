@@ -352,6 +352,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
     })
 }
 
+/// Opens the startup project or default/demo workspace, imports any media paths passed on the
+/// command line, and runs requested crash recovery.
 fn open_startup_files(session: &mut Session, files: &[String], demo: bool, startup_flag: bool, recover: Option<bool>) {
     let (project, media) = args::project_and_media(files);
     if let Some(p) = project {
@@ -375,14 +377,11 @@ fn open_startup_files(session: &mut Session, files: &[String], demo: bool, start
     } else if demo {
         let _ = session.execute("file.openDemoProject", json!({}));
     }
-    if !media.is_empty() {
-        let _ = session.execute("file.import", json!({"paths": media}));
-        if session.path.is_none() {
-            session.history = Default::default();
-            session.history.limit = 200;
-            session.saved_revision = session.revision;
-            session.sync_persistence();
-        }
+    if !media.is_empty() && session.execute("file.import", json!({"paths": media})).is_ok() && session.path.is_none() {
+        session.history = Default::default();
+        session.history.limit = 200;
+        session.saved_revision = session.revision;
+        session.sync_persistence();
     }
     if recover == Some(true) && !session.recovery_candidates().is_empty() {
         let id = session.recovery_candidates()[0].id.clone();
