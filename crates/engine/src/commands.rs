@@ -1614,12 +1614,24 @@ fn build() -> Vec<CommandSpec> {
                 })?;
                 if let Some((&from, rest)) = from_ids.split_first() {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
+                    // #3569: the clip's In/Out marks choose the span, as `timeline.place` does
+                    let (mi, mo) = match s.project.item(from).map(|i| (&i.kind, i.frame_rate())) {
+                        Some((ItemKind::Media(m), rate)) => (m.mark_in, m.mark_out.map(|o| Tick(o.0.saturating_add(rate.frame_duration().0)))),
+                        _ => (None, None),
+                    };
+                    let sin = mi.unwrap_or_default().clamp(Tick::ZERO, dur);
+                    // on the frame grid, but never past the media's end (round down if nearest would)
+                    let avail = Tick(mo.unwrap_or(dur).min(dur).0.saturating_sub(sin.0));
+                    let rate = s.sequence_rate();
+                    let marked = Some(rate.snap_nearest(avail)).filter(|m| *m <= avail).unwrap_or_else(|| rate.snap(avail));
+                    let range =
+                        if (mi.is_some() || mo.is_some()) && marked > Tick::ZERO { TimeRange::new(sin, marked) } else { TimeRange::new(Tick::ZERO, dur) };
                     let tg = s.targeting();
                     let ids = place_item(
                         s,
                         ItemPlacement {
                             item: from,
-                            range: TimeRange::new(Tick::ZERO, dur),
+                            range,
                             at: Tick::ZERO,
                             vdest: tg.video_dest,
                             adest: tg.audio_dest,
