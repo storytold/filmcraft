@@ -57,12 +57,14 @@ name = "android.permission.READ_MEDIA_IMAGES"
 [dependencies]
 filmcraft-ui-egui = { workspace = true }
 egui = { workspace = true }
+log = { workspace = true }
+# AAudio on Android; the same crate the desktop app plays through
+cpal = "0.16"
 
 # The app itself is android-only: on other targets only the browser is built (so
 # `cargo test --workspace` and clippy stay cheap).
 [target.'cfg(target_os = "android")'.dependencies]
 filmcraft-engine = { workspace = true }
-eframe ={ workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
-log = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
 android_logger = "0.14"
 android-activity = { version = "0.6", features = ["native-activity"] }

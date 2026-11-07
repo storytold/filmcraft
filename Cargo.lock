@@ -1966,6 +1966,7 @@ version = "0.17.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "cpal",
  "eframe",
  "egui",
  "filmcraft-engine",

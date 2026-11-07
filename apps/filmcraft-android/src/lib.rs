@@ -9,6 +9,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod audio;
 pub mod browser;
 
 #[cfg(target_os = "android")]
@@ -22,6 +23,7 @@ mod android_app {
     use filmcraft_ui_egui::FilmcraftApp;
     use log::LevelFilter;
 
+    use crate::audio::AndroidAudio;
     use crate::browser::{Browser, Request, Root};
 
     /// Where the user's media usually is: shared storage and its standard folders, then the app's
@@ -115,6 +117,8 @@ mod android_app {
                     None => log::warn!("no app data folder: settings and auto-save are not kept"),
                 }
                 let mut filmcraft = FilmcraftApp::new(session);
+                // playback sound and the audio master clock
+                filmcraft.audio = Some(Box::new(AndroidAudio::new()));
                 // Every file dialog goes to the in-app browser (drawn by `Shell` on the next frame).
                 let (requests_tx, requests) = channel::<Request>();
                 let ctx = cc.egui_ctx.clone();
