@@ -9,6 +9,17 @@ fn demo() -> Session {
     s
 }
 
+#[test]
+fn a_changed_playhead_advances_the_project_view_epoch_once_per_position() {
+    let mut s = demo();
+    let before = s.view_epoch;
+    let one_frame = s.sequence_rate().frame_duration();
+    s.set_playhead(one_frame);
+    assert_eq!(s.view_epoch, before.wrapping_add(1));
+    s.set_playhead(one_frame);
+    assert_eq!(s.view_epoch, before.wrapping_add(1));
+}
+
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
