@@ -8,17 +8,20 @@ mod common;
 use common::*;
 use filmcraft_media::FrameRequest;
 
+/// Verify that deferred registration and `Hardware decoding = Off` keep decoding in software,
+/// and enabling hardware decoding probes and registers the platform decoder on first decode.
 #[test]
 fn off_uses_the_software_decoder() {
+    filmcraft_platform::register_deferred();
+    assert!(!filmcraft_platform::registered(), "register_deferred() waits until a hardware decoder is needed");
     let ff = filmcraft_testkit::require_ffmpeg!();
     let Some(path) = named(&ff, "hevc_main.mp4") else { return };
     let s = read_stream(&path);
-    let available = filmcraft_platform::register();
-    assert_eq!(filmcraft_platform::register(), available, "registering twice is harmless");
 
     filmcraft_codecs::hw::set_hardware_decoding(false);
     let d = filmcraft_codecs::make_video_decoder(&s.entry).unwrap();
     assert_eq!(d.name(), "FilmCraft HEVC");
+    assert!(!filmcraft_platform::registered(), "Off: make_video_decoder does not probe hardware decoders");
     let bytes: std::sync::Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let (g0, h0) = (filmcraft_codecs::gop_stats(), filmcraft_codecs::hw::hw_stats());
     let src = filmcraft_codecs::open_bytes("hevc_main.mp4", bytes.clone()).unwrap();
@@ -31,6 +34,8 @@ fn off_uses_the_software_decoder() {
 
     filmcraft_codecs::hw::set_hardware_decoding(true);
     let d = filmcraft_codecs::make_video_decoder(&s.entry).unwrap();
+    let available = filmcraft_platform::register();
+    assert_eq!(filmcraft_platform::register(), available, "registering twice is harmless");
     let hw = filmcraft_platform::hardware_decoder_for(&s.entry);
     if !hw {
         eprintln!("SKIPPED (Auto half): no hardware decoder ({available:?})");

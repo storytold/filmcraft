@@ -96,6 +96,15 @@ fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
     F.get_or_init(|| RwLock::new(BUILTIN_FACTORIES.to_vec()))
 }
 
+static DECODER_INIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+static DECODER_INIT_ONCE: std::sync::Once = std::sync::Once::new();
+
+/// Register a one-time initializer run before [`make_video_decoder`] first looks up a
+/// decoder while hardware decoding is enabled (#4266).
+pub fn register_video_decoder_init(init: fn()) {
+    let _ = DECODER_INIT.set(init);
+}
+
 /// Register a video decoder factory (tried before previously registered ones).
 pub fn register_video_decoder(f: VideoDecoderFactory) {
     let mut g = factories().write().unwrap_or_else(|e| e.into_inner());
@@ -111,6 +120,11 @@ pub fn video_decoder_registered(f: VideoDecoderFactory) -> bool {
 
 /// Create a decoder for a sample entry.
 pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
+    if hw::hardware_decoding()
+        && let Some(init) = DECODER_INIT.get()
+    {
+        DECODER_INIT_ONCE.call_once(init);
+    }
     let g = factories().read().unwrap_or_else(|e| e.into_inner());
     for f in g.iter() {
         if let Some(r) = f(entry) {
