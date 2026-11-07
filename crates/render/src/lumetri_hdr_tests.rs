@@ -89,6 +89,32 @@ fn whites_and_contrast_scale_with_hdr_white() {
     assert!((got[0] - 1000.0).abs() < 4.0, "{got:?}");
 }
 
+/// Negative Contrast moves HDR White down; speculars above it move with it (keeping their distance
+/// from white in the graded signal), so a gradient across HDR White never falls and has no step,
+/// in PQ and HLG (at -100 everything up to white is flat).
+#[test]
+fn negative_contrast_is_continuous_across_hdr_white() {
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let gs = GradeSpace::new(working, 1000.0);
+        // signal 0.8 … 1.2 of HDR White, in fine steps
+        let nits: Vec<f32> = (0..81).map(|i| gs.nits_of_signal(0.8 + 0.4 * i as f32 / 80.0)).collect();
+        for c in [-100.0, -50.0] {
+            let got = grade(working, &nits, &lumetri(&[("contrast", F(c))]));
+            let sig: Vec<f32> = got.iter().map(|n| gs.signal_of_nits(*n)).collect();
+            let steps: Vec<f32> = sig.windows(2).map(|w| w[1] - w[0]).collect();
+            let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+            for (i, d) in steps.iter().enumerate() {
+                assert!(*d >= -1e-5 && *d <= 3.0 * mean, "{working:?} contrast {c}: step {i} is {d} (mean {mean})");
+            }
+            // a specular keeps its distance from the graded HDR White
+            let k = 1.0 + c as f32 / 100.0;
+            let white = 0.5 + 0.5 * k;
+            let spec = gs.signal_of_nits(grade(working, &[gs.nits_of_signal(1.15)], &lumetri(&[("contrast", F(c))]))[0]);
+            assert!((spec - (white + 0.15)).abs() < 3e-3, "{working:?} contrast {c}: specular at {spec}, want {}", white + 0.15);
+        }
+    }
+}
+
 #[test]
 fn hdr_specular_sets_highlights_above_hdr_white() {
     let e = lumetri(&[("hdr_specular", F(-100.0))]);
