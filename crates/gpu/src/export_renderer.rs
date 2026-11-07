@@ -88,6 +88,24 @@ fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The adapter off-screen GPU work runs on (export rendering, GPU encoding): the GPU the app's
+/// window asks for, the high-performance one (`WGPU_POWER_PREF` overrides it, as for the window).
+/// With no preference the first adapter listed can be an integrated GPU whose read-back memory is
+/// uncached.
+pub(crate) fn offscreen_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
+    let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+    // the adapter `request_adapter` would return, except where that one's driver is known to crash
+    // creating the device (`adapter::choose`); among the backends `WGPU_BACKEND` names, as for the
+    // window, when this instance has any of them
+    let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if let Some(named) = wgpu::Backends::from_env()
+        && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+    {
+        adapters.retain(|a| named.contains(a.get_info().backend.into()));
+    }
+    crate::adapter::pick(&adapters, None, power_preference).ok()
+}
+
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
     device: wgpu::Device,
@@ -111,20 +129,7 @@ impl ExportRenderer {
                     return None;
                 }
                 let instance = crate::adapter::native_instance();
-                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
-                // overrides it, as for the window). With no preference the first adapter listed
-                // can be an integrated GPU whose read-back memory is uncached.
-                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-                // the adapter `request_adapter` would return, except where that one's driver is
-                // known to crash creating the device (`adapter::choose`); among the backends
-                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
-                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-                if let Some(named) = wgpu::Backends::from_env()
-                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
-                {
-                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
-                }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = offscreen_adapter(&instance)?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and

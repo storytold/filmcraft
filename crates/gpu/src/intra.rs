@@ -106,17 +106,17 @@ pub(crate) struct Decoded {
 }
 
 /// A buffer kept between frames, grown as needed.
-struct Pooled {
+pub(crate) struct Pooled {
     buf: Option<wgpu::Buffer>,
     usage: wgpu::BufferUsages,
     label: &'static str,
 }
 
 impl Pooled {
-    fn new(label: &'static str, usage: wgpu::BufferUsages) -> Self {
+    pub(crate) fn new(label: &'static str, usage: wgpu::BufferUsages) -> Self {
         Pooled { buf: None, usage, label }
     }
-    fn get(&mut self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    pub(crate) fn get(&mut self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
         let size = size.max(16).next_multiple_of(16);
         match &self.buf {
             Some(b) if b.size() >= size => b.clone(),
@@ -150,7 +150,7 @@ pub(crate) struct IntraStage {
     pub(crate) fallbacks: u64,
 }
 
-fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -159,7 +159,7 @@ fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn bind(buf: &wgpu::Buffer, binding: u32, size: Option<u64>) -> wgpu::BindGroupEntry<'_> {
+pub(crate) fn bind(buf: &wgpu::Buffer, binding: u32, size: Option<u64>) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: buf, offset: 0, size: size.and_then(std::num::NonZeroU64::new) }),
@@ -196,7 +196,7 @@ const DNX_WARM_BITS: u32 = 256;
 const DNX_CAP: u32 = 8;
 
 /// 2-D workgroup counts covering `n` invocations of 64 (the shaders flatten `gid.y`).
-fn groups(n: u64, max: u32) -> Option<(u32, u32)> {
+pub(crate) fn groups(n: u64, max: u32) -> Option<(u32, u32)> {
     let g = n.div_ceil(64);
     if g == 0 {
         return Some((1, 1));
@@ -773,7 +773,7 @@ fn cid_p(p: u32) -> Option<u32> {
 }
 
 /// A uniform buffer holding `params`.
-fn uniform(device: &wgpu::Device, queue: &wgpu::Queue, params: &[u8]) -> wgpu::Buffer {
+pub(crate) fn uniform(device: &wgpu::Device, queue: &wgpu::Queue, params: &[u8]) -> wgpu::Buffer {
     let ubuf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("intra-params"),
         size: params.len() as u64,
@@ -802,7 +802,7 @@ fn status_buffers(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
 }
 
 /// Run the passes of one batch, in order, over `bg` (each with its workgroup counts).
-fn dispatch(enc: &mut wgpu::CommandEncoder, passes: &[(&wgpu::ComputePipeline, &str, (u32, u32))], bg: &wgpu::BindGroup) {
+pub(crate) fn dispatch(enc: &mut wgpu::CommandEncoder, passes: &[(&wgpu::ComputePipeline, &str, (u32, u32))], bg: &wgpu::BindGroup) {
     for &(pipeline, label, (x, y)) in passes {
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
         pass.set_pipeline(pipeline);

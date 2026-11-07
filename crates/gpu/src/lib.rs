@@ -42,12 +42,15 @@ pub mod adapter;
 pub mod export_renderer;
 pub mod fx;
 mod intra;
+pub mod intra_enc;
 pub mod lut;
 pub mod mask;
+mod prores_enc;
 mod transition;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
+pub use prores_enc::ProResGpuEncoder;
 
 /// Output texture format: gamma-encoded RGBA8 (what egui expects of native textures); the resolve
 /// shader applies the sRGB encoding.
@@ -1444,7 +1447,7 @@ const UNIFORM_FLOATS: usize = 52;
 
 /// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
 /// pending (then the caller assumes the worst).
-fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
+pub(crate) fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
         std::task::Poll::Ready(v) => Some(v),
@@ -1497,5 +1500,7 @@ mod dnx_tests;
 mod fx_tests;
 #[cfg(test)]
 mod intra_tests;
+#[cfg(test)]
+mod prores_enc_tests;
 #[cfg(test)]
 mod tests;
