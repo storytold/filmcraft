@@ -244,11 +244,10 @@ pub(super) fn draw_clip(
             let subpixel = cap_w < 1.0;
             let cap_w = if subpixel { th.width() } else { cap_w };
             let frozen = if subpixel { None } else { frozen };
-            let mut fh = th.height();
-            let mut tw = fh * aspect;
+            let max_tile_h = th.height();
+            let mut tw = max_tile_h * aspect;
             if tw > cap_w {
                 tw = cap_w;
-                fh = (tw / aspect).min(th.height());
             }
             let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
             let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
@@ -266,7 +265,10 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, fh));
+                    // Continuous tiles scale into live screen coordinates during a zoom gesture;
+                    // derive height from that rendered width so the frame keeps its aspect ratio.
+                    let h = (w / aspect).min(max_tile_h);
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, h));
                     cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
             }
