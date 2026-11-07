@@ -136,12 +136,27 @@ fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, ra
     let mut direction = 0.0;
     let mut mult = 1.0;
     ui.input_mut(|i| {
+        // Shift wins over Command, as in the drag. The modifiers are those of the key press
+        // itself, so a Shift+Command press is consumed and gets the Shift multiplier.
         for (key, dir) in [(egui::Key::ArrowUp, 1.0), (egui::Key::ArrowDown, -1.0)] {
-            for (mods, m) in [(egui::Modifiers::SHIFT, 10.0), (egui::Modifiers::COMMAND, 0.1), (egui::Modifiers::NONE, 1.0)] {
-                if direction == 0.0 && i.consume_key(mods, key) {
-                    direction = dir;
-                    mult = m;
-                }
+            let mods = i
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or(i.modifiers);
+            let m = if mods.shift {
+                10.0
+            } else if mods.command {
+                0.1
+            } else {
+                1.0
+            };
+            if direction == 0.0 && i.consume_key(mods, key) {
+                direction = dir;
+                mult = m;
             }
         }
     });
@@ -150,8 +165,13 @@ fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, ra
     }
     let typed = if suffix.trim().is_empty() { buf.trim().to_owned() } else { buf.trim().replace(suffix.trim(), "") };
     let current = crate::calc::eval(&typed, value).filter(|v| v.is_finite())?;
-    // the last shown digit of the typed number, in a narrow range only
-    let shown = typed.trim().split_once('.').map_or(0, |(_, f)| f.chars().filter(char::is_ascii_digit).count()).min(6);
+    // the last shown digit: of a plain typed number as typed; of a calculation, of its result
+    let shown = if typed.trim().parse::<f64>().is_ok() {
+        typed.trim().split_once('.').map_or(0, |(_, f)| f.chars().filter(char::is_ascii_digit).count()).min(6)
+    } else {
+        let r = format!("{current:.6}");
+        r.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len())
+    };
     let narrow = (range.1 - range.0).abs() <= 10.0;
     let base = if narrow { 10f64.powi(-(shown as i32)) } else { 1.0 };
     let step = base * mult;

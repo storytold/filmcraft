@@ -291,6 +291,25 @@ mod arrow_step {
     }
 
     #[test]
+    fn a_calculation_in_a_narrow_range_steps_by_the_digits_of_its_result() {
+        // 0.5+0.25 = 0.75: two digits, so the step is 0.01 (not 0.0001 from the text)
+        let mut h = editing(0.0, "0.5+0.25", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 0.76);
+        // a whole-number result steps by one
+        let mut h = editing(0.0, "1.5*2", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 4.0, "3 is a whole number: step 1");
+    }
+
+    #[test]
+    fn shift_command_steps_by_ten_like_the_drag() {
+        let mut h = editing(0.5, "0.50", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::SHIFT | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.6);
+    }
+
+    #[test]
     fn text_that_is_not_a_number_is_left_alone() {
         let mut h = editing(3.0, "abc", (0.0, 100.0), 0);
         press(&mut h, Key::ArrowUp, Modifiers::NONE);
