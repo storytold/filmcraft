@@ -305,10 +305,11 @@ fn source_insert_and_overwrite_keep_subclip_sound() {
 #[test]
 fn a_placed_subclip_is_measured_by_its_parent_picture() {
     let centre = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(640.0, 360.0));
-    for (frame, scaling) in [((1280, 720), "none"), ((1920, 1080), "setToFrameSize"), ((1920, 1080), "scaleToFrameSize")] {
+    // a 1280 x 720 picture doesn't fill a 1920 x 1080 frame, so each setting sizes it differently
+    for (scaling, scale, scale_to_frame) in [("none", 100.0, false), ("setToFrameSize", 150.0, false), ("scaleToFrameSize", 100.0, true)] {
         let mut s = Session::default();
         s.prefs.media.default_media_scaling = scaling.into();
-        s.execute("file.newSequence", json!({"name":"Subclip size","width":frame.0,"height":frame.1,"fps":24})).unwrap();
+        s.execute("file.newSequence", json!({"name":"Subclip size","width":1920,"height":1080,"fps":24})).unwrap();
         let media = json!({"name":"Parent","video":true,"audio":false,"width":1280,"height":720,"fps":24,"seconds":10});
         let parent = s.execute("file.newOfflineFile", media).unwrap()["item"].as_u64().unwrap();
         let sub = s.execute("clip.makeSubclip", json!({"item":parent,"startFrame":10,"endFrame":60})).unwrap()["item"].as_u64().unwrap();
@@ -319,10 +320,11 @@ fn a_placed_subclip_is_measured_by_its_parent_picture() {
             placed.push(s.active_sequence().unwrap().find_item(clip).unwrap().1.clone());
         }
         let motion = |i: usize, k: &str| placed[i].effect("motion").unwrap().params[k].value.clone();
-        assert_eq!(motion(0, "anchor"), centre, "{scaling}: the parent's anchor");
-        assert_eq!(motion(1, "anchor"), centre, "{scaling}: the subclip's anchor");
-        assert_eq!(motion(1, "scale"), motion(0, "scale"), "{scaling}: scale");
-        assert_eq!(placed[1].scale_to_frame, placed[0].scale_to_frame, "{scaling}: Scale to Frame Size");
+        for (i, clip) in [(0, "parent"), (1, "subclip")] {
+            assert_eq!(motion(i, "anchor"), centre, "{scaling}: the {clip}'s anchor");
+            assert_eq!(motion(i, "scale"), filmcraft_project::ParamValue::Float(scale), "{scaling}: the {clip}'s scale");
+            assert_eq!(placed[i].scale_to_frame, scale_to_frame, "{scaling}: the {clip}'s Scale to Frame Size");
+        }
     }
 }
 
