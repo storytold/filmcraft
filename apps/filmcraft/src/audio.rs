@@ -129,7 +129,7 @@ fn fallback_rank(name: &str) -> u8 {
 fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, String)>>) -> Option<DeviceChoice> {
     if !name.is_empty()
         && let Ok(devs) = h.output_devices()
-        && let Some(d) = pick_named(devs, name)
+        && let Some(d) = pick_named(devs, name, |d| d.default_output_config().is_ok())
     {
         return Some(DeviceChoice { device: d, fallback: None });
     }
@@ -140,7 +140,7 @@ fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, Strin
     }
     let host_name = h.id().name().to_string();
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut devs: Vec<(String, cpal::Device)> = h.output_devices().ok()?.filter_map(|d| d.name().ok().map(|n| (n, d))).collect();
+    let mut devs: Vec<(String, cpal::Device)> = h.output_devices().ok()?.filter_map(|d| device_name(&d).map(|n| (n, d))).collect();
     if let Some((cached_host, cached)) = cache.as_ref()
         && *cached_host == host_name
         && let Some(i) = devs.iter().position(|(n, _)| n == cached)
@@ -155,17 +155,29 @@ fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, Strin
     Some(DeviceChoice { device: d, fallback: Some(Note::Fallback(found)) })
 }
 
+/// The name cpal reports for a device: what the settings store and list.
+///
+/// cpal 0.17 deprecates `Device::name` in favour of `description().name()`, but on ALSA the two
+/// differ: `name()` is the PCM id (`plughw:CARD=PCH,DEV=0`) that a saved preference holds, while
+/// the description holds the human card text. Every other backend reports the same in both.
+#[allow(deprecated, reason = "cpal 0.17 has no non-deprecated equivalent of ALSA's PCM id")]
+pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
+    d.name().ok()
+}
+
 /// The device a saved preference names, or `None` when it is gone.
 ///
 /// A preference saved before cpal 0.17 can hold the name 0.16 reported, which a 0.17 device no
-/// longer answers to (see `saved_name_matches`); an exact name always wins.
-pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str) -> Option<cpal::Device> {
+/// longer answers to (see `saved_name_matches`); an exact name always wins. A legacy match is only
+/// taken when `usable` says the device can open a stream, since a hint that merely describes the
+/// card may not play or record.
+pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str, usable: impl Fn(&cpal::Device) -> bool) -> Option<cpal::Device> {
     let mut legacy = None;
     for d in devs {
-        if d.name().is_ok_and(|n| n == name) {
+        if device_name(&d).is_some_and(|n| n == name) {
             return Some(d);
         }
-        if legacy.is_none() && saved_name_matches(&d, name) {
+        if legacy.is_none() && saved_name_matches(&d, name) && usable(&d) {
             legacy = Some(d);
         }
     }
@@ -491,8 +503,8 @@ impl AudioOut for CpalOut {
     }
     fn devices(&self) -> AudioDevices {
         let h = host(&self.hw.device_class);
-        let outputs = h.output_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default();
-        let inputs = h.input_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default();
+        let outputs = h.output_devices().map(|d| d.filter_map(|x| device_name(&x)).collect()).unwrap_or_default();
+        let inputs = h.input_devices().map(|d| d.filter_map(|x| device_name(&x)).collect()).unwrap_or_default();
         let output_channels =
             output_device(&h, &self.hw.default_output, &self.fallback).and_then(|c| self.config(&c.device).ok()).map(|cfg| cfg.channels()).unwrap_or(0);
         AudioDevices { hosts: cpal::available_hosts().iter().map(|h| h.name().to_string()).collect(), inputs, outputs, output_channels }

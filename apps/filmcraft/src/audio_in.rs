@@ -55,7 +55,7 @@ fn host(name: &str) -> cpal::Host {
 fn device(h: &cpal::Host, name: &str) -> Option<cpal::Device> {
     if !name.is_empty()
         && let Ok(devs) = h.input_devices()
-        && let Some(d) = crate::audio::pick_named(devs, name)
+        && let Some(d) = crate::audio::pick_named(devs, name, |d| d.default_input_config().is_ok())
     {
         return Some(d);
     }
@@ -124,7 +124,7 @@ impl AudioInput for CpalIn {
         self.host = name.to_string();
     }
     fn devices(&self) -> Vec<String> {
-        host(&self.host).input_devices().map(|d| d.filter_map(|x| x.name().ok()).collect()).unwrap_or_default()
+        host(&self.host).input_devices().map(|d| d.filter_map(|x| crate::audio::device_name(&x)).collect()).unwrap_or_default()
     }
     fn channels(&self, name: &str) -> u16 {
         device(&host(&self.host), name).and_then(|d| d.default_input_config().ok()).map(|c| c.channels()).unwrap_or(0)
