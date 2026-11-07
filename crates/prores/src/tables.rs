@@ -48,6 +48,9 @@ pub(crate) const RUN_CB: [Codebook; 16] = [
 pub(crate) const LEVEL_CB: [Codebook; 10] =
     [cb(0, 1, 0), cb(0, 2, 2), cb(0, 1, 1), cb(0, 1, 2), cb(0, 1, 0), cb(1, 2, 0), cb(1, 2, 0), cb(1, 2, 0), cb(1, 2, 0), cb(2, 3, 0)];
 
+/// Rounding offset for AC quantisation (nearest for DC, a slight dead zone for AC).
+pub const AC_ROUND: f32 = 0.45;
+
 /// Initial DC codebook context for the second DC of a component.
 pub const DC_CTX_INIT: u32 = 5;
 /// Initial AC run / level codebook contexts.

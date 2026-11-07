@@ -3,7 +3,7 @@
 use crate::bits::{Counter, Sink, Writer};
 use crate::dct::fdct8x8;
 use crate::header::{FRAME_ID, FrameHeader, PictureHeader, row_slice_widths};
-use crate::tables::{DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_PROGRESSIVE, qscale};
+use crate::tables::{AC_ROUND, DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, ColorInfo, Error, Frame, Interlace, Profile, Result};
 
 /// Encoder configuration.
@@ -83,6 +83,52 @@ impl Encoder {
     /// Encode one frame. Input planes may be at any bit depth 8..=16 (10 is typical); the frame's
     /// chroma format must match the profile.
     pub fn encode(&mut self, frame: &Frame) -> Result<Vec<u8>> {
+        self.encode_with(frame, None).map(|(f, _)| f)
+    }
+
+    /// `encode`, with the per-block work on `backend` when it takes the frame. Returns the frame
+    /// and whether the backend coded it; any inconsistency is re-encoded on the CPU.
+    pub fn encode_with(&mut self, frame: &Frame, backend: Option<&mut dyn SliceBackend>) -> Result<(Vec<u8>, bool)> {
+        let with_alpha = self.validate(frame)?;
+        let jobs = self.slice_jobs();
+        let src = Source::new(&self.cfg, frame, with_alpha);
+        if let Some(backend) = backend
+            && let Some((out, qg)) = self.encode_on_backend(&src, backend, &jobs)
+        {
+            self.last_q = qg;
+            return Ok((out, true));
+        }
+        let threads = self.cfg.threads;
+        let prepared: Vec<SliceData> = par_map(threads, &jobs, |j| prepare_slice(&src, j.mb_x as usize, j.mb_y as usize, j.mbs as usize));
+        let limits: Vec<u64> = prepared.iter().map(SliceData::limit_bits).collect();
+        let budget = frame_budget(prepared.len(), slice_header_size(with_alpha), src.bits_per_mb, src.mb_count());
+        let mut bits_at = |q: u8| Some(par_map(threads, &prepared, |sd| slice_bits(sd, q)));
+        let (qs, qg) = choose_quantisers(budget, &limits, self.last_q, &mut bits_at).ok_or(Error::Invalid("rate control failed"))?;
+        self.last_q = qg;
+        let items: Vec<(&SliceData, u8)> = prepared.iter().zip(qs).collect();
+        let slices: Option<Vec<Vec<u8>>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q)).into_iter().collect();
+        let slices = slices.ok_or(Error::Invalid("slice larger than its 16-bit size field"))?;
+        Ok((self.assemble_frame(&slices, with_alpha)?, false))
+    }
+
+    /// The slices of a frame of this encoder's size, in coded order.
+    pub fn slice_jobs(&self) -> Vec<SliceJob> {
+        let mb_width = (self.cfg.width as usize).div_ceil(16);
+        let mb_height = (self.cfg.height as usize).div_ceil(16);
+        let widths = row_slice_widths(mb_width, self.cfg.log2_slice_mbs.min(3));
+        let mut jobs = Vec::with_capacity(widths.len() * mb_height);
+        for row in 0..mb_height {
+            let mut x = 0usize;
+            for &sw in &widths {
+                jobs.push(SliceJob { mb_x: x as u32, mb_y: row as u32, mbs: sw as u32 });
+                x += sw;
+            }
+        }
+        jobs
+    }
+
+    /// Check the frame against the configuration; whether alpha is coded.
+    fn validate(&self, frame: &Frame) -> Result<bool> {
         let cfg = &self.cfg;
         if frame.width != cfg.width || frame.height != cfg.height {
             return Err(Error::Input(format!("frame is {}x{}, encoder is {}x{}", frame.width, frame.height, cfg.width, cfg.height)));
@@ -112,35 +158,67 @@ impl Encoder {
         if cfg.log2_slice_mbs > 3 {
             return Err(Error::Input("log2_slice_mbs must be 0..=3".into()));
         }
+        Ok(with_alpha)
+    }
 
-        let mb_width = w.div_ceil(16);
-        let mb_height = h.div_ceil(16);
-        let widths = row_slice_widths(mb_width, cfg.log2_slice_mbs);
-        let mut jobs = Vec::with_capacity(widths.len() * mb_height);
-        for row in 0..mb_height {
-            let mut x = 0;
-            for &sw in &widths {
-                jobs.push((x, row, sw));
-                x += sw;
-            }
+    /// The frame coded with the backend's per-block work, and its uniform quantiser. `None` when
+    /// the backend declines, fails, or its answers do not agree with each other.
+    fn encode_on_backend(&self, src: &Source, backend: &mut dyn SliceBackend, jobs: &[SliceJob]) -> Option<(Vec<u8>, u8)> {
+        let n = jobs.len();
+        if n == 0 || !backend.load(&self.cfg, src.frame, jobs) {
+            return None;
         }
-        let src = Source {
-            frame,
-            w,
-            h,
-            cw,
-            chroma444: chroma == ChromaFormat::Yuv444,
-            scale: (2f32).powi(12 - frame.bit_depth as i32),
-            alpha: with_alpha,
-            bits_per_mb: self.bits_per_mb(),
+        let alpha: Vec<Option<Vec<u8>>> = if src.alpha {
+            match backend.alpha() {
+                Some(a) if a.len() == n => a.into_iter().map(Some).collect(),
+                _ => jobs.iter().map(|j| Some(encode_alpha_slice(src, j.mb_x as usize * 16, j.mb_y as usize * 16, j.mbs as usize))).collect(),
+            }
+        } else {
+            vec![None; n]
         };
-        let threads = cfg.threads;
-        let prepared: Vec<SliceData> = par_map(threads, &jobs, |&(x, row, sw)| prepare_slice(&src, x, row, sw));
-        let (qs, qg) = choose_quantisers(&prepared, &src, mb_width * mb_height, threads, self.last_q);
-        self.last_q = qg;
-        let items: Vec<(&SliceData, u8)> = prepared.iter().zip(qs).collect();
-        let slices: Vec<Vec<u8>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q));
+        let limits: Vec<u64> = alpha.iter().map(|a| slice_limit_bits(src.alpha, a.as_ref().map_or(0, Vec::len))).collect();
+        let budget = frame_budget(n, slice_header_size(src.alpha), src.bits_per_mb, src.mb_count());
+        let mut measured: Vec<(u8, Vec<[u32; 3]>)> = Vec::new();
+        let (qs, qg) = backend_quantisers(backend, budget, &limits, self.last_q, &mut measured)?;
+        if qs.len() != n {
+            return None;
+        }
+        // The bits every component was measured at, at the quantiser it will be written at.
+        let mut want: Vec<[u32; 3]> = Vec::with_capacity(n);
+        for (i, &q) in qs.iter().enumerate() {
+            if !measured.iter().any(|(mq, _)| *mq == q) {
+                let v = backend.bits(q)?;
+                if v.len() != n {
+                    return None;
+                }
+                measured.push((q, v));
+            }
+            let (_, v) = measured.iter().find(|(mq, _)| *mq == q)?;
+            want.push(*v.get(i)?);
+        }
+        let written = backend.write(&qs)?;
+        if written.len() != n {
+            return None;
+        }
+        let hsize = slice_header_size(src.alpha);
+        let mut slices = Vec::with_capacity(n);
+        for (((comps, &q), bits), a) in written.iter().zip(&qs).zip(&want).zip(&alpha) {
+            if comps.iter().zip(bits).any(|(c, &b)| c.len() as u64 * 8 != b as u64) {
+                return None;
+            }
+            slices.push(assemble_slice(hsize, q, [&comps[0], &comps[1], &comps[2]], a.as_deref())?);
+        }
+        let out = self.assemble_frame(&slices, src.alpha).ok()?;
+        Some((out, qg))
+    }
 
+    /// The frame header, picture header, slice table and slices.
+    fn assemble_frame(&self, slices: &[Vec<u8>], with_alpha: bool) -> Result<Vec<u8>> {
+        let cfg = &self.cfg;
+        let chroma = cfg.profile.chroma();
+        if slices.iter().any(|s| s.len() > 65535) {
+            return Err(Error::Invalid("slice larger than its 16-bit size field"));
+        }
         let hdr = FrameHeader {
             header_size: 0,
             bitstream_version: if chroma == ChromaFormat::Yuv444 { 1 } else { 0 },
@@ -167,15 +245,109 @@ impl Encoder {
         out.extend_from_slice(&FRAME_ID);
         out.extend_from_slice(&fh);
         PictureHeader { header_size: 8, picture_size: pic_size, num_slices: slices.len(), log2_slice_mbs: cfg.log2_slice_mbs }.write(&mut out);
-        for s in &slices {
+        for s in slices {
             out.extend_from_slice(&(s.len() as u16).to_be_bytes());
         }
-        for s in &slices {
+        for s in slices {
             out.extend_from_slice(s);
         }
         debug_assert_eq!(out.len(), total);
         Ok(out)
     }
+}
+
+/// Where one slice lies, in coded order (row-major, `row_slice_widths` per row).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SliceJob {
+    pub mb_x: u32,
+    pub mb_y: u32,
+    pub mbs: u32,
+}
+
+/// The per-block work of an encode on other hardware: forward DCT, quantisation, entropy coding
+/// of the Y, Cb and Cr components of every slice, exactly as this crate's encoder does them.
+pub trait SliceBackend: Send {
+    /// Take `frame` (already validated by the encoder) for `slices`. `false`: this backend cannot
+    /// encode it (size, profile, a device error); the encoder then uses its own code.
+    fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, slices: &[SliceJob]) -> bool;
+    /// The coded bits of every slice's Y, Cb, Cr at quantiser index `q`, each padded to whole
+    /// bytes (as `component_bits`), in `slices` order.
+    fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>>;
+    /// Every slice's Y, Cb, Cr payload bytes at its quantiser index `qs[i]`.
+    fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>>;
+    /// Every slice's coded alpha (4444 with alpha; `encode_alpha_slice`'s bytes). `None`: the
+    /// encoder codes alpha itself.
+    fn alpha(&mut self) -> Option<Vec<Vec<u8>>> {
+        None
+    }
+    /// The whole rate control (`choose_quantisers` with this frame's `hint`, `budget` bits and
+    /// per-slice `limits` bits), run where the bits are. `None`: the encoder runs it over `bits`.
+    fn choose(&mut self, hint: u8, budget: u64, limits: &[u64]) -> Option<(Vec<u8>, u8)> {
+        let _ = (hint, budget, limits);
+        None
+    }
+}
+
+/// The quantisers of a frame from the backend: its own rate control when it has one and its
+/// answer is in range, else the encoder's over the bits the backend measures (kept in `measured`).
+fn backend_quantisers(backend: &mut dyn SliceBackend, budget: u64, limits: &[u64], hint: u8, measured: &mut Vec<(u8, Vec<[u32; 3]>)>) -> Option<(Vec<u8>, u8)> {
+    let n = limits.len();
+    if let Some((qs, qg)) = backend.choose(hint, budget, limits)
+        && qs.len() == n
+        && (Q_MIN..=Q_MAX).contains(&qg)
+        && qs.iter().all(|q| (Q_MIN..=Q_MAX).contains(q))
+    {
+        return Some((qs, qg));
+    }
+    let mut bits_at = |q: u8| {
+        let v = backend.bits(q)?;
+        if v.len() != n {
+            return None;
+        }
+        let sums = v.iter().map(|c| c.iter().map(|&b| b as u64).sum()).collect();
+        measured.push((q, v));
+        Some(sums)
+    };
+    choose_quantisers(budget, limits, hint, &mut bits_at)
+}
+
+/// Bytes of a slice header: with the alpha size field or without.
+fn slice_header_size(alpha: bool) -> usize {
+    if alpha { 8 } else { 6 }
+}
+
+/// Largest DCT payload (bits) that keeps every 16-bit size field valid.
+fn slice_limit_bits(alpha: bool, alpha_len: usize) -> u64 {
+    65535usize.saturating_sub(slice_header_size(alpha) + alpha_len) as u64 * 8
+}
+
+/// The DCT payload budget of a frame in bits (after the fixed headers).
+fn frame_budget(slices: usize, hsize: usize, bits_per_mb: u32, total_mbs: usize) -> u64 {
+    let fixed = 8 * (8 + 20 + 8 + slices * (2 + hsize)) as u64;
+    (bits_per_mb as u64 * total_mbs as u64).saturating_sub(fixed)
+}
+
+/// A slice from its three payloads: header, payloads, alpha. `None` when a size does not fit its
+/// 16-bit field.
+fn assemble_slice(hsize: usize, q: u8, comps: [&[u8]; 3], alpha: Option<&[u8]>) -> Option<Vec<u8>> {
+    let alpha_bytes = alpha.unwrap_or(&[]);
+    let total = hsize + comps.iter().map(|c| c.len()).sum::<usize>() + alpha_bytes.len();
+    if total > 65535 || comps.iter().any(|c| c.len() > 65535) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(total);
+    out.push((hsize as u8) << 3);
+    out.push(q);
+    out.extend_from_slice(&(comps[0].len() as u16).to_be_bytes());
+    out.extend_from_slice(&(comps[1].len() as u16).to_be_bytes());
+    if alpha.is_some() {
+        out.extend_from_slice(&(comps[2].len() as u16).to_be_bytes());
+    }
+    for c in comps {
+        out.extend_from_slice(c);
+    }
+    out.extend_from_slice(alpha_bytes);
+    Some(out)
 }
 
 struct Source<'a> {
@@ -188,6 +360,26 @@ struct Source<'a> {
     scale: f32,
     alpha: bool,
     bits_per_mb: u32,
+}
+
+impl<'a> Source<'a> {
+    fn new(cfg: &EncoderConfig, frame: &'a Frame, alpha: bool) -> Source<'a> {
+        let chroma = cfg.profile.chroma();
+        Source {
+            frame,
+            w: cfg.width as usize,
+            h: cfg.height as usize,
+            cw: chroma.chroma_width(cfg.width) as usize,
+            chroma444: chroma == ChromaFormat::Yuv444,
+            scale: (2f32).powi(12 - frame.bit_depth as i32),
+            alpha,
+            bits_per_mb: cfg.bits_per_mb.unwrap_or_else(|| cfg.profile.nominal_bits_per_mb()),
+        }
+    }
+
+    fn mb_count(&self) -> usize {
+        self.w.div_ceil(16) * self.h.div_ceil(16)
+    }
 }
 
 /// Load an 8×8 block (edge-replicated) into the 12-bit signed domain and transform it.
@@ -204,9 +396,6 @@ fn load_block(plane: &[u16], stride: usize, height: usize, x0: usize, y0: usize,
     fdct8x8(&mut b);
     b
 }
-
-/// Rounding offsets for quantisation: nearest for DC, a slight dead zone for AC.
-const AC_ROUND: f32 = 0.45;
 
 fn quantise(coeffs: &[[f32; 64]], qmat_inv: &[f32; 64], out: &mut Vec<[i32; 64]>) {
     out.clear();
@@ -341,38 +530,46 @@ fn quantise_all(sd: &SliceData, q: u8, lv: &mut [Vec<[i32; 64]>; 3]) {
     }
 }
 
-/// Coded DCT payload bits of a slice at quantiser `q` (components padded to bytes).
-fn slice_bits(sd: &SliceData, q: u8) -> u64 {
+/// Coded bits of a slice's Y, Cb and Cr at quantiser `q` (each padded to bytes).
+fn slice_comp_bits(sd: &SliceData, q: u8) -> [u64; 3] {
     let mut lv = [Vec::new(), Vec::new(), Vec::new()];
     quantise_all(sd, q, &mut lv);
-    lv.iter().map(|l| component_bits(l)).sum()
+    lv.map(|l| component_bits(&l))
+}
+
+/// Coded DCT payload bits of a slice at quantiser `q` (components padded to bytes).
+fn slice_bits(sd: &SliceData, q: u8) -> u64 {
+    slice_comp_bits(sd, q).iter().sum()
 }
 
 /// Per-slice coded bits at the quantisers tried so far, so no quantiser is measured twice.
 struct Probes<'a> {
-    slices: &'a [SliceData],
-    threads: bool,
+    bits_at: &'a mut dyn FnMut(u8) -> Option<Vec<u64>>,
+    /// Slices of the frame: every measurement must have this many entries.
+    slices: usize,
     tried: Vec<(u8, Vec<u64>, u64)>,
 }
 
 impl Probes<'_> {
-    /// The frame's coded bits at `q` (the sum over slices).
-    fn total(&mut self, q: u8) -> u64 {
-        if let Some((_, _, t)) = self.tried.iter().find(|(tq, _, _)| *tq == q) {
-            return *t;
+    /// The per-slice bits at `q`, measuring them if `q` was not tried yet. `None`: the
+    /// measurement failed or has the wrong number of slices.
+    fn at(&mut self, q: u8) -> Option<Vec<u64>> {
+        if let Some((_, v, _)) = self.tried.iter().find(|(tq, _, _)| *tq == q) {
+            return Some(v.clone());
         }
-        let v = par_map(self.threads, self.slices, |sd| slice_bits(sd, q));
-        let t = v.iter().sum();
-        self.tried.push((q, v, t));
-        t
+        let v = (self.bits_at)(q)?;
+        if v.len() != self.slices {
+            return None;
+        }
+        let t = v.iter().fold(0u64, |a, &b| a.saturating_add(b));
+        self.tried.push((q, v.clone(), t));
+        Some(v)
     }
 
-    /// The per-slice bits at `q`, measuring them if `q` was not tried yet.
-    fn take(&mut self, q: u8) -> Vec<u64> {
-        match self.tried.iter().position(|(tq, _, _)| *tq == q) {
-            Some(i) => self.tried.swap_remove(i).1,
-            None => par_map(self.threads, self.slices, |sd| slice_bits(sd, q)),
-        }
+    /// The frame's coded bits at `q` (the sum over slices).
+    fn total(&mut self, q: u8) -> Option<u64> {
+        self.at(q)?;
+        self.tried.iter().find(|(tq, _, _)| *tq == q).map(|(_, _, t)| *t)
     }
 }
 
@@ -425,66 +622,84 @@ fn smallest_fitting(total: &mut impl FnMut(u8) -> u64, hint: u8, budget: u64) ->
 /// Frame-level rate control: the smallest uniform quantiser whose frame fits the budget, then
 /// one step finer on as many slices as the remaining budget allows. Uniform quantisation
 /// approximately minimises frame MSE for a given size. Returns the slices' quantisers and the
-/// uniform one (the next frame's `hint`).
-fn choose_quantisers(slices: &[SliceData], src: &Source, total_mbs: usize, threads: bool, hint: u8) -> (Vec<u8>, u8) {
-    let n = slices.len();
-    let hsize = slices.first().map_or(6, SliceData::header_size);
-    let fixed = 8 * (8 + 20 + 8 + n * (2 + hsize)) as u64;
-    let budget = (src.bits_per_mb as u64 * total_mbs as u64).saturating_sub(fixed);
-    let mut probes = Probes { slices, threads, tried: Vec::new() };
-    let qg = smallest_fitting(&mut |q| probes.total(q), hint, budget);
+/// uniform one (the next frame's `hint`). `limits` are the slices' largest payloads in bits;
+/// `bits_at(q)` measures every slice at `q`. `None`: a measurement failed.
+fn choose_quantisers(budget: u64, limits: &[u64], hint: u8, bits_at: &mut dyn FnMut(u8) -> Option<Vec<u64>>) -> Option<(Vec<u8>, u8)> {
+    let n = limits.len();
+    let mut probes = Probes { bits_at, slices: n, tried: Vec::new() };
+    let mut failed = false;
+    let qg = smallest_fitting(
+        &mut |q| {
+            probes.total(q).unwrap_or_else(|| {
+                failed = true;
+                u64::MAX
+            })
+        },
+        hint,
+        budget,
+    );
+    if failed {
+        return None;
+    }
     let mut qs = vec![qg; n];
-    let mut cur = probes.take(qg);
+    let mut cur = probes.at(qg)?;
     let total = cur.iter().sum::<u64>();
     if qg > Q_MIN && total < budget {
         // usually measured already: the search's last quantiser that did not fit
-        let finer = probes.take(qg - 1);
+        let finer = probes.at(qg - 1)?;
         let mut left = budget - total;
-        for (((sd, f), c), q) in slices.iter().zip(&finer).zip(cur.iter_mut()).zip(qs.iter_mut()) {
+        for (((&limit, f), c), q) in limits.iter().zip(&finer).zip(cur.iter_mut()).zip(qs.iter_mut()) {
             let d = f.saturating_sub(*c);
-            if d <= left && *f <= sd.limit_bits() {
+            if d <= left && *f <= limit {
                 left -= d;
                 *q = qg - 1;
                 *c = *f;
             }
         }
     }
-    // Keep every slice within its 16-bit size fields.
-    for ((sd, q), c) in slices.iter().zip(qs.iter_mut()).zip(cur.iter_mut()) {
-        while *c > sd.limit_bits() && *q < Q_MAX {
-            *q += 1;
-            *c = slice_bits(sd, *q);
+    // Keep every slice within its 16-bit size fields: raise the quantiser of those that do not
+    // fit, one step per round, over the cached whole-frame measurements.
+    loop {
+        let mut raised = false;
+        for ((&limit, q), c) in limits.iter().zip(qs.iter_mut()).zip(cur.iter()) {
+            if *c > limit && *q < Q_MAX {
+                *q += 1;
+                raised = true;
+            }
+        }
+        if !raised {
+            break;
+        }
+        let mut by_q: Vec<(u8, Vec<u64>)> = Vec::new();
+        for &q in &qs {
+            if by_q.iter().all(|(bq, _)| *bq != q) {
+                by_q.push((q, probes.at(q)?));
+            }
+        }
+        for (i, (&q, c)) in qs.iter().zip(cur.iter_mut()).enumerate() {
+            if let Some(b) = by_q.iter().find(|(bq, _)| *bq == q).and_then(|(_, v)| v.get(i)) {
+                *c = *b;
+            }
         }
     }
-    (qs, qg)
+    Some((qs, qg))
 }
 
-fn write_slice(sd: &SliceData, q: u8) -> Vec<u8> {
+/// The Y, Cb and Cr payloads of a slice at quantiser `q`.
+fn write_components(sd: &SliceData, q: u8) -> [Vec<u8>; 3] {
     let mut lv = [Vec::new(), Vec::new(), Vec::new()];
     quantise_all(sd, q, &mut lv);
-    let comps: Vec<Vec<u8>> = lv
-        .iter()
-        .map(|l| {
-            let mut w = Writer::new();
-            encode_component(&mut w, l, &SCAN_PROGRESSIVE);
-            w.finish()
-        })
-        .collect();
-    let hsize = sd.header_size();
-    let alpha = sd.alpha.as_deref().unwrap_or(&[]);
-    let mut out = Vec::with_capacity(hsize + comps.iter().map(Vec::len).sum::<usize>() + alpha.len());
-    out.push((hsize as u8) << 3);
-    out.push(q);
-    out.extend_from_slice(&(comps[0].len() as u16).to_be_bytes());
-    out.extend_from_slice(&(comps[1].len() as u16).to_be_bytes());
-    if sd.alpha.is_some() {
-        out.extend_from_slice(&(comps[2].len() as u16).to_be_bytes());
-    }
-    for c in &comps {
-        out.extend_from_slice(c);
-    }
-    out.extend_from_slice(alpha);
-    out
+    lv.map(|l| {
+        let mut w = Writer::new();
+        encode_component(&mut w, &l, &SCAN_PROGRESSIVE);
+        w.finish()
+    })
+}
+
+/// A whole slice; `None` when it does not fit its 16-bit size fields.
+fn write_slice(sd: &SliceData, q: u8) -> Option<Vec<u8>> {
+    let [y, cb, cr] = write_components(sd, q);
+    assemble_slice(sd.header_size(), q, [&y, &cb, &cr], sd.alpha.as_deref())
 }
 
 /// Encode the slice's alpha samples (16-bit coding) in raster order over its 16 lines.
@@ -558,20 +773,21 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
 mod rate_tests {
     use super::*;
 
-    /// `take` gives a quantiser's measured per-slice bits whether or not `total` tried it: an
+    /// `at` gives a quantiser's measured per-slice bits whether or not `total` tried it: an
     /// empty list would skip the slices' 16-bit size checks in `choose_quantisers`.
     #[test]
-    fn take_measures_an_untried_quantiser() {
+    fn at_measures_an_untried_quantiser() {
         let block = |v: f32| std::array::from_fn::<f32, 64, _>(|i| v * (64 - i) as f32);
         let slices: Vec<SliceData> =
             (1..=3).map(|k| SliceData { comps: [vec![block(40.0 * k as f32); 4], vec![block(10.0); 2], vec![block(5.0); 2]], alpha: None }).collect();
         let want = |q| slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>();
         assert!(want(4).iter().all(|&b| b > 0));
-        let mut probes = Probes { slices: &slices, threads: false, tried: Vec::new() };
-        assert_eq!(probes.take(4), want(4), "untried");
+        let mut bits_at = |q| Some(slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>());
+        let mut probes = Probes { bits_at: &mut bits_at, slices: slices.len(), tried: Vec::new() };
+        assert_eq!(probes.at(4), Some(want(4)), "untried");
         probes.total(6);
-        assert_eq!(probes.take(6), want(6), "tried");
-        assert!(probes.tried.is_empty());
+        assert_eq!(probes.at(6), Some(want(6)), "tried");
+        assert_eq!(probes.tried.len(), 2, "each quantiser is measured once");
     }
 
     /// Frame bits falling with the quantiser (steeply at first, then flat), as real content does.
@@ -767,6 +983,295 @@ mod alpha_conformance_tests {
                 }
                 assert_eq!(offset, picture.len());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+    use crate::layout::frame_layout;
+    use crate::{SliceBackend, SliceJob, decode_frame};
+
+    /// Deterministic busy planes: gradient + checkerboard + xorshift noise; alpha ramp for 4444.
+    fn test_frame(profile: Profile, w: u32, h: u32, seed: u32) -> Frame {
+        let alpha = profile.chroma() == ChromaFormat::Yuv444;
+        let mut f = Frame::new(w, h, profile.chroma(), 10, alpha);
+        let mut s = seed.max(1);
+        let mut noise = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        let cw = f.chroma_width() as usize;
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let check = if (x / 4 + y / 4) % 2 == 0 { 60 } else { 0 };
+                f.y[y * w as usize + x] = (64 + (x * 3 + y * 2) % 600 + check + noise() as usize % 40) as u16;
+                if let Some(a) = f.alpha.as_mut() {
+                    a[y * w as usize + x] = ((x * 1023) / w.max(1) as usize) as u16;
+                }
+            }
+            for x in 0..cw {
+                f.cb[y * cw + x] = (400 + (x + y) % 200 + noise() as usize % 30) as u16;
+                f.cr[y * cw + x] = (500 + (x * 5 + y) % 100 + noise() as usize % 30) as u16;
+            }
+        }
+        f
+    }
+
+    /// The crate's own CPU functions behind the backend trait.
+    #[derive(Default)]
+    struct CpuBackend {
+        slices: Vec<SliceData>,
+        /// Lie about a component: (slice, component, bytes to add to `write`'s answer).
+        extra_byte: Option<(usize, usize)>,
+        garbage: bool,
+        fail_bits: bool,
+        fail_write: bool,
+        decline: bool,
+        choose: ChooseMode,
+        alpha_mode: AlphaMode,
+        choose_calls: usize,
+    }
+
+    #[derive(Default)]
+    enum ChooseMode {
+        #[default]
+        Default,
+        /// The CPU algorithm's own answer over this backend's bits.
+        Cpu,
+        /// A fixed answer, whatever the frame.
+        Fixed(Vec<u8>, u8),
+        /// The CPU algorithm's quantisers with one entry too many.
+        TooLong,
+    }
+
+    #[derive(Default)]
+    enum AlphaMode {
+        #[default]
+        Slices,
+        Nothing,
+        /// One entry too few.
+        WrongCount,
+    }
+
+    impl SliceBackend for CpuBackend {
+        fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob]) -> bool {
+            if self.decline {
+                return false;
+            }
+            let alpha = cfg.encode_alpha && cfg.profile.chroma() == ChromaFormat::Yuv444 && frame.alpha.is_some();
+            let src = Source::new(cfg, frame, alpha);
+            self.slices = jobs.iter().map(|j| prepare_slice(&src, j.mb_x as usize, j.mb_y as usize, j.mbs as usize)).collect();
+            true
+        }
+        fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+            if self.fail_bits {
+                return None;
+            }
+            Some(self.slices.iter().map(|sd| slice_comp_bits(sd, q).map(|b| b as u32)).collect())
+        }
+        fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+            if self.fail_write {
+                return None;
+            }
+            let mut out: Vec<[Vec<u8>; 3]> = self.slices.iter().zip(qs).map(|(sd, &q)| write_components(sd, q)).collect();
+            if let Some((s, c)) = self.extra_byte
+                && let Some(comp) = out.get_mut(s).and_then(|x| x.get_mut(c))
+            {
+                comp.push(0);
+            }
+            if self.garbage {
+                for comp in out.iter_mut().flatten() {
+                    for (i, b) in comp.iter_mut().enumerate() {
+                        *b = (i as u8).wrapping_mul(97) ^ 0x5a;
+                    }
+                }
+            }
+            Some(out)
+        }
+        fn alpha(&mut self) -> Option<Vec<Vec<u8>>> {
+            match self.alpha_mode {
+                AlphaMode::Slices => self.slices.iter().map(|sd| sd.alpha.clone()).collect(),
+                AlphaMode::Nothing => None,
+                AlphaMode::WrongCount => {
+                    let mut v: Vec<Vec<u8>> = self.slices.iter().map(|sd| sd.alpha.clone()).collect::<Option<_>>()?;
+                    v.pop();
+                    Some(v)
+                }
+            }
+        }
+        fn choose(&mut self, hint: u8, budget: u64, limits: &[u64]) -> Option<(Vec<u8>, u8)> {
+            self.choose_calls += 1;
+            let cpu = || {
+                let slices = &self.slices;
+                choose_quantisers(budget, limits, hint, &mut |q| Some(slices.iter().map(|sd| slice_bits(sd, q)).collect()))
+            };
+            match &self.choose {
+                ChooseMode::Default => None,
+                ChooseMode::Cpu => cpu(),
+                ChooseMode::Fixed(qs, qg) => Some((qs.clone(), *qg)),
+                ChooseMode::TooLong => {
+                    let (mut qs, qg) = cpu()?;
+                    qs.push(qg);
+                    Some((qs, qg))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_backend_doing_the_cpus_work_gives_the_cpus_frame() {
+        for profile in Profile::ALL {
+            for (w, h) in [(16, 16), (17, 13), (64, 48), (1920, 1080)] {
+                let f = test_frame(profile, w, h, 7);
+                let cpu = Encoder::new(profile, w, h).encode(&f).unwrap();
+                let mut b = CpuBackend::default();
+                let (gpu, used) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
+                assert!(used, "{profile:?} {w}x{h}");
+                assert_eq!(gpu, cpu, "{profile:?} {w}x{h}");
+            }
+        }
+    }
+
+    #[test]
+    fn slice_jobs_cover_the_frame_in_coded_order() {
+        let enc = Encoder::new(Profile::Hq, 333, 201);
+        let jobs = enc.slice_jobs();
+        let mbs: u32 = jobs.iter().map(|j| j.mbs).sum();
+        assert_eq!(mbs, 333u32.div_ceil(16) * 201u32.div_ceil(16));
+        assert_eq!(jobs.first(), Some(&SliceJob { mb_x: 0, mb_y: 0, mbs: 8 }));
+    }
+
+    #[test]
+    fn a_backend_that_declines_or_fails_leaves_the_frame_to_the_cpu() {
+        let (w, h) = (64, 48);
+        for profile in [Profile::Hq, Profile::P4444] {
+            let f = test_frame(profile, w, h, 3);
+            let cpu = Encoder::new(profile, w, h).encode(&f).unwrap();
+            let cases = [
+                ("declining", CpuBackend { decline: true, ..Default::default() }),
+                ("fails bits", CpuBackend { fail_bits: true, ..Default::default() }),
+                ("fails write", CpuBackend { fail_write: true, ..Default::default() }),
+            ];
+            for (name, mut b) in cases {
+                let (out, used) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
+                assert!(!used, "{profile:?} {name}");
+                assert_eq!(out, cpu, "{profile:?} {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_backend_whose_bytes_do_not_match_its_bits_is_not_trusted() {
+        let (w, h) = (128, 64);
+        for profile in [Profile::Hq, Profile::P4444] {
+            let f = test_frame(profile, w, h, 5);
+            let cpu = Encoder::new(profile, w, h).encode(&f).unwrap();
+            let mut b = CpuBackend { extra_byte: Some((3, 1)), ..Default::default() };
+            let (out, used) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
+            assert!(!used, "{profile:?}: one byte too many");
+            assert_eq!(out, cpu, "{profile:?}: one byte too many");
+
+            // Garbage of the right length is the backend's own frame: it must still parse and
+            // decode without a panic (only the shader tests can judge its content).
+            let mut b = CpuBackend { garbage: true, ..Default::default() };
+            let (out, _) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
+            assert!(frame_layout(&out).is_ok(), "{profile:?}: garbage frame parses");
+            let _ = decode_frame(&out);
+        }
+    }
+
+    #[test]
+    fn the_slice_size_guard_holds_through_a_backend() {
+        let (w, h) = (256, 64);
+        let mut f = Frame::new(w, h, ChromaFormat::Yuv422, 10, false);
+        let mut s = 12345u32;
+        for v in f.y.iter_mut().chain(f.cb.iter_mut()).chain(f.cr.iter_mut()) {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            *v = (s % 1024) as u16;
+        }
+        let mut cfg = EncoderConfig::new(Profile::Proxy, w, h);
+        cfg.bits_per_mb = Some(u32::MAX / 4096);
+        let cpu = Encoder::with_config(cfg.clone()).encode(&f).unwrap();
+        let mut b = CpuBackend::default();
+        let (out, used) = Encoder::with_config(cfg).encode_with(&f, Some(&mut b)).unwrap();
+        assert!(used);
+        assert_eq!(out, cpu);
+        let layout = frame_layout(&out).unwrap();
+        for sl in &layout.slices {
+            let size: u32 = sl.comps.iter().map(|c| c.1).sum::<u32>() + 6;
+            assert!(size <= 65535, "slice of {size} bytes");
+        }
+    }
+
+    /// The size guard itself: slice 1 only fits its 16-bit fields from quantiser 10 on.
+    #[test]
+    fn the_guard_raises_a_slice_until_it_fits() {
+        let limits = [1_000u64, 1_000, 1_000];
+        let mut measured = Vec::new();
+        let mut bits_at = |q: u8| {
+            measured.push(q);
+            Some(vec![500u64, if q < 10 { 5_000 } else { 900 }, 500])
+        };
+        let (qs, qg) = choose_quantisers(10_000, &limits, 3, &mut bits_at).unwrap();
+        assert_eq!(qs, vec![qg, 10, qg]);
+        assert!(measured.iter().all(|&q| (Q_MIN..=Q_MAX).contains(&q)));
+        let distinct = measured.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert_eq!(distinct, measured.len(), "no quantiser is measured twice: {measured:?}");
+    }
+
+    #[test]
+    fn a_valid_choose_answer_is_used() {
+        let (w, h) = (128, 64);
+        for profile in [Profile::Hq, Profile::P4444] {
+            let f = test_frame(profile, w, h, 11);
+            let cpu = Encoder::new(profile, w, h).encode(&f).unwrap();
+            let mut b = CpuBackend { choose: ChooseMode::Cpu, ..Default::default() };
+            let (out, used) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
+            assert_eq!(b.choose_calls, 1);
+            assert!(used, "{profile:?}");
+            assert_eq!(out, cpu, "{profile:?}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_choose_answer_is_ignored() {
+        let (w, h) = (128, 64);
+        let n = Encoder::new(Profile::Hq, w, h).slice_jobs().len();
+        let f = test_frame(Profile::Hq, w, h, 13);
+        let cpu = Encoder::new(Profile::Hq, w, h).encode(&f).unwrap();
+        let cases = [
+            ("q = 0", ChooseMode::Fixed(vec![0; n], 4)),
+            ("q = 225", ChooseMode::Fixed(vec![225; n], 4)),
+            ("qg = 0", ChooseMode::Fixed(vec![4; n], 0)),
+            ("too few", ChooseMode::Fixed(vec![4; n - 1], 4)),
+            ("too many", ChooseMode::TooLong),
+            ("empty", ChooseMode::Fixed(Vec::new(), 4)),
+        ];
+        for (name, choose) in cases {
+            let mut b = CpuBackend { choose, ..Default::default() };
+            let (out, used) = Encoder::new(Profile::Hq, w, h).encode_with(&f, Some(&mut b)).unwrap();
+            assert_eq!(b.choose_calls, 1, "{name}");
+            assert!(used, "{name}: the backend still codes it, over the CPU's rate control");
+            assert_eq!(out, cpu, "{name}");
+        }
+    }
+
+    #[test]
+    fn missing_or_miscounted_alpha_is_coded_by_the_cpu() {
+        let (w, h) = (128, 64);
+        let f = test_frame(Profile::P4444, w, h, 17);
+        let cpu = Encoder::new(Profile::P4444, w, h).encode(&f).unwrap();
+        for (name, alpha_mode) in [("none", AlphaMode::Nothing), ("wrong count", AlphaMode::WrongCount)] {
+            let mut b = CpuBackend { alpha_mode, ..Default::default() };
+            let (out, used) = Encoder::new(Profile::P4444, w, h).encode_with(&f, Some(&mut b)).unwrap();
+            assert!(used, "{name}");
+            assert_eq!(out, cpu, "{name}");
         }
     }
 }

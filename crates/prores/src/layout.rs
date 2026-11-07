@@ -95,7 +95,8 @@ pub fn frame_layout(data: &[u8]) -> Result<FrameLayout> {
 
 /// The constant tables a slice decoder needs (SMPTE RDD 36), for decoders elsewhere.
 pub mod tables {
-    pub use crate::tables::{DC_CTX_INIT, LEVEL_CTX_INIT, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE};
+    use crate::Profile;
+    pub use crate::tables::{AC_ROUND, DC_CTX_INIT, LEVEL_CTX_INIT, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE};
 
     /// A codebook as `(rice, exp, rice_q_max)`.
     pub type Codebook = (u8, u8, u8);
@@ -114,6 +115,20 @@ pub mod tables {
     }
     pub fn level() -> [Codebook; 10] {
         crate::tables::LEVEL_CB.map(cb)
+    }
+    /// The quantisation scale of every slice quantisation index `0..=224` (`[0]` is as `[1]`).
+    pub fn qscale_table() -> [u32; 225] {
+        std::array::from_fn(|q| crate::tables::qscale(q as u8))
+    }
+    /// The quantisation scale of slice quantisation index `q`.
+    pub fn qscale(q: u8) -> u32 {
+        crate::tables::qscale(q)
+    }
+    /// The luma and chroma quantisation matrices (raster order) this crate's encoder writes for
+    /// `profile`: flat 4 for every profile.
+    pub fn profile_qmats(profile: Profile) -> ([u8; 64], [u8; 64]) {
+        let _ = profile;
+        ([4; 64], [4; 64])
     }
     /// The orthonormal 1-D DCT basis the IDCT uses (`BASIS[u][x]`).
     pub fn basis() -> [[f32; 8]; 8] {
