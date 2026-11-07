@@ -795,7 +795,6 @@ impl Persistence {
             journaled: 0,
             journaled_view: 0,
             autosaved: 0,
-            autosaved_view: 0,
             first_pending: None,
             last_change: Instant::now(),
             next_autosave: Instant::now(),
@@ -984,7 +983,6 @@ struct Worker {
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
-    autosaved_view: u64,
     first_pending: Option<Instant>,
     last_change: Instant,
     next_autosave: Instant,
@@ -1043,7 +1041,7 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|s| s.content_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
@@ -1066,11 +1064,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && s.revision != self.autosaved) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1152,7 +1146,6 @@ impl Worker {
         match r {
             Ok(path) => {
                 self.autosaved = s.revision;
-                self.autosaved_view = s.view_epoch;
                 let _ = self.events.send(WorkerEvent::AutoSaved { path: path.clone(), revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
@@ -1333,6 +1326,22 @@ mod worker_failure_tests {
     #[test]
     fn worker_disconnect_request_reports_once() {
         disconnected_handoff("request");
+    }
+
+    #[test]
+    fn auto_save_now_skips_a_clean_view_only_snapshot() {
+        let (mut s, dir) = session("view-only-auto-save-now", |_| 0);
+        let project_path = dir.join("manual.fcproj");
+        s.execute("file.saveAs", json!({"path": project_path.to_string_lossy()})).unwrap();
+        s.view_changed();
+        s.sync_persistence();
+
+        assert!(s.persistence.as_ref().unwrap().auto_save_now().unwrap().is_none());
+        let auto_saves = dir.join(names::AUTO_SAVE_DIR);
+        assert!(!auto_saves.exists() || fs::read_dir(&auto_saves).unwrap().next().is_none());
+
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
