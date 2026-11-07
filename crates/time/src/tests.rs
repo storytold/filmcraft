@@ -397,3 +397,21 @@ proptest! {
         prop_assert_eq!(parse_timecode(&txt, r, false, 0).unwrap(), f);
     }
 }
+
+/// #4283: at 11 fps a frame is not a whole number of ticks, so the ticks from one boundary to the
+/// next can read as zero frames; counting between frame indices gives one.
+#[test]
+fn frames_between_counts_boundaries_at_fractional_tick_rates() {
+    let r = FrameRate::new(11, 1);
+    for f in 0..1000 {
+        for n in 1..=12 {
+            let (a, b) = (r.tick_of(f), r.tick_of(f + n));
+            assert_eq!(r.frames_between(a, b), n, "frames {f}..{}", f + n);
+        }
+    }
+    assert_eq!(r.frame_at(Tick(r.tick_of(2).0 - r.tick_of(1).0)), 0, "the length alone reads one short");
+    // frame indices that span the whole integer range saturate instead of overflowing
+    let fast = FrameRate::new(i64::MAX, 1);
+    assert_eq!(fast.frames_between(Tick(i64::MIN), Tick(i64::MAX)), i64::MAX);
+    assert_eq!(fast.frames_between(Tick(i64::MAX), Tick(i64::MIN)), i64::MIN);
+}

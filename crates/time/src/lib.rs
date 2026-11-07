@@ -247,6 +247,13 @@ impl FrameRate {
         clamp_i64(frame_index(self.sane(), t))
     }
 
+    /// Frames from `start` to `end`, counted between their frame indices. `frame_at(end - start)`
+    /// can read one short when a frame is not a whole number of ticks (#4283): the ticks between
+    /// two boundaries can be one fewer than the exact length of those frames.
+    pub fn frames_between(self, start: Tick, end: Tick) -> i64 {
+        self.frame_at(end).saturating_sub(self.frame_at(start))
+    }
+
     /// Start tick of frame `f` (ceiling division).
     ///
     /// Uses ceiling (not floor) so that `frame_at(tick_of(f)) == f` holds for every
