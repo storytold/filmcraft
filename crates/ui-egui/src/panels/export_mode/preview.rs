@@ -148,8 +148,15 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let est = child.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = format_bytes(sum.estimated_bytes))).color(t.text_dim));
     reg.add("export.estimate", est.rect, sum.estimated_size.clone());
     // buttons
-    let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
-    let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
+    let button_label = if queue_active {
+        tl!("Exporting")
+    } else if active_job.is_some() {
+        tl!("Cancel")
+    } else {
+        tl!("Export")
+    };
+    let queue_label = tl!("Send to Queue");
+    let (queue, go) = action_button_rects(ui.painter(), rect, queue_label, button_label);
     let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if busy { Sense::hover() } else { Sense::click() });
     let stroke_color = if busy {
         t.text_faint
@@ -160,16 +167,9 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     };
     let text_color = if busy { t.text_faint } else { t.text };
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), text_color);
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, queue_label, Tokens::semibold(12.5), text_color);
     reg.add("export.sendToQueue", queue, "Send to Queue");
 
-    let button_label = if queue_active {
-        tl!("Exporting")
-    } else if active_job.is_some() {
-        tl!("Cancel")
-    } else {
-        tl!("Export")
-    };
     let go_enabled = !queue_active;
     let resp = ui.interact(go, egui::Id::unique("export-go"), if go_enabled { Sense::click() } else { Sense::hover() });
     let fill_color = if !go_enabled {
@@ -208,6 +208,19 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             Err(e) => app.ui.status = e.to_string(),
         }
     }
+}
+
+/// Pill rects for the right column's "Send to Queue" and "Export" buttons, widened when a
+/// translated label (such as Russian "Отправить в очередь") exceeds the default button width.
+pub(super) fn action_button_rects(painter: &egui::Painter, rect: Rect, queue_label: &str, button_label: &str) -> (Rect, Rect) {
+    let go_text_w = painter.layout_no_wrap(button_label.to_string(), Tokens::semibold(13.0), Color32::WHITE).size().x;
+    let queue_text_w = painter.layout_no_wrap(queue_label.to_string(), Tokens::semibold(12.5), Color32::WHITE).size().x;
+    let go_w = (go_text_w + 28.0).ceil().max(104.0);
+    let queue_w = (queue_text_w + 28.0).ceil().max(122.0);
+    let y = rect.max.y - 44.0;
+    let go = Rect::from_min_size(pos2(rect.max.x - 16.0 - go_w, y), vec2(go_w, 30.0));
+    let queue = Rect::from_min_size(pos2(go.min.x - 10.0 - queue_w, y), vec2(queue_w, 30.0));
+    (queue, go)
 }
 
 /// The export range in sequence ticks (for the summary).
