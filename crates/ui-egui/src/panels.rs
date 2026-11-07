@@ -190,12 +190,17 @@ fn payload_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-payload")
 }
 
+/// Temp-store key recording the frame number on which the drag owner's pointer was released.
+fn release_frame_id() -> egui::Id {
+    egui::Id::unique("drag-release-frame")
+}
+
 /// Record `payload` as the active drag owned by `ui`'s viewport.
 fn start_drag(ui: &egui::Ui, payload: DragPayload) {
     let owner = ui.ctx().viewport_id();
     ui.ctx().data_mut(|d| {
         d.insert_temp(payload_id(), Some(DragPayloadBox { payload, owner }));
-        d.remove::<u64>(egui::Id::unique("drag-release-frame"));
+        d.remove::<u64>(release_frame_id());
     });
 }
 
@@ -294,7 +299,7 @@ pub fn dragged_effect(ui: &egui::Ui) -> Option<String> {
 pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| {
         d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None);
-        d.remove::<u64>(egui::Id::unique("drag-release-frame"));
+        d.remove::<u64>(release_frame_id());
     });
 }
 
@@ -371,7 +376,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if ctx.input(|i| i.pointer.any_released()) {
         // cleared next frame so drop targets see the release this frame
         let f = ctx.cumulative_frame_nr();
-        let k = egui::Id::unique("drag-release-frame");
+        let k = release_frame_id();
         match ctx.data(|d| d.get_temp::<u64>(k)) {
             Some(prev) if prev < f => {
                 clear_drag(ui);
