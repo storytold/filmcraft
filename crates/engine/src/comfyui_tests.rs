@@ -709,3 +709,158 @@ fn recipes_leave_with_their_item_and_keep_their_id() {
     assert!(s.project.item(item).is_none());
     assert!(!s.project.generated.contains_key(&item));
 }
+
+/// A fake whose n-th run (0-based) produces `runs[n]` (the last one again after that).
+fn fake_runs(runs: Vec<Vec<FakeOutput>>) -> Arc<FakeComfy> {
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    Arc::new(FakeComfy::new(Box::new(move |_| {
+        let k = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(runs.get(k).or(runs.last()).cloned().unwrap_or_default())
+    })))
+}
+
+/// The title clips in the active sequence.
+fn titles(s: &Session) -> usize {
+    let q = s.active_sequence().unwrap();
+    q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| crate::graphics::is_graphic(s, q, it.id)).count()
+}
+
+/// A name another job finished with is never taken over: each job claims its final name before
+/// downloading, so a later job gets the next number and both files keep their own bytes.
+#[test]
+fn a_finished_name_is_never_taken_over() {
+    use filmcraft_comfyui::Sink;
+    use std::io::Write as _;
+    let dir = tmp_dir("comfy-claim");
+    let d = dir.to_string_lossy().into_owned();
+    let services = crate::FsServices;
+    let cancel = AtomicBool::new(false);
+    let out = filmcraft_comfyui::Output {
+        node: "9".into(),
+        key: "images".into(),
+        kind: OutputKind::Image,
+        file: Some(filmcraft_comfyui::FileRef { filename: "x.png".into(), subfolder: String::new(), folder: "output".into() }),
+        text: None,
+    };
+    let files = |cancel| OutputFiles {
+        services: &services,
+        dir: &d,
+        name: "Shot",
+        in_memory: false,
+        cancel,
+        current: String::new(),
+        buffer: Vec::new(),
+        written: Vec::new(),
+    };
+    let (mut a, mut b) = (files(&cancel), files(&cancel));
+    // A has chosen and claimed 001 and is still downloading when B starts, finishes and publishes
+    a.create(&out).unwrap().write_all(b"from A").unwrap();
+    b.create(&out).unwrap().write_all(b"from B").unwrap();
+    b.close(&out, Some(6)).unwrap();
+    a.close(&out, Some(6)).unwrap();
+    assert_eq!(std::fs::read(dir.join("Shot 001.png")).unwrap(), b"from A");
+    assert_eq!(std::fs::read(dir.join("Shot 002.png")).unwrap(), b"from B");
+    // a download that did not complete releases its name
+    let mut c = files(&cancel);
+    drop(c.create(&out).unwrap());
+    c.close(&out, None).unwrap();
+    assert!(!dir.join("Shot 003.png").exists() && !dir.join("Shot 003.png.part").exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A result never overwrites recipe edits made while it was generating: it is not applied, and
+/// the clip keeps the new inputs.
+#[test]
+fn edits_during_a_run_are_not_overwritten() {
+    let mut s = session(Arc::new(FakeComfy::with_outputs(vec![])));
+    let (item, _) = new_clip(&mut s, json!({"inputs": [{"node": "6", "input": "text", "value": "a dog"}]}));
+    let original = recipe_of(&s, item).unwrap();
+    let dir = tmp_dir("comfy-stale");
+    let file = dir.join("out.png");
+    std::fs::write(&file, png(8, 8)).unwrap();
+    let output = filmcraft_comfyui::Output {
+        node: "9".into(),
+        key: "images".into(),
+        kind: OutputKind::Image,
+        file: Some(filmcraft_comfyui::FileRef { filename: "out.png".into(), subfolder: String::new(), folder: "output".into() }),
+        text: None,
+    };
+    let done = |original: Recipe| Done {
+        item,
+        recipe: original.clone(),
+        original,
+        result: Ok(("p".into(), vec![output.clone()], vec![(output.clone(), file.to_string_lossy().into_owned())])),
+    };
+    // the user changes the prompt while the run is going
+    s.execute("comfyui.setInputs", json!({"item": item.0, "inputs": [{"node": "6", "input": "text", "value": "a fox"}]})).unwrap();
+    let e = apply(&mut s, done(original)).unwrap_err().to_string();
+    assert!(e.contains("changed while it was generating"), "{e}");
+    assert!(matches!(s.project.item(item).unwrap().as_media().unwrap().media, MediaRef::Generator(_)));
+    assert_eq!(recipe_of(&s, item).unwrap().inputs[0].value, Some(json!("a fox")));
+    // unchanged since the start: applied
+    let current = recipe_of(&s, item).unwrap();
+    apply(&mut s, done(current)).unwrap();
+    assert!(matches!(s.project.item(item).unwrap().as_media().unwrap().media, MediaRef::File { .. }));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Titles made from text output are replaced by the next run's, and removed when a run makes a
+/// picture instead.
+#[test]
+fn titles_of_the_previous_run_are_replaced() {
+    let fake = fake_runs(vec![
+        vec![FakeOutput::text("30", "First take")],
+        vec![FakeOutput::text("30", "Second take")],
+        vec![FakeOutput::file("9", "images", "frame.png", png(64, 36))],
+    ]);
+    let mut s = session(fake);
+    let (item, _) = new_clip(&mut s, json!({"duration": 2}));
+    let dir = tmp_dir("comfy-titles");
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(titles(&s), 1);
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(titles(&s), 1, "the first run's title was kept");
+    // the second run is one undo step: undo brings the first title back
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(titles(&s), 1);
+    s.execute("edit.redo", json!({})).unwrap();
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(titles(&s), 0, "a title stayed over the picture");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Sound first, then a picture: the clip comes back to a video track (and leaves the audio track).
+#[test]
+fn a_picture_after_a_sound_goes_back_to_a_video_track() {
+    let fake = fake_runs(vec![vec![FakeOutput::file("12", "audio", "voice.wav", wav(1.0))], vec![FakeOutput::file("9", "images", "frame.png", png(64, 36))]]);
+    let mut s = session(fake);
+    let (item, _) = new_clip(&mut s, json!({"duration": 3}));
+    let dir = tmp_dir("comfy-back-to-video");
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(clips_of(&s, item).iter().map(|c| c.0).collect::<Vec<_>>(), [TrackKind::Audio]);
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    let clips = clips_of(&s, item);
+    assert_eq!(clips.iter().map(|c| c.0).collect::<Vec<_>>(), [TrackKind::Video], "{clips:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A video with sound regenerated as sound only keeps one audio clip (its linked partner), not two.
+#[test]
+fn sound_only_after_a_video_with_sound_keeps_one_audio_clip() {
+    let dir = tmp_dir("comfy-video-then-sound");
+    let movie = dir.join("in.mov");
+    make_movie(&movie, DemoScene::Plasma, 64, 36, 24);
+    let fake = fake_runs(vec![
+        vec![FakeOutput::file("20", "gifs", "clip.mov", std::fs::read(&movie).unwrap())],
+        vec![FakeOutput::file("12", "audio", "voice.wav", wav(0.5))],
+    ]);
+    let mut s = session(fake);
+    let (item, _) = new_clip(&mut s, json!({"duration": 5}));
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(clips_of(&s, item).len(), 2);
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    let clips = clips_of(&s, item);
+    assert_eq!(clips.len(), 1, "{clips:?}");
+    assert_eq!((clips[0].0, clips[0].2, clips[0].3), (TrackKind::Audio, Tick::from_seconds_f64(0.5), None));
+    std::fs::remove_dir_all(dir).ok();
+}

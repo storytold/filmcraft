@@ -133,6 +133,9 @@ type Written = (comfy::Output, String);
 /// What one clip's run produced.
 struct Done {
     item: ItemId,
+    /// The clip's recipe when the job started (before new seeds): a result is applied only while
+    /// the clip still has it, so edits made during the run are never overwritten.
+    original: Recipe,
     recipe: Recipe,
     result: std::result::Result<(String, Vec<comfy::Output>, Vec<Written>), String>,
 }
@@ -638,6 +641,8 @@ fn new_seed(salt: u64, k: usize) -> u64 {
 struct Work {
     item: ItemId,
     name: String,
+    /// The recipe as it was when the job started (see [`Done::original`]).
+    original: Recipe,
     recipe: Recipe,
 }
 
@@ -702,18 +707,37 @@ impl comfy::Sink for OutputFiles<'_> {
             return Ok(Box::new(Stoppable { inner: &mut self.buffer, cancel: self.cancel }));
         }
         std::fs::create_dir_all(self.dir).map_err(|e| format!("{}: {e}", self.dir))?;
-        // reserve the name: two jobs (clips with the same name) must never share a file, so the
-        // `.part` is created exclusively and a name another job took first means the next number
+        // reserve the name: two jobs (clips with the same name) must never share a file. The final
+        // name is claimed first by creating it empty and exclusively (so choosing and claiming it
+        // is one step, and no other job can pick it while this one downloads), then its `.part`;
+        // a name another job took first means the next number. `close` renames the `.part` over
+        // this job's own placeholder.
+        let create_new = |p: &str| std::fs::OpenOptions::new().write(true).create_new(true).open(p);
+        let taken = |e: &std::io::Error| e.kind() == std::io::ErrorKind::AlreadyExists;
         let mut tries = 0;
         let f = loop {
+            if tries >= 1000 {
+                return Err(format!("{}: no free file name", self.dir));
+            }
+            tries += 1;
+            match create_new(&path) {
+                Ok(_) => {}
+                Err(e) if taken(&e) => {
+                    path = version_path(self.services, self.dir, self.name, ext);
+                    continue;
+                }
+                Err(e) => return Err(format!("{path}: {e}")),
+            }
             let part = Self::part(&path);
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+            match create_new(&part) {
                 Ok(f) => break f,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 1000 => {
-                    tries += 1;
+                Err(e) => {
+                    let _ = std::fs::remove_file(&path);
+                    if !taken(&e) {
+                        return Err(format!("{part}: {e}"));
+                    }
                     path = version_path(self.services, self.dir, self.name, ext);
                 }
-                Err(e) => return Err(format!("{part}: {e}")),
             }
         };
         self.current.clone_from(&path);
@@ -733,12 +757,16 @@ impl comfy::Sink for OutputFiles<'_> {
             return Ok(());
         }
         let part = Self::part(&path);
+        // an incomplete download releases its name: both the `.part` and the placeholder go
         if size.is_none() {
             let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(&path);
             return Ok(());
         }
+        // `path` is this job's own empty placeholder (reserved in `create`): replacing it is safe
         if let Err(e) = std::fs::rename(&part, &path) {
             let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(&path);
             return Err(format!("{path}: {e}"));
         }
         self.written.push((o.clone(), path));
@@ -764,6 +792,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let mut refused = Vec::new();
     for item in &items {
         let Some(mut recipe) = recipe_of(s, *item) else { continue };
+        let original = recipe.clone();
         let name = s.project.item(*item).map(|i| i.name.clone()).unwrap_or_default();
         refused.extend(unconfirmed(s, &recipe).into_iter().map(|(node, input, f)| format!("{name}: node {node} `{input}`: {f}")));
         if randomize {
@@ -771,7 +800,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
             let seeds = wf.seeds();
             recipe.bind(seeds.into_iter().enumerate().map(|(k, (node, input))| Binding::value(node, input, json!(new_seed(salt ^ item.0, k)))));
         }
-        work.push(Work { item: *item, name, recipe });
+        work.push(Work { item: *item, name, original, recipe });
     }
     if !refused.is_empty() {
         return Err(bad(
@@ -857,7 +886,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
                 Ok(_) => ok += 1,
                 Err(e) => failed.push(format!("{}: {e}", w.name)),
             }
-            lock(&out).push(Done { item: w.item, recipe: w.recipe.clone(), result });
+            lock(&out).push(Done { item: w.item, original: w.original.clone(), recipe: w.recipe.clone(), result });
             prog.done.fetch_add(1, Ordering::Relaxed);
         }
         let secs = t0.elapsed().as_secs_f64();
@@ -933,11 +962,25 @@ fn primary(files: &[Written]) -> Option<usize> {
 /// Apply one finished run as one undo step: link the clip to its media, fit its clips, import
 /// further outputs and turn text into titles.
 fn apply(s: &mut Session, d: Done) -> Result<()> {
-    let Done { item, recipe, result } = d;
+    let Done { item, original, recipe, result } = d;
     let (prompt_id, outputs, files) = result.map_err(EngineError::Other)?;
     if s.project.item(item).and_then(|i| i.as_media()).is_none() {
         return Err(EngineError::Other("the clip was deleted while it was generating".into()));
     }
+    // inputs or the workflow were changed during the run: the result belongs to the old recipe,
+    // and applying it would overwrite those edits (its files stay in the output folder)
+    if recipe_of(s, item).as_ref() != Some(&original) {
+        return Err(EngineError::Other("its inputs were changed while it was generating, so the result was not applied; generate it again".into()));
+    }
+    // titles the previous run made for this clip (text output) are replaced by this run's
+    let old_titles: Vec<u64> = s
+        .project
+        .generated
+        .get(&item)
+        .and_then(|g| g.last_run.get("titles"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default();
     let texts: Vec<String> = outputs.iter().filter_map(|o| o.text.clone()).collect();
     let main = primary(&files);
     let last_run = json!({
@@ -994,6 +1037,19 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
             s.media.remove(item);
         }
     }
+    if !old_titles.is_empty() {
+        s.edit(label, |pr, _| {
+            let seqs: Vec<ItemId> = pr.sequences().map(|i| i.id).collect();
+            for sid in seqs {
+                if let Some(q) = pr.sequence_mut(sid) {
+                    for t in q.video_tracks.iter_mut() {
+                        t.items.retain(|it| !old_titles.contains(&it.id.0));
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
     // further media outputs are imported; a separate sound joins a picture that has none
     let mut sound = None;
     for (k, (o, path)) in files.iter().enumerate() {
@@ -1021,10 +1077,29 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
             .active_sequence()
             .map(|q| q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.item == item).map(|it| (it.start, it.duration)).collect())
             .unwrap_or_default();
+        let mut titles = Vec::new();
         for (start, dur) in places {
-            if let Err(e) = s.execute("graphics.newText", json!({"text": text, "time": start.0, "seconds": dur.seconds(), "size": 60})) {
-                late = Err(e);
-                break;
+            match s.execute("graphics.newText", json!({"text": text, "time": start.0, "seconds": dur.seconds(), "size": 60})) {
+                Ok(v) => titles.extend(v["clip"].as_u64()),
+                Err(e) => {
+                    late = Err(e);
+                    break;
+                }
+            }
+        }
+        // remembered with the run, so the next run replaces them
+        if !titles.is_empty() {
+            let r = s.edit(label, |pr, _| {
+                if let Some(g) = pr.generated.get_mut(&item) {
+                    let g = Arc::make_mut(g);
+                    if let Some(o) = g.last_run.as_object_mut() {
+                        o.insert("titles".into(), json!(titles));
+                    }
+                }
+                Ok(())
+            });
+            if late.is_ok() {
+                late = r;
             }
         }
     }
@@ -1043,20 +1118,27 @@ fn path_of(files: &[Written], k: Option<usize>) -> &str {
 
 /// Put `a` on the first unlocked audio track free over its range (a new track if none is).
 fn insert_audio(pr: &mut Project, seq: ItemId, a: TrackItem) -> Result<()> {
+    insert_on_free_track(pr, seq, TrackKind::Audio, a)
+}
+
+/// Put `it` on the first unlocked track of `kind` free over its range (a new track if none is).
+fn insert_on_free_track(pr: &mut Project, seq: ItemId, kind: TrackKind, it: TrackItem) -> Result<()> {
     let new_track = TrackId(pr.alloc_id());
     let q = pr.sequence_mut(seq).ok_or(EngineError::NoSequence)?;
-    let range = a.range();
+    let range = it.range();
     let free = |t: &Track| !t.locked && !t.items.iter().any(|i| i.range().overlaps(&range));
-    let idx = match q.audio_tracks.iter().position(free) {
+    let tracks = if kind == TrackKind::Audio { &mut q.audio_tracks } else { &mut q.video_tracks };
+    let idx = match tracks.iter().position(free) {
         Some(i) => i,
         None => {
-            let n = q.audio_tracks.len() + 1;
-            q.audio_tracks.push(Track::new(new_track, TrackKind::Audio, format!("Audio {n}")));
-            q.audio_tracks.len() - 1
+            let n = tracks.len() + 1;
+            let name = if kind == TrackKind::Audio { format!("Audio {n}") } else { format!("Video {n}") };
+            tracks.push(Track::new(new_track, kind, name));
+            tracks.len() - 1
         }
     };
-    let t = q.audio_tracks.get_mut(idx).ok_or(EngineError::NoSequence)?;
-    t.items.push(a);
+    let t = tracks.get_mut(idx).ok_or(EngineError::NoSequence)?;
+    t.items.push(it);
     t.sort();
     Ok(())
 }
@@ -1091,12 +1173,60 @@ fn fit_clips(pr: &mut Project, item: ItemId, info: &MediaInfo) -> Result<()> {
         }
         for v in to_audio {
             let dur = if info.duration > Tick::ZERO { v.duration.min(info.duration - v.source_in) } else { v.duration };
+            // a linked audio clip of the same item (a video that had sound) becomes the placement:
+            // adding another would play the sound twice
+            let q = pr.sequence_mut(sid).ok_or(EngineError::NoSequence)?;
+            let partner = v.link.and_then(|l| q.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).find(|a| a.link == Some(l) && a.item == item));
+            if let Some(a) = partner {
+                a.link = None;
+                if dur > Tick::ZERO {
+                    a.duration = a.duration.min(dur);
+                }
+                continue;
+            }
             if dur <= Tick::ZERO {
                 continue;
             }
             let mut a = pr.make_track_item(item, TrackKind::Audio, v.start, TimeRange::new(v.source_in, dur), rate).ok_or(EngineError::NoSequence)?;
             a.name = v.name.clone();
             insert_audio(pr, sid, a)?;
+        }
+        // media that is a picture again (after a sound-only run): placements that live only on
+        // audio tracks get a video clip back; with sound the audio clip becomes its linked
+        // partner, without it the audio clip goes
+        if has_v {
+            let q = pr.sequence(sid).ok_or(EngineError::NoSequence)?;
+            let frame = (q.settings.width, q.settings.height);
+            let video_links: Vec<u64> = q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.item == item).filter_map(|it| it.link).collect();
+            let lone: Vec<TrackItem> = q
+                .audio_tracks
+                .iter()
+                .flat_map(|t| t.items.iter())
+                .filter(|a| a.item == item && a.link.is_none_or(|l| !video_links.contains(&l)))
+                .cloned()
+                .collect();
+            let src_size = info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or(frame);
+            for a in lone {
+                let mut v =
+                    pr.make_track_item(item, TrackKind::Video, a.start, TimeRange::new(a.source_in, a.duration), rate).ok_or(EngineError::NoSequence)?;
+                v.name = a.name.clone();
+                for e in &mut v.effects {
+                    filmcraft_project::resolve_auto_points(e, frame, src_size);
+                }
+                let link = if has_a { Some(pr.alloc_id()) } else { None };
+                v.link = link;
+                let q = pr.sequence_mut(sid).ok_or(EngineError::NoSequence)?;
+                for t in q.audio_tracks.iter_mut() {
+                    if has_a {
+                        if let Some(x) = t.items.iter_mut().find(|x| x.id == a.id) {
+                            x.link = link;
+                        }
+                    } else {
+                        t.items.retain(|x| x.id != a.id);
+                    }
+                }
+                insert_on_free_track(pr, sid, TrackKind::Video, v)?;
+            }
         }
         if let Some(q) = pr.sequence(sid) {
             q.check().map_err(EngineError::Other)?;

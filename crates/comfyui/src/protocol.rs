@@ -161,8 +161,12 @@ fn cut(t: &str, max: usize) -> &str {
 pub fn parse_outputs(outputs: &Value) -> Vec<Output> {
     let Some(map) = outputs.as_object() else { return Vec::new() };
     let mut nodes: Vec<(&String, &Value)> = map.iter().filter(|(n, _)| n.len() <= MAX_NAME).collect();
+    // numeric ids in number order, then the rest by text: a total order (mixing the two
+    // comparisons would not be one), matching the workflow's own node order
     nodes.sort_by(|a, b| match (a.0.parse::<u64>(), b.0.parse::<u64>()) {
         (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         _ => a.0.cmp(b.0),
     });
     let mut out = Vec::new();
@@ -292,6 +296,14 @@ mod tests {
     }
 
     /// A history entry lists image, audio, video and text outputs in node order, with their `/view` paths.
+    /// Outputs follow node order: numeric ids by number, then other ids by text (a total order).
+    #[test]
+    fn outputs_follow_node_order_with_mixed_ids() {
+        let h = json!({"10": {"images": [{"filename": "c.png"}]}, "1a": {"images": [{"filename": "z.png"}]}, "2": {"images": [{"filename": "b.png"}]}, "b": {"images": [{"filename": "y.png"}]}});
+        let nodes: Vec<String> = parse_outputs(&h).into_iter().map(|o| o.node).collect();
+        assert_eq!(nodes, ["2", "10", "1a", "b"]);
+    }
+
     #[test]
     fn history_outputs_of_every_kind() {
         let h = json!({"p1": {
