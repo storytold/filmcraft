@@ -567,7 +567,14 @@ impl<P: Pixel> Core<P> {
         let threads = if cfg.threads == 0 { std::thread::available_parallelism().map_or(1, |n| n.get()) } else { cfg.threads };
         let slices = if cfg.slices > 0 { cfg.slices.min(mbh) } else { threads.min(mbh.div_ceil(4)).max(1) };
         #[cfg(feature = "threads")]
-        let pool = Pool { pool: rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok() };
+        let pool = Pool {
+            pool: Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .map_err(|e| Error::InvalidConfig(format!("cannot build the {threads}-thread pool: {e}")))?,
+            ),
+        };
         #[cfg(not(feature = "threads"))]
         let pool = Pool {};
         let record_pass1 = cfg.pass == Pass::First;
