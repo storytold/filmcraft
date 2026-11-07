@@ -22,6 +22,7 @@ pub(super) fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
         settings.height = *height;
         settings.frame_rate = *rate;
     }
+    settings.validate().map_err(|e| bad("file.newSequenceFromClip", e))?;
     let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio().map(|a| a.channels)).unwrap_or(2);
     let n_audio = media_root(&s.project, first)
         .map(|(_, m, _)| {
@@ -137,8 +138,14 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("file.newOfflineFile", "an offline file needs video or audio"));
     }
     let rate = f64_p(p, "fps").map(FrameRate::from_f64).unwrap_or(st.frame_rate);
-    let width = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
-    let height = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
+    let (width, height) = if has_v {
+        let width = crate::commands::checked_u32_p(p, "width", "file.newOfflineFile")?.unwrap_or(st.width);
+        let height = crate::commands::checked_u32_p(p, "height", "file.newOfflineFile")?.unwrap_or(st.height);
+        filmcraft_project::validate_frame_size(width, height).map_err(|e| bad("file.newOfflineFile", e))?;
+        (width, height)
+    } else {
+        (st.width, st.height)
+    };
     let secs = f64_p(p, "seconds").unwrap_or(10.0).max(rate.frame_duration().seconds());
     let duration = rate.snap_nearest(Tick::from_seconds_f64(secs)).max(rate.frame_duration());
     let start_tc = match str_p(p, "timecode") {

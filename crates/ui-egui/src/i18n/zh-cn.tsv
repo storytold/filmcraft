@@ -9,6 +9,19 @@
 # 净室实现：每条译文均由英文含义直接译出，使用通用的中文视频剪辑术语（剪辑、时间轴、序列、
 #   轨道、关键帧……）。未参考或复制任何专有本地化资源、字符串表或产品界面。产品与技术名称
 #   （FilmCraft、ArtCraft、Lumetri、ProRes、LUFS……）保留原文拼写。
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	无法打开浏览器恢复文件“{name}”：{error}
+	The browser recovery file “{name}” was skipped by a launch option.	由于启动选项，已跳过浏览器恢复文件“{name}”。
+	Recovery paused	恢复已暂停
+	Could not inspect the browser recovery file: {error}	无法检查浏览器恢复文件：{error}
+	Recovery unavailable	恢复不可用
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	无法读取浏览器恢复存储：{error}。新的恢复快照已暂停。请手动保存当前工作，然后重新加载此页面重试。
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	文件仍保存在此浏览器中。保存该文件之前，新的恢复快照已暂停。
+	Download recovery file	下载恢复文件
+	I saved the recovery file	我已保存恢复文件
+	Could not download recovery file: {error}	无法下载恢复文件：{error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	保存文件后再继续。编辑新项目可能会替换浏览器中的恢复副本。
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	未保存更改的恢复已暂停：{error}。请修复无效尺寸以恢复。
 	About FilmCraft	关于 FilmCraft
 	Add Audio Submix Track	添加音频子混音轨道
 	Add Caption at Playhead	在播放头处添加字幕

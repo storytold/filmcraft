@@ -113,7 +113,7 @@ pub fn open_image_sequence(first: &str, services: &dyn Services, rate: filmcraft
             Arc::new(move |p: &str| files.get(p).map(|b| b.to_vec()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, p.to_string())))
         }
     };
-    Ok(Arc::new(filmcraft_media::sequence::ImageSequenceSource::new(name, frames, rate, loader)?))
+    checked_source(Arc::new(filmcraft_media::sequence::ImageSequenceSource::new(name, frames, rate, loader)?))
 }
 
 /// The frames of the image sequence starting at `first` (see [`open_image_sequence`]).
@@ -148,6 +148,16 @@ fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+pub(crate) fn checked_source(src: SharedSource) -> Result<SharedSource, MediaError> {
+    if let Some(video) = &src.info().video
+        && (video.width, video.height) != (0, 0)
+    {
+        filmcraft_project::validate_frame_size(video.width, video.height)
+            .map_err(|e| MediaError::Unsupported(format!("{}: invalid video dimensions {}x{}: {e}", src.info().name, video.width, video.height)))?;
+    }
+    Ok(src)
+}
+
 impl MediaPool {
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(PoisonError::into_inner).push(o);
@@ -168,6 +178,15 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
         let src = self.unsupported_as_slate(item, path, src);
         self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (format!("file:{path}"), src));
+    }
+
+    /// A changed file that failed to open must not keep a reader for its old bytes. Cache the
+    /// offline slate from the project's last valid metadata without opening the bad file again.
+    pub(crate) fn insert_unreadable(&self, item: ItemId, path: &str, info: &MediaInfo, error: &str) {
+        self.remove(item);
+        self.set_offline(item, OfflineReason::Unreadable, path, error);
+        let src: SharedSource = Arc::new(SlateSource::new(info.clone(), &file_name(path), OfflineReason::Unreadable));
+        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
     }
 
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
@@ -276,7 +295,7 @@ impl MediaPool {
     /// Open a file through the registered openers.
     pub fn open_bytes(&self, name: &str, bytes: Arc<[u8]>) -> Result<SharedSource, MediaError> {
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
-        filmcraft_media::open_bytes(name, bytes, &openers)
+        checked_source(filmcraft_media::open_bytes(name, bytes, &openers)?)
     }
 
     /// Read and open a file through `services` (through its random-access reader when the host
@@ -285,7 +304,7 @@ impl MediaPool {
         let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
         if let Some(r) = services.reader(path) {
             let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
-            return filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers);
+            return checked_source(filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers)?);
         }
         let bytes = services.read_file(path).map_err(io)?;
         self.open_bytes(&file_name(path), bytes.into())
@@ -298,7 +317,7 @@ impl MediaPool {
         let Some(r) = services.reader(path) else { return self.open_file(path, services) };
         let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
-        filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)
+        checked_source(filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)?)
     }
 
     /// Resolve (and cache) the source for a project item, using proxies when they are enabled.
@@ -369,8 +388,13 @@ impl MediaPool {
     /// when the item shares the pool's source instead: not a file (a generator), made offline, an
     /// image sequence, a host without a reader (the browser), a format that would be read whole,
     /// or a file that does not open or that the pool last saw offline (the pool's source renders
-    /// the slate and says why, so the job shows what the monitors show).
+    /// the slate and says why, so the job shows what the monitors show). Rejected dimensions use a
+    /// job-owned slate; returning None there would fall back to the pool's stale reader.
     pub fn own_source(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
+        self.own_source_with_status(p, item, services).map(|owned| owned.source)
+    }
+
+    fn own_source_with_status(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<OwnedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let MediaRef::File { path } = &m.media else { return None };
         if m.offline || m.info.kind == filmcraft_media::MediaKind::ImageSequence || self.offline_status(item).is_some() {
@@ -380,7 +404,13 @@ impl MediaPool {
         let reader = services.reader(&file)?.ok()?;
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         let src = filmcraft_media::reader::open_reader_within(&file_name(&file), reader, &filmcraft_codecs::reader_openers(), &openers, 0).ok()?;
-        Some(self.unsupported_as_slate(item, path, src))
+        match checked_source(src) {
+            Ok(src) => Some(OwnedSource { source: self.unsupported_as_slate(item, path, src), offline: None }),
+            Err(error) => Some(OwnedSource {
+                source: Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::Unreadable)),
+                offline: Some(OfflineStatus { reason: OfflineReason::Unreadable, path: path.clone(), error: error.to_string() }),
+            }),
+        }
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
@@ -431,6 +461,12 @@ impl MediaPool {
     }
 }
 
+#[derive(Clone)]
+struct OwnedSource {
+    source: SharedSource,
+    offline: Option<OfflineStatus>,
+}
+
 /// Implements [`filmcraft_render::SourceProvider`] over the pool for one project snapshot.
 pub struct PoolProvider {
     pub pool: Arc<MediaPool>,
@@ -441,7 +477,7 @@ pub struct PoolProvider {
     /// Items asked for so far, when recording ([`PoolProvider::recording`]).
     used: Option<Mutex<BTreeSet<ItemId>>>,
     /// Per media item, its own copy or None to share the pool's source ([`PoolProvider::own_sources`]).
-    own: Option<Mutex<HashMap<ItemId, Option<SharedSource>>>>,
+    own: Option<Mutex<HashMap<ItemId, Option<OwnedSource>>>>,
 }
 
 impl PoolProvider {
@@ -469,7 +505,10 @@ impl PoolProvider {
         media
             .into_iter()
             .filter_map(|id| {
-                let st = self.pool.offline_status(id)?;
+                let owned_status = self.own.as_ref().and_then(|own| {
+                    own.lock().unwrap_or_else(PoisonError::into_inner).get(&id).and_then(|source| source.as_ref()).and_then(|owned| owned.offline.clone())
+                });
+                let st = owned_status.or_else(|| self.pool.offline_status(id))?;
                 let status = match st.reason {
                     OfflineReason::Missing => "missing",
                     OfflineReason::MadeOffline => "offline",
@@ -495,7 +534,7 @@ impl filmcraft_render::SourceProvider for PoolProvider {
             let src = match own.get(&media) {
                 Some(src) => src.clone(),
                 None => {
-                    let src = self.pool.own_source(&self.project, media, &*self.services);
+                    let src = self.pool.own_source_with_status(&self.project, media, &*self.services);
                     // the host is still fetching the file's bytes (the browser): try again next time
                     if src.is_some() || !filmcraft_media::pending::is_set() {
                         own.insert(media, src.clone());
@@ -503,8 +542,8 @@ impl filmcraft_render::SourceProvider for PoolProvider {
                     src
                 }
             };
-            if let Some(src) = src {
-                return Some(src);
+            if let Some(owned) = src {
+                return Some(owned.source);
             }
         }
         if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
@@ -708,6 +747,231 @@ impl MediaSource for ProxySource {
 mod tests {
     use super::*;
     use filmcraft_project::ItemKind;
+
+    #[test]
+    fn byte_media_probe_enforces_total_pixel_boundary_without_decoding_a_large_frame() {
+        fn dimension_probe(_name: &str, bytes: Arc<[u8]>) -> Option<filmcraft_media::Result<SharedSource>> {
+            let height = match bytes.first().copied() {
+                Some(b'a') => 8_192,
+                Some(b'r') => 8_193,
+                _ => return None,
+            };
+            Some(Ok(Arc::new(filmcraft_media::generators::GeneratorSource::new(
+                filmcraft_media::Generator::BlackVideo,
+                32_768,
+                height,
+                filmcraft_time::FrameRate::FPS_24,
+                filmcraft_time::Tick(1),
+            ))))
+        }
+
+        let pool = MediaPool::default();
+        pool.register_opener(dimension_probe);
+        let accepted = pool.open_bytes("boundary.probe", Arc::from(&b"a"[..])).unwrap();
+        assert_eq!(accepted.info().video.as_ref().map(|video| (video.width, video.height)), Some((32_768, 8_192)));
+        let rejected = pool.open_bytes("boundary.probe", Arc::from(&b"r"[..]));
+        assert!(matches!(rejected, Err(MediaError::Unsupported(message)) if message.contains("32768x8193")));
+    }
+
+    #[test]
+    fn job_owned_readers_reject_changed_files_with_invalid_dimensions() {
+        let dir = crate::media_test_util::tmp_dir("job-frame-size");
+        let path = dir.join("camera.y4m");
+        let y4m = |width: usize| {
+            let mut bytes = format!("YUV4MPEG2 W{width} H1 Cmono\nFRAME\n").into_bytes();
+            bytes.resize(bytes.len() + width, 128);
+            bytes
+        };
+        std::fs::write(&path, y4m(16)).unwrap();
+        let mut session = crate::Session::default();
+        let result = session.execute("file.import", serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let item = ItemId(result["items"][0].as_u64().unwrap());
+        session.execute("media.refreshChanged", serde_json::json!({})).unwrap();
+        assert!(session.media.own_source(&session.project, item, &crate::FsServices).is_some());
+        assert!(crate::previews::open_preview_file(&session.media, "camera.y4m", &path).is_some());
+        let cached = session.media.cached(item).unwrap();
+        std::fs::write(&path, y4m(32_769)).unwrap();
+        assert!(session.media.open_file(&path.to_string_lossy(), &crate::FsServices).is_err());
+        use filmcraft_render::SourceProvider;
+        let provider = session.media.full_res_provider(session.project.clone(), session.services.clone()).own_sources().recording();
+        let source = provider.source(item).unwrap();
+        let frame = source.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap();
+        assert_eq!((frame.width, frame.height), (16, 2));
+        assert_eq!(frame.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 2, "camera.y4m", OfflineReason::Unreadable));
+        let used = provider.offline_used();
+        assert_eq!(used.len(), 1);
+        assert!(used[0].error.contains("32769x1"));
+        assert!(Arc::ptr_eq(&cached, &session.media.cached(item).unwrap()), "job-local failure must not replace the live pool reader");
+        assert!(session.media.offline_status(item).is_none());
+        assert!(crate::previews::open_preview_file(&session.media, "camera.y4m", &path).is_none());
+        assert_eq!(session.project.item(item).unwrap().as_media().unwrap().info.video.as_ref().unwrap().width, 16);
+        std::fs::write(&path, y4m(32)).unwrap();
+        session.execute("media.refreshChanged", serde_json::json!({})).unwrap();
+        let repaired = session.media.own_source(&session.project, item, &crate::FsServices).unwrap();
+        assert_eq!(repaired.info().video.as_ref().unwrap().width, 32);
+        let retained = provider.source(item).unwrap();
+        assert!(Arc::ptr_eq(&retained, &source));
+        assert_eq!(retained.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap().to_rgba8(), frame.to_rgba8());
+        assert_eq!(provider.offline_used(), used, "repairing the live pool must retain diagnostics for the job still rendering its slate");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejected_job_reader_cannot_overwrite_a_concurrent_refresh() {
+        use filmcraft_render::SourceProvider;
+        use std::sync::mpsc::{Receiver, Sender, channel};
+        struct DelayedReader {
+            bytes: Arc<[u8]>,
+            entered: Sender<()>,
+            resume: Mutex<Receiver<()>>,
+        }
+        impl Services for DelayedReader {
+            fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+                Err(std::io::Error::other("reader only"))
+            }
+            fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+                Err(std::io::Error::other("reader only"))
+            }
+            fn reader(&self, _: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+                Some((|| {
+                    self.entered.send(()).map_err(std::io::Error::other)?;
+                    self.resume.lock().unwrap().recv_timeout(std::time::Duration::from_secs(30)).map_err(std::io::Error::other)?;
+                    Ok(Arc::new(filmcraft_media::reader::MemReader(self.bytes.clone())) as filmcraft_media::SharedReader)
+                })())
+            }
+        }
+        let y4m = |width: usize| {
+            let mut bytes = format!("YUV4MPEG2 W{width} H1 Cmono\nFRAME\n").into_bytes();
+            bytes.resize(bytes.len() + width, 128);
+            bytes
+        };
+        let dir = crate::media_test_util::tmp_dir("job-refresh-race");
+        let path = dir.join("camera.y4m");
+        std::fs::write(&path, y4m(16)).unwrap();
+        let mut session = crate::Session::default();
+        let result = session.execute("file.import", serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let item = ItemId(result["items"][0].as_u64().unwrap());
+        session.execute("media.refreshChanged", serde_json::json!({})).unwrap();
+        let (entered_tx, entered_rx) = channel();
+        let (resume_tx, resume_rx) = channel();
+        let host = Arc::new(DelayedReader { bytes: y4m(32_769).into(), entered: entered_tx, resume: Mutex::new(resume_rx) });
+        let provider = session.media.full_res_provider(session.project.clone(), host).own_sources().recording();
+        let job = std::thread::spawn(move || {
+            let source = provider.source(item).unwrap();
+            (provider, source)
+        });
+        entered_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        std::fs::write(&path, y4m(32)).unwrap();
+        session.execute("media.refreshChanged", serde_json::json!({})).unwrap();
+        let refreshed = session.media.cached(item).unwrap();
+        assert_eq!(refreshed.info().video.as_ref().unwrap().width, 32);
+        resume_tx.send(()).unwrap();
+        let (provider, rejected) = job.join().unwrap();
+        assert!(Arc::ptr_eq(&refreshed, &session.media.cached(item).unwrap()));
+        assert!(session.media.offline_status(item).is_none());
+        assert!(!Arc::ptr_eq(&refreshed, &rejected));
+        let frame = rejected.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        assert_eq!(frame.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 2, "camera.y4m", OfflineReason::Unreadable));
+        assert!(provider.offline_used()[0].error.contains("32769x1"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_media_import_and_relink_preserve_project_metadata() {
+        use serde_json::json;
+
+        let dir = crate::media_test_util::tmp_dir("y4m-frame-size");
+        let mut session = crate::Session::default();
+        let original = session.project.clone();
+        for (width, accepted) in [(32_769, false), (32_768, true)] {
+            let source = dir.join(format!("{width}.y4m"));
+            let mut bytes = format!("YUV4MPEG2 W{width} H1 Cmono\nFRAME\n").into_bytes();
+            bytes.resize(bytes.len() + width, 128);
+            std::fs::write(&source, bytes).unwrap();
+            let imported = session.execute("file.import", json!({"paths": [source.to_string_lossy()]}));
+            if accepted {
+                assert_eq!(imported.unwrap()["items"].as_array().map(Vec::len), Some(1));
+            } else {
+                let error = imported.unwrap_err().to_string();
+                assert!(error.contains("invalid video dimensions") && error.contains("32769x1"), "{error}");
+                assert!(Arc::ptr_eq(&session.project, &original), "rejected import modified the project");
+            }
+        }
+        let offline = session.execute("file.newOfflineFile", json!({"fileName": "missing.mov", "width": 64, "height": 36})).unwrap();
+        let preserved = session.project.clone();
+        let oversized = dir.join("32769.y4m");
+        let error = session.execute("media.relink", json!({"item": offline["item"], "path": oversized.to_string_lossy(), "force": true})).unwrap_err();
+        assert!(error.to_string().contains("invalid video dimensions 32769x1"), "{error}");
+        assert!(Arc::ptr_eq(&session.project, &preserved), "rejected relink changed the project");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_invalid_dimensions_preserves_the_last_reopenable_project_file() {
+        use serde_json::json;
+
+        let dir = crate::media_test_util::tmp_dir("save-invalid-dimensions");
+        let path = dir.join("cut.fcproj");
+        let mut session = crate::Session::default();
+        let created = session.execute("file.newOfflineFile", json!({"fileName": "offline.mov", "width": 64, "height": 36})).unwrap();
+        session.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let id = ItemId(created["item"].as_u64().unwrap());
+        if let Some(filmcraft_project::ItemKind::Media(media)) = std::sync::Arc::make_mut(&mut session.project).item_mut(id).map(|item| &mut item.kind) {
+            media.info.video.as_mut().unwrap().width = 32_769;
+        } else {
+            panic!("created offline item disappeared");
+        }
+        let error = session.execute("file.save", json!({})).unwrap_err().to_string();
+        assert!(error.contains("invalid video dimensions") && error.contains("offline.mov"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), original, "failed validation replaced the last good file");
+        let mut reopened = crate::Session::default();
+        reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(reopened.project.source_size(id), Some((64, 36)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opening_a_project_with_oversized_offline_media_keeps_the_current_project() {
+        use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef};
+
+        let mut session = crate::Session::default();
+        let original = session.project.clone();
+        let mut project = Project::new("Untrusted");
+        let mut info = filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::BlackVideo,
+            1_000_000,
+            1_000_000,
+            filmcraft_time::FrameRate::FPS_24,
+            filmcraft_time::Tick(1),
+        )
+        .info()
+        .clone();
+        info.name = "oversized.mov".into();
+        project.add_item(
+            "oversized.mov",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::File { path: "missing.mov".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: true,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let dir = crate::media_test_util::tmp_dir("hostile-offline-size");
+        let path = dir.join("cut.fcproj");
+        std::fs::write(&path, filmcraft_format::encode(&project, false)).unwrap();
+        let error = session.execute("file.open", serde_json::json!({"path": path.to_string_lossy()})).unwrap_err();
+        assert!(error.to_string().contains("oversized.mov") && error.to_string().contains("invalid video dimensions"));
+        assert!(Arc::ptr_eq(&session.project, &original), "failed open discarded the current project");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A host whose whole-file read fails: opening must go through the reader.
     struct ReaderOnly(Arc<[u8]>);

@@ -40,6 +40,50 @@ fn import_replace_starts_from_an_empty_project() {
     assert!(merge.project.items.len() > demo_items);
 }
 
+#[test]
+fn rejected_replacement_import_preserves_live_document_and_history() {
+    let dir = tmp_dir("import-replace-rollback");
+    let wav = dir.join("valid.wav");
+    let missing = dir.join("missing.wav");
+    let oversized = dir.join("oversized.y4m");
+    let mut bytes = b"YUV4MPEG2 W32769 H1 Cmono\nFRAME\n".to_vec();
+    bytes.resize(bytes.len() + 32_769, 128);
+    std::fs::write(&oversized, bytes).unwrap();
+    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 4800], 2, 48_000)).unwrap();
+    for paths in [
+        vec![missing.to_string_lossy().to_string()],
+        vec![wav.to_string_lossy().to_string(), missing.to_string_lossy().to_string()],
+        vec![wav.to_string_lossy().to_string(), oversized.to_string_lossy().to_string()],
+    ] {
+        let mut s = demo();
+        s.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        s.path = Some(dir.join("existing.fcproj").to_string_lossy().to_string());
+        let project = s.project.clone();
+        let instance = s.project_instance.clone();
+        let media = s.media.clone();
+        let state = serde_json::to_value(&s.state).unwrap();
+        let history = (s.history.undo.len(), s.history.redo.len());
+        let revision = (s.revision, s.saved_revision, s.document_epoch);
+        let path = s.path.clone();
+        let journal = s.journal.clone();
+        let event_count = s.events.len();
+        assert!(s.execute("file.import", json!({"paths": paths, "replace": true})).is_err());
+        assert!(std::sync::Arc::ptr_eq(&s.project, &project));
+        assert!(std::sync::Arc::ptr_eq(&s.project_instance, &instance));
+        assert!(std::sync::Arc::ptr_eq(&s.media, &media));
+        assert_eq!(serde_json::to_value(&s.state).unwrap(), state);
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+        assert_eq!((s.revision, s.saved_revision, s.document_epoch), revision);
+        assert_eq!(s.path, path);
+        assert_eq!(s.journal, journal);
+        assert_eq!(s.events.len(), event_count);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(s.revision > revision.0);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();

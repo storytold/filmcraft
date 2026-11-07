@@ -16,6 +16,19 @@
 # décalage, overwrite = écraser, scopes = oscilloscopes, preferences (also the native macOS
 # Settings menu) = Préférences, settings = paramètres.
 
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	Impossible d’ouvrir le fichier de récupération du navigateur « {name} » : {error}
+	The browser recovery file “{name}” was skipped by a launch option.	Le fichier de récupération du navigateur « {name} » a été ignoré en raison d’une option de démarrage.
+	Recovery paused	Récupération suspendue
+	Could not inspect the browser recovery file: {error}	Impossible d’examiner le fichier de récupération du navigateur : {error}
+	Recovery unavailable	Récupération indisponible
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	Impossible de lire le stockage de récupération du navigateur : {error}. Les nouveaux instantanés de récupération sont suspendus. Enregistrez votre travail manuellement, puis rechargez cette page pour réessayer.
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	Le fichier se trouve encore dans ce navigateur. Les nouveaux instantanés de récupération sont suspendus jusqu’à ce que vous l’enregistriez.
+	Download recovery file	Télécharger le fichier de récupération
+	I saved the recovery file	J’ai enregistré le fichier de récupération
+	Could not download recovery file: {error}	Impossible de télécharger le fichier de récupération : {error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	Après avoir enregistré le fichier, continuez. Modifier un nouveau projet peut remplacer la copie de récupération du navigateur.
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	Récupération des modifications non enregistrées suspendue : {error}. Corrigez les dimensions non valides pour reprendre.
 	About FilmCraft	À propos de FilmCraft
 	Add Audio Submix Track	Ajouter une piste de sous-mixage audio
 	Add Caption at Playhead	Ajouter un sous-titre à la tête de lecture

@@ -187,6 +187,28 @@ fn close_commands_and_templates() {
 }
 
 #[test]
+fn alternate_project_writers_reject_unreopenable_dimensions_without_overwriting_files() {
+    let mut session = demo();
+    let item = item_named(&session, "Ocean_Sunset.mp4");
+    let mut project = (*session.project).clone();
+    project.item_mut(item).unwrap().as_media_mut().unwrap().info.video.as_mut().unwrap().width = 32_769;
+    session.project = std::sync::Arc::new(project);
+    session.execute("project.select", json!({"items": [item.0]})).unwrap();
+    let root = tmp_dir("invalid-project-writers");
+    for (command, name) in [("file.saveAsTemplate", "template.fcproj"), ("file.exportSelectionProject", "selection.fcproj")] {
+        let path = root.join(name);
+        std::fs::write(&path, b"last good version").unwrap();
+        let result = session.execute(command, json!({"path": path.to_string_lossy(), "items": [item.0]}));
+        assert!(result.is_err(), "{command} accepted an invalid live project");
+        assert_eq!(std::fs::read(&path).unwrap(), b"last good version", "{command} overwrote the prior file");
+    }
+    let destination = root.join("manager");
+    let result = session.execute("file.projectManager", json!({"destination": destination.to_string_lossy(), "wait": true}));
+    assert!(result.is_err(), "Project Manager accepted an invalid live project");
+    assert!(!destination.exists(), "Project Manager created output before validation");
+}
+
+#[test]
 fn export_selection_project_and_ale() {
     let mut s = demo();
     let main = s.state.active_sequence.unwrap();

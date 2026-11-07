@@ -175,6 +175,15 @@ covers every clip. The edit is the same either way. From Bin starts each clip at
 no media outside its range, so there a kept In is moved to the subclip's first or last frame, and
 the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the clips it was moved for.
 
+**Replacement import:** `file.import {paths: [str], replace: true}` stages all inputs before replacing
+ the current document. If any input fails, staging leaves the current project, editor state, history,
+ media pool and recovery revision unchanged. The command dispatcher can still apply completed jobs
+ or commit an active dynamic trim before import begins. Without `replace`, successful inputs can still be imported
+ alongside errors. Ingest and automatic transcription run only after an accepted import. Synchronous ingest errors
+ and all-imported transcription errors accompany the accepted result; sequence-scoped transcription
+ and asynchronous ingest failures use their existing log, toast and job reporting. Interchange importers may extract media files while staging;
+ those external files are not rolled back when another input is rejected.
+
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,

@@ -14,6 +14,19 @@
 # way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS…) keep their
 # spelling. "video" is written without an accent, as in the rest of this catalog.
 
+# Browser recovery when a snapshot cannot be opened.
+	Could not open the browser recovery file “{name}”: {error}	No se pudo abrir el archivo de recuperación del navegador «{name}»: {error}
+	The browser recovery file “{name}” was skipped by a launch option.	Se omitió el archivo de recuperación del navegador «{name}» por una opción de inicio.
+	Recovery paused	Recuperación en pausa
+	Could not inspect the browser recovery file: {error}	No se pudo inspeccionar el archivo de recuperación del navegador: {error}
+	Recovery unavailable	Recuperación no disponible
+	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	No se pudo leer el almacenamiento de recuperación del navegador: {error}. Las nuevas copias de recuperación están en pausa. Guarda el trabajo actual manualmente y vuelve a cargar esta página para reintentarlo.
+	The file is still in this browser. New recovery snapshots are paused until you preserve it.	El archivo sigue en este navegador. Las nuevas copias de recuperación están en pausa hasta que lo guardes.
+	Download recovery file	Descargar archivo de recuperación
+	I saved the recovery file	Ya guardé el archivo de recuperación
+	Could not download recovery file: {error}	No se pudo descargar el archivo de recuperación: {error}
+	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	Después de guardar el archivo, continúa. Editar un proyecto nuevo puede reemplazar la copia de recuperación del navegador.
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	Recuperación pausada para los cambios no guardados: {error}. Corrige las dimensiones no válidas para reanudarla.
 	About FilmCraft	Acerca de FilmCraft
 	Add Audio Submix Track	Añadir pista de submezcla de audio
 	Add Caption at Playhead	Añadir subtítulo en el cabezal

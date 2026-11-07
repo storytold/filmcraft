@@ -7,7 +7,9 @@
 //! only drains part of the lead; the callback never decodes, allocates or takes a lock.
 //!
 //! When the ring does run dry (an underrun), the callback plays silence for the missing frames and
-//! counts them, and the mixer skips the same span, so sound stays locked to the picture.
+//! counts them. Ring positions name absolute device samples, including silence: late publication
+//! cannot replay an expired span. The mixer catches up before its next block, keeping sound locked
+//! to the picture without a separate, racy underrun-debt counter.
 //!
 //! Desktop only: the web build has no threads and keeps mixing in its callback.
 
@@ -57,7 +59,9 @@ impl AudioStats {
 }
 
 /// Single-producer, single-consumer ring of interleaved f32 samples (stored as bits, so it needs
-/// no `unsafe`). Indices count samples written / read since the start and only grow.
+/// no `unsafe`). Indices count absolute device samples since the start and only grow.
+/// Invariant: consuming silence expires its sample positions permanently. Publishing an old
+/// block must never make those positions audible again (including across ring wraparound).
 struct Ring {
     slots: Vec<AtomicU32>,
     write: AtomicU64,
@@ -73,7 +77,19 @@ impl Ring {
         self.write.load(Ordering::Acquire).saturating_sub(self.read.load(Ordering::Acquire)) as usize
     }
 
-    /// Producer: append as many samples as fit; returns how many were written.
+    /// Producer: skip expired device samples before preparing the next block.
+    fn catch_up(&self) -> u64 {
+        let w = self.write.load(Ordering::Relaxed);
+        let r = self.read.load(Ordering::Acquire);
+        if r > w {
+            self.write.store(r, Ordering::Release);
+        }
+        r.saturating_sub(w)
+    }
+
+    /// Producer: publish at the position reserved before mixing, even if now expired.
+    /// The consumer's absolute position rejects late samples.
+    /// Returns how many samples were written.
     fn push(&self, src: &[f32]) -> usize {
         let cap = self.slots.len();
         let w = self.write.load(Ordering::Relaxed);
@@ -105,7 +121,9 @@ impl Ring {
                 };
             }
         }
-        self.read.store(r + (n * ch) as u64, Ordering::Release);
+        // The device advances through silence too. Never rewind it when a late block arrives.
+        let requested = (dst.len() / dev_ch.max(1)).saturating_mul(ch);
+        self.read.store(r.saturating_add(requested as u64), Ordering::Release);
         n
     }
 }
@@ -134,27 +152,22 @@ where
     let mut block = vec![0.0; BLOCK_FRAMES * ch];
     mix(start, &mut block, ch);
     ring.push(&block);
-    // Frames the callback played as silence that the mixer has not skipped yet.
-    let skip = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     {
-        let (ring, skip, stop) = (ring.clone(), skip.clone(), stop.clone());
+        let (ring, stop) = (ring.clone(), stop.clone());
         let body = move || {
-            let mut cursor = start + BLOCK_FRAMES as i64;
+            let mut cursor = start.saturating_add(BLOCK_FRAMES as i64);
             while !stop.load(Ordering::Acquire) {
                 if ring.len() + block.len() > lead * ch {
                     std::thread::sleep(Duration::from_millis(2));
                     continue;
                 }
-                cursor += skip.swap(0, Ordering::AcqRel) as i64;
+                let expired = ring.catch_up() / ch as u64;
+                cursor = cursor.saturating_add(i64::try_from(expired).unwrap_or(i64::MAX));
                 block.fill(0.0);
                 mix(cursor, &mut block, ch);
-                cursor += BLOCK_FRAMES as i64;
-                // silence played while this block was mixing: its first frames are already late
-                let late = skip.swap(0, Ordering::AcqRel) as usize;
-                let drop = late.min(BLOCK_FRAMES);
-                cursor += (late - drop) as i64;
-                ring.push(block.get(drop * ch..).unwrap_or_default());
+                cursor = cursor.saturating_add(BLOCK_FRAMES as i64);
+                ring.push(&block);
             }
         };
         let spawned = std::thread::Builder::new().name("filmcraft-audio-mix".into()).spawn(move || {
@@ -182,7 +195,6 @@ where
         if have < n {
             stats.underruns.fetch_add(1, Ordering::Relaxed);
             stats.missing_frames.fetch_add((n - have) as u64, Ordering::Relaxed);
-            skip.fetch_add((n - have) as u64, Ordering::AcqRel);
         }
         let left = ring.len();
         primed |= left + 2 * BLOCK_FRAMES * ch > lead * ch;
@@ -190,4 +202,46 @@ where
             stats.min_lead_frames.fetch_min((left / ch) as u64, Ordering::Relaxed);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ring;
+
+    #[test]
+    fn expired_blocks_recover_at_the_device_position_across_ring_wrap() {
+        let ring = Ring::new(8);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0]), 4);
+        assert_eq!(ring.pop(&mut [0.0; 12], 1, 1), 4);
+        assert_eq!(ring.push(&[5.0, 6.0, 7.0, 8.0]), 4);
+        assert_eq!(ring.pop(&mut [0.0; 2], 1, 1), 0);
+        assert_eq!(ring.catch_up(), 6);
+        assert_eq!(ring.push(&[15.0, 16.0, 17.0, 18.0]), 4);
+        let mut output = [0.0; 4];
+        assert_eq!(ring.pop(&mut output, 1, 1), 4);
+        assert_eq!(output, [15.0, 16.0, 17.0, 18.0]);
+        assert_eq!(ring.catch_up(), 0);
+    }
+
+    #[test]
+    fn late_publication_cannot_replay_frames_already_played_as_silence() {
+        for channels in [1, 2, 6] {
+            for (prime, requested, late, next, expected) in [(4, 6, 4, 2, vec![7.0, 8.0]), (3, 5, 4, 2, vec![6.0, 7.0]), (4, 12, 4, 2, vec![])] {
+                let ring = Ring::new(32 * channels);
+                let samples = |start: usize, frames: usize| (start..start + frames).flat_map(|f| vec![f as f32; channels]).collect::<Vec<_>>();
+                assert_eq!(ring.push(&samples(1, prime)), prime * channels);
+                let mut first = vec![0.0; requested * channels];
+                assert_eq!(ring.pop(&mut first, channels, channels), prime);
+                // The producer prepared this block before the callback consumed silence,
+                // but publishes only after that callback completes.
+                assert_eq!(ring.push(&samples(prime + 1, late)), late * channels);
+                let mut output = vec![0.0; next * channels];
+                let copied = ring.pop(&mut output, channels, channels);
+                assert_eq!(copied, expected.len());
+                for (frame, value) in output.chunks(channels).zip(expected) {
+                    assert!(frame.iter().all(|sample| *sample == value), "{frame:?} != {value}");
+                }
+            }
+        }
+    }
 }

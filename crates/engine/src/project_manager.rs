@@ -82,6 +82,7 @@ struct Work {
 /// Plan, estimate and (unless `dryRun`) run the Project Manager.
 pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let dest = str_p(p, "destination").ok_or_else(|| bad("file.projectManager", "need `destination`"))?.to_string();
+    filmcraft_format::validate_project_dimensions(&s.project).map_err(|e| bad("file.projectManager", e.to_string()))?;
     let consolidate = match str_p(p, "mode").unwrap_or("collect") {
         "collect" => false,
         "consolidate" | "transcode" => true,
@@ -297,7 +298,10 @@ fn execute(
                 proj.shift_media_time(w.item, r.start);
                 let b = std::fs::read(&w.out).map_err(|e| format!("{}: {e}", w.out))?;
                 let fname = Path::new(&w.out).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let info = filmcraft_media::open_bytes(&fname, b.into(), &openers).map_err(|e| format!("{}: {e}", w.out))?.info().clone();
+                let source = filmcraft_media::open_bytes(&fname, b.into(), &openers)
+                    .and_then(crate::media_pool::checked_source)
+                    .map_err(|e| format!("{}: {e}", w.out))?;
+                let info = source.info().clone();
                 if let Some(mm) = proj.item_mut(w.item).and_then(|i| i.as_media_mut()) {
                     mm.info = info;
                     mm.proxy = None;
@@ -323,6 +327,7 @@ fn execute(
     if let Some((from, to)) = previews {
         bytes += copy_dir(&from, &to).map_err(|e| format!("copying previews: {e}"))?;
     }
+    filmcraft_format::validate_project_dimensions(&proj).map_err(|e| format!("{project_path}: {e}"))?;
     let data = filmcraft_format::encode(&proj, false);
     filmcraft_format::atomic_write(Path::new(project_path), &data).map_err(|e| format!("{project_path}: {e}"))?;
     prog.done.fetch_add(1, Ordering::Relaxed);

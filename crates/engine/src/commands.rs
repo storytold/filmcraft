@@ -890,18 +890,20 @@ pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Resu
     clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
 }
 
-/// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
-/// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
-/// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
+/// Sequence settings for a media clip (New Sequence From Clip, New Sequence from an item):
+/// use its known frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's).
+/// Unknown `(0, 0)` video size keeps the default sequence dimensions.
 pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     let info = &media.info;
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
-        st.width = v.width;
-        st.height = v.height;
         st.frame_rate = v.frame_rate;
         st.par = media.pixel_aspect();
-        st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        if (v.width, v.height) != (0, 0) {
+            st.width = v.width;
+            st.height = v.height;
+        }
+        st.preset = format!("{}x{} {}", st.width, st.height, v.frame_rate.label());
     }
     if let Some(a) = info.audio() {
         st.sample_rate = a.sample_rate.max(8000);
@@ -992,6 +994,12 @@ fn import_source(
     bin: Option<filmcraft_project::BinId>,
 ) -> Result<ItemId> {
     let mut info = src.info().clone();
+    if let Some(video) = &info.video
+        && (video.width, video.height) != (0, 0)
+    {
+        filmcraft_project::validate_frame_size(video.width, video.height)
+            .map_err(|e| bad("file.import", format!("{name}: invalid video dimensions {}x{}: {e}", video.width, video.height)))?;
+    }
     // Settings ▸ Labels ▸ Label Defaults
     let label = s.prefs.labels.for_media(info.kind, info.has_video(), info.has_audio());
     // Settings ▸ Media ▸ Indeterminate Media Timebase: the frame rate stills report
@@ -1024,10 +1032,16 @@ fn import_source(
     Ok(id)
 }
 
-fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value, cmd: &str) -> Result<Value> {
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-    let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
-    let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
+    let (w, h) = if matches!(g, Generator::Tone { .. }) {
+        (st.width, st.height)
+    } else {
+        let w = checked_u32_p(p, "width", cmd)?.unwrap_or(st.width);
+        let h = checked_u32_p(p, "height", cmd)?.unwrap_or(st.height);
+        filmcraft_project::validate_frame_size(w, h).map_err(|e| bad(cmd, e))?;
+        (w, h)
+    };
     let secs = f64_p(p, "seconds").unwrap_or(5.0);
     let name = str_p(p, "name").unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
@@ -1500,6 +1514,184 @@ fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
     Ok((seq, s.playhead()))
 }
 
+struct ImportedFiles {
+    ids: Vec<u64>,
+    errors: Vec<String>,
+    sequences: Vec<Value>,
+    reports: Vec<Value>,
+    image_sequences: Vec<Value>,
+    preset_names: Vec<String>,
+    pending_presets: Vec<String>,
+}
+
+fn import_inputs(s: &mut Session, p: &Value, replacing: bool) -> Result<ImportedFiles> {
+    let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+    let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
+    };
+    if paths.is_empty() {
+        return Err(bad("file.import", "need `paths`"));
+    }
+    let mut ids = Vec::new();
+    let mut errors = Vec::new();
+    let mut sequences = Vec::new();
+    let mut reports = Vec::new();
+    let mut image_sequences = Vec::new();
+    let mut preset_names = Vec::new();
+    let mut pending_presets = Vec::new();
+    // Image Sequence: each path is the first frame of a numbered still sequence. With
+    // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
+    let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
+    let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
+    for path in paths {
+        if as_sequence || (detect && detect_image_sequence(s, &path)) {
+            match import_image_sequence(s, &path, bin) {
+                Ok((id, frames, missing)) => {
+                    ids.push(id.0);
+                    image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+                }
+                Err(e) => errors.push(format!("{path}: {e}")),
+            }
+            continue;
+        }
+        // Media files through the host's reader (no whole-file read) when it has one.
+        let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+        let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+        match read {
+            Ok(_) if streamed => match import_streamed(s, &path, bin) {
+                Ok(id) => ids.push(id.0),
+                Err(e) => errors.push(format!("{path}: {e}")),
+            },
+            Ok(b) => {
+                if let Some(fmt) = crate::captions::detect(&path, &b) {
+                    match crate::captions::import(s, &path, &b, fmt, None, None) {
+                        Ok(r) => reports.push(r),
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                    match crate::interchange::import(s, &path, &b, fmt, bin) {
+                        Ok(r) => {
+                            sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                            reports.push(r);
+                        }
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                } else if crate::presets::is_preset_file(std::path::Path::new(&path), &b) {
+                    if replacing {
+                        // Validate before touching the preset library or replacing the document.
+                        match crate::presets::parse_file_detailed(&b) {
+                            Ok(parsed) if !parsed.presets.is_empty() => pending_presets.push(path),
+                            Ok(_) => errors.push(format!("{path}: no supported effects in this preset file")),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    } else {
+                        match s.execute("presets.import", json!({"path": path})) {
+                            Ok(r) => {
+                                if let Some(arr) = r["imported"].as_array() {
+                                    preset_names.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+                                }
+                                reports.push(r);
+                            }
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
+                } else {
+                    match import_bytes(s, &path, b.into(), bin) {
+                        Ok(id) => ids.push(id.0),
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{path}: {e}")),
+        }
+    }
+    if (replacing || (ids.is_empty() && sequences.is_empty() && reports.is_empty())) && !errors.is_empty() {
+        return Err(EngineError::Other(errors.join("; ")));
+    }
+
+    Ok(ImportedFiles { ids, errors, sequences, reports, image_sequences, preset_names, pending_presets })
+}
+
+fn import_files(s: &mut Session, p: &Value) -> Result<Value> {
+    let imported = if bool_p(p, "replace").unwrap_or(false) {
+        // Import into a separate document so any rejected input leaves the live editor intact.
+        let mut staged = Session::new(s.services.clone());
+        staged.prefs = s.prefs.clone();
+        staged.prefs.media_analysis.auto_transcribe = false;
+        staged.media.set_use_proxies(s.prefs.media.enable_proxies);
+        staged.project = std::sync::Arc::new(filmcraft_project::Project::new(&s.project.name));
+        *staged.media.openers.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            s.media.openers.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let mut imported = import_inputs(&mut staged, p, true)?;
+        for path in std::mem::take(&mut imported.pending_presets) {
+            let r = s.execute("presets.import", json!({"path": path}))?;
+            if let Some(arr) = r["imported"].as_array() {
+                imported.preset_names.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+            }
+            imported.reports.push(r);
+        }
+        let name = s.project.name.clone();
+        s.execute("file.newProject", json!({ "name": name }))?;
+        s.project = staged.project;
+        s.state = staged.state;
+        s.history = staged.history;
+        s.media = staged.media;
+        s.offline = staged.offline;
+        s.events.extend(staged.events.into_iter().filter(|event| !matches!(event, crate::Event::ProjectChanged { .. })));
+        s.bump();
+        imported
+    } else {
+        import_inputs(s, p, false)?
+    };
+    let ImportedFiles { ids, mut errors, sequences, reports, image_sequences, preset_names, .. } = imported;
+    // Project Settings ▸ Ingest: copy / transcode / create proxies
+    // (image sequences are many files: ingest copies and transcodes single files only)
+    let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
+    // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+    let ma = &s.prefs.media_analysis;
+    if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
+        let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
+        if !audio.is_empty() {
+            // without speech-to-text the setting can't act: say so instead of importing
+            // silently untranscribed (#89)
+            let r = crate::transcript::can_transcribe(s).map_err(EngineError::Other).and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+            if let Err(e) = r {
+                errors.push(format!("transcription: {e}"));
+            }
+        }
+    }
+    let ingest = match crate::proxies::ingest(s, &item_ids) {
+        Ok(v) => v,
+        Err(e) => {
+            errors.push(format!("ingest: {e}"));
+            Value::Null
+        }
+    };
+    let mut out = if !ingest.is_null() {
+        json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
+    } else if reports.is_empty() {
+        json!({"items": ids, "errors": errors})
+    } else {
+        json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
+    };
+    if !image_sequences.is_empty() {
+        out["imageSequences"] = json!(image_sequences);
+    }
+    if !preset_names.is_empty() {
+        out["presets"] = json!(preset_names);
+    }
+    // Newly imported files may resolve paths the project already listed as offline
+    // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
+    // the cached slate of every item that came back so the monitors show the file again.
+    let was_missing = s.offline.missing.clone();
+    crate::relink::refresh(s);
+    for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
+        s.media.remove(*item);
+    }
+    Ok(out)
+}
+
 /// Builds the command registry shared by the UI, CLI and control interfaces.
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
@@ -1658,38 +1850,45 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"item": id.0}))
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
-            s,
-            Generator::BarsAndTone,
-            "Bars and Tone",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
+        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10,"width":u32?,"height":u32?}"#, always, |s, p| {
+            new_generator(s, Generator::BarsAndTone, "Bars and Tone", Label::Lavender, p, "file.newBarsAndTone")
+        }),
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64,"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::BlackVideo,
             "Black Video",
             Label::Lavender,
-            p
+            p,
+            "file.newBlackVideo"
         )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5}"##, always, |s, p| {
-            let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
-            new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
-        }),
+        cmd!(
+            "file.newColorMatte",
+            "Color Matte…",
+            ["File", "New"],
+            None,
+            r##"{"color":"#rrggbb"?,"seconds":f64=5,"width":u32?,"height":u32?}"##,
+            always,
+            |s, p| {
+                let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
+                new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p, "file.newColorMatte")
+            }
+        ),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::CountingLeader,
             "Universal Counting Leader",
             Label::Lavender,
-            p
+            p,
+            "file.newCountingLeader"
         )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, r#"{"width":u32?,"height":u32?}"#, always, |s, p| new_generator(
             s,
             Generator::TransparentVideo,
             "Transparent Video",
             Label::Lavender,
-            p
+            p,
+            "file.newTransparentVideo"
         )),
         cmd!(
             "file.importDemoFootage",
@@ -1713,133 +1912,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
-            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
-            let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
-                Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
-            };
-            if paths.is_empty() {
-                return Err(bad("file.import", "need `paths`"));
-            }
-            if bool_p(p, "replace").unwrap_or(false) {
-                let name = s.project.name.clone();
-                s.execute("file.newProject", json!({ "name": name }))?;
-            }
-            let mut ids = Vec::new();
-            let mut errors = Vec::new();
-            let mut sequences = Vec::new();
-            let mut reports = Vec::new();
-            let mut image_sequences = Vec::new();
-            let mut preset_names = Vec::new();
-            // Image Sequence: each path is the first frame of a numbered still sequence. With
-            // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
-            let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
-            let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
-            for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
-                    match import_image_sequence(s, &path, bin) {
-                        Ok((id, frames, missing)) => {
-                            ids.push(id.0);
-                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
-                        }
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    }
-                    continue;
-                }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt, bin) {
-                                Ok(r) => {
-                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                    reports.push(r);
-                                }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else if crate::presets::is_preset_file(std::path::Path::new(&path), &b) {
-                            match s.execute("presets.import", json!({"path": path})) {
-                                Ok(r) => {
-                                    if let Some(arr) = r["imported"].as_array() {
-                                        preset_names.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
-                                    }
-                                    reports.push(r);
-                                }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        }
-                    }
-                    Err(e) => errors.push(format!("{path}: {e}")),
-                }
-            }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
-                return Err(EngineError::Other(errors.join("; ")));
-            }
-            // Project Settings ▸ Ingest: copy / transcode / create proxies
-            // (image sequences are many files: ingest copies and transcodes single files only)
-            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
-            let ma = &s.prefs.media_analysis;
-            if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
-                let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
-                if !audio.is_empty() {
-                    // without speech-to-text the setting can't act: say so instead of importing
-                    // silently untranscribed (#89)
-                    let r = crate::transcript::can_transcribe(s)
-                        .map_err(EngineError::Other)
-                        .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
-                    if let Err(e) = r {
-                        errors.push(format!("transcription: {e}"));
-                    }
-                }
-            }
-            let ingest = match crate::proxies::ingest(s, &item_ids) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.push(format!("ingest: {e}"));
-                    Value::Null
-                }
-            };
-            let mut out = if !ingest.is_null() {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
-            } else if reports.is_empty() {
-                json!({"items": ids, "errors": errors})
-            } else {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
-            };
-            if !image_sequences.is_empty() {
-                out["imageSequences"] = json!(image_sequences);
-            }
-            if !preset_names.is_empty() {
-                out["presets"] = json!(preset_names);
-            }
-            // Newly imported files may resolve paths the project already listed as offline
-            // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
-            // the cached slate of every item that came back so the monitors show the file again.
-            let was_missing = s.offline.missing.clone();
-            crate::relink::refresh(s);
-            for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
-                s.media.remove(*item);
-            }
-            Ok(out)
-        }),
+        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, import_files),
         cmd!(
             "file.exportInterchange",
             "Export Interchange",
@@ -5209,6 +5282,7 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
+    filmcraft_format::validate_project_dimensions(&s.project).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
         && let Some(name) = project_name_for(path)

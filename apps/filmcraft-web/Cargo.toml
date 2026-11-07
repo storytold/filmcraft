@@ -12,8 +12,13 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# Everything is wasm32-only: on other targets this crate is empty (so `cargo test --workspace`
-# and clippy stay cheap). Build with `cargo xtask web` (see docs/web.md).
+# The library is wasm32-only; native builds also run the recovery-policy integration tests.
+# Build the browser app with `cargo xtask web` (see docs/web.md).
+[dev-dependencies]
+filmcraft-format = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-time = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 filmcraft-engine = { workspace = true }
 # The host messages (storytold/craft-libs): one contract and one bridge for the web builds.
