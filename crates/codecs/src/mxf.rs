@@ -301,9 +301,9 @@ impl MxfSource {
                 pixel_format = crate::video::mpeg2_pixel_format(info, fo);
                 mpeg2_header = header.clone();
             }
-            let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
-            if p.full_range() {
-                color.range = filmcraft_color::Range::Full;
+            let labels = descriptor_color_codes(&p);
+            let color = crate::stream_color::resolve(w, h, &[labels]);
+            if p.full_range() || [labels.matrix, labels.transfer, labels.primaries].iter().any(|&c| c != UNSPECIFIED) {
                 explicit_color = Some(color);
             }
             let secs = vcount as f64 / rate.as_f64().max(1e-9);
@@ -393,6 +393,29 @@ impl MxfSource {
     /// The demuxed file (tracks, partitions, index, timecode).
     pub fn file(&self) -> &MxfFile {
         &self.file
+    }
+}
+
+/// ITU-T H.273 `Unspecified`.
+const UNSPECIFIED: u8 = 2;
+
+/// The picture descriptor's colour labels (SMPTE RP 224 `04.01.01.01` transfer characteristic,
+/// coding equations and colour primaries) as H.273 code points, `Unspecified` for a missing or
+/// unknown label (the label's version byte is ignored).
+fn descriptor_color_codes(p: &filmcraft_mxf::PictureInfo) -> crate::stream_color::ColorCodes {
+    let code = |ul: Option<filmcraft_mxf::Ul>, group: u8, table: &[(u8, u8)]| {
+        ul.filter(|u| u.is_smpte() && u.0[8..13] == [0x04, 0x01, 0x01, 0x01, group])
+            .and_then(|u| table.iter().find(|(item, _)| *item == u.0[13]))
+            .map_or(UNSPECIFIED, |&(_, c)| c)
+    };
+    crate::stream_color::ColorCodes {
+        // BT.709, linear, BT.2020 (the BT.709 curve), SMPTE ST 2084, ARIB STD-B67 (HLG)
+        transfer: code(p.transfer_characteristic, 0x01, &[(0x02, 1), (0x06, 8), (0x09, 14), (0x0A, 16), (0x0B, 18)]),
+        // BT.601, BT.709, BT.2020 non-constant luminance
+        matrix: code(p.coding_equations, 0x02, &[(0x01, 6), (0x02, 1), (0x06, 9)]),
+        // SMPTE 170M (525), BT.470 BG (625), BT.709, BT.2020
+        primaries: code(p.color_primaries, 0x03, &[(0x01, 6), (0x02, 5), (0x03, 1), (0x04, 9)]),
+        full_range: p.full_range().then_some(true),
     }
 }
 
@@ -545,5 +568,33 @@ mod tests {
         let f = start_frames(&df, FrameRate::FPS_23_976);
         let secs = f as f64 * 1001.0 / 24000.0;
         assert!((secs - 107_892.0 * 1001.0 / 30000.0).abs() < 0.05, "{secs}");
+    }
+
+    /// A one-frame OP1a ProRes MXF whose picture descriptor carries `color`'s labels.
+    fn mxf_with_color(color: filmcraft_mxf::ColorSpace) -> Arc<[u8]> {
+        use filmcraft_mxf::{FrameInfo, MxfWriter, PackageIds, Pattern, PictureCoding, PictureDesc, Rational, WriterConfig};
+        let mut cfg = WriterConfig::new(Pattern::Op1a, Rational::new(25, 1), PackageIds::from_seed("color", "Color"));
+        let mut pic = PictureDesc::new(PictureCoding::ProRes { profile: 3 }, 1920, 1080);
+        pic.color = color;
+        cfg.picture = Some(pic);
+        let mut w = MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
+        let mut frame = vec![0, 0, 0, 40];
+        frame.extend_from_slice(b"icpf");
+        frame.extend(std::iter::repeat_n(0u8, 32));
+        w.push_picture(&frame, FrameInfo::intra()).unwrap();
+        w.finish().unwrap().into_inner().into()
+    }
+
+    #[test]
+    fn descriptor_colour_labels_set_the_clip_colour() {
+        use filmcraft_color::{ColorInfo, ColorSpace, Matrix, Primaries, Range, Transfer};
+        for (label, transfer) in [(filmcraft_mxf::ColorSpace::Rec2020Hlg, Transfer::Hlg), (filmcraft_mxf::ColorSpace::Rec2020Pq, Transfer::Pq)] {
+            let src = MxfSource::open("hdr.mxf", mxf_with_color(label)).unwrap();
+            let color = src.info().video.as_ref().unwrap().color;
+            assert_eq!(color, ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited }, "{label:?}");
+            assert!(ColorSpace::from_info(&color).is_hdr(), "{label:?}");
+        }
+        let src = MxfSource::open("sdr.mxf", mxf_with_color(filmcraft_mxf::ColorSpace::Rec709)).unwrap();
+        assert_eq!(src.info().video.as_ref().unwrap().color, ColorInfo::REC709);
     }
 }
