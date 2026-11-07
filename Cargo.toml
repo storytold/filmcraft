@@ -23,6 +23,7 @@ filmcraft-mxf = { path = "crates/mxf" }
 filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-mpegts = { path = "crates/mpegts" }
 filmcraft-mpeg2v = { path = "crates/mpeg2v" }
+filmcraft-mpeg4v = { path = "crates/mpeg4v" }
 filmcraft-ac3 = { path = "crates/ac3" }
 filmcraft-mpa = { path = "crates/mpa" }
 filmcraft-ogg = { path = "crates/ogg" }
@@ -118,6 +119,9 @@ debug = "line-tables-only"
 opt-level = 3
 
 [profile.dev.package.filmcraft-h264enc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-mpeg4v]
 opt-level = 3
 
 [profile.dev.package.filmcraft-hevc]
