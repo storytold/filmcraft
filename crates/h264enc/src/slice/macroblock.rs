@@ -1,18 +1,18 @@
-use super::{BitWriter, CabacEstimator, Cand, MbCtx, MbKind, NbCtx, SliceEnc, SliceType, Src, cabac_mb, cavlc, ssd};
+use super::{BitWriter, CabacEstimator, Cand, MbCtx, MbKind, NbCtx, Pixel, SliceEnc, SliceType, Src, cabac_mb, cavlc, ssd};
 
-impl<'a, 'b> SliceEnc<'a, 'b> {
+impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ macroblock
 
     pub(super) fn encode_mb(&mut self, mx: usize, my: usize) {
         let f = self.f;
         let mbw = f.p.mbw;
         let aq = if f.aq.is_empty() { 0 } else { f.aq[my * mbw + mx] as i32 };
-        let qp = (f.qp as i32 + aq).clamp(0, 51) as u8;
+        let qp = (f.qp as i32 + aq).clamp(0, 51 + f.p.depth.qp_offset) as u8;
         let av = self.avail(mx, my);
         let (px, py) = (mx * 16, my * 16);
-        let mut src_y = [0u8; 256];
-        let mut src_u = [0u8; 64];
-        let mut src_v = [0u8; 64];
+        let mut src_y = [P::default(); 256];
+        let mut src_u = [P::default(); 64];
+        let mut src_v = [P::default(); 64];
         {
             let s = &f.src.y;
             for r in 0..16 {
@@ -36,7 +36,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         self.commit(mx, my, qp, *best);
     }
 
-    fn commit(&mut self, mx: usize, my: usize, qp: u8, mut c: Cand) {
+    fn commit(&mut self, mx: usize, my: usize, qp: u8, mut c: Cand<P>) {
         let (px, py) = (mx * 16, my * 16);
         // reconstruction
         for r in 0..16 {
@@ -52,11 +52,13 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let has_dqp = !kind.is_skip() && (c.code.cbp != 0 || kind == MbKind::I16x16);
         let prev_dqp_nz = self.prev_dqp_nz;
         if has_dqp {
+            // mb_qp_delta lies in -(26 + QpBdOffset/2)..=25 + QpBdOffset/2 and wraps modulo 52 + QpBdOffset (7.4.5).
+            let off = self.f.p.depth.qp_offset;
             let mut d = qp as i32 - self.last_qp as i32;
-            if d < -26 {
-                d += 52;
-            } else if d > 25 {
-                d -= 52;
+            if d < -(26 + off / 2) {
+                d += 52 + off;
+            } else if d > 25 + off / 2 {
+                d -= 52 + off;
             }
             c.code.qp_delta = d;
             self.prev_dqp_nz = d != 0;
@@ -106,7 +108,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Estimated bits (1/256 units) of coding candidate `c` at the current entropy state.
-    fn est_bits(&self, mx: usize, my: usize, c: &Cand, qp: u8) -> u64 {
+    fn est_bits(&self, mx: usize, my: usize, c: &Cand<P>, qp: u8) -> u64 {
         let av = self.avail(mx, my);
         let idx = (my - self.y0) * self.f.p.mbw + mx;
         let left = if av.left { Some(&self.mbs[idx - 1]) } else { None };
@@ -139,7 +141,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         }
     }
 
-    pub(super) fn rd_cost(&self, mx: usize, my: usize, c: &Cand, src: &Src, qp: u8) -> u64 {
+    pub(super) fn rd_cost(&self, mx: usize, my: usize, c: &Cand<P>, src: &Src<P>, qp: u8) -> u64 {
         let d = ssd(&src.y, 16, &c.ry, 16, 16, 16) + ssd(&src.u, 8, &c.ru, 8, 8, 8) + ssd(&src.v, 8, &c.rv, 8, 8, 8);
         let bits = self.est_bits(mx, my, c, qp);
         let lam = self.f.lam.ssd[qp as usize];
