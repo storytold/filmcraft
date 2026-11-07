@@ -21,13 +21,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.header_bg);
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
-    let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
-    if drag.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+    // Window dragging and maximizing do not exist on Android.
+    #[cfg(not(target_os = "android"))]
+    {
+        let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
+        if drag.drag_started_by(egui::PointerButton::Primary) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+        }
     }
     let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
     // Home
