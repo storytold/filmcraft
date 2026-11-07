@@ -49,11 +49,12 @@ const FRAME_TICKS: i64 = TICKS_PER_SAMPLE * crate::mel::HOP as i64;
 /// Agglomerative linkage is cubic in the number of chunks, so at most this many are clustered (the
 /// heaviest chunk of each of that many equal stretches of the file); every other chunk then joins
 /// the cluster whose clustered members it is closest to on average, which is linear in the number
-/// of chunks. A 48-minute interview has about 800 chunks.
+/// of chunks. Folding a small cluster afterwards compares each of its chunks with every other chunk,
+/// at worst quadratic, which `MAX_CHUNKS` bounds. A 48-minute interview has about 800 chunks.
 const MAX_CLUSTER_CHUNKS: usize = 256;
-/// Beyond this many chunks (about eight hours of dense dialogue) the assignment pass and the
-/// per-chunk vectors would still be a document-controlled amount of work, so the transcript keeps a
-/// single speaker instead.
+/// Beyond this many chunks (about eight hours of dense dialogue) the assignment pass, the small-cluster
+/// fold and the per-chunk vectors would still be a document-controlled amount of work, so the
+/// transcript keeps a single speaker instead.
 const MAX_CHUNKS: usize = 8_192;
 
 /// Word index ranges of the chunks.
@@ -272,7 +273,7 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         let small = members.iter().position(|c| c.iter().map(|&i| weight.get(i).copied().unwrap_or(0.0)).sum::<f32>() < 0.05 * total);
         let Some(si) = small else { break };
         let s = members.remove(si);
-        let near = (0..members.len()).min_by(|&a, &b| link_all(&s, &members[a]).total_cmp(&link_all(&s, &members[b]))).unwrap_or(0);
+        let near = (0..members.len()).map(|a| (link_all(&s, &members[a]), a)).min_by(|x, y| x.0.total_cmp(&y.0)).map_or(0, |x| x.1);
         members[near].extend(s);
     }
     if members.len() <= 1 {
