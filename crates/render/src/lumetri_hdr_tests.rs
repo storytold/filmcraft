@@ -115,6 +115,24 @@ fn negative_contrast_is_continuous_across_hdr_white() {
     }
 }
 
+/// HDR Specular still scales speculars after negative Contrast has moved them down with HDR White:
+/// it works on their distance from the graded white.
+#[test]
+fn hdr_specular_follows_negative_contrast() {
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let gs = GradeSpace::new(working, 1000.0);
+        let src = gs.nits_of_signal(1.15);
+        for c in [-100.0, -50.0] {
+            let white = 0.5 + 0.5 * (1.0 + c as f32 / 100.0);
+            let spec = |s: f64| gs.signal_of_nits(grade(working, &[src], &lumetri(&[("contrast", F(c)), ("hdr_specular", F(s))]))[0]);
+            for (s, want) in [(0.0, white + 0.15), (-100.0, white), (100.0, white + 0.3)] {
+                let got = spec(s);
+                assert!((got - want).abs() < 3e-3, "{working:?} contrast {c}, specular {s}: {got}, want {want}");
+            }
+        }
+    }
+}
+
 #[test]
 fn hdr_specular_sets_highlights_above_hdr_white() {
     let e = lumetri(&[("hdr_specular", F(-100.0))]);
