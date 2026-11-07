@@ -7,6 +7,10 @@
 //! Monitor (graphic drags snap to guides, the frame edges and center) and Transparency Grid (a
 //! checkerboard behind the picture shows its transparent areas).
 //!
+//! The Centering Grid has four patterns (rule of thirds, centre cross, golden ratio, both
+//! diagonals), chosen in the wrench menu or View ▸ Centering Grid Pattern. Full Screen on Monitor
+//! asks which connected display shows the preview.
+//!
 //! Everything is [`MonitorView`] state (serde: `ui.inspect`, `ui.set {"program": {…}}`) changed
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
 //! `params.monitor` ("program" / "source"), else on the focused monitor (Program by default).
@@ -26,7 +30,7 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::frames::Rgba;
 use crate::panels::monitor::Which;
-use crate::state::{DisplayMode, Guide, GuideDialog, MonitorView, PlaybackRes, Tool};
+use crate::state::{CenterGridPattern, DisplayMode, Guide, GuideDialog, MonitorView, PlaybackRes, Tool};
 use crate::theme::Tokens;
 
 /// Magnification levels (View ▸ Magnification and the monitor zoom menu).
@@ -38,6 +42,9 @@ const GUIDE_COLOR: Color32 = Color32::from_rgb(0x3d, 0xa5, 0xff);
 const SNAP_COLOR: Color32 = Color32::from_rgb(0xff, 0x4f, 0xd8);
 /// Snap distance (points).
 pub const SNAP_PX: f32 = 6.0;
+/// Golden-ratio section lines: 1 − φ and 1/φ (about 0.382 and 0.618).
+const GOLDEN_LOW: f32 = 0.381_966_02;
+const GOLDEN_HIGH: f32 = 0.618_034;
 
 const RES_NAMES: [(&str, PlaybackRes); 5] = [
     ("full", PlaybackRes::Full),
@@ -58,6 +65,14 @@ const DISPLAY_NAMES: [(&str, DisplayMode); 8] = [
     ("videoAndWaveform", DisplayMode::VideoAndWaveform),
 ];
 
+/// Wrench and View menu keys of the Centering Grid patterns.
+pub const CENTER_GRID_NAMES: [(&str, CenterGridPattern); 4] = [
+    ("thirds", CenterGridPattern::Thirds),
+    ("cross", CenterGridPattern::Cross),
+    ("goldenRatio", CenterGridPattern::GoldenRatio),
+    ("diagonals", CenterGridPattern::Diagonals),
+];
+
 pub fn prefix(w: Which) -> &'static str {
     if w == Which::Program { "program" } else { "source" }
 }
@@ -71,7 +86,7 @@ pub fn view_mut(app: &mut FilmcraftApp, w: Which) -> &mut MonitorView {
 }
 
 /// The monitor a `view.*` command acts on: `params.monitor`, else the focused monitor.
-fn which_of(app: &FilmcraftApp, params: &Value) -> Which {
+pub fn which_of(app: &FilmcraftApp, params: &Value) -> Which {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => Which::Source,
         Some("program") => Which::Program,
@@ -128,6 +143,14 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if let Some(d) = rest.strip_prefix("display.") {
         return Some(set_display(app, w, d));
     }
+    if let Some(g) = rest.strip_prefix("centerGrid.") {
+        let (_, pattern) = CENTER_GRID_NAMES.iter().find(|(n, _)| *n == g)?;
+        let v = view_mut(app, w);
+        v.center_grid_pattern = *pattern;
+        // Choosing a pattern shows it: the click is the user asking for that guide.
+        v.center_grid = true;
+        return Some(Ok(json!({"monitor": pfx, "centerGrid": true, "centerGridPattern": g})));
+    }
     if let Some(z) = rest.strip_prefix("magnification.") {
         let zoom = if z == "fit" { None } else { Some(ZOOMS.iter().find(|(n, _)| *n == z)?.1) };
         let v = view_mut(app, w);
@@ -145,6 +168,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let v = view_mut(app, w);
             v.safe_margins = toggled(v.safe_margins, params);
             Ok(json!({"monitor": pfx, "safeMargins": v.safe_margins}))
+        }
+        "centerGrid" => {
+            let v = view_mut(app, w);
+            v.center_grid = toggled(v.center_grid, params);
+            Ok(json!({"monitor": pfx, "centerGrid": v.center_grid}))
         }
         "transparencyGrid" => {
             let v = view_mut(app, w);
@@ -307,9 +335,13 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
     if let Some(z) = rest.strip_prefix("magnification.") {
         return Some(if z == "fit" { v.zoom.is_none() } else { ZOOMS.iter().find(|(n, _)| *n == z).is_some_and(|(_, f)| v.zoom == Some(*f)) });
     }
+    if let Some(g) = rest.strip_prefix("centerGrid.") {
+        return CENTER_GRID_NAMES.iter().find(|(n, _)| *n == g).map(|(_, p)| v.center_grid && v.center_grid_pattern == *p);
+    }
     match rest {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
+        "centerGrid" => Some(v.center_grid),
         "transparencyGrid" => Some(v.transparency_grid),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
@@ -518,6 +550,44 @@ pub fn draw_snap_lines(p: &egui::Painter, pic: Rect, lines: &[(bool, f32)]) {
     for &(vertical, c) in lines {
         let seg = if vertical { [pos2(c, pic.min.y), pos2(c, pic.max.y)] } else { [pos2(pic.min.x, c), pos2(pic.max.x, c)] };
         p.line_segment(seg, Stroke::new(1.0, SNAP_COLOR));
+    }
+}
+
+/// The Centering Grid's lines over `pic` for `pattern`, the centre cross last. Empty when the
+/// picture has no area (an empty or infinite rect must not reach the painter).
+pub fn center_grid_lines(pic: Rect, pattern: CenterGridPattern) -> Vec<[egui::Pos2; 2]> {
+    if !pic.is_positive() || !pic.min.is_finite() || !pic.max.is_finite() {
+        return Vec::new();
+    }
+    let (x0, y0, w, h) = (pic.left(), pic.top(), pic.width(), pic.height());
+    let (x1, y1) = (pic.right(), pic.bottom());
+    let (cx, cy) = (pic.center().x, pic.center().y);
+    let mut lines = match pattern {
+        CenterGridPattern::Thirds => vec![
+            [pos2(x0 + w / 3.0, y0), pos2(x0 + w / 3.0, y1)],
+            [pos2(x0 + 2.0 * w / 3.0, y0), pos2(x0 + 2.0 * w / 3.0, y1)],
+            [pos2(x0, y0 + h / 3.0), pos2(x1, y0 + h / 3.0)],
+            [pos2(x0, y0 + 2.0 * h / 3.0), pos2(x1, y0 + 2.0 * h / 3.0)],
+        ],
+        CenterGridPattern::GoldenRatio => vec![
+            [pos2(x0 + w * GOLDEN_LOW, y0), pos2(x0 + w * GOLDEN_LOW, y1)],
+            [pos2(x0 + w * GOLDEN_HIGH, y0), pos2(x0 + w * GOLDEN_HIGH, y1)],
+            [pos2(x0, y0 + h * GOLDEN_LOW), pos2(x1, y0 + h * GOLDEN_LOW)],
+            [pos2(x0, y0 + h * GOLDEN_HIGH), pos2(x1, y0 + h * GOLDEN_HIGH)],
+        ],
+        CenterGridPattern::Diagonals => vec![[pos2(x0, y0), pos2(x1, y1)], [pos2(x1, y0), pos2(x0, y1)]],
+        CenterGridPattern::Cross => Vec::new(),
+    };
+    lines.push([pos2(cx, y0), pos2(cx, y1)]);
+    lines.push([pos2(x0, cy), pos2(x1, cy)]);
+    lines
+}
+
+/// Paint the Centering Grid `pattern` over the picture `pic`.
+pub fn center_grid(p: &egui::Painter, pic: Rect, pattern: CenterGridPattern) {
+    let cp = p.with_clip_rect(pic);
+    for line in center_grid_lines(pic, pattern) {
+        cp.line_segment(line, Stroke::new(1.0, Color32::from_white_alpha(100)));
     }
 }
 
@@ -777,6 +847,7 @@ fn pick(ui: &mut egui::Ui, out: &mut Picks, key: &str, label: &str, on: bool) {
 
 /// The view items of a monitor's wrench menu (display modes, resolutions, rulers, guides, snap).
 pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
+    let ctx = ui.ctx().clone();
     let v = view(app, w).clone();
     let mode = v.display_mode();
     let mut out: Picks = Vec::new();
@@ -799,6 +870,11 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "display.videoAndWaveform", tl!("Video and Audio Waveform Split"), mode == Some(DisplayMode::VideoAndWaveform));
     }
     ui.separator();
+    pick(ui, &mut out, "monitorFullScreen", tl!("Full Screen on Monitor"), false);
+    if w == Which::Program {
+        pick(ui, &mut out, "restoreProgramMonitor", tl!("Restore Program Monitor"), false);
+    }
+    ui.separator();
     ui.menu_button(tl!("Playback Resolution"), |ui| {
         for (k, r) in RES_NAMES {
             pick(ui, &mut out, &format!("playbackRes.{k}"), crate::i18n::t(r.label()), v.res == r);
@@ -812,6 +888,13 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     pick(ui, &mut out, "highQualityPlayback", tl!("High Quality Playback"), v.high_quality);
     ui.separator();
     pick(ui, &mut out, "showRulers", tl!("Show Rulers"), v.show_rulers);
+    ui.menu_button(tl!("Centering Grid"), |ui| {
+        pick(ui, &mut out, "centerGrid", tl!("Centering Grid"), v.center_grid);
+        ui.separator();
+        for (k, pattern) in CENTER_GRID_NAMES {
+            pick(ui, &mut out, &format!("centerGrid.{k}"), crate::i18n::t(pattern.label()), v.center_grid && v.center_grid_pattern == pattern);
+        }
+    });
     pick(ui, &mut out, "showGuides", tl!("Show Guides"), v.show_guides);
     if !v.guides.is_empty() {
         pick(ui, &mut out, "lockGuides", tl!("Lock Guides"), v.lock_guides);
@@ -825,7 +908,20 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {
         app.auto.add(&format!("{pfx}.settings.{key}"), r, &label);
-        if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {
+        if !clicked {
+            continue;
+        }
+        let id = format!("view.{key}");
+        let params = json!({"monitor": pfx});
+        // Full Screen on Monitor and Restore Program Monitor are keyboard/UI commands (they open
+        // the display chooser or move the panel and need the egui context), not view-state
+        // commands of `route`.
+        let r = if matches!(key.as_str(), "monitorFullScreen" | "restoreProgramMonitor") {
+            Some(crate::menus::invoke(app, &ctx, &id, params))
+        } else {
+            route(app, &id, &params)
+        };
+        if let Some(Err(e)) = r {
             app.ui.status = e;
         }
         // the menu stays open for the toggles; a display mode, a resolution and Clear Guides are
@@ -987,6 +1083,59 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Full Screen on Monitor's display chooser: the displays connected when the command was
+/// pressed, asked every time (choosing one floats the monitor and full screens it there).
+pub fn monitor_fullscreen_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(d) = app.ui.monitor_fullscreen.clone() else { return };
+    let mut elems: Elems = Vec::new();
+    let mut close = crate::widgets::escape_closes(ctx);
+    let mut chosen = None;
+    egui::Window::new(tl!("Full Screen on Monitor"))
+        .id(egui::Id::unique("Full Screen on Monitor"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.label(tl!("Choose the display for the full screen preview."));
+            for display in &d.displays {
+                let name = if display.name.is_empty() { tlf!("Monitor {n}", n = display.index + 1) } else { display.name.clone() };
+                let label = if display.primary {
+                    tlf!("{name} — {width} × {height} (Primary)", name, width = display.width, height = display.height)
+                } else {
+                    tlf!("{name} — {width} × {height}", name, width = display.width, height = display.height)
+                };
+                let r = ui.selectable_label(false, &label);
+                push(&mut elems, &format!("monitorFullScreen.display.{}", display.index), &r, &label);
+                if r.clicked() {
+                    chosen = Some(display.index);
+                }
+            }
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                push(&mut elems, "monitorFullScreen.cancel", &r, "Cancel");
+                close |= r.clicked();
+            });
+            if crate::widgets::escape_closes(ctx) {
+                close = true;
+            }
+        });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if let Some(display) = chosen
+        && let Err(e) = crate::panels::keyboard::choose_monitor_fullscreen(app, ctx, d.source, display)
+    {
+        app.ui.status = e;
+    } else if close {
+        app.ui.monitor_fullscreen = None;
+        return;
+    }
+    if chosen.is_some() {
+        app.ui.monitor_fullscreen = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,6 +1163,48 @@ mod tests {
         let huge = Rect::from_min_max(pos2(-1e20, -1e20), pos2(1e20, 1e20));
         assert!(grid_cells(huge, view).len() <= 6);
         assert!(grid_cells(Rect::from_min_max(pos2(f32::NEG_INFINITY, 0.0), pos2(f32::INFINITY, 1.0)), view).is_empty());
+    }
+
+    #[test]
+    fn centering_grid_marks_thirds_and_centre() {
+        let pic = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 200.0));
+        let lines = center_grid_lines(pic, CenterGridPattern::Thirds);
+        assert_eq!(lines.len(), 6);
+        // thirds: x = 10 + 100 and 10 + 200; y = 20 + 200/3 and 20 + 400/3
+        assert_eq!(lines[0], [pos2(110.0, 20.0), pos2(110.0, 220.0)]);
+        assert_eq!(lines[1], [pos2(210.0, 20.0), pos2(210.0, 220.0)]);
+        assert!((lines[2][0].y - (20.0 + 200.0 / 3.0)).abs() < 1e-4);
+        assert!((lines[3][0].y - (20.0 + 400.0 / 3.0)).abs() < 1e-4);
+        // the centre cross
+        assert_eq!(lines[4], [pos2(160.0, 20.0), pos2(160.0, 220.0)]);
+        assert_eq!(lines[5], [pos2(10.0, 120.0), pos2(310.0, 120.0)]);
+    }
+
+    #[test]
+    fn centering_grid_patterns_keep_the_frame_inside() {
+        let pic = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 200.0));
+        // centre cross only
+        assert_eq!(center_grid_lines(pic, CenterGridPattern::Cross), [[pos2(160.0, 20.0), pos2(160.0, 220.0)], [pos2(10.0, 120.0), pos2(310.0, 120.0)]]);
+        // golden ratio at 1 − φ and 1/φ, then the cross
+        let golden = center_grid_lines(pic, CenterGridPattern::GoldenRatio);
+        assert_eq!(golden.len(), 6);
+        for (line, want) in
+            golden[..4].iter().zip([10.0 + 300.0 * GOLDEN_LOW, 10.0 + 300.0 * GOLDEN_HIGH, 20.0 + 200.0 * GOLDEN_LOW, 20.0 + 200.0 * GOLDEN_HIGH])
+        {
+            let got = if line[0].x == line[1].x { line[0].x } else { line[0].y };
+            assert!((got - want).abs() < 1e-4, "{line:?} at {got}, want {want}");
+        }
+        assert_eq!(golden[4], [pos2(160.0, 20.0), pos2(160.0, 220.0)]);
+        assert_eq!(golden[5], [pos2(10.0, 120.0), pos2(310.0, 120.0)]);
+        // both diagonals, then the cross
+        let diagonals = center_grid_lines(pic, CenterGridPattern::Diagonals);
+        assert_eq!(diagonals[..2], [[pos2(10.0, 20.0), pos2(310.0, 220.0)], [pos2(310.0, 20.0), pos2(10.0, 220.0)]]);
+        assert_eq!(diagonals.len(), 4);
+        // degenerate pictures draw nothing in any pattern
+        for pattern in CenterGridPattern::ALL {
+            assert!(center_grid_lines(Rect::NOTHING, pattern).is_empty(), "{pattern:?}");
+            assert!(center_grid_lines(Rect::from_min_max(pos2(f32::NAN, 0.0), pos2(1.0, 1.0)), pattern).is_empty(), "{pattern:?}");
+        }
     }
 
     #[test]

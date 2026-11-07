@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 17,
+  "schema_version": 18,
   "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
@@ -57,6 +57,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
+| 18 | Warp Stabilizer | the analysis saved on a Warp Stabilizer effect (`EffectInstance::analysis`), packed base64, tied to the clip it analysed; older builds refuse v18 instead of silently dropping the analysis; no-op step |
 
 ### Migrations
 
