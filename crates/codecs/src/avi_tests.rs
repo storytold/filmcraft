@@ -162,14 +162,21 @@ fn drop_frames_hold_the_previous_picture() {
     assert!(at(11) != at(9));
 }
 
-/// DivX / Xvid has no decoder yet: the file opens, the codec is named, the picture reports it, and
-/// the sound plays.
+/// DivX / Xvid: the codec is named, the picture is ffmpeg's, the sound plays. Files of every
+/// flavour are in `tests/mpeg4_oracle.rs`.
 #[test]
-fn mpeg4_part2_is_named_and_its_audio_plays() {
-    let Some((_, src)) = avi("avi_xvid.avi", &["-c:v", "mpeg4", "-vtag", "XVID"], &["-c:a", "pcm_s16le"]) else { return };
+fn mpeg4_part2_is_named_decoded_and_its_audio_plays() {
+    let Some((path, src)) = avi("avi_xvid.avi", &["-c:v", "mpeg4", "-vtag", "XVID"], &["-c:a", "pcm_s16le"]) else { return };
     assert_eq!(src.info().video.as_ref().unwrap().codec, "MPEG-4 Part 2 (DivX / Xvid)");
-    let e = src.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap_err().to_string();
-    assert!(e.contains("MPEG-4 Part 2"), "{e}");
+    let reference = reference_yuv(&path, "yuv420p").unwrap();
+    let frame = reference.len() / 50;
+    let rate = src.info().frame_rate();
+    for k in [0, 7, 49] {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        let got = yuv_bytes(&f);
+        let worst = got.iter().zip(&reference[k * frame..(k + 1) * frame]).map(|(a, b)| a.abs_diff(*b)).max();
+        assert!(worst.is_some_and(|w| w <= 8), "frame {k}: {worst:?}");
+    }
     assert!(ours(&src, 4_800).iter().any(|s| s.abs() > 0.1));
 }
 

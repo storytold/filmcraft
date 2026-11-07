@@ -20,6 +20,7 @@ filmcraft-matroska = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-mpegts = { workspace = true }
 filmcraft-mpeg2v = { workspace = true }
+filmcraft-mpeg4v = { workspace = true }
 filmcraft-ac3 = { workspace = true }
 filmcraft-mpa = { workspace = true }
 filmcraft-ogg = { workspace = true }

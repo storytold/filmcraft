@@ -1013,6 +1013,89 @@ pub fn mpeg2_to_video_frame(p: filmcraft_mpeg2v::Picture) -> VideoFrame {
     }
 }
 
+/// Our MPEG-4 Part 2 video decoder (DivX / Xvid).
+pub struct Mpeg4Decoder {
+    dec: filmcraft_mpeg4v::Decoder,
+}
+
+impl Mpeg4Decoder {
+    /// `extradata`: codec setup kept outside the stream (AVI `strf`); it may be empty, as the
+    /// layer header usually comes with the first chunk.
+    pub fn new(extradata: &[u8]) -> Self {
+        let mut dec = filmcraft_mpeg4v::Decoder::new();
+        // a bad header here is reported, if it matters, when a VOP needs it
+        let _ = dec.configure(extradata);
+        Self { dec }
+    }
+}
+
+fn mpeg4_error(e: filmcraft_mpeg4v::Error) -> CodecError {
+    match e {
+        filmcraft_mpeg4v::Error::Unsupported(_) => CodecError::Unsupported(e.to_string()),
+        filmcraft_mpeg4v::Error::Invalid(_) => CodecError::Decode(e.to_string()),
+    }
+}
+
+/// Convert a decoded MPEG-4 Part 2 picture. Colour comes from the visual object header (defaults:
+/// BT.601 for SD, BT.709 for HD).
+pub fn mpeg4_to_video_frame(p: filmcraft_mpeg4v::Picture) -> VideoFrame {
+    use std::sync::Arc;
+    let info = &p.info;
+    let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(p.width, p.height), ..filmcraft_color::ColorInfo::REC709 };
+    if info.width <= 1024 && info.height <= 576 {
+        color.primaries = if p.height == 576 { filmcraft_color::Primaries::Bt601_625 } else { filmcraft_color::Primaries::Bt601_525 };
+    }
+    if let Some((prim, transfer, matrix)) = info.colour {
+        if let Some(m) = filmcraft_color::Matrix::from_code(matrix) {
+            color.matrix = m;
+        }
+        if let Some(t) = filmcraft_color::Transfer::from_code(transfer) {
+            color.transfer = t;
+        }
+        if let Some(pr) = primaries_from_code(prim) {
+            color.primaries = pr;
+        }
+    }
+    if info.full_range {
+        color.range = filmcraft_color::Range::Full;
+    }
+    let par = info.sar;
+    VideoFrame {
+        width: p.width,
+        height: p.height,
+        data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(p.y), Arc::new(p.cb), Arc::new(p.cr)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
+        color,
+        par: if par.0 > 0 && par.1 > 0 { par } else { (1, 1) },
+        pts: filmcraft_time::Tick::ZERO,
+    }
+}
+
+impl VideoDecoder for Mpeg4Decoder {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let pics = self.dec.decode(sample, pts).map_err(mpeg4_error)?;
+        Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg4_to_video_frame(p), draft: false }).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg4_to_video_frame(p), draft: false }).collect()
+    }
+    fn reset(&mut self) {
+        self.dec.reset();
+    }
+    fn name(&self) -> &str {
+        "FilmCraft MPEG-4 Part 2"
+    }
+    /// A chunk that starts with an I-VOP; `None` for one with no VOP at all.
+    fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        filmcraft_mpeg4v::vop_types(sample).first().map(|t| *t == filmcraft_mpeg4v::VopType::I)
+    }
+    /// B-VOPs are never referenced. A chunk with an anchor in it is not disposable, nor is a
+    /// not-coded VOP (it may show the anchor of a packed stream).
+    fn is_disposable(&self, sample: &[u8]) -> bool {
+        let types = filmcraft_mpeg4v::vop_types(sample);
+        !types.is_empty() && types.iter().all(|t| *t == filmcraft_mpeg4v::VopType::B)
+    }
+}
+
 /// "YUV 4:2:2 8-bit, interlaced (upper field first)" for the media info.
 pub fn mpeg2_pixel_format(info: &filmcraft_mpeg2v::SequenceInfo, field_order: Option<filmcraft_mpeg2v::FieldOrder>) -> String {
     let sub = match info.chroma {

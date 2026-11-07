@@ -28,7 +28,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | JPEG 2000 (MXF, DCP) | decode + encode (Kakadu) | none | none | — | 0% | 40–70 h |
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
-| MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
+| MPEG-4 Part 2 | decode | none | `filmcraft-mpeg4v` in AVI (Simple, Advanced Simple; no interlaced, no GMC; MP4 and MKV not wired in) | ffmpeg oracle, ≥ 45 dB | 80% | 4–8 h |
 | Apple Intermediate Codec (`icod`, iMovie / Final Cut) | not in Adobe's supported-formats list | none (#3646): Apple publishes no specification, so a clean-room decoder needs a maintainer ruling ([AGENTS.md](../AGENTS.md) §2); import names the codec and the Project panel's Unreadable badge shows "no decoder for Apple Intermediate Codec video" on hover | none | — | 0% | — (no estimate without a specification) |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
@@ -62,6 +62,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-07 | minor | MPEG-4 Part 2 decode in AVI (`filmcraft-mpeg4v`) |
 | 2026-11-05 | minor | H.264 High 10 and High 10 Intra in the built-in encoder (#1221) |
 | 2026-11-02 | minor | Apple Intermediate Codec row: named on import and in the no-decoder error, no decoder (#3646) |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |

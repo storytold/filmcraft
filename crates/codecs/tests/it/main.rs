@@ -11,6 +11,7 @@ mod media_oracle;
 mod mkv_mp1_oracle;
 mod mp4_oracle;
 mod mp4_rtmd;
+mod mpeg4_oracle;
 mod mpeg_oracle;
 mod mxf_oracle;
 mod ogg_oracle;

@@ -13,7 +13,7 @@
 //! - [`MpegSource`]: MPEG-2 transport streams (`.ts`, `.m2ts`, `.mts`), program streams (`.mpg`,
 //!   `.vob`, `.mod`) and MPEG-1/2 video elementary streams: MPEG-1/2, H.264 and HEVC video; MPEG
 //!   audio, AAC (ADTS / LATM), AC-3 and LPCM.
-//! - [`AviSource`]: AVI (OpenDML included): Motion JPEG, H.264, HEVC and uncompressed video; PCM,
+//! - [`AviSource`]: AVI (OpenDML included): Motion JPEG, H.264, HEVC, MPEG-4 Part 2 and uncompressed video; PCM,
 //!   MP3 / MP2 and AC-3 audio.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.

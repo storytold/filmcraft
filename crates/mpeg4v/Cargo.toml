@@ -1,0 +1,16 @@
+[package]
+name = "filmcraft-mpeg4v"
+description = "Clean-room MPEG-4 Part 2 video (ISO/IEC 14496-2, DivX / Xvid) decoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+filmcraft-testkit = { workspace = true }
