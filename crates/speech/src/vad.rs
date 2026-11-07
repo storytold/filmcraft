@@ -54,7 +54,7 @@ const VOICED: f32 = 0.55;
 const RELEASE_FRAMES: usize = 8;
 /// An unvoiced lead longer than this (and quiet, see [`BREATH_DB`]) is a breath, not a consonant.
 const ONSET_FRAMES: usize = 15;
-/// A lead this far under the word's voiced peak is a breath.
+/// A lead at least this far under the word's voiced peak is a breath.
 const BREATH_DB: f32 = 8.0;
 /// Unvoiced frames kept ahead of the first voiced one when a breath runs straight into the word
 /// (room for an unvoiced first consonant).
@@ -299,10 +299,11 @@ fn trim_unvoiced_edges(audio: &[f32], db: &[f32], loud: &[bool], words: &mut [Wo
             if let Some(v) = first_voiced
                 && v > a + ONSET_FRAMES
             {
-                let peak = |r: std::ops::Range<usize>| r.filter_map(|f| db.get(f)).copied().fold(f32::NEG_INFINITY, f32::max);
-                let lead_peak = peak(a..v);
-                let word_peak = peak(v..(v + 30).min(new_end));
-                if lead_peak < word_peak - BREATH_DB {
+                let level = |f: usize| db.get(f).copied().unwrap_or(f32::NEG_INFINITY);
+                let lead_peak = (a..v).map(level).fold(f32::NEG_INFINITY, f32::max);
+                // the word's voiced peak: its loudest voiced frame in the 300 ms from its first one
+                let word_peak = (v..(v + 30).min(new_end)).filter(|&f| voiced_at(f)).map(level).fold(f32::NEG_INFINITY, f32::max);
+                if lead_peak <= word_peak - BREATH_DB {
                     // the word starts after the last silent frame before its voice; when the
                     // breath runs straight into the word, 120 ms ahead of the voice, which keeps
                     // an unvoiced first consonant (an "s", an "f")
@@ -524,6 +525,22 @@ mod tests {
         let mut a = audio(1.2, &[(0.3, 0.8)]);
         add_noise(&mut a, 0.0, 0.3, -14.0);
         let mut w = vec![word("shore", 0.0, 0.8)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.8)]);
+    }
+
+    #[test]
+    fn the_onset_gate_measures_the_word_by_its_voiced_peak() {
+        // a 0.3 s unvoiced lead 5 dB under the vowel (a consonant, not a breath), then "church"
+        // sounding 0.3–0.8 with a 100 ms unvoiced burst inside it that is louder than the vowel: the
+        // burst is not the word's voiced peak, so the lead stays
+        let mut a = audio(1.2, &[(0.3, 0.8)]);
+        add_noise(&mut a, 0.0, 0.3, -18.5);
+        for v in &mut a[(0.4 * SAMPLE_RATE as f64) as usize..(0.5 * SAMPLE_RATE as f64) as usize] {
+            *v = 0.0;
+        }
+        add_noise(&mut a, 0.4, 0.5, -5.0);
+        let mut w = vec![word("church", 0.0, 0.8)];
         tighten_words(&a, &mut w);
         assert_eq!(bounds(&w), [(0.0, 0.8)]);
     }
