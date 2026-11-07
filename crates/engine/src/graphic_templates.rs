@@ -745,7 +745,23 @@ fn pin_layer(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// Character style from command JSON (friendly names accepted).
+/// Stroke widths use the same finite pixel range as the layer controls.
+fn char_stroke_width(k: &str, v: &Value) -> Result<f32> {
+    v.as_f64()
+        .filter(|n| n.is_finite() && (0.0..=1000.0).contains(n))
+        .map(|n| n as f32)
+        .ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be a number from 0 to 1000")))
+}
+
+fn char_stroke_kind(k: &str, v: &Value) -> Result<u32> {
+    let kind = match v {
+        Value::Number(n) => n.as_u64().filter(|n| *n <= 2).map(|n| n as u32),
+        Value::String(s) => graphic::STROKE_OPTS.iter().position(|o| o.eq_ignore_ascii_case(s)).map(|n| n as u32),
+        _ => None,
+    };
+    kind.ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be outer, center, inner, or 0..2")))
+}
+
 fn char_style_p(v: &Value) -> Result<CharStyle> {
     let o = v.as_object().ok_or_else(|| bad("graphics.setCharStyle", "`style` must be an object"))?;
     let mut c = CharStyle::default();
@@ -754,15 +770,27 @@ fn char_style_p(v: &Value) -> Result<CharStyle> {
             "font" | "family" => c.font = x.as_str().map(str::to_string),
             "fontStyle" | "font_style" | "style" => c.font_style = x.as_str().map(str::to_string),
             "size" | "fontSize" => c.size = x.as_f64().map(|v| v as f32),
-            "fill" | "color" | "fillColor" | "fill_color" => {
-                c.fill = Some(match crate::commands::json_to_param(&ParamValue::Color([0.0; 4]), x) {
+            "stroke" => c.stroke = Some(x.as_bool().ok_or_else(|| bad("graphics.setCharStyle", "`stroke` must be a boolean"))?),
+            "stroke2" => c.stroke2 = Some(x.as_bool().ok_or_else(|| bad("graphics.setCharStyle", "`stroke2` must be a boolean"))?),
+            "strokeWidth" | "stroke_width" => c.stroke_width = Some(char_stroke_width(k, x)?),
+            "stroke2Width" | "stroke2_width" => c.stroke2_width = Some(char_stroke_width(k, x)?),
+            "strokeType" | "stroke_type" => c.stroke_type = Some(char_stroke_kind(k, x)?),
+            "stroke2Type" | "stroke2_type" => c.stroke2_type = Some(char_stroke_kind(k, x)?),
+            "fill" | "color" | "fillColor" | "fill_color" | "strokeColor" | "stroke_color" | "stroke2Color" | "stroke2_color" => {
+                let color = Some(match crate::commands::json_to_param(&ParamValue::Color([0.0; 4]), x) {
                     Some(ParamValue::Color(col)) => col,
-                    _ => return Err(bad("graphics.setCharStyle", "`color`: \"#rrggbb\" or [r,g,b,a]")),
-                })
+                    _ => return Err(bad("graphics.setCharStyle", format!("`{k}`: \"#rrggbb\" or [r,g,b,a]"))),
+                });
+                match k.as_str() {
+                    "strokeColor" | "stroke_color" => c.stroke_color = color,
+                    "stroke2Color" | "stroke2_color" => c.stroke2_color = color,
+                    _ => c.fill = color,
+                }
             }
             "bold" | "fauxBold" | "faux_bold" => c.faux_bold = x.as_bool(),
             "italic" | "fauxItalic" | "faux_italic" => c.faux_italic = x.as_bool(),
             "underline" => c.underline = x.as_bool(),
+            "strikethrough" | "strike" => c.strikethrough = x.as_bool(),
             "tracking" => c.tracking = x.as_f64().map(|v| v as f32),
             "baselineShift" | "baseline_shift" => c.baseline_shift = x.as_f64().map(|v| v as f32),
             "caps" => {
@@ -909,7 +937,8 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let col = |c: [u8; 4]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
         set(&mut layer, "font", ParamValue::Text(st.font.clone()));
-        set(&mut layer, "font_style", ParamValue::Text("SemiBold".into()));
+        let font_style = if st.font_style.trim().is_empty() { "SemiBold" } else { st.font_style.trim() };
+        set(&mut layer, "font_style", ParamValue::Text(font_style.into()));
         set(&mut layer, "align", ParamValue::Choice(st.align as u32));
         set(&mut layer, "fill_color", ParamValue::Color(col(st.color)));
         set(&mut layer, "leading", ParamValue::Float(line_h - size * 1.21));
@@ -1066,7 +1095,8 @@ pub fn fonts_used(s: &Session) -> Vec<(String, String, usize)> {
     for q in s.project.sequences() {
         if let ItemKind::Sequence(sq) = &q.kind {
             for t in &sq.caption_tracks {
-                add(t.style.font.clone(), "SemiBold".into());
+                let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                add(t.style.font.clone(), st.into());
             }
         }
     }
@@ -1122,8 +1152,12 @@ fn replace_fonts(s: &mut Session, p: &Value) -> Result<Value> {
         for id in ids {
             if let Some(sq) = pr.sequence_mut(id) {
                 for t in &mut sq.caption_tracks {
-                    if t.style.font.eq_ignore_ascii_case(&from) && from_style.is_none() {
+                    let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                    if matches(&t.style.font, st) {
                         t.style.font = to.clone();
+                        if let Some(ts) = &to_style {
+                            t.style.font_style = ts.clone();
+                        }
                         n += 1;
                     }
                 }
@@ -1236,7 +1270,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.setCharStyle",
             "Character Style",
             &[],
-            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
+            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","stroke":bool,"strokeColor":"#rrggbb","strokeWidth":px,"strokeType":"outer|center|inner","stroke2":bool,"stroke2Color":"#rrggbb","stroke2Width":px,"stroke2Type":"outer|center|inner","bold":bool,"italic":bool,"underline":bool,"strikethrough":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
             has_graphic,
             set_char_style,
         ),

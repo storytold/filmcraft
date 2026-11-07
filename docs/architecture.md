@@ -241,7 +241,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
   slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads
   it through `ProxySource`, which reports the original's size. Export always uses
-  `MediaPool::full_res_provider`. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
+  `MediaPool::full_res_provider`. Background jobs (exports, Render Previews, proxies) open their
+  own copy of each file they can stream (`MediaPool::own_source`, `PoolProvider::own_sources`),
+  so they never take turns with the monitors on one decoder. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
@@ -299,6 +301,12 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
   and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
+  On macOS, `platform::hardware_encode` (VideoToolbox H.264, opt-in the same way, and H.265) is
+  registered likewise. It too takes the RGBA pictures as they are (`32BGRA` buffers tagged BT.709)
+  and VideoToolbox converts them to 4:2:0, so the encode thread only copies: converting on the CPU
+  there competed with the render of the next frames for the thread pool and cost more than the
+  hardware encode (20 ms a 1080p frame). A VideoToolbox that refuses RGB input on the first picture
+  gets the CPU's conversion into NV12 instead, and the export goes on.
 - **Compositor.** `render` is the reference for monitors, thumbnails and export. `render::plan`
   turns a frame into GPU layers, each with its opacity and blend mode. All 27 blend modes run on the
   GPU (`filmcraft-gpu`): Normal and Dissolve with fixed-function "over" blending, the others by
@@ -314,7 +322,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. An adjustment layer that covers the whole frame at 100 % opacity in
+  Normal, unmasked and with only effects from that set, is a step of the plan: its effects run the
+  same way on the composite of the tracks below it, and the result replaces it before the tracks
+  above are drawn. The plan is made for the device that composites it (`plan::DeviceCaps`, part
+  of the monitor's frame key and of the export's renderer pool): on one without an effect stage,
+  or for a frame larger than its textures, the adjustment layer sends the frame to the CPU
+  renderer on the thread that plans it, not on the UI thread or inside a renderer. Other standard
+  effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
   blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
@@ -558,7 +573,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
   Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
   `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
-  `color.spaces`, `media.colorInfo`.
+  `color.spaces`, `media.colorInfo`. Where no tag in a file gives the matrix, transfer or
+  primaries, the metadata holds a default (BT.709 transfer and primaries, the matrix by frame
+  size); `media.colorInfo`'s `assumed` and `probe`'s `video.color_assumed` say which.
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
@@ -692,9 +709,11 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
-  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
+  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920 and its
+  TikTok / Instagram Reels / YouTube Shorts variants with loudness normalized to −14 LUFS, ProRes,
   DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
-  `<data dir>/export-presets.json` (`export.presets.*`).
+  `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
+  adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
@@ -773,4 +792,4 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
+| 2026-10-10 | trivial | Status line and revision history added; milestone link points at docs/roadmap.md |

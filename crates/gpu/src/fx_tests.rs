@@ -114,6 +114,45 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("black_white", vec![], false),
         ("color_balance", vec![("shadow_r", fl(50.0)), ("mid_g", fl(-40.0)), ("hi_b", fl(80.0)), ("shadow_b", fl(-100.0)), ("hi_r", fl(100.0))], false),
         ("color_balance", vec![("mid_r", fl(70.0)), ("hi_g", fl(-60.0)), ("preserve", ParamValue::Bool(true))], false),
+        (
+            "three_way_color",
+            vec![
+                ("shadow_hue", fl(220.0)),
+                ("shadow_balance", fl(60.0)),
+                ("hi_hue", fl(30.0)),
+                ("hi_balance", fl(80.0)),
+                ("mid_level", fl(-30.0)),
+                ("saturation", fl(130.0)),
+            ],
+            false,
+        ),
+        (
+            "three_way_color",
+            vec![
+                ("shadow_level", fl(50.0)),
+                ("hi_level", fl(-40.0)),
+                ("shadow_threshold", fl(50.0)),
+                ("shadow_softness", fl(0.0)),
+                ("hi_threshold", fl(50.0)),
+                ("hi_softness", fl(0.0)),
+                ("saturation", fl(0.0)),
+            ],
+            false,
+        ),
+        // overlapping ranges (shadow edge above the highlight edge)
+        (
+            "three_way_color",
+            vec![
+                ("shadow_threshold", fl(80.0)),
+                ("hi_threshold", fl(20.0)),
+                ("shadow_balance", fl(70.0)),
+                ("hi_balance", fl(70.0)),
+                ("hi_hue", fl(200.0)),
+                ("shadow_level", fl(30.0)),
+                ("hi_level", fl(30.0)),
+            ],
+            false,
+        ),
         ("leave_color", vec![("amount", fl(80.0)), ("tolerance", fl(20.0)), ("softness", fl(30.0))], true),
         ("leave_color", vec![("amount", fl(100.0)), ("color", col(0.1, 0.8, 0.2)), ("tolerance", fl(0.0)), ("softness", fl(0.0))], true),
         ("change_to_color", vec![], true),
@@ -157,6 +196,12 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("directional_blur", vec![("length", fl(10.0)), ("direction", fl(30.0))], false),
         ("directional_blur", vec![("length", fl(0.2))], false),
         ("directional_blur", vec![("length", fl(1000.0)), ("direction", fl(-100.0))], false),
+        ("bokeh_blur", vec![("amount", fl(0.2))], false),
+        ("bokeh_blur", vec![("amount", fl(3.0)), ("shape", ch(0)), ("highlight", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(11.0)), ("shape", ch(4)), ("rotation", fl(20.0))], false),
+        ("bokeh_blur", vec![("amount", fl(30.0)), ("shape", ch(1)), ("rotation", fl(-75.0)), ("highlight", fl(100.0)), ("threshold", fl(40.0))], false),
+        ("bokeh_blur", vec![("amount", fl(60.0)), ("shape", ch(5)), ("highlight", fl(300.0)), ("threshold", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(500.0)), ("shape", ch(2))], false),
         ("sharpen", vec![("amount", fl(80.0))], false),
         ("sharpen", vec![("amount", fl(4000.0))], false),
         ("unsharp_mask", vec![("amount", fl(150.0)), ("radius", fl(3.0)), ("threshold", fl(10.0))], true),
@@ -313,7 +358,35 @@ fn gpu_effects_match_cpu_exactly() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    let mut c = GpuCompositor::new(&dev, &q);
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+/// The same on DX12 with FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
+/// FilmCraft's builds). FXC aborted on the effect stage ("internal error: compilation aborted
+/// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
+/// CPU. WARP stands in when there is no GPU.
+#[cfg(windows)]
+#[test]
+fn gpu_effects_match_cpu_exactly_with_fxc() {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    let instance = wgpu::Instance::new(desc);
+    let adapter = [false, true].into_iter().find_map(|force_fallback_adapter| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter, ..Default::default() })).ok()
+    });
+    let Some(adapter) = adapter else {
+        eprintln!("no DX12 adapter; skipping");
+        return;
+    };
+    eprintln!("DX12 + FXC on {}", adapter.get_info().name);
+    let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("DX12 device");
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
+    let mut c = GpuCompositor::new(dev, q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
     let (w, h) = (67u32, 41u32);
     let px = picture(w, h);
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
@@ -324,7 +397,7 @@ fn gpu_effects_match_cpu_exactly() {
         assert!(op.gpu_ok(), "{id} {params:?}: not GPU-capable");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+        let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] };
         let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{id} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
@@ -333,6 +406,38 @@ fn gpu_effects_match_cpu_exactly() {
         }
     }
     assert!(failures.is_empty(), "GPU effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// #3465 review: a neutral Three-Way Color Corrector leaves every value alone on both paths,
+/// negative and HDR channels included.
+#[test]
+fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (16u32, 8u32);
+    let mut px = picture(w, h);
+    for (i, p) in px.chunks_mut(4).enumerate() {
+        p[3] = 1.0;
+        if i % 3 == 0 {
+            p[0] = -0.1;
+        }
+        if i % 5 == 0 {
+            p[1] = 2.0;
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let e = effect("three_way_color", &[]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("three_way_color has a GPU op");
+    assert!(op.is_identity_three_way());
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    op.apply(&mut cpu);
+    assert_eq!(cpu.px, px, "the CPU leaves a neutral corrector's input untouched");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+    let (worst, flips) = compare(&px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
 }
 
 #[test]
@@ -349,7 +454,7 @@ fn gpu_extract_zero_softness_has_no_fractional_edge() {
     for invert in [false, true] {
         let e = effect("extract", &[("black", fl(90.0)), ("white", fl(160.0)), ("invert", ParamValue::Bool(invert))]);
         let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).unwrap();
         for (src, out) in px.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()) {
             assert_eq!(out[3], src[3], "Extract must preserve alpha");
             assert!(out[0] == 0.0 || out[0] == out[3], "zero softness produced a fractional edge: {out:?}");
@@ -404,7 +509,7 @@ fn gpu_effect_chains_match_cpu() {
             op.apply(&mut cpu);
         }
         let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{names:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
         assert!(worst < EXACT * 2.0 && flips == 0.0, "{names:?}: {worst}, {flips}");
@@ -438,7 +543,7 @@ fn keyframed_effects_follow_time() {
         for op in &ops {
             op.apply(&mut cpu);
         }
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst < EXACT && flips == 0.0, "t = {s}: {worst}, {flips}");
         assert_ne!(last.as_ref(), Some(&gpu), "t = {s}: the keyframes change the picture");
@@ -455,6 +560,8 @@ fn hostile_parameters_are_bounded() {
         effect("brightness_contrast", &[("brightness", fl(f64::NAN))]),
         effect("gaussian_blur", &[("blurriness", fl(f64::INFINITY))]),
         effect("directional_blur", &[("length", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("rotation", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("highlight", fl(f64::INFINITY))]),
         effect("transform", &[("rotation", fl(f64::NAN))]),
         effect("crop", &[("left", fl(f64::NAN))]),
         effect("offset", &[("shift", pt(f64::INFINITY, 0.0))]),
@@ -504,13 +611,19 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("gaussian_blur", &[("blurriness", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("unsharp_mask", &[("radius", fl(1e30)), ("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("directional_blur", &[("length", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(f64::NAN))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, ops }).expect("effect image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, turns: 0, ops }).expect("effect image");
     assert!(t0.elapsed().as_secs() < 30);
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
-    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, ops: vec![FxOp::BlackWhite] }).is_none());
+    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).is_none());
+    // and the refusal ends its frame: the next frame, which uses no effect, releases the working
+    // images the first one pooled
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] });
+    assert!(c.fx.as_ref().is_some_and(|f| f.is_idle()), "working images kept after a refused effect image");
 }
 
 #[test]
@@ -611,7 +724,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::IDENTITY,
                     opacity: 1.0,
                     blend: Blend::Normal,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, ops: ops(&chain_c, 320, 180, 0.5) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, turns: 0, ops: ops(&chain_c, 320, 180, 0.5) })),
                     input: None,
                 },
                 PlanLayer {
@@ -619,7 +732,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(1.1, 1.1), 17.0, Vec2::new(80.0, 60.0)),
                     opacity: 0.8,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops: ops(&chain_a, 160, 120, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops: ops(&chain_a, 160, 120, 1.0) })),
                     input: None,
                 },
                 PlanLayer::new(ramp.clone(), Affine::translate(10.0, 20.0), 0.5, Blend::Normal),
@@ -628,7 +741,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(250.0, 70.0), Vec2::new(0.45, 0.45), -9.0, Vec2::new(160.0, 90.0)),
                     opacity: 0.7,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, ops: ops(&chain_b, 320, 180, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, turns: 0, ops: ops(&chain_b, 320, 180, 1.0) })),
                     input: None,
                 },
             ],
@@ -655,7 +768,7 @@ fn plain_layers_skip_the_effect_stage() {
     let plan = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
     c.composite(&plan);
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
-    let fx = LayerFx { size: (64, 36), decimation: 1, ops: vec![FxOp::BlackWhite] };
+    let fx = LayerFx { size: (64, 36), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] };
     let with = FramePlan::Layers {
         width: 64,
         height: 36,
@@ -686,7 +799,7 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         layers: vec![
             PlanLayer::new(yuv_frame(200, 150), Affine::IDENTITY, 1.0, Blend::Normal),
             PlanLayer {
-                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops })),
+                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops })),
                 ..PlanLayer::new(
                     ramp_layer(160, 120, 2),
                     Affine::motion(Vec2::new(100.0, 75.0), Vec2::new(0.9, 0.9), 8.0, Vec2::new(80.0, 60.0)),
@@ -723,7 +836,7 @@ fn effect_source_identity_preserves_odd_sized_half_float_texels() {
         let px = picture(w, h);
         let frame = VideoFrame::rgba_f32(w, h, px.clone());
         for n in [0, 1] {
-            let (ow, oh, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: n, ops: Vec::new() }).expect("source image");
+            let (ow, oh, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: n, turns: 0, ops: Vec::new() }).expect("source image");
             assert_eq!((ow, oh, gpu.len()), (w, h, px.len()));
             for (i, (expected, actual)) in px.iter().zip(&gpu).enumerate() {
                 assert_eq!(actual.to_bits(), expected.to_bits(), "{w}x{h} n{n} source component{i}: {actual} != {expected}");
@@ -745,7 +858,7 @@ fn alpha_invert_does_not_amplify_invented_opacity_at_odd_source_pixels() {
     let op = FxOp::Invert { channel: 4, blend: 0.2 };
     let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("alpha invert image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("alpha invert image");
     assert_eq!(gpu.len(), px.len());
     let (worst, flips) = compare(&cpu.px, &gpu);
     assert!(worst <= EXACT && flips == 0.0, "alpha invert: {worst}, {flips}");
@@ -758,6 +871,31 @@ fn alpha_invert_does_not_amplify_invented_opacity_at_odd_source_pixels() {
         }
     }
     assert_eq!(transparent, 402);
+}
+
+/// A turned working image (display rotation) matches the CPU's: decimated, then turned.
+#[test]
+fn effect_source_quarter_turns_match_the_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(67u32, 41u32), (96, 54)] {
+        let frame = VideoFrame::rgba_f32(w, h, picture(w, h));
+        for n in [1, 2, 4] {
+            for turns in 1..4u8 {
+                let (dw, dh) = ((w / n) as usize, (h / n) as usize);
+                let size = if turns % 2 == 1 { (dh as u32, dw as u32) } else { (dw as u32, dh as u32) };
+                let fx = LayerFx { size, decimation: n, turns, ops: Vec::new() };
+                let cpu = filmcraft_render::plan::effect_image(&frame, &fx);
+                let (gw, gh, gpu) = c.effect_image(&frame, &fx).expect("turned source image");
+                assert_eq!((gw as usize, gh as usize, gpu.len()), (cpu.w, cpu.h, cpu.px.len()));
+                let (worst, flips) = compare(&cpu.px, &gpu);
+                assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} turns{turns}: {worst}, {flips}");
+            }
+        }
+    }
 }
 
 /// The exact source grid keeps the existing box-minification behavior at non-unit factors.
@@ -773,7 +911,7 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
         for n in [2, 4, 8] {
             let (ow, oh, cpu) = frame.to_linear_f32_decimated(n as usize);
             let (gw, gh, gpu) =
-                c.effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, ops: Vec::new() }).expect("decimated source image");
+                c.effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, turns: 0, ops: Vec::new() }).expect("decimated source image");
             assert_eq!((gw as usize, gh as usize, gpu.len()), (ow, oh, cpu.len()));
             let (worst, flips) = compare(&cpu, &gpu);
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");

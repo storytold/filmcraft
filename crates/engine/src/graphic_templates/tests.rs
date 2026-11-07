@@ -41,6 +41,25 @@ fn clip_of(v: &Value) -> ClipId {
 }
 
 #[test]
+fn template_exports_keep_distinct_non_ascii_names() {
+    let mut s = demo("gt-unicode-export");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Headline"})).unwrap());
+    let first = s.execute("graphics.template.export", json!({"clip": c.0, "name": "片头"})).unwrap();
+    let first_path = first["path"].as_str().unwrap();
+    let first_bytes = std::fs::read(first_path).unwrap();
+    let second = s.execute("graphics.template.export", json!({"clip": c.0, "name": "片尾"})).unwrap();
+    assert_ne!(first["path"], second["path"], "distinct names must not overwrite the first export");
+    assert_ne!(first["id"], second["id"], "distinct templates need distinct library identities");
+    assert_eq!(std::fs::read(first_path).unwrap(), first_bytes);
+    let second_file: Value = serde_json::from_slice(&std::fs::read(second["path"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(second_file["name"], "片尾");
+    let installed = s.execute("graphics.template.list", json!({"source": "user"})).unwrap();
+    for exported in [&first, &second] {
+        assert!(installed.as_array().unwrap().iter().any(|entry| entry["id"] == exported["id"] && entry["name"] == exported["name"]));
+    }
+}
+
+#[test]
 fn template_export_install_apply_round_trip() {
     let mut s = demo("gt-export");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Headline", "position": [200, 900]})).unwrap());
@@ -264,6 +283,112 @@ fn pins_follow_text_growth() {
 }
 
 #[test]
+fn character_stroke_sizes_and_switches_do_not_change_the_layer() {
+    let mut s = demo("gt-char-stroke-size");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "甲12乙"})).unwrap());
+    let before = item(&s, c);
+    let style = json!({"stroke": true, "strokeWidth": 24, "strokeType": "inner", "stroke2": false, "stroke2Width": 36, "stroke2Type": "center"});
+    let result = s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 1, "end": 3, "style": style})).unwrap();
+    assert_eq!(
+        result["styles"],
+        json!([{"start": 1, "end": 3, "stroke": true, "strokeWidth": 24.0, "strokeType": 2,
+        "stroke2": false, "stroke2Width": 36.0, "stroke2Type": 1}])
+    );
+    let after = item(&s, c);
+    for (a, b) in after.effects.iter().zip(&before.effects) {
+        assert_eq!(a.params, b.params, "layer parameters stay unchanged");
+    }
+    assert_eq!(serde_json::from_str::<TrackItem>(&serde_json::to_string(&after).unwrap()).unwrap(), after);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), after);
+    let path = tmp_dir("gt-char-stroke-size-save").join("stroke-sizes.fcproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(item(&reopened, c).effects, after.effects);
+}
+
+#[test]
+fn character_stroke_sizes_and_types_reject_invalid_values_atomically() {
+    let mut s = demo("gt-char-stroke-size-invalid");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "1234"})).unwrap());
+    let before = item(&s, c);
+    let history = s.execute("history.list", json!({})).unwrap();
+    for key in ["strokeWidth", "stroke_width", "stroke2Width", "stroke2_width"] {
+        for value in [json!(null), json!("wide"), json!(-1), json!(1001), json!(1e300)] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: value}})).is_err());
+            assert_eq!(item(&s, c), before);
+        }
+    }
+    for key in ["stroke", "stroke2", "strokeType", "stroke2Type"] {
+        for value in [json!(null), json!("invalid"), json!(-1), json!(3)] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: value}})).is_err());
+            assert_eq!(item(&s, c), before);
+        }
+    }
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
+#[test]
+fn character_stroke_colours_are_local_undoable_and_persistent() {
+    let mut s = demo("gt-char-strokes");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "甲12乙"})).unwrap());
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 1, "end": 3, "style": {"color": "#ffff00"}})).unwrap();
+    let before = item(&s, c);
+    let styled = s
+        .execute(
+            "graphics.setCharStyle",
+            json!({
+                "clip": c.0, "start": 1, "end": 3,
+                "style": {"strokeColor": "#ff0000", "stroke2Color": "#0000ff"}
+            }),
+        )
+        .unwrap()["styles"]
+        .clone();
+    assert_eq!(
+        styled,
+        json!([{
+            "start": 1, "end": 3, "fill": [1.0, 1.0, 0.0, 1.0], "strokeColor": [1.0, 0.0, 0.0, 1.0], "stroke2Color": [0.0, 0.0, 1.0, 1.0]
+        }])
+    );
+    let after = item(&s, c);
+    assert_eq!(after.effects[0].params, before.effects[0].params, "layer appearance is unchanged");
+    let saved = serde_json::to_string(&after).unwrap();
+    assert_eq!(serde_json::from_str::<TrackItem>(&saved).unwrap(), after);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), after);
+    let path = tmp_dir("gt-char-strokes-save").join("strokes.fcproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(item(&reopened, c).effects, after.effects, "project files preserve both stroke colours");
+    s.execute("graphics.setText", json!({"clip": c.0, "text": "新甲12乙"})).unwrap();
+    let runs = s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"].clone();
+    assert_eq!((runs[0]["start"].as_u64(), runs[0]["end"].as_u64()), (Some(2), Some(4)));
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "clear": true})).unwrap();
+    assert_eq!(s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"], json!([]));
+}
+
+#[test]
+fn character_stroke_colours_reject_invalid_input_without_edits() {
+    let mut s = demo("gt-char-strokes-invalid");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "1234"})).unwrap());
+    let before = item(&s, c);
+    let history = s.execute("history.list", json!({})).unwrap();
+    for key in ["strokeColor", "stroke_color", "stroke2Color", "stroke2_color"] {
+        for colour in [json!(null), json!(true), json!("invalid"), json!([1, 2]), json!([1e300, 0, 0, 1])] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: colour}})).is_err(), "{key}: {colour}");
+            assert_eq!(item(&s, c), before);
+            assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+        }
+    }
+}
+
+#[test]
 fn character_styles_follow_edits() {
     let mut s = demo("gt-chars");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Hello World"})).unwrap());
@@ -283,6 +408,29 @@ fn character_styles_follow_edits() {
     assert_eq!(s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"], json!([]));
     assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 3, "end": 3, "style": {"bold": true}})).is_err());
     assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {"sparkle": true}})).is_err());
+}
+
+#[test]
+fn strikethrough_per_character_and_per_layer() {
+    let mut s = demo("gt-strike");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "old new"})).unwrap());
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 0, "end": 3, "style": {"strikethrough": true}})).unwrap();
+    let st = s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"].clone();
+    assert_eq!(st, json!([{"start": 0, "end": 3, "strikethrough": true}]));
+    let layout = |s: &Session| {
+        let it = item(s, c);
+        let sp = &item_layer_specs(&it, it.source_in, canvas(s))[0].1;
+        let LayerContent::Text(t) = &sp.content else { panic!() };
+        filmcraft_render::graphic_clip::text_layout(t)
+    };
+    let l = layout(&s);
+    assert_eq!(l.underline_runs, vec![1], "one stroke, over the styled word");
+    assert!(l.underlines[0][2] <= l.caret(3).0 + 0.01);
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "clear": true})).unwrap();
+    s.execute("graphics.set", json!({"clip": c.0, "props": {"strikethrough": true}})).unwrap();
+    let l = layout(&s);
+    assert_eq!(l.underlines.len(), 1);
+    assert!((l.underlines[0][2] - l.underlines[0][0] - l.lines[0].width).abs() < 0.01, "the whole line");
 }
 
 #[test]
@@ -306,6 +454,27 @@ fn upgrade_caption_to_graphic() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.active_sequence().unwrap().find_item(c).is_none());
     assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().len(), before);
+}
+
+#[test]
+fn caption_font_style_is_upgraded_listed_and_replaced() {
+    let mut s = demo("gt-caption-font");
+    s.execute("captions.add", json!({"text": "Styled", "seconds": 600, "durationSeconds": 2})).unwrap();
+    s.execute("captions.setStyle", json!({"font": "Inter", "fontStyle": "Medium"})).unwrap();
+    let used = s.execute("graphics.fonts.used", json!({})).unwrap().to_string();
+    assert!(used.contains("Medium"), "{used}");
+    // a style-specific replacement skips other styles and moves this one
+    s.execute("file.replaceFonts", json!({"from": {"family": "Inter", "style": "Bold"}, "to": "Noto Serif"})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.font, "Inter");
+    // upgrading carries the style onto the graphic's text
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    let it = item(&s, ClipId(r["clips"][0].as_u64().unwrap()));
+    let e = it.effects.iter().find(|e| e.effect == "graphic_text").unwrap();
+    assert_eq!(e.param("font_style").unwrap().value, ParamValue::Text("Medium".into()));
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("file.replaceFonts", json!({"from": {"family": "Inter", "style": "Medium"}, "to": {"family": "Noto Serif", "style": "Bold"}})).unwrap();
+    let st = &s.active_sequence().unwrap().caption_tracks[0].style;
+    assert_eq!((st.font.as_str(), st.font_style.as_str()), ("Noto Serif", "Bold"));
 }
 
 #[test]
@@ -435,4 +604,17 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
         s.execute("graphics.setCharStyle", json!({"clip":b.0,"layer":layer,"start":0,"end":5,"style":{"size":150},"merge":true})).unwrap();
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
+}
+
+/// Issue #3094: a gradient stop set as `#rrggbbaa` keeps its opacity.
+#[test]
+fn gradient_stop_keeps_its_alpha() {
+    let mut s = demo("gt-gradient-alpha");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "G"})).unwrap());
+    s.execute("graphics.set", json!({"clip": c.0, "props": {"gradient_start": "#ff000080", "gradient_end": "#0000ff"}})).unwrap();
+    let it = item(&s, c);
+    let col = |id: &str| it.effects.iter().find_map(|e| e.params.get(id)).and_then(|p| p.value.as_color());
+    let start = col("gradient_start").unwrap();
+    assert!((start[3] - 128.0 / 255.0).abs() < 1e-3, "{start:?}");
+    assert_eq!(col("gradient_end").unwrap()[3], 1.0);
 }

@@ -305,7 +305,8 @@ pub struct ExportSettings {
     pub sdr: bool,
     /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ
     /// QuickTime movies (straight alpha, Premiere's "Include Alpha Channel"; OpenEXR stores it
-    /// premultiplied, as the format defines). Off, every frame is flattened over black (#160).
+    /// premultiplied, as the format defines). GIF keeps binary transparency: RGBA8 alpha below
+    /// 128 becomes transparent, otherwise opaque. Off, every frame is flattened over black (#160).
     /// Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,
@@ -322,6 +323,10 @@ pub struct ExportSettings {
     pub pixel_aspect: Option<(u32, u32)>,
     pub field_order: FieldOrder,
     pub h264_profile: H264Profile,
+    /// H.264 all-intra: every frame is a keyframe (IDR), for edit-friendly intermediates; High 10
+    /// becomes High 10 Intra. The keyframe distance is ignored.
+    #[serde(default)]
+    pub h264_intra_only: bool,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
@@ -369,6 +374,7 @@ pub struct ExportSettings {
     pub sink: Option<OutputSink>,
     /// An already-created primary output file. Internal callers use this to retain an exclusive
     /// reservation made while choosing an output name, rather than reopening that path later.
+    /// MP4 video outputs require read and write access for fast-start finalization.
     #[serde(skip)]
     pub output_file: Option<Arc<std::fs::File>>,
 }
@@ -449,6 +455,7 @@ impl Default for ExportSettings {
             pixel_aspect: None,
             field_order: FieldOrder::Progressive,
             h264_profile: H264Profile::High,
+            h264_intra_only: false,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,

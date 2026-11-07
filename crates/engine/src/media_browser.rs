@@ -11,7 +11,7 @@
 //! | `mediaBrowser.select` | the selected files (File ▸ Import from Media Browser uses them) |
 //! | `mediaBrowser.favorite` | Add to / Remove from Favorites |
 //! | `mediaBrowser.clearRecent` | Clear Recent Directories |
-//! | `mediaBrowser.settings` | file types, view (list / thumbnails), columns (Edit Columns…), Import as Image Sequence, Hover Scrub, thumbnail size |
+//! | `mediaBrowser.settings` | file types, view (list / thumbnails), columns (Edit Columns…) and their widths, Import as Image Sequence, Hover Scrub, thumbnail size |
 //! | `mediaBrowser.import` | Import (the selection or `paths`; a folder becomes a bin, its sub-folders bins inside it; Project ▸ Ingest settings apply) |
 //! | `mediaBrowser.openInSource` | Open In Source Monitor (Shift+O) |
 //! | `mediaBrowser.probe` | a file's media properties (frame rate, duration, video / audio info), cached |
@@ -19,7 +19,8 @@
 //! Navigation history and the selection are session state ([`BrowserState`]); Favorites, recent
 //! directories and the view settings are preferences ([`MediaBrowserPrefs`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_media::MediaInfo;
 use filmcraft_project::ItemId;
@@ -73,9 +74,11 @@ pub const ALL_COLUMNS: [&str; 10] =
     ["Name", "Media Type", "Size", "Date Modified", "Frame Rate", "Media Duration", "Video Info", "Audio Info", "Video Codec", "Audio Codec"];
 pub const DEFAULT_COLUMNS: [&str; 5] = ["Name", "Frame Rate", "Media Duration", "Video Info", "Size"];
 
-/// Project and interchange files the browser can import. Avid Log Exchange (`.ale`) is left out:
-/// FilmCraft writes it (File ▸ Export) but, like Premiere, does not read it (#1292).
-const PROJECT_EXTENSIONS: [&str; 5] = ["fcproj", "edl", "xml", "fcpxml", "otio"];
+/// Project and interchange files the browser can import: FilmCraft projects and every
+/// interchange document `file.import` reads ([`crate::interchange::EXTENSIONS`], AAF and OMF
+/// included). Avid Log Exchange (`.ale`) is left out: FilmCraft writes it (File ▸ Export) but,
+/// like Premiere, does not read it (#1292).
+const PROJECT_EXTENSIONS: [&str; 8] = ["fcproj", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi"];
 const CAPTION_EXTENSIONS: [&str; 3] = ["srt", "vtt", "scc"];
 const RECENT_MAX: usize = 10;
 
@@ -93,6 +96,8 @@ pub struct MediaBrowserPrefs {
     /// `list` | `thumbnails`.
     pub view: String,
     pub columns: Vec<String>,
+    /// List view column widths (points) the user dragged; the others keep their default width.
+    pub column_widths: BTreeMap<String, f32>,
     pub import_as_image_sequence: bool,
     pub hover_scrub: bool,
     pub thumbnail_size: f32,
@@ -107,6 +112,7 @@ impl Default for MediaBrowserPrefs {
             file_types: "all".into(),
             view: "list".into(),
             columns: DEFAULT_COLUMNS.iter().map(|c| c.to_string()).collect(),
+            column_widths: BTreeMap::new(),
             import_as_image_sequence: false,
             hover_scrub: true,
             thumbnail_size: 120.0,
@@ -126,6 +132,11 @@ pub struct BrowserState {
     /// Probed media properties by path (None = not a readable media file).
     #[serde(skip)]
     pub probes: BTreeMap<String, Option<MediaInfo>>,
+    /// Paths [`probe_background`] is probing, and the results its threads hand back.
+    #[serde(skip)]
+    pub probing: BTreeSet<String>,
+    #[serde(skip)]
+    pub probe_results: Arc<Mutex<Vec<(String, Option<MediaInfo>)>>>,
 }
 
 /// A listed entry with what the browser shows about it.
@@ -403,6 +414,13 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
         }
         mb.columns = cols;
     }
+    if let Some(o) = p.get("columnWidths").and_then(Value::as_object) {
+        for (c, w) in o {
+            let c = ALL_COLUMNS.iter().find(|x| x.eq_ignore_ascii_case(c)).ok_or_else(|| bad("mediaBrowser.settings", format!("unknown column `{c}`")))?;
+            let w = w.as_f64().filter(|w| w.is_finite()).ok_or_else(|| bad("mediaBrowser.settings", format!("width of `{c}` is not a number")))?;
+            mb.column_widths.insert(c.to_string(), (w as f32).clamp(30.0, 800.0));
+        }
+    }
     if let Some(v) = bool_p(p, "importAsImageSequence") {
         mb.import_as_image_sequence = v;
     }
@@ -436,16 +454,23 @@ struct Folder {
 }
 
 /// The files the browser shows in `dir` and its sub-folders, as a tree; `None` when the tree
-/// holds none (or `budget` folders were walked already).
-fn walk_folder(services: &dyn Services, dir: &str, depth: usize, budget: &mut usize) -> Option<Folder> {
+/// holds none (or `budget` folders were walked already). A folder that cannot be listed is added
+/// to `errors` rather than silently left out of the import.
+fn walk_folder(services: &dyn Services, dir: &str, depth: usize, budget: &mut usize, errors: &mut Vec<String>) -> Option<Folder> {
     *budget = budget.checked_sub(1)?;
-    let entries = list(services, dir, "all").ok()?;
+    let entries = match list(services, dir, "all") {
+        Ok(entries) => entries,
+        Err(e) => {
+            errors.push(format!("{dir}: {e}"));
+            return None;
+        }
+    };
     let mut folder = Folder { name: base_name(dir), files: Vec::new(), subs: Vec::new() };
     for e in entries {
         if !e.is_dir {
             folder.files.push(e.path);
         } else if depth < FOLDER_IMPORT_MAX_DEPTH
-            && let Some(sub) = walk_folder(services, &e.path, depth + 1, budget)
+            && let Some(sub) = walk_folder(services, &e.path, depth + 1, budget, errors)
         {
             folder.subs.push(sub);
         }
@@ -510,6 +535,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut files = Vec::new();
     let mut folders = Vec::new();
     let mut empty = Vec::new();
+    let mut walk_errors = Vec::new();
     let mut budget = FOLDER_IMPORT_MAX_FOLDERS;
     for path in paths {
         let is_dir = matches!(s.services.list_entries(&path), Some(Ok(_))) && kind_of(&path).is_none();
@@ -522,7 +548,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                 Err(_) => files.push(path),
             }
         } else {
-            match walk_folder(&*s.services, &path, 0, &mut budget) {
+            match walk_folder(&*s.services, &path, 0, &mut budget, &mut walk_errors) {
                 Some(f) => folders.push(f),
                 None => empty.push(path),
             }
@@ -532,18 +558,38 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     if seq {
         files.truncate(1);
     }
+    // folders without media, or with sub-folders that could not be listed: reported alongside
+    // whatever did import, not silently skipped
+    let folder_errors: Vec<String> = walk_errors.into_iter().chain(empty.iter().map(|e| format!("{e}: no media files"))).collect();
     if folders.is_empty() {
-        if files.is_empty() && !empty.is_empty() {
-            return Err(bad("mediaBrowser.import", format!("no media files in {}", empty.join(", "))));
+        if files.is_empty() && !folder_errors.is_empty() {
+            return Err(bad("mediaBrowser.import", folder_errors.join("; ")));
         }
         let mut q = json!({"paths": files, "imageSequence": seq});
         if let Some(b) = bin {
             q["bin"] = json!(b);
         }
-        return s.execute("file.import", q);
+        return match s.execute("file.import", q) {
+            Ok(r) if folder_errors.is_empty() => Ok(r),
+            // `file.import`'s result keeps its shape (an Ingest result stays an object); the folder
+            // errors are added to its `errors`
+            Ok(mut r) => {
+                if let Value::Object(m) = &mut r {
+                    match m.get_mut("errors") {
+                        Some(Value::Array(a)) => a.extend(folder_errors.into_iter().map(Value::String)),
+                        _ => {
+                            m.insert("errors".into(), json!(folder_errors));
+                        }
+                    }
+                }
+                Ok(r)
+            }
+            Err(e) if folder_errors.is_empty() => Err(e),
+            Err(e) => Err(bad("mediaBrowser.import", format!("{e}; {}", folder_errors.join("; ")))),
+        };
     }
     let mut out = serde_json::Map::new();
-    merge_import(&mut out, json!({"items": [], "errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>(), "bins": []}));
+    merge_import(&mut out, json!({"items": [], "errors": folder_errors, "bins": []}));
     if !files.is_empty() {
         import_into(s, &files, bin, &mut out);
     }
@@ -596,6 +642,40 @@ pub fn probe(s: &mut Session, path: &str) -> Option<MediaInfo> {
     };
     s.browser.probes.insert(path.to_string(), info.clone());
     info
+}
+
+/// At most this many [`probe_background`] threads at once.
+const PROBE_THREADS: usize = 4;
+
+/// [`probe`] without blocking: an unknown file is probed on a background thread and `None` is
+/// returned until its result is in (big files take seconds to open).
+pub fn probe_background(s: &mut Session, path: &str) -> Option<Option<MediaInfo>> {
+    let done = std::mem::take(&mut *s.browser.probe_results.lock().unwrap_or_else(PoisonError::into_inner));
+    for (p, info) in done {
+        s.browser.probing.remove(&p);
+        s.browser.probes.insert(p, info);
+    }
+    if let Some(v) = s.browser.probes.get(path) {
+        return Some(v.clone());
+    }
+    if cfg!(target_arch = "wasm32") || !kind_of(path).is_some_and(|k| matches!(k, "video" | "audio" | "image")) {
+        return Some(probe(s, path));
+    }
+    if s.browser.probing.contains(path) || s.browser.probing.len() >= PROBE_THREADS {
+        return None;
+    }
+    let (media, services, results, key) = (s.media.clone(), s.services.clone(), s.browser.probe_results.clone(), path.to_string());
+    let run = move || {
+        let info =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| media.probe_file(&key, &*services).ok().map(|src| src.info().clone()))).ok().flatten();
+        results.lock().unwrap_or_else(PoisonError::into_inner).push((key, info));
+    };
+    if std::thread::Builder::new().name("filmcraft-browser-probe".into()).spawn(run).is_ok() {
+        s.browser.probing.insert(path.to_string());
+        None
+    } else {
+        Some(probe(s, path))
+    }
 }
 
 /// The text of a list column for an entry (`probe`: its media properties, when known).
@@ -689,7 +769,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         c(
             "mediaBrowser.settings",
             "Media Browser Settings",
-            r#"{"fileTypes":"all|video|audio|image|project|caption|<ext>"?,"view":"list|thumbnails"?,"columns":[str]?,"importAsImageSequence":bool?,"hoverScrub":bool?,"thumbnailSize":f32?}"#,
+            r#"{"fileTypes":"all|video|audio|image|project|caption|<ext>"?,"view":"list|thumbnails"?,"columns":[str]?,"columnWidths":{str:f32}?,"importAsImageSequence":bool?,"hoverScrub":bool?,"thumbnailSize":f32?}"#,
             settings,
         ),
         c("mediaBrowser.import", "Import", r#"{"paths":[str]?,"bin":binId?,"imageSequence":bool?}"#, import),

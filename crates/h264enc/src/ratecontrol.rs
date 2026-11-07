@@ -106,6 +106,8 @@ pub struct RateControl {
     /// Sum and count of the rate-model terms (`coef · cplx^QCOMP / type_factor`) of the coded P and B frames.
     inter_s: f64,
     inter_n: u64,
+    /// Lowest QPY constant quality may reach: 0, or -QpBdOffset above 8 bits.
+    pub qp_min: f64,
 }
 
 impl RateControl {
@@ -130,6 +132,7 @@ impl RateControl {
             prior: None,
             inter_s: 0.0,
             inter_n: 0,
+            qp_min: 0.0,
         }
     }
 
@@ -180,7 +183,7 @@ impl RateControl {
                     SliceType::P => 0.0,
                     SliceType::B => 1.5,
                 })
-                .clamp(0.0, 51.0);
+                .clamp(self.qp_min, 51.0);
             }
             RcKind::Abr { kbps } => {
                 let bpf = *kbps as f64 * 1000.0 / self.fps;
@@ -199,7 +202,11 @@ impl RateControl {
                 let s = self.sum_s + s_here + ps;
                 let wanted = bpf * (self.frames as f64 + 1.0 + pn);
                 let mut rf = s / wanted;
-                let abr_buffer = bpf * self.fps.max(1.0);
+                // A quarter second of bits: with a longer horizon the correction is so weak that a short clip
+                // that starts over target never pays the excess back (+10..14% on 2 s of high motion at 1 s).
+                // Never shorter than one frame's budget: at a low frame rate the horizon would be a fraction of a
+                // frame and the correction would overshoot in the other direction every frame.
+                let abr_buffer = (bpf * self.fps.max(1.0) * 0.25).max(bpf);
                 let overflow = (1.0 + (self.total_bits - bpf * self.frames as f64) / abr_buffer).clamp(0.5, 2.0);
                 rf *= overflow;
                 let q = rf * cplx.powf(1.0 - QCOMP) * type_factor(t);

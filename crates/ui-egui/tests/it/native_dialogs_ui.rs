@@ -219,3 +219,205 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
 }
+
+/// An empty folder for one test in Cargo's temporary folder.
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn s(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+/// #1644: GTK's file chooser saves the name as typed. Save As adds `.fcproj` when the name has no
+/// such extension, and asks before replacing a file that only the added extension names (the
+/// dialog's own prompt was about the name as typed).
+#[test]
+fn save_as_adds_the_project_extension_and_asks_before_replacing_what_that_names() {
+    let dir = fresh_dir("save-extension");
+    let mut d = Driver::new(true);
+    let save_as = |d: &mut Driver, answer: String| {
+        assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.saveAs"})), json!({"dialog": "open"}));
+        let (dialog, tx) = d.asked();
+        assert!(matches!(dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+        tx.send(vec![answer]).unwrap();
+        d.frames(3);
+    };
+    // no extension: `cut` is saved as `cut.fcproj`
+    save_as(&mut d, s(&dir.join("cut")));
+    assert!(dir.join("cut.fcproj").is_file());
+    assert!(!dir.join("cut").exists());
+    assert_eq!(d.app().session.path.as_deref(), Some(s(&dir.join("cut.fcproj")).as_str()));
+    // another extension keeps it and adds ours; an upper-case `.FCPROJ` is kept as typed
+    save_as(&mut d, s(&dir.join("a.filmcraft")));
+    assert!(dir.join("a.filmcraft.fcproj").is_file());
+    save_as(&mut d, s(&dir.join("UPPER.FCPROJ")));
+    assert!(dir.join("UPPER.FCPROJ").is_file());
+    assert!(d.app().overwrite_prompt_path().is_none());
+
+    // `keep` + `.fcproj` is an existing file: nothing is written until the user answers
+    let keep = dir.join("keep.fcproj");
+    std::fs::write(&keep, "not a project").unwrap();
+    save_as(&mut d, s(&dir.join("keep")));
+    assert_eq!(d.app().overwrite_prompt_path(), Some(s(&keep).as_str()));
+    // the app keeps running, and no other dialog opens meanwhile
+    d.ok("ui.inspect", json!({}));
+    let r = d.call("ui.menu.invoke", json!({"id": "file.open"}));
+    assert_eq!(r["ok"], false, "{r}");
+    // Cancel: the file is untouched
+    d.click("overwrite.cancel");
+    assert!(d.app().overwrite_prompt_path().is_none());
+    assert_eq!(std::fs::read_to_string(&keep).unwrap(), "not a project");
+    // Replace: the project is written there
+    save_as(&mut d, s(&dir.join("keep")));
+    d.click("overwrite.replace");
+    assert!(d.app().overwrite_prompt_path().is_none());
+    assert!(std::fs::read_to_string(&keep).unwrap().starts_with('{'));
+    assert_eq!(d.app().session.path.as_deref(), Some(s(&keep).as_str()));
+    // the chosen name already ends in `.fcproj`: the dialog asked, the app doesn't ask again
+    save_as(&mut d, s(&keep));
+    assert!(d.app().overwrite_prompt_path().is_none());
+    // cancelled: nothing saved, no prompt
+    let n = std::fs::read_dir(&dir).unwrap().count();
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.saveAs"})), json!({"dialog": "open"}));
+    d.asked().1.send(vec![]).unwrap();
+    d.frames(3);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), n);
+    assert!(d.app().overwrite_prompt_path().is_none());
+}
+
+/// The synchronous pickers (no runner) get the same treatment, and so do export save dialogs:
+/// File ▸ Export ▸ EDL… answered with `cut` writes `cut.edl`.
+#[test]
+fn export_save_dialogs_add_their_extension_with_synchronous_pickers_too() {
+    let dir = fresh_dir("export-extension");
+    let mut d = Driver::new(false);
+    let answer = s(&dir.join("cut"));
+    d.app().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    d.ok("ui.menu.invoke", json!({"id": "file.exportEdl"}));
+    d.frames(2);
+    assert!(dir.join("cut.edl").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>());
+    assert!(!dir.join("cut").exists());
+}
+
+/// #2211: Quit ▸ Save on a new project with a dialog the host answers later (Linux, Windows):
+/// once the file is picked the project is saved and the window closes; a cancelled dialog brings
+/// the prompt back and nothing quits.
+#[test]
+fn quit_save_waits_for_a_save_dialog_answered_later() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs-quit");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("quit.fcproj");
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    assert!(d.app().session.is_dirty());
+    let close = |d: &mut Driver| {
+        d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        d.frames(3);
+    };
+    let closes =
+        |d: &Driver| d.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close));
+    // cancelled: the prompt comes back, nothing quits
+    close(&mut d);
+    d.click("quit.save");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+    answer.send(Vec::new()).unwrap();
+    d.frames(3);
+    assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed, "back to the prompt");
+    // a file is picked a few frames later: saved, and the window closes
+    d.click("quit.save");
+    let (_, answer) = d.asked();
+    d.frames(3);
+    assert!(!d.app().quit_confirmed, "waits for the answer");
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    let mut closed = false;
+    for _ in 0..10 {
+        d.frames(1);
+        closed |= closes(&d);
+    }
+    assert!(d.app().quit_confirmed && !d.app().session.is_dirty(), "saved and quitting");
+    assert!(closed, "the window was asked to close");
+    assert!(path.exists());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// While Close Project ▸ Save's dialog is open the window is asked to close: once a file is picked
+/// the project is saved and the app quits (the newer Quit prompt is the one finished). And an
+/// answer that arrives after another project was opened saves nothing.
+#[test]
+fn a_late_save_answer_finishes_the_newest_prompt_and_only_for_its_project() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs-late");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("late.fcproj");
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    // Quit while the Save dialog is open
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"));
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert!(path.exists() && d.app().quit_confirmed, "saved, then quit (not just closed)");
+    let _ = std::fs::remove_file(&path);
+
+    // the same, but the save fails: the newer Quit prompt stays, with the reason (#2437 review)
+    let blocker = dir.join("not-a-folder");
+    std::fs::write(&blocker, b"").unwrap();
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    answer.send(vec![blocker.join("late.fcproj").to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the Quit prompt stays");
+    assert!(!d.app().quit_confirmed && !d.app().ui.status.is_empty(), "not quitting, with the reason");
+    let _ = std::fs::remove_file(&blocker);
+
+    // a project opened while the dialog is open: the late answer saves nothing
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    d.ok("engine.execute", json!({"command": "file.newProject", "params": {"force": true}}));
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert!(!path.exists(), "the other project was not saved under the old project's file");
+}
+
+/// Save on the quit prompt while another file dialog is already open: no Save dialog can be shown,
+/// so the prompt stays (with the reason) instead of disappearing.
+#[test]
+fn quit_save_keeps_the_prompt_when_no_dialog_can_open() {
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    // another dialog, still open
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    let _pending = d.asked();
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    d.click("quit.save");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the prompt stays");
+    assert!(!d.app().ui.status.is_empty(), "with the reason");
+    assert!(d.asked.lock().unwrap().is_empty(), "no second dialog");
+}
