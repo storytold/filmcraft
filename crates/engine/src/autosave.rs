@@ -1097,9 +1097,7 @@ impl Worker {
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
         meta.dirty = s.content_dirty;
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        let r = write_recovery_pair(&self.session_dir, &bytes, &meta, filmcraft_format::atomic_write);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
@@ -1175,9 +1173,39 @@ impl Worker {
     }
 }
 
+/// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
+/// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
+fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let metadata = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    let meta_path = dir.join(META);
+    let snapshot_path = dir.join(SNAPSHOT);
+    if meta.dirty {
+        write(&meta_path, &metadata)?;
+        write(&snapshot_path, snapshot)
+    } else {
+        write(&snapshot_path, snapshot)?;
+        write(&meta_path, &metadata)
+    }
+}
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+    #[test]
+    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let result = write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            filmcraft_format::atomic_write(path, bytes)?;
+            if path.ends_with(SNAPSHOT) { Err(io::Error::other("interrupted")) } else { Ok(()) }
+        });
+        assert!(result.is_err());
+        assert_eq!(scan_candidates(&dir, None).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn recovery_keeps_original_when_worker_has_stopped() {
