@@ -36,7 +36,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 macro_rules! label_cmd {
@@ -50,6 +50,7 @@ macro_rules! label_cmd {
             enabled: can_label,
             run: |s, p| apply_label(s, p, $l),
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         }
     };
 }

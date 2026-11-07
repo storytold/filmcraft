@@ -149,3 +149,99 @@ fn random_frames_never_panic() {
         }
     }
 }
+
+/// Output of the decoder, bit for bit, on deterministic synthetic streams.
+///
+/// Each stream is a run of valid headers (mono, stereo, joint stereo at several bounds and dual
+/// channel; Layer I and II; MPEG-1 and MPEG-2; several bit rates and sampling frequencies)
+/// followed by xorshift noise, decoded by one `Decoder` so that the synthesis filter's history
+/// carries from frame to frame. Frames the decoder rejects are counted and skipped. The hash is
+/// FNV-1a over the bits of every decoded sample.
+///
+/// The golden values were captured from the decoder before the synthesis filterbank was
+/// rewritten (`synthesize` with the shifting `V` buffer and the 64-row matrix): check out that
+/// commit, run `cargo test -p filmcraft-mpa decoded_samples_are_bit_exact -- --nocapture`, and
+/// copy the printed `(ok, hash)` pairs. A change of the filter's arithmetic (summation order,
+/// grouping, fused multiply-add) shows up here; a legitimate one needs new goldens and a reason.
+#[test]
+fn decoded_samples_are_bit_exact() {
+    // (lsf, layer, bitrate_index, rate_index, mode, mode_extension)
+    const STREAMS: &[(bool, u8, u8, u8, u8, u8)] = &[
+        (false, 2, 10, 1, 0, 0),
+        (false, 2, 14, 1, 3, 0),
+        (false, 2, 6, 0, 1, 0),
+        (false, 2, 9, 0, 1, 3),
+        (false, 2, 5, 2, 2, 0),
+        (false, 2, 2, 1, 0, 0),
+        (true, 2, 8, 0, 1, 2),
+        (true, 2, 4, 2, 3, 0),
+        (false, 1, 12, 0, 1, 2),
+        (false, 1, 14, 1, 0, 0),
+        (false, 1, 8, 2, 3, 0),
+        (true, 1, 10, 0, 2, 0),
+    ];
+    let mut got = vec![];
+    for (n, &(lsf, layer, br, rate, mode, ext)) in STREAMS.iter().enumerate() {
+        let mut x = 0x9E37_79B9u32 ^ (n as u32).wrapping_mul(0x85EB_CA6B);
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let mut d = Decoder::new();
+        let (mut ok, mut hash) = (0u32, 0xCBF2_9CE4_8422_2325u64);
+        for _ in 0..60 {
+            let h = header(lsf, layer, br, rate, mode, ext);
+            let len = parse_header(&h).map_or(0, |p| p.frame_bytes);
+            let mut f = h.to_vec();
+            // sparse noise: most allocations are zero, so many frames are valid and quiet
+            f.extend((0..len.saturating_sub(4)).map(|_| (rnd() & rnd() & rnd()) as u8));
+            if let Ok(fr) = d.decode(&f) {
+                ok += 1;
+                for s in fr.channels.iter().flatten() {
+                    hash = (hash ^ u64::from(s.to_bits())).wrapping_mul(0x0000_0100_0000_01B3);
+                }
+            }
+        }
+        got.push((ok, hash));
+    }
+    println!("{got:?}");
+    const GOLDEN: &[(u32, u64)] = &[
+        (59, 0xea8448e85fe3df1b),
+        (60, 0xc6ecc7f674c186d4),
+        (60, 0xb38a4d7cba7bfbde),
+        (59, 0xf37f8a5abff50363),
+        (60, 0x1e489c563c40c852),
+        (49, 0x52ab5c8f9db13cc1),
+        (60, 0x401b8039ec831783),
+        (60, 0x3555c5d49d12ecca),
+        (59, 0xb063c5f8c79edaef),
+        (58, 0xcedb49aa85eb2e29),
+        (58, 0x3ee32a2c6b9da56b),
+        (57, 0xbb913530021557b1),
+    ];
+    assert_eq!(got, GOLDEN);
+}
+
+/// `reset` forgets the filter history, including where the ring buffer of `V` starts.
+#[test]
+fn reset_matches_a_fresh_decoder() {
+    let mut x = 0x2545_F491u32;
+    let mut f = header(false, 2, 10, 1, 0, 0).to_vec();
+    f.extend((0..572).map(|_| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        (x & (x >> 7) & (x >> 13)) as u8
+    }));
+    let first = Decoder::new().decode(&f).unwrap();
+    let mut d = Decoder::new();
+    for _ in 0..3 {
+        d.decode(&f).unwrap();
+    }
+    d.reset();
+    let again = d.decode(&f).unwrap();
+    assert!(first.channels.iter().flatten().any(|&s| s != 0.0));
+    assert_eq!(first.channels, again.channels);
+}
