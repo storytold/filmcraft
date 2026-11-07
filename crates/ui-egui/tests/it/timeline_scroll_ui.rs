@@ -528,3 +528,47 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
 }
+
+/// #4164: `View ▸ Zoom In` and `Zoom Out` keep `00:00:00:00` at the left edge while the playhead
+/// is left of the view's middle, anchor at the middle once reached, and reveal preceding clips
+/// smoothly when zooming back out.
+#[test]
+fn zoom_in_and_out_keep_clips_before_the_playhead_in_view() {
+    let mut d = Driver::demo();
+    let seconds = d.seconds();
+    let width = f64::from(d.rect("timeline.tracks")[2]);
+    let floor = width / timeline_extent(seconds);
+    let ph = seconds * 0.9;
+    let ph_ticks = (ph * 254_016_000_000.0) as i64;
+    d.exec("playhead.set", json!({"time": ph_ticks}));
+    d.ok("ui.set", json!({"timeline": {"pps": floor, "scroll": 0.0}}));
+    d.frames(4);
+    assert_eq!(d.view().0, 0.0);
+
+    // Zooming in from the full extent keeps 00:00:00:00 at the left edge until the playhead reaches the middle of the view.
+    while d.view().1 * 1.6 * ph <= width * 0.5 {
+        d.ok("ui.menu.invoke", json!({"id": "view.zoomIn"}));
+        let (scroll, pps, ..) = d.view();
+        assert!(ph * pps <= width * 0.5);
+        assert_eq!(scroll, 0.0, "start stays at the left edge while the playhead moves toward the center");
+    }
+
+    // Further zoom-in steps anchor the playhead at the center of the view rather than snapping it to the left edge.
+    for _ in 0..3 {
+        d.ok("ui.menu.invoke", json!({"id": "view.zoomIn"}));
+        let (scroll, pps, ..) = d.view();
+        let x = (ph - scroll) * pps;
+        assert!((x - width * 0.5).abs() < 1.0, "playhead stays centered: x={x}, half={}", width * 0.5);
+        assert!(scroll > 0.0 && scroll < ph - 2.0, "clips before the playhead remain visible: scroll={scroll}, ph={ph}");
+    }
+
+    // Zooming back out smoothly decreases scroll and returns to 00:00:00:00 as soon as the playhead fits in the left half.
+    let mut prev_scroll = d.view().0;
+    for _ in 0..3 {
+        d.ok("ui.menu.invoke", json!({"id": "view.zoomOut"}));
+        let (scroll, ..) = d.view();
+        assert!(scroll < prev_scroll, "zooming out reveals earlier clips: {scroll} < {prev_scroll}");
+        prev_scroll = scroll;
+    }
+    assert_eq!(prev_scroll, 0.0, "scroll returns to the start without waiting for minimum zoom");
+}

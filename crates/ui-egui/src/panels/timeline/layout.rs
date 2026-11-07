@@ -135,12 +135,26 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Zoom about a time (keeps it under the same screen x).
+/// Zoom about a time (keeps it under the same screen x once it reaches the middle of the view).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
     let old = v.target_pps;
     let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
-    let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
+    let x = if (width / 2.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
-    v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+    v.target_scroll = (anchor_secs - f64::from(x) / new).clamp(0.0, max_scroll(sequence_seconds, width, new));
+}
+
+/// Zoom the Timeline about the playhead (`View ▸ Zoom In` / `Zoom Out`), keeping its screen
+/// position once it reaches the middle of the view (#4164).
+pub(crate) fn zoom_playhead(app: &mut FilmcraftApp, factor: f64) {
+    let ph = app.session.playhead().seconds();
+    let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
+    let width = app.last_timeline_width;
+    let v = &mut app.ui.timeline;
+    let x = ((ph - v.target_scroll) * v.target_pps) as f32;
+    let x = if (width / 2.0..=width).contains(&x) { x } else { width / 2.0 };
+    zoom_about(v, factor, ph, width, seconds);
+    let keep = ((ph - f64::from(x) / v.pps).max(0.0) - v.scroll).abs() < 1e-3;
+    app.tl.zoom_anchor = app.tl.layout.as_ref().filter(|_| keep).map(|l| (ph, l.content.min.x + x));
 }

@@ -45,7 +45,7 @@ pub(crate) use interact::wheel_input;
 use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
-pub(crate) use layout::reveal_playhead;
+pub(crate) use layout::{reveal_playhead, zoom_playhead};
 use layout::video_row_tops;
 pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
 #[cfg(test)]
@@ -1325,7 +1325,7 @@ mod ruler_tests {
 
 #[cfg(test)]
 mod waveform_zone_tests {
-    use super::waveform_zone_height;
+    use super::{TimelineView, min_pps, waveform_zone_height, zoom_about};
 
     #[test]
     fn a_compact_clip_has_its_whole_height_for_the_waveform_and_a_tall_one_the_lower_part() {
@@ -1337,5 +1337,26 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+
+    /// #4164: zooming in from the full extent keeps 00:00:00:00 at the left edge until the
+    /// playhead reaches the middle of the view, and zooming back out returns scroll to 0.
+    #[test]
+    fn zoom_about_keeps_start_visible_until_playhead_reaches_view_center() {
+        let width = 800.0;
+        let seq_s = 45.0;
+        let ph = 41.54;
+        let floor = min_pps(seq_s, width);
+        let mut v = TimelineView { pps: floor, target_pps: floor, scroll: 0.0, target_scroll: 0.0, ..TimelineView::default() };
+        for _ in 0..4 {
+            zoom_about(&mut v, 1.6, ph, width, seq_s);
+            assert_eq!(v.target_scroll, 0.0, "start stays at 0 while playhead is left of center");
+        }
+        zoom_about(&mut v, 1.6, ph, width, seq_s);
+        let centered_x = (ph - v.target_scroll) * v.target_pps;
+        assert!((centered_x - f64::from(width / 2.0)).abs() < 1e-4);
+        assert!(v.target_scroll < 15.0, "clips before the playhead stay in view: {}", v.target_scroll);
+        zoom_about(&mut v, 1.0 / 1.6, ph, width, seq_s);
+        assert_eq!(v.target_scroll, 0.0, "zooming back out returns scroll to 0");
     }
 }
