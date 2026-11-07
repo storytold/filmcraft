@@ -1197,6 +1197,18 @@ fn fit_clips(pr: &mut Project, item: ItemId, info: &MediaInfo) -> Result<()> {
                 t.items.retain(|it| it.item != item);
             }
         }
+        // audio placements of the item (a retained, unlinked audio clip included) follow the new
+        // sound the same way: never past the end of the media
+        if has_a && info.duration > Tick::ZERO {
+            for it in q.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| it.item == item) {
+                if it.speed == 1.0 && !it.reverse {
+                    let max = rate.snap(info.duration - it.source_in).max(min);
+                    if it.duration > max {
+                        it.duration = max;
+                    }
+                }
+            }
+        }
         for v in to_audio {
             let dur = if info.duration > Tick::ZERO { v.duration.min(info.duration - v.source_in) } else { v.duration };
             // a linked audio clip of the same item (a video that had sound) becomes the placement:

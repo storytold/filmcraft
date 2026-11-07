@@ -957,3 +957,27 @@ fn a_chosen_name_published_by_another_job_is_not_overwritten() {
         std::fs::remove_dir_all(dir).ok();
     }
 }
+
+/// An audio clip the user unlinked follows a shorter result like its picture: it never runs past
+/// the end of the new media.
+#[test]
+fn unlinked_audio_follows_a_shorter_result() {
+    let dir = tmp_dir("comfy-unlinked-shorter");
+    let (long, short) = (dir.join("long.mov"), dir.join("short.mov"));
+    make_movie(&long, DemoScene::Plasma, 64, 36, 24);
+    make_movie(&short, DemoScene::Plasma, 64, 36, 12);
+    let fake = fake_runs(vec![
+        vec![FakeOutput::file("20", "gifs", "a.mov", std::fs::read(&long).unwrap())],
+        vec![FakeOutput::file("20", "gifs", "b.mov", std::fs::read(&short).unwrap())],
+    ]);
+    let mut s = session(fake);
+    let (item, clip) = new_clip(&mut s, json!({"duration": 5}));
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    s.execute("clip.link", json!({"clips": [clip.0]})).unwrap();
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    let clips = clips_of(&s, item);
+    assert_eq!(clips.len(), 2, "{clips:?}");
+    let half = Tick::from_seconds_f64(0.5);
+    assert!(clips.iter().all(|c| c.2 == half), "{clips:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
