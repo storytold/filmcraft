@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use filmcraft_project::{ItemId, ItemKind, Label, MediaRef, Project};
+use filmcraft_project::{ItemId, ItemKind, Label, MediaRef, Project, TrackItem};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -163,16 +163,21 @@ pub struct Field {
 /// The item the Metadata panel describes: `item`, else the item of timeline clip `clip`, else the
 /// Project panel selection, else the timeline selection.
 pub fn metadata_target(s: &Session, p: &Value) -> Option<ItemId> {
+    metadata_target_clip(s, p).map(|(i, _)| i)
+}
+
+/// [`metadata_target`] with the timeline clip it came from, if any.
+pub fn metadata_target_clip(s: &Session, p: &Value) -> Option<(ItemId, Option<TrackItem>)> {
     if let Some(i) = item_p(p, "item") {
-        return Some(i);
+        return Some((i, None));
     }
     let clip = u64_p(p, "clip").map(filmcraft_project::ClipId);
     let seq = s.active_sequence();
-    let clip_item = |c| seq.and_then(|q| q.find_item(c)).map(|(_, it)| it.item);
+    let clip_item = |c| seq.and_then(|q| q.find_item(c)).map(|(_, it)| (it.item, Some(it.clone())));
     if let Some(c) = clip {
         return clip_item(c);
     }
-    s.state.project_selection.first().copied().or_else(|| s.state.selection.first().and_then(|c| clip_item(*c)))
+    s.state.project_selection.first().map(|i| (*i, None)).or_else(|| s.state.selection.first().and_then(|c| clip_item(*c)))
 }
 
 fn tc(t: Tick, rate: filmcraft_time::FrameRate) -> String {
@@ -181,6 +186,12 @@ fn tc(t: Tick, rate: filmcraft_time::FrameRate) -> String {
 
 /// Every Metadata panel row of an item (Clip section, then File section).
 pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
+    metadata_clip_fields(p, id, None)
+}
+
+/// [`metadata_fields`] of the item of timeline clip `clip`: Media Start, End and Duration describe
+/// the part of the media the clip uses.
+pub fn metadata_clip_fields(p: &Project, id: ItemId, clip: Option<&TrackItem>) -> Vec<Field> {
     let Some(it) = p.item(id) else { return Vec::new() };
     let media = match &it.kind {
         ItemKind::Media(m) => Some(m.as_ref()),
@@ -200,9 +211,12 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
     add("Clip", "Frame Rate", col("Frame Rate"), false);
     // media start / end / duration in the item's own timecode
     let start = media.and_then(|m| m.info.start_timecode).map(|f| rate.tick_of(f)).unwrap_or(Tick::ZERO);
-    let (offset, dur) = match &it.kind {
-        ItemKind::Subclip { range, .. } => (range.start, range.duration),
-        _ => (Tick::ZERO, it.duration()),
+    let (offset, dur) = match (clip, &it.kind) {
+        // a clip's source in is in the parent's media time, also for a subclip (a clip of a
+        // subclip starts at `range.start`, see `media_start`): no subclip offset to add
+        (Some(c), _) => (c.source_in, c.source_out() - c.source_in),
+        (None, ItemKind::Subclip { range, .. }) => (range.start, range.duration),
+        (None, _) => (Tick::ZERO, it.duration()),
     };
     let first = start + offset;
     add("Clip", "Media Start", tc(first, rate), false);
@@ -273,9 +287,9 @@ fn format_bytes(b: u64) -> String {
 }
 
 fn metadata_get(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = metadata_target(s, p).ok_or_else(|| bad("metadata.get", "no item: pass `item` or `clip`, or select one"))?;
+    let (id, clip) = metadata_target_clip(s, p).ok_or_else(|| bad("metadata.get", "no item: pass `item` or `clip`, or select one"))?;
     let it = s.project.item(id).ok_or_else(|| bad("metadata.get", "no such item"))?;
-    let fields = metadata_fields(&s.project, id);
+    let fields = metadata_clip_fields(&s.project, id, clip.as_ref());
     Ok(json!({"item": id.0, "name": it.name, "fields": fields, "metadata": it.metadata}))
 }
 

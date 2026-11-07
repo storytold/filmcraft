@@ -212,3 +212,69 @@ fn project_notes_refuse_bad_input() {
     assert!(s.execute("project.setNotes", json!({"text": huge})).is_err());
     assert_eq!(s.project.notes, "");
 }
+
+#[test]
+fn metadata_of_a_timeline_clip_shows_the_clip_media_range() {
+    use filmcraft_time::{Tick, TimeDisplay, format_time};
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let cut = clip.start + Tick(clip.duration.0 / 3);
+    s.execute("timeline.razor", json!({"time": cut.0, "clip": clip.id.0})).unwrap();
+    let seq = s.active_sequence().unwrap().clone();
+    let halves: Vec<_> = seq.video_tracks[0].items.iter().filter(|c| c.item == clip.item).cloned().collect();
+    assert!(halves.len() >= 2, "the razor split the clip");
+    let it = s.project.item(clip.item).unwrap().clone();
+    let rate = it.frame_rate();
+    let tc = |t: Tick| json!(format_time(t, rate, false, TimeDisplay::Timecode, 48000));
+    let start = it.as_media().and_then(|m| m.info.start_timecode).map(|f| rate.tick_of(f)).unwrap_or(Tick::ZERO);
+    let whole = s.execute("metadata.get", json!({"item": clip.item.0})).unwrap();
+    assert_eq!(field(&whole, "Media Duration")["value"], tc(it.duration()), "the item keeps the full source duration");
+    for c in &halves {
+        let g = s.execute("metadata.get", json!({"clip": c.id.0})).unwrap();
+        assert_eq!(g["item"], json!(clip.item.0));
+        let span = c.source_out() - c.source_in;
+        let first = start + c.source_in;
+        assert_eq!(field(&g, "Media Duration")["value"], tc(span), "clip {}", c.id.0);
+        assert_eq!(field(&g, "Media Start")["value"], tc(first), "clip {}", c.id.0);
+        assert_eq!(field(&g, "Media End")["value"], tc(first + span - rate.frame_duration()), "clip {}", c.id.0);
+        // the timeline selection describes the selected clip too
+        s.state.project_selection.clear();
+        s.state.selection = vec![c.id];
+        let g = s.execute("metadata.get", json!({})).unwrap();
+        assert_eq!(field(&g, "Media Duration")["value"], tc(span), "selected clip {}", c.id.0);
+    }
+}
+
+#[test]
+fn metadata_of_a_timeline_clip_of_a_subclip_shows_the_parent_media_range() {
+    use filmcraft_time::{Tick, TimeDisplay, format_time};
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let it = s.project.item(clip.item).unwrap().clone();
+    let rate = it.frame_rate();
+    let tc = |t: Tick| json!(format_time(t, rate, false, TimeDisplay::Timecode, 48000));
+    let start = it.as_media().and_then(|m| m.info.start_timecode).map(|f| rate.tick_of(f)).unwrap_or(Tick::ZERO);
+    // a subclip that starts 10 frames into the media, put in place of the first clip
+    let r = s.execute("clip.makeSubclip", json!({"item": clip.item.0, "start": rate.tick_of(10).0, "restrictTrims": false})).unwrap();
+    let sub = ItemId(r["item"].as_u64().unwrap());
+    s.state.project_selection.clear();
+    s.state.selection = vec![clip.id];
+    s.execute("clip.replaceFromBin", json!({"item": sub.0})).unwrap();
+    let placed = s.active_sequence().unwrap().find_item(clip.id).unwrap().1.clone();
+    assert_eq!((placed.item, placed.source_in), (sub, rate.tick_of(10)), "the clip starts at the subclip's In point");
+    let cut = placed.start + rate.tick_of(placed.duration.0 / rate.frame_duration().0 / 3);
+    s.execute("timeline.razor", json!({"time": cut.0, "clip": clip.id.0})).unwrap();
+    let seq = s.active_sequence().unwrap().clone();
+    let halves: Vec<_> = seq.video_tracks[0].items.iter().filter(|c| c.item == sub).cloned().collect();
+    assert_eq!(halves.len(), 2, "the razor split the clip");
+    // the halves show frames 10.. and 10 + (first half).. of the parent media
+    let mut first = start + rate.tick_of(10);
+    for c in &halves {
+        let g = s.execute("metadata.get", json!({"clip": c.id.0})).unwrap();
+        assert_eq!(g["item"], json!(sub.0));
+        assert_eq!(field(&g, "Media Start")["value"], tc(first), "clip {}", c.id.0);
+        assert_eq!(field(&g, "Media End")["value"], tc(first + c.duration - rate.frame_duration()), "clip {}", c.id.0);
+        assert_eq!(field(&g, "Media Duration")["value"], tc(c.duration), "clip {}", c.id.0);
+        first += c.duration;
+    }
+}
