@@ -9,6 +9,7 @@
 //! | `window.toggleFullScreen` | Toggle Full Screen | Ctrl+` |
 //! | `view.monitorFullScreen` | Full Screen on a Monitor (asks which connected display) | |
 //! | `view.restoreProgramMonitor` | Restore Program Monitor to its docked position | |
+//! | `view.fullScreenProgram` | Full Screen Program Monitor | |
 //! | `window.nextPanel` / `window.prevPanel` | Select Next / Previous Panel | Ctrl+Shift+. / Ctrl+Shift+, |
 //! | `window.toggleMonitorFocus` | Toggle Source/Program Monitor Focus | |
 //! | `window.openSearch` / `panel.selectFindBox` | Open Search / Select Find Box | Cmd+Shift+F / Shift+F |
@@ -65,6 +66,7 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("window.toggleFullScreen", "Toggle Full Screen", [], Some("Ctrl+`")),
     uic!("view.monitorFullScreen", "Full Screen on Monitor", ["View"], None),
     uic!("view.restoreProgramMonitor", "Restore Program Monitor", ["View"], None),
+    uic!("view.fullScreenProgram", "Full Screen Program Monitor", [], None),
     uic!("window.nextPanel", "Select Next Panel", [], Some("Ctrl+Shift+.")),
     uic!("window.prevPanel", "Select Previous Panel", [], Some("Ctrl+Shift+,")),
     uic!("window.toggleMonitorFocus", "Toggle Source/Program Monitor Focus", [], None),
@@ -165,6 +167,23 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "view.monitorFullScreen" => toggle_monitor_fullscreen(app, ctx, params),
         "view.restoreProgramMonitor" => restore_program_monitor(app, ctx),
+        "view.fullScreenProgram" => {
+            let entering = !app.ui.fullscreen_program;
+            if entering {
+                app.ui.cinema_was_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                app.ui.cinema_prev_focus = Some(app.ui.focused);
+                app.ui.focused = PanelKind::Program;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            } else {
+                let restore = app.ui.cinema_was_fullscreen;
+                if let Some(prev) = app.ui.cinema_prev_focus.take() {
+                    app.ui.focused = prev;
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
+            }
+            app.ui.fullscreen_program = entering;
+            Ok(json!({"fullScreenProgram": entering}))
+        }
         "window.nextPanel" | "window.prevPanel" => Ok(cycle_panel(app, id == "window.nextPanel")),
         "window.toggleMonitorFocus" => {
             let p = if app.ui.focused == PanelKind::Program { PanelKind::Source } else { PanelKind::Program };
