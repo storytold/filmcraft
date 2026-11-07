@@ -421,3 +421,28 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     assert!(s.execute("lumetri.exportCube", json!({"path": path})).is_err());
     std::fs::remove_file(&path).ok();
 }
+
+#[test]
+fn export_cube_goes_through_the_host_and_refuses_a_masked_lumetri() {
+    use filmcraft_project::{Mask, MaskPath};
+    let files = std::sync::Arc::new(WrittenFiles::default());
+    let mut s = Session::new(files.clone());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let clip = pick_clip(&mut s);
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": "lumetri", "param": "exposure", "value": 0.5})).unwrap();
+    let path = "/virtual/grade.cube";
+    s.execute("lumetri.exportCube", json!({"path": path, "size": 9})).unwrap();
+    assert!(files.read_file(path).unwrap().starts_with(b"TITLE"));
+    assert!(!std::path::Path::new(path).exists());
+    // a LUT has no spatial input: a masked Lumetri is an error, not a whole-frame grade
+    s.edit_sequence("mask", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).unwrap();
+        it.effects.iter_mut().filter(|e| e.effect == "lumetri").for_each(|e| e.masks.push(Mask::new("m", MaskPath::rect(0.0, 0.0, 100.0, 100.0))));
+        Ok(())
+    })
+    .unwrap();
+    let other = "/virtual/masked.cube";
+    assert!(s.execute("lumetri.exportCube", json!({"path": other})).is_err());
+    assert!(files.read_file(other).is_err());
+}

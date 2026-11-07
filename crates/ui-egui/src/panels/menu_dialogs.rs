@@ -236,10 +236,14 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 return Some(Err(e));
             }
             // the clip is fixed now, not when the dialog closes
-            let found = app.session.state.selection.iter().find_map(|c| {
+            let has_lumetri = |c: &filmcraft_project::ClipId| {
                 let (_, it) = app.session.active_sequence()?.find_item(*c)?;
                 it.effects.iter().any(|e| e.enabled && e.effect == "lumetri").then(|| (c.0, it.name.clone()))
-            });
+            };
+            let found = match params.get("clip").and_then(Value::as_u64) {
+                Some(c) => has_lumetri(&filmcraft_project::ClipId(c)),
+                None => app.session.state.selection.iter().find_map(has_lumetri),
+            };
             let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Lumetri Color".into())) };
             let stem: String =
                 stem.unwrap_or_else(|| "Lumetri".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();

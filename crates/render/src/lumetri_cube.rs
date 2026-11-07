@@ -76,6 +76,9 @@ pub fn sample_lumetri(
     if !(MIN_SIZE..=MAX_SIZE).contains(&size) {
         return Err(format!("`size` must be between {MIN_SIZE} and {MAX_SIZE}"));
     }
+    if effects.iter().any(|e| e.enabled && e.effect == "lumetri" && !e.masks.is_empty()) {
+        return Err("Lumetri Color with masks cannot be exported to a LUT: a LUT has no spatial input".into());
+    }
     let mut left_out = Vec::new();
     let graded: Vec<EffectInstance> = effects.iter().filter(|e| e.enabled && e.effect == "lumetri").map(|e| tabulable(e, t, &mut left_out)).collect();
     // one row of `size` pixels per (g, b): red runs fastest, as in a .cube

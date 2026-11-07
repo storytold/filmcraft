@@ -200,7 +200,7 @@ fn export_cube(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let text = sample.lut.to_cube();
-    std::fs::write(path, &text).map_err(|e| bad(CMD, format!("{path}: {e}")))?;
+    s.services.write_file(path, text.as_bytes()).map_err(|e| bad(CMD, format!("{path}: {e}")))?;
     Ok(json!({"clip": clip.0, "path": path, "size": size, "bytes": text.len(), "leftOut": left_out}))
 }
 
