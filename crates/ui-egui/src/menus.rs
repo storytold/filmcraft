@@ -147,6 +147,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    uic!("help.checkForUpdates", "Check for Updates…", ["Help"], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
     uic!("help.website", "ArtCraft Website", ["Help"], None),
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
@@ -154,7 +155,6 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
     uic!("help.revealLogFiles", "Reveal Log Files…", ["Help"], None),
     uic!("help.systemCompatibilityReport", "System Compatibility Report…", ["Help"], None),
-    uic!("app.checkForUpdates", "Check for Updates…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.settings.general", "General…", ["Edit", "Preferences"], Some("Cmd+,")),
@@ -217,6 +217,15 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if app.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
         return invoke(app, ctx, "project.deselectAll", params);
+    }
+    if id == "help.checkForUpdates" {
+        if let Err(e) = app.updates.start_check() {
+            app.ui.status = e.clone();
+            return Err(e);
+        }
+        app.ui.status = tl!("Checking for FilmCraft updates…").into();
+        ctx.request_repaint();
+        return Ok(Value::Null);
     }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
