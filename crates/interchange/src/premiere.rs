@@ -48,6 +48,10 @@ mod fidelity_tests;
 #[path = "premiere_picture_tests.rs"]
 mod picture_tests;
 
+#[cfg(test)]
+#[path = "premiere_truth_tests.rs"]
+mod truth_tests;
+
 #[path = "premiere_color.rs"]
 mod color;
 
