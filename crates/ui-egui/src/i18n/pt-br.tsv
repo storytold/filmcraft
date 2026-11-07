@@ -3690,3 +3690,12 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) com o tamanho da sequência, qualidade constante CRF 16, AAC 320 kbps; um master de 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, todo quadro é um quadro-chave), CRF 12, AAC 320 kbps; um intermediário fácil de editar
+	Lettering	Lettering
+	Lettering with Animation Templates…	Lettering com modelos de animação…
+	Rendering the lettering in the animation app…	Renderizando o lettering no app de animação…
+	Done: {out}	Pronto: {out}
+	Cancelled.	Cancelado.
+	Cancel order	Cancelar pedido
+	Words (click to highlight)	Palavras (clique para destacar)
+	No templates found in the template bank.	Nenhum modelo no banco de modelos.
+	Send	Enviar

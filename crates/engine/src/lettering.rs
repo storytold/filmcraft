@@ -1560,7 +1560,7 @@ fn hide_captions(s: &mut Session, p: &Value, at: Option<f64>, first_start: f64, 
 
 /// Words (with the times they are said at) of the captions in `ids`: the transcript between the
 /// first and the last caption when there is one, else the caption text spread over its time.
-fn words_of_captions(s: &Session, ids: &[filmcraft_project::ClipId]) -> Result<(Vec<Word>, f64, f64)> {
+pub(crate) fn words_of_captions(s: &Session, ids: &[filmcraft_project::ClipId]) -> Result<(Vec<Word>, f64, f64)> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut caps: Vec<(f64, f64, String)> = ids
         .iter()
