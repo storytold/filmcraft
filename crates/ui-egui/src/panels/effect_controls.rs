@@ -18,6 +18,9 @@ mod selection;
 pub(crate) use selection::Interaction;
 
 const ROW_H: f32 = 22.0;
+/// How far a property row sits in from its effect's header, so the stopwatch lines up under the
+/// effect's name, as in Premiere (#4282).
+pub(crate) const PROP_INDENT: f32 = 23.0;
 /// The narrowest the effect list and the keyframe area can be dragged (#643): the list's rows are
 /// laid out for at least 260 points (values from 150 points in, the reset button at the end).
 const MIN_LIST_W: f32 = 260.0;
@@ -247,6 +250,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         for (clip, it, kind) in &clips {
             let clip = *clip;
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
+            // the band stays in the effect list: at the top of the list the keyframe area beside the
+            // heading is the clip's bar, so a band across both would show for Audio but not Video
+            bui.painter().rect_filled(row_fill(hr), 0.0, t.section_band);
             let heading = if *kind == TrackKind::Video { tl!("Video") } else { tl!("Audio") };
             bui.painter().text(pos2(hr.min.x + 8.0, hr.center().y), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
             // a graphic with Responsive Design – Time: its clip effects below keep media time (#3361)
@@ -455,8 +461,8 @@ fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, lane:
     let t = app.tokens;
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
     row_line(ui, r, lane, &t);
-    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, tl!("Custom Setup"), Tokens::ui(12.0), t.text_dim);
-    let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
+    ui.painter().text(pos2(r.min.x + 40.0 + PROP_INDENT, r.center().y), Align2::LEFT_CENTER, tl!("Custom Setup"), Tokens::ui(12.0), t.text_dim);
+    let br = Rect::from_min_size(pos2(r.min.x + 160.0 + PROP_INDENT, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
     let resp = ui.interact(br, egui::Id::unique(("fx-custom-setup", clip.0, idx)), Sense::click());
     ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
@@ -670,12 +676,13 @@ pub(crate) fn param_row(
     if row.clicked() {
         actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
     }
-    let mut x = r.min.x + 26.0;
-    // twirl-down for the value/velocity graphs (animated scalar and point params)
+    let mut x = r.min.x + 26.0 + PROP_INDENT;
+    // twirl-down for the value/velocity graphs (animated scalar and point params), under the
+    // effect's fx toggle
     if param.is_animated() && graphable(&param.value) {
         let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
-        let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
+        let tw = Rect::from_center_size(pos2(r.min.x + 28.0, r.center().y), vec2(12.0, 12.0));
         let tresp = ui.interact(tw.expand(2.0), egui::Id::unique(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text(tl!("Show graphs"));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pkey), tw, "Show graphs");
@@ -1433,11 +1440,11 @@ pub(crate) fn graph_rows(
     let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
-    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(vr.min.x + 44.0 + PROP_INDENT, area.center().y), Align2::LEFT_CENTER, tl!("Value"), Tokens::ui(11.0), t.text_dim);
     let curve_color = |c: usize| if c == 0 { t.accent } else { Y_CURVE };
     if curves > 1 {
-        p.text(pos2(vr.min.x + 44.0, area.center().y + 14.0), Align2::LEFT_CENTER, "X", Tokens::ui(10.5), curve_color(0));
-        p.text(pos2(vr.min.x + 58.0, area.center().y + 14.0), Align2::LEFT_CENTER, "Y", Tokens::ui(10.5), curve_color(1));
+        p.text(pos2(vr.min.x + 44.0 + PROP_INDENT, area.center().y + 14.0), Align2::LEFT_CENTER, "X", Tokens::ui(10.5), curve_color(0));
+        p.text(pos2(vr.min.x + 58.0 + PROP_INDENT, area.center().y + 14.0), Align2::LEFT_CENTER, "Y", Tokens::ui(10.5), curve_color(1));
     }
     for c in 0..curves {
         let line: Vec<Pos2> =
@@ -1464,7 +1471,7 @@ pub(crate) fn graph_rows(
     p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, t.keyframe_plot_axis));
     let vline: Vec<Pos2> = vel.iter().enumerate().filter(|(_, v)| v.is_finite()).map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
     p.add(egui::Shape::line(vline, Stroke::new(1.2, Color32::from_rgb(0xd0, 0xa0, 0x40))));
-    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(velr.min.x + 44.0 + PROP_INDENT, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
     // keyframes + handles
@@ -1743,6 +1750,35 @@ mod lane_tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// #4282: a property sits one step in from its effect's header, its stopwatch under the
+    /// effect's name and its graphs twirl under the fx toggle; a mask's properties too.
+    #[test]
+    fn properties_sit_under_their_effects_name() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+        s.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
+        s.execute("effects.toggleAnimation", json!({"clip": clip.0, "effect": "motion", "param": "scale"})).unwrap();
+        s.execute("masks.add", json!({"clip": clip.0, "effect": "opacity", "shape": "ellipse"})).unwrap();
+        let mut app = crate::FilmcraftApp::new(s);
+        let ctx = context();
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(700.0, 1200.0));
+        for _ in 0..2 {
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show(&mut app, ui, rect));
+            out.textures_delta.clear();
+        }
+        let left = |id: &str| app.auto.find(id).unwrap_or_else(|| panic!("{id} is drawn")).rect[0];
+        let name = left("effectControls.effect.motion") + 42.0;
+        for stopwatch in ["effectControls.motion.scale.stopwatch", "effectControls.opacity.opacity.stopwatch", "effectControls.opacity.mask0.feather.stopwatch"]
+        {
+            assert!((left(stopwatch) - name).abs() < 0.5, "{stopwatch} starts under the effect's name");
+        }
+        // the fx toggle is centred 28 points into the header
+        let twirl = app.auto.find("effectControls.motion.scale.graphs").map(|e| e.rect[0] + e.rect[2] / 2.0);
+        assert!(twirl.is_some_and(|x| (x - (left("effectControls.effect.motion") + 28.0)).abs() < 0.5), "the graphs twirl sits under the fx toggle");
     }
 
     /// The ruler takes its numbers from the project (clip times, the sequence's frame rate) and
