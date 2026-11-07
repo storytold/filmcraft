@@ -67,8 +67,11 @@ in the original snapshot and are reported once per distinct effect name with an 
 rather than silently recreated with guessed parameters. Fader-muted audio imports audible unless
 the track is also muted through `IsMuted`.
 Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
-or unreadable media remains visible as offline placeholders. Document references pass the existing
-document-path policy before canonicalization. Both the reference and resolved file must have a
+or unreadable media remains visible as offline placeholders. A media path saved on the other
+system family (POSIX against a Windows drive or share, or the reverse) is replaced by the stored
+`RelativePath` resolved against the project's folder; a stored path that cannot be opened falls
+back to that relative path with a warning. Document references, including that fallback, pass the
+existing document-path policy before canonicalization. Both the reference and resolved file must have a
 recognized media extension, and the registered media opener must accept the file before it is
 hashed or copied. Non-media, refused paths and failed probes stay offline with only their original
 reference recorded, no hash/size, and no copied file. Probing may read media headers or, for formats
