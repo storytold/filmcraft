@@ -207,3 +207,113 @@ fn toggling_a_partly_selected_group_flips_it_as_a_whole() {
     s.execute("timeline.select", json!({"clips": [v0.0], "toggle": true})).unwrap();
     assert!(s.state.selection.is_empty(), "the whole group is deselected: {:?}", s.state.selection);
 }
+
+/// Cut, Copy and Nest take an Alt selection as it is, as Clear does (#2244): one half of a linked
+/// pair goes, and its partner stays where it was.
+#[test]
+fn cut_copy_and_nest_keep_an_alt_selection_exact() {
+    for command in ["edit.cut", "edit.copy", "clip.nest"] {
+        for audio in [false, true] {
+            let (mut s, [(video, sound), _]) = paired_sequence();
+            let (selected, partner) = if audio { (sound, video) } else { (video, sound) };
+            let partner_at = s.active_sequence().unwrap().find_item(partner).unwrap().1.range();
+            s.execute("timeline.select", json!({"clips": [selected.0], "linked": false})).unwrap();
+            let before = s.project.clone();
+            let r = s.execute(command, json!({})).unwrap();
+            let q = s.active_sequence().unwrap();
+            q.check().unwrap();
+            assert_eq!(q.find_item(partner).unwrap().1.range(), partner_at, "{command} {audio}: the partner stays");
+            assert_eq!(q.find_item(selected).is_none(), command != "edit.copy", "{command} {audio}");
+            if command == "clip.nest" {
+                let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
+                let inside: Vec<_> = nested.all_tracks().flat_map(|t| t.items.iter()).collect();
+                assert_eq!(inside.len(), 1, "{audio}: only the selected half is nested");
+                // neither half has a partner to follow any more
+                assert_eq!(inside[0].link, None, "{audio}: the nested half is not linked");
+                assert_eq!(q.find_item(partner).unwrap().1.link, None, "{audio}: the half left behind is not linked");
+            } else {
+                assert_eq!(s.state.clipboard.len(), 1, "{command} {audio}: only the selected half is copied");
+                assert_eq!(s.state.clipboard[0].2.id, selected);
+            }
+            assert!(s.state.linked_selection);
+            if command != "edit.copy" {
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(*s.project, *before, "{command} {audio}: one undo restores the pair");
+            }
+        }
+    }
+}
+
+/// An ordinary click selects both halves, so Cut, Copy and Nest still take the whole pair.
+#[test]
+fn cut_copy_and_nest_take_both_halves_of_a_linked_selection() {
+    for command in ["edit.cut", "edit.copy", "clip.nest"] {
+        let (mut s, [(video, sound), _]) = paired_sequence();
+        s.execute("timeline.select", json!({"clips": [sound.0]})).unwrap();
+        let r = s.execute(command, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        if command == "edit.copy" {
+            assert_eq!(s.state.clipboard.len(), 2, "both halves are copied");
+            continue;
+        }
+        assert!(q.find_item(video).is_none() && q.find_item(sound).is_none(), "{command}: both halves go");
+        if command == "clip.nest" {
+            let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
+            let inside: Vec<_> = nested.all_tracks().flat_map(|t| t.items.iter()).collect();
+            assert_eq!(inside.len(), 2, "both halves are nested");
+            assert!(inside[0].link.is_some() && inside[0].link == inside[1].link, "the nested pair stays linked");
+        } else {
+            assert_eq!(s.state.clipboard.len(), 2, "both halves are cut");
+        }
+    }
+}
+
+/// Removing one half of a linked pair leaves the other half unlinked: it has nothing to follow,
+/// and a later Link on it must link, not unlink. A partner on a locked track stays put and is
+/// unlinked too.
+#[test]
+fn the_half_left_behind_is_no_longer_linked() {
+    for command in ["edit.cut", "edit.clear", "edit.rippleDelete", "clip.nest"] {
+        for locked in [false, true] {
+            let (mut s, [(video, sound), (next_video, next_sound)]) = paired_sequence();
+            for track in ["V1", "A1"] {
+                s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+            }
+            s.execute("timeline.select", json!({"clips": [video.0], "linked": false})).unwrap();
+            if locked {
+                s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+            }
+            s.execute(command, json!({})).unwrap();
+            let q = s.active_sequence().unwrap();
+            q.check().unwrap();
+            assert!(q.find_item(video).is_none(), "{command} {locked}");
+            assert_eq!(q.find_item(sound).unwrap().1.link, None, "{command} {locked}: the sound left behind is not linked");
+            let link = |c| q.find_item(c).unwrap().1.link;
+            assert!(link(next_video).is_some() && link(next_video) == link(next_sound), "{command} {locked}: other pairs keep their link");
+        }
+    }
+}
+
+/// A link with more than two members keeps the members that stay: removing one Alt-selected sound
+/// clip of a picture linked to two sound clips leaves the picture and the other sound linked.
+#[test]
+fn the_rest_of_a_larger_link_stays_linked() {
+    for command in ["edit.cut", "edit.clear", "edit.rippleDelete"] {
+        let (mut s, [(video, sound), (next_video, next_sound)]) = paired_sequence();
+        for track in ["V1", "A1"] {
+            s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+        }
+        for pair in [[next_video, next_sound], [video, sound]] {
+            s.execute("clip.link", json!({"clips": [pair[0].0, pair[1].0]})).unwrap();
+        }
+        s.execute("clip.link", json!({"clips": [video.0, sound.0, next_sound.0]})).unwrap();
+        s.execute("timeline.select", json!({"clips": [sound.0], "linked": false})).unwrap();
+        s.execute(command, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        q.check().unwrap();
+        assert!(q.find_item(sound).is_none(), "{command}");
+        let link = |c| q.find_item(c).unwrap().1.link;
+        assert!(link(video).is_some() && link(video) == link(next_sound), "{command}: the picture and the other sound stay linked");
+        assert_eq!(link(next_video), None, "{command}");
+    }
+}

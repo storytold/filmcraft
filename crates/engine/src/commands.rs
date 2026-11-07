@@ -2035,9 +2035,12 @@ fn build() -> Vec<CommandSpec> {
                 return Ok(Value::Null);
             }
             copy_selection(s);
-            let sel = with_links(s, &s.state.selection.clone());
+            // An Alt selection is already exact, as for Clear (#2244).
+            let sel = s.state.selection.clone();
             s.edit_sequence("Cut", |q, _, st| {
+                let links = links_of(q, &sel);
                 edit::delete_items(q, &sel);
+                unlink_lone_clips(q, &links);
                 st.selection.clear();
                 Ok(())
             })?;
@@ -2082,7 +2085,9 @@ fn build() -> Vec<CommandSpec> {
                     None => s.state.selection.clone(),
                 };
                 s.edit_sequence("Clear", |q, _, st| {
+                    let links = links_of(q, &sel);
                     edit::delete_items(q, &sel);
+                    unlink_lone_clips(q, &links);
                     st.selection.clear();
                     Ok(())
                 })?;
@@ -2112,7 +2117,9 @@ fn build() -> Vec<CommandSpec> {
                     None => s.state.selection.clone(),
                 };
                 s.edit_sequence("Ripple Delete", |q, _, st| {
+                    let links = links_of(q, &sel);
                     let spans = edit::ripple_delete_items(q, &sel)?;
+                    unlink_lone_clips(q, &links);
                     if st.ripple_sequence_markers {
                         for r in spans.iter().rev() {
                             crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
@@ -4368,9 +4375,11 @@ fn param_value_to_json(value: &ParamValue) -> Value {
     }
 }
 
+/// Copy the selected clips as they are: a linked selection already holds both halves, and an
+/// Alt-click picks one half on purpose (#2244).
 fn copy_selection(s: &mut Session) {
     let Some(q) = s.active_sequence() else { return };
-    let sel = with_links(s, &s.state.selection);
+    let sel = &s.state.selection;
     let min = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
     let max = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
     // Copy Paste Includes Sequence Markers: the markers inside the copied span go along
@@ -4524,9 +4533,32 @@ pub fn next_nested_name(s: &Session) -> String {
         .unwrap_or_else(|| "Nested Sequence".to_string())
 }
 
+/// The links that `clips` of `seq` belong to.
+fn links_of(seq: &filmcraft_project::Sequence, clips: &[ClipId]) -> std::collections::HashSet<u64> {
+    let clips: std::collections::HashSet<ClipId> = clips.iter().copied().collect();
+    seq.all_tracks().flat_map(|t| t.items.iter()).filter(|i| clips.contains(&i.id)).filter_map(|i| i.link).collect()
+}
+
+/// Clear the link of every clip of `seq` that is the only clip left with one of `links`: it has
+/// nothing to follow. A clip on a locked track stays where it is but loses the link too.
+fn unlink_lone_clips(seq: &mut filmcraft_project::Sequence, links: &std::collections::HashSet<u64>) {
+    let mut members: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for l in seq.all_tracks().flat_map(|t| t.items.iter()).filter_map(|i| i.link) {
+        *members.entry(l).or_default() += 1;
+    }
+    for t in seq.all_tracks_mut() {
+        for it in &mut t.items {
+            if it.link.is_some_and(|l| links.contains(&l) && members.get(&l).copied().unwrap_or(0) < 2) {
+                it.link = None;
+            }
+        }
+    }
+}
+
 fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let sel = with_links(s, &s.state.selection.clone());
+    // An Alt selection is already exact, as for Clear (#2244).
+    let sel = s.state.selection.clone();
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
     let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or_else(|| next_nested_name(s));
     let mut items: Vec<(TrackKind, usize, filmcraft_project::TrackItem)> = Vec::new();
@@ -4574,6 +4606,7 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let nested_track = |k: TrackKind, ti: usize| if k == TrackKind::Audio { audio_at.get(&ti).copied().unwrap_or(ti) } else { ti };
     // what leaves this sequence: everything nested, less the sound that stays behind
     let removed: Vec<ClipId> = items.iter().filter(|i| !(video_only && i.0 == TrackKind::Audio)).map(|i| i.2.id).collect();
+    let nested_links: std::collections::HashSet<u64> = items.iter().filter_map(|i| i.2.link).collect();
     let stays = |k: TrackKind| video_only && k == TrackKind::Audio;
     let r = s.edit("Nest", |pr, st| {
         let nid = pr.new_sequence(&name, q.settings.clone(), nv, na, None);
@@ -4613,6 +4646,8 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
             for t in nq.all_tracks_mut() {
                 t.sort();
             }
+            // inside the nest too, a clip whose partner was not nested is not linked
+            unlink_lone_clips(nq, &nested_links);
             nq.check().map_err(EngineError::Other)?;
         }
         let rate = q.settings.frame_rate;
@@ -4627,15 +4662,9 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
         let (link, new_video, new_audio) = (pr.alloc_id(), pr.alloc_id(), pr.alloc_id());
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         edit::delete_items(seq, &removed);
-        // sound left behind has lost its picture: it is no longer linked
-        if video_only {
-            let links: Vec<u64> = items.iter().filter(|i| i.0 == TrackKind::Video).filter_map(|i| i.2.link).collect();
-            for it in seq.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
-                if it.link.is_some_and(|l| links.contains(&l)) {
-                    it.link = None;
-                }
-            }
-        }
+        // a clip that lost its partners to the nest is no longer linked; clips that stay behind
+        // together keep their link to each other
+        unlink_lone_clips(seq, &nested_links);
         // Where the nest goes, as Premiere Pro 26.5.2 places it (about 35 nests observed). With L
         // the lowest video track of the selection and `a` the number of the highest audio track
         // holding selected sound, the picture takes the lowest track T from L up such that
