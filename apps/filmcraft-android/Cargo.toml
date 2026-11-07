@@ -37,13 +37,31 @@ orientation = "sensorLandscape"
 target_sdk_version = 35
 min_sdk_version = 24
 
-# Everything is android-only: on other targets this crate is empty (so `cargo test --workspace`
-# and clippy stay cheap).
-[target.'cfg(target_os = "android")'.dependencies]
-filmcraft-engine = { workspace = true }
+# Storage access: shared media (Android 13+) and, up to Android 12, external storage. The user
+# grants it in system Settings > Apps > FilmCraft > Permissions.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_VIDEO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_AUDIO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_MEDIA_IMAGES"
+
+# The in-app file browser is plain egui and is built (and tested) on every target.
+[dependencies]
 filmcraft-ui-egui = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+
+# The app itself is android-only: on other targets only the browser is built (so
+# `cargo test --workspace` and clippy stay cheap).
+[target.'cfg(target_os = "android")'.dependencies]
+filmcraft-engine = { workspace = true }
+eframe ={ workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
 log = { workspace = true }
 android_logger = "0.14"
 android-activity = { version = "0.6", features = ["native-activity"] }

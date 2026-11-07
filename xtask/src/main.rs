@@ -479,8 +479,9 @@ fn android(args: &[String]) -> Result<(), String> {
     ];
     for (dir, src) in icon_sources {
         let dir_path = res_dir.join(dir);
-        let _ = std::fs::create_dir_all(&dir_path);
-        let _ = std::fs::copy(root().join(src), dir_path.join("ic_launcher.png"));
+        std::fs::create_dir_all(&dir_path).map_err(|e| format!("cannot create {}: {e}", dir_path.display()))?;
+        let (from, to) = (root().join(src), dir_path.join("ic_launcher.png"));
+        std::fs::copy(&from, &to).map_err(|e| format!("cannot copy the launcher icon {} to {}: {e}", from.display(), to.display()))?;
     }
 
     let action = if run_app { "run" } else { "build" };
