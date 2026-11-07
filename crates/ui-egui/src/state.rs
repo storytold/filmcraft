@@ -906,8 +906,6 @@ pub struct SequenceSettingsDraft {
     pub mix: String,
     pub sample_rate: u32,
     pub max_render_quality: bool,
-    /// Composite in Linear Color (#4477).
-    pub linear_color: bool,
     pub working_space: String,
     pub wide_gamut: bool,
     pub auto_tone_map: bool,
@@ -930,7 +928,6 @@ impl Default for SequenceSettingsDraft {
             mix: "Stereo".into(),
             sample_rate: 48_000,
             max_render_quality: false,
-            linear_color: true,
             working_space: "rec709".into(),
             wide_gamut: false,
             auto_tone_map: true,

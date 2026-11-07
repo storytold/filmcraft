@@ -142,7 +142,8 @@ pub(crate) fn video_transition_defs() -> Vec<EffectDef> {
             m,
             vec![colour("burn_color", "Burn Color", [1.0, 0.45, 0.1, 1.0]), num("softness", "Softness", 25.0, 100.0, "%"), seed()],
         ),
-        tr("cross_dissolve", "Cross Dissolve", DISSOLVE, m, vec![]),
+        // Premiere 26: Ease In / Ease Out of the Visual Curve Editor, 34 each by default (#4477)
+        tr("cross_dissolve", "Cross Dissolve", DISSOLVE, m, vec![num("ease_in", "Ease In", 34.0, 100.0, ""), num("ease_out", "Ease Out", 34.0, 100.0, "")]),
         tr("dip_to_black", "Dip to Black", DISSOLVE, m, vec![]),
         tr("dip_to_color", "Dip to Color", DISSOLVE, m, vec![colour("color", "Color", [0.85, 0.2, 0.2, 1.0]), num("hold", "Hold", 0.0, 90.0, "%")]),
         tr("dip_to_white", "Dip to White", DISSOLVE, m, vec![]),

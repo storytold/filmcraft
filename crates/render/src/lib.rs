@@ -265,9 +265,12 @@ fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
             let p = tr.progress(t) as f32;
             // Reverse plays the transition backwards (e.g. an iris closing on the outgoing clip)
             // while still going from A to B.
-            // Composite in Linear Color off: the transition mixes the encoded pictures (#4477)
-            let mix = if seq.settings.composites_encoded() { transitions::apply_scaled_encoded } else { transitions::apply_scaled };
-            let mixed = if tr.reverse { mix(&tr.effect, &lb, &la, 1.0 - p, opts.scale) } else { mix(&tr.effect, &la, &lb, p, opts.scale) };
+            let plain = seq.settings.color.is_plain();
+            let mixed = if tr.reverse {
+                transitions::apply_in(&tr.effect, &lb, &la, 1.0 - p, opts.scale, plain)
+            } else {
+                transitions::apply_in(&tr.effect, &la, &lb, p, opts.scale, plain)
+            };
             blend::composite(canvas.get(), &mixed, 1.0, bl);
             continue;
         }

@@ -273,7 +273,8 @@ fn morph_cut_moves_the_subject_instead_of_double_exposing() {
     let (a, b) = (jump_cut_frame(96.0, false), jump_cut_frame(108.0, false));
     let want = jump_cut_frame(102.0, false);
     let morph = apply(&filmcraft_project::find_effect("morph_cut").unwrap().instance(), &a, &b, 0.5);
-    let dissolve = apply(&filmcraft_project::find_effect("cross_dissolve").unwrap().instance(), &a, &b, 0.5);
+    // the straight linear-light dissolve (Legacy) is the reference for ghosting
+    let dissolve = apply(&filmcraft_project::find_effect("cross_dissolve_legacy").unwrap().instance(), &a, &b, 0.5);
     // mean red error down a column through the subject's rows
     let column_err = |img: &Image, x: usize| (40..104).map(|y| (img.get(x, y)[0] - want.get(x, y)[0]).abs()).sum::<f32>() / 64.0;
     // uncovered background, both edges, the middle, background still to be covered
@@ -517,52 +518,78 @@ fn typewriter_cursor_stays_on_the_text_block() {
     }
 }
 
-/// #4477: without linear colour a transition mixes the encoded pictures. A cross dissolve is then
-/// linear in the Rec. 709 signal and a dip to black scales the signal, as in Premiere with Composite
-/// in Linear Color off; both ends stay exact, and transparent pixels stay transparent.
+/// #4477: Cross Dissolve is Premiere 26's: it mixes the encoded (Rec. 709) pictures in a plain
+/// Rec. 709 sequence, along an ease curve set by Ease In / Ease Out (34 each by default). With both
+/// at 0 the mix is linear in the encoded signal. Cross Dissolve (Legacy) keeps the old linear-light
+/// straight line, and so does every Cross Dissolve in an HDR / wide-gamut sequence.
 #[test]
-fn encoded_mixing_is_linear_in_the_signal() {
+fn cross_dissolve_eases_the_encoded_mix() {
+    use super::cross_dissolve_curve as curve;
     use filmcraft_color::{Transfer, from_linear, to_linear};
     let flat = |v: f32| paint(4, 2, move |_, _| [v, v, v, 1.0]);
     let (a, b) = (flat(1.0), flat(to_linear(0.2, Transfer::Bt709)));
     let enc = |img: &Image| from_linear(img.px[0], Transfer::Bt709);
-    let dissolve = filmcraft_project::find_effect("cross_dissolve").unwrap().instance();
+    let dissolve = |ease_in: f64, ease_out: f64| {
+        let mut e = filmcraft_project::find_effect("cross_dissolve").unwrap().instance();
+        e.params.get_mut("ease_in").unwrap().value = ParamValue::Float(ease_in);
+        e.params.get_mut("ease_out").unwrap().value = ParamValue::Float(ease_out);
+        e
+    };
+    // eases 0/0: a straight line in the encoded signal
+    let straight = dissolve(0.0, 0.0);
     for p in [0.1f32, 0.25, 0.5, 0.75, 0.9] {
-        let got = enc(&apply_scaled_encoded(&dissolve, &a, &b, p, 1.0));
-        let want = 1.0 * (1.0 - p) + 0.2 * p;
-        assert!((got - want).abs() < 1e-4, "p {p}: {got} vs {want}");
-        // linear light mixes 1.0 and 0.033: brighter than the encoded mix in between
-        assert!(enc(&apply_scaled(&dissolve, &a, &b, p, 1.0)) > want + 0.01, "p {p}");
+        let got = enc(&apply_scaled(&straight, &a, &b, p, 1.0));
+        let want = (1.0 - p) + 0.2 * p;
+        assert!((got - want).abs() < 1e-3, "p {p}: {got} vs {want}");
     }
-    let dip = filmcraft_project::find_effect("dip_to_black").unwrap().instance();
-    for p in [0.1f32, 0.25, 0.4] {
-        let got = enc(&apply_scaled_encoded(&dip, &a, &b, p, 1.0));
-        assert!((got - (1.0 - 2.0 * p)).abs() < 1e-4, "dip p {p}: {got}");
+    // the default eases slow both ends down, symmetric about the middle
+    let default = filmcraft_project::find_effect("cross_dissolve").unwrap().instance();
+    assert!((curve(0.5, 34.0, 34.0) - 0.5).abs() < 1e-4);
+    assert!(curve(0.1, 34.0, 34.0) < 0.06 && curve(0.9, 34.0, 34.0) > 0.94, "{} {}", curve(0.1, 34.0, 34.0), curve(0.9, 34.0, 34.0));
+    let quarter = enc(&apply_scaled(&default, &a, &b, 0.25, 1.0));
+    let k = curve(0.25, 34.0, 34.0);
+    assert!((quarter - ((1.0 - k) + 0.2 * k)).abs() < 1e-3, "{quarter}");
+    // Ease In shapes the start, Ease Out the end
+    assert!(curve(0.2, 70.0, 0.0) < curve(0.2, 0.0, 0.0) && curve(0.8, 0.0, 70.0) > curve(0.8, 0.0, 0.0));
+    // Premiere Pro 26.5.2 exports (a 30-frame Cross Dissolve from grey 40 to grey 220): how far each
+    // frame had mixed, at that frame's progress
+    let premiere = [
+        (34.0, 34.0, 0.191, 0.099),
+        (34.0, 34.0, 0.392, 0.354),
+        (34.0, 34.0, 0.692, 0.768),
+        (100.0, 100.0, 0.191, 0.011),
+        (100.0, 100.0, 0.392, 0.127),
+        (100.0, 100.0, 0.592, 0.856),
+        (70.0, 0.0, 0.291, 0.072),
+        (70.0, 0.0, 0.592, 0.309),
+        (70.0, 0.0, 0.792, 0.575),
+        (0.0, 0.0, 0.291, 0.287),
+        (0.0, 0.0, 0.692, 0.691),
+    ];
+    for (ease_in, ease_out, p, want) in premiere {
+        let got = curve(p, ease_in, ease_out);
+        assert!((got - want).abs() < 0.015, "{ease_in}/{ease_out} at {p}: {got} vs Premiere {want}");
     }
-    let (fa, fb) = (frame_a(), frame_b());
-    // a colour parameter is used as stored in the encoded mix: Dip to Color holds its colour's code values
-    let mut dip_col = filmcraft_project::find_effect("dip_to_color").unwrap().instance();
-    let c = [0.6f32, 0.3, 0.1, 1.0];
-    dip_col.params.get_mut("color").unwrap().value = ParamValue::Color(c);
-    let held = apply_scaled_encoded(&dip_col, &a, &b, 0.5, 1.0);
-    let linear = apply_scaled(&dip_col, &a, &b, 0.5, 1.0);
-    for ch in 0..3 {
-        assert!((from_linear(held.px[ch], Transfer::Bt709) - c[ch]).abs() < 1e-4, "encoded dip colour {:?}", &held.px[..4]);
-        assert!((linear.px[ch] - filmcraft_color::srgb_to_linear(c[ch])).abs() < 1e-4, "linear dip colour {:?}", &linear.px[..4]);
+    // ends exact, monotonic, finite for hostile values
+    for (ei, eo) in [(0.0, 0.0), (34.0, 34.0), (100.0, 100.0), (70.0, 0.0), (f32::NAN, 250.0), (-5.0, f32::INFINITY)] {
+        assert_eq!(curve(0.0, ei, eo), 0.0);
+        assert!((curve(1.0, ei, eo) - 1.0).abs() < 1e-5);
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let v = curve(i as f32 / 100.0, ei, eo);
+            assert!(v.is_finite() && v >= last - 1e-6, "{ei}/{eo} at {i}: {v} after {last}");
+            last = v;
+        }
     }
-    // half-way into the dip the encoded mix is linear in the code values: (A' + colour) / 2
-    let quarter = enc(&apply_scaled_encoded(&dip_col, &a, &b, 0.25, 1.0));
-    assert!((quarter - (1.0 + c[0]) / 2.0).abs() < 1e-3, "{quarter}");
-    // Film Dissolve has its own blend space: the same picture with or without linear colour
-    let film = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
-    assert_eq!(apply_scaled_encoded(&film, &fa, &fb, 0.3, 1.0), apply_scaled(&film, &fa, &fb, 0.3, 1.0));
-    assert!(mean_abs(&apply_scaled_encoded(&dissolve, &fa, &fb, 0.0, 1.0), &fa) < 1e-6);
-    assert!(mean_abs(&apply_scaled_encoded(&dissolve, &fa, &fb, 1.0, 1.0), &fb) < 1e-6);
+    // Legacy keeps the linear-light straight line; an HDR / wide-gamut sequence mixes in linear light
+    let legacy = filmcraft_project::find_effect("cross_dissolve_legacy").unwrap().instance();
+    let lin = apply_scaled(&legacy, &a, &b, 0.5, 1.0).px[0];
+    assert!((lin - (0.5 + 0.5 * to_linear(0.2, Transfer::Bt709))).abs() < 1e-5, "{lin}");
+    let hdr = apply_in(&straight, &a, &b, 0.5, 1.0, false).px[0];
+    assert!((hdr - lin).abs() < 1e-5, "{hdr} vs {lin}");
+    // transparent stays transparent; a half-transparent pixel converts its colour, not its premultiplied value
     let clear = paint(4, 2, |_, _| [0.0, 0.0, 0.0, 0.0]);
-    let half = apply_scaled_encoded(&dissolve, &clear, &clear, 0.5, 1.0);
-    assert!(half.px.iter().all(|v| *v == 0.0));
-    // premultiplied: a half-transparent pixel converts its colour, not its premultiplied value
+    assert!(apply_scaled(&default, &clear, &clear, 0.5, 1.0).px.iter().all(|v| *v == 0.0));
     let semi = paint(4, 2, |_, _| [0.25, 0.25, 0.25, 0.5]);
-    let same = apply_scaled_encoded(&dissolve, &semi, &semi, 0.5, 1.0);
-    assert!(mean_abs(&same, &semi) < 1e-5, "{:?}", &same.px[..4]);
+    assert!(mean_abs(&apply_scaled(&default, &semi, &semi, 0.5, 1.0), &semi) < 1e-5);
 }

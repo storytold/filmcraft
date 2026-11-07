@@ -25,21 +25,10 @@ pub struct SequenceSettings {
     /// Auto Tone Map Media.
     #[serde(default = "default_color_pipeline")]
     pub color: filmcraft_color::ColorPipeline,
-    /// Composite in Linear Color (#4477). On: transitions mix the pictures in linear light. Off:
-    /// they mix the pictures as encoded (Rec. 709), as Premiere does without linear compositing,
-    /// which changes how dissolves and dips look. Only a plain Rec. 709 pipeline composites
-    /// non-linearly; HDR and wide-gamut working spaces are always linear. Opacity and blend modes
-    /// composite in linear light either way for now.
-    #[serde(default = "default_linear_color")]
-    pub linear_color: bool,
 }
 
 fn default_color_pipeline() -> filmcraft_color::ColorPipeline {
     filmcraft_color::ColorPipeline::REC709
-}
-
-fn default_linear_color() -> bool {
-    true
 }
 
 impl Default for SequenceSettings {
@@ -58,7 +47,6 @@ impl Default for SequenceSettings {
             max_render_quality: false,
             working_space: "Rec. 709".into(),
             color: filmcraft_color::ColorPipeline::REC709,
-            linear_color: true,
         }
     }
 }
@@ -123,12 +111,6 @@ pub fn conformed_size(size: (u32, u32), par: (u32, u32), frame_par: (u32, u32)) 
 }
 
 impl SequenceSettings {
-    /// Whether transitions mix the encoded pictures instead of linear light: Composite in Linear
-    /// Color is off and the pipeline is plain Rec. 709 (#4477).
-    pub fn composites_encoded(&self) -> bool {
-        !self.linear_color && self.color.is_plain()
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         validate_frame_size(self.width, self.height)?;
         if self.frame_rate.num <= 0

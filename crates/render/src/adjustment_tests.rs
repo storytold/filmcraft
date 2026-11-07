@@ -242,7 +242,9 @@ fn transform_shutter_on_an_adjustment_layer_spans_one_sequence_frame() {
 fn dissolve(s: &mut Scene, track: usize, from: Option<ClipId>, to: Option<ClipId>, start: i64) {
     let tr = filmcraft_project::Transition {
         id: filmcraft_project::TransitionId(900 + start as u64),
-        effect: find_effect("cross_dissolve").unwrap().instance(),
+        // the straight linear-light dissolve (Legacy): these tests check the fade arithmetic of
+        // adjustment layers, not Cross Dissolve's ease curve (#4477)
+        effect: find_effect("cross_dissolve_legacy").unwrap().instance(),
         start: R.tick_of(start),
         duration: R.tick_of(12),
         from,

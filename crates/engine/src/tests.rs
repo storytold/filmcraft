@@ -276,20 +276,6 @@ fn sequence_settings_without_params_reports_the_settings() {
 }
 
 /// Reporting the settings is a query: like `sequence.inspect` it is not journaled; an edit is.
-/// #4477: Composite in Linear Color is a sequence setting; settings saved before it existed
-/// composite in linear light, as before.
-#[test]
-fn sequence_settings_linear_color() {
-    let mut s = demo();
-    assert!(s.active_sequence().unwrap().settings.linear_color);
-    s.execute("sequence.settings", json!({"linearColor": false})).unwrap();
-    assert!(!s.active_sequence().unwrap().settings.linear_color);
-    let mut v = serde_json::to_value(&s.active_sequence().unwrap().settings).unwrap();
-    v.as_object_mut().unwrap().remove("linear_color");
-    let older: filmcraft_project::SequenceSettings = serde_json::from_value(v).unwrap();
-    assert!(older.linear_color);
-}
-
 #[test]
 fn sequence_settings_report_is_not_journaled() {
     let mut s = demo();

@@ -1,5 +1,5 @@
-//! Dissolves (the classic Cross Dissolve / Dip / Film / Additive family stays in `legacy.rs`,
-//! whose output the golden images pin).
+//! Dissolves (the classic Dip / Film / Additive family and Cross Dissolve (Legacy) stay in
+//! `legacy.rs`, whose output the golden images pin).
 
 use super::{Tx, add_light, bell, blurred, fbm, hash, luma, mid_mix, mix, paint, scale4, smoothstep};
 use crate::image::Image;
@@ -9,9 +9,44 @@ pub(crate) fn perceptual_luma(c: [f32; 4]) -> f32 {
     luma(c).clamp(0.0, 1.0).powf(1.0 / 2.2)
 }
 
+/// How far Premiere 26's Cross Dissolve has mixed into B at progress `p`: a cubic Bézier ease from
+/// (0, 0) to (1, 1) whose handles are the Ease In and Ease Out values (0-100) of its Visual Curve
+/// Editor. Measured on Premiere Pro 26.5.2 exports with eases 0/0 (a straight line), 34/34
+/// (default), 70/0 and 100/100: the handles reach `CROSS_DISSOLVE_HANDLE` of the ease value
+/// along the time axis (#4477).
+pub(crate) fn cross_dissolve_curve(p: f32, ease_in: f32, ease_out: f32) -> f32 {
+    let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
+    if p <= 0.0 || p >= 1.0 {
+        return p;
+    }
+    let handle = |v: f32| if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) * CROSS_DISSOLVE_HANDLE } else { 0.0 };
+    let (x1, x2) = (handle(ease_in), 1.0 - handle(ease_out));
+    // x(s) = 3(1-s)²s·x1 + 3(1-s)s²·x2 + s³ rises monotonically from 0 to 1: find s with x(s) = p
+    let x = |s: f32| 3.0 * (1.0 - s) * (1.0 - s) * s * x1 + 3.0 * (1.0 - s) * s * s * x2 + s * s * s;
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..30 {
+        let mid = 0.5 * (lo + hi);
+        if x(mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let s = 0.5 * (lo + hi);
+    3.0 * (1.0 - s) * s * s + s * s * s
+}
+
+/// The handle length per unit of ease that fits Premiere 26.5.2's Cross Dissolve (0.915 of the
+/// ease value; 1.0 left 2-3 times the residual on the 70/0 and 100/100 exports).
+const CROSS_DISSOLVE_HANDLE: f32 = 0.915;
+
 pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
     let p = t.p;
     Some(match id {
+        "cross_dissolve" => {
+            let k = cross_dissolve_curve(p, t.num("ease_in"), t.num("ease_out"));
+            t.a.clone().lerp(t.b, k)
+        }
         "blur_dissolve" => {
             let sigma = t.px("blur") * 0.5;
             let k = smoothstep(0.25, 0.75, p);

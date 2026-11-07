@@ -244,8 +244,11 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px))
 }
 
+/// Transitions the layered plan draws itself as weighted layers (a straight mix in linear light).
+/// Cross Dissolve isn't one since it eases the mix of the encoded pictures as Premiere 26 does
+/// (#4477): it renders on the CPU, like the other transitions; Cross Dissolve (Legacy) still is.
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
+    matches!(id, "cross_dissolve_legacy" | "dip_to_black" | "dip_to_white")
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
@@ -361,8 +364,7 @@ fn adjustment_ops(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick, sc
 /// Whether the frame of `seq` at `t` and render `scale` can be planned as layers for a device that
 /// runs `caps`: no adjustment layer it can't run ([`adjustment_ops`]) and no transition the
 /// compositor cannot mix itself is showing (a transition into or out of an adjustment layer counts,
-/// also on the side of the cut where the other clip is; so does any transition of a sequence that
-/// composites without linear colour, since the compositor mixes in linear light).
+/// also on the side of the cut where the other clip is).
 pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
     let adjustment = |it: &TrackItem| is_adjustment(project, it);
     for tr in &seq.video_tracks {
@@ -370,8 +372,7 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32,
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            // the compositor mixes in linear light only: without linear colour the CPU renders it (#4477)
-            if seq.settings.composites_encoded() || (!simple_transition(&trn.effect.effect) && trn.effect.effect != "push") {
+            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
@@ -447,7 +448,7 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
                     }
                 }
                 _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                    // Cross Dissolve (Legacy): A at full, B over it at p (premultiplied over == linear mix when A is opaque)
                     if let Some(it) = a {
                         push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
                     }

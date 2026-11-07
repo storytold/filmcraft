@@ -868,7 +868,8 @@ fn gpu_blend_modes_match_cpu_render() {
 }
 
 /// Inside a transition the CPU mixes the clips and composites the result Normal, ignoring their
-/// blend modes: the plan does the same (Screen clips cross-dissolving on V2 over V1).
+/// blend modes: the plan does the same (Screen clips cross-dissolving on V2 over V1, with the
+/// layered Cross Dissolve (Legacy)).
 #[test]
 fn gpu_transition_of_blended_clips_matches_cpu_render() {
     let Some((dev, q)) = device("gpu blend parity", false) else {
@@ -882,7 +883,8 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     for id in [ca, cb] {
         b.fixed(id, "opacity", &[("blend", blend("Screen"))]);
     }
-    b.transition(1, "cross_dissolve", ca, cb, 24, 12);
+    // the layered plan draws Cross Dissolve (Legacy); Cross Dissolve renders on the CPU (#4477)
+    b.transition(1, "cross_dissolve_legacy", ca, cb, 24, 12);
     let s = b.at(22);
     let plan = filmcraft_render::plan::plan_frame(
         &s.project,

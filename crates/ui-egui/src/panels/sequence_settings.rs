@@ -14,8 +14,8 @@
 //! value and a "not supported yet" hint, rather than editable and silently ignored: Editing Mode,
 //! Pixel Aspect Ratio (rendered, and set by New Sequence From Clip, but not editable here yet), Fields, the Frames and Feet + Frames display
 //! formats, Number of Channels, audio Display Format, the Video Previews format, codec and size,
-//! Maximum Bit Depth, and the VR Properties tab. Composite in Linear Color is editable (#4477): off,
-//! transitions mix the encoded pictures in a plain Rec. 709 sequence.
+//! Maximum Bit Depth, and the VR Properties tab. Composite in Linear Color is shown on and greyed:
+//! FilmCraft always composites in linear light.
 //!
 //! Automation ids (`sequenceSettings.` + …): `tab.general`, `tab.color`, `tab.vr`; General:
 //! `name`, `editingMode`, `timebase` (+ `timebase.option.<num>/<den>` while open), `width`, `height`,
@@ -36,7 +36,7 @@ use crate::i18n::t;
 use crate::state::SequenceSettingsDraft;
 
 const NOT_YET: &str = "Not supported in FilmCraft yet";
-const LINEAR: &str = "Off: transitions mix the encoded pictures (Rec. 709 sequences). Opacity and blend modes still composite in linear light.";
+const LINEAR: &str = "FilmCraft always composites in linear light";
 
 /// The Timebase list (frames per second as num/den), Premiere's common rates.
 const TIMEBASES: [(i64, i64); 15] = [
@@ -88,7 +88,6 @@ pub fn open(app: &mut FilmcraftApp) {
         mix: mix_name(st.audio_master).into(),
         sample_rate: st.sample_rate,
         max_render_quality: st.max_render_quality,
-        linear_color: st.linear_color,
         working_space: st.color.working.id().into(),
         wide_gamut: st.color.wide_gamut,
         auto_tone_map: st.color.auto_tone_map,
@@ -115,7 +114,6 @@ pub fn open_new(app: &mut FilmcraftApp) {
         mix: mix_name(st.audio_master).into(),
         sample_rate: st.sample_rate,
         max_render_quality: st.max_render_quality,
-        linear_color: st.linear_color,
         working_space: st.color.working.id().into(),
         wide_gamut: st.color.wide_gamut,
         auto_tone_map: st.color.auto_tone_map,
@@ -125,7 +123,7 @@ pub fn open_new(app: &mut FilmcraftApp) {
 }
 
 /// The `file.newSequence` parameters for a New Sequence draft. Settings `file.newSequence` doesn't
-/// take (drop-frame timecode, Maximum Render Quality, Composite in Linear Color) are the second map, for `sequence.settings`
+/// take (drop-frame timecode, Maximum Render Quality) are the second map, for `sequence.settings`
 /// on the new sequence; empty when they are the defaults.
 fn new_sequence_params(d: &SequenceSettingsDraft) -> (Map<String, Value>, Map<String, Value>) {
     let mut p = Map::new();
@@ -143,7 +141,7 @@ fn new_sequence_params(d: &SequenceSettingsDraft) -> (Map<String, Value>, Map<St
     // what's left: only the settings `file.newSequence` has no parameter for
     let after = SequenceSettings { frame_rate: rate(d), width: d.width, height: d.height, sample_rate: d.sample_rate, ..Default::default() };
     let mut rest = changes(d, &after, name);
-    rest.retain(|k, _| matches!(k.as_str(), "dropFrame" | "maxRenderQuality" | "linearColor"));
+    rest.retain(|k, _| matches!(k.as_str(), "dropFrame" | "maxRenderQuality"));
     (p, rest)
 }
 
@@ -242,9 +240,6 @@ fn changes(d: &SequenceSettingsDraft, cur: &SequenceSettings, cur_name: &str) ->
     }
     if d.max_render_quality != cur.max_render_quality {
         p.insert("maxRenderQuality".into(), json!(d.max_render_quality));
-    }
-    if d.linear_color != cur.linear_color {
-        p.insert("linearColor".into(), json!(d.linear_color));
     }
     if d.working_space != cur.color.working.id() {
         p.insert("workingSpace".into(), json!(d.working_space));
@@ -428,8 +423,9 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let r = ui.checkbox(&mut d.max_render_quality, tl!("Maximum Render Quality"));
             elems.push(("sequenceSettings.maxRenderQuality".into(), r.rect, d.max_render_quality.to_string()));
         });
-        let r = ui.checkbox(&mut d.linear_color, tl!("Composite in Linear Color")).on_hover_text(t(LINEAR));
-        elems.push(("sequenceSettings.linearColor".into(), r.rect, d.linear_color.to_string()));
+        let mut linear = true;
+        let r = ui.add_enabled(false, egui::Checkbox::new(&mut linear, tl!("Composite in Linear Color"))).on_disabled_hover_text(t(LINEAR));
+        elems.push(("sequenceSettings.linearColor".into(), r.rect, "true".into()));
     });
 }
 
@@ -640,9 +636,6 @@ mod tests {
         d.max_render_quality = true;
         let p = changes(&d, &cur, "");
         assert_eq!(Value::Object(p), json!({"width":1280,"height":720,"scaleMotion":true,"maxRenderQuality":true}));
-        // Composite in Linear Color (#4477)
-        let d = SequenceSettingsDraft { linear_color: false, ..Default::default() };
-        assert_eq!(Value::Object(changes(&d, &cur, "")), json!({"linearColor":false}));
         // drop-frame only travels for a rate that has it
         let mut d = SequenceSettingsDraft { drop_frame: true, ..Default::default() };
         assert!(changes(&d, &cur, "").is_empty());

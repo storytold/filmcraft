@@ -1719,14 +1719,11 @@ fn sequence_settings_dialog_applies_in_one_undo_step() {
     d.frames(2);
     assert_eq!(d.label("sequenceSettings.aspect"), "16:9");
     d.click("sequenceSettings.maxRenderQuality");
-    // Composite in Linear Color is editable (#4477)
-    d.click("sequenceSettings.linearColor");
-    assert_eq!(d.label("sequenceSettings.linearColor"), "false");
     d.click("sequenceSettings.ok");
     assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
     let st = d.app().session.active_sequence().unwrap().settings.clone();
     assert_eq!((st.width, st.height, st.frame_rate), (1280, 720, filmcraft_engine::time::FrameRate::FPS_29_97));
-    assert!(st.drop_frame && st.max_render_quality && !st.linear_color);
+    assert!(st.drop_frame && st.max_render_quality);
     let (x1, y1, s1) = motion(&mut d);
     let k = 2.0 / 3.0;
     assert!((x1 - x0 * k).abs() < 1e-9 && (y1 - y0 * k).abs() < 1e-9 && (s1 - s0 * k).abs() < 1e-9, "{x0},{y0},{s0} -> {x1},{y1},{s1}");
