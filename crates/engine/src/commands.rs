@@ -485,11 +485,10 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     if listed.is_empty() {
         return Err(bad(CMD, "need `moves`"));
     }
+    let copy = bool_p(p, "copy").unwrap_or(false);
     // One destination per clip: a clip listed twice would end up on both tracks under one id
     // (#1903). Copies may repeat a source, each copy getting its own id.
-    if !bool_p(p, "copy").unwrap_or(false)
-        && let Some(dup) = listed.iter().enumerate().find_map(|(i, m)| listed[..i].iter().any(|o| o.0 == m.0).then_some(m.0))
-    {
+    if !copy && let Some(dup) = listed.iter().enumerate().find_map(|(i, m)| listed[..i].iter().any(|o| o.0 == m.0).then_some(m.0)) {
         return Err(bad(CMD, format!("clip {} is listed more than once; a move takes one destination per clip (copies may repeat a source)", dup.0)));
     }
     let follow = bool_p(p, "linked").unwrap_or(s.state.linked_selection);
@@ -504,8 +503,11 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
         let offset = i128::from(time.0) - i128::from(it.start.0);
         for t in q.all_tracks().filter(|t| !t.locked) {
             for partner in t.items.iter().filter(|i| i.link == Some(link)) {
-                if !listed.iter().any(|m| m.0 == partner.id) && !plan.iter().any(|m| m.0 == partner.id) {
-                    plan.push((partner.id, t.id, i128::from(partner.start.0) + offset, Some(i128::from(partner.start.0)), false));
+                let landing = i128::from(partner.start.0) + offset;
+                let already_planned = plan.iter().any(|m| m.0 == partner.id && (!copy || (m.1, m.2) == (t.id, landing)));
+                let explicitly_planned = listed.iter().any(|m| m.0 == partner.id && (!copy || i128::from(m.2.0) == landing));
+                if !explicitly_planned && !already_planned {
+                    plan.push((partner.id, t.id, landing, Some(i128::from(partner.start.0)), false));
                 }
             }
         }
@@ -539,7 +541,6 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
         moves.push((clip, track, start, new_track));
     }
     let ins = bool_p(p, "insert").unwrap_or(false);
-    let copy = bool_p(p, "copy").unwrap_or(false);
     // every clip on the sequence now: id -> (track, start, end, project item)
     let spots = |s: &Session| -> Vec<(u64, TrackId, Tick, Tick, ItemId)> {
         let q = s.active_sequence();
@@ -751,8 +752,9 @@ pub fn linked_roll_pairs(seq: &filmcraft_project::Sequence, left: ClipId, right:
 /// Keep each selected identity once, then expand linked partners when linked selection is on.
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for c in clips {
-        if !out.contains(c) {
+        if seen.insert(*c) {
             out.push(*c);
         }
     }
@@ -3233,10 +3235,17 @@ fn build() -> Vec<CommandSpec> {
             }
             let clips: Vec<ClipId> =
                 p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
+            let mut unique = Vec::with_capacity(clips.len());
+            let mut seen = std::collections::HashSet::new();
+            for clip in clips {
+                if seen.insert(clip) {
+                    unique.push(clip);
+                }
+            }
             // a toggle adds or removes the requested clips as a whole, decided once from their own
             // selection state, so a partly selected group never ends up half flipped
-            let toggle_off = !clips.is_empty() && clips.iter().all(|c| s.state.selection.contains(c));
-            let clips = if bool_p(p, "linked").unwrap_or(true) { with_groups_and_links(s, &clips) } else { clips };
+            let toggle_off = !unique.is_empty() && unique.iter().all(|c| s.state.selection.contains(c));
+            let clips = if bool_p(p, "linked").unwrap_or(true) { with_groups_and_links(s, &unique) } else { unique };
             // selecting clips leaves trim mode (Premiere: clip and edit point selections are exclusive)
             s.state.edit_points.clear();
             s.state.trim_shift = Default::default();

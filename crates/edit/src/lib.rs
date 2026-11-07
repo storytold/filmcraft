@@ -24,7 +24,7 @@ pub mod through;
 pub mod transcript;
 pub mod transitions;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionAlign, TransitionId};
 use filmcraft_time::{Tick, TimeRange};
@@ -133,11 +133,25 @@ pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut
 
 /// Remove all material in `range` on a track (splitting items at the boundaries).
 pub fn clear_track_range(track: &mut Track, range: TimeRange, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) -> Vec<ClipId> {
+    clear_track_range_with_splits(track, range, ctx, links, |_, _| {})
+}
+
+fn clear_track_range_with_splits(
+    track: &mut Track,
+    range: TimeRange,
+    ctx: &mut EditCtx,
+    links: &mut HashMap<u64, u64>,
+    mut on_split: impl FnMut(ClipId, ClipId),
+) -> Vec<ClipId> {
     if range.is_empty() {
         return Vec::new();
     }
-    split_track_at(track, range.start, ctx, links);
-    split_track_at(track, range.end(), ctx, links);
+    for at in [range.start, range.end()] {
+        let parent = track.item_at(at).map(|it| it.id);
+        if let (Some(parent), Some(child)) = (parent, split_track_at(track, at, ctx, links)) {
+            on_split(parent, child);
+        }
+    }
     let mut removed = Vec::new();
     track.items.retain(|i| {
         let inside = i.start >= range.start && i.end() <= range.end();
@@ -254,8 +268,9 @@ fn keep_within_clips(tr: &mut Transition, (lo, cut, hi): (Tick, Tick, Tick), fra
 
 /// Keep a clip's one-sided transitions (a fade in from nothing, a fade out to nothing) on its edges
 /// after a regular trim moved them, no longer than the clip (#374). Transitions between two clips
-/// are left alone: a regular trim cannot move their cut.
-fn fades_follow_edges(track: &mut Track, clip: ClipId) {
+/// are left alone: a regular trim cannot move their cut. `adjust_out` is false when an overwrite
+/// split a copy's right edge into a new identity; its out fade is carried on the right fragment.
+fn fades_follow_edges(track: &mut Track, clip: ClipId, adjust_out: bool) {
     let Some((start, end, len)) = track.item(clip).map(|i| (i.start, i.end(), i.duration)) else { return };
     for tr in &mut track.transitions {
         match (tr.from, tr.to) {
@@ -263,7 +278,7 @@ fn fades_follow_edges(track: &mut Track, clip: ClipId) {
                 tr.duration = tr.duration.min(len);
                 tr.start = start;
             }
-            (Some(from), None) if from == clip => {
+            (Some(from), None) if from == clip && adjust_out => {
                 tr.duration = tr.duration.min(len);
                 tr.start = end - tr.duration;
             }
@@ -308,7 +323,18 @@ fn unlocked_track(seq: &Sequence, clip: ClipId) -> Result<TrackId> {
 
 /// Overwrite edits: each item replaces material on its track.
 pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
+    overwrite_with_fragment_roots(seq, placements, ctx).map(|(ids, _)| ids)
+}
+
+/// Track the original identity of each fragment made while placing copies, so a copied fade
+/// follows the surviving fragment at its source edge after a later overwrite splits that copy.
+fn overwrite_with_fragment_roots(
+    seq: &mut Sequence,
+    placements: Vec<(TrackId, TrackItem)>,
+    ctx: &mut EditCtx,
+) -> Result<(Vec<ClipId>, HashMap<ClipId, ClipId>)> {
     let mut links = HashMap::new();
+    let mut roots = HashMap::new();
     let mut ids = Vec::new();
     for (tid, _) in &placements {
         if track_mut(seq, *tid)?.locked {
@@ -317,11 +343,13 @@ pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx:
     }
     for (tid, item) in placements {
         let t = track_mut(seq, tid)?;
-        clear_track_range(t, item.range(), ctx, &mut links);
+        clear_track_range_with_splits(t, item.range(), ctx, &mut links, |parent, child| {
+            roots.insert(child, roots.get(&parent).copied().unwrap_or(parent));
+        });
         ids.push(item.id);
         place(t, item);
     }
-    Ok(ids)
+    Ok((ids, roots))
 }
 
 /// Insert edits: open a gap on target tracks and all sync-locked unlocked tracks, then place.
@@ -604,8 +632,8 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
 /// Copy items to (track, time) with overwrite or insert semantics, leaving the originals where
 /// they are (Option-drag). `moves`: (item, destination track, start of the copy). The copies get
 /// new ids; copies of linked clips are linked to each other, not to the originals, and the
-/// transitions that would travel with a move are copied with them. Returns the copies' ids in
-/// the order of `moves`.
+/// transitions that would travel with a move are copied with them. Returns the IDs of every
+/// surviving copy fragment in request order, with each request's fragments ordered by start.
 pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_mode: bool, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
     let mut work = seq.clone();
     let mut placed = Vec::new();
@@ -618,47 +646,312 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // worked out on the original ids, then moved over to the copies (only transitions whose every
-    // clip is copied travel; one whose partner stays with the originals is not duplicated)
-    let carried = carried_transitions(&work, &placed);
-    let mut ids = HashMap::new();
+    let (copies, planned_links) = plan_copy_identities(seq, moves, &mut placed, insert_mode, ctx)?;
+    let (_, fragment_roots) =
+        if insert_mode { (insert(&mut work, placed, ctx)?, HashMap::new()) } else { overwrite_with_fragment_roots(&mut work, placed, ctx)? };
+    let copied_fragments = copied_fragments(&work, &copies, &fragment_roots)?;
+    relink_broken_groups(&mut work, &planned_links, insert_mode);
+    unlink_lone_fragments(&mut work, &copied_fragments, &fragment_roots);
+    let carried = carried_copy_transitions(seq, &work, &copies, &fragment_roots, ctx);
+    place_carried_transitions(&mut work, carried)?;
+    for &(source, dest, delta, id) in &copies {
+        let expected_end = seq.find_item(source).ok_or(EditError::NoItem(source))?.1.end() + delta;
+        let adjust_out = work.find_item(id).is_some_and(|(_, copied)| copied.end() == expected_end);
+        // The copied out fade follows the fragment retaining the original out edge. Never
+        // move one back onto a shortened left fragment.
+        fades_follow_edges(track_mut(&mut work, dest)?, id, adjust_out);
+    }
+    *seq = work;
+    Ok(copied_fragments)
+}
+
+/// One requested copy: (source clip, destination track, time delta, the copy's id).
+type CopyRequest = (ClipId, TrackId, Tick, ClipId);
+
+/// Give every copy its own id and a link that pairs it with the copies made from the same linked
+/// group at the same landing. Each requested landing is kept: one source identity can be copied
+/// more than once. Returns the copies in request order and the members planned under each new
+/// link.
+fn plan_copy_identities(
+    seq: &Sequence,
+    moves: &[(ClipId, TrackId, Tick)],
+    placed: &mut [(TrackId, TrackItem)],
+    insert_mode: bool,
+    ctx: &mut EditCtx,
+) -> Result<(Vec<CopyRequest>, HashMap<u64, Vec<CopyRequest>>)> {
+    let mut group_counts: HashMap<(u64, Tick), HashMap<ClipId, usize>> = HashMap::new();
+    let mut group_destinations: HashMap<(u64, Tick), HashMap<ClipId, HashSet<TrackId>>> = HashMap::new();
+    let mut link_source_counts: HashMap<u64, HashMap<ClipId, usize>> = HashMap::new();
+    let mut landings = HashSet::new();
+    for ((source, dest, _), (_, it)) in moves.iter().zip(placed.iter()) {
+        if let Some(link) = it.link {
+            // Identical overwrite requests leave one copy at that landing. Counting them twice
+            // changes pairing even though the earlier copy cannot survive. Inserts retain both.
+            if !insert_mode && !landings.insert((*source, *dest, it.start)) {
+                continue;
+            }
+            let old_start = seq.find_item(*source).ok_or(EditError::NoItem(*source))?.1.start;
+            let group = (link, it.start - old_start);
+            *group_counts.entry(group).or_default().entry(*source).or_default() += 1;
+            group_destinations.entry(group).or_default().entry(*source).or_default().insert(*dest);
+            *link_source_counts.entry(link).or_default().entry(*source).or_default() += 1;
+        }
+    }
+    let mut copies = Vec::with_capacity(placed.len());
+    let mut planned_links: HashMap<u64, Vec<CopyRequest>> = HashMap::new();
+    let mut occurrences: HashMap<(ClipId, Tick, Option<i128>), usize> = HashMap::new();
     let mut links = HashMap::new();
     let mut groups = HashMap::new();
-    for (_, it) in &mut placed {
+    for ((source, dest, _), (_, it)) in moves.iter().zip(placed.iter_mut()) {
+        let (source_track, original) = seq.find_item(*source).ok_or(EditError::NoItem(*source))?;
+        let delta = it.start - original.start;
+        let track_shift = match it.link {
+            Some(link) if repeated_linked_group(&group_counts, &group_destinations, link, delta) => Some(linked_track_shift(seq, source_track, *dest)?),
+            _ => None,
+        };
+        let occurrence = occurrences.entry((*source, delta, track_shift)).or_default();
         let id = ClipId(ctx.alloc());
-        ids.insert(it.id, id);
+        copies.push((*source, *dest, delta, id));
         it.id = id;
-        if let Some(l) = it.link {
-            it.link = Some(*links.entry(l).or_insert_with(|| ctx.alloc()));
+        if let Some(link) = it.link {
+            // A single copy of each linked source stays linked even if their destinations have
+            // different offsets. Repeated sources need the offset to distinguish their copies.
+            let repeated_source = link_source_counts.get(&link).is_some_and(|counts| counts.values().any(|&count| count > 1));
+            let group_delta = repeated_source.then_some(delta);
+            let provisional = *links.entry((link, group_delta, track_shift, *occurrence)).or_insert_with(|| ctx.alloc());
+            it.link = Some(provisional);
+            planned_links.entry(provisional).or_default().push((*source, *dest, delta, id));
         }
         // copies of grouped clips form a group of their own, never one with the originals
         if let Some(g) = it.group {
             it.group = Some(*groups.entry(g).or_insert_with(|| ctx.alloc()));
         }
+        *occurrence += 1;
     }
-    // a copy whose linked partner is not copied is not linked
-    let mut counts: HashMap<u64, usize> = HashMap::new();
-    for l in placed.iter().filter_map(|(_, it)| it.link) {
-        *counts.entry(l).or_default() += 1;
+    Ok((copies, planned_links))
+}
+
+/// Whether every member of a linked group is copied the same number of times, each to more than
+/// one track, at `delta`: same-time linked copies that may be listed out of track order.
+fn repeated_linked_group(
+    group_counts: &HashMap<(u64, Tick), HashMap<ClipId, usize>>,
+    group_destinations: &HashMap<(u64, Tick), HashMap<ClipId, HashSet<TrackId>>>,
+    link: u64,
+    delta: Tick,
+) -> bool {
+    group_counts.get(&(link, delta)).is_some_and(|counts| {
+        let Some(&first) = counts.values().next() else { return false };
+        counts.len() > 1
+            && first > 1
+            && counts.values().all(|&count| count == first)
+            && group_destinations.get(&(link, delta)).is_some_and(|destinations| destinations.values().all(|tracks| tracks.len() > 1))
+    })
+}
+
+/// How many tracks a copy moves by, so same-time linked copies pair V2 with A2 rather than A3
+/// whatever order they were listed in.
+fn linked_track_shift(seq: &Sequence, from: TrackId, to: TrackId) -> Result<i128> {
+    let from_index = seq.all_tracks().position(|track| track.id == from).ok_or(EditError::NoTrack(from))?;
+    let to_index = seq.all_tracks().position(|track| track.id == to).ok_or(EditError::NoTrack(to))?;
+    let from_index = i128::try_from(from_index).map_err(|_| EditError::Other("too many tracks to pair linked copies".into()))?;
+    let to_index = i128::try_from(to_index).map_err(|_| EditError::Other("too many tracks to pair linked copies".into()))?;
+    Ok(to_index - from_index)
+}
+
+/// Every live identity each copy left, in request order and by start: an overwrite can split a
+/// copy into several fragments, and a request whose first fragment was removed may keep a tail.
+fn copied_fragments(work: &Sequence, copies: &[CopyRequest], fragment_roots: &HashMap<ClipId, ClipId>) -> Result<Vec<ClipId>> {
+    let mut out = Vec::new();
+    for &(_, dest, _, root) in copies {
+        let mut fragments: Vec<_> = work
+            .track(dest)
+            .ok_or(EditError::NoTrack(dest))?
+            .items
+            .iter()
+            .filter(|it| it.id == root || fragment_roots.get(&it.id) == Some(&root))
+            .map(|it| (it.start, it.id))
+            .collect();
+        fragments.sort_by_key(|&(start, id)| (start, id.0));
+        out.extend(fragments.into_iter().map(|(_, id)| id));
     }
-    for (_, it) in &mut placed {
-        if it.link.is_some_and(|l| counts.get(&l).copied().unwrap_or(0) < 2) {
+    Ok(out)
+}
+
+/// Exact source/track/time slots describe a copy cohort. Nested duplicate requests share a
+/// cohort only when one containing slot-set includes every alternative; incomparable plans
+/// retain their own links. A whole planned group moves together, preserving intact pairs.
+fn relink_broken_groups(work: &mut Sequence, planned_links: &HashMap<u64, Vec<CopyRequest>>, insert_mode: bool) {
+    if insert_mode {
+        return;
+    }
+    type Landing = (ClipId, TrackId, Tick);
+    let required: HashMap<u64, HashSet<Landing>> =
+        planned_links.iter().map(|(&link, members)| (link, members.iter().map(|m| (m.0, m.1, m.2)).collect())).collect();
+    for (&provisional, members) in planned_links {
+        let Some(slots) = required.get(&provisional) else { continue };
+        let mut greatest: Option<(u64, &HashSet<Landing>)> = None;
+        for (&candidate, candidate_slots) in &required {
+            if slots.is_subset(candidate_slots)
+                && greatest.is_none_or(|(id, current)| candidate_slots.len() > current.len() || (candidate_slots.len() == current.len() && candidate < id))
+            {
+                greatest = Some((candidate, candidate_slots));
+            }
+        }
+        let Some((link, containing)) = greatest else { continue };
+        if required.values().filter(|other| slots.is_subset(other)).any(|other| !other.is_subset(containing)) {
+            continue;
+        }
+        for &(_, _, _, id) in members {
+            if let Some((_, it)) = work.find_item_mut(id)
+                && it.link == Some(provisional)
+            {
+                it.link = Some(link);
+            }
+        }
+    }
+}
+
+/// A copy whose partners did not survive keeps no link. The link is counted per copied
+/// identity, not per fragment: an overwrite that splits one copy twice gives both right-hand
+/// fragments the same split link, and two fragments of one copy are not partners.
+fn unlink_lone_fragments(work: &mut Sequence, copied_fragments: &[ClipId], fragment_roots: &HashMap<ClipId, ClipId>) {
+    let root_of = |id: ClipId| fragment_roots.get(&id).copied().unwrap_or(id);
+    let mut holders: HashMap<u64, HashSet<ClipId>> = HashMap::new();
+    for &id in copied_fragments {
+        if let Some(link) = work.find_item(id).and_then(|(_, it)| it.link) {
+            holders.entry(link).or_default().insert(root_of(id));
+        }
+    }
+    for &id in copied_fragments {
+        if let Some((_, it)) = work.find_item_mut(id)
+            && it.link.is_some_and(|link| holders.get(&link).is_none_or(|roots| roots.len() < 2))
+        {
             it.link = None;
         }
     }
-    let out = if insert_mode { insert(&mut work, placed, ctx)? } else { overwrite(&mut work, placed, ctx)? };
-    for (dest, mut tr) in carried {
-        tr.id = TransitionId(ctx.alloc());
-        tr.from = tr.from.and_then(|c| ids.get(&c).copied());
-        tr.to = tr.to.and_then(|c| ids.get(&c).copied());
-        let t = track_mut(&mut work, dest)?;
-        if [tr.from, tr.to].into_iter().flatten().all(|c| t.item(c).is_some()) && (tr.from.is_some() || tr.to.is_some()) {
+}
+
+/// The transitions that travel with the copies: those whose every clip is copied to the same
+/// landing, re-pointed at the fragments that kept the original edges.
+fn carried_copy_transitions(
+    seq: &Sequence,
+    work: &Sequence,
+    copies: &[CopyRequest],
+    fragment_roots: &HashMap<ClipId, ClipId>,
+    ctx: &mut EditCtx,
+) -> Vec<(TrackId, Transition)> {
+    let mut carried = Vec::new();
+    for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| &t.transitions) {
+        for &copy in copies {
+            carry_transition(seq, work, copies, fragment_roots, ctx, tr, copy, &mut carried);
+        }
+    }
+    carried
+}
+
+/// Copy `tr` for one copy of one of its clips: a one-sided fade travels with that copy and
+/// shrinks to its fragment; a two-sided transition travels once, with its first endpoint, to each
+/// landing where its partner was copied too.
+#[allow(clippy::too_many_arguments)]
+fn carry_transition(
+    seq: &Sequence,
+    work: &Sequence,
+    copies: &[CopyRequest],
+    fragment_roots: &HashMap<ClipId, ClipId>,
+    ctx: &mut EditCtx,
+    tr: &Transition,
+    (source, dest, delta, copied_id): CopyRequest,
+    carried: &mut Vec<(TrackId, Transition)>,
+) {
+    if tr.from != Some(source) && tr.to != Some(source) {
+        return;
+    }
+    let partner = if tr.from == Some(source) { tr.to } else { tr.from };
+    let partners: Vec<_> = match partner {
+        Some(partner) => copies.iter().filter(|&&(id, track, offset, _)| id == partner && track == dest && offset == delta).collect(),
+        None => Vec::new(),
+    };
+    // A two-sided transition is carried from its outgoing clip only: carried from the incoming
+    // clip as well, it would be placed twice.
+    if partner.is_some() && (partners.is_empty() || tr.from != Some(source)) {
+        return;
+    }
+    let landings = partners.into_iter().map(|entry| Some(entry.3)).collect::<Vec<_>>();
+    for partner_id in if partner.is_none() { vec![None] } else { landings } {
+        let mut copied = tr.clone();
+        copied.id = TransitionId(ctx.alloc());
+        copied.start = tr.start + delta;
+        copied.from = if tr.from == Some(source) { Some(copied_id) } else { partner_id };
+        copied.to = if tr.to == Some(source) { Some(copied_id) } else { partner_id };
+        if let Some(from_source) = tr.from {
+            let Some((id, _, end, duration)) = copied.from.and_then(|root| edge_fragment(seq, work, fragment_roots, dest, delta, from_source, root, true))
+            else {
+                continue;
+            };
+            copied.from = Some(id);
+            if partner.is_none() {
+                copied.duration = copied.duration.min(duration);
+                copied.start = end - copied.duration;
+            }
+        }
+        if let Some(to_source) = tr.to {
+            let Some((id, start, _, duration)) = copied.to.and_then(|root| edge_fragment(seq, work, fragment_roots, dest, delta, to_source, root, false))
+            else {
+                continue;
+            };
+            copied.to = Some(id);
+            if partner.is_none() {
+                copied.duration = copied.duration.min(duration);
+                copied.start = start;
+            }
+        }
+        carried.push((dest, copied));
+    }
+}
+
+/// The fragment of the copy rooted at `root` that kept `source`'s out edge (or in edge) at the
+/// landing: (id, start, end, duration).
+#[allow(clippy::too_many_arguments)]
+fn edge_fragment(
+    seq: &Sequence,
+    work: &Sequence,
+    fragment_roots: &HashMap<ClipId, ClipId>,
+    dest: TrackId,
+    delta: Tick,
+    source: ClipId,
+    root: ClipId,
+    out_edge: bool,
+) -> Option<(ClipId, Tick, Tick, Tick)> {
+    let original = seq.find_item(source)?.1;
+    let edge = if out_edge { original.end() + delta } else { original.start + delta };
+    work.track(dest)?
+        .items
+        .iter()
+        .find(|it| (it.id == root || fragment_roots.get(&it.id) == Some(&root)) && if out_edge { it.end() == edge } else { it.start == edge })
+        .map(|it| (it.id, it.start, it.end(), it.duration))
+}
+
+/// Add the carried transitions whose endpoints survived and, for a two-sided one, still meet at
+/// a cut the transition fits in.
+fn place_carried_transitions(work: &mut Sequence, carried: Vec<(TrackId, Transition)>) -> Result<()> {
+    for (dest, tr) in carried {
+        let t = track_mut(work, dest)?;
+        let has_endpoints = [tr.from, tr.to].into_iter().flatten().all(|c| t.item(c).is_some());
+        let still_a_cut = match (tr.from, tr.to) {
+            (Some(from), Some(to)) => t.item(from).zip(t.item(to)).is_some_and(|(a, b)| {
+                a.end() == b.start
+                    && a.start <= tr.start
+                    && tr.end() <= b.end()
+                    && !t.items.iter().any(|other| other.id != from && other.id != to && other.range().overlaps(&tr.range()))
+            }),
+            _ => true,
+        };
+        if has_endpoints && still_a_cut && (tr.from.is_some() || tr.to.is_some()) {
             t.transitions.push(tr);
             t.sort();
         }
     }
-    *seq = work;
-    Ok(out)
+    Ok(())
 }
 
 /// The transitions that travel with a move (#227, #374): only those whose every clip moves, onto
@@ -839,7 +1132,7 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     } else {
         let frame = work.settings.frame_rate.frame_duration();
         if let Ok(track) = track_mut(&mut work, tid) {
-            fades_follow_edges(track, clip);
+            fades_follow_edges(track, clip, true);
             transitions_stay_within_clips(track, clip, frame);
         }
     }
@@ -1219,7 +1512,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         it.duration = new_dur;
         let frame = work.settings.frame_rate.frame_duration();
         let track = work.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
-        fades_follow_edges(track, *clip);
+        fades_follow_edges(track, *clip, true);
         if !ripple {
             transitions_stay_within_clips(track, *clip, frame);
         }

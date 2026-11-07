@@ -353,6 +353,211 @@ fn repeated_new_track_copy_destinations_get_distinct_ids() {
     }
 }
 
+#[test]
+fn mixed_explicit_and_implicit_copy_partners_keep_each_landing() {
+    for explicit_first in [false, true] {
+        let mut s = demo();
+        let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+        let first = video.end() + s.sequence_rate().tick_of(48);
+        let second = first + video.duration + s.sequence_rate().tick_of(24);
+        let mut moves = vec![
+            json!({"clip": video.id.0, "track": "V2", "time": first.0}),
+            json!({"clip": sound.id.0, "track": "A2", "time": first.0}),
+            json!({"clip": video.id.0, "track": "V2", "time": second.0}),
+        ];
+        if explicit_first {
+            moves.swap(0, 1);
+        }
+        let before = s.project.clone();
+        let result = s.execute("timeline.move", json!({"moves": moves, "linked": true, "copy": true})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!(result["copied"].as_array().unwrap().len(), 4);
+        for (time, audio_index) in [(first, 1), (second, 0)] {
+            let picture = q.video_tracks[1].items.iter().find(|it| it.start == time).unwrap();
+            let audio = q.audio_tracks[audio_index].items.iter().find(|it| it.start == time).unwrap();
+            assert!(picture.link.is_some());
+            assert_eq!(picture.link, audio.link, "explicit and implicit sound copies each follow their picture");
+        }
+        assert!(q.video_tracks[0].items.iter().all(|it| it.id == video.id), "an explicit picture destination suppresses an implicit duplicate at that time");
+        q.check().unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, before);
+    }
+}
+
+#[test]
+fn repeated_linked_video_copies_each_keep_sound_at_distinct_times() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let first = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let second = first + video.duration + s.sequence_rate().tick_of(24);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": first.0},
+                {"clip": video.id.0, "track": "V2", "time": second.0}
+            ], "linked": true, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 4, "each video request needs its own sound partner");
+    let q = s.active_sequence().unwrap();
+    let links_at = |time| {
+        let picture = q.video_tracks[1].items.iter().find(|it| it.start == time).unwrap();
+        let audio = q.audio_tracks[0].items.iter().find(|it| it.start == time).unwrap();
+        assert_ne!(audio.id, sound.id);
+        assert_eq!(picture.link, audio.link);
+        picture.link
+    };
+    assert!(links_at(first).is_some());
+    assert_ne!(links_at(first), links_at(second));
+    assert!(copied.iter().all(|id| q.find_item(*id).is_some()));
+    q.check().unwrap();
+}
+
+#[test]
+fn explicitly_copied_linked_pair_keeps_link_with_different_landings() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let picture_to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let sound_to = picture_to + s.sequence_rate().tick_of(24);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": picture_to.0},
+                {"clip": sound.id.0, "track": "A2", "time": sound_to.0}
+            ], "linked": false, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 2);
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == picture_to).unwrap();
+    let audio = q.audio_tracks[1].items.iter().find(|it| it.start == sound_to).unwrap();
+    assert_eq!(picture.link, audio.link, "explicit copies of a linked pair retain one group even with distinct offsets");
+    assert!(picture.link.is_some());
+    let (picture_id, audio_id) = (picture.id, audio.id);
+    q.check().unwrap();
+
+    let delta = s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture_id.0, "track": "V2", "time": (picture_to + delta).0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, picture_id).1, picture_to + delta);
+    assert_eq!(state(&s, audio_id).1, sound_to + delta, "the explicitly copied sound remains a movable partner");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn identical_linked_copy_requests_keep_the_surviving_picture_and_sound_linked() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": to.0},
+                {"clip": video.id.0, "track": "V2", "time": to.0}
+            ], "linked": true, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 2, "only the surviving picture and sound are reported");
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == to).unwrap();
+    let audio = q.audio_tracks[0].items.iter().find(|it| it.start == to).unwrap();
+    assert_ne!(audio.id, sound.id);
+    assert_eq!(picture.link, audio.link);
+    assert!(picture.link.is_some(), "the surviving copy pair retains a usable link");
+    assert!(copied.contains(&picture.id) && copied.contains(&audio.id));
+    let (picture_id, audio_id) = (picture.id, audio.id);
+    q.check().unwrap();
+
+    let later = to + s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture_id.0, "track": "V2", "time": later.0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, picture_id).1, later);
+    assert_eq!(state(&s, audio_id).1, later, "a subsequent linked move follows the surviving sound");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn reordered_same_time_linked_copies_pair_by_destination_track_shift() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 1})).unwrap();
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    s.execute(
+        "timeline.move",
+        json!({"moves": [
+        {"clip": video.id.0, "track": "V2", "time": to.0},
+        {"clip": video.id.0, "track": "V3", "time": to.0},
+        {"clip": sound.id.0, "track": "A3", "time": to.0},
+        {"clip": sound.id.0, "track": "A2", "time": to.0}
+    ], "linked": false, "copy": true}),
+    )
+    .unwrap();
+    let q = s.active_sequence().unwrap();
+    let at = |kind: filmcraft_project::TrackKind, index: usize| q.tracks(kind)[index].items.iter().find(|it| it.start == to).unwrap().clone();
+    let (v2, v3) = (at(filmcraft_project::TrackKind::Video, 1), at(filmcraft_project::TrackKind::Video, 2));
+    let (a2, a3) = (at(filmcraft_project::TrackKind::Audio, 1), at(filmcraft_project::TrackKind::Audio, 2));
+    assert!(v2.link.is_some());
+    assert_eq!(v2.link, a2.link, "V2 must stay linked to A2 even when A3 was listed first");
+    assert_eq!(v3.link, a3.link, "V3 must stay linked to A3");
+    assert_ne!(v2.link, v3.link, "the two copies need independent link groups");
+    q.check().unwrap();
+
+    let later = to + s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": v2.id.0, "track": "V2", "time": later.0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, v2.id).1, later);
+    assert_eq!(state(&s, a2.id).1, later, "linked move follows the matching sound copy");
+    assert_eq!(state(&s, v3.id).1, to);
+    assert_eq!(state(&s, a3.id).1, to, "the other sound copy stays put");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn vertical_linked_copy_does_not_overwrite_its_stationary_sound() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let link = video.link;
+    assert!(link.is_some());
+    assert_eq!(link, sound.link);
+    let result =
+        s.execute("timeline.move", json!({"moves": [{"clip": video.id.0, "track": "V2", "time": video.start.0}], "linked": true, "copy": true})).unwrap();
+    let copied = result["copied"].as_array().unwrap();
+    assert_eq!(copied.len(), 1, "the stationary linked partner is not copied onto itself");
+    assert_eq!(result["overwritten"], json!([]));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(video.id).unwrap().1.link, link);
+    assert_eq!(q.find_item(sound.id).unwrap().1.link, link);
+    let new_video = ClipId(copied[0].as_u64().unwrap());
+    assert_eq!(q.find_item(new_video).unwrap().1.link, None, "a video-only copy has no sound partner");
+    q.check().unwrap();
+}
+
+#[test]
+fn overlapping_repeated_copy_reports_only_the_surviving_clip() {
+    let mut s = demo();
+    let (_, video, _, _) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": to.0},
+                {"clip": video.id.0, "track": "V2", "time": to.0}
+            ], "linked": false, "copy": true}),
+        )
+        .unwrap();
+    let copies = result["copied"].as_array().unwrap();
+    assert_eq!(copies.len(), 1);
+    let id = ClipId(copies[0].as_u64().unwrap());
+    assert_eq!(s.state.selection, vec![id]);
+    assert!(s.active_sequence().unwrap().find_item(id).is_some());
+    s.active_sequence().unwrap().check().unwrap();
+}
+
 /// `timeline.move` of one clip left its linked sound behind although Linked Selection was on.
 #[test]
 fn move_takes_linked_partners_along() {
@@ -815,4 +1020,47 @@ fn copy_paste_drops_transition_to_uncopied_neighbour() {
     let pasted = t.items.iter().find(|i| i.start == end).unwrap();
     assert!(!t.transitions.iter().any(|x| x.from == Some(pasted.id)), "the cut to the neighbour left behind is not pasted: {:?}", t.transitions);
     assert!(t.transitions.len() >= count, "the original transitions stay");
+}
+
+/// A picture linked to two sounds, copied twice to one landing with Linked Selection on: the
+/// partners are planned once and the second picture copy overwrites the first. The surviving
+/// picture and both sound copies are one group, and a linked move of the picture takes them along.
+#[test]
+fn repeated_linked_copies_of_a_three_member_group_stay_one_group() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let seq_id = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    let second_id = ClipId(p.next_id);
+    p.next_id += 1;
+    let mut second = sound.clone();
+    second.id = second_id;
+    p.sequence_mut(seq_id).unwrap().audio_tracks[1].items.push(second);
+    s.project = std::sync::Arc::new(p);
+    let landing = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    s.execute(
+        "timeline.move",
+        json!({"moves": [
+            {"clip": video.id.0, "track": "V2", "time": landing.0},
+            {"clip": video.id.0, "track": "V2", "time": landing.0}
+        ], "linked": true, "copy": true}),
+    )
+    .unwrap();
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == landing).expect("the copied picture").clone();
+    let sounds: Vec<TrackItem> = q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.start == landing).cloned().collect();
+    assert_eq!(sounds.len(), 2, "each sound partner was copied once");
+    assert!(picture.link.is_some(), "the surviving picture copy keeps a link");
+    assert!(
+        sounds.iter().all(|a| a.link == picture.link),
+        "picture and both sounds form one group: {:?} vs {:?}",
+        picture.link,
+        sounds.iter().map(|a| a.link).collect::<Vec<_>>()
+    );
+    q.check().unwrap();
+    let delta = s.sequence_rate().tick_of(24);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture.id.0, "track": "V2", "time": (landing + delta).0}], "linked": true})).unwrap();
+    for a in &sounds {
+        assert_eq!(state(&s, a.id).1, landing + delta, "a linked move of the picture takes both sounds along");
+    }
 }
