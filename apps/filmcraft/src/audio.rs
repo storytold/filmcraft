@@ -216,6 +216,7 @@ fn description_names(described: &str, saved: &str) -> bool {
 }
 
 impl CpalOut {
+    /// The device and rate the settings window starts from; no stream is opened until `start`.
     pub fn new() -> Self {
         let host = cpal::default_host();
         let fallback = Mutex::new(None);
@@ -510,6 +511,8 @@ impl AudioOut for CpalOut {
     fn played_frames(&self) -> Option<u64> {
         self.stream.as_ref().filter(|_| !self.health.failed.load(Ordering::SeqCst)).map(|_| self.played.load(Ordering::SeqCst))
     }
+    /// The hosts, the output and input device names, and the output channel count the settings
+    /// window lists.
     fn devices(&self) -> AudioDevices {
         let h = host(&self.hw.device_class);
         let outputs = h.output_devices().map(|d| d.filter_map(|x| device_name(&x)).collect()).unwrap_or_default();
@@ -518,6 +521,8 @@ impl AudioOut for CpalOut {
             output_device(&h, &self.hw.default_output, &self.fallback).and_then(|c| self.config(&c.device).ok()).map(|cfg| cfg.channels()).unwrap_or(0);
         AudioDevices { hosts: cpal::available_hosts().iter().map(|h| h.name().to_string()).collect(), inputs, outputs, output_channels }
     }
+    /// Remember the settings and take the rate and channel count playback mixes at, which `start`
+    /// needs before it opens a stream.
     fn configure(&mut self, hw: &AudioHardwarePrefs, document_rate: Option<u32>) {
         self.hw = hw.clone();
         self.document_rate = document_rate;

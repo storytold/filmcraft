@@ -52,6 +52,7 @@ fn host(name: &str) -> cpal::Host {
     cpal::default_host()
 }
 
+/// The input device the settings name, or the host default when it is empty, gone or unusable.
 fn device(h: &cpal::Host, name: &str) -> Option<cpal::Device> {
     if !name.is_empty()
         && let Ok(devs) = h.input_devices()
@@ -123,6 +124,7 @@ impl AudioInput for CpalIn {
     fn configure_host(&mut self, name: &str) {
         self.host = name.to_string();
     }
+    /// The input device names the settings window lists for the chosen host.
     fn devices(&self) -> Vec<String> {
         host(&self.host).input_devices().map(|d| d.filter_map(|x| crate::audio::device_name(&x)).collect()).unwrap_or_default()
     }
