@@ -737,3 +737,70 @@ fn a_huge_link_group_does_not_write_quadratic_links() {
     assert_eq!(text.matches("<linkclipref>").count(), 64 * 64);
     assert!(rep.has_warnings(), "{rep}");
 }
+
+fn fcp7_loss_fixture() -> (Project, filmcraft_project::ItemId, filmcraft_project::ItemId) {
+    let mut project = Project::new("Export loss diagnostics");
+    let rate = FrameRate::FPS_24;
+    let source = sequence(&mut project, "Camera source", rate, false);
+    let a = media(&mut project, "/media/camera-a.mov", true, false, rate);
+    let b = media(&mut project, "/media/camera-b.mov", true, false, rate);
+    clip(&mut project, source, TrackKind::Video, 0, a, 0..48, 0);
+    clip(&mut project, source, TrackKind::Video, 1, b, 0..48, 0);
+    let edit = sequence(&mut project, "Edit", rate, false);
+    clip(&mut project, edit, TrackKind::Video, 0, source, 0..24, 0);
+    clip(&mut project, edit, TrackKind::Video, 0, source, 24..48, 24);
+    (project, edit, source)
+}
+
+#[test]
+fn fcp7_reports_active_multicam_selection_loss_without_changing_xml() {
+    let (original, edit, _) = fcp7_loss_fixture();
+    let (plain_xml, plain_report) = export(&original, edit, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    assert!(!plain_report.mentions("multicam"));
+    for enabled in [false, true] {
+        let mut project = original.clone();
+        for item in &mut project.sequence_mut(edit).unwrap().video_tracks[0].items {
+            item.multicam = Some(filmcraft_project::MulticamSel { enabled, angle: 1 });
+        }
+        let (xml, report) = export(&project, edit, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+        assert_eq!(xml, plain_xml);
+        let warnings: Vec<_> = report.warnings().filter(|e| e.message.contains("Multicam camera selection")).collect();
+        if enabled {
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].count, 2);
+            assert!(warnings[0].message.contains("flatten"));
+        } else {
+            assert!(warnings.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fcp7_reports_populated_nested_caption_tracks_once_without_changing_xml() {
+    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, TrackId};
+    let (mut project, edit, source) = fcp7_loss_fixture();
+    let (plain_xml, plain_report) = export(&project, edit, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    assert!(!plain_report.mentions("caption tracks"));
+    let mut track = CaptionTrack::new(TrackId(project.alloc_id()), "Guide captions".into(), CaptionFormat::Subtitle);
+    project.sequence_mut(source).unwrap().caption_tracks.push(track.clone());
+    let (_, report) = export(&project, edit, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    assert!(!report.mentions("caption tracks"), "an empty track loses no cues");
+    track.captions.push(Caption {
+        id: ClipId(project.alloc_id()),
+        start: Tick::ZERO,
+        duration: FrameRate::FPS_24.tick_of(12),
+        text: "Guide caption".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    track.id = TrackId(project.alloc_id());
+    project.sequence_mut(source).unwrap().caption_tracks.push(track);
+    // The same source is referenced twice. Its captions are omitted once, not per reference.
+    let (xml, report) = export(&project, edit, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    assert_eq!(xml, plain_xml);
+    let warnings: Vec<_> = report.warnings().filter(|e| e.message.contains("Caption tracks")).collect();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].count, 1);
+    assert!(warnings[0].message.contains("SRT"));
+}
