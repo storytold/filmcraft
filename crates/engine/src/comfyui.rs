@@ -145,6 +145,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A bridge error as an engine error: a bad workflow or binding is a parameter error of `cmd`.
 fn comfy_err(cmd: &str, e: ComfyError) -> EngineError {
     match e {
         ComfyError::Workflow(m) => bad(cmd, m),
@@ -154,6 +155,7 @@ fn comfy_err(cmd: &str, e: ComfyError) -> EngineError {
 
 // ------------------------------------------------------------------------------------- transport
 
+/// The HTTP(S) transport to `server` (feature `comfyui`).
 #[cfg(feature = "comfyui")]
 fn http_transport(server: &str) -> std::result::Result<Arc<dyn Transport>, ComfyError> {
     Ok(Arc::new(comfy::http::HttpTransport::new(server)?))
@@ -169,6 +171,7 @@ pub fn available(s: &Session) -> bool {
     s.comfyui.transport.is_some() || cfg!(feature = "comfyui")
 }
 
+/// The transport to use: the one installed in the session, else HTTP to `server`.
 fn transport(s: &Session, server: &str) -> std::result::Result<Arc<dyn Transport>, ComfyError> {
     match &s.comfyui.transport {
         Some(t) => Ok(t.clone()),
@@ -279,10 +282,12 @@ pub fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
     raw
 }
 
+/// Enabled when a ComfyUI clip is selected (timeline or Project panel).
 fn has_target(s: &Session) -> std::result::Result<(), String> {
     if targets(s, &Value::Null).is_empty() { Err("select a ComfyUI clip".into()) } else { Ok(()) }
 }
 
+/// Enabled when a ComfyUI clip is selected and this session can reach ComfyUI.
 fn can_generate(s: &Session) -> std::result::Result<(), String> {
     has_target(s)?;
     if available(s) { Ok(()) } else { Err(NO_COMFY.into()) }
@@ -294,6 +299,8 @@ fn settings_json(s: &Session) -> Value {
     json!({"settings": s.prefs.comfyui, "available": available(s)})
 }
 
+/// `comfyui.settings`: read or change the server, output folder and timeout; `check` asks the
+/// server for its versions.
 fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.settings";
     let mut c = s.prefs.comfyui.clone();
@@ -334,6 +341,8 @@ pub fn exposed_of(s: &Session, wf: &Workflow) -> Vec<ExposedInput> {
     s.prefs.comfyui.exposed.get(&wf.key()).into_iter().flatten().filter(|e| wf.input(&e.node, &e.input).is_some()).cloned().collect()
 }
 
+/// The workflow's nodes and literal inputs for `comfyui.inspect`, each input with the clip's
+/// override and whether it is exposed.
 fn nodes_json(wf: &Workflow, recipe: Option<&Recipe>, exposed: &[ExposedInput]) -> Value {
     let nodes: Vec<Value> = wf
         .nodes()
@@ -359,6 +368,8 @@ fn nodes_json(wf: &Workflow, recipe: Option<&Recipe>, exposed: &[ExposedInput]) 
     json!(nodes)
 }
 
+/// `comfyui.inspect`: a workflow's editable inputs, or a ComfyUI clip's recipe, files waiting for
+/// confirmation and last run.
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.inspect";
     if let Some(w) = workflow_p(s, p, CMD)? {
@@ -468,6 +479,7 @@ fn expose(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"key": key, "exposed": list}))
 }
 
+/// Every override that sets something must name a literal input of the workflow.
 fn check_bindings(wf: &Workflow, b: &[Binding], cmd: &str) -> Result<()> {
     for b in b.iter().filter(|b| b.value.is_some() || b.file.is_some()) {
         wf.check_binding(b).map_err(|e| comfy_err(cmd, e))?;
@@ -475,6 +487,8 @@ fn check_bindings(wf: &Workflow, b: &[Binding], cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// `comfyui.newClip`: a placeholder clip with a recipe for the workflow, placed at the playhead
+/// (optionally generated at once), as one undo step.
 fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.newClip";
     no_server(p, CMD)?;
@@ -525,6 +539,8 @@ fn new_clip(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
+/// `comfyui.setInputs`: change the recipe of one ComfyUI clip (overrides, workflow, outputs,
+/// name) as one undo step.
 fn set_inputs(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.setInputs";
     no_server(p, CMD)?;
@@ -624,6 +640,7 @@ struct Stoppable<'a, W> {
 }
 
 impl<W: Write> Write for Stoppable<'_, W> {
+    /// Write through, unless the job was stopped.
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(std::io::Error::other("stopped"));
@@ -666,6 +683,8 @@ impl OutputFiles<'_> {
 }
 
 impl comfy::Sink for OutputFiles<'_> {
+    /// Start the next output file: a new version path in the output folder, written to a `.part`
+    /// file first (or to a buffer for hosts that save through their services).
     fn create(&mut self, o: &comfy::Output) -> std::result::Result<Box<dyn Write + '_>, String> {
         let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1);
         let path = version_path(self.services, self.dir, self.name, ext);
@@ -680,6 +699,8 @@ impl comfy::Sink for OutputFiles<'_> {
         Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
     }
 
+    /// Finish the current file: a complete one is renamed from its `.part` (or saved through the
+    /// services), an incomplete one is removed.
     fn close(&mut self, o: &comfy::Output, size: Option<u64>) -> std::result::Result<(), String> {
         let path = std::mem::take(&mut self.current);
         if self.in_memory {
@@ -704,6 +725,8 @@ impl comfy::Sink for OutputFiles<'_> {
     }
 }
 
+/// `comfyui.generate`: run the clips' workflows in timeline order in one background job (or
+/// at once with `wait`); finished clips are applied by [`poll`].
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "comfyui.generate";
     let items = targets(s, p);
@@ -876,6 +899,8 @@ fn primary(files: &[Written]) -> Option<usize> {
     [OutputKind::Video, OutputKind::Image, OutputKind::Audio].iter().find_map(|k| files.iter().position(|f| f.0.kind == *k))
 }
 
+/// Apply one finished run as one undo step: link the clip to its media, fit its clips, import
+/// further outputs and turn text into titles.
 fn apply(s: &mut Session, d: Done) -> Result<()> {
     let Done { item, recipe, result } = d;
     let (prompt_id, outputs, files) = result.map_err(EngineError::Other)?;
@@ -1093,6 +1118,7 @@ fn add_audio_partners(pr: &mut Project, item: ItemId, audio: ItemId, audio_dur: 
 
 // ------------------------------------------------------------------------------------- registry
 
+/// A `comfyui.*` command; only Generate has a menu entry (Clip).
 fn spec(
     id: &'static str,
     label: &'static str,
@@ -1105,6 +1131,7 @@ fn spec(
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
 
+/// The `comfyui.*` commands.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         spec(

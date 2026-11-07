@@ -127,6 +127,7 @@ fn runs_a_workflow_over_http() {
     assert_eq!(g.prompts[0]["6"]["inputs"]["image"], "up.png");
 }
 
+/// A 400 from `/prompt` becomes a refusal naming each node error.
 #[test]
 fn a_refused_workflow_explains_why() {
     let base = serve(Arc::default(), true);
@@ -138,6 +139,7 @@ fn a_refused_workflow_explains_why() {
     }
 }
 
+/// Large outputs stream to the sink and stop at the limit, with or without a declared length.
 #[test]
 fn downloads_stream_and_stop_at_the_limit() {
     let base = serve(Arc::default(), false);

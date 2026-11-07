@@ -31,6 +31,7 @@ pub enum OutputKind {
 }
 
 impl OutputKind {
+    /// The kind of an output from its file name's extension.
     pub fn of_file(name: &str) -> Self {
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
         match ext.as_str() {
@@ -290,6 +291,7 @@ mod tests {
         assert!(matches!(parse_queued(400, b"{}"), Err(ComfyError::Rejected(_))));
     }
 
+    /// A history entry lists image, audio, video and text outputs in node order, with their `/view` paths.
     #[test]
     fn history_outputs_of_every_kind() {
         let h = json!({"p1": {
@@ -309,6 +311,7 @@ mod tests {
         assert_eq!(parse_history(&json!({}), "p1"), None);
     }
 
+    /// A server listing thousands of files or a huge text yields bounded lists and cut text.
     #[test]
     fn outputs_are_capped() {
         // a server listing a million files and a huge text: bounded lists, cut text

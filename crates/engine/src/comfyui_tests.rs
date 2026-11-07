@@ -44,6 +44,7 @@ fn session(fake: Arc<FakeComfy>) -> Session {
     s
 }
 
+/// A ComfyUI clip named Shot from [`workflow`], with `extra` parameters; its item and clip.
 fn new_clip(s: &mut Session, extra: Value) -> (ItemId, ClipId) {
     let mut p = json!({"workflow": workflow(), "name": "Shot"});
     if let (Some(p), Some(e)) = (p.as_object_mut(), extra.as_object()) {
@@ -53,6 +54,7 @@ fn new_clip(s: &mut Session, extra: Value) -> (ItemId, ClipId) {
     (ItemId(r["item"].as_u64().unwrap()), ClipId(r["clip"].as_u64().unwrap()))
 }
 
+/// Generate and wait, writing files to `dir`.
 fn generate(s: &mut Session, dir: &std::path::Path, extra: Value) -> crate::Result<Value> {
     let mut p = json!({"wait": true, "dir": dir.to_string_lossy()});
     if let (Some(p), Some(e)) = (p.as_object_mut(), extra.as_object()) {
@@ -67,6 +69,7 @@ fn clips_of(s: &Session, item: ItemId) -> Vec<(TrackKind, Tick, Tick, Option<u64
     q.all_tracks().flat_map(|t| t.items.iter().filter(|it| it.item == item).map(move |it| (t.kind, it.start, it.duration, it.link))).collect()
 }
 
+/// A new clip is a placeholder matte at the playhead with its recipe, undone in one step.
 #[test]
 fn new_clip_is_a_placeholder_with_a_recipe() {
     let mut s = session(Arc::new(FakeComfy::with_outputs(vec![])));
@@ -123,6 +126,7 @@ fn set_inputs_edits_the_recipe_in_one_undo_step() {
     assert!(s.execute("comfyui.setInputs", json!({"item": item.0, "inputs": [{"node": "6", "input": "clip", "value": 1}]})).is_err());
 }
 
+/// An image becomes the clip's media; generating again makes a new version, undo goes back.
 #[test]
 fn image_result_links_the_item() {
     let fake = Arc::new(FakeComfy::new(Box::new(|wf| {
@@ -159,6 +163,7 @@ fn image_result_links_the_item() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// A video with sound shortens the clip to its length and adds a linked audio clip.
 #[test]
 fn video_with_sound_is_trimmed_and_gets_its_audio() {
     let dir = tmp_dir("comfy-video");
@@ -178,6 +183,7 @@ fn video_with_sound_is_trimmed_and_gets_its_audio() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// A sound-only result moves the clip to an audio track, as long as the sound.
 #[test]
 fn sound_only_moves_to_an_audio_track() {
     let fake = Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("12", "audio", "voice.wav", wav(1.0))]));
@@ -192,6 +198,7 @@ fn sound_only_moves_to_an_audio_track() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// A picture plus a separate sound output: the sound is imported and laid under it, linked.
 #[test]
 fn a_separate_sound_lies_under_the_picture() {
     let fake = Arc::new(FakeComfy::with_outputs(vec![
@@ -300,6 +307,7 @@ fn new_seeds_are_kept_with_the_clip() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Without `wait` the run is a background job, applied by `poll_persistence` when it finishes.
 #[test]
 fn background_job_applies_when_polled() {
     let mut fake = FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]);
@@ -348,6 +356,7 @@ fn settings_are_checked_and_saved() {
     assert!(s.execute("comfyui.settings", json!({"server": "http://"})).is_err());
 }
 
+/// Bad parameters and damaged recipes are errors that leave the project unchanged.
 #[test]
 fn hostile_parameters_are_errors() {
     let mut s = session(Arc::new(FakeComfy::with_outputs(vec![])));
@@ -409,6 +418,7 @@ fn tampered_project(s: &mut Session, dir: &std::path::Path, item: ItemId, edit: 
     path
 }
 
+/// A server named by a project file or a parameter is never used: only the preferences' one.
 #[test]
 fn a_project_never_chooses_the_server() {
     let fake = Arc::new(FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]));
@@ -432,6 +442,7 @@ fn a_project_never_chooses_the_server() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// File inputs that come from an opened project are not uploaded until the user allows them.
 #[test]
 fn files_named_by_a_project_are_not_uploaded_until_confirmed() {
     let dir = tmp_dir("comfy-exfil");
@@ -463,6 +474,7 @@ fn files_named_by_a_project_are_not_uploaded_until_confirmed() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Media items of the project upload; a non-media file named like one does not.
 #[test]
 fn project_media_upload_but_not_a_non_media_file_posing_as_one() {
     let dir = tmp_dir("comfy-media-input");
@@ -510,6 +522,7 @@ fn project_media_upload_but_not_a_non_media_file_posing_as_one() {
 struct Flaky(Arc<FakeComfy>);
 
 impl Transport for Flaky {
+    /// The fake's answers, except a 500 for the `broken` output file.
     fn get(&self, path: &str) -> filmcraft_comfyui::Result<filmcraft_comfyui::Response> {
         if path.starts_with("/view") && path.contains("broken") {
             return Ok(filmcraft_comfyui::Response { status: 500, body: b"oops".to_vec() });
@@ -522,6 +535,7 @@ impl Transport for Flaky {
     fn pause(&self, _: std::time::Duration) {}
 }
 
+/// When one output fails to download, the files already written are removed.
 #[test]
 fn a_failed_download_leaves_no_files_behind() {
     let fake = Arc::new(FakeComfy::with_outputs(vec![

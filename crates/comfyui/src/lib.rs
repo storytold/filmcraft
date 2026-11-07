@@ -227,6 +227,7 @@ mod tests {
         assert_eq!(r.files().collect::<Vec<_>>(), [("1", "image", "/in.png")]);
     }
 
+    /// Server addresses are normalised, and anything but a plain http(s) base URL is refused.
     #[test]
     fn server_addresses() {
         assert_eq!(normalize_server(" http://127.0.0.1:8188/ ").unwrap(), "http://127.0.0.1:8188");

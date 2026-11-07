@@ -26,6 +26,8 @@ pub fn normalize(url: &str) -> Result<String> {
 }
 
 impl HttpTransport {
+    /// A transport for the server at `base_url` (checked with [`normalize`]), with pure-Rust TLS and
+    /// connect / response timeouts.
     pub fn new(base_url: &str) -> Result<Self> {
         let base = normalize(base_url)?;
         let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
@@ -51,6 +53,7 @@ impl HttpTransport {
         &self.base
     }
 
+    /// The status and body of a JSON answer, capped at [`MAX_JSON`]; a failed request is a connection error.
     fn read(&self, path: &str, r: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Response> {
         let r = r.map_err(|e| ComfyError::Connection(format!("{}{path}: {e}", self.base)))?;
         let status = r.status().as_u16();
@@ -70,6 +73,8 @@ impl Transport for HttpTransport {
         self.read(path, self.agent.post(&url).header("Content-Type", content_type).send(body))
     }
 
+    /// Stream an output file into `out`: a non-2xx status is a server error, and more than `limit`
+    /// bytes (by the declared length when there is one, else while reading) is too large.
     fn download(&self, path: &str, out: &mut dyn Write, limit: u64) -> Result<u64> {
         let url = format!("{}{path}", self.base);
         let conn = |e: &dyn std::fmt::Display| ComfyError::Connection(format!("{}{path}: {e}", self.base));
@@ -111,6 +116,7 @@ mod tests {
         assert!(HttpTransport::new("http://a b").is_err());
     }
 
+    /// A refused connection is a connection error.
     #[test]
     fn unreachable_server_is_an_error() {
         // port 9 (discard) on localhost: refused at once on every CI machine

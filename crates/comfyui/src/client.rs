@@ -28,6 +28,7 @@ impl Response {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
+    /// The body as JSON; a non-2xx status or a body that isn't JSON is a server error naming `what`.
     fn json(&self, what: &str) -> Result<Value> {
         if !self.ok() {
             let text = String::from_utf8_lossy(self.body.get(..self.body.len().min(300)).unwrap_or_default()).into_owned();
@@ -39,7 +40,9 @@ impl Response {
 
 /// The connection to one ComfyUI server. Paths start with `/` and include the query.
 pub trait Transport: Send + Sync {
+    /// `GET path`: the whole answer, whatever its status.
     fn get(&self, path: &str) -> Result<Response>;
+    /// `POST path` with `body` of `content_type`: the whole answer, whatever its status.
     fn post(&self, path: &str, content_type: &str, body: &[u8]) -> Result<Response>;
     /// Stream the body of `GET path` (a file) into `out`; more than `limit` bytes is
     /// [`ComfyError::TooLarge`], a failed write [`ComfyError::Storage`]. Returns the size. The
@@ -90,6 +93,7 @@ impl Sink for MemorySink {
         self.current.clear();
         Ok(Box::new(&mut self.current))
     }
+    /// Keep the file just written when it completed (`size` is set), else drop its bytes.
     fn close(&mut self, output: &Output, size: Option<u64>) -> std::result::Result<(), String> {
         let bytes = std::mem::take(&mut self.current);
         if size.is_some() {
@@ -138,6 +142,7 @@ pub enum Progress {
 }
 
 impl std::fmt::Display for Progress {
+    /// The job's status line (`Queued (2 ahead)`, `Running (12 s)`…).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Progress::Uploading { file } => write!(f, "Uploading {file}"),

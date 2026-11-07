@@ -78,6 +78,7 @@ fn is_file_input(class_type: &str, input: &str, value: &Value) -> bool {
     value.is_string() && class_type.starts_with("Load") && NAMES.iter().any(|n| input == *n || input.starts_with(&format!("{n}_")))
 }
 
+/// The kind of a literal input: a file for loader nodes, else by its JSON type.
 fn kind_of(class_type: &str, input: &str, v: &Value) -> InputKind {
     if is_file_input(class_type, input, v) {
         return InputKind::File;

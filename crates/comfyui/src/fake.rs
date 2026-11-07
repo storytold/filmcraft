@@ -87,6 +87,7 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The decoded `key=value` pairs of a path's query string.
 fn query(path: &str) -> BTreeMap<String, String> {
     path.split_once('?').map(|(_, q)| q).unwrap_or_default().split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (decode(k), decode(v))).collect()
 }
@@ -135,6 +136,8 @@ impl FakeComfy {
         lock(&self.inner).cancelled.clone()
     }
 
+    /// `POST /prompt`: record the workflow, ask the responder what it makes and keep that as the
+    /// history entry the prompt reports once its polls are used up.
     fn queue_prompt(&self, body: &[u8]) -> Result<Response> {
         let v: Value = serde_json::from_slice(body).map_err(|e| ComfyError::Server(e.to_string()))?;
         let Some(wf) = v.get("prompt").filter(|p| p.is_object()).cloned() else {
@@ -175,6 +178,7 @@ impl FakeComfy {
 }
 
 impl Transport for FakeComfy {
+    /// The read routes: `/system_stats`, `/queue`, `/history/<id>` and `/view`; anything else is a 404.
     fn get(&self, path: &str) -> Result<Response> {
         let route = path.split('?').next().unwrap_or(path);
         let mut g = lock(&self.inner);
@@ -206,6 +210,7 @@ impl Transport for FakeComfy {
         Ok(Response { status: 404, body: b"not found".to_vec() })
     }
 
+    /// The write routes: `/prompt`, `/upload/image`, and `/interrupt` / `/queue` (cancel).
     fn post(&self, path: &str, content_type: &str, body: &[u8]) -> Result<Response> {
         match path {
             "/prompt" => self.queue_prompt(body),
@@ -261,6 +266,8 @@ mod tests {
         Ok(format!("bytes of {path}").into_bytes())
     }
 
+    /// A whole run: the file input is uploaded, the overrides are in the queued workflow, media
+    /// outputs are downloaded and text outputs reported.
     #[test]
     fn full_run_uploads_queues_and_downloads() {
         let fake = Arc::new(FakeComfy::new(Box::new(|wf| {
@@ -314,6 +321,7 @@ mod tests {
         assert_eq!(res.files[0].output.node, "12");
     }
 
+    /// A failed run reports the server's error; a file input that can't be read fails before queueing.
     #[test]
     fn execution_errors_and_missing_files() {
         let fake = Arc::new(FakeComfy::new(Box::new(|_| Err("CUDA out of memory".into()))));
@@ -349,6 +357,7 @@ mod tests {
         assert_eq!(fake.cancelled().len(), 1);
     }
 
+    /// Junk from the server (not JSON, a numeric prompt id) is an error, never a panic.
     #[test]
     fn hostile_server_answers_are_errors() {
         struct Junk;
@@ -359,6 +368,7 @@ mod tests {
             fn post(&self, _: &str, _: &str, _: &[u8]) -> Result<Response> {
                 Ok(Response { status: 200, body: br#"{"prompt_id": 7}"#.to_vec() })
             }
+            /// No waiting between polls: the test runs at once.
             fn pause(&self, _: Duration) {}
         }
         let r = Recipe::new(json!({"1": {"class_type": "X", "inputs": {}}})).unwrap();
@@ -375,6 +385,7 @@ mod tests {
         ]))
     }
 
+    /// Output files over the size or count limit fail the run and leave nothing kept.
     #[test]
     fn downloads_are_capped() {
         let run = |opts: RunOptions, sink: &mut MemorySink| Client::new(three_files()).run(&recipe(), &mut read, &opts, &mut |_| true, sink);
@@ -395,6 +406,7 @@ mod tests {
         assert_eq!(sink.files.len(), 2);
     }
 
+    /// A sink that can't write drops the file; stopping during a download ends the run as stopped.
     #[test]
     fn a_failed_write_drops_the_file_and_a_stop_while_downloading_is_a_stop() {
         /// Fails every write; counts what it was asked to close.
@@ -443,6 +455,7 @@ mod tests {
         assert_eq!(sink.closed, [None]);
     }
 
+    /// A file input over the upload limit is refused before anything is sent.
     #[test]
     fn huge_uploads_are_refused() {
         let fake = Arc::new(FakeComfy::with_outputs(vec![]));
@@ -452,6 +465,7 @@ mod tests {
         assert!(fake.uploads().is_empty() && fake.queued().is_empty());
     }
 
+    /// The fake's own parsers: percent-decoding, query strings and multipart bodies.
     #[test]
     fn multipart_and_query_helpers() {
         assert_eq!(decode("a%20b%2Fc+d%zz"), "a b/c d%zz");

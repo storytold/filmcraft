@@ -3,6 +3,7 @@
 
 use crate::{Dialog, FilmcraftApp};
 
+/// Draw the open dialogs and windows (each panel's own first, then the one in `app.dialog`).
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::marker_properties::show(app, ctx);
     crate::panels::custom_colors::show(app, ctx);

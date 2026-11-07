@@ -42,9 +42,11 @@ struct Field {
 }
 
 impl Field {
+    /// Whether the input differs from the workflow's own value (or has a file to upload).
     fn changed(&self) -> bool {
         !self.file.is_empty() || self.value != self.default
     }
+    /// The override this input sends (`comfyui.setInputs`), none when it has the workflow's value.
     fn binding(&self) -> Option<Value> {
         if !self.file.is_empty() {
             Some(json!({"node": self.node, "input": self.input, "file": self.file}))
@@ -85,6 +87,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Option<Re
     (id == "window.comfyui").then(|| open(app, ctx))
 }
 
+/// Open the window, showing the selected ComfyUI clip when there is one.
 pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String> {
     let mut d = Draft { server: app.session.prefs.comfyui.server.clone(), duration: 5.0, ..Default::default() };
     if let Some(item) = selected_clip(app) {
@@ -133,6 +136,7 @@ fn nodes_of(v: &Value) -> Vec<(String, String, Vec<Field>)> {
     out
 }
 
+/// Show ComfyUI clip `item`: its name, inputs, files waiting for confirmation and text output.
 fn load_clip(app: &mut FilmcraftApp, d: &mut Draft, item: u64) {
     match app.session.execute("comfyui.inspect", json!({"item": item})) {
         Ok(v) => {
@@ -270,6 +274,8 @@ fn finished_status(app: &FilmcraftApp) -> Option<String> {
         .and_then(|j| j["status"].as_str().map(str::to_string))
 }
 
+/// Draw the window (when open) and run what was clicked; it follows the selected clip and
+/// refreshes when its generation finished.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
     // follow the selection while showing a clip; refresh when its generation finished
@@ -456,6 +462,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     ctx.data_mut(|m| m.insert_temp(draft_id(), open.then_some(d)));
 }
 
+/// The input's value as automation text (the file to upload, when set).
 fn field_label(f: &Field) -> String {
     if !f.file.is_empty() {
         return f.file.clone();
@@ -466,6 +473,7 @@ fn field_label(f: &Field) -> String {
     }
 }
 
+/// The editor for one input by its kind: text, number, switch, file path or a read-only value.
 fn field_widget(ui: &mut egui::Ui, f: &mut Field) -> egui::Response {
     match f.kind.as_str() {
         "text" => {
@@ -519,6 +527,7 @@ fn field_widget(ui: &mut egui::Ui, f: &mut Field) -> egui::Response {
     }
 }
 
+/// Do what the window asked for through the engine commands; the result goes to the status line.
 fn run(app: &mut FilmcraftApp, d: &mut Draft, a: Action) {
     let r: Result<String, String> = match a {
         Action::Test => app.session.execute("comfyui.settings", json!({"server": d.server, "check": true})).map_err(|e| e.to_string()).and_then(|v| {
@@ -685,6 +694,7 @@ mod tests {
         assert!(filmcraft_engine::comfyui::recipe_of(&app.session, filmcraft_project::ItemId(item)).unwrap().inputs.is_empty(), "{}", d.status);
     }
 
+    /// Files named by an opened project are listed and only uploaded after Allow Uploads.
     #[test]
     fn files_named_by_a_project_wait_for_allow_uploads() {
         use filmcraft_project::ItemId;
@@ -720,6 +730,7 @@ mod tests {
         assert!(d.unconfirmed.is_empty());
     }
 
+    /// Inputs exposed for a workflow are shown first again when that workflow is loaded later.
     #[test]
     fn exposed_inputs_come_back_with_the_workflow() {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
