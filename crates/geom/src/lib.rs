@@ -132,16 +132,27 @@ impl Affine {
         self.a * self.d - self.b * self.c
     }
     pub fn inverse(&self) -> Option<Affine> {
-        let det = self.determinant();
-        if det.abs() < 1e-12 {
+        // Normalise each row by its own largest entry so neither tiny, huge nor mixed scales
+        // under/overflow, then test the determinant relative to the row magnitudes.
+        let s1 = self.a.abs().max(self.c.abs());
+        let s2 = self.b.abs().max(self.d.abs());
+        if !s1.is_finite() || !s2.is_finite() || s1 == 0.0 || s2 == 0.0 {
             return None;
         }
-        let inv = 1.0 / det;
-        let a = self.d * inv;
-        let b = -self.b * inv;
-        let c = -self.c * inv;
-        let d = self.a * inv;
-        Some(Affine { a, b, c, d, e: -(a * self.e + c * self.f), f: -(b * self.e + d * self.f) })
+        let (na, nc, nb, nd) = (self.a / s1, self.c / s1, self.b / s2, self.d / s2);
+        let ndet = na * nd - nb * nc;
+        if !ndet.is_finite() || ndet.abs() <= 1e-12 {
+            return None;
+        }
+        let a = nd / ndet / s1;
+        let b = -nb / ndet / s1;
+        let c = -nc / ndet / s2;
+        let d = na / ndet / s2;
+        let (e, f) = (-(a * self.e + c * self.f), -(b * self.e + d * self.f));
+        if ![a, b, c, d, e, f].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        Some(Affine { a, b, c, d, e, f })
     }
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
@@ -177,6 +188,32 @@ mod tests {
         let p = Vec2::new(12.0, -7.0);
         let q = inv.apply(m.apply(p));
         assert!((p - q).length() < 1e-9);
+    }
+
+    #[test]
+    fn inverse_small_uniform_scale() {
+        let m = Affine::scale(1e-7, 1e-7);
+        let inv = m.inverse().expect("uniform scale 1e-7 is invertible");
+        let p = Vec2::new(3.0, -2.0);
+        let q = inv.apply(m.apply(p));
+        assert!((p - q).length() < 1e-9);
+    }
+
+    #[test]
+    fn inverse_extreme_scales() {
+        let big = Affine::scale(1e155, 1e155).inverse().expect("large scale is invertible");
+        assert!((big.a * 1e155 - 1.0).abs() < 1e-9);
+        let tiny = Affine::scale(1e-160, 1e-160).inverse().expect("tiny scale is invertible");
+        assert!((tiny.a * 1e-160 - 1.0).abs() < 1e-9);
+        let mixed = Affine::scale(1e-300, 1e300).inverse().expect("mixed scale is invertible");
+        assert!((mixed.a / 1e300 - 1.0).abs() < 1e-9);
+        assert!((mixed.d * 1e300 - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn inverse_rejects_tiny_singular() {
+        assert!(Affine { a: 1e-7, b: 1e-7, c: 1e-7, d: 1e-7, e: 0.0, f: 0.0 }.inverse().is_none());
+        assert!(Affine::scale(1e-7, 0.0).inverse().is_none());
     }
 
     #[test]
