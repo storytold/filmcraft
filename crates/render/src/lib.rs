@@ -30,6 +30,7 @@ pub mod plan;
 pub mod preview;
 pub mod remix;
 pub mod scene;
+mod stretch;
 pub mod track;
 pub mod transitions;
 pub mod vfx;
@@ -378,23 +379,32 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
 /// Coverage of an adjustment layer's (Motion-transformed) frame in output pixels, or `None` when
 /// it covers the whole output.
 fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> Option<Image> {
+    let (fw, fh, m) = adjustment_frame(seq, item, project, mt, scale);
+    if covers_output(fw, fh, &m, w, h) {
+        return None;
+    }
+    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
+}
+
+/// Whether an adjustment layer's (Motion-transformed) frame covers the whole `w`×`h` output
+/// ([`adjustment_region`] is `None`), without building its coverage.
+pub(crate) fn adjustment_covers_output(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> bool {
+    let (fw, fh, m) = adjustment_frame(seq, item, project, mt, scale);
+    covers_output(fw, fh, &m, w, h)
+}
+
+/// An adjustment layer's frame size at `scale` and its Motion map into output pixels.
+fn adjustment_frame(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32) -> (usize, usize, Affine) {
     let size = source_size(project, item.item).unwrap_or((seq.settings.width, seq.settings.height));
     let motion = motion_matrix(seq, item, size, source_par(project, item.item), mt);
     let s = scale as f64;
     let (fw, fh) = (((size.0 as f64 * s).round() as usize).max(1), ((size.1 as f64 * s).round() as usize).max(1));
     let m = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
-    let full = fw == w
-        && fh == h
-        && (m.a - 1.0).abs() < 1e-9
-        && (m.d - 1.0).abs() < 1e-9
-        && m.b.abs() < 1e-12
-        && m.c.abs() < 1e-12
-        && m.e.abs() < 1e-9
-        && m.f.abs() < 1e-9;
-    if full {
-        return None;
-    }
-    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
+    (fw, fh, m)
+}
+
+fn covers_output(fw: usize, fh: usize, m: &Affine, w: usize, h: usize) -> bool {
+    fw == w && fh == h && (m.a - 1.0).abs() < 1e-9 && (m.d - 1.0).abs() < 1e-9 && m.b.abs() < 1e-12 && m.c.abs() < 1e-12 && m.e.abs() < 1e-9 && m.f.abs() < 1e-9
 }
 
 /// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.
@@ -559,7 +569,7 @@ pub(crate) fn item_layer_ex(
         let px_scale = lw as f32 / src_size.0.max(1) as f32;
         let m =
             Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-        if (lw, lh) == (w, h) && identity_placement(&m) && interpolation_blend(item, t, src.info().frame_rate()).is_none() {
+        if (lw, lh) == (w, h) && identity_placement(&m) && media_interpolation(item, t, &src, seq.settings.frame_rate).is_none() {
             let cs = colorman::source_space(project, item.item, &frame);
             if !colorman::needs_management(&seq.settings.color, cs, &frame) {
                 let (op, bl) = opacity_blend(item, mt);
@@ -603,11 +613,20 @@ pub(crate) fn item_layer_ex(
 }
 
 /// The layer of a plain media frame (see [`item_layer_ex`]): only the part with alpha when the frame
-/// has an alpha plane, the whole picture otherwise (opaque when it has no alpha at all).
+/// has an alpha plane, the whole picture otherwise (opaque when it has no alpha at all, or when its
+/// alpha is opaque everywhere).
 fn plain_layer(frame: &Arc<VideoFrame>, n: usize, opacity: f32, blend: Blend) -> Layer {
     match frame.alpha_region(n) {
         Some(r) => {
             let (r, px) = frame.to_linear_f32_region(n, None, r);
+            // An RGB PNG or a JPEG decodes to RGBA8 with alpha 255 everywhere: the whole picture,
+            // every pixel opaque. Like a frame with no alpha, it becomes the canvas when it is the
+            // bottom layer, instead of being mixed over a zero-filled one (another 33 MB a frame at
+            // 1080p, for every frame an export renders at once).
+            let (w, h) = frame.decimated_size(n);
+            if (r.x, r.y, r.w, r.h) == (0, 0, w, h) && px.as_chunks::<4>().0.iter().all(|p| p[3] == 1.0) {
+                return Layer::Full { image: Image { w: r.w, h: r.h, px }, opacity, blend, opaque: true };
+            }
             Layer::Region { image: Image { w: r.w, h: r.h, px }, x: r.x, y: r.y, opacity, blend }
         }
         None if matches!(frame.data, PixelData::Yuv8 { alpha: None, .. }) => Layer::Frame { frame: Arc::clone(frame), n, opacity, blend },
@@ -654,7 +673,7 @@ struct MediaFrame<'a> {
 fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, mf: MediaFrame<'_>, want: f32) -> Image {
     let MediaFrame { src, frame, n } = mf;
     let img = colorman::decode(project, item.item, frame, n, &seq.settings.color);
-    match interpolation_blend(item, t, src.info().frame_rate()) {
+    match media_interpolation(item, t, src, seq.settings.frame_rate) {
         Some((next_time, wgt)) => match src.video_frame(FrameRequest { time: next_time, scale: want }) {
             Ok(f2) if f2.width == frame.width && f2.height == frame.height => {
                 let b = colorman::decode(project, item.item, &f2, n, &seq.settings.color);
@@ -730,15 +749,17 @@ pub fn render_clip(
     item_layer(project, seq, item, t, opts, sources, &tc).map(|(img, _, _)| img)
 }
 
-/// Frame Blending / Optical Flow on a speed-changed clip: the later source frame to mix in and
-/// its weight (0..1) at timeline `t`, or None when the exact media time falls on a source frame
-/// (or the clip plays at 100 %, is frame-held, or uses Frame Sampling). Frame Blending cross-fades
-/// the two frames; Optical Flow synthesises the in-between frame from their motion ([`flow`]).
-pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
+/// Frame Blending / Optical Flow on a speed-changed clip, or on media whose frame rate differs from
+/// the sequence's (24 fps on 29.97 at 100 %): the later source frame to mix in and its weight
+/// (0..1) at timeline `t`, or None when the exact media time falls on a source frame (or the clip
+/// plays at 100 % at the sequence's rate, is frame-held, or uses Frame Sampling), or when the later
+/// frame lies past the clip's source out. Frame Blending cross-fades the two frames; Optical Flow
+/// synthesises the in-between frame from their motion ([`flow`]).
+pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
     if item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
         return None;
     }
-    if (item.speed.abs() - 1.0).abs() < 1e-9 {
+    if (item.speed.abs() - 1.0).abs() < 1e-9 && src_rate.frame_duration() == seq_rate.frame_duration() {
         return None;
     }
     let mt = item.source_time_at(t);
@@ -752,8 +773,24 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::
     if frac <= 1e-6 {
         return None;
     }
+    // the later frame must be part of the clip: from its source out on, the media was trimmed
+    // away. A reversed clip starts just before its source out and a forward one can end there;
+    // both show their last frame alone.
+    let next = src_rate.tick_of(f + 1);
+    if next >= item.source_out() {
+        return None;
+    }
     // the mix depends only on the media position, so reversed clips blend the same pair
-    Some((src_rate.tick_of(f + 1), frac.clamp(0.0, 1.0) as f32))
+    Some((next, frac.clamp(0.0, 1.0) as f32))
+}
+
+/// [`interpolation_blend`] for a clip showing `src`. A still image has one picture (it reports
+/// 29.97 fps whatever the sequence), so it never needs an in-between frame.
+pub(crate) fn media_interpolation(item: &TrackItem, t: Tick, src: &SharedSource, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
+    if src.info().kind == filmcraft_media::MediaKind::Still {
+        return None;
+    }
+    interpolation_blend(item, t, src.info().frame_rate(), seq_rate)
 }
 
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.

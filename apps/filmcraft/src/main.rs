@@ -35,6 +35,8 @@ mod file_filters;
 mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
+mod native_color;
+#[cfg(target_os = "macos")]
 mod native_menu;
 mod window_raise;
 
@@ -360,7 +362,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         #[cfg(target_os = "macos")]
         {
-            let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
+            let (rx, update, text_menu) = native_menu::install(&app, cc.egui_ctx.clone());
+            app.hooks.pick_color = Some(native_color::picker(text_menu));
             app.command_inbox = Some(rx);
             app.hooks.menu_changed = Some(update);
             app.ui.show_menu_bar = false;
@@ -435,6 +438,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 

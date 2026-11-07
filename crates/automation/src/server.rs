@@ -35,6 +35,9 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 #[derive(Clone)]
 pub struct FilmcraftMcp {
     backend: Arc<Backend>,
+    /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
+    /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
+    render_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -195,12 +198,15 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     })
 }
 
+/// Parse-error replies queued for the writer before the reader waits for it to catch up.
+const MAX_QUEUED_PARSE_ERRORS: usize = 64;
+
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
+        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -209,7 +215,9 @@ impl FilmcraftMcp {
 
     /// Serve MCP over any line stream. A line that isn't JSON gets a JSON-RPC parse error
     /// (`-32700`, id null) instead of being dropped silently; the rest go to the rmcp service. One
-    /// writer task owns `output`, so replies never interleave.
+    /// writer task owns `output`, so replies never interleave. Parse errors wait for room in a
+    /// small queue before more input is read: a client that sends junk and never reads its output
+    /// stalls its own input instead of growing the server's memory.
     pub async fn serve_io(
         self,
         input: impl tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -218,10 +226,15 @@ impl FilmcraftMcp {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let (mut to_service, service_in) = tokio::io::duplex(1 << 20);
         let (service_out, from_service) = tokio::io::duplex(1 << 20);
-        let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (err_tx, mut err_rx) = tokio::sync::mpsc::channel::<String>(MAX_QUEUED_PARSE_ERRORS);
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            // `err_tx.closed()`: the writer is gone (output failed), so stop forwarding requests whose replies cannot be delivered.
+            loop {
+                let line = tokio::select! {
+                    l = lines.next_line() => match l { Ok(Some(l)) => l, _ => break },
+                    () = err_tx.closed() => break,
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -233,7 +246,10 @@ impl FilmcraftMcp {
                     }
                     Err(e) => {
                         let reply = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}});
-                        let _ = err_tx.send(reply.to_string());
+                        // the writer is gone (output failed): stop reading
+                        if err_tx.send(reply.to_string()).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -451,6 +467,8 @@ impl FilmcraftMcp {
                 })
             }
             Backend::Bridge(b) => {
+                // held until the playhead is back, also for the no-`seconds` screenshot, which must not catch another call's seek
+                let _turn = self.render_lock.lock().await;
                 let Some(sec) = p.seconds else {
                     return self.screenshot(&b.clone(), Some("Program".into()), max).await;
                 };

@@ -37,6 +37,7 @@ impl Fx {
     fn item(&mut self, start: i64, dur: i64, src_in: i64) -> TrackItem {
         self.next += 1;
         TrackItem {
+            custom_label_color: None,
             id: ClipId(self.next),
             item: ItemId(1),
             name: format!("c{}", self.next),
@@ -57,6 +58,7 @@ impl Fx {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
