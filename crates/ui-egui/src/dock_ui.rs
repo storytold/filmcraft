@@ -576,7 +576,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 
     /// The ≡ menu, and the Timeline's sequence tabs before it while the Timeline is shown.
     /// The sequence tabs take at most two thirds of the strip, so the group's own tabs keep room;
-    /// past that they scroll into their » list.
+    /// past that they scroll between ‹ › arrows and a » list.
     fn group_header_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool, strip_width: f32) -> f32 {
         if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { (self.seq_width + MENU_W).min(strip_width * 2.0 / 3.0).max(MENU_W) } else { MENU_W }
     }
