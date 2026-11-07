@@ -667,7 +667,8 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
                     crate::panels::clear_drag(ui);
                 }
             }
-            egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
+            let bin = (v.bin != app.session.project.root.id).then_some(v.bin.0);
+            egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, bin, actions));
         } else if resp.clicked() && enabled {
             match id {
                 "find" => actions.push(("edit.find".into(), json!({}))),
@@ -699,12 +700,24 @@ pub const NEW_ITEMS: [(&str, &str); 8] = [
     ("Demo Footage", "file.importDemoFootage"),
 ];
 
-pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, actions: &mut Actions) {
+/// The bin of a New Item action that carries only that: `Some(None)` is the root, as in the engine
+/// (`bin` null), which the dialogs of Sequence and Color Matte take instead of the shown bin.
+pub fn bin_only(params: &Value) -> Option<Option<u64>> {
+    let m = params.as_object().filter(|m| m.len() == 1)?;
+    let bin = m.get("bin")?;
+    if bin.is_null() { Some(None) } else { bin.as_u64().map(Some) }
+}
+
+/// New Item menu of the panel instance `pre`, which shows `bin` (`None` = the root): every action
+/// names that bin, so a floating bin panel does not make its items in the main panel's bin.
+pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, bin: Option<u64>, actions: &mut Actions) {
     for (label, c) in NEW_ITEMS {
         let b = ui.button(crate::i18n::t(label));
         app.auto.add(&format!("{pre}.newItem.{c}"), b.rect, label);
         if b.clicked() {
-            actions.push((c.into(), json!({})));
+            // Demo Footage has no bin
+            let params = if c == "file.importDemoFootage" { json!({}) } else { json!({"bin": bin}) };
+            actions.push((c.into(), params));
             ui.close();
         }
     }

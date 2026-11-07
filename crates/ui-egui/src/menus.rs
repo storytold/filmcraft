@@ -226,9 +226,10 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return Ok(json!({"dialog": "clipMismatch"}));
     }
     // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
-    // Sequence and Color Matte take it when they open); a `bin` of the caller wins
+    // Sequence and Color Matte take it when they open); a `bin` of the caller wins, null included
+    // (the engine's root)
     if matches!(id, "file.newAdjustmentLayer" | "file.newBarsAndTone" | "file.newBlackVideo" | "file.newCountingLeader" | "file.newTransparentVideo")
-        && params.get("bin").is_none_or(Value::is_null)
+        && params.get("bin").is_none()
         && let Some(bin) = crate::panels::project::shown_bin(app)
         && let Some(object) = params.as_object_mut()
     {
@@ -590,8 +591,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
-        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) => {
-            crate::panels::sequence_settings::open_new(app);
+        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some() => {
+            crate::panels::sequence_settings::open_new(app, crate::panels::project::bin_only(&params));
             return Ok(json!({"dialog": "newSequence"}));
         }
         "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {

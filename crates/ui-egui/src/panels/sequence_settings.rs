@@ -98,13 +98,13 @@ pub fn open(app: &mut FilmcraftApp) {
 
 /// File ▸ New ▸ Sequence…: the dialog as New Sequence, from the default settings, named like
 /// `file.newSequence` would name it, with three video and three audio tracks.
-pub fn open_new(app: &mut FilmcraftApp) {
+pub fn open_new(app: &mut FilmcraftApp, bin: Option<Option<u64>>) {
     let st = SequenceSettings::default();
     let n = app.session.project.sequences().count() + 1;
     app.ui.sequence_settings = SequenceSettingsDraft {
         tab: "general".into(),
         new_sequence: true,
-        bin: crate::panels::project::shown_bin(app),
+        bin: bin.unwrap_or_else(|| crate::panels::project::shown_bin(app)),
         video_tracks: 3,
         audio_tracks: 3,
         fps_num: st.frame_rate.num,
