@@ -338,6 +338,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+        app.hooks.cursor_in_points = filmcraft_platform::cursor::CURSOR_IN_POINTS;
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).
