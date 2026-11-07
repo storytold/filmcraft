@@ -29,10 +29,20 @@ fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)
     })
 }
 
-/// Resolve the Lumetri instance shown by the Color panel. When a Lumetri effect is selected in
-/// Effect Controls, follow that selection; otherwise keep the historical first-instance default.
-fn lumetri_index(clip: ClipId, effects: &[EffectInstance], selected: Option<&filmcraft_engine::EffectSel>) -> Option<usize> {
-    selected.filter(|s| s.clip == clip && s.effect == "lumetri").and_then(|s| s.index(effects)).or_else(|| effects.iter().position(|e| e.effect == "lumetri"))
+/// Resolve the Lumetri instance shown by the Color panel. When a Lumetri effect is selected
+/// in Effect Controls, or its mask is selected, follow that instance; otherwise keep the
+/// historical first-instance default. Selecting a mask clears `selected_effect`.
+fn lumetri_index(
+    clip: ClipId,
+    effects: &[EffectInstance],
+    selected: Option<&filmcraft_engine::EffectSel>,
+    mask: Option<&filmcraft_engine::masks::MaskSel>,
+) -> Option<usize> {
+    selected
+        .filter(|s| s.clip == clip && s.effect == "lumetri")
+        .and_then(|s| s.index(effects))
+        .or_else(|| mask.filter(|m| m.clip == clip).and_then(|m| effects.get(m.effect).filter(|e| e.effect == "lumetri").map(|_| m.effect)))
+        .or_else(|| effects.iter().position(|e| e.effect == "lumetri"))
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -42,7 +52,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("lumetri2"));
-    let Some(idx) = lumetri_index(clip, &it.effects, app.session.state.selected_effect.as_ref()) else {
+    let Some(idx) = lumetri_index(
+        clip,
+        &it.effects,
+        app.session.state.selected_effect.as_ref(),
+        app.session.state.selected_mask.as_ref(),
+    ) else {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
@@ -76,7 +91,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut lut_actions: Vec<(&'static str, Value)> = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
         if open_section(ui, app, &e, "Basic Correction", "basic_on", "basic", &mut sections) {
-            lut_combo(ui, app, &e, "input_lut", tl!("Input LUT"), true, &mut lut_actions);
+            lut_combo(ui, app, &e, "input_lut", tl!("Input LUT"), true, idx, &mut lut_actions);
             sub(ui, &t, tl!("Color"));
             slider(ui, &e, mt, "temperature", tl!("Temperature"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "tint", tl!("Tint"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
@@ -123,7 +138,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     });
             });
-            lut_combo(ui, app, &e, "look_lut", tl!("Look LUT"), false, &mut lut_actions);
+            lut_combo(ui, app, &e, "look_lut", tl!("Look LUT"), false, idx, &mut lut_actions);
             slider(ui, &e, mt, "look_intensity", tl!("Intensity"), None, &t, &mut actions, clip, idx);
             sub(ui, &t, tl!("Adjustments"));
             for (id, label) in
@@ -190,7 +205,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
                 }
             });
-            match_controls(ui, app, &mut lut_actions);
+            match_controls(ui, app, idx, &mut lut_actions);
         }
         if open_section(ui, app, &e, "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, tl!("Key"));
@@ -251,7 +266,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // a dragged value is one undo step, as in Effect Controls
     crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
     for sec in sections {
-        if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
+        if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "effect": idx, "section": sec})) {
             app.ui.status = err.to_string();
         }
     }
@@ -265,16 +280,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         if p.get("browse").is_some() {
+            let eff = p["effect"].as_u64().unwrap_or(idx as u64);
             let (cmd, clip) = (cmd.to_string(), clip.0);
             app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
-                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
+                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip, "effect": eff})) {
                     app.ui.status = err.to_string();
                 }
             });
             continue;
         }
         p["clip"] = json!(clip.0);
+        p["effect"] = json!(idx);
         if let Err(err) = app.session.execute(cmd, p) {
             app.ui.status = err.to_string();
         }
@@ -299,7 +316,17 @@ fn open_section(
 }
 
 /// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
-fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
+#[allow(clippy::too_many_arguments)]
+fn lut_combo(
+    ui: &mut egui::Ui,
+    app: &mut FilmcraftApp,
+    e: &EffectInstance,
+    param: &str,
+    label: &str,
+    input: bool,
+    idx: usize,
+    out: &mut Vec<(&'static str, Value)>,
+) {
     let t = app.tokens;
     let cur = match e.param(param).map(|p| &p.value) {
         Some(ParamValue::Text(s)) => s.clone(),
@@ -312,8 +339,8 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
         let width = (ui.available_width() - 40.0).max(60.0);
         let (r, pick) = lut_menu(ui, app, ("lumetri-lut", param), &cur, input, width, &format!("lumetri.{param}"));
         match pick {
-            Some(LutPick::Lut(r)) => out.push((cmd, json!({"lut": r}))),
-            Some(LutPick::Browse) => out.push((cmd, json!({"browse": true}))),
+            Some(LutPick::Lut(r)) => out.push((cmd, json!({"lut": r, "effect": idx}))),
+            Some(LutPick::Browse) => out.push((cmd, json!({"browse": true, "effect": idx}))),
             None => {}
         }
         rect = r;
@@ -701,7 +728,7 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
 
 /// Color Match: reference frame (sequence timecode), Face Detection (skin-tone protection),
 /// Apply Match (`lumetri.applyMatch`).
-fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'static str, Value)>) {
+fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, idx: usize, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
     sub(ui, &t, tl!("Color Match"));
     let key = egui::Id::unique("lumetri-match-ref");
@@ -732,8 +759,8 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     app.auto.add("lumetri.match.apply", b.rect, "Apply Match");
     if b.clicked() {
         let p = match reference {
-            Some(r) => json!({"referenceTime": r.0, "faceDetection": face}),
-            None => json!({"referenceTimecode": tc, "faceDetection": face}),
+            Some(r) => json!({"effect": idx, "referenceTime": r.0, "faceDetection": face}),
+            None => json!({"effect": idx, "referenceTimecode": tc, "faceDetection": face}),
         };
         out.push(("lumetri.applyMatch", p));
     }
@@ -766,7 +793,7 @@ mod tests {
         let effects = vec![lumetri.instance(), lumetri.instance()];
         let selected = filmcraft_engine::EffectSel::of(clip, &effects, 1).unwrap();
 
-        assert_eq!(lumetri_index(clip, &effects, Some(&selected)), Some(1));
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected), None), Some(1));
     }
 
     #[test]
@@ -777,8 +804,36 @@ mod tests {
         let effects = vec![lumetri.instance(), lumetri.instance()];
         let selected_on_other_clip = filmcraft_engine::EffectSel::of(other_clip, &effects, 1).unwrap();
 
-        assert_eq!(lumetri_index(clip, &effects, None), Some(0));
-        assert_eq!(lumetri_index(clip, &effects, Some(&selected_on_other_clip)), Some(0));
-        assert_eq!(lumetri_index(clip, &[], None), None);
+        assert_eq!(lumetri_index(clip, &effects, None, None), Some(0));
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected_on_other_clip), None), Some(0));
+        assert_eq!(lumetri_index(clip, &[], None, None), None);
+    }
+
+    #[test]
+    fn color_panel_keeps_first_instance_when_a_non_lumetri_effect_is_selected() {
+        let clip = ClipId(17);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let motion = filmcraft_project::find_effect("motion").unwrap();
+        let effects = vec![motion.instance(), lumetri.instance(), lumetri.instance()];
+        let selected_motion = filmcraft_engine::EffectSel::of(clip, &effects, 0).unwrap();
+
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected_motion), None), Some(1));
+    }
+
+    #[test]
+    fn color_panel_follows_the_masked_lumetri_instance() {
+        let clip = ClipId(17);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let motion = filmcraft_project::find_effect("motion").unwrap();
+        let effects = vec![lumetri.instance(), lumetri.instance()];
+        // selecting a mask clears selected_effect, so the panel must follow the mask
+        let mask_second = filmcraft_engine::masks::MaskSel { clip, effect: 1, mask: 0 };
+
+        assert_eq!(lumetri_index(clip, &effects, None, Some(&mask_second)), Some(1));
+
+        let mixed = vec![motion.instance(), lumetri.instance(), lumetri.instance()];
+        let mask_motion = filmcraft_engine::masks::MaskSel { clip, effect: 0, mask: 0 };
+        assert_eq!(lumetri_index(clip, &mixed, None, Some(&mask_motion)), Some(1));
+        assert_eq!(lumetri_index(clip, &mixed, None, Some(&filmcraft_engine::masks::MaskSel { clip, effect: 99, mask: 0 })), Some(1));
     }
 }
