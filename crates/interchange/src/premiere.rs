@@ -68,6 +68,10 @@ mod markers;
 pub struct Document {
     pub sequences: Vec<Sequence>,
     pub media: BTreeMap<String, String>,
+    /// Resolved media path → its project-relative `RelativePath`, resolved against the project
+    /// folder: the fallback for a stored absolute path that is missing on this computer.
+    #[serde(default)]
+    pub relative_media: BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sequence {
@@ -224,8 +228,29 @@ fn source_target<'a, 'i>(
     Ok(Some(node))
 }
 
+/// The stored absolute path, or the project-relative `RelativePath` when the absolute path was
+/// saved on another system (a macOS project opened on Windows, or the reverse).
 fn media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
-    child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).filter(|p| !p.is_empty()).map(|p| crate::resolve_path(p, base_dir))
+    let stored = child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).filter(|p| !p.is_empty())?;
+    if let (Some(base), Some(relative)) = (base_dir, relative_media_path(n, base_dir))
+        && foreign_absolute(stored, base)
+    {
+        return Some(relative);
+    }
+    Some(crate::resolve_path(stored, base_dir))
+}
+
+fn relative_media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
+    let base = base_dir.filter(|b| !b.is_empty())?;
+    child_text(n, "RelativePath").filter(|r| !r.is_empty()).map(|r| crate::resolve_path(r, Some(base)))
+}
+
+/// Whether `path` is an absolute path of the other system family than `base` (POSIX against a
+/// Windows drive or share, or the reverse).
+fn foreign_absolute(path: &str, base: &str) -> bool {
+    let windows = |p: &str| matches!(p.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic()) || p.starts_with(r"\\");
+    let posix = |p: &str| p.starts_with('/') && !p.starts_with("//");
+    (posix(path) && windows(base)) || (windows(path) && posix(base))
 }
 
 /// Stable identifiers observed in user-owned XML. Display names remain diagnostic text only.
@@ -333,6 +358,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     let mut names = BTreeMap::new();
     let mut sequence_count = 0usize;
     let mut media = BTreeMap::new();
+    let mut relative_media = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     for n in root.children().filter(Node::is_element) {
         for (attr, map) in [("ObjectID", &mut ids), ("ObjectUID", &mut uids)] {
@@ -351,8 +377,23 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         if n.has_tag_name("Media") {
             if child_text(n, "Title").is_some_and(|s| s.len() > 4096)
                 || child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).is_some_and(|s| s.len() > 16384)
+                || child_text(n, "RelativePath").is_some_and(|s| s.len() > 16384)
             {
                 return Err(error("media title or path is too long"));
+            }
+            if let (Some(path), Some(relative)) = (media_path(n, base_dir), relative_media_path(n, base_dir))
+                && path != relative
+            {
+                // One stored path saved with different relative paths has no single fallback.
+                match relative_media.get(&path) {
+                    None => {
+                        relative_media.insert(path, Some(relative));
+                    }
+                    Some(Some(known)) if *known != relative => {
+                        relative_media.insert(path, None);
+                    }
+                    Some(_) => {}
+                }
             }
             if let (Some(title), Some(path)) = (child_text(n, "Title"), media_path(n, base_dir)) {
                 if media.get(title).is_some_and(|p| p != &path) {
@@ -709,7 +750,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         let occurrences = if count == 1 { "occurrence" } else { "occurrences" };
         warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences}; identifier {identifier})"));
     }
-    Ok(Document { sequences, media })
+    let relative_media = relative_media.into_iter().filter_map(|(path, relative)| Some((path, relative?))).collect();
+    Ok(Document { sequences, media, relative_media })
 }
 
 fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
@@ -1487,6 +1529,38 @@ mod tests {
         }
         let cyclic = base.replace(r#"<Second ObjectRef="m-comment"/>"#, r#"<Second ObjectRef="seq-markers"/>"#);
         assert!(std::panic::catch_unwind(|| import(cyclic.as_bytes(), &ImportOptions::default(), None)).unwrap().is_ok());
+    }
+    #[test]
+    fn paths_saved_on_another_system_use_the_relative_path() {
+        // Hand-written: Media keeps the absolute path where it was saved and a project-relative one.
+        let media = |absolute: &str, relative: &str| {
+            fixture().replace(
+                "<ActualMediaFilePath>/missing/camera.mov</ActualMediaFilePath>",
+                &format!("<ActualMediaFilePath>{absolute}</ActualMediaFilePath><RelativePath>{relative}</RelativePath>"),
+            )
+        };
+        let read_with = |xml: &str, base: &str| read(xml.as_bytes(), Some(base), &mut Report::default()).unwrap();
+        let cases = [
+            ("/Users/editor/Shoot/camera.mov", r"..\Shoot\camera.mov", r"D:\Edit\Project", r"D:\Edit\Shoot\camera.mov"),
+            (r"C:\Users\editor\Shoot\camera.mov", "../Shoot/camera.mov", "/home/editor/Project", "/home/editor/Shoot/camera.mov"),
+            (r"\\server\share\camera.mov", "camera.mov", "/home/editor/Project", "/home/editor/Project/camera.mov"),
+        ];
+        for (absolute, relative, base, expected) in cases {
+            let doc = read_with(&media(absolute, relative), base);
+            assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some(expected), "{absolute}");
+            assert!(doc.relative_media.is_empty());
+        }
+        // Same system: the absolute path stays first; the relative one is the engine's fallback.
+        let doc = read_with(&media("/Volumes/Shoot/camera.mov", "../Shoot/camera.mov"), "/Users/editor/Project");
+        assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/Volumes/Shoot/camera.mov"));
+        assert_eq!(doc.relative_media.get("/Volumes/Shoot/camera.mov").map(String::as_str), Some("/Users/editor/Shoot/camera.mov"));
+        // Without a project folder, or without a relative path, nothing changes.
+        let doc = read(media("/Users/editor/Shoot/camera.mov", r"..\Shoot\camera.mov").as_bytes(), None, &mut Report::default()).unwrap();
+        assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/Users/editor/Shoot/camera.mov"));
+        let doc = read_with(&fixture(), r"D:\Edit\Project");
+        assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/missing/camera.mov"));
+        let long = media("/Users/editor/camera.mov", &"r".repeat(16385));
+        assert!(read(long.as_bytes(), Some("/x"), &mut Report::default()).unwrap_err().to_string().contains("too long"));
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {

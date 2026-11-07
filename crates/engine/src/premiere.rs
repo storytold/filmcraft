@@ -185,7 +185,19 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
         let original = path.clone();
         if !records.contains_key(&original) {
             let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None, identity: None };
-            match probe_media(s, &original, &source) {
+            // A project moved between computers keeps a project-relative path. It is tried only
+            // when the stored path fails, and passes the same document policy and probe.
+            let probed_media = match (probe_media(s, &original, &source), tree.relative_media.get(&original)) {
+                (Err(error), Some(relative)) => match probe_media(s, relative, &source) {
+                    Ok(found) => {
+                        filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; using its project-relative path {relative}"));
+                        Ok(found)
+                    }
+                    Err(relative_error) => Err(format!("{error}; project-relative path {relative}: {relative_error}")),
+                },
+                (result, _) => result,
+            };
+            match probed_media {
                 Ok((src, info)) => {
                     record.original_path = stored_path(&src);
                     record.imported_path = record.original_path.clone();
