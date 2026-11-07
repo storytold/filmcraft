@@ -54,8 +54,8 @@ fn host(name: &str) -> cpal::Host {
 
 fn device(h: &cpal::Host, name: &str) -> Option<cpal::Device> {
     if !name.is_empty()
-        && let Ok(mut devs) = h.input_devices()
-        && let Some(d) = devs.find(|d| d.name().is_ok_and(|n| n == name))
+        && let Ok(devs) = h.input_devices()
+        && let Some(d) = crate::audio::pick_named(devs, name)
     {
         return Some(d);
     }
@@ -157,10 +157,10 @@ impl AudioInput for CpalIn {
                                     .and_then(|c| c.try_with_sample_rate(sample_rate))
                             })
                             .unwrap_or(default);
-                        if cfg.channels() == 0 || cfg.channels() > 256 || cfg.sample_rate().0 == 0 {
+                        if cfg.channels() == 0 || cfg.channels() > 256 || cfg.sample_rate() == 0 {
                             return Err("the input device returned an invalid format".into());
                         }
-                        let fmt = InputFormat { sample_rate: cfg.sample_rate().0, channels: cfg.channels() };
+                        let fmt = InputFormat { sample_rate: cfg.sample_rate(), channels: cfg.channels() };
                         let format = cfg.sample_format();
                         let config = cfg.into();
                         let stream = match format {

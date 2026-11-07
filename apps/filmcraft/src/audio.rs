@@ -76,7 +76,7 @@ fn needs_rate_search(default_rate: u32, want: u32) -> bool {
 fn stream_config(hw: &AudioHardwarePrefs, document_rate: Option<u32>, dev: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
     let default = dev.default_output_config().map_err(|e| e.to_string())?;
     let want = if hw.force_document_rate { document_rate.unwrap_or(hw.sample_rate) } else { hw.sample_rate };
-    if !needs_rate_search(default.sample_rate().0, want) {
+    if !needs_rate_search(default.sample_rate(), want) {
         return Ok(default);
     }
     let exact = dev.supported_output_configs().ok().and_then(|it| {
@@ -128,8 +128,8 @@ fn fallback_rank(name: &str) -> u8 {
 /// only after the default fails, in [`fallback_rank`] order, and the pick is cached in `cache`.
 fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, String)>>) -> Option<DeviceChoice> {
     if !name.is_empty()
-        && let Ok(mut devs) = h.output_devices()
-        && let Some(d) = devs.find(|d| d.name().is_ok_and(|n| n == name))
+        && let Ok(devs) = h.output_devices()
+        && let Some(d) = pick_named(devs, name)
     {
         return Some(DeviceChoice { device: d, fallback: None });
     }
@@ -155,6 +155,46 @@ fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, Strin
     Some(DeviceChoice { device: d, fallback: Some(Note::Fallback(found)) })
 }
 
+/// The device a saved preference names, or `None` when it is gone.
+///
+/// A preference saved before cpal 0.17 can hold the name 0.16 reported, which a 0.17 device no
+/// longer answers to (see `saved_name_matches`); an exact name always wins.
+pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str) -> Option<cpal::Device> {
+    let mut legacy = None;
+    for d in devs {
+        if d.name().is_ok_and(|n| n == name) {
+            return Some(d);
+        }
+        if legacy.is_none() && saved_name_matches(&d, name) {
+            legacy = Some(d);
+        }
+    }
+    legacy
+}
+
+/// Whether `d` still answers to a name saved before cpal 0.17.
+///
+/// 0.16 named ALSA hardware devices by card name; 0.17 names them by PCM id
+/// (`plughw:CARD=PCH,DEV=0`) and keeps the 0.16 name in the description instead.
+#[cfg(target_os = "linux")]
+fn saved_name_matches(d: &cpal::Device, saved: &str) -> bool {
+    d.description().is_ok_and(|desc| description_names(desc.name(), saved))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn saved_name_matches(_: &cpal::Device, _: &str) -> bool {
+    false
+}
+
+/// Whether a 0.17 device description names the card a 0.16 preference holds.
+///
+/// A hardware description is `"Card, Device"` (or just one of the two), possibly prefixed with
+/// `hw:`/`plughw:`; the saved name is the card name.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn description_names(described: &str, saved: &str) -> bool {
+    described == saved || described.split(',').next().is_some_and(|card| card.trim() == saved)
+}
+
 impl CpalOut {
     pub fn new() -> Self {
         let host = cpal::default_host();
@@ -175,7 +215,7 @@ impl CpalOut {
             health: Arc::new(Health::default()),
             watchdog: Watchdog::default(),
             epoch: Instant::now(),
-            rate: cfg.as_ref().map_or(48_000, |c| c.sample_rate().0),
+            rate: cfg.as_ref().map_or(48_000, |c| c.sample_rate()),
             channels: cfg.as_ref().map_or(2, |c| c.channels()),
             hw: AudioHardwarePrefs::default(),
             document_rate: None,
@@ -226,13 +266,13 @@ impl CpalOut {
         self.note = fallback;
         let cfg = self.config(&dev)?;
         let channels = cfg.channels() as usize;
-        if channels == 0 || cfg.sample_rate().0 == 0 {
+        if channels == 0 || cfg.sample_rate() == 0 {
             return Err("the output device returned an invalid channel count or sample rate".into());
         }
         if let Some((rate, ch)) = expect
-            && (rate, ch) != (cfg.sample_rate().0, cfg.channels())
+            && (rate, ch) != (cfg.sample_rate(), cfg.channels())
         {
-            return Err(format!("the output device now runs at {} Hz with {} channels", cfg.sample_rate().0, cfg.channels()));
+            return Err(format!("the output device now runs at {} Hz with {} channels", cfg.sample_rate(), cfg.channels()));
         }
         let mut config: cpal::StreamConfig = cfg.clone().into();
         if let cpal::SupportedBufferSize::Range { min, max } = cfg.buffer_size()
@@ -240,7 +280,7 @@ impl CpalOut {
         {
             config.buffer_size = cpal::BufferSize::Fixed(self.hw.buffer_size);
         }
-        self.rate = cfg.sample_rate().0;
+        self.rate = cfg.sample_rate();
         self.channels = cfg.channels();
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -465,7 +505,7 @@ impl AudioOut for CpalOut {
         if let Some(choice) = output_device(&host, &self.hw.default_output, &self.fallback)
             && let Ok(cfg) = self.config(&choice.device)
         {
-            self.rate = cfg.sample_rate().0;
+            self.rate = cfg.sample_rate();
             self.channels = cfg.channels();
             self.note = choice.fallback;
         }
@@ -491,6 +531,16 @@ mod tests {
     fn notes_name_the_fallback_device() {
         assert!(Note::Fallback("pipewire".into()).text().contains("'pipewire'"));
         assert!(!Note::NoDevice.text().is_empty());
+    }
+
+    /// A preference saved by cpal 0.16 holds the card name; 0.17 describes the card as
+    /// "Card, Device", so the saved name still identifies it.
+    #[test]
+    fn a_saved_card_name_still_names_its_017_device() {
+        assert!(description_names("HDA Intel PCH, ALC897 Analog", "HDA Intel PCH"));
+        assert!(description_names("HDA Intel PCH", "HDA Intel PCH"));
+        assert!(!description_names("HDA Intel PCH, ALC897 Analog", "HDA Intel"), "a card name is matched whole");
+        assert!(!description_names("plughw:CARD=PCH,DEV=0", "HDA Intel PCH"));
     }
 
     /// #2633: the rate search costs ~190 ms on WASAPI, so the device default is taken as is.
