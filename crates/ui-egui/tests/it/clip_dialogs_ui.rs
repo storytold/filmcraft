@@ -427,6 +427,8 @@ fn scene_edit_detection_from_the_clip_menu_opens_the_dialog() {
     assert!(!d.has("sceneDetect.ok"));
 }
 
+/// Verifies that closing the window with unsaved changes cancels the close request, restores and
+/// focuses the viewport, and presents the Save Project prompt as a modal dialog.
 #[test]
 fn quitting_with_unsaved_changes_asks_to_save() {
     let mut d = Driver::new();
@@ -434,7 +436,12 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     // the close is cancelled, the window is raised/focused, and the modal prompt asks instead
     d.request_close();
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "the window must stay open");
+    assert!(d.sent(&egui::ViewportCommand::Minimized(false)), "minimized windows must be restored for the prompt");
     assert!(d.sent(&egui::ViewportCommand::Focus), "the window must be raised and focused for the prompt");
+    assert!(
+        d.sent(&egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational)),
+        "user attention is requested as a fallback for compositors where Focus is a no-op"
+    );
     d.frames(2);
     assert!(d.has("quit.save") && d.has("quit.dontSave") && d.has("quit.cancel"));
     assert!(d.harness.ctx.memory(|m| m.top_modal_layer().is_some()), "the save prompt is drawn as a modal");

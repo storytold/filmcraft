@@ -370,6 +370,8 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     });
 }
 
+/// Draws a clip or project dialog as either a centered `egui::Modal` (for save prompts) or a
+/// centered `egui::Window`.
 fn draw_dialog(ctx: &egui::Context, id: egui::Id, title: &str, is_modal: bool, t: &crate::theme::Tokens, add_contents: impl FnOnce(&mut egui::Ui)) {
     if is_modal {
         egui::Modal::new(id).frame(super::file_dialogs::modal_frame(t)).show(ctx, |ui| {
@@ -683,6 +685,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "file.closeProject" | "app.quit" | "file.open" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
+                if !d.error.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = ui.button(tl!("Cancel"));
@@ -761,9 +766,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("save") => {
             if app.session.path.is_some() {
-                // the save failed: the prompt stays, with the reason in the status bar
+                // the save failed: the prompt stays, with the reason in the modal and status bar
                 if let Err(e) = app.session.execute("file.save", json!({})) {
-                    app.ui.status = e.to_string();
+                    let msg = e.to_string();
+                    d.error = msg.clone();
+                    app.ui.status = msg;
                     app.ui.clip_dialog = Some(d);
                     return;
                 }
@@ -785,7 +792,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 // a newer prompt (Quit asked while Close Project's dialog was open) is the one to
                 // finish or to show again
                 let newer = matches!(app.ui.clip_dialog.as_ref().map(|c| c.command.as_str()), Some("app.quit" | "file.closeProject" | "file.open"));
-                let prompt = if newer { app.ui.clip_dialog.take().unwrap_or(prompt) } else { prompt };
+                let mut prompt = if newer { app.ui.clip_dialog.take().unwrap_or(prompt) } else { prompt };
                 let Some(path) = paths.into_iter().next() else {
                     // cancelled: the prompt again, unless another dialog is open now
                     if app.ui.clip_dialog.is_none() {
@@ -797,8 +804,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 match &r {
                     Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt),
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
-                    // the save failed: the prompt stays, with the reason in the status bar
+                    // the save failed: the prompt stays, with the reason in the modal and status bar
                     Err(e) => {
+                        prompt.error = e.clone();
                         app.ui.status = e.clone();
                         app.ui.clip_dialog = Some(prompt);
                     }
@@ -807,6 +815,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             // no dialog shown (another one is open): the prompt stays, with the reason
             if let Err(e) = r {
+                d.error = e.clone();
                 app.ui.status = e;
                 app.ui.clip_dialog = Some(d);
             }
