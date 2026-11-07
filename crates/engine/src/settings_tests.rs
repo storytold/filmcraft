@@ -1251,3 +1251,14 @@ fn selection_follows_playhead_is_in_the_settings_registry() {
     assert!(matches!(f.kind, Kind::Bool));
     assert_eq!(settings::field("timeline.selectionFollowsPlayhead").map(|f| f.key), Some("timeline.selectionFollowsPlayhead"));
 }
+
+/// A batch that switches a duration's unit and sets the duration checks the duration against the
+/// new unit: 0.5 s from frames stays 0.5 s, not one frame rounded and then read as 1 s.
+#[test]
+fn a_batch_sets_the_unit_before_its_duration() {
+    let mut s = Session::default();
+    assert_eq!(s.prefs.timeline.video_transition_unit, "frames");
+    s.execute("prefs.set", json!({"values": {"timeline.videoTransitionUnit": "seconds", "timeline.videoTransitionDuration": 0.5}})).unwrap();
+    assert_eq!(s.prefs.timeline.video_transition_unit, "seconds");
+    assert_eq!(s.prefs.timeline.video_transition_duration, 0.5);
+}

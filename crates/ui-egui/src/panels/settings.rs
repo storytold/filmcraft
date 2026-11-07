@@ -51,6 +51,10 @@ pub struct SettingsDraft {
     /// Result of the last Label Color Presets button, or its error.
     #[serde(default)]
     pub preset_message: String,
+    /// Reset All… was clicked: OK starts from the default preferences, including the groups the
+    /// dialog has no page for (Project panel, Media Browser, guides…).
+    #[serde(default)]
+    pub reset_all: bool,
 }
 
 /// Open the dialog on a category page.
@@ -362,6 +366,21 @@ fn diff(prefix: &str, old: &Value, new: &Value, out: &mut Map<String, Value>) {
         }
         _ => {}
     }
+}
+
+/// Puts these categories' values back to their defaults in the dialog's working copy. Recent
+/// projects are kept: they are a history, not a preference.
+fn reset_to_defaults(values: &mut Value, pages: &[&str]) {
+    let defaults = filmcraft_engine::autosave::Preferences::default().to_value();
+    let keep = get(values, "general.recentProjects").clone();
+    if let Some(map) = values.as_object_mut() {
+        for page in pages {
+            if let Some(v) = defaults.get(*page) {
+                map.insert((*page).to_string(), v.clone());
+            }
+        }
+    }
+    put(values, "general.recentProjects", keep);
 }
 
 fn modal_frame(t: &Tokens) -> Frame {
@@ -920,10 +939,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             }
             if button(app, ui, "settings.reset", tl!("Reset…"), false) {
                 // this category back to its defaults (OK applies it)
+                reset_to_defaults(&mut d.values, &[d.page.as_str()]);
+            }
+            if button(app, ui, "settings.resetAll", tl!("Reset All…"), false) {
+                // every group back to its defaults, pages or not (OK applies it, Cancel keeps the old values)
                 let defaults = filmcraft_engine::autosave::Preferences::default().to_value();
-                let keep = get(&d.values, "general.recentProjects").clone();
-                d.values[d.page.as_str()] = defaults[d.page.as_str()].clone();
-                put(&mut d.values, "general.recentProjects", keep);
+                let pages: Vec<&str> = defaults.as_object().map(|m| m.keys().map(String::as_str).collect()).unwrap_or_default();
+                reset_to_defaults(&mut d.values, &pages);
+                d.reset_all = true;
+                d.message = tl!("All preferences will return to their defaults when you click OK.").into();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(20.0);
@@ -938,9 +962,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         ui.add_space(14.0);
     });
     if apply {
+        // after Reset All…, start from the defaults (keeping recent projects), then apply the edits
+        // made since
+        let reset = if d.reset_all {
+            let mut next = filmcraft_engine::autosave::Preferences::default();
+            next.general.recent_projects = app.session.prefs.general.recent_projects.clone();
+            app.session.set_prefs(next).map_err(|e| format!("saving preferences: {e}"))
+        } else {
+            Ok(())
+        };
         let mut changes = Map::new();
         diff("", &app.session.prefs.to_value(), &d.values, &mut changes);
-        match if changes.is_empty() { Ok(Value::Null) } else { app.session.execute("prefs.set", json!({ "values": changes })) } {
+        match reset.and_then(|()| {
+            if changes.is_empty() { Ok(Value::Null) } else { app.session.execute("prefs.set", json!({ "values": changes })).map_err(|e| e.to_string()) }
+        }) {
             Ok(_) => {
                 close = true;
                 app.apply_prefs(ctx);
@@ -995,6 +1030,51 @@ mod tests {
         h.run_steps(3);
         assert_eq!(h.state().session.prefs.appearance.appearance_mode, "light");
         assert_eq!(h.state().session.prefs.appearance.dark_theme, "darkest");
+    }
+
+    /// #4207: Reset All… puts every category back to its defaults once OK is clicked; Cancel keeps
+    /// the old values; recent projects survive either way.
+    #[test]
+    fn reset_all_restores_every_category_on_ok_only() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        use filmcraft_engine::autosave::Preferences;
+        let changed = || {
+            let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+            for (key, value) in
+                [("timeline.autoScroll", json!("smoothScroll")), ("general.showToolTips", json!(false)), ("labels.defaults.movie", json!("Rose"))]
+            {
+                app.session.execute("prefs.set", json!({"key": key, "value": value})).unwrap();
+            }
+            app.session.prefs.general.recent_projects = vec!["/a.fcproj".into()];
+            // a group the dialog has no page for
+            app.session.prefs.project_panel.hover_scrub = !Preferences::default().project_panel.hover_scrub;
+            open(&mut app, "appearance").unwrap();
+            Harness::builder().with_size(vec2(1400.0, 1000.0)).build_eframe(move |_| app)
+        };
+
+        let mut h = changed();
+        h.run_steps(4);
+        h.get_by_label("Reset All…").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("All preferences will return to their defaults when you click OK.").is_some());
+        assert_eq!(h.state().session.prefs.timeline.auto_scroll, "smoothScroll", "nothing changes before OK");
+        h.get_by_label("OK").click();
+        h.run_steps(3);
+        let prefs = &h.state().session.prefs;
+        assert_eq!(prefs.general.recent_projects, ["/a.fcproj"], "recent projects survive a reset");
+        let mut expected = Preferences::default();
+        expected.general.recent_projects = prefs.general.recent_projects.clone();
+        assert_eq!(*prefs, expected);
+
+        let mut h = changed();
+        h.run_steps(4);
+        h.get_by_label("Reset All…").click();
+        h.run_steps(3);
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.prefs.timeline.auto_scroll, "smoothScroll");
+        assert!(!h.state().session.prefs.general.show_tool_tips);
+        assert_ne!(h.state().session.prefs.project_panel.hover_scrub, Preferences::default().project_panel.hover_scrub);
     }
 
     /// #457: on a desktop that reports 150%, UI Scale 100% makes a point one physical pixel. It is
