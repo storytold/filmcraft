@@ -44,12 +44,16 @@ fn draft_id() -> egui::Id {
 /// The microphone button of an audio track header. Returns the requested action.
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, r: Rect, visible: Rect, label: &str, t: &Tokens) -> Option<Action> {
     let recording_here = app.session.voiceover.rec.as_ref().is_some_and(|x| x.track == track);
-    let resp = ui.interact(r.intersect(visible), egui::Id::unique(("vo", track.0)), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, 2.0, t.hover);
+    let shown = r.intersect(visible);
+    let resp = ui.interact(if shown.is_positive() { shown } else { Rect::NOTHING }, egui::Id::unique(("vo", track.0)), Sense::click());
+    if shown.is_positive() {
+        let p = ui.painter().with_clip_rect(shown.intersect(ui.clip_rect()));
+        if resp.hovered() {
+            p.rect_filled(r, 2.0, t.hover);
+        }
+        let col = if recording_here { RED } else { t.text_dim };
+        icons::paint(&p, r.shrink(1.0), Icon::Mic, col);
     }
-    let col = if recording_here { RED } else { t.text_dim };
-    icons::paint(&ui.painter().with_clip_rect(visible), r.shrink(1.0), Icon::Mic, col);
     let id = format!("timeline.track.{label}.voiceover");
     app.auto.add(&id, r, if recording_here { "Stop Voice-over Recording" } else { "Voice-over Record" });
     let mut act = None;
