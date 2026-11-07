@@ -591,10 +591,11 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
   0 … HDR White like black … white in SDR, exposure is stops of light, and highlights above HDR
-  White pass through (contrast leaves them alone; **HDR Specular** scales them). Rec. 709
-  sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
-  radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
-  resolution.
+  White pass through (contrast keeps their distance from HDR White, so positive contrast leaves
+  them alone and negative contrast moves them with white, without a step; **HDR Specular** scales
+  them). Rec. 709 sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median
+  of the key, radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the
+  playback resolution.
 - **HDR metadata.** `VideoStreamInfo::hdr` (`HdrMetadata`: ST 2086 mastering luminance, MaxCLL,
   MaxFALL) is read from `mdcv` / `clli` (MP4 / MOV) and Matroska `MasteringMetadata` / `MaxCLL` /
   `MaxFALL`. PQ media tone mapped into an SDR working space uses it as the BT.2390 source peak
