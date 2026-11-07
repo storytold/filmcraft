@@ -59,8 +59,10 @@ const BREATH_DB: f32 = 8.0;
 /// Unvoiced frames kept ahead of the first voiced one when a breath runs straight into the word
 /// (room for an unvoiced first consonant).
 const ONSET_KEEP_FRAMES: usize = 12;
-/// Frames looked at from a word's edge for its last / first voiced frame.
-const PITCH_SCAN: usize = 100;
+/// Frames looked at from a word's edge for its last / first voiced frame (5 s). A word with more
+/// unvoiced sound than this at an edge is left alone: it bounds the pitch work per word, and the
+/// pause split would have cut a real word long before. Each frame's pitch is computed once.
+const PITCH_SCAN: usize = 500;
 /// A word borders a pause when at least this many frames separate it from its neighbour.
 const PAUSE_EDGE_FRAMES: usize = 10;
 
@@ -253,7 +255,23 @@ fn periodicity(audio: &[f32], frame: usize) -> f32 {
 /// a noise and leaves the word.
 fn trim_unvoiced_edges(audio: &[f32], db: &[f32], loud: &[bool], words: &mut [Word], frame_ticks: i64) {
     let tick = |frame: usize| Tick((frame as i64).saturating_mul(frame_ticks));
-    let voiced_at = |f: usize| loud.get(f).copied().unwrap_or(false) && periodicity(audio, f) >= VOICED;
+    // pitch per frame, computed on first use: words may overlap, and only edge frames are asked for
+    let mut pitch: Vec<Option<f32>> = vec![None; loud.len()];
+    let mut voiced_at = |f: usize| {
+        if !loud.get(f).copied().unwrap_or(false) {
+            return false;
+        }
+        let Some(slot) = pitch.get_mut(f) else { return false };
+        let p = match *slot {
+            Some(p) => p,
+            None => {
+                let p = periodicity(audio, f);
+                *slot = Some(p);
+                p
+            }
+        };
+        p >= VOICED
+    };
     let n = words.len();
     for i in 0..n {
         let (prev_end, next_start) = (
@@ -440,6 +458,17 @@ mod tests {
     }
 
     #[test]
+    fn a_long_breath_after_the_last_word_is_not_the_word() {
+        // "yeah." sounds 0.0–0.5, then a 1.2 s sigh above the level threshold: longer than the old
+        // one-second scan from the end, so the voice has to be found through it
+        let mut a = audio(2.0, &[(0.0, 0.5)]);
+        add_noise(&mut a, 0.5, 1.7, -40.0);
+        let mut w = vec![word("yeah.", 0.0, 1.7)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.58)]);
+    }
+
+    #[test]
     fn a_breath_before_the_first_word_is_not_the_word() {
         // a 0.3 s breath (noise about 30 dB under the voice), a 40 ms dip, then "so" sounds 0.34–0.8
         let mut a = audio(1.2, &[(0.34, 0.8)]);
@@ -448,6 +477,17 @@ mod tests {
         tighten_words(&a, &mut w);
         assert!((0.28..=0.34).contains(&bounds(&w)[0].0), "start {:?} should sit in the dip before the voice", bounds(&w));
         assert_eq!(bounds(&w)[0].1, 0.8);
+    }
+
+    #[test]
+    fn a_long_breath_before_the_first_word_is_not_the_word() {
+        // a 1.2 s breath, a 40 ms dip, then "so" sounds 1.24–1.7
+        let mut a = audio(2.0, &[(1.24, 1.7)]);
+        add_noise(&mut a, 0.0, 1.2, -45.0);
+        let mut w = vec![word("so", 0.0, 1.7)];
+        tighten_words(&a, &mut w);
+        assert!((1.18..=1.24).contains(&bounds(&w)[0].0), "start {:?} should sit in the dip before the voice", bounds(&w));
+        assert_eq!(bounds(&w)[0].1, 1.7);
     }
 
     #[test]
