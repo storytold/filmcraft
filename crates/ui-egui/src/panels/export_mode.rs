@@ -60,6 +60,11 @@ pub struct ExportUi {
     /// The preset the settings came from ("Custom" once edited).
     pub preset: String,
     pub settings: ExportSettings,
+    /// Export on the CPU (manual). Unchecked, the export uses the GPU where the format has a route.
+    pub cpu_export: bool,
+    /// On the GPU route, encode with NVIDIA NVENC instead of AMD VA-API. Ignored while `cpu_export`
+    /// is on. Missing from older files, it reads as false (AMD).
+    pub nvenc_export: bool,
     /// File name without extension, and the folder.
     pub file_name: String,
     pub location: String,
@@ -89,6 +94,8 @@ impl Default for ExportUi {
         ExportUi {
             preset: DEFAULT_PRESET.into(),
             settings: preset,
+            cpu_export: false,
+            nvenc_export: false,
             file_name: String::new(),
             location: String::new(),
             range: "entire".into(),
@@ -117,6 +124,12 @@ pub struct PresetManager {
 
 pub const CUSTOM: &str = "Custom";
 
+/// The encoder choices of the Encoder selector (the labels are the combo's values; CPU is the
+/// existing manual-CPU label).
+const ENCODER_AMD: &str = "AMD (VA-API)";
+const ENCODER_NVENC: &str = "NVIDIA (NVENC)";
+const ENCODER_CPU: &str = "Export via CPU (manual)";
+
 /// Collected automation ids (registered after drawing, so widgets can borrow the app freely).
 #[derive(Default)]
 struct Reg(Vec<(String, Rect, String)>);
@@ -134,6 +147,27 @@ impl Reg {
 
 fn settings_json(s: &ExportSettings) -> Value {
     serde_json::to_value(s).unwrap_or_default()
+}
+
+/// Whether the format has a GPU route (VA-API H.264 or H.265).
+fn gpu_capable(s: &ExportSettings) -> bool {
+    matches!(s.format, Format::H264 | Format::Hevc)
+}
+
+/// The settings an export runs with: the GPU route unless the CPU is picked by hand or the format has
+/// no GPU route. The GPU route is AMD VA-API (`set_hardware_export(true)`, which refuses instead of
+/// falling back to the CPU), or NVIDIA NVENC when picked: CPU reference rendering with
+/// `HardwareEncoding::NvencRequired`, which fails closed rather than falling back.
+pub fn effective_settings(ex: &ExportUi) -> ExportSettings {
+    let mut s = ex.settings.clone();
+    let gpu = !ex.cpu_export && gpu_capable(&s);
+    if gpu && ex.nvenc_export {
+        s.set_hardware_export(false);
+        s.hardware_encoding = HardwareEncoding::NvencRequired;
+    } else {
+        s.set_hardware_export(gpu);
+    }
+    s
 }
 
 /// Apply a preset by name (from the engine's library).
@@ -162,7 +196,7 @@ pub fn output_path(ex: &ExportUi) -> String {
 /// Engine params for the current settings (`file.exportMedia` / `export.queue.add`).
 pub fn export_params(app: &FilmcraftApp) -> Value {
     let ex = &app.ui.export;
-    let mut p = json!({"path": output_path(ex), "settings": settings_json(&ex.settings), "range": ex.range});
+    let mut p = json!({"path": output_path(ex), "settings": settings_json(&effective_settings(ex)), "range": ex.range});
     if ex.range == "custom" {
         p["startSeconds"] = json!(ex.custom_start);
         p["endSeconds"] = json!(ex.custom_end);

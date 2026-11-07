@@ -622,7 +622,8 @@ fn hostile_parameters_are_bounded() {
     assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).is_none());
     // and the refusal ends its frame: the next frame, which uses no effect, releases the working
     // images the first one pooled
-    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] });
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] })
+        .expect("composite");
     assert!(c.fx.as_ref().is_some_and(|f| f.is_idle()), "working images kept after a refused effect image");
 }
 
@@ -747,7 +748,7 @@ fn gpu_effect_layers_match_cpu_plan() {
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let keep = interior(&plan);
         let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
@@ -766,7 +767,7 @@ fn plain_layers_skip_the_effect_stage() {
     };
     let mut c = GpuCompositor::new(&dev, &q);
     let plan = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
     let fx = LayerFx { size: (64, 36), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] };
     let with = FramePlan::Layers {
@@ -774,10 +775,10 @@ fn plain_layers_skip_the_effect_stage() {
         height: 36,
         layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal) }],
     };
-    c.composite(&with);
+    c.composite(&with).expect("composite");
     assert!(!c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
     // and they are released once no layer needs them
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
 }
 
@@ -815,7 +816,7 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         if !stage {
             c.fx = None;
         }
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
         eprintln!("effect stage {stage}: interior p99 {p99}, mean {mean:.3}");

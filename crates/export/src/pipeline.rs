@@ -13,7 +13,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_frame};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -92,7 +92,7 @@ impl RendererPool {
     /// Admitting more frame tasks than renderers could then deadlock this condition variable
     /// against the suspended outer frame's renderer. `None` once a renderer has
     /// panicked: the panicking renderer is dropped (its state can't be trusted) and so are the
-    /// others as they come back, so the caller falls back to the CPU for the rest of the export.
+    /// others as they come back. GPU-selected exports must propagate failure, never use CPU.
     fn with<R>(&self, f: impl FnOnce(&mut dyn FrameRenderer) -> R) -> Option<R> {
         use std::sync::atomic::Ordering;
         let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -225,6 +225,9 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        if settings.gpu_rendering == GpuRendering::Auto && renderer.is_none() {
+            return Err(ExportError::Unsupported("GPU rendering is on but no GPU adapter is available. Turn GPU Rendering off to export on the CPU.".into()));
+        }
         Ok(Pipeline {
             renderer,
             seq_rate: q.settings.frame_rate,
@@ -247,37 +250,31 @@ impl Pipeline {
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    /// R'G'B' floats (3 per pixel). `Off` uses CPU reference renderer. GPU-selected modes fail closed.
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
         let t = self.rate.tick_of(f);
-        // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
-        // draw, any internal error) falls back to the CPU reference renderer below. A frame the
-        // planner hands back as one CPU image anyway (an adjustment layer the GPU can't run, a
-        // complex transition, HDR) does not take a pooled renderer: it would render on the CPU
-        // inside the pool, as many frames at a time as there are renderers instead of one per
-        // export thread.
-        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
-        let gpu = match pool {
+        // GPU mode fails closed: a frame the GPU can't draw is an error, never a silent CPU frame.
+        // Off renders on the CPU reference renderer only.
+        let img = match self.renderer.as_ref() {
+            None => filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources),
             Some(pool) => {
+                if filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps) {
+                    return Err(ExportError::Unsupported(format!(
+                        "GPU rendering cannot draw frame {f} (an effect or transition has no GPU path). Nothing was rendered on the CPU."
+                    )));
+                }
                 let asked = web_time::Instant::now();
-                pool.with(|r| {
+                let res = pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
                     r.render(&self.project, self.seq, t, self.opts, sources)
-                })
-                .flatten()
-            }
-            None => None,
-        };
-        let img = match gpu {
-            Some(img) => {
-                note_gpu_frame();
-                img
-            }
-            None => {
-                if self.renderer.is_some() {
-                    note_gpu_fallback();
+                });
+                match res.flatten() {
+                    Some(img) => {
+                        note_gpu_frame();
+                        img
+                    }
+                    None => return Err(ExportError::Unsupported(format!("GPU render refused frame {f}. Nothing was rendered on the CPU."))),
                 }
-                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
         let mut img = self.place(img);
@@ -295,7 +292,7 @@ impl Pipeline {
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return Ok((Vec::new(), out));
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -303,7 +300,7 @@ impl Pipeline {
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
-        (rgba, Vec::new())
+        Ok((rgba, Vec::new()))
     }
 
     /// Fit the rendered picture into the output frame.

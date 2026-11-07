@@ -1,5 +1,5 @@
 use super::format::ExportSettings;
-use super::{Arc, ExportError, Mutex, PoisonError, Result, Write, pcm};
+use super::{Arc, AtomicU64, ExportError, Mutex, Ordering, PoisonError, Result, Write, pcm};
 
 /// Receives in-memory export output: `(path, bytes)` per finished file.
 #[derive(Clone)]
@@ -19,15 +19,28 @@ pub(crate) enum AudioWriter {
 
 /// An export's output file: on disk, or in memory for an [`OutputSink`].
 pub(crate) enum Out {
-    File(std::io::BufWriter<std::fs::File>),
+    File { writer: std::io::BufWriter<std::fs::File>, temp: Option<TempOutput> },
     Mem(std::io::Cursor<Vec<u8>>),
 }
+
+pub(crate) struct TempOutput {
+    path: std::path::PathBuf,
+    destination: std::path::PathBuf,
+}
+
+impl Drop for TempOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+static NEXT_OUTPUT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 impl Out {
     pub(crate) fn create(settings: &ExportSettings) -> Result<Out> {
         if let Some(file) = &settings.output_file {
             let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
-            return Ok(Out::File(std::io::BufWriter::new(file)));
+            return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: None });
         }
         Out::create_path(settings, &settings.path)
     }
@@ -41,16 +54,22 @@ impl Out {
             && let Some(file) = &settings.output_file
         {
             let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
-            return Ok(Out::File(std::io::BufWriter::new(file)));
+            return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: None });
         }
-        let f = std::fs::OpenOptions::new()
-            .read(settings.format.is_mp4_with(settings.multiplexer))
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
-        Ok(Out::File(std::io::BufWriter::new(f)))
+        let destination = std::path::PathBuf::from(path);
+        let dir = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        // fast-start MP4 is written by reading the file back (upstream #3470), so it opens for read too
+        let read = settings.format.is_mp4_with(settings.multiplexer);
+        for _ in 0..32 {
+            let id = NEXT_OUTPUT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let temp = dir.join(format!(".filmcraft-export-{}-{id}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new().read(read).write(true).create_new(true).open(&temp) {
+                Ok(file) => return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: Some(TempOutput { path: temp, destination }) }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(ExportError::Io(format!("{path}: {e}"))),
+            }
+        }
+        Err(ExportError::Io(format!("{path}: could not allocate a unique temporary output")))
     }
 
     /// Flush (and hand in-memory output to the sink); returns the file size.
@@ -60,9 +79,19 @@ impl Out {
 
     pub(crate) fn finish_path(self, settings: &ExportSettings, path: &str) -> Result<u64> {
         match self {
-            Out::File(mut w) => {
-                w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
-                Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            Out::File { mut writer, temp } => {
+                let name = temp.as_ref().map_or_else(|| path.to_owned(), |t| t.destination.display().to_string());
+                let io = |e| ExportError::Io(format!("{name}: {e}"));
+                writer.flush().map_err(io)?;
+                let Some(temp) = temp else {
+                    // a handle the caller opened: it is theirs to sync and keep
+                    return Ok(writer.get_ref().metadata().map_err(io)?.len());
+                };
+                writer.get_ref().sync_all().map_err(io)?;
+                let size = writer.get_ref().metadata().map_err(io)?.len();
+                drop(writer);
+                std::fs::rename(&temp.path, &temp.destination).map_err(io)?;
+                Ok(size)
             }
             Out::Mem(c) => write_output(settings, path, c.into_inner()),
         }
@@ -83,13 +112,13 @@ pub(crate) fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>)
 impl Write for Out {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            Out::File(w) => w.write(buf),
+            Out::File { writer, .. } => writer.write(buf),
             Out::Mem(w) => w.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Out::File(w) => w.flush(),
+            Out::File { writer, .. } => writer.flush(),
             Out::Mem(w) => w.flush(),
         }
     }
@@ -98,7 +127,7 @@ impl Write for Out {
 impl std::io::Seek for Out {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         match self {
-            Out::File(w) => w.seek(pos),
+            Out::File { writer, .. } => writer.seek(pos),
             Out::Mem(w) => w.seek(pos),
         }
     }
@@ -107,11 +136,11 @@ impl std::io::Seek for Out {
 impl std::io::Read for Out {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            Out::File(w) => {
+            Out::File { writer, .. } => {
                 // Fast-start muxing reads media back to shift it in place. Commit buffered
                 // writes before reading through the same file handle and cursor.
-                w.flush()?;
-                std::io::Read::read(w.get_mut(), buf)
+                writer.flush()?;
+                std::io::Read::read(writer.get_mut(), buf)
             }
             Out::Mem(w) => std::io::Read::read(w, buf),
         }

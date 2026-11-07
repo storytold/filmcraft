@@ -428,7 +428,7 @@ fn an_adjustment_layer_the_gpu_cant_run_plans_the_frame_on_the_cpu() {
     };
     let multiply = filmcraft_project::effect::BLEND_MODES.iter().position(|b| *b == "Multiply").unwrap() as u32;
     let cases: Vec<(&str, Box<dyn Fn(&mut Scene, ClipId)>)> = vec![
-        ("an effect without a GPU implementation", Box::new(|s, a| fx(s, a, "emboss"))),
+        ("an effect without a GPU implementation", Box::new(|s, a| fx(s, a, "ultra_key"))),
         (
             "a Transform that shrinks the frame (the CPU's mip path)",
             Box::new(|s, a| {

@@ -34,7 +34,7 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 | Codec | Premiere macOS | **Ours macOS** | Premiere Windows | **Ours Windows** | **Ours Linux** |
 |---|---|---|---|---|---|
-| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
+| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC, VA-API** (AMD / Intel / Mesa; opt-in, no B-frames) |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
 | HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
@@ -56,7 +56,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 4.0–5.0× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
-| Software adapter fallback | warns | silently renders everything on the CPU (#632) | — |
+| Software adapter fallback for GPU-selected export | warns | Auto fails closed; Off explicitly selects CPU reference rendering (#632 historical behavior) | — |
 | Intel integrated graphics | supported | start-up crash on Intel UHD (#512) | — |
 
 ## Devices and I/O
@@ -85,5 +85,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Linux H.264 export encoding through VA-API (AMD / Intel; #30) |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

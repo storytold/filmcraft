@@ -84,6 +84,7 @@ impl Driver {
 fn frame_worker_survives_a_panicking_job_and_keeps_rendering() {
     let _serial = serial();
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     d.settle();
     let workers = d.harness.state().frames.workers() as u64;
     let faults = workers + 2;

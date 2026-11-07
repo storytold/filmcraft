@@ -516,6 +516,10 @@ impl ExportSettings {
 
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        // GPU-required encoding has no software encoder to fall back to, so only the VA-API formats can run.
+        if self.hardware_encoding == HardwareEncoding::GpuRequired && !matches!(self.video_format(), Format::H264 | Format::Hevc) {
+            return Err(ExportError::Unsupported("GPU-required encoding supports VA-API H.264 or HEVC exports only".into()));
+        }
         if let Some(range) = self.range {
             validate_range(range)?;
         }

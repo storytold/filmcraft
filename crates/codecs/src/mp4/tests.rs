@@ -515,3 +515,37 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
+
+fn h264_mov() -> Arc<[u8]> {
+    let cfg = filmcraft_isobmff::AvcConfig::new(vec![vec![0x67, 0x42, 0, 0x1e]], vec![vec![0x68, 0xce]], 4);
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+    let t = mux.add_track(TrackConfig::new(SampleEntry::avc(cfg, 64, 48), 25)).expect("track");
+    let data = [0, 0, 0, 1, 0x65];
+    mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+    mux.finish().expect("finish").into_inner().into()
+}
+
+#[test]
+fn compressed_h264_metadata_precedes_bounded_sample_read() {
+    let source = Mp4Source::open("compressed.mov", h264_mov()).expect("open");
+    assert_eq!(source.h264_sample_count().expect("count"), 1);
+    assert_eq!(source.h264_timescale().expect("timescale"), 25);
+    let metadata = source.h264_sample_metadata(0).expect("metadata");
+    assert_eq!(metadata.size, 5);
+    assert!(metadata.is_sync);
+    assert_eq!(metadata.description_index, 1);
+    assert!(matches!(&source.h264_sample_entry(0).expect("entry").codec, CodecConfig::Avc(_)));
+    assert_eq!(source.read_h264_sample(0).expect("sample"), [0, 0, 0, 1, 0x65]);
+    assert_eq!(source.h264_sample_at(Tick::ZERO).expect("seek"), Some(0));
+    assert!(source.h264_sample_metadata(1).is_err());
+}
+
+#[test]
+fn compressed_h264_reader_rejects_sample_description_change_on_access() {
+    let mut source = Mp4Source::open("compressed.mov", h264_mov()).expect("open");
+    let first = *source.file.tracks[0].samples.first().expect("first sample");
+    source.file.tracks[0].samples.push(first);
+    source.file.tracks[0].samples[1].description_index = 2;
+    assert_eq!(source.h264_sample_count().expect("count"), 2);
+    assert!(source.h264_sample_metadata(1).is_err());
+}

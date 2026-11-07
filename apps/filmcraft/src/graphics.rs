@@ -457,7 +457,7 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
                 Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| filmcraft_gpu::adapter::pick(adapters, surface, power)));
         }
         Mode::Default => {}
-        // Without Vulkan, whose driver is what crashes.
+        // Without Vulkan, whose driver is what crashes; GPU effects fail closed, they do not fall back to the CPU.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);

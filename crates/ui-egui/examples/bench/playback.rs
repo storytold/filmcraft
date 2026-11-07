@@ -138,7 +138,7 @@ impl Display {
 
     fn target(&self, seq: ItemId) -> Target {
         match &self.gpu {
-            Some((c, _)) => Target::SequencePlan(seq, c.caps()),
+            Some((_, _)) => Target::SequencePlan(seq),
             None => Target::Sequence(seq),
         }
     }
@@ -155,7 +155,9 @@ impl Display {
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
-                let _ = comp.composite_prepared(&plan.plan, Some(&plan.prepared));
+                if let Err(error) = plan.composite_display(comp) {
+                    eprintln!("bench: strict GPU composite failed: {error:?}");
+                }
                 // Wait for the GPU so the time includes the upload and the draw.
                 let _ = dev.poll(eframe::wgpu::PollType::wait_indefinitely());
                 self.uploaded += comp.uploaded_bytes - before;

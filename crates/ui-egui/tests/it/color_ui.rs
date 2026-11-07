@@ -262,6 +262,7 @@ fn lumetri_curves_grow_with_the_panel() {
 #[test]
 fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     d.ok("ui.set", json!({"workspace": "Color"}));
     d.frames(3);
     let clip = select_first_clip(&mut d);
@@ -300,6 +301,7 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
 #[test]
 fn apply_match_from_the_color_wheels_section() {
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     d.ok("ui.set", json!({"workspace": "Color"}));
     d.frames(3);
     let clip = select_first_clip(&mut d);

@@ -1,4 +1,6 @@
-/// Largest texture side a plan needs on the GPU (output and every layer).
+/// Largest texture side a plan needs on the GPU (output and every layer). The GPU preview asks
+/// `GpuPlan::extent` instead; this stays for the plan-level tests.
+#[cfg(test)]
 pub(crate) fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
     plan.max_side()
 }
@@ -19,13 +21,20 @@ fn rasterizer_reason(name: &str, device_type: eframe::wgpu::DeviceType) -> Optio
     None
 }
 
-/// Whether the GPU compositor can run on this adapter: it renders and blends Rgba16Float
-/// targets and uploads whole frames as textures. Older or OpenGL-backed GPUs (some Intel Macs,
-/// VMs, Linux without Vulkan, WebGL) can't; those use the CPU compositor, which renders the same
-/// frames. Returns the reason when unsupported.
+/// Whether the GPU compositor can run on this adapter: a physical AMD GPU that renders and blends
+/// Rgba16Float targets and uploads whole frames as textures. Anything else (software rasterizers,
+/// other vendors, OpenGL-backed or old GPUs) is refused: the preview then fails closed instead of
+/// compositing on the CPU. Returns the reason when unsupported.
 pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<String> {
     use eframe::wgpu::{TextureFormat, TextureFormatFeatureFlags as F, TextureUsages as U};
-    if let Some(why) = software_rasterizer(&adapter.get_info()) {
+    let info = adapter.get_info();
+    if info.vendor != 0x1002 {
+        return Some(format!("AMD adapter required; selected vendor is 0x{:04x}", info.vendor));
+    }
+    if !matches!(info.device_type, eframe::wgpu::DeviceType::IntegratedGpu | eframe::wgpu::DeviceType::DiscreteGpu) {
+        return Some(format!("physical AMD GPU required; selected device type is {:?}", info.device_type));
+    }
+    if let Some(why) = software_rasterizer(&info) {
         return Some(why);
     }
     let f = adapter.get_texture_format_features(TextureFormat::Rgba16Float);

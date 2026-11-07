@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
-    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params, format_bytes,
-    is_export_busy, json, output_path, pos2, vec2,
+    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, GpuRendering, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params,
+    format_bytes, is_export_busy, json, output_path, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -20,7 +20,17 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let pv_area = Rect::from_min_size(rect.min + vec2(14.0, 14.0), vec2(rect.width() - 28.0, (rect.height() * 0.42).max(160.0)));
     let pic = crate::panels::monitor::fit(pv_area, r.width as f32, r.height as f32);
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
-    if app.ui.export.settings.has_video() {
+    // the GPU route has no CPU preview: it says so instead of compositing on the CPU
+    let gpu_preview = super::effective_settings(&app.ui.export).gpu_rendering != GpuRendering::Off;
+    if app.ui.export.settings.has_video() && gpu_preview {
+        ui.painter().text(
+            pic.center(),
+            Align2::CENTER_CENTER,
+            tl!("Export preview unavailable in GPU-only mode; CPU fallback is disabled"),
+            Tokens::ui(12.0),
+            t.text_dim,
+        );
+    } else if app.ui.export.settings.has_video() {
         let frame = rate.frame_at(app.session.playhead());
         let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
         let project = app.session.project.clone();

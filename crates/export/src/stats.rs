@@ -52,7 +52,8 @@ pub enum Stage {
     /// Encoding the rendered frames, colour conversion included (serial).
     Encode,
     /// Time spent converting RGB to the encoder's YUV: part of [`Stage::Encode`], or, when the encoder
-    /// converts ahead ([`crate::VideoEncoder::prepare_ahead`]), summed over the render threads.
+    /// converts ahead ([`crate::VideoEncoder::prepare_ahead`]), summed over the render threads. Resident
+    /// rendering counts its GPU NV12 import/repack here, within [`Stage::Render`].
     Convert,
     /// Mixing and encoding audio and writing it to the container.
     Audio,
@@ -62,6 +63,7 @@ pub enum Stage {
     Finish,
     /// Time the encoding side waited, after encoding a batch, for the next batch to finish rendering
     /// (only with overlap: large means the export is render-bound, near zero encode-bound).
+    /// Resident rendering also records queue retirement here, nested within [`Stage::Render`].
     Wait,
 }
 

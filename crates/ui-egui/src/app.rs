@@ -1,5 +1,5 @@
 use super::audio::{AUDIO_RETRY_S, AUDIO_STALL_S};
-use super::gpu::{gpu_compositor_unsupported, plan_side};
+use super::gpu::gpu_compositor_unsupported;
 use super::hooks::HostHooks;
 use super::raw_input::drop_native_input;
 #[cfg(target_os = "macos")]
@@ -119,7 +119,10 @@ impl FilmcraftApp {
             v_down: false,
             stale_clipboard_media: None,
             gpu: None,
+            gpu_unavailable: None,
+            cpu_composite_explicit: false,
             watched_render: None,
+            reported_jobs: Default::default(),
             job_text: None,
             steady_texts: Default::default(),
             applied_prefs: None,

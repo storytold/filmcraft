@@ -522,7 +522,7 @@ fn gif_palette_quantization_preserves_isolated_transparency_and_dark_pixels() {
     let pipe = pipeline::Pipeline::new(p.clone(), seq, &settings, false).unwrap();
     let expected: Vec<Vec<[u8; 4]>> = (0..2)
         .map(|i| {
-            let rgba = pipe.frame(i, &sources).0;
+            let rgba = pipe.frame(i, &sources).expect("render GIF frame").0;
             let pixels: Vec<_> = rgba.as_chunks::<4>().0.iter().map(|&[r, g, b, a]| if a < 128 { [0; 4] } else { [r, g, b, 255] }).collect();
             let colors: std::collections::HashSet<_> = pixels.iter().copied().collect();
             assert!(colors.len() >= 257, "frame {i}: only {} post-conversion colors", colors.len());

@@ -69,7 +69,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                 });
                 let cpu = frame.to_rgba8();
                 let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
-                c.composite(&plan);
+                c.composite(&plan).expect("composite");
                 let (w, h, gpu) = c.read_output().expect("readback");
                 assert_eq!((w, h, gpu.len()), (256, 1, cpu.len()));
                 let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
@@ -79,7 +79,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                     assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
                 }
                 let prepared = prepare(&plan);
-                prepared_compositor.composite_prepared(&plan, Some(&prepared));
+                prepared_compositor.composite_prepared(&plan, Some(&prepared)).expect("composite");
                 assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
                 eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, max error={error}, prepared=inline");
             }
@@ -136,7 +136,7 @@ fn gpu_matches_cpu_plan() {
         ],
     };
     let cpu = execute_cpu(&plan).over_black_rgba8();
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     let (gw, gh, gpu) = c.read_output().expect("readback");
     assert_eq!((gw as usize, gh as usize), (w, h));
     // compare away from antialiased edges: mean abs error and 99th percentile
@@ -148,7 +148,7 @@ fn gpu_matches_cpu_plan() {
     assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
     // cache: compositing the same plan again uploads nothing
     let before = c.uploaded_bytes;
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     assert_eq!(c.uploaded_bytes, before);
 }
 
@@ -204,7 +204,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
                     ],
                 };
                 let cpu = execute_cpu(&plan).over_black_rgba8();
-                c.composite_prepared(&plan, Some(&prepare(&plan)));
+                c.composite_prepared(&plan, Some(&prepare(&plan))).expect("composite");
                 let (_, _, gpu) = c.read_output().expect("readback");
                 let mut diffs: Vec<u32> =
                     cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
@@ -230,7 +230,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
             scale: 1.0,
         }],
     };
-    c.composite(&fallback);
+    c.composite(&fallback).expect("composite");
     let (_, _, got) = c.read_output().expect("fallback readback");
     let expected = execute_cpu(&fallback).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
@@ -251,7 +251,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
         height: h,
         steps: vec![PlanStep::Layers(vec![layer(1)]), transition(0.25), PlanStep::Layers(vec![middle]), transition(0.75)],
     };
-    c.composite_prepared(&stacked, Some(&prepare(&stacked)));
+    c.composite_prepared(&stacked, Some(&prepare(&stacked))).expect("composite");
     let (_, _, gpu) = c.read_output().expect("stacked readback");
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
@@ -297,12 +297,12 @@ fn prepared_upload_matches_inline_conversion() {
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
     for plan in [layers, image] {
         let mut a = GpuCompositor::new(&dev, &q);
-        a.composite(&plan);
+        a.composite(&plan).expect("composite");
         let inline = a.read_output().expect("readback");
         let mut b = GpuCompositor::new(&dev, &q);
         let prep = prepare(&plan);
         assert!(prep.bytes() > 0);
-        b.composite_prepared(&plan, Some(&prep));
+        b.composite_prepared(&plan, Some(&prep)).expect("composite");
         let prepared = b.read_output().expect("readback");
         assert!(inline == prepared, "prepared upload differs");
     }
@@ -325,7 +325,7 @@ fn upload_cache_keeps_buffers_alive() {
         height: 8,
         layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
     };
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
 }
@@ -479,7 +479,7 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let mut diffs: Vec<u32> =
             cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
@@ -541,12 +541,12 @@ fn hdr_input_gpu_matches_cpu() {
         let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
         let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
         let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
         // and the stage does something: the default decode of the same frame is far off
         let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
-        c.composite(&plain);
+        c.composite(&plain).expect("composite");
         let (_, _, unmanaged) = c.read_output().expect("readback");
         let apart = cpu.iter().zip(&unmanaged).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
         eprintln!("{name}: max error {error}, unmanaged differs by up to {apart}");
@@ -623,11 +623,11 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
             c.fx = None;
         }
         // the Program monitor's path (sRGB over black)
-        c.composite_prepared(&plan, Some(&prepare(&plan)));
+        c.composite_prepared(&plan, Some(&prepare(&plan))).expect("composite");
         if stage {
             // the next frame reuses the step's working textures instead of making them again
             let created = c.fx.as_ref().map(fx::FxStage::created);
-            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            c.composite_prepared(&plan, Some(&prepare(&plan))).expect("composite");
             assert_eq!(c.fx.as_ref().map(fx::FxStage::created), created, "the second frame made new working textures");
         }
         let (_, _, gpu) = c.read_output().expect("readback");

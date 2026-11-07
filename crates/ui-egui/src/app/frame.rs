@@ -127,6 +127,23 @@ impl FilmcraftApp {
     pub(super) fn poll_jobs(&mut self, ctx: &egui::Context) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
         let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
+        // Say how a finished export ended; otherwise a failure, or a file written to the default folder, goes unnoticed.
+        for j in self.session.jobs.iter().rev().take(8) {
+            if !self.session.export_offline.contains_key(&j.id) || !j.progress.finished.load(Ordering::Relaxed) || self.reported_jobs.contains(&j.id) {
+                continue;
+            }
+            let outcome = j.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match outcome {
+                Some(Ok(report)) => {
+                    let path = report.path;
+                    self.ui.status = tlf!("Exported to {path}", path);
+                }
+                Some(Err(e)) if e == "cancelled" => {}
+                Some(Err(e)) => self.ui.status = e,
+                None => continue,
+            }
+            self.reported_jobs.insert(j.id);
+        }
         // Play after rendering previews.
         if let Some((id, from)) = self.watched_render
             && let Some(j) = self.session.jobs.iter().find(|j| j.id == id)

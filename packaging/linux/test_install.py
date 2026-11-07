@@ -22,6 +22,8 @@ class InstallTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bundle = self.root / "extracted bundle"
         (self.bundle / "bin").mkdir(parents=True)
+        (self.bundle / "lib/filmcraft").mkdir(parents=True)
+        (self.bundle / "lib/filmcraft/filmcraft-bin").write_text("runtime fixture\n")
         self.share = self.bundle / "share"
         (self.share / "applications").mkdir(parents=True)
         shutil.copyfile(HERE / "install.sh", self.bundle / "install.sh")
@@ -59,6 +61,7 @@ class InstallTests(unittest.TestCase):
                     (prefix / "bin" / name).read_bytes(), (self.bundle / "bin" / name).read_bytes()
                 )
             self.assertEqual((prefix / "share/doc/filmcraft/LICENSE-MIT").read_text(), version)
+            self.assertEqual((prefix / "lib/filmcraft/filmcraft-bin").read_text(), "runtime fixture\n")
             self.assertTrue((prefix / "share/icons/hicolor/test").is_file())
             self.assertTrue((prefix / "share/mime/packages/test.xml").is_file())
             self.assertEqual(other.read_text(), "unrelated\n")
@@ -105,6 +108,24 @@ class InstallTests(unittest.TestCase):
 
     def test_help(self):
         self.assertEqual(self.install("--help").returncode, 0)
+
+    def test_appimage_apprun_resolves_binary_from_appdir(self):
+        apprun = HERE / "AppRun"
+        self.assertTrue(apprun.is_file(), "AppImage needs a path-stable AppRun wrapper")
+        appdir = self.root / "relocated AppDir"
+        binary = appdir / "usr/bin/filmcraft"
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$CAPTURE_ARGS"\n')
+        binary.chmod(0o755)
+        shutil.copy2(apprun, appdir / "AppRun")
+        capture = self.root / "args.txt"
+        result = subprocess.run(
+            [str(appdir / "AppRun"), "--version", "file with spaces"],
+            env={**os.environ, "CAPTURE_ARGS": str(capture)},
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(capture.read_text().splitlines(), ["--version", "file with spaces"])
 
     def test_release_tarball_includes_executable_installer(self):
         target = self.root / "target"

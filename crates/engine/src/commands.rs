@@ -2004,6 +2004,7 @@ fn build() -> Vec<CommandSpec> {
             s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
             Ok(s.prefs.to_value())
         }),
+        // `hardwareExport` and `hardwareEncoding` conflict: export_tools rejects the mix (nvencRequired).
         cmd!(
             "file.exportMedia",
             "Media…",

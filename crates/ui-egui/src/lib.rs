@@ -375,8 +375,15 @@ pub struct FilmcraftApp {
     pub(crate) stale_clipboard_media: Option<String>,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
+    /// Why the GPU compositor could not start on this machine. The preview then fails closed
+    /// (no CPU composite) unless the CPU compositor is chosen explicitly.
+    pub gpu_unavailable: Option<String>,
+    /// Explicit CPU compositing opt-in from the host flag (`--cpu-composite`).
+    pub cpu_composite_explicit: bool,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
+    /// Finished export jobs whose outcome the status bar already showed.
+    reported_jobs: std::collections::HashSet<u64>,
     /// The status bar's running-job text as last shown.
     job_text: Option<panels::JobText>,
     /// Running jobs' texts in the export queue and the Progress panel as last shown.
@@ -400,8 +407,7 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
-    /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
-    /// device, out of memory). The app then drops it and composites on the CPU.
+    /// Set by the device's uncaptured-error handler: GPU preview failed and must fail closed.
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Largest texture side the device accepts.
     pub max_texture: u32,

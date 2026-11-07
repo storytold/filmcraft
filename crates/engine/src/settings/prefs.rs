@@ -366,6 +366,8 @@ pub struct TimelinePrefs {
     pub add_tracks_automatically: bool,
     /// Files dropped onto the Timeline are placed directly on it.
     pub drop_import_to_timeline: bool,
+    /// Backend for Render Effects In to Out (Enter): `cpu` | `gpu`. Set from the status bar.
+    pub render_backend: String,
     /// Sequence ▸ Selection Follows Playhead: moving the playhead selects the clips under it on
     /// targeted tracks (#3089: persisted, so it survives a restart like the sibling toggles).
     pub selection_follows_playhead: bool,
@@ -395,6 +397,7 @@ impl Default for TimelinePrefs {
             match_frame_sets_in: false,
             restore_open_sequences: true,
             add_tracks_automatically: true,
+            render_backend: "cpu".into(),
             drop_import_to_timeline: true,
             selection_follows_playhead: false,
         }

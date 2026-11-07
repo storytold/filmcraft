@@ -379,3 +379,75 @@ fn hevc_damaged_samples_are_errors() {
         let _ = f.flush();
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vaapi_capability_requires_requested_codec_profile_and_matching_node() {
+    use super::{DrmNodeId, ffi, va::validate_video_probe};
+    use filmcraft_export::Format;
+    let node = DrmNodeId { major: 226, minor: 128 };
+    for codec in [Format::H264, Format::Hevc] {
+        let profile = if codec == Format::H264 { ffi::VAProfileH264Main } else { ffi::VAProfileHEVCMain };
+        let entrypoint = if codec == Format::Hevc { ffi::VAEntrypointEncSliceLP } else { ffi::VAEntrypointEncSlice };
+        let packed = if codec == Format::Hevc {
+            ffi::VA_ENC_PACKED_HEADER_SEQUENCE | ffi::VA_ENC_PACKED_HEADER_PICTURE | ffi::VA_ENC_PACKED_HEADER_SLICE
+        } else {
+            1 << 9 // recorded for H.264, but not required by its encoder
+        };
+        let caps = validate_video_probe(codec, node, Some(node), Some(0x1002), Some(0x1638), profile, entrypoint, packed, true, true).unwrap();
+        assert_eq!(caps.entrypoint, entrypoint);
+        assert_eq!(caps.packed_headers, packed);
+        for (actual, selected_profile, encode, input) in [
+            (DrmNodeId { minor: 129, ..node }, profile, true, true),
+            (node, ffi::VAProfileH264ConstrainedBaseline, true, true),
+            (node, profile, false, true),
+            (node, profile, true, false),
+        ] {
+            assert!(validate_video_probe(codec, node, Some(actual), Some(0x1002), None, selected_profile, entrypoint, packed, encode, input).is_err());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vaapi_probe_rejects_non_amd_or_unknown_node() {
+    use super::{DrmNodeId, ffi, va::validate_video_probe};
+    use filmcraft_export::Format;
+    let node = DrmNodeId { major: 226, minor: 128 };
+    for (actual, vendor) in [(Some(node), Some(0x8086)), (Some(node), None), (None, Some(0x1002))] {
+        assert!(validate_video_probe(Format::H264, node, actual, vendor, None, ffi::VAProfileH264High, ffi::VAEntrypointEncSlice, 0, true, true).is_err());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vaapi_exact_node_rejects_non_render_device_or_wrong_fd_identity() {
+    use super::{DrmNodeId, va::validate_render_node};
+    let expected = DrmNodeId { major: 226, minor: 128 };
+    assert!(validate_render_node(expected, expected, true, "renderD128").is_ok());
+    for (actual, character, name) in [
+        (expected, true, "card0"),
+        (expected, true, "renderD"),
+        (expected, true, "renderD128invalid"),
+        (expected, false, "renderD128"),
+        (DrmNodeId { minor: 129, ..expected }, true, "renderD128"),
+    ] {
+        assert!(validate_render_node(expected, actual, character, name).is_err());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vaapi_hevc_requires_all_packed_headers_but_h264_does_not() {
+    use super::{ffi, va::validate_packed_headers};
+    use filmcraft_export::Format;
+    let required = ffi::VA_ENC_PACKED_HEADER_SEQUENCE | ffi::VA_ENC_PACKED_HEADER_PICTURE | ffi::VA_ENC_PACKED_HEADER_SLICE;
+    assert!(validate_packed_headers(Format::Hevc, required).is_ok());
+    for absent in [ffi::VA_ENC_PACKED_HEADER_SEQUENCE, ffi::VA_ENC_PACKED_HEADER_PICTURE, ffi::VA_ENC_PACKED_HEADER_SLICE] {
+        assert!(validate_packed_headers(Format::Hevc, required & !absent).is_err());
+    }
+    for unsupported in [0, ffi::VA_ATTRIB_NOT_SUPPORTED] {
+        assert!(validate_packed_headers(Format::Hevc, unsupported).is_err());
+        assert!(validate_packed_headers(Format::H264, unsupported).is_ok());
+    }
+}

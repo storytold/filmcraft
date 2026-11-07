@@ -83,6 +83,7 @@
       // WebGPU was found but could not be started: try again on WebGL2 (once)
       if (!params.has("webgl") && !params.has("cpu") && /wgpu|webgpu|requestDevice|requestAdapter|GPUDevice|surface/i.test(text)) {
         params.set("webgl", "");
+        params.set("cpu", "");
         location.replace(location.pathname + "?" + params.toString().replace(/=(&|$)/g, "$1") + location.hash);
       } else {
         const s = document.getElementById("status");

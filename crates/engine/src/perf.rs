@@ -118,4 +118,15 @@ mod tests {
         assert_eq!(v["jobs"]["running"], json!(0));
         assert_eq!(s.history.undo.len(), undo, "a query adds no undo step");
     }
+
+    #[test]
+    fn export_hardware_counters_increment_per_encoded_frame() {
+        use super::export_json;
+        let frames = || export_json()["hardware"]["frames"].as_u64().expect("export.hardware.frames is a number");
+        let before = frames();
+        for _ in 0..5 {
+            filmcraft_export::note_hw_encode_frame();
+        }
+        assert_eq!(frames(), before + 5, "each picture a hardware encoder produces adds one");
+    }
 }
