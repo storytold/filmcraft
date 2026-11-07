@@ -118,8 +118,9 @@ Large XML still requires substantial memory and parses synchronously. Clips with
 timeline duration, non-finite speed or speed outside 0.001–1000, or inverted/unsupported source
 ranges are skipped with a warning naming the clip. Other clips keep their original timeline
 positions; skipped clips can leave gaps. A transition whose end precedes its start is skipped with
-a warning, preserving its clip and any valid transition. DTD/entity expansion, duplicate IDs, negative/non-integer
-timeline or source ticks, non-numeric speeds, cyclic nesting and nesting deeper than 64 levels
+a warning, preserving its clip and any valid transition. A clip slipped before its source's first
+frame (a negative in point) starts at the source start, with a warning naming the clip.
+DTD/entity expansion, duplicate IDs, negative/non-integer timeline ticks, negative out points, non-integer source ticks, non-numeric speeds, cyclic nesting and nesting deeper than 64 levels
 still produce errors. The referenced graph is validated before unsupported clips are removed,
 so skipping a clip does not bypass the corruption or resource-limit checks. A failed import removes only
 its newly created destination and leaves the editor project unchanged.
