@@ -82,6 +82,15 @@ does), so the decoder doesn't need to know.
   content uses qidx 1 and comes in under the target. Every slice is kept within the 16-bit
   size fields.
 
+### Backend seam (GPU encoding)
+
+`Encoder::encode_with(frame, Some(&mut backend))` hands the per-slice work (`SliceBackend`: forward DCT,
+bits at a quantiser, entropy coding, alpha, rate-control choice) to a backend, `filmcraft-gpu`'s compute
+shaders in the app ([ADR 0003](../../docs/adr/0003-gpu-intra-encode.md)). Rate control, headers and frame
+assembly stay here, and a backend that declines, fails or answers inconsistently makes the encoder code
+the frame itself (the returned flag says which). `encode_resident` does the same for planes the backend
+already holds. `ReferenceBackend` is the CPU test double, behind the `test-support` feature (off by default; other crates enable it in their dev-dependencies only). No new dependency.
+
 ## Accuracy (vs ffmpeg as an external oracle)
 
 `tests/it/oracle_decode.rs` decodes 29 fixtures made by ffmpeg's `prores_ks` and `prores_aw`

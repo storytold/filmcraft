@@ -71,12 +71,12 @@ and `filmcraft-cli`.
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
-| `gpu` | L3 | wgpu compositor (WGSL); decodes ProRes and DNxHD / DNxHR in compute shaders for the monitors ([ADR 0002](adr/0002-gpu-intra-decode.md)) |
+| `gpu` | L3 | wgpu compositor (WGSL); decodes ProRes and DNxHD / DNxHR in compute shaders for the monitors ([ADR 0002](adr/0002-gpu-intra-decode.md)) and encodes them for export ([ADR 0003](adr/0003-gpu-intra-encode.md)) |
 | `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
 | `scopes` | L3 | video scope maths: waveform, parade, histogram, YUV / HLS vectorscopes, numeric summaries ([crates/scopes/README.md](../crates/scopes/README.md)) |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
-| `gpu-export` | L4 | glue the apps register: `gpu`'s export renderer and ProRes / DNxHR encoders behind `export`'s hooks, paired on one device so a rendered frame stays on the GPU into the encoder (ADR 0003 Step 2) |
+| `gpu-export` | L4 | glue the apps register: `gpu`'s export renderer and ProRes / DNxHR encoders behind `export`'s hooks, paired on one device so a rendered frame stays on the GPU into the encoder ([ADR 0003](adr/0003-gpu-intra-encode.md)) |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
@@ -282,6 +282,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Decoders run slices on rayon, so an export worker waiting inside a decode can pick up another
   frame of the same source. A request that finds the shared decoder busy decodes with a private
   decoder.
+- **GPU ProRes / DNx encoding.** The same Hardware encoding setting (`Auto`; for ProRes and DNxHR the Export
+  panel shows it as GPU Encoding) also lets
+  `filmcraft-gpu-export` register wgpu compute encoders for ProRes and DNxHR, behind the codec crates'
+  `SliceBackend` / `MacroblockBackend` ([ADR 0003](adr/0003-gpu-intra-encode.md)); output is
+  byte-identical to the software encoders, which take any frame the GPU declines.
 - **Hardware encoding.** On Windows and 64-bit Linux, `platform::nvenc::export::factory` is registered with
   `filmcraft_export::register_encoder` (`register()` does this once), in front of the software H.264
   encoder. It takes an export only when Export ▸ Hardware encoding (`ExportSettings.hardwareEncoding`,
@@ -299,7 +304,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   (`filmcraft_export::register_hdr_probe`, `hdr_available`; NVENC with 10-bit support), otherwise it is
   tone-mapped to SDR as on macOS: `register()` hands `platform::nvenc::hevc_available` to
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
-  and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
+  and choosing it is the opt-in (the Hardware encoding toggle governs H.264 and the GPU ProRes / DNx encoders, not H.265). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
   On macOS, `platform::hardware_encode` (VideoToolbox H.264, opt-in the same way, and H.265) is
   registered likewise. It too takes the RGBA pictures as they are (`32BGRA` buffers tagged BT.709)

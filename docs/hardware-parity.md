@@ -39,8 +39,14 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
 | HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
-| ProRes | Apple silicon | software only | software | software | software |
+| ProRes | Apple silicon | software; wgpu compute encode in the app (untested on Apple GPUs, [ADR 0003](adr/0003-gpu-intra-encode.md)) | software | wgpu compute (tested on NVIDIA / Vulkan only), software fallback | wgpu compute (tested on NVIDIA / Vulkan only), software fallback |
+| DNxHD / DNxHR | n/a | software; wgpu compute encode in the app (untested on Apple GPUs, ADR 0003) | n/a | wgpu compute (tested on NVIDIA / Vulkan only), software fallback | wgpu compute (tested on NVIDIA / Vulkan only), software fallback |
 | AV1 | — | no | via plug-ins / newer GPUs | no | no |
+
+ProRes and DNxHR encode run in wgpu compute shaders (Export ▸ GPU Encoding, the Hardware encoding setting: Auto) and are
+byte-identical to the software encoder where tested; tested on NVIDIA / Vulkan only, other GPUs fall back to
+software if they cannot run it. 4K HQ frame,
+encoder alone: ProRes 42.4 → 10.6 ms, DNxHR 57.9 → 8.0 ms (RTX 4090; [performance.md](performance.md#results-gpu-prores-and-dnx-encode-adr-0003)).
 
 Measured: VideoToolbox H.264 1080p25 encode 200 fps on M1; a 9:29 timeline exported in 311 s
 against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9 dB luma PSNR
@@ -86,5 +92,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-07 | minor | ProRes and DNx encode rows: GPU compute (ADR 0003) |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

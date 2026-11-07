@@ -383,6 +383,9 @@ pub trait SliceBackend: Send {
 
 /// The quantisers of a frame from the backend: its own rate control when it has one and its
 /// answer is in range, else the encoder's over the bits the backend measures (kept in `measured`).
+/// Unlike DNxHR's, the answer is not checked against `budget`: a ProRes frame has no fixed size,
+/// so an answer that overshoots only makes a larger frame (each slice's 16-bit size fields are
+/// still checked when it is written), while a DNxHR frame must fit its constant size.
 fn backend_quantisers(backend: &mut dyn SliceBackend, budget: u64, limits: &[u64], hint: u8, measured: &mut Vec<(u8, Vec<[u32; 3]>)>) -> Option<(Vec<u8>, u8)> {
     let n = limits.len();
     if let Some((qs, qg)) = backend.choose(hint, budget, limits)

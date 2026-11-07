@@ -109,6 +109,15 @@ the prose of §7.3.1.2; we follow the prose (normative text takes precedence).
   writes QuickTime `AVdh` + PCM. The Avid-specific `ACLR`/`ADHR` sample-entry atoms are not
   written (ffmpeg and our reader don't need them).
 
+### Backend seam (GPU encoding)
+
+`Encoder::encode_with(frame, Some(&mut backend))` hands the per-macroblock work (`MacroblockBackend`: forward DCT,
+bits at a quantiser including DC differences, bit layout and coding, alpha, rate-control choice) to a backend, `filmcraft-gpu`'s compute
+shaders in the app ([ADR 0003](../../docs/adr/0003-gpu-intra-encode.md)). Rate control, headers and frame
+assembly stay here, and a backend that declines, fails or answers inconsistently makes the encoder code
+the frame itself (the returned flag says which). `encode_resident` does the same for planes the backend
+already holds. `ReferenceBackend` is the CPU test double, behind the `test-support` feature (off by default; other crates enable it in their dev-dependencies only). No new dependency.
+
 ## Accuracy (vs ffmpeg as an external oracle)
 
 `tests/it/oracle_decode.rs` decodes 22 fixtures made by ffmpeg's VC-3 encoder: CIDs 1235, 1237,

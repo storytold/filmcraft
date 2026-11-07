@@ -229,7 +229,7 @@ read-back copies each row out of the mapped buffer in one go before reading it s
 ms for the same frame on the integrated GPU).
 
 Same laptop, `cargo xtask bench --sections export --repeat 2 --hw auto` (GPU rendering Auto and
-NVENC; ProRes has no hardware encoder), best of 2, 2026-10-24:
+NVENC; this run predates the GPU ProRes encoder of ADR 0003, so `prores` encodes on the CPU), best of 2, 2026-10-24:
 
 | scene | before | after (RTX 5090) | after, integrated GPU forced (`WGPU_POWER_PREF=low`) |
 |---|---|---|---|
@@ -341,6 +341,38 @@ playback with hardware decoding: the hardware ignores draft mode (`set_draft` is
 the draft plan's box decimation of the planes, cheap next to software decoding, is now the main
 CPU cost. Zero-copy upload of the decoded `CVPixelBuffer` into wgpu (no copy-out at all) is the
 next step (issue #30).
+
+## Results (GPU ProRes and DNx encode, ADR 0003)
+
+RTX 4090 (Vulkan), Ryzen 7 7800X3D, release build, 2026-11-07. Hardware encoding Auto against Off; the
+GPU encoders are byte-identical to the CPU encoders, so the files are the same.
+
+### The encoder alone (3840x2160 HQ, 30 frames, median per frame, GPU rate control, 3 runs)
+
+`cargo test --release -p filmcraft-gpu --lib -- --ignored --nocapture prores_gpu_encode_bench dnx_gpu_encode_bench`
+
+| Codec | CPU (runs) | GPU (runs) |
+|---|---|---|
+| ProRes 422 HQ | **42.4 ms** (42.8 / 42.4 / 42.4) | **10.6 ms** (10.7 / 10.2 / 10.6) |
+| DNxHR HQ | **57.9 ms** (56.4 / 58.4 / 57.9) | **8.0 ms** (8.1 / 8.0 / 8.0) |
+
+The rate control on the GPU costs DNx about 0.7 ms per frame against CPU rate control over GPU-measured
+bits (about 7.5 to 8.2 ms, measured when it landed); ProRes is within noise.
+
+### UHD exports (100 frames, `stage_times()` = `perf.stats` `export.stages`, median of 3)
+
+`cargo test --release -p filmcraft-gpu --test export_pipeline -- --ignored --nocapture bench_uhd`
+
+| Export | CPU (render + encode Off) | GPU, read-back | GPU, resident |
+|---|---:|---:|---:|
+| ProRes 422 HQ | 6.98 s | 3.83 s | **0.99 s** |
+| DNxHR HQX | 9.14 s | 4.06 s | **1.05 s** |
+
+Resident means the rendered frame stays on the GPU into the encoder (post-render conversion in a
+compute pass); resident exports are encode-bound (the renderer's wait is 0). Overlay and HDR exports
+take the read-back path. The encoders stay byte-identical to the CPU's, but the resident post-render
+conversion is not bit-identical to the CPU's, so resident files differ slightly from read-back ones
+(within 0.1 dB PSNR, `resident_export_matches_the_read_back_export`). Not measured: AMD, Intel and Apple GPUs.
 
 ## Results (HW2: VideoToolbox hardware H.264 encoding, built-in → hardware)
 
