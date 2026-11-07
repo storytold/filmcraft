@@ -94,6 +94,12 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     }
 }
 /// Delete/Ripple Delete with no explicit clips and both clips and captions selected (Select All).
+/// The selected captions a Clear / Ripple Delete can still take after the clip edit: the ripple of
+/// a clip removes the captions of sync-locked caption tracks that lay inside its range, and
+/// captions on a locked track stay.
+fn deletable_captions(q: &filmcraft_project::Sequence, caps: &[ClipId]) -> Vec<ClipId> {
+    caps.iter().copied().filter(|c| q.find_caption(*c).is_some_and(|(t, _)| q.caption_track(t).is_some_and(|t| !t.locked))).collect()
+}
 fn clips_and_captions_selected(s: &Session, p: &Value) -> bool {
     p.get("clips").is_none() && p.get("clip").is_none() && !s.state.selection.is_empty() && !s.state.caption_selection.is_empty()
 }
@@ -2054,10 +2060,11 @@ fn build() -> Vec<CommandSpec> {
                 s.edit_sequence("Clear", |q, _, st| {
                     edit::delete_items(q, &sel);
                     st.selection.clear();
-                    if !caps.is_empty() {
-                        edit::captions::delete_captions(q, &caps, false)?;
-                        st.caption_selection.retain(|c| !caps.contains(c));
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, false)?;
                     }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2094,10 +2101,11 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     st.selection.clear();
-                    if !caps.is_empty() {
-                        edit::captions::delete_captions(q, &caps, true)?;
-                        st.caption_selection.retain(|c| !caps.contains(c));
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, true)?;
                     }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)

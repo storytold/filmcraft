@@ -387,6 +387,35 @@ fn select_all_then_delete_removes_clips_and_captions_in_one_undo() {
 }
 
 #[test]
+fn select_all_then_delete_with_a_caption_inside_a_deleted_clip_and_a_locked_track() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        // a caption lying inside the clips: the clip ripple takes it before the caption delete runs
+        let mut s = demo("gt-caption-inside-delete");
+        s.execute("captions.add", json!({"text": "Inside", "seconds": 1, "durationSeconds": 2})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        assert!(!s.state.caption_selection.is_empty());
+        s.execute(cmd, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.all_tracks().map(|t| t.items.len()).sum::<usize>(), 0, "{cmd}: clips gone");
+        assert_eq!(q.caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), 0, "{cmd}: caption gone");
+        assert!(s.state.caption_selection.is_empty());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().all_tracks().any(|t| !t.items.is_empty()), "{cmd}: one undo restores");
+        // a caption on a locked track stays, and stays selected; the clips still go
+        let mut s = demo("gt-caption-locked-delete");
+        s.execute("captions.add", json!({"text": "Locked", "seconds": 600, "durationSeconds": 2})).unwrap();
+        s.execute("captions.setTrack", json!({"track": "C1", "locked": true})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        let caps = s.state.caption_selection.clone();
+        s.execute(cmd, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.all_tracks().map(|t| t.items.len()).sum::<usize>(), 0, "{cmd}: the clips go");
+        assert_eq!(q.caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), caps.len(), "{cmd}: the locked caption stays");
+        assert_eq!(s.state.caption_selection, caps);
+    }
+}
+
+#[test]
 fn explicit_clip_deletion_keeps_selected_captions_and_rejects_invalid_targets() {
     for cmd in ["edit.clear", "edit.rippleDelete"] {
         let mut s = demo("gt-caption-explicit-delete");
