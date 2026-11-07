@@ -97,7 +97,12 @@ values are rejected. Integer timeline ticks are preserved in every case. Media a
 `ObjectURef` through the document's ID maps. Sequences are keyed by ObjectUID. Clip labels and
 duplicate sequence/media display names do not affect a resolved reference. If the chain cannot
 be resolved, an unambiguous title match is used with a warning; ambiguous fallbacks stay offline.
-Only timeline-referenced media is imported; unused bin media and bin organization
+Subclips in the project panel (`Project/RootProjectItem` → `ClipProjectItem/MasterClip`, whose media
+source `Content` holds `StartBoundary`/`EndBoundary` and `BoundariesAreHard`) are imported as FilmCraft
+subclips named after their master clip, on media shared with the timeline when it is the same file;
+their parent media is probed like timeline media. Unreadable or inverted boundaries skip the subclip
+with a warning. Timeline clips keep referencing the parent media with their absolute source range.
+Otherwise only timeline-referenced media is imported; unused bin media and bin organization
 are not reconstructed. Reverse/time-remapped clips, unmapped native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
