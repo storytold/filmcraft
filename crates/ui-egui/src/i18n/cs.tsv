@@ -3780,3 +3780,19 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10bitové 4:2:0) ve velikosti sekvence, konstantní kvalita CRF 16, AAC 320 kb/s; 10bitový master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10bitové 4:2:0, každý snímek klíčový), CRF 12, AAC 320 kb/s; mezilehlý formát vhodný pro střih
+
+# Czech catch-up: strings `cargo xtask i18n-report` lists after merging main on 2026-11-07
+# (preset library, Full Screen Program Monitor, Remove Attributes hint).
+	From preset file:	Ze souboru přednastavení:
+	Full Screen Program Monitor	Programový monitor na celou obrazovku
+	Imported {n} preset(s)	Importovaná přednastavení: {n}
+	Imported {n} preset(s); not imported: {error}	Importovaná přednastavení: {n}; neimportováno: {error}
+	Imported {n} preset(s); {skipped} skipped	Importovaná přednastavení: {n}; přeskočeno: {skipped}
+	Imported {n} preset(s); {warnings} with unsupported parameters	Importovaná přednastavení: {n}; s nepodporovanými parametry: {warnings}
+	No presets folder: the app has no data directory	Složka přednastavení neexistuje: aplikace nemá datový adresář
+	Open Presets Folder	Otevřít složku přednastavení
+	Preset library is up to date	Knihovna přednastavení je aktuální
+	Preset library updated	Knihovna přednastavení byla aktualizována
+	Preset library updated: {imported} loaded, {removed} removed	Knihovna přednastavení byla aktualizována: načteno {imported}, odebráno {removed}
+	Scan Presets Folder	Prohledat složku přednastavení
+	Ticked attributes are removed from the selected clips.	Zaškrtnuté atributy budou z vybraných klipů odebrány.
