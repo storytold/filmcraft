@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::Az => Some(include_str!("az.tsv")),
     }
 }
 
@@ -73,6 +74,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
         (Language::Tr, "Türkçe"),
+        (Language::Az, "Azərbaycanca"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -527,6 +529,7 @@ fn language_commands_switch_and_persist_without_a_document() {
         ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
         ("swedish", Language::Sv, "sv", "Svenska", Some(("app.language.italian", "Italiano"))),
         ("turkish", Language::Tr, "tr", "Türkçe", Some(("app.language.italian", "Italiano"))),
+        ("azerbaijani", Language::Az, "az", "Azərbaycanca", Some(("app.language.italian", "Italiano"))),
         ("bosnian", Language::Bs, "bs", "Bosanski", Some(("app.language.italian", "Italiano"))),
     ] {
         switch_and_check(&mut app, &ctx, name, lang, code, own, earlier);
@@ -603,7 +606,10 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
         assert_eq!(l(&[tag]), Language::Tr, "{tag}");
     }
-    for none in [&["ita"][..], &["i"], &["-it"]] {
+    for tag in ["az", "AZ", "az-AZ", "az_AZ.UTF-8", "az_AZ"] {
+        assert_eq!(l(&[tag]), Language::Az, "{tag}");
+    }
+    for none in [&["ita"][..], &["i"], &["-it"], &["aze"], &["a"], &["-az"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
@@ -874,6 +880,18 @@ fn turkish_renders_with_bundled_fonts() {
     let alphabet = "ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZabcçdefgğhıijklmnoöprsştuüvyz";
     let letters = entries.iter().flat_map(|(_, _, tr)| tr.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
     assert_bundled_fonts_cover(alphabet.chars().chain(Language::Tr.name().chars()).chain(letters));
+}
+
+#[test]
+fn azerbaijani_casing_and_fonts() {
+    assert_eq!(Language::Az.to_uppercase("i"), "İ");
+    assert_eq!(Language::Az.to_uppercase("ı"), "I");
+    assert_eq!(Language::Az.to_lowercase("İ"), "i");
+    assert_eq!(Language::Az.to_lowercase("I"), "ı");
+    let (entries, _) = catalog::parse_entries(include_str!("az.tsv"));
+    let alphabet = "ABCÇDEƏFGĞHXIİJKQLMNOÖPRSŞTUÜVYZabcçdeəfgğhxıijkqlmnoöprsştuüvyz";
+    let letters = entries.iter().flat_map(|(_, _, az)| az.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Az.name().chars()).chain(letters));
 }
 
 /// Every Bosnian locale, with region, script or encoding, picks the Bosnian catalog.
