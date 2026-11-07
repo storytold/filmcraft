@@ -90,7 +90,6 @@ fn device_failed() -> bool {
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
@@ -149,6 +148,11 @@ impl ExportRenderer {
         self.compositor.caps()
     }
 
+    /// Pictures decoded by the compositor's compute shaders, and those it handed to the CPU.
+    pub fn intra_decodes(&self) -> (u64, u64) {
+        self.compositor.intra_decodes()
+    }
+
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
@@ -162,14 +166,33 @@ impl ExportRenderer {
                 }
                 let prep = prepare(&plan);
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                // A picture the GPU decoded (ProRes, DNx) and found corrupt is marked once the
+                // GPU's report is read back: the monitors show its CPU decode from the next frame
+                // on, but an exported frame is final, so this one goes to the CPU renderer.
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
                 // an error reported while this frame was drawn leaves its pixels untrusted
-                if device_failed() {
+                if device_failed() || has_corrupt_coded_picture(&plan) {
                     return None;
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }
+    }
+}
+
+/// Whether a layer of `plan` is a coded picture the GPU decode found corrupt.
+fn has_corrupt_coded_picture(plan: &FramePlan) -> bool {
+    let corrupt =
+        |layers: &[filmcraft_render::plan::PlanLayer]| layers.iter().any(|l| matches!(&l.frame.data, filmcraft_frame::PixelData::Coded(c) if c.gpu_failed()));
+    match plan {
+        FramePlan::Layers { layers, .. } => corrupt(layers),
+        FramePlan::Composite { steps, .. } => steps.iter().any(|s| match s {
+            filmcraft_render::plan::PlanStep::Layers(layers) => corrupt(layers),
+            filmcraft_render::plan::PlanStep::Transition { inputs, .. } => inputs.iter().any(|ls| corrupt(ls)),
+            filmcraft_render::plan::PlanStep::Adjust { .. } => false,
+        }),
+        FramePlan::Image(_) => false,
     }
 }
 

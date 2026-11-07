@@ -2250,6 +2250,7 @@ dependencies = [
  "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-prores",
