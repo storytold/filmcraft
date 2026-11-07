@@ -1348,13 +1348,9 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
     if !has_v && !has_a {
         return Err(EngineError::Other("no destination track for this media (check source patching)".into()));
     }
-    let src_size = match &pi.kind {
-        ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
-        ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
-        ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
-        _ => None,
-    }
-    .unwrap_or((1920, 1080));
+    // the size of the picture the item shows (a subclip shows its parent's, a graphic its canvas),
+    // as the renderer measures it (#3933)
+    let src_size = s.project.source_size(item).unwrap_or((1920, 1080));
     // `None`: drawn in the pixels of the sequence it is placed in
     let src_par = s.project.source_par(item);
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
