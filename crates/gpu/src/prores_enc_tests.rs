@@ -5,11 +5,12 @@
 use std::process::Command;
 
 use filmcraft_prores::{
-    ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, SliceBackend, decode_frame, decode_frame_with, frame_layout, rate_control_for_tests,
+    ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Interlace, Profile, SliceBackend, decode_frame, decode_frame_with, frame_layout,
+    rate_control_for_tests,
 };
 
 use crate::intra_enc::fits;
-use crate::prores_enc::{ProResGpuEncoder, RC_ROUNDS};
+use crate::prores_enc::{C_INV, C_SCAN, C_SCAN_INTERLACED, ProResGpuEncoder, RC_ROUNDS, consts};
 
 fn encoder(test: &str) -> Option<ProResGpuEncoder> {
     let e = ProResGpuEncoder::new();
@@ -340,14 +341,100 @@ fn a_second_device_error_retires_the_backend() {
     assert_eq!(gpu, cpu);
 }
 
+/// Interlaced frames (two field pictures, either field first) of every profile at 1080i: the GPU
+/// codes them, and they meet the bar of a progressive frame.
 #[test]
-fn interlaced_frames_are_declined() {
-    let Some(mut enc) = encoder("interlaced_frames_are_declined") else { return };
+fn gpu_interlaced_prores_matches_the_cpu_quality() {
+    let Some(mut enc) = encoder("gpu_interlaced_prores_matches_the_cpu_quality") else { return };
+    let (mut failures, mut same, mut total) = (Vec::new(), 0usize, 0usize);
+    for interlace in [Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+        for profile in Profile::ALL {
+            let alpha = profile.chroma() == ChromaFormat::Yuv444;
+            let (w, h) = (1920, 1080);
+            let cfg = EncoderConfig { interlace, encode_alpha: alpha, ..EncoderConfig::new(profile, w, h) };
+            let frame = test_frame(profile, w, h, alpha, 21);
+            let name = format!("{interlace:?} {profile:?} {w}x{h}");
+            let (cpu, gpu, used) = both(&mut enc, &cfg, &frame);
+            assert!(used, "{name}: the GPU did not encode the frame");
+            check_frame(&name, &cpu, &gpu, &frame, &mut failures);
+            if let Ok(l) = frame_layout(&gpu) {
+                assert_eq!(l.header.interlace, interlace, "{name}");
+            }
+            total += 1;
+            same += usize::from(cpu == gpu);
+        }
+    }
+    eprintln!("interlaced 1080: byte-identical {same}/{total}");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Interlaced frames at odd sizes and every slice width (the bottom field one line shorter, edge
+/// replication within each field), alpha too: as good as the CPU's, mostly byte-identical.
+#[test]
+fn gpu_interlaced_prores_odd_sizes_match_the_cpu() {
+    let Some(mut enc) = encoder("gpu_interlaced_prores_odd_sizes_match_the_cpu") else { return };
+    let (mut failures, mut same, mut total, mut differ) = (Vec::new(), 0usize, 0usize, Vec::new());
+    for interlace in [Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+        for c in cases().into_iter().filter(|c| c.cfg.height >= 2) {
+            let cfg = EncoderConfig { interlace, ..c.cfg };
+            let name = format!("{interlace:?} {}", c.name);
+            let (cpu, gpu, used) = both(&mut enc, &cfg, &c.frame);
+            assert!(used, "{name}: the GPU did not encode the frame");
+            check_frame(&name, &cpu, &gpu, &c.frame, &mut failures);
+            total += 1;
+            if cpu == gpu {
+                same += 1;
+            } else {
+                differ.push(name);
+            }
+        }
+        for (profile, w, h) in [(Profile::Hq, 16, 2), (Profile::Lt, 33, 3), (Profile::P4444, 70, 37)] {
+            let alpha = profile.chroma() == ChromaFormat::Yuv444;
+            let cfg = EncoderConfig { interlace, encode_alpha: alpha, ..EncoderConfig::new(profile, w, h) };
+            let frame = test_frame(profile, w, h, alpha, 5);
+            let name = format!("{interlace:?} {profile:?} {w}x{h}");
+            let (cpu, gpu, used) = both(&mut enc, &cfg, &frame);
+            assert!(used, "{name}: the GPU did not encode the frame");
+            check_frame(&name, &cpu, &gpu, &frame, &mut failures);
+            total += 1;
+            if cpu == gpu {
+                same += 1;
+            } else {
+                differ.push(name);
+            }
+        }
+    }
+    eprintln!("interlaced: byte-identical {same}/{total}; differing: {differ:?}");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(same * 10 >= total * 9, "only {same}/{total} frames byte-identical: {differ:?}");
+}
+
+/// The input frame's own interlace flag is metadata the CPU encoder does not read: the field
+/// structure is the configuration's, on the GPU as on the CPU.
+#[test]
+fn the_frames_interlace_flag_does_not_change_the_coding() {
+    let Some(mut enc) = encoder("the_frames_interlace_flag_does_not_change_the_coding") else { return };
     let (profile, w, h) = (Profile::Hq, 64, 48);
     let cfg = EncoderConfig::new(profile, w, h);
     let mut frame = test_frame(profile, w, h, false, 6);
-    frame.interlace = filmcraft_prores::Interlace::TopFieldFirst;
-    assert!(!enc.load(&cfg, &frame, &Encoder::with_config(cfg.clone()).slice_jobs()));
+    frame.interlace = Interlace::TopFieldFirst;
+    let (cpu, gpu, used) = both(&mut enc, &cfg, &frame);
+    assert!(used);
+    assert_eq!(frame_layout(&gpu).unwrap().header.interlace, Interlace::Progressive);
+    assert_eq!(gpu, cpu);
+}
+
+/// The constants hold both scan orders and every quantiser's step, none over another.
+#[test]
+fn the_constants_keep_both_scans() {
+    let c = consts();
+    let words = |at: usize| c.get(at..at + 64).unwrap().to_vec();
+    let scan = |s: &[u8; 64]| s.iter().map(|&v| u32::from(v)).collect::<Vec<u32>>();
+    assert_eq!(words(C_SCAN), scan(&filmcraft_prores::layout::tables::SCAN_PROGRESSIVE));
+    assert_eq!(words(C_SCAN_INTERLACED), scan(&filmcraft_prores::layout::tables::SCAN_INTERLACED));
+    let inv = c.get(C_INV..C_SCAN_INTERLACED).unwrap();
+    assert_eq!(inv.len(), 225);
+    assert!(inv.iter().skip(1).all(|&w| f32::from_bits(w) > 0.0 && f32::from_bits(w) <= 0.25));
 }
 
 /// A QuickTime file of `frames` (one ProRes track).
@@ -427,6 +514,69 @@ fn gpu_prores_frames_decode_in_ffmpeg() {
         }
         if at != raw.len() {
             failures.push(format!("{name}: ffmpeg returned {} samples, we decode {at}", raw.len()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// GPU-coded interlaced frames, top and bottom field first: ffmpeg decodes them without an error,
+/// agrees with our decoder within a code, and reports the coded field order on every frame.
+#[test]
+fn gpu_interlaced_prores_frames_decode_in_ffmpeg() {
+    let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("gpu interlaced prores encode") else { return };
+    let Some(probe) = filmcraft_testkit::ffprobe_or_skip("gpu interlaced prores field order") else { return };
+    let Some(mut enc) = encoder("gpu_interlaced_prores_frames_decode_in_ffmpeg") else { return };
+    let dir = filmcraft_testkit::fixtures_dir("gpu-prores-enc");
+    let mut failures = Vec::new();
+    for (interlace, tff) in [(Interlace::TopFieldFirst, "1"), (Interlace::BottomFieldFirst, "0")] {
+        for (profile, w, h, alpha) in [(Profile::Hq, 1920, 1080, false), (Profile::Lt, 720, 487, false), (Profile::P4444, 333, 201, true)] {
+            let name = format!("il_{interlace:?}_{profile:?}_{w}x{h}");
+            let cfg = EncoderConfig { interlace, encode_alpha: alpha, ..EncoderConfig::new(profile, w, h) };
+            let mut e = Encoder::with_config(cfg);
+            let coded: Vec<Vec<u8>> = (0..2)
+                .map(|i| {
+                    let (c, used) = e.encode_with(&test_frame(profile, w, h, alpha, 31 + i), Some(&mut enc)).unwrap();
+                    assert!(used, "{name}");
+                    c
+                })
+                .collect();
+            let path = dir.join(format!("{name}.mov"));
+            std::fs::write(&path, mov(profile, w, h, &coded)).unwrap();
+            let fmt = if alpha { "yuva444p12le" } else { "yuv422p10le" };
+            let out = Command::new(&ff)
+                .args(["-hide_banner", "-loglevel", "error", "-xerror", "-i"])
+                .arg(&path)
+                .args(["-f", "rawvideo", "-pix_fmt", fmt, "-"])
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !out.status.success() || !err.trim().is_empty() {
+                failures.push(format!("{name}: ffmpeg: {err}"));
+                continue;
+            }
+            let raw: Vec<u16> = out.stdout.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+            let mut at = 0usize;
+            for (i, c) in coded.iter().enumerate() {
+                let ours = decode_frame(c).unwrap();
+                for p in [Some(&ours.y), Some(&ours.cb), Some(&ours.cr), ours.alpha.as_ref()].into_iter().flatten() {
+                    let max = raw.get(at..at + p.len()).map(|t| p.iter().zip(t).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0));
+                    if max.is_none_or(|m| m > 1) {
+                        failures.push(format!("{name} #{i}: ffmpeg's decode differs by {max:?}"));
+                    }
+                    at += p.len();
+                }
+            }
+            // the decoder reads the field order from every frame header
+            let frames = Command::new(&probe)
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=interlaced_frame,top_field_first", "-of", "csv=p=0"])
+                .arg(&path)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&frames.stdout);
+            let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            if lines.len() != coded.len() || lines.iter().any(|l| *l != format!("1,{tff}")) {
+                failures.push(format!("{name}: ffprobe reports {lines:?}, want 1,{tff} per frame"));
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -10,12 +10,17 @@
 //! chose, for `bits`); `bits(q)` measures every slice at `q` and its two neighbours in one dispatch
 //! and keeps the answers for the frame; `write` codes every component into its own word-aligned
 //! range and reads back only those ranges.
+//!
+//! An interlaced frame is two field pictures: the coefficients, slice records and alpha regions of
+//! the second follow the first's as if its macroblock rows continued the frame's, `fdct` and `alpha`
+//! read every second line of the field's parity, and every component is coded with the interlaced
+//! scan. The CPU encoder writes the two picture headers.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use filmcraft_prores::layout::tables;
-use filmcraft_prores::{ChromaFormat, EncoderConfig, Frame, Interlace, SliceBackend, SliceJob};
+use filmcraft_prores::{ChromaFormat, EncoderConfig, Frame, Interlace, SliceBackend, SliceJob, picture_lines};
 
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
 use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
@@ -29,13 +34,15 @@ use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_
 /// can start to fit. (The size guard raises each slice on its own, in one pass after the rounds.)
 pub(crate) const RC_ROUNDS: usize = 16;
 
-/// Words of the constants (see `prores_enc.wgsl`): basis, scan, codebooks, AC rounding and
-/// contexts, then `1 / (4 qscale(q))` for every quantiser index from `C_INV`.
-const C_SCAN: usize = 64;
+/// Words of the constants (see `prores_enc.wgsl`): basis, progressive scan, codebooks, AC rounding
+/// and contexts, `1 / (4 qscale(q))` for every quantiser index from `C_INV`, then the interlaced
+/// scan.
+pub(crate) const C_SCAN: usize = 64;
 const C_CB: usize = 128;
 const C_AC_ROUND: usize = 162;
-const C_INV: usize = 192;
-const CONST_WORDS: usize = C_INV + 225;
+pub(crate) const C_INV: usize = 192;
+pub(crate) const C_SCAN_INTERLACED: usize = C_INV + 225;
+const CONST_WORDS: usize = C_SCAN_INTERLACED + 64;
 /// Quantiser indices the encoder uses (RDD 36 allows 1..=224).
 const Q_RANGE: std::ops::RangeInclusive<u8> = 1..=224;
 /// Worst-case words of a macroblock's coded alpha: 256 values of at most 18 bits each.
@@ -55,7 +62,7 @@ const RC_SLOTS: u64 = 16;
 /// at the uniform quantiser and the finer one (for the cache of `bits`).
 type Choice = (Vec<u8>, u8, Vec<(u8, Vec<[u32; 3]>)>);
 
-/// `Params` in `prores_enc.wgsl` (24 words).
+/// `Params` in `prores_enc.wgsl` (28 words).
 #[derive(Clone, Copy, Default)]
 struct Params {
     n_slices: u32,
@@ -76,6 +83,13 @@ struct Params {
     qv: [u32; 4],
     total_blocks: u32,
     mbcol_base: u32,
+    /// Frame lines between a picture's lines (1, or 2 for fields), each picture's first frame
+    /// line and its number of lines.
+    step: u32,
+    first: [u32; 2],
+    lines: [u32; 2],
+    /// Word offset of the scan order in the constants.
+    scan: u32,
 }
 
 impl Params {
@@ -104,8 +118,12 @@ impl Params {
             q3,
             self.total_blocks,
             self.mbcol_base,
-            0,
-            0,
+            self.step,
+            self.first[0],
+            self.first[1],
+            self.lines[0],
+            self.lines[1],
+            self.scan,
         ])
     }
 }
@@ -128,8 +146,8 @@ impl Plan {
     fn new(cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob], limits: &wgpu::Limits) -> Option<Plan> {
         let (w, h) = (cfg.width, cfg.height);
         let chroma = cfg.profile.chroma();
-        if frame.width != w || frame.height != h || frame.chroma != chroma || frame.interlace != Interlace::Progressive || !(8..=16).contains(&frame.bit_depth)
-        {
+        // (the frame's own interlace flag is metadata: the configuration says how it is coded)
+        if frame.width != w || frame.height != h || frame.chroma != chroma || !(8..=16).contains(&frame.bit_depth) {
             return None;
         }
         let cw = chroma.chroma_width(w);
@@ -139,16 +157,19 @@ impl Plan {
         if short(&frame.y, luma) || short(&frame.cb, croma) || short(&frame.cr, croma) || (alpha && frame.alpha.as_deref().is_none_or(|a| short(a, luma))) {
             return None;
         }
-        let (mb_w, mb_h) = (w.div_ceil(16), h.div_ceil(16));
+        let pics = Pictures::new(cfg.interlace, h)?;
+        let (mb_w, mb_h) = (w.div_ceil(16), pics.mb_rows);
         let cpm: u32 = if chroma == ChromaFormat::Yuv444 { 4 } else { 2 };
         let bpm = 4 + 2 * cpm;
-        let (slice_words, mbcol_base) = slice_table(jobs, mb_w, mb_h, bpm)?;
-        let total_blocks = u64::from(mb_w) * u64::from(mb_h) * u64::from(bpm);
+        let (slice_words, mbcol_base) = slice_table(jobs, mb_w, mb_h, pics.count, bpm)?;
+        // the pictures' macroblock rows, one after the other
+        let rows = u64::from(mb_h) * u64::from(pics.count);
+        let total_blocks = u64::from(mb_w) * rows * u64::from(bpm);
         let samples = luma + 2 * croma + if alpha { luma } else { 0 };
         let plane_bytes = (samples * 2).next_multiple_of(4);
         let coeff_bytes = total_blocks * 64 * 4;
         let n = jobs.len();
-        let alpha_bytes = if alpha { (n as u64 + u64::from(mb_w) * u64::from(mb_h) * ALPHA_WORDS_PER_MB) * 4 } else { 16 };
+        let alpha_bytes = if alpha { (n as u64 + u64::from(mb_w) * rows * ALPHA_WORDS_PER_MB) * 4 } else { 16 };
         let biggest = plane_bytes.max(alpha_bytes).max(slice_words.len() as u64 * 4);
         let maxg = limits.max_compute_workgroups_per_dimension;
         if !fits(limits, coeff_bytes, biggest, w, h)
@@ -177,22 +198,52 @@ impl Plan {
             qv: [0; 4],
             total_blocks: u32::try_from(total_blocks).ok()?,
             mbcol_base,
+            step: pics.step,
+            first: pics.first,
+            lines: pics.lines,
+            scan: u32::try_from(if pics.count == 2 { C_SCAN_INTERLACED } else { C_SCAN }).ok()?,
         };
         let mbs = jobs.iter().map(|j| j.mbs).collect();
         Some(Plan { params, n, alpha, mbs, slice_words, plane_bytes, coeff_bytes, alpha_bytes })
     }
 }
 
-/// The slice records (mb_x, mb_y, mbs, first block) and the macroblock-column table (first column
-/// of the slice | its width << 16) with its word offset. `None` unless `jobs` cover the frame in
-/// coded order with the same slices in every row.
-fn slice_table(jobs: &[SliceJob], mb_w: u32, mb_h: u32, bpm: u32) -> Option<(Vec<u32>, u32)> {
+/// The coded pictures of a frame: one, or an interlaced frame's two fields.
+struct Pictures {
+    count: u32,
+    /// Macroblock rows of every picture.
+    mb_rows: u32,
+    step: u32,
+    first: [u32; 2],
+    lines: [u32; 2],
+}
+
+impl Pictures {
+    /// `None` for an interlaced frame of fewer than two lines (the encoder refuses it).
+    fn new(interlace: Interlace, h: u32) -> Option<Pictures> {
+        let count = if interlace == Interlace::Progressive { 1 } else { 2 };
+        let ((f0, step), (f1, _)) = (picture_lines(interlace, 0), picture_lines(interlace, 1));
+        let lines = |first: u32| h.saturating_sub(first).div_ceil(step.max(1));
+        let first = [f0, if count == 2 { f1 } else { 0 }];
+        let lines = [lines(first[0]), if count == 2 { lines(first[1]) } else { 0 }];
+        if lines.get(..count as usize)?.contains(&0) {
+            return None;
+        }
+        Some(Pictures { count, mb_rows: h.div_ceil(16 * step), step, first, lines })
+    }
+}
+
+/// The slice records (mb_x, macroblock row counted over the pictures one after the other, mbs,
+/// first block) and the macroblock-column table (first column of the slice | its width << 16) with
+/// its word offset. `None` unless `jobs` cover every picture in coded order with the same slices in
+/// every row.
+fn slice_table(jobs: &[SliceJob], mb_w: u32, mb_h: u32, pictures: u32, bpm: u32) -> Option<(Vec<u32>, u32)> {
     let mut words = Vec::with_capacity(jobs.len() * 4 + mb_w as usize);
     let mut cols = vec![u32::MAX; mb_w as usize];
-    let (mut x, mut y) = (0u32, 0u32);
+    let (mut x, mut y, mut p) = (0u32, 0u32, 0u32);
     for j in jobs {
         let end = j.mb_x.checked_add(j.mbs)?;
-        if j.mb_x != x || j.mb_y != y || !matches!(j.mbs, 1 | 2 | 4 | 8) || end > mb_w || y >= mb_h {
+        if j.mb_x != x || j.mb_y != y || j.picture != p || !matches!(j.mbs, 1 | 2 | 4 | 8) || end > mb_w || y >= mb_h || p >= pictures {
             return None;
         }
         let col = j.mb_x | j.mbs << 16;
@@ -202,11 +253,15 @@ fn slice_table(jobs: &[SliceJob], mb_w: u32, mb_h: u32, bpm: u32) -> Option<(Vec
             }
             *c = col;
         }
-        let first = (y.checked_mul(mb_w)?.checked_add(x)?).checked_mul(bpm)?;
-        words.extend_from_slice(&[j.mb_x, j.mb_y, j.mbs, first]);
+        let row = p.checked_mul(mb_h)?.checked_add(y)?;
+        let first = (row.checked_mul(mb_w)?.checked_add(x)?).checked_mul(bpm)?;
+        words.extend_from_slice(&[j.mb_x, row, j.mbs, first]);
         (x, y) = if end == mb_w { (0, y + 1) } else { (end, y) };
+        if y == mb_h {
+            (y, p) = (0, p + 1);
+        }
     }
-    if (x, y) != (0, mb_h) {
+    if (x, y, p) != (0, 0, pictures) {
         return None;
     }
     let base = u32::try_from(words.len()).ok()?;
@@ -637,12 +692,15 @@ fn parse_choice(words: &[u32], n: usize) -> Result<Choice, Fail> {
 }
 
 /// The constants `prores_enc.wgsl` reads (see the shader).
-fn consts() -> Vec<u32> {
+pub(crate) fn consts() -> Vec<u32> {
     let mut c = vec![0u32; CONST_WORDS];
     for (d, b) in c.iter_mut().zip(tables::basis().iter().flatten()) {
         *d = b.to_bits();
     }
     for (d, &s) in c.iter_mut().skip(C_SCAN).zip(tables::SCAN_PROGRESSIVE.iter()) {
+        *d = u32::from(s);
+    }
+    for (d, &s) in c.iter_mut().skip(C_SCAN_INTERLACED).zip(tables::SCAN_INTERLACED.iter()) {
         *d = u32::from(s);
     }
     let cb = |(rice, exp, rq): (u8, u8, u8)| u32::from(rice) | u32::from(exp) << 8 | u32::from(rq) << 16;
@@ -654,7 +712,7 @@ fn consts() -> Vec<u32> {
         *d = v;
     }
     // the CPU encoder's own expression, so the quantisers agree bit for bit
-    for (q, d) in c.iter_mut().skip(C_INV).enumerate() {
+    for (q, d) in c.iter_mut().skip(C_INV).take(C_SCAN_INTERLACED - C_INV).enumerate() {
         *d = (1.0 / (4.0 * tables::qscale(q as u8) as f32)).to_bits();
     }
     c

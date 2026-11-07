@@ -12,6 +12,12 @@
 // - `alpha`: one invocation per slice runs `encode_alpha_slice` (16-bit alpha, run-length coded)
 //   into the slice's worst-case region; `alpha_pack` packs the regions' coded bytes together.
 //
+// An interlaced frame is two field pictures, each `mb_h` macroblock rows of every second frame
+// line (`first[p]`, `first[p] + step`, …, `lines[p]` of them). Macroblock rows are counted over the
+// pictures one after the other (the second picture's row 0 is row `mb_h`), so the coefficients,
+// the slice records and the alpha regions of the second picture follow the first's. Every
+// component is coded with the scan at `scan` (progressive or interlaced).
+//
 // Words in `outp` hold the stream's bytes in order (the first byte in the low eight bits), so the
 // host reads the coded bytes as they are. A write past a component's range, a length that is not
 // the one measured, or a value outside the code's range counts in `status` (word 0 for `bits` and
@@ -45,19 +51,27 @@ struct Params {
     total_blocks: u32,
     // word offset of the macroblock-column table in `slices`
     mbcol_base: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // frame lines between a picture's lines (1, or 2 for fields), each picture's first frame line
+    // and number of lines (`first1`, `lines1`: the second field)
+    step: u32,
+    first0: u32,
+    first1: u32,
+    lines0: u32,
+    lines1: u32,
+    // word offset of the scan order in `consts`
+    scan: u32,
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
 // the Y, Cb, Cr (and alpha) planes: 16-bit samples packed in pairs, the first in the low half
 @group(0) @binding(1) var<storage, read> planes: array<u32>;
-// 4 words per slice (mb_x, mb_y, mbs, first block), then per macroblock column of a row:
+// 4 words per slice (mb_x, macroblock row over the pictures, mbs, first block), then per
+// macroblock column of a row:
 // first column of its slice | slice width << 16
 @group(0) @binding(2) var<storage, read> slices: array<u32>;
-// basis bits [0,64), scan [64,128), codebooks [128,162) (first DC, DC×7, run×16, level×10;
-// rice | exp << 8 | rice_q_max << 16), AC rounding bits 162, DC / run / level contexts 163..166,
-// 1 / (4 qscale(q)) bits for q = 0..224 from 192
+// basis bits [0,64), progressive scan [64,128), codebooks [128,162) (first DC, DC×7, run×16,
+// level×10; rice | exp << 8 | rice_q_max << 16), AC rounding bits 162, DC / run / level contexts
+// 163..166, 1 / (4 qscale(q)) bits for q = 0..224 from 192, interlaced scan [417,481)
 @group(0) @binding(3) var<storage, read> consts: array<u32>;
 // coefficients (f32 bits, 64 per block), or the alpha regions for `alpha_pack`
 @group(0) @binding(4) var<storage, read_write> work: array<u32>;
@@ -69,7 +83,6 @@ struct Params {
 @group(0) @binding(6) var<storage, read> aux: array<u32>;
 @group(0) @binding(7) var<storage, read_write> status: array<atomic<u32>>;
 
-const C_SCAN: u32 = 64u;
 const CB_FIRST_DC: u32 = 128u;
 const CB_DC: u32 = 129u;
 const CB_RUN: u32 = 136u;
@@ -93,6 +106,14 @@ fn mul(a: f32, b: f32) -> f32 {
 fn sample(off: u32, i: u32) -> u32 {
     let k = off + i;
     return (planes[k >> 1u] >> ((k & 1u) * 16u)) & 0xffffu;
+}
+
+// The frame line of line `y` of picture `pic`, edge-replicated below the picture's last line.
+fn frame_line(pic: u32, y: u32) -> u32 {
+    if pic == 0u {
+        return P.first0 + min(y, P.lines0 - 1u) * P.step;
+    }
+    return P.first1 + min(y, P.lines1 - 1u) * P.step;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -140,13 +161,16 @@ fn fdct(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     }
     let m = g / P.bpm;
     let k = g % P.bpm;
-    let mb_y = m / P.mb_w;
+    // the macroblock row over the pictures, the picture, and the row within it
+    let row = m / P.mb_w;
+    let pic = row / P.mb_h;
+    let mb_y = row % P.mb_h;
     let mb_x = m % P.mb_w;
     let col = slices[P.mbcol_base + mb_x];
     let start = col & 0xffffu;
     let smbs = col >> 16u;
     let l = mb_x - start;
-    let first = (mb_y * P.mb_w + start) * P.bpm;
+    let first = (row * P.mb_w + start) * P.bpm;
     var dest = 0u;
     var off = 0u;
     var stride = P.width;
@@ -176,7 +200,7 @@ fn fdct(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         }
     }
     for (var yy = 0u; yy < 8u; yy = yy + 1u) {
-        let y = min(by + yy, P.height - 1u);
+        let y = frame_line(pic, by + yy);
         for (var xx = 0u; xx < 8u; xx = xx + 1u) {
             let x = min(bx + xx, stride - 1u);
             blk[yy * 8u + xx] = f32(sample(off, y * stride + x)) * P.scale - 2048.0;
@@ -345,7 +369,7 @@ fn encode_component(base: u32, n: u32, inv: f32) {
     var run_ctx = consts[C_RUN_CTX];
     var lev_ctx = consts[C_LEVEL_CTX];
     for (var si = 1u; si < 64u; si = si + 1u) {
-        let nat = consts[C_SCAN + si];
+        let nat = consts[P.scan + si];
         for (var b = 0u; b < n; b = b + 1u) {
             let l = q_ac(coef(base + b, nat), inv);
             if l == 0 {
@@ -417,9 +441,10 @@ fn write(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
 // Alpha (`encode_alpha_slice` + `encode_alpha`, 16-bit coding)
 // ---------------------------------------------------------------------------------------------
 
-// Alpha value `i` of a slice (raster order over its 16 lines, edge-replicated), at 16 bits.
-fn alpha_val(x0: u32, y0: u32, sw: u32, i: u32) -> u32 {
-    let y = min(y0 + i / sw, P.height - 1u);
+// Alpha value `i` of a slice of picture `pic` (raster order over its 16 lines of the picture,
+// edge-replicated), at 16 bits.
+fn alpha_val(pic: u32, x0: u32, y0: u32, sw: u32, i: u32) -> u32 {
+    let y = frame_line(pic, y0 + i / sw);
     let x = min(x0 + i % sw, P.width - 1u);
     let d = P.depth;
     let v = sample(P.off_a, y * P.width + x) & ((1u << d) - 1u);
@@ -439,8 +464,9 @@ fn alpha(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
     let mb_x = slices[s * 4u];
     let mb_y = slices[s * 4u + 1u];
     let mbs = slices[s * 4u + 2u];
+    let pic = mb_y / P.mb_h;
     let x0 = mb_x * 16u;
-    let y0 = mb_y * 16u;
+    let y0 = (mb_y % P.mb_h) * 16u;
     let sw = mbs * 16u;
     let count = sw * 16u;
     let region = P.alpha_base + (mb_y * P.mb_w + mb_x) * ALPHA_WORDS_PER_MB;
@@ -451,7 +477,7 @@ fn alpha(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
         if i >= count {
             break;
         }
-        let v = alpha_val(x0, y0, sw, i);
+        let v = alpha_val(pic, x0, y0, sw, i);
         let diff = (v - prev) & 0xffffu;
         var sd = i32(diff);
         if diff > 0x7fffu {
@@ -469,7 +495,7 @@ fn alpha(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
         // a run after every value, including the last (RDD 36 §5.3.3)
         var run = 0u;
         loop {
-            if i + run >= count || run >= 2047u || alpha_val(x0, y0, sw, i + run) != prev {
+            if i + run >= count || run >= 2047u || alpha_val(pic, x0, y0, sw, i + run) != prev {
                 break;
             }
             run = run + 1u;
