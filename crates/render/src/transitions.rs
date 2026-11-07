@@ -71,6 +71,35 @@ pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32
         .unwrap_or_else(|| paint(t.w, t.h, |x, y| mix(t.sa(x, y), t.sb(x, y), p)))
 }
 
+/// [`apply_scaled`] for a sequence that composites without linear colour (#4477): the pictures are
+/// mixed as encoded, with the Rec. 709 curve FilmCraft decodes and encodes them with, so a dissolve
+/// is linear in the signal, as in Premiere with Composite in Linear Color off. The colour is
+/// converted unpremultiplied; alpha mixes as it does in linear light. Film Dissolve mixes in its own
+/// gamma space either way, so it renders as in a linear sequence.
+pub fn apply_scaled_encoded(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
+    if matches!(e.effect.as_str(), "film_dissolve" | "film_dissolve_legacy") {
+        return apply_scaled(e, a, b, p, scale);
+    }
+    let encode = |v: f32| filmcraft_color::from_linear(v, filmcraft_color::Transfer::Bt709);
+    let decode = |v: f32| filmcraft_color::to_linear(v, filmcraft_color::Transfer::Bt709);
+    let mixed = apply_scaled(e, &recoded(a, encode), &recoded(b, encode), p, scale);
+    recoded(&mixed, decode)
+}
+
+/// `img` with `f` applied to every pixel's unpremultiplied colour.
+fn recoded(img: &Image, f: impl Fn(f32) -> f32 + Sync) -> Image {
+    let mut out = img.clone();
+    out.px.par_chunks_exact_mut(4).for_each(|px| {
+        let alpha = px[3];
+        if alpha > 0.0 {
+            for c in &mut px[..3] {
+                *c = f(*c / alpha) * alpha;
+            }
+        }
+    });
+    out
+}
+
 /// Audio crossfade gains (out, in) for progress p.
 pub fn audio_gains(kind: &str, p: f32) -> (f32, f32) {
     match kind {

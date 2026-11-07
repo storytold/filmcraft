@@ -361,7 +361,8 @@ fn adjustment_ops(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick, sc
 /// Whether the frame of `seq` at `t` and render `scale` can be planned as layers for a device that
 /// runs `caps`: no adjustment layer it can't run ([`adjustment_ops`]) and no transition the
 /// compositor cannot mix itself is showing (a transition into or out of an adjustment layer counts,
-/// also on the side of the cut where the other clip is).
+/// also on the side of the cut where the other clip is; so does any transition of a sequence that
+/// composites without linear colour, since the compositor mixes in linear light).
 pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
     let adjustment = |it: &TrackItem| is_adjustment(project, it);
     for tr in &seq.video_tracks {
@@ -369,7 +370,8 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32,
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
+            // the compositor mixes in linear light only: without linear colour the CPU renders it (#4477)
+            if seq.settings.composites_encoded() || (!simple_transition(&trn.effect.effect) && trn.effect.effect != "push") {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {

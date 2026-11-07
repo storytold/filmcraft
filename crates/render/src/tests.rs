@@ -160,6 +160,67 @@ fn cross_dissolve_midpoint() {
     }
 }
 
+/// #4477: with Composite in Linear Color off, a cross dissolve mixes the encoded pictures (as
+/// Premiere does), on the CPU path, and the GPU plan doesn't take the frame.
+#[test]
+fn cross_dissolve_without_linear_color_mixes_the_encoded_pictures() {
+    let (mut p, red, _o, seq, map) = setup();
+    let a = place(&mut p, seq, 0, red, 0, 24);
+    let blue_src = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 1.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = blue_src.info().clone();
+    let blue = p.add_item(
+        "blue",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(blue_src.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let mut map = map;
+    map.0.insert(blue, Arc::new(blue_src));
+    let b = place(&mut p, seq, 0, blue, 24, 24);
+    let r = FrameRate::FPS_24;
+    // 12 frames from 18: frame 24 is the middle (progress 0.5)
+    let tr = filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(999),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: r.tick_of(18),
+        duration: r.tick_of(12),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    };
+    p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
+    let mid = |p: &Project| render_sequence(p, seq, r.tick_of(24), RenderOptions::default(), &map).get(10, 10);
+    let layered = |p: &Project| plan::layered_at(p, p.sequence(seq).unwrap(), r.tick_of(24), 1.0, plan::DeviceCaps::ALL);
+    // linear light (the default): half of each in linear light
+    let c = mid(&p);
+    assert!((c[0] - 0.5).abs() < 0.02 && (c[2] - 0.5).abs() < 0.02, "{c:?}");
+    assert!(layered(&p));
+    // encoded: half of each encoded value, so each channel is the linear value of code 0.5
+    p.sequence_mut(seq).unwrap().settings.linear_color = false;
+    let want = filmcraft_color::to_linear(0.5, filmcraft_color::Transfer::Bt709);
+    let c = mid(&p);
+    assert!((c[0] - want).abs() < 0.01 && (c[2] - want).abs() < 0.01, "{c:?} vs {want}");
+    assert!(!layered(&p), "the compositor mixes in linear light: the CPU renders the frame");
+    // outside the transition nothing changes, and the plan takes the frame again
+    let c = render_sequence(&p, seq, r.tick_of(10), RenderOptions::default(), &map).get(10, 10);
+    assert!((c[0] - 1.0).abs() < 0.01 && c[2].abs() < 0.01, "{c:?}");
+    assert!(plan::layered_at(&p, p.sequence(seq).unwrap(), r.tick_of(10), 1.0, plan::DeviceCaps::ALL));
+    // HDR and wide-gamut working spaces always composite in linear light
+    p.sequence_mut(seq).unwrap().settings.color.wide_gamut = true;
+    assert!(!p.sequence(seq).unwrap().settings.composites_encoded());
+}
+
 #[test]
 fn audio_mix_bars_tone() {
     let mut p = Project::new("a");

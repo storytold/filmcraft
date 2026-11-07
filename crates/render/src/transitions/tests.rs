@@ -516,3 +516,40 @@ fn typewriter_cursor_stays_on_the_text_block() {
         }
     }
 }
+
+/// #4477: without linear colour a transition mixes the encoded pictures. A cross dissolve is then
+/// linear in the Rec. 709 signal and a dip to black scales the signal, as in Premiere with Composite
+/// in Linear Color off; both ends stay exact, and transparent pixels stay transparent.
+#[test]
+fn encoded_mixing_is_linear_in_the_signal() {
+    use filmcraft_color::{Transfer, from_linear, to_linear};
+    let flat = |v: f32| paint(4, 2, move |_, _| [v, v, v, 1.0]);
+    let (a, b) = (flat(1.0), flat(to_linear(0.2, Transfer::Bt709)));
+    let enc = |img: &Image| from_linear(img.px[0], Transfer::Bt709);
+    let dissolve = filmcraft_project::find_effect("cross_dissolve").unwrap().instance();
+    for p in [0.1f32, 0.25, 0.5, 0.75, 0.9] {
+        let got = enc(&apply_scaled_encoded(&dissolve, &a, &b, p, 1.0));
+        let want = 1.0 * (1.0 - p) + 0.2 * p;
+        assert!((got - want).abs() < 1e-4, "p {p}: {got} vs {want}");
+        // linear light mixes 1.0 and 0.033: brighter than the encoded mix in between
+        assert!(enc(&apply_scaled(&dissolve, &a, &b, p, 1.0)) > want + 0.01, "p {p}");
+    }
+    let dip = filmcraft_project::find_effect("dip_to_black").unwrap().instance();
+    for p in [0.1f32, 0.25, 0.4] {
+        let got = enc(&apply_scaled_encoded(&dip, &a, &b, p, 1.0));
+        assert!((got - (1.0 - 2.0 * p)).abs() < 1e-4, "dip p {p}: {got}");
+    }
+    let (fa, fb) = (frame_a(), frame_b());
+    // Film Dissolve has its own blend space: the same picture with or without linear colour
+    let film = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
+    assert_eq!(apply_scaled_encoded(&film, &fa, &fb, 0.3, 1.0), apply_scaled(&film, &fa, &fb, 0.3, 1.0));
+    assert!(mean_abs(&apply_scaled_encoded(&dissolve, &fa, &fb, 0.0, 1.0), &fa) < 1e-6);
+    assert!(mean_abs(&apply_scaled_encoded(&dissolve, &fa, &fb, 1.0, 1.0), &fb) < 1e-6);
+    let clear = paint(4, 2, |_, _| [0.0, 0.0, 0.0, 0.0]);
+    let half = apply_scaled_encoded(&dissolve, &clear, &clear, 0.5, 1.0);
+    assert!(half.px.iter().all(|v| *v == 0.0));
+    // premultiplied: a half-transparent pixel converts its colour, not its premultiplied value
+    let semi = paint(4, 2, |_, _| [0.25, 0.25, 0.25, 0.5]);
+    let same = apply_scaled_encoded(&dissolve, &semi, &semi, 0.5, 1.0);
+    assert!(mean_abs(&same, &semi) < 1e-5, "{:?}", &same.px[..4]);
+}
