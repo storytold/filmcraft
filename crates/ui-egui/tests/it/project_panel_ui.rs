@@ -1732,3 +1732,33 @@ fn save_arrangement_refuses_an_unknown_bin() {
     d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
     assert!(d.app().ui.project_panel.dialog.is_some());
 }
+
+#[test]
+fn a_dragged_item_moves_into_a_bin_in_list_and_icon_views() {
+    // #4397: dragging media onto a bin did nothing (no ghost, no drop)
+    for (view, maximized) in [("list", true), ("icon", true), ("list", false), ("icon", false)] {
+        let mut d = Driver::demo();
+        d.ok("ui.panel.show", json!({"panel": "Project"}));
+        d.ok("ui.set", json!({"focused": "Project"}));
+        if maximized {
+            d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+        }
+        d.frames(3);
+        d.exec("project.view.set", json!({"view": view}));
+        // a long project, as in the report: the panel scrolls
+        for _ in 0..70 {
+            d.exec("file.newBlackVideo", json!({}));
+        }
+        let target = d.exec("file.newBin", json!({"name": "Target"}))["bin"].as_u64().unwrap();
+        d.exec("project.select", json!({"items": []}));
+        d.frames(3);
+        // an item the scrolled view shows
+        let ids: Vec<u64> = d.app().session.project.items.values().map(|i| i.id.0).collect();
+        let item = ids.into_iter().find(|i| d.has(&format!("project.item.{i}")) && d.rect(&format!("project.item.{i}"))[3] > 10.0).expect("a visible item");
+        let parent = |d: &mut Driver| d.app().session.project.root.parent_of(filmcraft_project::ItemId(item)).map(|b| b.0);
+        assert_ne!(parent(&mut d), Some(target), "{view} {maximized}: starts outside the bin");
+        d.ok("ui.drag", json!({"from": {"id": format!("project.item.{item}")}, "to": {"id": format!("project.bin.{target}")}, "steps": 12}));
+        d.frames(3);
+        assert_eq!(parent(&mut d), Some(target), "{view} {maximized}: the item moved into the bin");
+    }
+}
