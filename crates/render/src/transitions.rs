@@ -70,6 +70,8 @@ pub fn apply_in(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32, pl
     recoded(&mixed(e, &recoded(a, encode), &recoded(b, encode), p, scale), decode)
 }
 
+/// Transition `e` at progress `p` on `a` and `b` as they are (the legacy implementations first,
+/// then the families of [`Tx`]-based transitions); the ends return the pictures unchanged.
 fn mixed(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
     let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
     if a.w == 0 || a.h == 0 || (a.w, a.h) != (b.w, b.h) {

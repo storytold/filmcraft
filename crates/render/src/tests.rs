@@ -107,6 +107,8 @@ fn motion_scale_and_position() {
     assert_eq!(img.get(200, 120)[3], 0.0, "rest transparent");
 }
 
+/// A rendered Cross Dissolve half-way through (default eases, encoded mix), and an Iris Round
+/// forwards and reversed.
 #[test]
 fn cross_dissolve_midpoint() {
     let (mut p, red, _o, seq, map) = setup();

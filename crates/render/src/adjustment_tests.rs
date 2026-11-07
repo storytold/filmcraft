@@ -239,6 +239,7 @@ fn transform_shutter_on_an_adjustment_layer_spans_one_sequence_frame() {
     assert!(diff(45) > 1e-2, "moving frame is sharp");
 }
 
+/// A 12-frame dissolve on `track` from `start` between `from` and `to` (either may be none: a fade).
 fn dissolve(s: &mut Scene, track: usize, from: Option<ClipId>, to: Option<ClipId>, start: i64) {
     let tr = filmcraft_project::Transition {
         id: filmcraft_project::TransitionId(900 + start as u64),

@@ -40,6 +40,7 @@ pub(crate) fn cross_dissolve_curve(p: f32, ease_in: f32, ease_out: f32) -> f32 {
 /// ease value; 1.0 left 2-3 times the residual on the 70/0 and 100/100 exports).
 const CROSS_DISSOLVE_HANDLE: f32 = 0.915;
 
+/// The dissolve-family transition `id` at the progress in `t`; `None` for ids of other families.
 pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
     let p = t.p;
     Some(match id {

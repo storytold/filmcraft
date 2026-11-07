@@ -512,7 +512,9 @@ fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
         total += match l {
             Layer::Item(_, it) => layer_cost(project, it, px, false),
             Layer::Transition(_, x, a, b) => {
-                let simple = matches!(x.effect.effect.as_str(), "cross_dissolve" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve");
+                // the transitions the layered plan draws itself (`plan::simple_transition`); Cross Dissolve
+                // renders on the CPU since it eases the encoded mix (#4477)
+                let simple = matches!(x.effect.effect.as_str(), "cross_dissolve_legacy" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve");
                 let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, it, px, !simple))).sum();
                 sides + if simple { 1.0 } else { 12.0 * px }
             }
