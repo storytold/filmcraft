@@ -3507,6 +3507,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	拖动：移动 · Alt-单击：平滑/拐角 · Ctrl-单击：删除
 	Drag inward to round the corners	向内拖动以使拐角变圆
 	Include Alpha Channel	包含 Alpha 通道
+	Alpha in DNxHR is not yet checked against Avid's decoder.	DNxHR 中的 Alpha 尚未用 Avid 的解码器验证。
 	Sequence Settings	序列设置
 	Color Management	色彩管理
 	VR Properties	VR 属性

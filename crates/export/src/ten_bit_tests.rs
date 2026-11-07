@@ -235,3 +235,75 @@ fn float_frames_stay_in_range_on_values_out_of_range() {
     assert!(straight.iter().all(|v| (0.0..=1.0).contains(v)), "{straight:?}");
     assert!(srgb_floats(&Image::new(0, 0), false).is_empty());
 }
+
+/// An RGBA8 picture of a red disc with a soft edge: opaque inside, transparent outside, and a band
+/// of partial alpha (every code from 0 to 255) between.
+struct SoftDisc(MediaInfo);
+
+impl MediaSource for SoftDisc {
+    fn info(&self) -> &MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let mut px = Vec::with_capacity((W * H * 4) as usize);
+        for y in 0..H {
+            for x in 0..W {
+                let (dx, dy) = (x as f32 - W as f32 / 2.0, y as f32 - H as f32 / 2.0);
+                let a = (255.0 * ((50.0 - (dx * dx + dy * dy).sqrt()) / 24.0 + 0.5).clamp(0.0, 1.0)) as u8;
+                px.extend_from_slice(&[200, 40, 20, a]);
+            }
+        }
+        Ok(Arc::new(VideoFrame { width: W, height: H, data: PixelData::Rgba8(Arc::new(px)), color: ColorInfo::REC709, par: (1, 1), pts: Tick::ZERO }))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<AudioBuffer> {
+        Err(MediaError::NoStream("audio"))
+    }
+}
+
+/// DNxHR with Include Alpha Channel codes the picture's alpha losslessly: the file decodes with our
+/// decoder, its alpha is the source's at the coded depth, and the sample entry and the frame header
+/// say there is alpha. Without the setting there is none.
+#[test]
+fn a_dnxhr_export_with_alpha_keeps_its_alpha() {
+    let (p, seq, m) = project_of([0.0; 4], |g| Arc::new(SoftDisc(g.info().clone())));
+    for (profile, depth) in [("lb", 8u8), ("sq", 8), ("hq", 8), ("hqx", 10)] {
+        let s = ExportSettings { dnx_profile: profile.into(), alpha: true, ..settings(Format::DnxHr, &format!("alpha-{profile}.mov")) };
+        assert!(s.supports_alpha() && s.keeps_alpha(), "{profile}");
+        // the alpha the pipeline hands the encoder (RGBA8, kept next to the floats at 10 bits)
+        let (rgba, _) = Pipeline::new(p.clone(), seq, &s, false).unwrap().frame(0, &m);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{profile}: {e}"));
+
+        let data = std::fs::read(&s.path).unwrap();
+        let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+        let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        assert_eq!(file.tracks[vt].entries[0].video.as_ref().map(|v| v.depth), Some(32), "{profile}: sample entry depth");
+        let sample = file.read_sample(data.as_slice(), vt, 0).unwrap();
+        let header = filmcraft_dnx::probe(&sample).unwrap();
+        assert!(header.alpha && header.lossless_alpha, "{profile}: header flags");
+        let frame = filmcraft_dnx::decode_frame(&sample).unwrap();
+        assert_eq!(frame.bit_depth, depth, "{profile}");
+        let got = frame.alpha.as_ref().expect("the decoded frame has alpha");
+        let want: Vec<u16> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| {
+                let a10 = (u32::from(c[3]) * 1023 + 127) / 255;
+                (if depth == 8 { ((a10 + 2) >> 2).min(255) } else { a10 }) as u16
+            })
+            .collect();
+        assert_eq!(got.len(), want.len(), "{profile}");
+        assert!(got.iter().zip(&want).all(|(a, b)| a == b), "{profile}: alpha differs");
+        assert!(got.iter().any(|&a| a > 0 && a < 255 >> (8 - depth.min(8))), "{profile}: the edge is soft");
+
+        let off = ExportSettings { alpha: false, ..s.clone() };
+        assert!(!off.keeps_alpha());
+        export(&p, seq, &off, &m, &Progress::default()).unwrap();
+        let data = std::fs::read(&off.path).unwrap();
+        let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+        let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        assert_eq!(file.tracks[vt].entries[0].video.as_ref().map(|v| v.depth), Some(24), "{profile}: opaque entry");
+        let sample = file.read_sample(data.as_slice(), vt, 0).unwrap();
+        assert!(!filmcraft_dnx::probe(&sample).unwrap().alpha, "{profile}: no alpha without the setting");
+    }
+}

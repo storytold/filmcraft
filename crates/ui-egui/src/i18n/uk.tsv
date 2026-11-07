@@ -441,6 +441,7 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Альфа-канал у DNxHR ще не перевірено з декодером Avid.
 	Hardware Encoding	Апаратне кодування
 	Use the hardware encoder when available	Використовувати апаратний кодувальник, коли це можливо
 	GPU Encoding	Кодування на GPU

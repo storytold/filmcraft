@@ -3502,6 +3502,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Перетаскивание: перемещение · Alt+щелчок: сглаживание/угол · Ctrl+щелчок: удаление
 	Drag inward to round the corners	Протянуть внутрь, чтобы скруглить углы
 	Include Alpha Channel	Включить альфа-канал
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Альфа-канал в DNxHR пока не проверен с декодером Avid.
 	Sequence Settings	Настройки последовательности
 	Color Management	Управление цветом
 	VR Properties	Свойства VR

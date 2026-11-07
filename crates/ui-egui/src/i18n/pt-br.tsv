@@ -3512,6 +3512,7 @@
 	Click to zoom in; Alt-click to zoom out.	Clique para ampliar; Alt+clique para reduzir.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Arrastar: mover · Alt+clique: suave/canto · Ctrl+clique: excluir
 	Include Alpha Channel	Incluir canal alfa
+	Alpha in DNxHR is not yet checked against Avid's decoder.	O alfa em DNxHR ainda não foi verificado com o decodificador da Avid.
 	Sequence Settings	Configurações da sequência
 	Color Management	Gerenciamento de cores
 	VR Properties	Propriedades de RV

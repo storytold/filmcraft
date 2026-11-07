@@ -3531,6 +3531,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	ドラッグ: 移動 · Alt+クリック: スムーズ/コーナー · Ctrl+クリック: 削除
 	Drag inward to round the corners	内側にドラッグして角を丸める
 	Include Alpha Channel	アルファチャンネルを含める
+	Alpha in DNxHR is not yet checked against Avid's decoder.	DNxHR のアルファは、まだ Avid のデコーダーで検証されていません。
 	Sequence Settings	シーケンス設定
 	Color Management	カラーマネジメント
 	VR Properties	VR プロパティ

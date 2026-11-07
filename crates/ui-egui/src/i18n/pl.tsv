@@ -3506,6 +3506,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Przeciągnij: przesuń · Alt-klik: gładki/narożny · Ctrl-klik: usuń
 	Drag inward to round the corners	Przeciągnij do środka, aby zaokrąglić narożniki
 	Include Alpha Channel	Uwzględnij kanał alfa
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Kanał alfa w DNxHR nie został jeszcze sprawdzony z dekoderem Avid.
 	Sequence Settings	Ustawienia sekwencji
 	Color Management	Zarządzanie kolorem
 	VR Properties	Właściwości VR

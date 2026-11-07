@@ -3509,6 +3509,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Sürükle: taşı · Alt-tıkla: yumuşat/köşe · Ctrl-tıkla: sil
 	Drag inward to round the corners	Köşeleri yuvarlamak için içe doğru sürükleyin
 	Include Alpha Channel	Alfa Kanalını Dahil Et
+	Alpha in DNxHR is not yet checked against Avid's decoder.	DNxHR'deki alfa henüz Avid'in kod çözücüsüyle denetlenmedi.
 	Sequence Settings	Sekans Ayarları
 	Color Management	Renk Yönetimi
 	VR Properties	VR Özellikleri

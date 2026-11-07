@@ -521,6 +521,8 @@ impl ExportSettings {
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
+            // lossless alpha next to the colour, in every DNxHR profile we write (QuickTime only)
+            Format::DnxHr => true,
             _ => false,
         }
     }

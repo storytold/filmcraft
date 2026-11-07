@@ -46,9 +46,16 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
         }
     });
     if let Some(a) = alpha {
-        for (i, dst) in a.iter_mut().enumerate().take(n) {
-            *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
-        }
+        let n = n.min(a.len());
+        alpha_10(rgba, a.get_mut(..n).unwrap_or_default());
+    }
+}
+
+/// The RGBA8 alpha as full-range 10-bit codes (0 = transparent); opaque where `rgba` holds none
+/// (HDR frames, which carry no RGBA8).
+pub fn alpha_10(rgba: &[u8], alpha: &mut [u16]) {
+    for (i, dst) in alpha.iter_mut().enumerate() {
+        *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
     }
 }
 

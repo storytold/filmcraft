@@ -3494,6 +3494,7 @@
 	Click to zoom in; Alt-click to zoom out.	Kliknutím přiblížíte; Alt+kliknutím oddálíte.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Tažení: přesun · Alt+kliknutí: hladký bod / roh · Ctrl+kliknutí: odstranění
 	Include Alpha Channel	Zahrnout alfa kanál
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Alfa kanál v DNxHR zatím nebyl ověřen s dekodérem Avid.
 	Sequence Settings	Nastavení sekvence
 	Color Management	Správa barev
 	VR Properties	Vlastnosti VR

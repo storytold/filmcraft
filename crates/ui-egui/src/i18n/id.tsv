@@ -3515,6 +3515,7 @@
 	Click to zoom in; Alt-click to zoom out.	Klik untuk memperbesar; Alt-klik untuk memperkecil.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Seret: pindahkan · Alt-klik: halus/sudut · Ctrl-klik: hapus
 	Include Alpha Channel	Sertakan Kanal Alfa
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Alfa di DNxHR belum diperiksa dengan dekoder Avid.
 	Sequence Settings	Pengaturan Sekuens
 	Color Management	Manajemen Warna
 	VR Properties	Properti VR

@@ -3528,6 +3528,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Arrastrar: mover · Alt+clic: suave/esquina · Ctrl+clic: eliminar
 	Drag inward to round the corners	Arrastrar hacia dentro para redondear las esquinas
 	Include Alpha Channel	Incluir canal alfa
+	Alpha in DNxHR is not yet checked against Avid's decoder.	El alfa en DNxHR todavía no se ha comprobado con el decodificador de Avid.
 	Sequence Settings	Ajustes de secuencia
 	Color Management	Gestión del color
 	VR Properties	Propiedades de RV

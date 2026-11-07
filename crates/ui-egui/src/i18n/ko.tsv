@@ -1520,6 +1520,7 @@
 	In/Out Duration	시작/끝 지속 시간
 	In: {name}	시작: {name}
 	Include Alpha Channel	알파 채널 포함
+	Alpha in DNxHR is not yet checked against Avid's decoder.	DNxHR의 알파는 아직 Avid 디코더로 검증되지 않았습니다.
 	Include captions on import	가져올 때 자막 포함
 	Include Handles:	핸들 포함:
 	Include Preview Files	미리보기 파일 포함

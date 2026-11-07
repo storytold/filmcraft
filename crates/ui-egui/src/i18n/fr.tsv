@@ -3499,6 +3499,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Glisser : déplacer · Alt+clic : lisse/angle · Ctrl+clic : supprimer
 	Drag inward to round the corners	Glisser vers l'intérieur pour arrondir les angles
 	Include Alpha Channel	Inclure la couche alpha
+	Alpha in DNxHR is not yet checked against Avid's decoder.	L'alpha en DNxHR n'a pas encore été vérifié avec le décodeur d'Avid.
 	Sequence Settings	Paramètres de séquence
 	Color Management	Gestion des couleurs
 	VR Properties	Propriétés VR

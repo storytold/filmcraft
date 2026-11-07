@@ -254,6 +254,8 @@ pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
 /// LB/SQ/HQ, 10-bit for HQX).
 struct DnxEncoder {
     enc: filmcraft_dnx::Encoder,
+    /// Code the frames' alpha channel (Include Alpha Channel), losslessly.
+    alpha: bool,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -266,13 +268,20 @@ impl VideoEncoder for DnxEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
+        if let (true, Some(v)) = (self.alpha, e.video.as_mut()) {
+            // 32 bits per pixel: colour with alpha, as QuickTime says for ProRes 4444
+            v.depth = 32;
+        }
         e
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, self.alpha);
+        if let Some(a) = fr.alpha.as_deref_mut() {
+            crate::convert::alpha_10(f.rgba, a);
+        }
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
@@ -319,9 +328,11 @@ pub(crate) fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
         if s.signal.primaries == 9 {
             cfg.color_volume = filmcraft_dnx::ColorVolume::Bt2020Ncl;
         }
+        let alpha = s.keeps_alpha();
+        cfg.alpha = alpha.then_some(filmcraft_dnx::AlphaCoding::Lossless);
         let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
         let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_dnx_backend).flatten();
-        Ok(Box::new(DnxEncoder { enc, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
+        Ok(Box::new(DnxEncoder { enc, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
     })
 }
 

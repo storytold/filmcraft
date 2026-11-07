@@ -3507,6 +3507,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Prevlačenje: pomjeri · Alt-klik: glatko/ugao · Ctrl-klik: izbriši
 	Drag inward to round the corners	Prevucite prema unutra da zaoblite uglove
 	Include Alpha Channel	Uključi alfa kanal
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Alfa u DNxHR još nije provjeren s Avidovim dekoderom.
 	Sequence Settings	Postavke sekvence
 	Color Management	Upravljanje bojama
 	VR Properties	VR svojstva

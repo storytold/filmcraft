@@ -516,7 +516,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     }
     if s.supports_alpha() {
         row(ui, t, tl!("Alpha"), |ui| {
-            check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
+            let label = tl!("Include Alpha Channel");
+            let mut r = ui.checkbox(&mut s.alpha, label);
+            reg.add("export.video.alpha", r.rect, label);
+            if s.format == Format::DnxHr {
+                r = r.on_hover_text(tl!("Alpha in DNxHR is not yet checked against Avid's decoder."));
+            }
+            let _ = r;
         });
         if s.format == Format::Gif {
             row(ui, t, "", |ui| {
