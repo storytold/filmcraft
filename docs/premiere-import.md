@@ -56,6 +56,9 @@ available at their recorded locations; automatic portable-project conversion is 
 
 Supported: video/audio tracks (track `IsMuted` only; the track-fader mute checkbox is not read),
 track names (`MZ.TrackName`; unnamed tracks keep generated names) and locks (`IsLocked`),
+sequence markers and master-clip markers on their media (type, colour, duration, name and comment
+from each `DVAMarker` record; FilmCraft markers have no URL field, so a web link's URL is reported
+and left in the original snapshot; unreadable records are skipped with a warning),
 disabled clips (`ClipTrackItem/IsMuted`), exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, editable Motion scale/position/rotation,
 intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
