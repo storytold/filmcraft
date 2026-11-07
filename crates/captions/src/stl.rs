@@ -189,6 +189,8 @@ fn decode_tf(tf: &[u8], out: &mut String, italic: &mut bool, underline: &mut boo
                 *underline = false;
             }
             0x00..=0x1f | 0x7f..=0x9f => {}
+            b'<' => out.push_str("&lt;"),
+            b'&' => out.push_str("&amp;"),
             0x20..=0x7e => out.push(b as char),
             0xc1..=0xcf => {
                 if let Some(&base) = tf.get(i)
@@ -532,7 +534,8 @@ mod tests {
         let encoded = write(&doc, Some(FrameRate::FPS_25));
         let decoded = parse(&encoded).expect("valid EBU STL");
         assert_eq!(decoded.cues.len(), 1);
-        assert_eq!(decoded.cues[0].text, literal);
+        assert_eq!(filmcraft_project::caption::plain_text(&decoded.cues[0].text), literal);
+        assert_eq!(write(&decoded, Some(FrameRate::FPS_25)), encoded, "another export preserves literal bytes");
         // Recognized styling still becomes STL control bytes.
         assert_eq!(encode_text("<i>Hi</i>"), vec![0x80, b'H', b'i', 0x81]);
         assert_eq!(encode_text("<i >Hi</i >"), vec![0x80, b'H', b'i', 0x81]);

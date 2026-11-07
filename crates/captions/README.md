@@ -7,6 +7,14 @@ The caption *model* (caption tracks in a sequence, captions, track style) lives 
 `filmcraft-project` (`caption.rs`) because it is part of the `.fcproj` document. This crate reads
 and writes caption files, converts them to and from caption tracks, and draws captions.
 
+### Literal text and style markup
+
+Stored cue text can combine style tags with character entities. The STL reader escapes
+literal `<` and `&` text while keeping generated style tags distinct; its writer converts
+text entities back to literal characters.
+The SRT writer retains stored entities alongside genuine style tags, so reimport does not turn
+a literal bracket into markup. Repeated exports must preserve both plain text and supported styles.
+
 ## Formats
 
 | Format | Read | Write | Notes |

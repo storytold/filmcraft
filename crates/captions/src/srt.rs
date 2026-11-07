@@ -84,8 +84,8 @@ pub fn write(doc: &Document) -> String {
         out.push_str(&format!("{}\n{} --> {}\n", n + 1, format_clock(c.start, ','), format_clock(c.end, ',')));
         // blank lines inside text would end the cue: drop them
         for l in c.text.lines().filter(|l| !l.trim().is_empty()) {
-            // SRT has tags but no entities: a stored `&lt;` or `&amp;` is its character
-            out.push_str(&filmcraft_project::caption::decode_entities(l));
+            // Keep literal entities distinct from style tags when the file is imported again.
+            out.push_str(l);
             out.push('\n');
         }
         out.push('\n');
@@ -103,10 +103,14 @@ mod tests {
     }
 
     #[test]
-    fn entities_are_written_as_their_characters() {
+    fn entities_stay_distinct_from_style_tags_after_reimport() {
         let mut d = Document::default();
         d.cues.push(Cue { start: Tick(TICKS_PER_MS * 1000), end: Tick(TICKS_PER_MS * 2000), text: "1 &lt; 2 &amp; <i>x</i>".into(), ..Default::default() });
-        assert_eq!(write(&d), "1\n00:00:01,000 --> 00:00:02,000\n1 < 2 & <i>x</i>\n\n");
+        let encoded = write(&d);
+        assert_eq!(encoded, "1\n00:00:01,000 --> 00:00:02,000\n1 &lt; 2 &amp; <i>x</i>\n\n");
+        let decoded = parse(&encoded).unwrap();
+        assert_eq!(decoded.cues, d.cues);
+        assert_eq!(filmcraft_project::caption::plain_text(&decoded.cues[0].text), "1 < 2 & x");
     }
 
     #[test]
