@@ -59,7 +59,9 @@
 //!   backend, decided once in [`Exporter::new`] ([`Pipeline::choose_resident`]), a batch holds the
 //!   encoder's planes on the GPU instead of pixels (counted against the same budget). A frame whose
 //!   resident render or encode fails is rendered again through the read-back path and coded from
-//!   its pixels; every frame is intra, so the file may mix both.
+//!   its pixels; every frame is intra, so the file may mix both. A frame the encoder refuses ends
+//!   the resident path for the rest of the export ([`Pipeline::stop_resident`]): only the frames
+//!   already rendered resident by then are rendered twice.
 //! * **Timers.** `Render` and `Encode` are wall times of work that now runs at the same time, so
 //!   their sum may exceed the export's wall time; `Wait` is the time the encoding side then spent
 //!   waiting for the render (large: render-bound; near zero: encode-bound).
@@ -80,7 +82,7 @@ use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
     AudioEncoder, ColorSignal, EncodedPacket, EncoderFactory, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report,
-    ResidentFrame, Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_resident, note_stage, timed, video_factories,
+    ResidentFrame, Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_gpu_frame, note_resident, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -700,11 +702,15 @@ impl Exporter {
             Frame::Pixels(rgba, hdr) => (rgba, hdr),
             Frame::Resident(planes) => {
                 if let Some(packets) = self.venc.encode_resident(&planes, index) {
+                    note_gpu_frame();
                     note_resident();
                     return Ok(packets);
                 }
                 drop(planes);
+                // a refusal is the encoder's (limits, a device error, a dropped backend): frames
+                // already rendered resident are tried, later ones are read back from the start
                 self.pipe.note_resident_missed();
+                self.pipe.stop_resident();
                 self.pipe.frame(f, sources)
             }
         };

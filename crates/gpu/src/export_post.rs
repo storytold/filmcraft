@@ -52,15 +52,17 @@ impl PostConfig {
         if self.chroma_422 { self.width.div_ceil(2) } else { self.width }
     }
 
-    /// Samples of the planes: Y, Cb, Cr and alpha, one after the other.
+    /// Samples of the planes: Y, Cb, Cr and alpha, one after the other (saturating: a size this
+    /// large is refused by [`Self::supported`]).
     fn samples(&self) -> u64 {
-        let (luma, chroma) = (u64::from(self.width) * u64::from(self.height), u64::from(self.cwidth()) * u64::from(self.height));
-        luma + 2 * chroma + if self.alpha { luma } else { 0 }
+        let luma = u64::from(self.width).saturating_mul(u64::from(self.height));
+        let chroma = u64::from(self.cwidth()).saturating_mul(u64::from(self.height));
+        luma.saturating_add(chroma.saturating_mul(2)).saturating_add(if self.alpha { luma } else { 0 })
     }
 
-    /// Bytes of the planes buffer (16-bit samples, padded to a word).
+    /// Bytes of the planes buffer (16-bit samples, padded to a word; saturating).
     pub fn plane_bytes(&self) -> u64 {
-        (self.samples() * 2).next_multiple_of(4)
+        self.samples().saturating_mul(2).checked_next_multiple_of(4).unwrap_or(u64::MAX)
     }
 
     /// The picture's size in the output frame.
@@ -98,7 +100,8 @@ impl PostConfig {
     fn params(&self) -> Option<Vec<u8>> {
         let (cw, ch) = self.content_size();
         let (rw, rh) = self.rendered;
-        let (luma, chroma) = (u64::from(self.width) * u64::from(self.height), u64::from(self.cwidth()) * u64::from(self.height));
+        let luma = u64::from(self.width).checked_mul(u64::from(self.height))?;
+        let chroma = u64::from(self.cwidth()).checked_mul(u64::from(self.height))?;
         let resample = (cw, ch) != (rw, rh);
         let flags = u32::from(resample)
             | u32::from(self.floats) << 1
@@ -131,8 +134,8 @@ impl PostConfig {
             i32::try_from(self.offset.0).ok()? as u32,
             i32::try_from(self.offset.1).ok()? as u32,
             u32::try_from(luma).ok()?,
-            u32::try_from(luma + chroma).ok()?,
-            u32::try_from(luma + 2 * chroma).ok()?,
+            u32::try_from(luma.checked_add(chroma)?).ok()?,
+            u32::try_from(luma.checked_add(chroma.checked_mul(2)?)?).ok()?,
             0,
             0,
             0,

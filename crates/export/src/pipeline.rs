@@ -174,6 +174,9 @@ pub(crate) struct Pipeline {
     resident: Option<PostSettings>,
     /// A frame of a resident export was read back: batches are sized for read-back frames again.
     resident_missed: std::sync::atomic::AtomicBool,
+    /// The encoder refused a resident frame: the rest of the export is read back (rendering frames
+    /// on the GPU only to render them again would double the work of every frame).
+    resident_off: std::sync::atomic::AtomicBool,
     start_tc: i64,
     drop_frame: bool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
@@ -281,6 +284,7 @@ impl Pipeline {
             rendered,
             resident: None,
             resident_missed: std::sync::atomic::AtomicBool::new(false),
+            resident_off: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -320,18 +324,24 @@ impl Pipeline {
             .filter(|post| self.renderer.as_ref().is_some_and(|pool| pool.resident_supported(post)));
     }
 
-    /// Whether frames stay on the GPU in this export.
+    /// Whether frames stay on the GPU in this export (from now on).
     pub(crate) fn resident(&self) -> bool {
-        self.resident.is_some()
+        self.resident.is_some() && !self.resident_off.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The encoder refused a resident frame: read every later frame back.
+    pub(crate) fn stop_resident(&self) {
+        self.resident_off.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Bytes a resident frame holds on the GPU (its planes), while every frame so far stayed
     /// there; `None` otherwise (frames are read back, see [`crate::job`]'s `frame_bytes`).
     pub(crate) fn resident_frame_bytes(&self) -> Option<u64> {
-        let post = self.resident.as_ref().filter(|_| !self.resident_missed.load(std::sync::atomic::Ordering::Relaxed))?;
-        let luma = u64::from(self.w) * u64::from(self.h);
-        let chroma = if post.planes.chroma_422 { u64::from(self.w.div_ceil(2)) * u64::from(self.h) } else { luma };
-        Some((luma + 2 * chroma + if post.planes.alpha { luma } else { 0 }) * 2)
+        let post = self.resident.as_ref().filter(|_| self.resident() && !self.resident_missed.load(std::sync::atomic::Ordering::Relaxed))?;
+        let luma = u64::from(self.w).saturating_mul(u64::from(self.h));
+        let chroma = if post.planes.chroma_422 { u64::from(self.w.div_ceil(2)).saturating_mul(u64::from(self.h)) } else { luma };
+        let alpha = if post.planes.alpha { luma } else { 0 };
+        Some(luma.saturating_add(chroma.saturating_mul(2)).saturating_add(alpha).saturating_mul(2))
     }
 
     /// A frame of a resident export takes the read-back path (counted).
@@ -343,19 +353,17 @@ impl Pipeline {
     /// Output frame `f` rendered and post-processed on the GPU and left there for the encoder;
     /// `None` when the export is not resident or this frame must be read back ([`Pipeline::frame`]):
     /// a frame the renderers' device cannot composite, or one whose resident render failed.
+    /// (Counted as a GPU frame once the encoder has taken it, see `job`.)
     pub(crate) fn frame_resident(&self, f: i64, sources: &dyn SourceProvider) -> Option<ResidentFrame> {
-        let post = self.resident.as_ref()?;
+        let post = self.resident.as_ref().filter(|_| self.resident())?;
         let t = self.rate.tick_of(f);
         let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps))?;
         let asked = web_time::Instant::now();
-        let frame = pool
-            .with(|r| {
-                crate::note_lock_wait(asked.elapsed());
-                filmcraft_media::cancel::with_gpu_frames(true, || r.render_resident(&self.project, self.seq, t, self.opts, sources, post))
-            })
-            .flatten()?;
-        note_gpu_frame();
-        Some(frame)
+        pool.with(|r| {
+            crate::note_lock_wait(asked.elapsed());
+            filmcraft_media::cancel::with_gpu_frames(true, || r.render_resident(&self.project, self.seq, t, self.opts, sources, post))
+        })
+        .flatten()
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or the encoded R'G'B' floats

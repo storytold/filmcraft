@@ -972,12 +972,43 @@ impl FrameRenderer for CpuResident {
             (true, 3) => return Some(Box::new(42u32)),
             _ => {}
         }
+        RESIDENT_RENDERS.fetch_add(1, Ordering::SeqCst);
         let img = filmcraft_render::render_sequence(project, seq, t, opts, sources);
         let (w, h) = (post.width as usize, post.height as usize);
         let rgb = crate::pipeline::srgb_floats(&img, false);
         let mut f = filmcraft_prores::Frame::new(post.width, post.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
         rgbf_to_yuv422_10(&rgb, w, h, Matrix::new(post.planes.kr, post.planes.kb), &mut f.y, &mut f.cb, &mut f.cr);
         Some(Box::new(f))
+    }
+}
+
+/// Resident frames [`CpuResident`] made (the planes of a frame, rendered on the "device").
+static RESIDENT_RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The reference backend, refusing resident frames from its third on when [`RESIDENT_FAULT`] is 4
+/// (an encoder that cannot take resident frames any more: limits, a lost device, dropped).
+#[derive(Default)]
+struct RefusingBackend {
+    inner: filmcraft_prores::ReferenceBackend,
+    resident: u32,
+}
+
+impl filmcraft_prores::SliceBackend for RefusingBackend {
+    fn load(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &filmcraft_prores::Frame, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.inner.load(cfg, frame, slices)
+    }
+    fn load_resident(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &dyn std::any::Any, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.resident += 1;
+        if RESIDENT_FAULT.load(Ordering::SeqCst) == 4 && self.resident >= 3 {
+            return false;
+        }
+        self.inner.load_resident(cfg, frame, slices)
+    }
+    fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+        self.inner.write(qs)
     }
 }
 
@@ -988,7 +1019,7 @@ impl GpuPair for CpuPair {
         Some(Box::new(CpuResident))
     }
     fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
-        Some(Box::new(filmcraft_prores::ReferenceBackend::default()))
+        Some(Box::new(RefusingBackend::default()))
     }
     fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
         None
@@ -1039,6 +1070,24 @@ fn a_resident_frame_that_fails_takes_the_read_back_path() {
             _ => assert!(missed >= 1, "fault {fault}: {st:?}"),
         }
     }
+    // an encoder that refuses resident frames from frame 2 on: frame 2 is rendered twice, every
+    // later frame is read back from the start (one frame per step, so nothing is rendered ahead)
+    RESIDENT_FAULT.store(4, Ordering::SeqCst);
+    let path = tmp("rs-refused.mov");
+    let mut s = ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), path: path.clone(), include_audio: false, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+    (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Auto, HardwareEncoding::Auto);
+    let (before, renders) = (gpu_render_stats(), RESIDENT_RENDERS.load(Ordering::SeqCst));
+    let prog = Progress::default();
+    let mut ex = Exporter::new(p.clone(), seq, &s, &prog).unwrap();
+    ex.set_batch(1);
+    ex.set_overlap(false);
+    while !matches!(ex.step(&m, &prog).unwrap(), Step::Done(_)) {}
+    let st = gpu_render_stats();
+    assert!(std::fs::read(&path).unwrap() == off, "the read-back path's file");
+    assert_eq!(RESIDENT_RENDERS.load(Ordering::SeqCst) - renders, 3, "frames 0, 1 and 2 rendered resident, no later one");
+    assert_eq!((st.resident - before.resident, st.resident_fallbacks - before.resident_fallbacks), (2, 1), "{st:?}");
+    assert_eq!(st.frames - before.frames, BACKEND_FRAMES as u64, "every frame counts once as a GPU frame, the refused one too");
     RESIDENT_FAULT.store(0, Ordering::SeqCst);
     let off = run("rs-tc-off.mov", false, true);
     let before = gpu_render_stats();

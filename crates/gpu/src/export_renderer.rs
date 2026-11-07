@@ -167,13 +167,15 @@ impl ExportRenderer {
         let compositor = GpuCompositor::new(&device, &queue);
         // (the pipeline is made inside error scopes: a device that cannot build it keeps the
         // renderer, without resident frames)
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let scopes = Scopes::push(&device);
         let pass = PostPass::new(&device, &queue);
-        let error = crate::poll_now(validation.pop());
-        let pass = matches!(error, Some(None)).then_some(pass);
-        if pass.is_none() {
-            log::warn!("GPU export: the post-render pass did not build ({error:?}); rendered frames are read back");
-        }
+        let pass = match scopes.pop() {
+            Ok(()) => Some(pass),
+            Err(e) => {
+                log::warn!("GPU export: the post-render pass did not build ({e}); rendered frames are read back");
+                None
+            }
+        };
         Some(Self { _instance: None, device, queue, compositor, paired: Some((dev.lost.clone(), pass)) })
     }
 
@@ -214,7 +216,7 @@ impl ExportRenderer {
                     return None;
                 }
                 let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let (w, h, px) = self.composite_and_read(&plan, &prep)?;
                 // A picture the GPU decoded (ProRes, DNx) and found corrupt is marked once the
                 // GPU's report is read back: the monitors show its CPU decode from the next frame
                 // on, but an exported frame is final, so this one goes to the CPU renderer.
@@ -227,6 +229,23 @@ impl ExportRenderer {
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }
+    }
+
+    /// Composite `plan` and read the accumulator back. A paired renderer does it inside error
+    /// scopes: its device is the encoders' too, and an error that reached the device's handler
+    /// would retire GPU rendering and encoding for the process; here it only sends this frame to
+    /// the CPU renderer.
+    fn composite_and_read(&mut self, plan: &FramePlan, prep: &crate::PreparedPlan) -> Option<(u32, u32, Vec<f32>)> {
+        if self.paired.is_none() {
+            return self.compositor.render_export_prepared(plan, Some(prep));
+        }
+        let scopes = Scopes::push(&self.device);
+        let read = self.compositor.render_export_prepared(plan, Some(prep));
+        if let Err(e) = scopes.pop() {
+            log::warn!("GPU export: a frame failed ({e}); the CPU renders it");
+            return None;
+        }
+        read
     }
 
     /// One frame rendered and post-processed into the encoders' planes, left on the export
@@ -252,18 +271,16 @@ impl ExportRenderer {
         }
         let prep = prepare(&plan);
         let t0 = std::time::Instant::now();
-        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let scopes = Scopes::push(&self.device);
         let (view, size) = self.compositor.render_plan(&plan, Some(&prep), true, false);
         let planes = match (&self.paired, size == post.rendered) {
             (Some((_, Some(pass))), true) => pass.run(&self.device, &self.queue, &view, post),
             _ => None,
         };
-        let errors = [crate::poll_now(validation.pop()), crate::poll_now(oom.pop())];
+        let settled = scopes.pop();
         timing::add_submit(t0.elapsed());
-        // (a scope that has not resolved counts as an error)
-        if let Some(e) = errors.iter().find(|e| !matches!(e, Some(None))) {
-            log::warn!("GPU export: a resident frame failed ({e:?}); it is rendered again and read back");
+        if let Err(e) = settled {
+            log::warn!("GPU export: a resident frame failed ({e}); it is rendered again and read back");
             return None;
         }
         let planes = planes?;
@@ -276,6 +293,33 @@ impl ExportRenderer {
         }
         timing::add_frame();
         Some(planes)
+    }
+}
+
+/// The out-of-memory and validation error scopes around one step of a paired renderer (this
+/// thread's errors only).
+struct Scopes {
+    oom: wgpu::ErrorScopeGuard,
+    validation: wgpu::ErrorScopeGuard,
+}
+
+impl Scopes {
+    fn push(device: &wgpu::Device) -> Scopes {
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        Scopes { oom, validation }
+    }
+
+    /// The first error the step raised (a scope that has not resolved counts as one).
+    fn pop(self) -> Result<(), String> {
+        let Scopes { oom, validation } = self;
+        // (scopes pop in reverse order)
+        let errors = [crate::poll_now(validation.pop()), crate::poll_now(oom.pop())];
+        match errors.into_iter().find(|e| !matches!(e, Some(None))) {
+            None => Ok(()),
+            Some(Some(Some(e))) => Err(e.to_string()),
+            Some(_) => Err("an error scope did not resolve".into()),
+        }
     }
 }
 
