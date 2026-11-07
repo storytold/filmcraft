@@ -18,7 +18,11 @@ struct PatchButton<'a> {
 
 fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
     let PatchButton { rect: r, clip, label, active: on, show_inactive: show_off, id, tokens: t } = button;
-    let resp = ui.interact(r.intersect(clip), id, Sense::click());
+    let shown = r.intersect(clip);
+    let resp = ui.interact(if shown.is_positive() { shown } else { Rect::NOTHING }, id, Sense::click());
+    if !shown.is_positive() {
+        return resp;
+    }
     let p = ui.painter().with_clip_rect(clip);
     if on {
         p.rect_filled(r, 2.0, t.track_target);
@@ -122,9 +126,10 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
         let lock_r = small(49.0, hrect.center().y);
-        let lresp = crate::widgets::icon_toggle(
+        let lresp = crate::widgets::icon_toggle_clipped(
             ui,
-            lock_r.intersect(visible),
+            lock_r,
+            visible,
             if tr.locked { Icon::Lock } else { Icon::Unlock },
             true,
             t,
@@ -187,11 +192,8 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
-        let resp = ui.interact(
-            Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
-            egui::Id::unique(("hdr", r.track.0)),
-            Sense::click(),
-        );
+        let lower = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible);
+        let resp = ui.interact(if lower.is_positive() { lower } else { Rect::NOTHING }, egui::Id::unique(("hdr", r.track.0)), Sense::click());
         if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
@@ -231,7 +233,7 @@ fn header_line_buttons(
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =
-        crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
+        crate::widgets::icon_toggle_clipped(ui, sr, visible, Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
     app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
     if sresp.clicked() {
         actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
@@ -239,9 +241,10 @@ fn header_line_buttons(
     x += 24.0;
     if r.kind == TrackKind::Video {
         let er = small(x, upper_y);
-        let eresp = crate::widgets::icon_toggle(
+        let eresp = crate::widgets::icon_toggle_clipped(
             ui,
-            er.intersect(visible),
+            er,
+            visible,
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
             true,
             t,

@@ -97,9 +97,10 @@ fn band(r: &Row) -> Rect {
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: &Row, rect: Rect, visible: Rect, label: &str, t: &Tokens) {
     let Some(tr) = seq.track(r.track) else { return };
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
-    let resp = crate::widgets::icon_toggle(
+    let resp = crate::widgets::icon_toggle_clipped(
         ui,
-        rect.intersect(visible),
+        rect,
+        visible,
         Icon::Keyframe,
         showing.is_some(),
         t,

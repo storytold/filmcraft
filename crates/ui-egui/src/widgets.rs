@@ -392,12 +392,25 @@ pub fn letter_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, letter: &str, 
 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
+    icon_toggle_clipped(ui, rect, ui.clip_rect(), icon, on, t, id, on_color)
+}
+
+/// [`icon_toggle`] shown only where `rect` meets `clip`, such as a Timeline track header scrolled
+/// partly out of its half: the button keeps its size and is cut off at the edge, takes clicks only
+/// where it shows, and draws nothing once it is scrolled out entirely.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
+    let visible = rect.intersect(clip);
+    let resp = ui.interact(if visible.is_positive() { visible } else { Rect::NOTHING }, id, Sense::click());
+    if !visible.is_positive() {
+        return resp;
+    }
+    let p = ui.painter().with_clip_rect(visible.intersect(ui.clip_rect()));
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, t.hover);
+        p.rect_filled(rect, 2.0, t.hover);
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
-    icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
+    icons::paint(&p, rect.shrink(rect.width() * 0.16), icon, col);
     resp
 }
 
@@ -712,6 +725,37 @@ mod tests {
                 for s in &out.shapes {
                     assert!(clip.contains_rect(s.clip_rect), "button at y {y} draws outside its clip: {:?}", s.clip_rect);
                 }
+            }
+        }
+    }
+
+    /// A Timeline track header's icon toggles (Lock, Sync Lock, Output, Show Keyframes) keep their
+    /// 18×18 size as a tall track scrolls partly out of its half, and draw nothing once scrolled
+    /// out entirely (intersecting the icon rect before drawing gave a shorter or negative-height
+    /// rect, which scaled the icon up as the track scrolled).
+    #[test]
+    fn a_clipped_icon_toggle_keeps_its_size_and_draws_only_inside_its_clip() {
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let ctx = egui::Context::default();
+        let clip = Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 300.0));
+        let draw_at = |y: f32| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let r = Rect::from_min_size(pos2(20.0, y), vec2(18.0, 18.0));
+                icon_toggle_clipped(ui, r, clip, Icon::SyncLock, true, &t, egui::Id::unique("sync"), Some(t.text_dim));
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+        let full_bounds = draw_at(150.0).iter().fold(Rect::NOTHING, |acc, s| acc.union(s.shape.visual_bounding_rect()));
+        for (y, shows) in [(20.0, false), (80.0, false), (90.0, true), (150.0, true), (290.0, true), (310.0, false)] {
+            let shapes = draw_at(y);
+            assert_eq!(!shapes.is_empty(), shows, "icon at y {y}");
+            for s in &shapes {
+                assert!(clip.contains_rect(s.clip_rect), "icon at y {y} draws outside its clip: {:?}", s.clip_rect);
+            }
+            if shows {
+                let bounds = shapes.iter().fold(Rect::NOTHING, |acc, s| acc.union(s.shape.visual_bounding_rect()));
+                assert!((bounds.size() - full_bounds.size()).length() < 0.01, "icon at y {y} changed size: {:?} vs {:?}", bounds.size(), full_bounds.size());
             }
         }
     }
