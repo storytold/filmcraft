@@ -2166,6 +2166,8 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-mxf",
+ "filmcraft-ogg",
+ "filmcraft-opus",
  "filmcraft-project",
  "filmcraft-prores",
  "filmcraft-render",

@@ -689,21 +689,29 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
+            AudioCodec::Opus => "Opus",
             _ => tl!("Uncompressed (PCM)"),
         };
-        // MP4 takes AAC or FLAC; QuickTime any of the three
+        // MP4 takes AAC, FLAC or Opus; QuickTime any of the four
         let labels = vec![
             ("AAC".to_string(), !audio_only),
             (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),
             (tl!("FLAC (lossless)").to_string(), true),
+            ("Opus".to_string(), !audio_only),
         ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
+            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Opus][i.min(3)];
         }
     });
+    let opus = s.audio_codec() == AudioCodec::Opus;
     row(ui, t, tl!("Sample Rate"), |ui| {
+        if opus {
+            // Opus always codes at 48 kHz; other sequence rates are resampled
+            ui.label("48000 Hz");
+            return;
+        }
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
@@ -718,16 +726,21 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             6 => names[2],
             _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
+        if opus && s.audio.channels == 6 {
+            s.audio.channels = 2;
+        }
+        let surround = if opus { Some(tl!("Opus export writes mono or stereo")) } else { None };
+        let labels: Vec<(String, Option<&str>)> = vec![(names[0].to_string(), None), (names[1].to_string(), None), (names[2].to_string(), surround)];
+        if let Some(i) = combo_why(ui, reg, "export.audio.channels", cur, &labels, 120.0) {
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
-    if s.audio_codec() == AudioCodec::Aac {
+    if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Opus) {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
-            let rates = [128u32, 160, 192, 256, 320];
+            let rates: &[u32] = if opus { &[32, 64, 96, 128, 160, 192, 256, 320, 510] } else { &[128, 160, 192, 256, 320] };
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
-            if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
-                s.audio.bitrate_kbps = rates[i];
+            if let Some(&r) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0).and_then(|i| rates.get(i)) {
+                s.audio.bitrate_kbps = r;
             }
         });
     } else {

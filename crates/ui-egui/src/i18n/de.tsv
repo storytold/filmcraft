@@ -2946,6 +2946,7 @@
 	32 bit	32 Bit
 	32 bit float	32 Bit Gleitkomma
 	FLAC stores whole-number samples only	FLAC speichert nur ganzzahlige Samples
+	Opus export writes mono or stereo	Der Opus-Export schreibt Mono oder Stereo
 	MXF export writes integer PCM only	Der MXF-Export schreibt nur ganzzahliges PCM
 	Size / Opacity	Größe/Deckkraft
 	Image Overlay	Bildüberlagerung

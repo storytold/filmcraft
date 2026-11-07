@@ -3604,6 +3604,7 @@
 	32 bit	32 bit
 	32 bit float	32 bit in virgola mobile
 	FLAC stores whole-number samples only	FLAC memorizza solo campioni interi
+	Opus export writes mono or stereo	L’esportazione Opus scrive mono o stereo
 	MXF export writes integer PCM only	L'esportazione MXF scrive solo PCM intero
 	Saves this session's log and shows it in your file manager.	Salva il registro di questa sessione e lo mostra nel gestore file.
 	Shows a report on this computer.	Mostra un rapporto su questo computer.

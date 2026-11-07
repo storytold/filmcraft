@@ -865,6 +865,183 @@ fn flac_settings_round_trip_and_summary() {
     assert!(flac < pcm, "{flac} < {pcm}");
 }
 
+/// ffmpeg's decode of the audio of `path` to interleaved f32, with `decoder` (`libopus`, `opus`)
+/// and `-xerror`; any decoder complaint fails the test.
+fn ffmpeg_f32(ffmpeg: &Path, decoder: &str, path: &str) -> Vec<f32> {
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-v", "error", "-xerror", "-c:a", decoder, "-i", path, "-map", "0:a", "-f", "f32le", "-c:a", "pcm_f32le", "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success() && out.stderr.is_empty(), "{decoder} {path}: {}", String::from_utf8_lossy(&out.stderr));
+    out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+}
+
+/// SNR (dB) of `test` against `reference`.
+fn snr_db(reference: &[f32], test: &[f32]) -> f64 {
+    let (mut sig, mut err) = (0f64, 0f64);
+    for (&a, &b) in reference.iter().zip(test) {
+        sig += f64::from(a) * f64::from(a);
+        err += (f64::from(a) - f64::from(b)).powi(2);
+    }
+    10.0 * (sig.max(1e-20) / err.max(1e-20)).log10()
+}
+
+#[test]
+fn opus_audio_is_an_ogg_opus_file() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("opus");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
+    let (wav, opus) = (dir.path("ref.wav"), dir.path("a.opus"));
+    let audio = AudioSettings { channels: 2, bits: 24, ..Default::default() };
+    export(&p, seq, &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio, ..Default::default() }, &m, &Progress::default()).unwrap();
+    let metadata = ExportMetadata { title: "Opus test".into(), creator: "FilmCraft".into(), ..Default::default() };
+    let audio = AudioSettings { bitrate_kbps: 160, ..Default::default() };
+    let s = ExportSettings { format: Format::Opus, path: opus.clone(), range, audio, metadata, ..Default::default() };
+    let prog = Progress::default();
+    let r = export(&p, seq, &s, &m, &prog).unwrap();
+    assert_eq!(r.frames, 72_000, "1.5 s at 48 kHz");
+    assert_eq!((prog.total.load(Ordering::Relaxed), prog.done.load(Ordering::Relaxed)), (2, 2));
+    let bytes = std::fs::read(&opus).unwrap();
+
+    // RFC 7845: OpusHead, OpusTags, 20 ms packets of 400 bytes (160 kbps), the end trimmed
+    let ogg = filmcraft_ogg::open(&bytes).unwrap();
+    assert!(ogg.warnings.is_empty(), "{:?}", ogg.warnings);
+    let st = &ogg.streams[0];
+    assert_eq!((st.codec, st.saw_eos), (filmcraft_ogg::Codec::Opus, true));
+    let head = filmcraft_opus::OpusHead::parse(&st.headers[0]).unwrap();
+    assert_eq!((head.channels, head.pre_skip, head.input_sample_rate), (2, filmcraft_opus::PRE_SKIP, 48_000));
+    let tags = String::from_utf8_lossy(&st.headers[1]);
+    assert!(tags.starts_with("OpusTags") && tags.contains("TITLE=Opus test") && tags.contains("ARTIST=FilmCraft") && tags.contains("FilmCraft "), "{tags}");
+    assert_eq!(st.packets.len(), (72_000 + 120usize).div_ceil(960));
+    assert!(st.packets.iter().all(|p| p.size == 400));
+    assert_eq!(st.last_granule, Some(120 + 72_000));
+    let timing = filmcraft_ogg::OpusTiming::of(st, 120);
+    assert_eq!(timing.total, 72_000);
+
+    // FilmCraft's own importer: the same length, and close to the WAV export
+    let decode = |name: &str, bytes: Vec<u8>| filmcraft_codecs::open_bytes(name, bytes.into()).unwrap().audio(0, 72_000, 48_000).unwrap();
+    let reference = decode("ref.wav", std::fs::read(&wav).unwrap());
+    let ours = decode("a.opus", bytes);
+    for (a, b) in reference.channels.iter().zip(&ours.channels) {
+        assert_eq!(b.len(), 72_000);
+        let snr = snr_db(a, b);
+        assert!(snr > 20.0, "own import: {snr:.1} dB");
+    }
+    // libopus and ffmpeg's own Opus decoder take every packet, and stop at the last real sample
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("opus export") {
+        let left: Vec<f32> = reference.channels[0].clone();
+        for decoder in ["libopus", "opus"] {
+            let pcm = ffmpeg_f32(&ffmpeg, decoder, &opus);
+            assert_eq!(pcm.len(), 2 * 72_000, "{decoder}: end trimming");
+            let l: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+            let snr = snr_db(&left, &l);
+            assert!(snr > 20.0, "{decoder}: {snr:.1} dB");
+        }
+    }
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &opus) {
+        let a = &j["streams"][0];
+        assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("opus"), Some("48000"), Some(2)));
+        assert_eq!(j["format"]["format_name"].as_str(), Some("ogg"));
+        // Vorbis comments are stream tags, under their own (upper-case) names
+        assert_eq!((a["tags"]["TITLE"].as_str(), a["tags"]["ARTIST"].as_str()), (Some("Opus test"), Some("FilmCraft")));
+        assert_eq!(a["initial_padding"].as_u64(), Some(u64::from(filmcraft_opus::PRE_SKIP)));
+    }
+}
+
+#[test]
+fn opus_audio_in_mp4_and_mov() {
+    let (p, seq, m) = matte([0.2, 0.4, 0.6, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("opus-in");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
+    let wav = dir.path("ref.wav");
+    let pcm = AudioSettings { channels: 2, bits: 24, ..Default::default() };
+    export(&p, seq, &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio: pcm, ..Default::default() }, &m, &Progress::default()).unwrap();
+    let reference = filmcraft_codecs::open_bytes("ref.wav", std::fs::read(&wav).unwrap().into()).unwrap().audio(0, 72_000, 48_000).unwrap();
+    let audio = AudioSettings { codec: AudioCodec::Opus, bitrate_kbps: 128, sample_rate: Some(44_100), ..Default::default() };
+    for (format, mux, name) in
+        [(Format::H264, Multiplexer::Mp4, "a.mp4"), (Format::H264, Multiplexer::Mov, "b.mov"), (Format::ProRes, Multiplexer::Mp4, "c.mov")]
+    {
+        let path = dir.path(name);
+        let s = ExportSettings { format, multiplexer: mux, path: path.clone(), range, audio: audio.clone(), ..Default::default() };
+        assert_eq!(s.audio_codec(), AudioCodec::Opus, "{name}");
+        let sum = s.summary(64, 36, FrameRate::FPS_24, 44_100, Tick(TICKS_PER_SECOND));
+        assert_eq!(sum.audio, "Opus, 128 kbps, 48000 Hz, Stereo", "{name}: always 48 kHz");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"dOps"), "{name}: Opus sample entry");
+        // FilmCraft's own importer reads the Opus track back, sample-accurately long
+        let src = filmcraft_codecs::open_bytes(name, bytes.into()).unwrap();
+        let a = src.audio(0, 72_000, 48_000).unwrap();
+        assert!(a.channels.iter().all(|c| c.len() == 72_000), "{name}");
+        let snr = snr_db(&reference.channels[0], &a.channels[0]);
+        assert!(snr > 20.0, "{name}: own import {snr:.1} dB");
+        if let Some(j) = ffprobe_json(&["-show_streams", "-count_packets"], &path) {
+            let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "audio").unwrap().clone();
+            assert_eq!((st["codec_name"].as_str(), st["sample_rate"].as_str(), st["channels"].as_u64()), (Some("opus"), Some("48000"), Some(2)), "{name}");
+            assert_eq!(st["nb_read_packets"].as_str(), Some("76"), "{name}: one 20 ms packet per sample");
+            // presented from the pre-skip to the input's end: the range, to the sample
+            assert_eq!(st["duration_ts"].as_u64(), Some(72_000), "{name}: the edit spans exactly the range");
+        }
+        // the edit list starts after the pre-skip and spans exactly the range
+        let file = std::fs::read(&path).unwrap();
+        let edits: Vec<(u32, i32)> = file
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == b"elst")
+            .map(|(i, _)| (u32::from_be_bytes(file[i + 8..i + 12].try_into().unwrap()), i32::from_be_bytes(file[i + 16..i + 20].try_into().unwrap())))
+            .collect();
+        assert!(edits.contains(&(1, 120)), "{name}: the audio track has one edit from the pre-skip: {edits:?}");
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("opus in containers") {
+            for decoder in ["libopus", "opus"] {
+                let pcm = ffmpeg_f32(&ffmpeg, decoder, &path);
+                // ffmpeg drops the pre-skip the edit list skips, but presents the whole last
+                // packet past the edit's end (it does so for any Opus in MP4)
+                assert!((2 * 72_000..=2 * (72_000 + 960)).contains(&pcm.len()), "{name} {decoder}: {} samples", pcm.len() / 2);
+                let l: Vec<f32> = pcm.iter().step_by(2).copied().collect();
+                let snr = snr_db(&reference.channels[0], &l);
+                assert!(snr > 20.0, "{name} {decoder}: {snr:.1} dB");
+            }
+        }
+    }
+}
+
+#[test]
+fn opus_settings_round_trip_and_summary() {
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "opus"})).unwrap();
+    assert_eq!((s.format, s.audio_codec(), s.has_video()), (Format::Opus, AudioCodec::Opus, false));
+    assert_eq!((s.extension(), Format::from_name("Ogg Opus"), Format::Opus.id(), Format::Opus.label()), ("opus", Some(Format::Opus), "opus", "Opus"));
+    let v: ExportSettings = serde_json::from_value(serde_json::json!({"format": "h264", "audio": {"codec": "opus"}})).unwrap();
+    assert_eq!(v.audio_codec(), AudioCodec::Opus);
+    // 48 kHz and at most stereo, whatever is asked for
+    let surround =
+        ExportSettings { format: Format::Opus, audio: AudioSettings { channels: 6, sample_rate: Some(96_000), ..Default::default() }, ..Default::default() };
+    let r = surround.resolve(64, 36, FrameRate::FPS_24, 44_100);
+    assert_eq!((r.sample_rate, r.channels), (48_000, 2));
+    let mono = ExportSettings { format: Format::Opus, audio: AudioSettings { channels: 1, bitrate_kbps: 64, ..Default::default() }, ..Default::default() };
+    assert_eq!(mono.summary(64, 36, FrameRate::FPS_24, 44_100, Tick(TICKS_PER_SECOND)).audio, "Opus, 64 kbps, 48000 Hz, Mono");
+    // bit rates are clamped to what Opus codes and rounded to whole bytes per packet
+    for (kbps, bps) in [(0u32, 6000u32), (6, 6000), (161, 161_200), (510, 510_000), (u32::MAX, 510_000)] {
+        let s = ExportSettings { format: Format::Opus, audio: AudioSettings { bitrate_kbps: kbps, ..Default::default() }, ..Default::default() };
+        assert_eq!(s.opus_bitrate(), bps, "{kbps} kbps");
+        assert!(s.validate().is_ok());
+    }
+    // the estimate is the bit rate
+    let est = ExportSettings { format: Format::Opus, audio: AudioSettings { bitrate_kbps: 160, ..Default::default() }, ..Default::default() }.estimate_bytes(
+        64,
+        36,
+        FrameRate::FPS_24,
+        48_000,
+        Tick(10 * TICKS_PER_SECOND),
+    );
+    assert_eq!(est, 200_000);
+    // formats that cannot carry Opus keep their codec
+    for f in [Format::MxfOp1a, Format::Wav, Format::Aiff] {
+        let s = ExportSettings { format: f, audio: AudioSettings { codec: AudioCodec::Opus, ..Default::default() }, ..Default::default() };
+        assert_eq!(s.audio_codec(), AudioCodec::Pcm, "{f:?}");
+    }
+    assert!(presets::builtin_presets().iter().any(|p| p.settings.format == Format::Opus && p.settings.audio.bitrate_kbps == 160));
+}
+
 #[test]
 fn invalid_export_allocations_are_rejected_before_rendering() {
     let (project, sequence, _) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
@@ -1330,7 +1507,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");

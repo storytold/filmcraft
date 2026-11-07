@@ -1,7 +1,7 @@
 //! Pulse cache and bit allocation (RFC 6716 §4.3.3, §4.3.4.1).
 
 use super::tables::{ALLOC, EBANDS, LOG2_FRAC_TABLE, MAX_LM, NB_EBANDS, OVERLAP};
-use crate::range::{BITRES, RangeDecoder};
+use crate::range::{BITRES, Coder};
 
 const MAX_PSEUDO: i32 = 40;
 const LOG_MAX_PSEUDO: i32 = 6;
@@ -280,8 +280,9 @@ pub struct Allocation {
     pub fine_priority: [i32; NB_EBANDS],
 }
 
-/// `clt_compute_allocation` (decoder side).
-pub struct AllocationInput<'a, 'd> {
+/// `clt_compute_allocation`, for the decoder (reading the skip, intensity and dual-stereo
+/// decisions) or the encoder (writing them).
+pub struct AllocationInput<'a, C: Coder> {
     pub mode: &'a Mode,
     pub start: usize,
     pub end: usize,
@@ -291,11 +292,13 @@ pub struct AllocationInput<'a, 'd> {
     pub total: i32,
     pub channels: usize,
     pub lm: usize,
-    pub decoder: &'a mut RangeDecoder<'d>,
+    /// Encoder only: the first band to code with intensity stereo (clamped to the coded bands).
+    pub intensity: usize,
+    pub coder: &'a mut C,
 }
 
-pub fn compute_allocation(input: AllocationInput<'_, '_>) -> Allocation {
-    let AllocationInput { mode: m, start, end, offsets, cap, trim: alloc_trim, total, channels: c, lm, decoder: dec } = input;
+pub(crate) fn compute_allocation<C: Coder>(input: AllocationInput<'_, C>) -> Allocation {
+    let AllocationInput { mode: m, start, end, offsets, cap, trim: alloc_trim, total, channels: c, lm, intensity: want_intensity, coder: dec } = input;
     let ci = c as i32;
     let lmi = lm as i32;
     let mut total = total.max(0);
@@ -394,11 +397,12 @@ pub fn compute_allocation(input: AllocationInput<'_, '_>) -> Allocation {
         stereo_reservation: dual_stereo_rsv,
         channels: c,
         lm,
-        decoder: dec,
+        intensity: want_intensity,
+        coder: dec,
     })
 }
 
-struct InterpPulsesInput<'a, 'd> {
+struct InterpPulsesInput<'a, C: Coder> {
     mode: &'a Mode,
     start: usize,
     end: usize,
@@ -413,10 +417,11 @@ struct InterpPulsesInput<'a, 'd> {
     stereo_reservation: i32,
     channels: usize,
     lm: usize,
-    decoder: &'a mut RangeDecoder<'d>,
+    intensity: usize,
+    coder: &'a mut C,
 }
 
-fn interp_bits2pulses(input: InterpPulsesInput<'_, '_>) -> Allocation {
+fn interp_bits2pulses<C: Coder>(input: InterpPulsesInput<'_, C>) -> Allocation {
     let InterpPulsesInput {
         mode: m,
         start,
@@ -432,7 +437,8 @@ fn interp_bits2pulses(input: InterpPulsesInput<'_, '_>) -> Allocation {
         stereo_reservation: mut dual_stereo_rsv,
         channels: c,
         lm,
-        decoder: dec,
+        intensity: want_intensity,
+        coder: dec,
     } = input;
     let ci = c as i32;
     let alloc_floor = ci << BITRES;
@@ -489,7 +495,8 @@ fn interp_bits2pulses(input: InterpPulsesInput<'_, '_>) -> Allocation {
         let band_width = EBANDS[coded_bands] - EBANDS[j];
         let mut band_bits = bits[j] + percoeff * band_width + rem;
         if band_bits >= thresh[j].max(alloc_floor + (1 << BITRES)) {
-            if dec.bit_logp(1) {
+            // The encoder keeps every band it can afford.
+            if dec.bit_logp(true, 1) {
                 break;
             }
             psum += 1 << BITRES;
@@ -508,12 +515,17 @@ fn interp_bits2pulses(input: InterpPulsesInput<'_, '_>) -> Allocation {
         }
         coded_bands -= 1;
     }
-    let intensity = if intensity_rsv > 0 { s + dec.uint((coded_bands + 1 - s) as u32) as usize } else { 0 };
+    let intensity = if intensity_rsv > 0 {
+        let want = (want_intensity.clamp(s, coded_bands) - s) as u32;
+        s + dec.uint(want, (coded_bands + 1 - s) as u32) as usize
+    } else {
+        0
+    };
     if intensity <= s {
         total += dual_stereo_rsv;
         dual_stereo_rsv = 0;
     }
-    let dual_stereo = if dual_stereo_rsv > 0 { dec.bit_logp(1) } else { false };
+    let dual_stereo = if dual_stereo_rsv > 0 { dec.bit_logp(false, 1) } else { false };
     let mut left = total - psum;
     let span = EBANDS[coded_bands] - EBANDS[s];
     let percoeff = left / span;

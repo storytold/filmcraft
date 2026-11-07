@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-opus"
-description = "Clean-room pure-Rust Opus decoder (RFC 6716 / RFC 8251; OpusHead, multistream surround)"
+description = "Clean-room pure-Rust Opus decoder (RFC 6716 / RFC 8251; OpusHead, multistream surround) and CELT encoder"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,7 @@
 //! CELT layer decoder (RFC 6716 §4.3).
 
 pub(crate) mod bands;
+pub(crate) mod encode;
 pub(crate) mod energy;
 pub(crate) mod mdct;
 pub(crate) mod rate;
@@ -281,7 +282,8 @@ impl CeltDecoder {
             total: bits,
             channels: c,
             lm,
-            decoder: dec,
+            intensity: 0,
+            coder: &mut *dec,
         });
         unquant_fine_energy(start, end, &mut self.old_band_e, &alloc.fine_quant, dec, c);
 
@@ -315,7 +317,8 @@ impl CeltDecoder {
                 tf_res: &tf_res,
                 total_bits: ((len as i32) * (8 << BITRES)) - anti_collapse_rsv,
                 balance: alloc.balance,
-                decoder: dec,
+                coder: &mut *dec,
+                band_e: &[],
                 lm,
                 coded_bands: alloc.coded_bands,
                 seed: &mut seed,

@@ -2943,6 +2943,7 @@
 	32 bit	32 bit
 	32 bit float	32 bit titik mengambang
 	FLAC stores whole-number samples only	FLAC hanya menyimpan sampel bilangan bulat
+	Opus export writes mono or stereo	Ekspor Opus menulis mono atau stereo
 	MXF export writes integer PCM only	Ekspor MXF hanya menulis PCM bilangan bulat
 	Size / Opacity	Ukuran / Opasitas
 	Image Overlay	Overlay Gambar

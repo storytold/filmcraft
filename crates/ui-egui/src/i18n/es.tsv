@@ -2949,6 +2949,7 @@
 	32 bit	32 bits
 	32 bit float	32 bits de coma flotante
 	FLAC stores whole-number samples only	FLAC solo guarda muestras enteras
+	Opus export writes mono or stereo	La exportación Opus escribe mono o estéreo
 	MXF export writes integer PCM only	La exportación MXF solo escribe PCM entero
 	Size / Opacity	Tamaño / opacidad
 	Image Overlay	Superposición de imagen

@@ -1,9 +1,15 @@
-//! Band shape decoding: PVQ, spreading, TF changes, band splitting, stereo, folding
+//! Band shape coding: PVQ, spreading, TF changes, band splitting, stereo, folding
 //! (RFC 6716 §4.3.4 – §4.3.6).
+//!
+//! One implementation serves both directions through [`Coder`]: the decoder reads each decision,
+//! the encoder makes it (pulse search, split angle, mid/side or intensity stereo, signs) and then
+//! runs the same reconstruction, so its folding source is bit-identical to the decoder's.
 
 use super::rate::{Mode, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, get_pulses};
 use super::tables::{E_MEANS, EBANDS, NB_EBANDS, ORDERY, SHORT_MDCT};
-use crate::range::{BITRES, RangeDecoder, ilog};
+#[cfg(test)]
+use crate::range::RangeDecoder;
+use crate::range::{BITRES, Coder, ilog};
 
 pub const SPREAD_NONE: usize = 0;
 pub const SPREAD_AGGRESSIVE: usize = 3;
@@ -41,14 +47,49 @@ fn pvq_table() -> &'static [u32] {
     })
 }
 
-/// Decodes a PVQ codeword of `k` pulses in `n` dimensions; returns the sum of squares.
-fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder) -> f32 {
+/// Index of the PVQ codeword `y` (`k` pulses in `n` dimensions): the inverse of the walk in
+/// [`code_pulses`].
+fn pulses_index(y: &[i32], n: usize, k: usize) -> u64 {
+    let table = pvq_table();
+    let vv = |nn: usize, kx: usize| table.get(nn * PVQ_W + kx).copied().unwrap_or(0) as u64;
+    let mut index = 0u64;
+    let mut kk = k;
+    for (j, &v) in y.iter().enumerate().take(n) {
+        if kk == 0 {
+            break;
+        }
+        let rem = n - j;
+        let half = (vv(rem - 1, kk) + vv(rem, kk)) / 2;
+        let mag = (v.unsigned_abs() as usize).min(kk);
+        if v < 0 && mag > 0 {
+            index += half;
+        }
+        let mut p = half - vv(rem - 1, kk);
+        for _ in 0..mag {
+            kk -= 1;
+            p -= vv(rem - 1, kk);
+        }
+        index += p;
+    }
+    index
+}
+
+/// Codes a PVQ codeword of `k` pulses in `n` dimensions in `y` (decoded into it, or encoded
+/// from it); returns the sum of squares.
+fn code_pulses<C: Coder>(y: &mut [i32], n: usize, k: usize, dec: &mut C) -> f32 {
     debug_assert!(n <= PVQ_MAX_N && k <= PVQ_MAX_K);
     let table = pvq_table();
     let vv = |nn: usize, kx: usize| table[nn * PVQ_W + kx] as u64;
     let total = vv(n, k);
     let ft = total.min(u32::MAX as u64) as u32;
-    let mut i = if ft >= 2 { dec.uint(ft) as u64 } else { 0 };
+    if C::ENCODE {
+        let index = pulses_index(y, n, k).min(u64::from(ft.saturating_sub(1))) as u32;
+        if ft >= 2 {
+            dec.uint(index, ft);
+        }
+        return y.iter().take(n).map(|&v| (v * v) as f32).sum();
+    }
+    let mut i = if ft >= 2 { dec.uint(0, ft) as u64 } else { 0 };
     let mut kk = k;
     let mut ryy = 0f32;
     for j in 0..n {
@@ -122,6 +163,121 @@ fn exp_rotation(x: &mut [f32], len: usize, stride: usize, k: usize, spread: usiz
             exp_rotation1(xs, sub, stride2, s, c);
         }
         exp_rotation1(xs, sub, 1, c, s);
+    }
+}
+
+/// Forward spreading rotation (encoder direction): undone exactly by [`exp_rotation`].
+fn exp_rotation_forward(x: &mut [f32], len: usize, stride: usize, k: usize, spread: usize) {
+    const SPREAD_FACTOR: [usize; 3] = [15, 10, 5];
+    if 2 * k >= len || spread == SPREAD_NONE || stride == 0 {
+        return;
+    }
+    let factor = SPREAD_FACTOR[(spread - 1).min(2)];
+    let gain = len as f32 / (len + factor * k) as f32;
+    let theta = 0.5 * gain * gain;
+    let c = (0.5 * std::f32::consts::PI * theta).cos();
+    let s = (0.5 * std::f32::consts::PI * (1.0 - theta)).cos();
+    let mut stride2 = 0;
+    if len >= 8 * stride {
+        stride2 = 1;
+        while (stride2 * stride2 + stride2) * stride + (stride >> 2) < len {
+            stride2 += 1;
+        }
+    }
+    let sub = len / stride;
+    for i in 0..stride {
+        let xs = &mut x[i * sub..(i + 1) * sub];
+        exp_rotation1(xs, sub, 1, c, -s);
+        if stride2 != 0 {
+            exp_rotation1(xs, sub, stride2, s, -c);
+        }
+    }
+}
+
+/// Pulse search: the `k`-pulse codeword `iy` closest in direction to `x` (greedy, after a
+/// projection when there are many pulses). `iy` gets exactly `k` pulses.
+fn pvq_search(x: &[f32], k: usize, iy: &mut [i32]) {
+    let n = x.len().min(iy.len());
+    iy.fill(0);
+    if n == 0 || k == 0 {
+        return;
+    }
+    let ax: Vec<f64> = x[..n].iter().map(|v| if v.is_finite() { f64::from(v.abs()) } else { 0.0 }).collect();
+    let sum: f64 = ax.iter().sum();
+    if sum <= 1e-15 || !sum.is_finite() {
+        iy[0] = k as i32;
+        return;
+    }
+    let mut left = k;
+    let (mut rxy, mut ryy) = (0f64, 0f64);
+    if k > n / 2 {
+        let r = (k - 1) as f64 / sum;
+        for j in 0..n {
+            let y = ((ax[j] * r).floor() as usize).min(left);
+            iy[j] = y as i32;
+            rxy += y as f64 * ax[j];
+            ryy += (y * y) as f64;
+            left -= y;
+        }
+    }
+    while left > 0 {
+        let mut best = 0usize;
+        let (mut best_num, mut best_den) = (-1f64, 1f64);
+        for j in 0..n {
+            let num = (rxy + ax[j]) * (rxy + ax[j]);
+            let den = ryy + 2.0 * f64::from(iy[j]) + 1.0;
+            if num * best_den > best_num * den {
+                best = j;
+                best_num = num;
+                best_den = den;
+            }
+        }
+        rxy += ax[best];
+        ryy += 2.0 * f64::from(iy[best]) + 1.0;
+        iy[best] += 1;
+        left -= 1;
+    }
+    for j in 0..n {
+        if x[j] < 0.0 {
+            iy[j] = -iy[j];
+        }
+    }
+}
+
+/// The split angle of `x` against `y` in Q14 quarter turns (0 = all `x`, 16384 = all `y`); for
+/// stereo, of the mid `x + y` against the side `x - y`.
+fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool) -> i32 {
+    let (mut emid, mut eside) = (1e-15f64, 1e-15f64);
+    for (&a, &b) in x.iter().zip(y) {
+        let (a, b) = (f64::from(a), f64::from(b));
+        if stereo {
+            emid += (a + b) * (a + b);
+            eside += (a - b) * (a - b);
+        } else {
+            emid += a * a;
+            eside += b * b;
+        }
+    }
+    let t = (16384.0 * std::f64::consts::FRAC_2_PI * eside.sqrt().atan2(emid.sqrt()) + 0.5).floor();
+    if t.is_finite() { (t as i32).clamp(0, 16384) } else { 0 }
+}
+
+/// Encoder: mid in `x`, side in `y`, from the left and right shapes.
+fn stereo_split(x: &mut [f32], y: &mut [f32]) {
+    for (a, b) in x.iter_mut().zip(y.iter_mut()) {
+        let l = std::f32::consts::FRAC_1_SQRT_2 * *a;
+        let r = std::f32::consts::FRAC_1_SQRT_2 * *b;
+        *a = l + r;
+        *b = r - l;
+    }
+}
+
+/// Encoder: the intensity-stereo mono shape in `x`, the channels weighted by their band amplitude.
+fn intensity_stereo(x: &mut [f32], y: &[f32], left: f32, right: f32) {
+    let norm = 1e-15 + (left * left + right * right).sqrt();
+    let (a1, a2) = (left / norm, right / norm);
+    for (a, &b) in x.iter_mut().zip(y) {
+        *a = a1 * *a + a2 * b;
     }
 }
 
@@ -260,9 +416,11 @@ fn sdiv(a: i32, b: i32) -> i32 {
     a / b
 }
 
-pub struct BandCtx<'m, 'd, 'b> {
+pub struct BandCtx<'m, 'd, C: Coder> {
     pub m: &'m Mode,
-    pub dec: &'d mut RangeDecoder<'b>,
+    pub dec: &'d mut C,
+    /// Encoder only: linear band amplitudes, `[channel * NB_EBANDS + band]` (intensity stereo).
+    pub band_e: &'m [f32],
     pub i: usize,
     pub intensity: usize,
     pub spread: usize,
@@ -323,10 +481,12 @@ struct QuantBandStereoInput<'a> {
     fill: u32,
 }
 
-impl BandCtx<'_, '_, '_> {
-    fn compute_theta(&mut self, n: i32, b: &mut i32, band: ThetaBand, fill: &mut u32) -> Split {
+impl<C: Coder> BandCtx<'_, '_, C> {
+    fn compute_theta(&mut self, x: &mut [f32], y: &mut [f32], n: i32, b: &mut i32, band: ThetaBand, fill: &mut u32) -> Split {
         let ThetaBand { bb, b0, lm, stereo } = band;
         let i = self.i;
+        let nn = (n.max(0) as usize).min(x.len()).min(y.len());
+        let itheta_in = if C::ENCODE { stereo_itheta(&x[..nn], &y[..nn], stereo) } else { 0 };
         let pulse_cap = self.m.log_n[i] + lm * (1 << BITRES);
         let offset = (pulse_cap >> 1) - if stereo && n == 2 { QTHETA_OFFSET_TWOPHASE } else { QTHETA_OFFSET };
         let mut qn = compute_qn(n, *b, offset, pulse_cap, stereo);
@@ -337,28 +497,45 @@ impl BandCtx<'_, '_, '_> {
         let mut itheta = 0i32;
         let mut inv = false;
         if qn != 1 {
+            let want = ((itheta_in * qn + 8192) >> 14).clamp(0, qn) as u32;
             if stereo && n > 2 {
                 let p0 = 3u32;
                 let x0 = (qn / 2) as u32;
                 let ft = p0 * (x0 + 1) + x0;
-                let fs = self.dec.decode(ft);
-                let x = if fs < (x0 + 1) * p0 { fs / p0 } else { x0 + 1 + (fs - (x0 + 1) * p0) };
+                let x = if C::ENCODE {
+                    want
+                } else {
+                    let fs = self.dec.decode(ft);
+                    if fs < (x0 + 1) * p0 { fs / p0 } else { x0 + 1 + (fs - (x0 + 1) * p0) }
+                };
                 let (fl, fh) = if x <= x0 { (p0 * x, p0 * (x + 1)) } else { ((x - 1 - x0) + (x0 + 1) * p0, (x - x0) + (x0 + 1) * p0) };
                 self.dec.update(fl, fh, ft);
                 itheta = x as i32;
             } else if b0 > 1 || stereo {
-                itheta = self.dec.uint(qn as u32 + 1) as i32;
+                itheta = self.dec.uint(want, qn as u32 + 1) as i32;
             } else {
                 let half = (qn >> 1) as u32;
                 let ft = (half + 1) * (half + 1);
-                let fm = self.dec.decode(ft);
                 let (fl, fs);
-                if fm < (half * (half + 1)) >> 1 {
+                if C::ENCODE {
+                    let q = qn as u32;
+                    if want <= half {
+                        fs = want + 1;
+                        fl = (want * (want + 1)) >> 1;
+                    } else {
+                        fs = q + 1 - want;
+                        fl = ft - (((q + 1 - want) * (q + 2 - want)) >> 1);
+                    }
+                    itheta = want as i32;
+                } else if let fm = self.dec.decode(ft)
+                    && fm < (half * (half + 1)) >> 1
+                {
                     let it = (isqrt32(8 * fm + 1) - 1) >> 1;
                     fs = it + 1;
                     fl = (it * (it + 1)) >> 1;
                     itheta = it as i32;
                 } else {
+                    let fm = self.dec.decode(ft);
                     let q = qn as u32;
                     let it = (2 * (q + 1) - isqrt32(8 * (ft - fm - 1) + 1)) >> 1;
                     fs = q + 1 - it;
@@ -368,9 +545,26 @@ impl BandCtx<'_, '_, '_> {
                 self.dec.update(fl, fl + fs, ft);
             }
             itheta = ((itheta as u32 * 16384) / qn as u32) as i32;
+            if C::ENCODE && stereo {
+                if itheta == 0 {
+                    self.intensity(x, y);
+                } else {
+                    stereo_split(&mut x[..nn], &mut y[..nn]);
+                }
+            }
         } else if stereo {
-            if *b > 2 << BITRES && self.remaining_bits > 2 << BITRES {
-                inv = self.dec.bit_logp(2);
+            let coded = *b > 2 << BITRES && self.remaining_bits > 2 << BITRES;
+            let want = C::ENCODE && coded && itheta_in > 8192 && !self.disable_inv;
+            if want {
+                for v in y[..nn].iter_mut() {
+                    *v = -*v;
+                }
+            }
+            if C::ENCODE {
+                self.intensity(x, y);
+            }
+            if coded {
+                inv = self.dec.bit_logp(want, 2);
             }
             if self.disable_inv {
                 inv = false;
@@ -398,18 +592,25 @@ impl BandCtx<'_, '_, '_> {
         Split { inv, imid, iside, delta, itheta, qalloc }
     }
 
+    /// Encoder: replaces `x` by the intensity-stereo mono shape of band `self.i`.
+    fn intensity(&self, x: &mut [f32], y: &[f32]) {
+        let left = self.band_e.get(self.i).copied().unwrap_or(1.0);
+        let right = self.band_e.get(NB_EBANDS + self.i).copied().unwrap_or(1.0);
+        intensity_stereo(x, y, left, right);
+    }
+
     fn quant_band_n1(&mut self, x: &mut [f32], y: Option<&mut [f32]>, lowband_out: Option<&mut [f32]>) -> u32 {
-        let dec_sign = |ctx: &mut Self| -> f32 {
+        let dec_sign = |ctx: &mut Self, v: f32| -> f32 {
             let mut sign = 0;
             if ctx.remaining_bits >= 1 << BITRES {
-                sign = ctx.dec.bits(1);
+                sign = ctx.dec.bits((v < 0.0) as u32, 1);
                 ctx.remaining_bits -= 1 << BITRES;
             }
             if sign != 0 { -1.0 } else { 1.0 }
         };
-        x[0] = dec_sign(self);
+        x[0] = dec_sign(self, x[0]);
         if let Some(y) = y {
-            y[0] = dec_sign(self);
+            y[0] = dec_sign(self, y[0]);
         }
         if let Some(lo) = lowband_out {
             lo[0] = x[0];
@@ -431,7 +632,7 @@ impl BandCtx<'_, '_, '_> {
                 fill = (fill & 1) | (fill << 1);
             }
             bb = (bb + 1) >> 1;
-            let sp = self.compute_theta(n as i32, &mut b, ThetaBand { bb, b0, lm, stereo: false }, &mut fill);
+            let sp = self.compute_theta(xa, ya, n as i32, &mut b, ThetaBand { bb, b0, lm, stereo: false }, &mut fill);
             let mid = sp.imid as f32 / 32768.0;
             let side = sp.iside as f32 / 32768.0;
             let mut delta = sp.delta;
@@ -487,7 +688,15 @@ impl BandCtx<'_, '_, '_> {
             let mut iy = std::mem::take(&mut self.iy);
             iy.clear();
             iy.resize(n, 0);
-            let ryy = decode_pulses(&mut iy, n, k, self.dec);
+            if C::ENCODE {
+                let mut t = std::mem::take(&mut self.tmp);
+                t.clear();
+                t.extend_from_slice(&x[..n]);
+                exp_rotation_forward(&mut t, n, bb, k, self.spread);
+                pvq_search(&t, k, &mut iy);
+                self.tmp = t;
+            }
+            let ryy = code_pulses(&mut iy, n, k, self.dec);
             let g = gain / ryy.sqrt();
             for (xv, &yv) in x[..n].iter_mut().zip(iy.iter()) {
                 *xv = g * yv as f32;
@@ -544,6 +753,9 @@ impl BandCtx<'_, '_, '_> {
         }
         const BIT_INTERLEAVE: [u32; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
         for k in 0..recombine {
+            if C::ENCODE {
+                haar1(x, n >> k, 1 << k);
+            }
             if let Some(lb) = lowband.as_deref_mut() {
                 haar1(lb, n >> k, 1 << k);
             }
@@ -552,6 +764,9 @@ impl BandCtx<'_, '_, '_> {
         bb >>= recombine;
         n_b <<= recombine;
         while (n_b & 1) == 0 && tf_change < 0 {
+            if C::ENCODE {
+                haar1(x, n_b, bb);
+            }
             if let Some(lb) = lowband.as_deref_mut() {
                 haar1(lb, n_b, bb);
             }
@@ -564,6 +779,9 @@ impl BandCtx<'_, '_, '_> {
         let b0 = bb;
         let n_b0 = n_b;
         let mut tmp = std::mem::take(&mut self.tmp);
+        if C::ENCODE && b0 > 1 {
+            deinterleave_hadamard(x, n_b >> recombine, b0 << recombine, long_blocks, &mut tmp);
+        }
         if b0 > 1
             && let Some(lb) = lowband.as_deref_mut()
         {
@@ -603,7 +821,7 @@ impl BandCtx<'_, '_, '_> {
         if n == 1 {
             return self.quant_band_n1(x, Some(y), lowband_out);
         }
-        let sp = self.compute_theta(n as i32, &mut b, ThetaBand { bb, b0: bb, lm, stereo: true }, &mut fill);
+        let sp = self.compute_theta(x, y, n as i32, &mut b, ThetaBand { bb, b0: bb, lm, stereo: true }, &mut fill);
         let mid = sp.imid as f32 / 32768.0;
         let side = sp.iside as f32 / 32768.0;
         let mut cm;
@@ -618,7 +836,13 @@ impl BandCtx<'_, '_, '_> {
             self.remaining_bits -= sp.qalloc + sbits;
             let mut sign = 0;
             if sbits != 0 {
-                sign = self.dec.bits(1) as i32;
+                let want = if C::ENCODE {
+                    let (m, o) = if c { (&*y, &*x) } else { (&*x, &*y) };
+                    (m[0] * o[1] - m[1] * o[0] < 0.0) as u32
+                } else {
+                    0
+                };
+                sign = self.dec.bits(want, 1) as i32;
             }
             let sign = (1 - 2 * sign) as f32;
             if c {
@@ -700,8 +924,9 @@ fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32) {
     }
 }
 
-/// Decodes all band shapes (`quant_all_bands`, decoder side).
-pub struct QuantAllBandsInput<'a, 'd> {
+/// Codes all band shapes (`quant_all_bands`). Decoding fills `x_buf` / `y_buf`; encoding reads
+/// the normalised shapes there and leaves the decoder's reconstruction in their place.
+pub struct QuantAllBandsInput<'a, C: Coder> {
     pub mode: &'a Mode,
     pub start: usize,
     pub end: usize,
@@ -716,14 +941,16 @@ pub struct QuantAllBandsInput<'a, 'd> {
     pub tf_res: &'a [i32; NB_EBANDS],
     pub total_bits: i32,
     pub balance: i32,
-    pub decoder: &'a mut RangeDecoder<'d>,
+    pub coder: &'a mut C,
+    /// Encoder only: linear band amplitudes `[channel * NB_EBANDS + band]`; empty when decoding.
+    pub band_e: &'a [f32],
     pub lm: usize,
     pub coded_bands: usize,
     pub seed: &'a mut u32,
     pub disable_inv: bool,
 }
 
-pub fn quant_all_bands(input: QuantAllBandsInput<'_, '_>) {
+pub(crate) fn quant_all_bands<C: Coder>(input: QuantAllBandsInput<'_, C>) {
     let QuantAllBandsInput {
         mode: m,
         start,
@@ -739,7 +966,8 @@ pub fn quant_all_bands(input: QuantAllBandsInput<'_, '_>) {
         tf_res,
         total_bits,
         mut balance,
-        decoder: dec,
+        coder: dec,
+        band_e,
         lm,
         coded_bands,
         seed,
@@ -760,6 +988,7 @@ pub fn quant_all_bands(input: QuantAllBandsInput<'_, '_>) {
     let mut ctx = BandCtx {
         m,
         dec,
+        band_e,
         i: 0,
         intensity,
         spread,
@@ -1023,7 +1252,7 @@ mod tests {
 
     #[test]
     fn pvq_roundtrip_all_codewords_small() {
-        use crate::range::enc::RangeEncoder;
+        use crate::range::RangeEncoder;
         // Enumerate every index for small N,K, decode, and check uniqueness + sum |y| == K.
         for n in 1..6usize {
             for k in 1..5usize {
@@ -1032,16 +1261,81 @@ mod tests {
                 for idx in 0..total {
                     let mut e = RangeEncoder::new(16);
                     e.uint(idx, total);
-                    let buf = e.done();
+                    let buf = e.done().unwrap();
                     let mut d = RangeDecoder::new(&buf);
                     let mut y = vec![0i32; n];
-                    let ryy = decode_pulses(&mut y, n, k, &mut d);
+                    let ryy = code_pulses(&mut y, n, k, &mut d);
                     assert_eq!(y.iter().map(|v| v.unsigned_abs() as usize).sum::<usize>(), k);
                     assert_eq!(ryy as i32, y.iter().map(|v| v * v).sum::<i32>());
                     assert!(seen.insert(y.clone()), "duplicate codeword n={n} k={k} idx={idx}");
                 }
             }
         }
+    }
+
+    /// Every codeword of small (N, K) encodes to an index the decoder walks back to exactly.
+    #[test]
+    fn pulse_index_inverts_the_decoder() {
+        use crate::range::RangeEncoder;
+        for n in 1..7usize {
+            for k in 1..6usize {
+                let total = super::super::rate::pvq_v(n, k) as u32;
+                for idx in 0..total {
+                    let mut e = RangeEncoder::new(16);
+                    e.uint(idx, total);
+                    let buf = e.done().unwrap();
+                    let mut y = vec![0i32; n];
+                    code_pulses(&mut y, n, k, &mut RangeDecoder::new(&buf));
+                    assert_eq!(pulses_index(&y, n, k), u64::from(idx), "n={n} k={k} y={y:?}");
+                    let mut e = RangeEncoder::new(16);
+                    code_pulses(&mut y.clone(), n, k, &mut e);
+                    let buf = e.done().unwrap();
+                    let mut back = vec![0i32; n];
+                    code_pulses(&mut back, n, k, &mut RangeDecoder::new(&buf));
+                    assert_eq!(back, y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forward_rotation_is_undone_by_the_decoder_rotation() {
+        for &(len, stride, k, spread) in &[(16usize, 1usize, 3usize, 2usize), (48, 1, 5, 1), (176, 1, 20, 3), (64, 4, 6, 2), (96, 2, 10, 2)] {
+            let orig: Vec<f32> = (0..len).map(|i| ((i * 37 % 23) as f32 - 11.0) / 7.0).collect();
+            let mut x = orig.clone();
+            exp_rotation_forward(&mut x, len, stride, k, spread);
+            assert!(x.iter().zip(&orig).any(|(a, b)| (a - b).abs() > 1e-3), "rotation should change the vector");
+            exp_rotation(&mut x, len, stride, k, spread);
+            for (a, b) in x.iter().zip(&orig) {
+                assert!((a - b).abs() < 1e-4, "len={len} stride={stride} k={k}: {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn pulse_search_places_exactly_k_pulses() {
+        let cases: [Vec<f32>; 5] = [
+            vec![1.0, -0.5, 0.25, 0.0],
+            vec![0.0; 8],
+            vec![f32::NAN, 1.0, f32::INFINITY, -2.0],
+            (0..40).map(|i| (i * 13 % 7) as f32 - 3.0).collect(),
+            vec![-1e-30; 3],
+        ];
+        for x in &cases {
+            for k in [1usize, 2, 5, 17, 64, 128] {
+                let mut iy = vec![0i32; x.len()];
+                pvq_search(x, k, &mut iy);
+                assert_eq!(iy.iter().map(|v| v.unsigned_abs() as usize).sum::<usize>(), k, "{x:?} k={k}");
+                let silent = !x.iter().any(|v| v.is_finite() && v.abs() > 1e-20);
+                for (v, &xv) in iy.iter().zip(x) {
+                    assert!(silent || *v == 0 || (*v < 0) == (xv < 0.0), "sign follows x: {iy:?} {x:?}");
+                }
+            }
+        }
+        // Greedy search finds the obvious codeword.
+        let mut iy = [0i32; 4];
+        pvq_search(&[0.0, 3.0, 0.0, -1.0], 4, &mut iy);
+        assert_eq!(iy, [0, 3, 0, -1]);
     }
 
     #[test]

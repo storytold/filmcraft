@@ -2933,6 +2933,7 @@
 	32 bit	32 bitar
 	32 bit float	32 bitar flyttal
 	FLAC stores whole-number samples only	FLAC lagrar endast heltalssampel
+	Opus export writes mono or stereo	Opus-export skriver mono eller stereo
 	MXF export writes integer PCM only	MXF-export skriver endast heltals-PCM
 	Size / Opacity	Storlek / opacitet
 	Image Overlay	Bildöverlägg

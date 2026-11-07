@@ -20,6 +20,7 @@ mod audio_out;
 mod deflate;
 mod job;
 mod mxf_out;
+mod ogg_out;
 mod pace;
 mod pcm;
 mod pipeline;
@@ -56,7 +57,7 @@ mod still_encode;
 pub use convert::{
     Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
 };
-pub(crate) use encoders::FlacAudio;
+pub(crate) use encoders::{FlacAudio, OpusAudio};
 #[cfg(test)]
 use encoders::{aac_factory, h264_factory};
 pub use encoders::{apv_profile, dnx_profile, prores_profile};

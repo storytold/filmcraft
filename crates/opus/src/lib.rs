@@ -1,10 +1,11 @@
-//! Clean-room pure-Rust Opus decoder (RFC 6716, updated by RFC 8251).
+//! Clean-room pure-Rust Opus decoder (RFC 6716, updated by RFC 8251) and CELT-only encoder.
 //!
 //! Layer L0: no dependencies beyond `std`; no `unsafe`; builds for `wasm32-unknown-unknown`.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 pub(crate) mod celt;
 mod decoder;
+mod encoder;
 mod header;
 mod multistream;
 pub mod packet;
@@ -12,6 +13,7 @@ pub(crate) mod range;
 pub(crate) mod silk;
 
 pub use decoder::{SAMPLE_RATES, StreamDecoder};
+pub use encoder::{Encoder, EncoderConfig, FRAME_SIZE, MAX_BITRATE, MIN_BITRATE, PRE_SKIP};
 pub use header::OpusHead;
 pub use multistream::Decoder;
 pub use packet::{Bandwidth, Mode, Packet, Toc};

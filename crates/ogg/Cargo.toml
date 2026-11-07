@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-ogg"
-description = "Clean-room Ogg (RFC 3533) demuxer with Ogg Opus (RFC 7845) and Ogg Vorbis stream mapping"
+description = "Clean-room Ogg (RFC 3533) demuxer and page writer with Ogg Opus (RFC 7845) and Ogg Vorbis stream mapping"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

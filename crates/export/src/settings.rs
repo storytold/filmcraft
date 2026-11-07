@@ -210,8 +210,8 @@ impl ExrCompression {
     }
 }
 
-/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC.
-/// MP4 and QuickTime can also carry FLAC; MXF is always PCM.
+/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC,
+/// Opus in Opus. MP4 and QuickTime can also carry FLAC and Opus; MXF is always PCM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioCodec {
@@ -221,6 +221,8 @@ pub enum AudioCodec {
     Pcm,
     /// Lossless compression (the FLAC format).
     Flac,
+    /// Opus (RFC 6716) at [`AudioSettings::bitrate_kbps`]: always 48 kHz, mono or stereo.
+    Opus,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -231,7 +233,7 @@ pub struct AudioSettings {
     pub sample_rate: Option<u32>,
     /// 1 (mono), 2 (stereo) or 6 (5.1: L, R, C, LFE, Ls, Rs).
     pub channels: u32,
-    /// AAC bitrate.
+    /// AAC and Opus bitrate.
     pub bitrate_kbps: u32,
     /// PCM and FLAC sample size: 16, 24 or 32 (other values round down to one of them, 16 at least).
     pub bits: u16,
@@ -490,6 +492,21 @@ impl ExportMetadata {
         v.push(("©too".into(), format!("FilmCraft {}", env!("CARGO_PKG_VERSION"))));
         v
     }
+
+    /// Vorbis-comment fields (Ogg Opus `OpusTags`, Ogg Vorbis): `TITLE`, `ARTIST`, `COPYRIGHT`,
+    /// `DESCRIPTION` and `COMMENT`, the empty ones left out.
+    pub fn vorbis_comments(&self) -> Vec<(&'static str, String)> {
+        [("TITLE", &self.title), ("ARTIST", &self.creator), ("COPYRIGHT", &self.copyright), ("DESCRIPTION", &self.description), ("COMMENT", &self.comment)]
+            .into_iter()
+            .filter(|(_, s)| !s.trim().is_empty())
+            .map(|(k, s)| (k, s.trim().to_string()))
+            .collect()
+    }
+
+    /// The vendor string of Ogg comment headers.
+    pub fn vendor() -> String {
+        format!("FilmCraft {}", env!("CARGO_PKG_VERSION"))
+    }
 }
 
 /// Values derived from settings + sequence at export time.
@@ -561,27 +578,39 @@ impl ExportSettings {
             6.. => 6,
             _ => 2,
         };
-        Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
+        // Opus codes 48 kHz mono or stereo: other rates are resampled, 5.1 folded to stereo
+        let (sample_rate, channels) =
+            if self.audio_codec() == AudioCodec::Opus { (48_000, channels.min(2)) } else { (self.audio.sample_rate.unwrap_or(seq_sr), channels) };
+        Resolved { width: w, height: h, rate, sample_rate, channels, target_kbps: target, max_kbps: max, keyint }
     }
 
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
     /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
-            AudioCodec::Aac => false,
+            AudioCodec::Aac | AudioCodec::Opus => false,
             AudioCodec::Flac => !f.is_float(),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
+    }
+
+    /// The Opus bit rate in bit/s: [`AudioSettings::bitrate_kbps`] limited to 6–510 kbps and
+    /// rounded to whole bytes per 20 ms packet, as the encoder writes it.
+    pub fn opus_bitrate(&self) -> u32 {
+        let bps = self.audio.bitrate_kbps.clamp(6, 510) * 1000;
+        (bps + 200) / 400 * 400
     }
 
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
+            (Format::Opus, _) => AudioCodec::Opus,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
-            // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`)
+            // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`) and Opus (`Opus` + `dOps`)
             (_, AudioCodec::Flac) => AudioCodec::Flac,
+            (_, AudioCodec::Opus) => AudioCodec::Opus,
             (f, _) if f.is_mp4_with(self.multiplexer) => AudioCodec::Aac,
             (_, AudioCodec::Auto) if self.format.is_mp4_video() => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
@@ -646,12 +675,13 @@ impl ExportSettings {
                 px * if self.keeps_alpha() { 8.0 } else { 6.0 } * 8.0 * fps * k
             }
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff | Format::Flac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
+            Format::Wav | Format::Aiff | Format::Flac | Format::Opus | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
         let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
+                AudioCodec::Opus => f64::from(self.opus_bitrate()),
                 // typical of music and dialogue; noise compresses less, silence far more
                 AudioCodec::Flac => pcm * 0.6,
                 _ => pcm,
@@ -752,6 +782,7 @@ impl ExportSettings {
             };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
+                AudioCodec::Opus => format!("Opus, {} kbps, {} Hz, {ch}", self.opus_bitrate() / 1000, r.sample_rate),
                 AudioCodec::Flac => {
                     format!("FLAC (lossless) {}-bit, level {}, {} Hz, {ch}", self.audio.sample_format().bits(), self.audio.flac_level.min(8), r.sample_rate)
                 }

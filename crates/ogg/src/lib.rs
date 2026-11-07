@@ -1,5 +1,8 @@
-//! Clean-room Ogg demuxer, written from RFC 3533 (the Ogg encapsulation format), RFC 7845 (Ogg
-//! Opus) and the Vorbis I specification's Ogg mapping (section A).
+//! Clean-room Ogg demuxer and page writer, written from RFC 3533 (the Ogg encapsulation format),
+//! RFC 7845 (Ogg Opus) and the Vorbis I specification's Ogg mapping (section A).
+//!
+//! [`PageWriter`] writes the pages of a logical bitstream; [`opus_tags`] and [`vorbis_comment`]
+//! build the comment headers.
 //!
 //! [`open`] reads every page (capture pattern, header, lacing values, CRC-32 checked; damaged
 //! regions are skipped by searching for the next `OggS`), groups them by logical bitstream and
@@ -591,5 +594,10 @@ impl VorbisInfo {
     }
 }
 
+mod write;
+pub use write::{PAGE_TARGET_BYTES, PAGE_TARGET_PACKETS, PageWriter, opus_tags, vorbis_comment};
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_tests;

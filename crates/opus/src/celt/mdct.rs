@@ -202,10 +202,85 @@ impl Imdct {
     }
 }
 
+impl Imdct {
+    /// Forward MDCT (encoder): `block` holds `n/2 + overlap` time samples (the previous frame's
+    /// last `overlap` samples, then this frame's `n/2`); `out` receives the `n/2` coefficients that
+    /// [`Self::backward`] turns back into this block, so that the decoder's overlap-add returns
+    /// the input delayed by `overlap` samples. Built as the exact inverse of `backward`: the
+    /// window fold undoes its mirror, and the scaled transpose of its core is the core's inverse.
+    pub fn forward(&self, block: &[f32], out: &mut [f32], window: &[f32], overlap: usize, work: &mut ImdctScratch) {
+        let n2 = self.n >> 1;
+        let h = overlap >> 1;
+        let s = |i: usize| block.get(i).copied().unwrap_or(0.0);
+        let w = |i: usize| window.get(i).copied().unwrap_or(0.0);
+        let mut y = std::mem::take(&mut work.fold);
+        y.clear();
+        y.resize(n2, 0.0);
+        for (m, v) in y.iter_mut().enumerate() {
+            *v = if m < h {
+                -s(h - 1 - m) * w(h - 1 - m) + s(h + m) * w(h + m)
+            } else if m + h < n2 {
+                s(m + h)
+            } else {
+                let i = m + h - n2;
+                s(n2 + i) * w(overlap - 1 - i) + s(n2 + overlap - 1 - i) * w(i)
+            };
+        }
+        self.core_transpose(&y, out, work);
+        let scale = 4.0 / self.n as f32;
+        for v in out.iter_mut().take(n2) {
+            *v *= scale;
+        }
+        work.fold = y;
+    }
+
+    /// The transpose of the core of [`Self::backward`] (pre-rotation, FFT, post-rotation, without
+    /// the window mirror): `y` holds `n/2` folded time samples, `out` receives `n/2` coefficients,
+    /// unscaled.
+    fn core_transpose(&self, y: &[f32], out: &mut [f32], work: &mut ImdctScratch) {
+        let n2 = self.n >> 1;
+        let n4 = self.n >> 2;
+        let t = &self.trig;
+        let at = |i: usize| y.get(i).copied().unwrap_or(0.0);
+        let z = &mut work.z;
+        z.clear();
+        z.resize(n4, Cpx::default());
+        for i in 0..n4.div_ceil(2) {
+            let (t0, t1) = (t[i], t[n4 + i]);
+            let (g0, g1) = (at(2 * i), at(n2 - 1 - 2 * i));
+            z[i].re += g0 * t1 - g1 * t0;
+            z[i].im += g0 * t0 + g1 * t1;
+            let j = n4 - 1 - i;
+            let (t0, t1) = (t[n4 - i - 1], t[n2 - i - 1]);
+            let (g0, g1) = (at(n2 - 2 - 2 * i), at(2 * i + 1));
+            z[j].re += g0 * t1 - g1 * t0;
+            z[j].im += g0 * t0 + g1 * t1;
+        }
+        // The transpose of the forward DFT is the conjugate DFT: conj(F(conj(z))).
+        for v in z.iter_mut() {
+            v.im = -v.im;
+        }
+        self.fft.process(z, &mut work.scratch);
+        for v in z.iter_mut() {
+            v.im = -v.im;
+        }
+        for (i, w) in z.iter().enumerate() {
+            let (ti, tn) = (t[i], t[n4 + i]);
+            if let Some(o) = out.get_mut(2 * i) {
+                *o = w.re * ti + w.im * tn;
+            }
+            if let Some(o) = out.get_mut(n2 - 1 - 2 * i) {
+                *o = -w.re * tn + w.im * ti;
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ImdctScratch {
     z: Vec<Cpx>,
     scratch: Vec<Cpx>,
+    fold: Vec<f32>,
 }
 
 #[cfg(test)]
@@ -284,6 +359,41 @@ mod tests {
             let peak = old.iter().map(|c| c.re.abs().max(c.im.abs())).fold(0f32, f32::max);
             let max_diff = new.iter().zip(&old).map(|(a, b)| (a.re - b.re).abs().max((a.im - b.im).abs())).fold(0f32, f32::max);
             assert!(max_diff <= 1e-5 * peak, "n={n} max_diff={max_diff} peak={peak}");
+        }
+    }
+
+    /// Forward then the decoder's overlap-add (the same buffer moves as `CeltDecoder`) returns
+    /// the input, delayed by the overlap.
+    #[test]
+    fn forward_is_inverted_by_the_decoder_overlap_add() {
+        const OV: usize = 120;
+        const DBS: usize = 2048;
+        let window: Vec<f32> = (0..OV)
+            .map(|i| {
+                let x = std::f64::consts::FRAC_PI_2 * (i as f64 + 0.5) / OV as f64;
+                (std::f64::consts::FRAC_PI_2 * x.sin() * x.sin()).sin() as f32
+            })
+            .collect();
+        for frame in [120usize, 240, 480, 960] {
+            let im = Imdct::new(2 * frame);
+            let len = frame * 12;
+            let input: Vec<f32> = (0..len).map(|t| (t as f32 * 0.031).sin() * 3000.0 + ((t * 7919) % 211) as f32 - 105.0).collect();
+            let mut hist = vec![0f32; OV];
+            let mut mem = vec![0f32; DBS + OV];
+            let mut output = Vec::new();
+            let mut work = ImdctScratch::default();
+            let mut coeffs = vec![0f32; frame];
+            for f in 0..len / frame {
+                let mut block = hist.clone();
+                block.extend_from_slice(&input[f * frame..(f + 1) * frame]);
+                im.forward(&block, &mut coeffs, &window, OV, &mut work);
+                hist.copy_from_slice(&block[frame..]);
+                mem.copy_within(frame..DBS + OV / 2, 0);
+                im.backward(&coeffs, 1, &mut mem[DBS - frame..], &window, OV, &mut work);
+                output.extend_from_slice(&mem[DBS - frame..DBS]);
+            }
+            let worst = (OV..len).map(|t| (output[t] - input[t - OV]).abs()).fold(0f32, f32::max);
+            assert!(worst < 0.05, "frame {frame}: worst error {worst}");
         }
     }
 

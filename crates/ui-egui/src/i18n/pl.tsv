@@ -2927,6 +2927,7 @@
 	32 bit	32 bity
 	32 bit float	32 bity zmiennoprzecinkowe
 	FLAC stores whole-number samples only	FLAC przechowuje tylko próbki całkowite
+	Opus export writes mono or stereo	Eksport Opus zapisuje mono lub stereo
 	MXF export writes integer PCM only	Eksport MXF zapisuje tylko całkowitoliczbowy PCM
 	Size / Opacity	Rozmiar / krycie
 	Image Overlay	Nakładka obrazu
