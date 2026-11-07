@@ -64,6 +64,9 @@ mod audio;
 #[path = "premiere_markers.rs"]
 mod markers;
 
+#[path = "premiere_items.rs"]
+mod items;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub sequences: Vec<Sequence>,
@@ -72,6 +75,28 @@ pub struct Document {
     /// folder: the fallback for a stored absolute path that is missing on this computer.
     #[serde(default)]
     pub relative_media: BTreeMap<String, String>,
+    /// Project panel items the timeline does not import by itself, such as subclips.
+    #[serde(default)]
+    pub items: Vec<ProjectEntry>,
+}
+/// A project panel item: a master clip's media and, for a subclip, its range of that media.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectEntry {
+    pub name: String,
+    pub media_path: Option<String>,
+    #[serde(default)]
+    pub synthetic: Option<SyntheticMedia>,
+    /// Whether the master clip's media source is video (otherwise audio).
+    pub video: bool,
+    #[serde(default)]
+    pub subclip: Option<SubclipRange>,
+}
+/// A subclip's media ticks; `hard` is Restrict Trims To Subclip Boundaries (`BoundariesAreHard`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubclipRange {
+    pub start: Tick,
+    pub end: Tick,
+    pub hard: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sequence {
@@ -813,6 +838,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     if sequences.is_empty() {
         return Err(Error::Empty);
     }
+    let items = items::read(root, &ids, &uids, base_dir, &mut work_left, report)?;
     validate_nesting(&sequences)?;
     // Validate the entire referenced graph before dropping unsupported clips, so skipping one
     // cannot hide malformed ticks, cycles or resource-limit violations elsewhere in its graph.
@@ -826,7 +852,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences}; identifier {identifier})"));
     }
     let relative_media = relative_media.into_iter().filter_map(|(path, relative)| Some((path, relative?))).collect();
-    Ok(Document { sequences, media, relative_media })
+    Ok(Document { sequences, media, relative_media, items })
 }
 
 fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
@@ -1077,6 +1103,40 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
         if let Some(id) = sequences.get(&src.object_uid) {
             b.put_sequence(*id, seq);
         }
+    }
+    // Subclips listed in the project panel, on media shared with the timeline where it is the same.
+    let (width, height, fps) = doc.sequences.first().map(|s| (s.width, s.height, rate.or(s.frame_rate).unwrap_or(FrameRate::FPS_24))).unwrap_or((
+        1920,
+        1080,
+        rate.unwrap_or(FrameRate::FPS_24),
+    ));
+    for entry in &doc.items {
+        let Some(range) = &entry.subclip else { continue };
+        let spec = MediaSpec {
+            duration: Some(range.end),
+            video: entry.video.then_some((width, height, fps)),
+            audio: (!entry.video).then_some((48000, 2)),
+            ..Default::default()
+        };
+        let parent = if let Some(path) = &entry.media_path {
+            let kind = if entry.video { "video" } else { "audio" };
+            let title = path.rsplit(['/', '\\']).next().filter(|t| !t.is_empty()).unwrap_or(&entry.name);
+            let id = b.file_media(&format!("{kind}:{path}"), title, path, &spec, None);
+            if let Some(ItemKind::Media(m)) = b.p.item_mut(id).map(|i| &mut i.kind) {
+                m.offline = true;
+            }
+            id
+        } else if let Some((synthetic, g)) = entry.synthetic.as_ref().and_then(|s| Some((s, generator(&s.code)?))) {
+            let key = format!("premiere-generator:{}:{}", synthetic.code, synthetic.media);
+            let spec = MediaSpec { video: Some((width, height, fps)), ..Default::default() };
+            b.generator_media(&key, &g.label(), g, &spec, None)
+        } else {
+            warning(&mut report, format!("{}: subclip of unsupported generated media skipped", entry.name));
+            continue;
+        };
+        let restrict_trims = range.hard;
+        let range = filmcraft_time::TimeRange::from_bounds(range.start, range.end);
+        b.p.add_item(&entry.name, Label::Iris, ItemKind::Subclip { parent, range, restrict_trims }, None);
     }
     Ok((b.finish(), doc, report))
 }
@@ -1733,6 +1793,46 @@ mod tests {
         let (fragment, _, _) = import(plain.as_bytes(), &ImportOptions::default(), None).unwrap();
         let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
         assert!(fragment.project.item(clip.item).and_then(|i| i.as_media()).is_some_and(|m| matches!(m.media, filmcraft_project::MediaRef::Generator(_))));
+    }
+    // Hand-written project panel: Project → RootProjectItem → ClipProjectItem → MasterClip, whose
+    // clip's media source carries the subclip boundaries.
+    fn subclip_fixture(boundaries: &str) -> String {
+        fixture().replace(
+            "</PremiereData>",
+            &format!(
+                r#"<Project ObjectRef="project"/><Project ObjectID="project"><RootProjectItem ObjectURef="root"/></Project>
+<RootProjectItem ObjectUID="root"><ProjectItem><Name>Root Bin</Name></ProjectItem><ProjectItemContainer><Items><Item Index="0" ObjectURef="answer"/><Item Index="1" ObjectURef="root"/></Items></ProjectItemContainer></RootProjectItem>
+<ClipProjectItem ObjectUID="answer"><ProjectItem><Name>interview.mov</Name></ProjectItem><MasterClip ObjectURef="answer-master"/></ClipProjectItem>
+<MasterClip ObjectUID="answer-master"><Clips><Clip Index="0" ObjectRef="answer-clip"/></Clips><Name>Answer</Name></MasterClip>
+<VideoClip ObjectID="answer-clip"><Clip><Source ObjectRef="answer-source"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="answer-source"><MediaSource><Content>{boundaries}</Content><Media ObjectURef="interview"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="interview"><Title>interview.mov</Title><ActualMediaFilePath>/media/interview.mov</ActualMediaFilePath></Media></PremiereData>"#
+            ),
+        )
+    }
+    #[test]
+    fn subclips_import_as_project_items() {
+        let bounds = |start: i64, end: i64, hard: bool| {
+            format!("<StartBoundary>{start}</StartBoundary><EndBoundary>{end}</EndBoundary><BoundariesAreHard>{hard}</BoundariesAreHard>")
+        };
+        let (fragment, tree, report) = import(subclip_fixture(&bounds(TPS, 3 * TPS, true)).as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.items.len(), 1, "{report:?}");
+        let subclips: Vec<_> = fragment.project.items.values().filter(|i| matches!(i.kind, ItemKind::Subclip { .. })).collect();
+        assert_eq!(subclips.len(), 1, "{report:?}");
+        assert_eq!(subclips[0].name, "Answer", "a renamed subclip keeps its master clip name");
+        let ItemKind::Subclip { parent, range, restrict_trims } = &subclips[0].kind else { unreachable!() };
+        assert_eq!((range.start, range.duration, *restrict_trims), (Tick(TPS), Tick(2 * TPS), true));
+        let parent = fragment.project.item(*parent).and_then(|i| i.as_media()).unwrap();
+        assert_eq!(parent.media, filmcraft_project::MediaRef::File { path: "/media/interview.mov".into() });
+        assert!(parent.offline, "the engine probes it like timeline media");
+        // A master clip without boundaries is not a subclip; hostile boundaries are skipped and reported.
+        let (fragment, tree, _) = import(subclip_fixture("").as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(tree.items.is_empty() && !fragment.project.items.values().any(|i| matches!(i.kind, ItemKind::Subclip { .. })));
+        for bad in [bounds(3 * TPS, TPS, false), bounds(-TPS, TPS, false), "<StartBoundary>x</StartBoundary><EndBoundary>1</EndBoundary>".into()] {
+            let (fragment, _, report) = import(subclip_fixture(&bad).as_bytes(), &ImportOptions::default(), None).unwrap();
+            assert!(!fragment.project.items.values().any(|i| matches!(i.kind, ItemKind::Subclip { .. })), "{bad}");
+            assert!(report.mentions("Answer") && report.mentions("subclip"), "{bad}: {report:?}");
+        }
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
