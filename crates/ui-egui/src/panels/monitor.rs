@@ -721,7 +721,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
 }
 
 /// Build the `effects.setParam` payload that writes a sampled 8-bit sRGB pixel (`rgb`) into `armed`.
-pub(crate) fn eyedropper_set_param(armed: &crate::state::EyedropperTarget, rgb: [u8; 3]) -> Value {
+pub(crate) fn eyedropper_set_param(armed: &crate::state::Eyedropper, rgb: [u8; 3]) -> serde_json::Value {
     let srgb = crate::panels::effect_controls::srgba_param(Color32::from_rgb(rgb[0], rgb[1], rgb[2]), 1.0);
     let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": srgb});
     if let Some(k) = armed.mask {

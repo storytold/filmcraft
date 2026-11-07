@@ -2048,12 +2048,12 @@ mod frame_hold_tests {
 
         let mut s = filmcraft_engine::Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
-        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
-        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "rectangle"})).unwrap();
-        let effect = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "rectangle").unwrap();
-        let armed = crate::state::EyedropperTarget { clip: clip.0, effect, param: "color".into(), mask: None };
+        let r = s.execute("graphics.newShape", json!({"shape": "rectangle", "position": [8, 8], "size": [16, 16]})).unwrap();
+        let clip = ClipId(r["clip"].as_u64().unwrap());
+        let effect = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "graphic_shape").unwrap();
+        let armed = crate::state::Eyedropper { clip: clip.0, effect, param: "fill_color".into(), mask: None };
         s.execute("effects.setParam", crate::panels::monitor::eyedropper_set_param(&armed, [66, 66, 66])).unwrap();
-        let stored = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[effect].params["color"].color_at(Tick::ZERO);
+        let stored = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[effect].params["fill_color"].value_at(Tick::ZERO).as_color().unwrap();
         assert_eq!(srgba_color32(stored), picked);
 
         let mut shape = filmcraft_project::graphic::new_shape_layer(0, Vec2::new(8.0, 8.0), Vec2::new(16.0, 16.0), Vec::new());
