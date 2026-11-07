@@ -505,8 +505,12 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     if s.format.is_mxf() {
         row(ui, t, tl!("Video Codec"), |ui| {
             let labels: Vec<(String, bool)> = MxfVideoCodec::ALL.iter().map(|c| (c.label().to_string(), true)).collect();
-            if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, 180.0) {
-                s.mxf_video_codec = MxfVideoCodec::ALL[i];
+            if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, 180.0)
+                && let Some(&codec) = MxfVideoCodec::ALL.get(i)
+            {
+                s.mxf_video_codec = codec;
+                // only ProRes codes fields
+                s.fit_field_order();
             }
         });
     }

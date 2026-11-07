@@ -534,6 +534,20 @@ impl ExportSettings {
         }
     }
 
+    /// Make the field order progressive when the video cannot be written with it
+    /// ([`ExportSettings::supports_field_order`]): settings carried over from another format (the
+    /// MXF video codec switched away from ProRes, a preset or project saved that way). Whether it
+    /// changed anything. The export itself rejects such a field order, so that an explicit request
+    /// for interlaced H.264 (CLI, control channel) fails instead of coming out progressive; the
+    /// Export panel calls this so that what it shows and exports is what the format writes.
+    pub fn fit_field_order(&mut self) -> bool {
+        if self.supports_field_order(self.field_order) {
+            return false;
+        }
+        self.field_order = FieldOrder::Progressive;
+        true
+    }
+
     /// How the ProRes encoder codes the output's frames: progressive, or two field pictures in
     /// the setting's field order.
     pub fn prores_interlace(&self) -> filmcraft_prores::Interlace {

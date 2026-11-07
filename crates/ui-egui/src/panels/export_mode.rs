@@ -136,6 +136,14 @@ fn settings_json(s: &ExportSettings) -> Value {
     serde_json::to_value(s).unwrap_or_default()
 }
 
+/// The settings an export from the panel runs with: a field order the format cannot write (one
+/// carried over from ProRes, or in a preset or project saved that way) becomes progressive.
+fn export_settings_json(s: &ExportSettings) -> Value {
+    let mut s = s.clone();
+    s.fit_field_order();
+    settings_json(&s)
+}
+
 /// Apply a preset by name (from the engine's library).
 pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
     match app.session.export_presets.find(name) {
@@ -162,7 +170,7 @@ pub fn output_path(ex: &ExportUi) -> String {
 /// Engine params for the current settings (`file.exportMedia` / `export.queue.add`).
 pub fn export_params(app: &FilmcraftApp) -> Value {
     let ex = &app.ui.export;
-    let mut p = json!({"path": output_path(ex), "settings": settings_json(&ex.settings), "range": ex.range});
+    let mut p = json!({"path": output_path(ex), "settings": export_settings_json(&ex.settings), "range": ex.range});
     if ex.range == "custom" {
         p["startSeconds"] = json!(ex.custom_start);
         p["endSeconds"] = json!(ex.custom_end);
@@ -215,6 +223,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     sync_sequence(app);
+    // a field order the format cannot write (the MXF video codec switched away from ProRes, a preset
+    // or project saved that way) shows and exports as progressive; before `before`, so it alone does
+    // not turn the preset into Custom
+    app.ui.export.settings.fit_field_order();
     let before = settings_json(&app.ui.export.settings);
     queue_column(app, ui, left);
     settings_column(app, ui, mid);

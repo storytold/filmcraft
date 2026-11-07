@@ -303,6 +303,33 @@ fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     d.snapshot("export-h265");
 }
 
+/// A field order only ProRes writes does not outlive a switch to a format that cannot write it
+/// (here MXF's video codec from ProRes to DNxHR), nor come in with a preset or project saved
+/// that way: the panel and the export it starts use progressive frames.
+#[test]
+fn a_field_order_the_format_cannot_write_goes_back_to_progressive() {
+    use filmcraft_engine::export::{ExportSettings, FieldOrder, Format, MxfVideoCodec};
+    let mut d = Driver::new("field-order");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    d.app().ui.export.settings =
+        ExportSettings { format: Format::MxfOp1a, mxf_video_codec: MxfVideoCodec::ProRes, field_order: FieldOrder::UpperFirst, ..Default::default() };
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.field_order, FieldOrder::UpperFirst, "MXF ProRes writes fields");
+    // the codec switch in the panel (DNxHR is the first entry)
+    assert_eq!(MxfVideoCodec::ALL[0], MxfVideoCodec::Dnxhr);
+    d.click("export.video.mxfCodec");
+    d.click("export.video.mxfCodec.option.0");
+    assert_eq!(d.app().ui.export.settings.mxf_video_codec, MxfVideoCodec::Dnxhr);
+    assert_eq!(d.app().ui.export.settings.field_order, FieldOrder::Progressive, "DNxHR in MXF is progressive");
+    // settings that arrive that way (a preset, a project): shown and exported progressive
+    d.app().ui.export.settings = ExportSettings { format: Format::H264, field_order: FieldOrder::LowerFirst, ..Default::default() };
+    let params = filmcraft_ui_egui::panels::export_mode::export_params(d.app());
+    assert_eq!(params["settings"]["fieldOrder"], json!("progressive"), "{params}");
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.field_order, FieldOrder::Progressive);
+}
+
 /// ProRes and DNxHR, on their own and in MXF, show the Hardware encoding setting as GPU encoding
 /// (the encoders run in compute shaders), under the same automation id as H.264's checkbox:
 /// clicking it switches the export's hardware encoding to Auto and back.
