@@ -239,38 +239,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
-        let (project, media) = args::project_and_media(&files);
-        if let Some(p) = project {
-            if let Err(e) = session.execute("file.open", json!({"path": p})) {
-                log::error!("{e}");
-            }
-        } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
-            // Settings ▸ General ▸ At Startup ▸ Open Most Recent
-            let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
-            match recent {
-                Some(p) => {
-                    if let Err(e) = session.execute("file.open", json!({"path": p})) {
-                        log::error!("{e}");
-                    }
-                }
-                None => {
-                    let _ = session.execute("file.openDemoProject", json!({}));
-                }
-            }
-        } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
-        } else if demo {
-            let _ = session.execute("file.openDemoProject", json!({}));
-        }
-        if !media.is_empty() {
-            let _ = session.execute("file.import", json!({"paths": media}));
-        }
-        if recover == Some(true) && !session.recovery_candidates().is_empty() {
-            let id = session.recovery_candidates()[0].id.clone();
-            match session.execute("file.recover", json!({"id": id})) {
-                Ok(r) => log::info!("recovered {r}"),
-                Err(e) => log::error!("recovery failed: {e}"),
-            }
-        }
+        open_startup_files(&mut session, &files, demo, startup_flag, recover);
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
         app.graphics_notice = notice;
@@ -381,6 +350,46 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         Ok(Box::new(app))
     })
+}
+
+/// Opens the startup project or default/demo workspace, imports any media paths passed on the
+/// command line, and runs requested crash recovery.
+fn open_startup_files(session: &mut Session, files: &[String], demo: bool, startup_flag: bool, recover: Option<bool>) {
+    let (project, media) = args::project_and_media(files);
+    if let Some(p) = project {
+        if let Err(e) = session.execute("file.open", json!({"path": p})) {
+            log::error!("{e}");
+        }
+    } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
+        // Settings ▸ General ▸ At Startup ▸ Open Most Recent
+        let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
+        match recent {
+            Some(p) => {
+                if let Err(e) = session.execute("file.open", json!({"path": p})) {
+                    log::error!("{e}");
+                }
+            }
+            None => {
+                let _ = session.execute("file.openDemoProject", json!({}));
+            }
+        }
+    } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
+    } else if demo {
+        let _ = session.execute("file.openDemoProject", json!({}));
+    }
+    if !media.is_empty() && session.execute("file.import", json!({"paths": media})).is_ok() && session.path.is_none() {
+        session.history = Default::default();
+        session.history.limit = 200;
+        session.saved_revision = session.revision;
+        session.sync_persistence();
+    }
+    if recover == Some(true) && !session.recovery_candidates().is_empty() {
+        let id = session.recovery_candidates()[0].id.clone();
+        match session.execute("file.recover", json!({"id": id})) {
+            Ok(r) => log::info!("recovered {r}"),
+            Err(e) => log::error!("recovery failed: {e}"),
+        }
+    }
 }
 
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
@@ -585,6 +594,58 @@ mod tests {
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    #[test]
+    fn opening_media_at_startup_keeps_unsaved_project_clean_until_edited() {
+        use filmcraft_engine::Session;
+        use serde_json::json;
+
+        let dir = std::env::temp_dir().join(format!("fc-startup-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("startup_clip.wav");
+        let mut pcm = Vec::with_capacity(48);
+        pcm.extend_from_slice(b"RIFF");
+        pcm.extend_from_slice(&40u32.to_le_bytes());
+        pcm.extend_from_slice(b"WAVEfmt ");
+        pcm.extend_from_slice(&16u32.to_le_bytes());
+        pcm.extend_from_slice(&1u16.to_le_bytes());
+        pcm.extend_from_slice(&1u16.to_le_bytes());
+        pcm.extend_from_slice(&48_000u32.to_le_bytes());
+        pcm.extend_from_slice(&96_000u32.to_le_bytes());
+        pcm.extend_from_slice(&2u16.to_le_bytes());
+        pcm.extend_from_slice(&16u16.to_le_bytes());
+        pcm.extend_from_slice(b"data");
+        pcm.extend_from_slice(&4u32.to_le_bytes());
+        pcm.extend_from_slice(&[0u8; 4]);
+        std::fs::write(&wav, &pcm).unwrap();
+        let wav_path = wav.to_string_lossy().into_owned();
+
+        for (demo, startup_flag) in [(true, false), (false, true)] {
+            let mut session = Session::default();
+            let before_count = if demo {
+                let mut probe = Session::default();
+                super::open_startup_files(&mut probe, &[], demo, startup_flag, None);
+                probe.project.items.len()
+            } else {
+                0
+            };
+            super::open_startup_files(&mut session, std::slice::from_ref(&wav_path), demo, startup_flag, None);
+            assert_eq!(session.project.items.len(), before_count + 1);
+            assert!(!session.is_dirty(), "startup media import should not mark an unsaved project as edited (demo={demo})");
+            assert!(!session.history.can_undo(), "startup media import should be the initial clean state (demo={demo})");
+
+            session.execute("file.newBin", json!({"name": "Rushes"})).unwrap();
+            assert!(session.is_dirty(), "subsequent edits mark the project as edited (demo={demo})");
+        }
+
+        let proj_path = dir.join("saved.fcproj").to_string_lossy().into_owned();
+        let mut saved = Session::default();
+        saved.execute("file.saveAs", json!({"path": proj_path})).unwrap();
+        let mut reopened = Session::default();
+        super::open_startup_files(&mut reopened, &[proj_path, wav_path], true, false, None);
+        assert!(reopened.is_dirty(), "importing media into an opened saved project still marks it as edited");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #262 on Linux: the dialogs shown off the UI thread (#260) filter with the same
