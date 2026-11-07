@@ -84,6 +84,11 @@ pub struct Track {
     pub kind: String,
     pub index: usize,
     pub muted: bool,
+    /// The stored track name; absent for tracks keeping Premiere's default name.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub locked: bool,
     pub items: Vec<Item>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -440,6 +445,17 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     return Err(error("duplicate track index"));
                 }
                 let muted = value(track, "IsMuted").is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
+                let base = child(track, "ClipTrack").and_then(|c| child(c, "Track"));
+                let locked = base.and_then(|b| child_text(b, "IsLocked")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
+                let track_name = base
+                    .and_then(|b| child(b, "Node"))
+                    .and_then(|n| child(n, "Properties"))
+                    .and_then(|p| child_text(p, "MZ.TrackName"))
+                    .filter(|s| !s.trim().is_empty());
+                if track_name.is_some_and(|s| s.len() > 4096) {
+                    return Err(error("track name is too long"));
+                }
+                let track_name = track_name.map(str::to_string);
                 let mut items = Vec::new();
                 for pointer in track.descendants().filter(|n| n.has_tag_name("TrackItem") && n.attribute("ObjectRef").is_some()) {
                     let Some(item) = referred(Some(pointer), &ids, "ObjectRef") else {
@@ -643,7 +659,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         transitions,
                     });
                 }
-                tracks.push(Track { kind: kind.into(), index, muted, items });
+                tracks.push(Track { kind: kind.into(), index, muted, name: track_name, locked, items });
             }
         }
         let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
@@ -737,6 +753,10 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
             if track.kind == "caption" {
                 let mut captions = CaptionTrack::new(TrackId(b.alloc()), format!("Captions {}", track.index + 1), CaptionFormat::Subtitle);
                 captions.enabled = !track.muted;
+                captions.locked = track.locked;
+                if let Some(name) = &track.name {
+                    captions.name = name.clone();
+                }
                 for item in &track.items {
                     captions.captions.push(Caption {
                         id: ClipId(b.alloc()),
@@ -757,6 +777,10 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
             if let Some(t) = seq.tracks_mut(kind).get_mut(track.index) {
                 t.enabled = !track.muted;
                 t.muted = track.muted;
+                t.locked = track.locked;
+                if let Some(name) = &track.name {
+                    t.name = name.clone();
+                }
             }
             let mut transition_ids = BTreeMap::new();
             for item in &track.items {
@@ -1266,7 +1290,7 @@ mod tests {
                 frame_rate: None,
                 sample_rate: None,
                 work_out: Tick::ZERO,
-                tracks: vec![Track { kind: "video".into(), index: 0, muted: false, items }],
+                tracks: vec![Track { kind: "video".into(), index: 0, muted: false, name: None, locked: false, items }],
             });
         }
         assert!(validate_nesting(&seqs).is_err());
@@ -1345,6 +1369,27 @@ mod tests {
         assert!(seq.video_tracks[0].enabled, "a disabled clip does not disable its track");
         let (fragment, _, _) = import(fixture().as_bytes(), &ImportOptions::default(), None).unwrap();
         assert!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].enabled);
+    }
+    #[test]
+    fn track_names_and_locks_are_imported() {
+        // Hand-written: a renamed, locked track; names are user text, never resolved as references.
+        let xml = fixture().replace(
+            "<Track><Index>0</Index>",
+            "<Track><Node><Properties><MZ.TrackName>Interviews</MZ.TrackName></Properties></Node><Index>0</Index><IsLocked>true</IsLocked>",
+        );
+        let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!((tree.sequences[0].tracks[0].name.as_deref(), tree.sequences[0].tracks[0].locked), (Some("Interviews"), true));
+        let track = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0];
+        assert_eq!((track.name.as_str(), track.locked), ("Interviews", true));
+        let (default, _, _) = import(fixture().as_bytes(), &ImportOptions::default(), None).unwrap();
+        let track = &default.project.sequence(default.sequences[0]).unwrap().video_tracks[0];
+        let blank = xml.replace("<MZ.TrackName>Interviews", "<MZ.TrackName> ");
+        let (blank, _, _) = import(blank.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let blank = &blank.project.sequence(blank.sequences[0]).unwrap().video_tracks[0];
+        assert!(!track.locked && !track.name.is_empty());
+        assert_eq!(blank.name, track.name, "a blank stored name keeps the generated name");
+        let long = xml.replace("Interviews", &"n".repeat(4097));
+        assert!(import(long.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string().contains("track name"));
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
