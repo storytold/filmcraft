@@ -62,9 +62,6 @@ const MAX_CHUNKS: usize = 8_192;
 /// a window (a short chunk after a long gap joins the chunk before it, so a span can run to minutes)
 /// is read window by window.
 const MAX_CHUNK_FRAMES: usize = 6_000;
-/// The energy of a frame with no signal at all: the log floor of `mfcc_frames` (10 log10 of 1e-10).
-/// Such a frame is digital silence, not quiet speech, and carries no voice and no weight.
-const SILENCE_DB: f32 = -99.0;
 
 /// Word index ranges of the chunks.
 pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
@@ -97,7 +94,9 @@ pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Per 10 ms frame of `audio`: the number of frames, each frame's energy (dB, the sum of its mel
-/// energies) and its `N_MFCC` MFCCs (the DCT-II of the log mel energies), frame-major.
+/// energies; negative infinity for a frame with no signal at all, so that digital silence is told
+/// from quiet sound before any log floor) and its `N_MFCC` MFCCs (the DCT-II of the log mel
+/// energies), frame-major.
 fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
     let (frames, mel) = crate::mel::mel_energies(audio, N_MELS);
     // per frame: log energies (dB-ish) and the DCT-II of the log mel
@@ -117,7 +116,7 @@ fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
             e += v;
             lm[m] = (v + 1e-10).ln();
         }
-        energy[f] = 10.0 * (e + 1e-10).log10();
+        energy[f] = if e > 0.0 { 10.0 * (e + 1e-10).log10() } else { f32::NEG_INFINITY };
         for k in 0..N_MFCC {
             mfcc[f * N_MFCC + k] = (0..N_MELS).map(|m| dct[k * N_MELS + m] * lm[m]).sum();
         }
@@ -151,8 +150,10 @@ struct ChunkVoice {
 
 /// The voice of frames `a..b`, read in windows of at most [`MAX_CHUNK_FRAMES`] so memory is bounded by
 /// a window however long the chunk. A frame is voiced when its energy is within 30 dB of the chunk's
-/// peak and it is not digital silence. A chunk longer than one window is read twice: once for its
-/// energies and peak, once for the MFCCs of its voiced frames.
+/// peak and it has any signal at all (a frame of digital silence has an energy of negative infinity
+/// and carries no voice and no weight; a quiet frame, however quiet, is still sound). A chunk longer
+/// than one window is read twice: once for its energies and peak, once for the MFCCs of its voiced
+/// frames.
 fn chunk_voice(audio: &[f32], a: usize, b: usize) -> ChunkVoice {
     let mut out = ChunkVoice { vector: vec![0f32; 2 * (N_MFCC - 1)], weight: 0.0, sum: [0.0; N_MFCC], sumsq: [0.0; N_MFCC] };
     let windows: Vec<(usize, usize)> = (a..b).step_by(MAX_CHUNK_FRAMES).map(|lo| (lo, lo.saturating_add(MAX_CHUNK_FRAMES).min(b))).collect();
@@ -168,7 +169,7 @@ fn chunk_voice(audio: &[f32], a: usize, b: usize) -> ChunkVoice {
     let floor = peak - 30.0;
     let mut add = |energy: &[f32], mfcc: &[f32]| {
         for (f, &e) in energy.iter().enumerate() {
-            if e > floor && e > SILENCE_DB {
+            if e.is_finite() && e > floor {
                 out.weight += 1.0;
                 for k in 1..N_MFCC {
                     let x = mfcc.get(f * N_MFCC + k).copied().unwrap_or(0.0) as f64;
@@ -578,6 +579,17 @@ mod tests {
         let first = chunk_voice(&audio, 0, 200);
         assert!(whole.weight > first.weight + 30.0, "later speech counts: {} voiced frames in all, {} in the first 2 s", whole.weight, first.weight);
         assert_eq!(chunk_voice(&audio, 400, 1000).weight, 0.0, "digital silence carries no weight");
+    }
+
+    #[test]
+    fn quiet_frames_are_voice_and_frames_of_nothing_are_not() {
+        // a voice 160 dB down is still a signal; samples that are exactly zero are not
+        let quiet: Vec<f32> = voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 1.0, 3).iter().map(|v| v * 1e-8).collect();
+        assert!(quiet.iter().any(|&v| v != 0.0));
+        let frames = quiet.len() / crate::mel::HOP;
+        assert!(chunk_voice(&quiet, 0, frames).weight > 50.0, "a quiet voice has voiced frames");
+        let nothing = vec![0f32; quiet.len()];
+        assert_eq!(chunk_voice(&nothing, 0, frames).weight, 0.0, "frames of nothing carry no weight");
     }
 
     #[test]
