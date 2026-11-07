@@ -418,3 +418,97 @@ fn coded_media_exports_decode_on_the_gpu() {
         assert!(decoded >= decodes, "{name}: {decoded} pictures decoded on the GPU");
     }
 }
+
+/// PSNR in dB of two RGBA8 pictures over all four channels (infinite when equal).
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let se: f64 = a.iter().zip(b).map(|(&x, &y)| f64::from(x.abs_diff(y)).powi(2)).sum();
+    if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / (se / a.len() as f64)).log10() }
+}
+
+/// Export `media` (3 frames) to `format` as `name` with `hardware`, and decode what was written
+/// (every frame must decode).
+fn export_codec(media: &Arc<[u8]>, name: &str, format: Format, profile: &str, alpha: bool, hardware: filmcraft_export::HardwareEncoding) -> Vec<Vec<u8>> {
+    let (w, h) = (320u32, 180u32);
+    let (p, seq, m) = clip_project(media, w, h, 3);
+    let path = std::env::temp_dir().join(format!("fc-gpu-enc-{}-{name}.mov", std::process::id())).to_string_lossy().into_owned();
+    let mut s = ExportSettings { format, path: path.clone(), include_audio: false, alpha, hardware_encoding: hardware, ..Default::default() };
+    match format {
+        Format::ProRes => s.prores_profile = profile.into(),
+        _ => s.dnx_profile = profile.into(),
+    }
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(3)));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 3, "{name}: frame count");
+    let src = filmcraft_codecs::open_bytes(&path, std::fs::read(&path).unwrap().into()).unwrap();
+    (0..3).map(|i| src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8().to_vec()).collect()
+}
+
+/// The GPU encoders under Hardware encoding: Auto write files that parse, decode and look like
+/// the CPU encoder's (within 0.1 dB against the picture that went in), and do the encoding.
+#[test]
+fn gpu_encoders_export_like_the_cpu() {
+    use filmcraft_export::HardwareEncoding::{Auto, Off};
+    let (Some(_), Some(_)) = (filmcraft_gpu::ProResGpuEncoder::new(), filmcraft_gpu::DnxGpuEncoder::new()) else {
+        eprintln!("SKIPPED (gpu encoders): no adapter");
+        return;
+    };
+    filmcraft_export::register_prores_backend(|| filmcraft_gpu::ProResGpuEncoder::new().map(|e| Box::new(e) as _));
+    filmcraft_export::register_dnx_backend(|| filmcraft_gpu::DnxGpuEncoder::new().map(|e| Box::new(e) as _));
+    let (w, h) = (320u32, 180u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let prores = |profile: filmcraft_prores::Profile, alpha: bool| -> Arc<[u8]> {
+        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
+        cfg.encode_alpha = alpha;
+        let chroma = profile.chroma();
+        let mut enc = filmcraft_prores::Encoder::with_config(cfg);
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|k| {
+                let mut f = filmcraft_prores::Frame::new(w, h, chroma, 10, alpha);
+                let cw = f.chroma_width() as usize;
+                [f.y, f.cb, f.cr] = busy(wu, hu, cw, 10, k + 1);
+                if let Some(a) = f.alpha.as_mut() {
+                    for (i, v) in a.iter_mut().enumerate() {
+                        *v = ((i % wu) as u32 * 1023 / wu as u32) as u16;
+                    }
+                }
+                enc.encode(&f).unwrap()
+            })
+            .collect();
+        let fourcc = filmcraft_isobmff::FourCc(profile.fourcc());
+        mov(filmcraft_isobmff::SampleEntry::prores(fourcc, w as u16, h as u16), &frames)
+    };
+    let dnx_src = {
+        let cfg = filmcraft_dnx::EncoderConfig { bit_depth: 10, ..filmcraft_dnx::EncoderConfig::new(filmcraft_dnx::Profile::Hqx, w, h) };
+        let mut enc = filmcraft_dnx::Encoder::with_config(cfg).unwrap();
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|k| {
+                let mut f = filmcraft_dnx::Frame::new(w, h, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+                let cw = f.chroma_width() as usize;
+                [f.y, f.cb, f.cr] = busy(wu, hu, cw, 10, k + 1);
+                enc.encode(&f).unwrap()
+            })
+            .collect();
+        mov(filmcraft_isobmff::SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), w as u16, h as u16), &frames)
+    };
+    let cases = [
+        ("prores-hq", prores(filmcraft_prores::Profile::Hq, false), Format::ProRes, "hq", false),
+        ("prores-4444-alpha", prores(filmcraft_prores::Profile::P4444, true), Format::ProRes, "4444", true),
+        ("dnxhr-hqx", dnx_src, Format::DnxHr, "hqx", false),
+    ];
+    for (name, media, format, profile, alpha) in cases {
+        let before = filmcraft_export::gpu_render_stats();
+        let cpu = export_codec(&media, &format!("{name}-cpu"), format, profile, alpha, Off);
+        assert_eq!(filmcraft_export::gpu_render_stats().encoded, before.encoded, "{name}: Off encodes on the CPU");
+        let gpu = export_codec(&media, &format!("{name}-gpu"), format, profile, alpha, Auto);
+        let st = filmcraft_export::gpu_render_stats();
+        assert!(st.encoded >= before.encoded + 3, "{name}: {} pictures encoded on the GPU", st.encoded - before.encoded);
+        let src = filmcraft_codecs::open_bytes("clip.mov", media.clone()).unwrap();
+        for i in 0..3 {
+            let want = src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8();
+            let (c, g) = (psnr(&want, &cpu[i as usize]), psnr(&want, &gpu[i as usize]));
+            eprintln!("{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB against the source");
+            assert!((c - g).abs() <= 0.1, "{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB");
+        }
+    }
+}

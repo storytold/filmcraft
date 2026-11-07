@@ -25,6 +25,8 @@ mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
 #[doc(hidden)]
+pub use encode::ReferenceBackend;
+#[doc(hidden)]
 pub use encode::rate_control_for_tests;
 pub use encode::{AlphaCoding, Encoder, EncoderConfig, MacroblockBackend};
 pub use header::{FieldCode, FrameHeader};

@@ -63,23 +63,23 @@ pub use encoders::{apv_profile, dnx_profile, prores_profile};
 pub use format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use output::Out;
 pub use output::OutputSink;
-pub(crate) use registry::build_frame_renderer;
-#[cfg(test)]
-pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
-    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
-    register_hdr_probe,
+    AudioEncoder, AudioEncoderFactory, DnxBackendFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead,
+    ProResBackendFactory, VideoEncoder, available, encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_dnx_backend,
+    register_encoder, register_format_probe, register_frame_renderer, register_hdr_probe, register_prores_backend,
 };
 use registry::{audio_factories, video_factories};
+pub(crate) use registry::{build_dnx_backend, build_frame_renderer, build_prores_backend};
+#[cfg(test)]
+pub(crate) use registry::{reset_encoder_backends_for_tests, reset_frame_renderers_for_tests};
 #[cfg(test)]
 use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
-pub(crate) use stats::note_lock_wait;
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
     note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
 };
+pub(crate) use stats::{note_gpu_encode_fallback, note_gpu_encoded, note_lock_wait};
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
 #[derive(Debug, thiserror::Error)]

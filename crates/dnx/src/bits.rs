@@ -114,7 +114,6 @@ impl Writer {
     }
 
     /// The bits written so far, padded with zeros to whole bytes, and their count.
-    #[cfg(test)]
     pub fn finish_bits(mut self) -> (Vec<u8>, u32) {
         let bits = self.buf.len() as u32 * 8 + self.n;
         if self.n > 0 {
