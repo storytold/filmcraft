@@ -861,7 +861,7 @@ fn build_track(
             }
             // A wrong or missing label: trust the essence bytes.
             if let Some(first) = elements.first() {
-                let head = read_upto(src, first.value_offset, 64)?;
+                let head = read_upto(src, first.value_offset, 4096)?;
                 if let Some(sniffed) = sniff_picture(&head) {
                     let agree = std::mem::discriminant(&sniffed) == std::mem::discriminant(&codec);
                     if !agree && !matches!(codec, Codec::Avc { intra: true }) {

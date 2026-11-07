@@ -1001,12 +1001,12 @@ impl<W: Write + Seek> MxfWriter<W> {
                         s.p(0x3201, &label);
                     }
                     if rgba {
-                        // RGBA descriptor (ST 377-1 G.2.40): pixel layout R, G, B of `depth` bits
-                        // each, and the component reference levels (CinemaDNG §7.2.2.3)
-                        let d = depth as u8;
+                        // RGBA descriptor (ST 377-1 G.2.40): pixel layout R, G, B of 16 bits each and
+                        // the component reference levels. CinemaDNG §7.2.2.3 fixes the decoded
+                        // image at 16 bits, whatever `PictureDesc::depth` says.
                         let mut layout = [0u8; 16];
-                        layout[..6].copy_from_slice(&[b'R', d, b'G', d, b'B', d]);
-                        let max = if depth >= 32 { u32::MAX } else { (1u32 << depth) - 1 };
+                        layout[..6].copy_from_slice(&[b'R', 16, b'G', 16, b'B', 16]);
+                        let max = u32::from(u16::MAX);
                         s.p(0x3401, &layout).u32(0x3406, max).u32(0x3407, 0);
                         s.write(&mut out);
                         continue;

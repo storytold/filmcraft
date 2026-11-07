@@ -43,6 +43,7 @@ impl RawSettings {
             demosaic: self.demosaic,
             output: self.output,
             target_size: target_size(width, height, level),
+            apply_opcodes: false,
         }
     }
 

@@ -14,6 +14,10 @@ writer = []
 # serde derives on the raw settings (`ProcessOptions`) for UI state and project files.
 serde = ["dep:serde"]
 
+[[example]]
+name = "bench"
+required-features = ["writer", "threads"]
+
 [dependencies]
 rayon = { workspace = true, optional = true }
 # Baseline (lossy) JPEG for Compression 34892 tiles: the JPEG decoder the workspace already uses

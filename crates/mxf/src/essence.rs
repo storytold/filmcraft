@@ -126,10 +126,27 @@ pub fn identify_picture(coding: Option<Ul>, container: Option<Ul>, mpeg_descript
     if mpeg_descriptor { Codec::Mpeg2 } else { Codec::Unknown }
 }
 
+/// DNG evidence in the leading bytes of a TIFF: a TIFF 6.0 §2 header whose first IFD, when it lies
+/// within `b`, holds the DNGVersion tag (DNG 1.x §2, tag 50706). A plain TIFF has no such tag.
+fn is_dng(b: &[u8]) -> bool {
+    let le = match b.get(..4) {
+        Some(h) if h == b"II*\0" => true,
+        Some(h) if h == b"MM\0*" => false,
+        _ => return false,
+    };
+    let u16_at = |o: usize| b.get(o..o + 2).map(|v| if le { u16::from_le_bytes([v[0], v[1]]) } else { u16::from_be_bytes([v[0], v[1]]) });
+    let Some(ifd) = b.get(4..8).map(|v| if le { u32::from_le_bytes([v[0], v[1], v[2], v[3]]) } else { u32::from_be_bytes([v[0], v[1], v[2], v[3]]) }) else {
+        return false;
+    };
+    let Some(count) = usize::try_from(ifd).ok().and_then(|o| u16_at(o).map(|n| (o, n))) else {
+        return false;
+    };
+    (0..usize::from(count.1)).any(|i| u16_at(count.0 + 2 + i * 12) == Some(50706))
+}
+
 /// Identify a picture codec from the first bytes of an essence element.
 pub fn sniff_picture(b: &[u8]) -> Option<Codec> {
-    // a TIFF header (TIFF 6.0 §2): a DNG dataset
-    if b.len() >= 8 && (b[..4] == *b"II*\0" || b[..4] == *b"MM\0*") {
+    if is_dng(b) {
         return Some(Codec::CinemaDng);
     }
     if b.len() >= 8 && &b[4..8] == b"icpf" {
@@ -357,8 +374,14 @@ mod tests {
         assert_eq!(sniff_picture(&[0, 0, 2, 0x80, 1]), Some(Codec::Vc3));
         assert_eq!(sniff_picture(&[0, 0, 0, 9, b'i', b'c', b'p', b'f']), Some(Codec::ProRes { profile: None }));
         assert_eq!(sniff_picture(&[1, 2, 3]), None);
-        assert_eq!(sniff_picture(b"II*\0\x08\0\0\0"), Some(Codec::CinemaDng));
-        assert_eq!(sniff_picture(b"MM\0*\0\0\0\x08"), Some(Codec::CinemaDng));
+        // a TIFF header alone is not DNG; an IFD0 with the DNGVersion tag (50706 = 0xC612) is
+        let tiff_le = |tag: u16| [b"II*\0\x08\0\0\0\x01\0".as_slice(), &tag.to_le_bytes(), &[1, 0, 4, 0, 0, 0, 1, 4, 0, 0], &[0; 8]].concat();
+        let tiff_be = |tag: u16| [b"MM\0*\0\0\0\x08\0\x01".as_slice(), &tag.to_be_bytes(), &[0, 1, 0, 0, 0, 4, 1, 4, 0, 0], &[0; 8]].concat();
+        assert_eq!(sniff_picture(&tiff_le(0xC612)), Some(Codec::CinemaDng));
+        assert_eq!(sniff_picture(&tiff_be(0xC612)), Some(Codec::CinemaDng));
+        assert_eq!(sniff_picture(&tiff_le(0x0100)), None);
+        assert_eq!(sniff_picture(&tiff_be(0x0100)), None);
+        assert_eq!(sniff_picture(b"II*\0\x08\0\0\0"), None);
         assert_eq!(sniff_picture(b"II*\0"), None);
     }
 

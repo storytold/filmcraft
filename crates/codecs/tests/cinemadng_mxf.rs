@@ -180,3 +180,19 @@ fn raw_settings_reach_every_mxf_picture() {
     // the sound is still there
     assert!(bright.audio(0, 100, 48_000).is_ok());
 }
+
+#[test]
+fn cinemadng_descriptor_stays_16_bit() {
+    // CinemaDNG §7.2.2.3: the decoded image is 16 bits per component, whatever `depth` a caller sets
+    let rate = Rational::new(24, 1);
+    let mut cfg = WriterConfig::new(Pattern::Op1a, rate, PackageIds::from_seed("depth", "depth"));
+    let mut pd = PictureDesc::new(PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32);
+    pd.depth = 10;
+    cfg.picture = Some(pd);
+    let mut w = MxfWriter::new(Cursor::new(Vec::new()), cfg).unwrap();
+    w.push_picture(&grey_dng(0.5, false), FrameInfo::intra()).unwrap();
+    let f = w.finish().unwrap().into_inner();
+    let has = |needle: &[u8]| f.windows(needle.len()).any(|w| w == needle);
+    assert!(has(&[b'R', 16, b'G', 16, b'B', 16]));
+    assert!(!has(&[b'R', 10, b'G', 10, b'B', 10]));
+}

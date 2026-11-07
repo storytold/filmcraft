@@ -386,6 +386,20 @@ fn source_settings_dialog_for_camera_raw() {
     d.click("sourceSettings.reset");
     d.click("sourceSettings.ok");
     assert!(d.app().session.project.item(ItemId(id)).unwrap().as_media().unwrap().interpret.raw.is_none());
+    // several selected raw items: the dialog applies to all of them, and keeps a fractional custom
+    // white balance as stored
+    let path2 = dir.join("A001_C002_still.dng");
+    std::fs::write(&path2, dng()).unwrap();
+    let id2 = d.exec("file.import", json!({"paths": [path2.to_string_lossy()]}))["items"][0].as_u64().unwrap();
+    d.exec("clip.sourceSettings", json!({"items": [id], "whiteBalance": "custom", "temperature": 4321.5, "tint": 2.25}));
+    d.exec("project.select", json!({"items": [id, id2]}));
+    d.menu("clip.sourceSettings");
+    let params = d.app().ui.extras.dialog.as_ref().unwrap().params.clone();
+    assert_eq!(params["items"], json!([id, id2]));
+    assert_eq!((params["temperature"].as_f64(), params["tint"].as_f64()), (Some(4321.5), Some(2.25)));
+    d.click("sourceSettings.cancel");
+    d.exec("clip.sourceSettings", json!({"items": [id], "reset": true}));
+    d.exec("project.select", json!({"items": [id]}));
     // Cancel changes nothing
     d.menu("clip.sourceSettings");
     d.click("sourceSettings.whiteBalance.custom");

@@ -375,9 +375,8 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
 
 /// The Source Settings dialog's parameters for camera raw footage (`clip.sourceSettings`'s
 /// description `info`): the item's settings, a custom white balance starting from the file's
-/// as-shot one. Empty for other footage. The dialog edits the first selected clip only: it shows
-/// that clip's values, and applying them to other selected clips would overwrite their own settings
-/// with it. `clip.sourceSettings` itself takes several `items`.
+/// as-shot one. Empty for other footage. The dialog shows the first selected clip's values and
+/// applies the submitted settings to every selected camera raw item (`info["items"]`).
 fn source_settings_params(info: &Value) -> Value {
     if info["raw"] != true {
         return json!({});
@@ -385,10 +384,10 @@ fn source_settings_params(info: &Value) -> Value {
     let st = &info["settings"];
     let pick = |k: &str, fallback: f64| st[k].as_f64().or_else(|| info["asShot"][k].as_f64()).unwrap_or(fallback);
     json!({
-        "items": [info["item"]],
+        "items": if info["items"].is_array() { info["items"].clone() } else { json!([info["item"]]) },
         "whiteBalance": st["whiteBalance"],
-        "temperature": pick("temperature", 6500.0).round(),
-        "tint": pick("tint", 0.0).round(),
+        "temperature": pick("temperature", 6500.0),
+        "tint": pick("tint", 0.0),
         "exposure": st["exposure"],
         "highlights": st["highlights"],
         "demosaic": st["demosaic"],
@@ -437,8 +436,8 @@ fn source_settings_ui(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut V
         p["highlights"] = json!("clip");
         p["output"] = json!("sceneLinearRec709");
         if let (Some(t), Some(n)) = (info["asShot"]["temperature"].as_f64(), info["asShot"]["tint"].as_f64()) {
-            p["temperature"] = json!(t.round());
-            p["tint"] = json!(n.round());
+            p["temperature"] = json!(t);
+            p["tint"] = json!(n);
         }
     }
 }
