@@ -142,7 +142,9 @@ pub fn write(doc: &Document) -> String {
         out.push('\n');
         let mut text = String::new();
         if let Some(s) = c.speaker.as_deref().filter(|s| !s.is_empty()) {
-            text.push_str(&format!("<v {s}>"));
+            // `>` would end the voice tag early and spill the rest of the name into the cue text, so it
+            // is written as the lookalike `›` (U+203A). Everything else is written and read verbatim.
+            text.push_str(&format!("<v {}>", s.replace('>', "\u{203a}")));
         }
         text.push_str(&c.text);
         for l in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -194,6 +196,17 @@ mod tests {
         let w = write(&d);
         assert!(w.starts_with("WEBVTT\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:00:01.000 --> 00:00:03.500 line:90% align:start\n<v Ann Smith>Hello there\n"));
         assert_eq!(parse(&w).unwrap().cues, d.cues);
+    }
+
+    #[test]
+    fn speaker_with_gt_keeps_cue_text_intact() {
+        for (name, back_name) in [("A > B", "A \u{203a} B"), ("Tom &amp; Jerry", "Tom &amp; Jerry")] {
+            let mut doc = Document::default();
+            doc.cues.push(Cue { start: crate::Tick(0), end: crate::Tick(254_016_000), text: "Hi".into(), speaker: Some(name.into()), ..Default::default() });
+            let back = parse(&write(&doc)).unwrap();
+            assert_eq!(back.cues[0].speaker.as_deref(), Some(back_name));
+            assert_eq!(back.cues[0].text, "Hi");
+        }
     }
 
     #[test]
