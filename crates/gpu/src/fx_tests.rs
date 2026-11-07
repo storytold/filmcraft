@@ -620,6 +620,10 @@ fn hostile_parameters_are_bounded() {
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
     assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).is_none());
+    // and the refusal ends its frame: the next frame, which uses no effect, releases the working
+    // images the first one pooled
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] });
+    assert!(c.fx.as_ref().is_some_and(|f| f.is_idle()), "working images kept after a refused effect image");
 }
 
 #[test]
