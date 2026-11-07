@@ -1838,7 +1838,8 @@ fn alac_settings_round_trip_preset_and_refusals() {
         for refused in [SampleFormat::Int32, SampleFormat::Float32] {
             let mut t = s.clone();
             t.audio.set_sample_format(refused);
-            assert!(t.validate().is_err_and(|e| e.to_string().contains("ALAC")), "{format:?} {refused:?}");
+            let msg = t.validate().err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(msg.contains("ALAC") && msg.ends_with("choose 16 or 24 bit"), "{format:?} {refused:?}: {msg}");
         }
     }
     let preset = crate::presets::builtin_presets().into_iter().find(|x| x.name == "Apple Lossless 48 kHz 24-bit").unwrap().settings;

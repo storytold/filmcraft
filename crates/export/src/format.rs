@@ -494,12 +494,12 @@ impl ExportSettings {
         }
         let sample_format = self.audio.sample_format();
         if (self.has_audio() || self.format.is_audio_only()) && self.audio_codec() != AudioCodec::Aac && !self.supports_sample_format(sample_format) {
-            let codec = match self.audio_codec() {
-                AudioCodec::Flac => "FLAC",
-                AudioCodec::Alac => "ALAC",
-                _ => self.format.label(),
+            let (codec, choices) = match self.audio_codec() {
+                AudioCodec::Flac => ("FLAC", "16, 24 or 32 bit"),
+                AudioCodec::Alac => ("ALAC", "16 or 24 bit"),
+                _ => (self.format.label(), "16, 24 or 32 bit"),
             };
-            return Err(ExportError::Unsupported(format!("{codec} audio has no {} samples: choose 16, 24 or 32 bit", sample_format.label())));
+            return Err(ExportError::Unsupported(format!("{codec} audio has no {} samples: choose {choices}", sample_format.label())));
         }
         Ok(())
     }
