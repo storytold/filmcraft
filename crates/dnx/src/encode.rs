@@ -697,6 +697,7 @@ fn rate_control(hint: u32, nw: usize, ns: usize, budget_bits: u64, mb_bits_at: &
 
 /// The encoder's rate control (`rate_control`) over `mb_bits_at`, for tests of a backend's
 /// `choose` in other crates: its answer must be this one over the same measurements.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn rate_control_for_tests(
     hint: u32,
@@ -710,6 +711,7 @@ pub fn rate_control_for_tests(
 
 /// This crate's own CPU functions behind [`MacroblockBackend`]: what a correct backend must
 /// give, for tests of the seam in other crates (a stand-in for a device that works).
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 #[derive(Default)]
 pub struct ReferenceBackend {
@@ -718,6 +720,7 @@ pub struct ReferenceBackend {
     rgb: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl MacroblockBackend for ReferenceBackend {
     /// A [`Frame`] passed as the handle loads as `load` would.
     fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any) -> bool {
@@ -729,8 +732,16 @@ impl MacroblockBackend for ReferenceBackend {
             }
         }
     }
+    /// `false` for a frame the encoder would refuse (it checks every frame before a backend sees
+    /// it): nothing outside the planes is read.
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool {
-        let Ok(enc) = Encoder::with_config(cfg.clone()) else { return false };
+        let enc = match Encoder::with_config(cfg.clone()) {
+            Ok(enc) if enc.validate(frame).is_ok() => enc,
+            _ => {
+                self.prep = None;
+                return false;
+            }
+        };
         self.prep = Some(enc.prepare(frame));
         self.enc = Some(enc);
         self.rgb = frame.rgb;
@@ -1378,6 +1389,29 @@ mod backend_tests {
             assert!(enc.config().alpha == cfg.alpha, "resident={resident}: lossless alpha is configured again");
             let (out, used) = enc.encode_with(&f, None).unwrap();
             assert!(!used && probe(&out).unwrap().lossless_alpha, "resident={resident}: the next frame has lossless alpha");
+        }
+    }
+
+    /// The reference backend checks the frame as the encoder does: planes smaller than the
+    /// configuration, a frame of another size, or alpha configured without an alpha plane are
+    /// refused, not indexed out of bounds.
+    #[test]
+    fn the_reference_backend_refuses_frames_that_do_not_match_the_configuration() {
+        let cfg = EncoderConfig::new(Profile::Hq, 64, 48);
+        assert!(ReferenceBackend::default().load(&cfg, &test_frame(&cfg, 1)), "a matching frame loads");
+        let mut small = test_frame(&cfg, 1);
+        small.y.truncate(100);
+        assert!(!ReferenceBackend::default().load(&cfg, &small), "a luma plane too small");
+        let mut small = test_frame(&cfg, 1);
+        small.cb.truncate(100);
+        assert!(!ReferenceBackend::default().load(&cfg, &small), "a chroma plane too small");
+        let mut other = test_frame(&EncoderConfig::new(Profile::Hq, 32, 32), 1);
+        other.width = 64;
+        other.height = 48;
+        assert!(!ReferenceBackend::default().load(&cfg, &other), "planes of a smaller frame");
+        for alpha in [AlphaCoding::Dct, AlphaCoding::Lossless] {
+            let with_alpha = EncoderConfig { alpha: Some(alpha), ..cfg.clone() };
+            assert!(!ReferenceBackend::default().load(&with_alpha, &test_frame(&cfg, 1)), "{alpha:?} alpha without an alpha plane");
         }
     }
 

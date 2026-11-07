@@ -810,6 +810,7 @@ fn choose_quantisers(budget: u64, limits: &[u64], hint: u8, bits_at: &mut dyn Fn
 
 /// The encoder's rate control (`choose_quantisers`) over `bits_at`, for tests of a backend's
 /// `choose` in other crates: its answer must be this one over the same measurements.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn rate_control_for_tests(budget: u64, limits: &[u64], hint: u8, bits_at: &mut dyn FnMut(u8) -> Option<Vec<u64>>) -> Option<(Vec<u8>, u8)> {
     choose_quantisers(budget, limits, hint, bits_at)
@@ -817,12 +818,14 @@ pub fn rate_control_for_tests(budget: u64, limits: &[u64], hint: u8, bits_at: &m
 
 /// This crate's own CPU functions behind [`SliceBackend`]: what a correct backend must give,
 /// for tests of the seam in other crates (a stand-in for a device that works).
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 #[derive(Default)]
 pub struct ReferenceBackend {
     slices: Vec<SliceData>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl SliceBackend for ReferenceBackend {
     /// A [`Frame`] passed as the handle loads as `load` would.
     fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any, jobs: &[SliceJob]) -> bool {
@@ -834,8 +837,17 @@ impl SliceBackend for ReferenceBackend {
             }
         }
     }
+    /// `false` for a frame the encoder would refuse (it checks every frame before a backend sees
+    /// it) or slices other than the encoder's own: nothing outside the planes is read.
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob]) -> bool {
-        let alpha = cfg.encode_alpha && cfg.profile.chroma() == ChromaFormat::Yuv444 && frame.alpha.is_some();
+        let enc = Encoder::with_config(cfg.clone());
+        let alpha = match enc.validate(frame) {
+            Ok(alpha) if jobs == enc.slice_jobs().as_slice() => alpha,
+            _ => {
+                self.slices.clear();
+                return false;
+            }
+        };
         let srcs = Source::pictures(cfg, frame, alpha);
         match prepare_slices(false, &srcs, jobs) {
             Some(slices) => {
@@ -1528,5 +1540,38 @@ mod backend_tests {
             assert!(used, "{name}");
             assert_eq!(out, cpu, "{name}");
         }
+    }
+
+    /// The reference backend checks the frame as the encoder does: planes smaller than the
+    /// configuration, a frame of another size, or an interlaced configuration of one line are
+    /// refused, not indexed out of bounds.
+    #[test]
+    fn the_reference_backend_refuses_frames_that_do_not_match_the_configuration() {
+        let load = |cfg: &EncoderConfig, f: &Frame| {
+            let jobs = Encoder::with_config(cfg.clone()).slice_jobs();
+            ReferenceBackend::default().load(cfg, f, &jobs)
+        };
+        let cfg = EncoderConfig::new(Profile::Hq, 64, 48);
+        assert!(load(&cfg, &test_frame(Profile::Hq, 64, 48, 1)), "a matching frame loads");
+        let mut small = test_frame(Profile::Hq, 64, 48, 1);
+        small.y.truncate(100);
+        assert!(!load(&cfg, &small), "a luma plane too small");
+        let mut small = test_frame(Profile::Hq, 64, 48, 1);
+        small.cr.truncate(100);
+        assert!(!load(&cfg, &small), "a chroma plane too small");
+        let mut other = test_frame(Profile::Hq, 32, 32, 1);
+        other.width = 64;
+        other.height = 48;
+        assert!(!load(&cfg, &other), "planes of a smaller frame");
+        for interlace in [Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+            let cfg = EncoderConfig { interlace, ..EncoderConfig::new(Profile::Hq, 16, 1) };
+            assert!(!load(&cfg, &test_frame(Profile::Hq, 16, 1, 1)), "{interlace:?} with one line");
+        }
+        let cfg = EncoderConfig { encode_alpha: true, ..EncoderConfig::new(Profile::P4444, 64, 48) };
+        let mut f = test_frame(Profile::P4444, 64, 48, 1);
+        if let Some(a) = f.alpha.as_mut() {
+            a.truncate(100);
+        }
+        assert!(!load(&cfg, &f), "an alpha plane too small");
     }
 }

@@ -24,11 +24,11 @@ mod spec_tables;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
-#[doc(hidden)]
-pub use encode::ReferenceBackend;
-#[doc(hidden)]
-pub use encode::rate_control_for_tests;
 pub use encode::{AlphaCoding, Encoder, EncoderConfig, MacroblockBackend};
+/// Test support (the `test-support` feature, for the tests of other crates): not shipped API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use encode::{ReferenceBackend, rate_control_for_tests};
 pub use header::{FieldCode, FrameHeader};
 pub use layout::frame_layout;
 pub use tables::ri_frame_size;

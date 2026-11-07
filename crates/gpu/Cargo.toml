@@ -24,6 +24,9 @@ pollster = "1"
 rayon = { workspace = true }
 
 [dev-dependencies]
+# `ReferenceBackend` / `rate_control_for_tests` for the backend-seam tests (never in a shipped build)
+filmcraft-prores = { workspace = true, features = ["test-support"] }
+filmcraft-dnx = { workspace = true, features = ["test-support"] }
 pollster = "1"
 filmcraft-codecs = { workspace = true }
 filmcraft-export = { workspace = true }

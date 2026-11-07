@@ -20,11 +20,11 @@ pub mod layout;
 mod tables;
 
 pub use decode::{DecodeOptions, decode_frame, decode_frame_into, decode_frame_with, probe};
-#[doc(hidden)]
-pub use encode::ReferenceBackend;
-#[doc(hidden)]
-pub use encode::rate_control_for_tests;
 pub use encode::{Encoder, EncoderConfig, SliceBackend, SliceJob, picture_lines};
+/// Test support (the `test-support` feature, for the tests of other crates): not shipped API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use encode::{ReferenceBackend, rate_control_for_tests};
 pub use header::{FrameHeader, PictureHeader};
 pub use layout::{FrameLayout, SliceLayout, frame_layout};
 

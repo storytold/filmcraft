@@ -113,7 +113,9 @@ impl Writer {
         self.acc &= (1u64 << self.n) - 1;
     }
 
-    /// The bits written so far, padded with zeros to whole bytes, and their count.
+    /// The bits written so far, padded with zeros to whole bytes, and their count (for the
+    /// test-support `ReferenceBackend`).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn finish_bits(mut self) -> (Vec<u8>, u32) {
         let bits = self.buf.len() as u32 * 8 + self.n;
         if self.n > 0 {

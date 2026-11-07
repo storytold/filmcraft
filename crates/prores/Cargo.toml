@@ -12,6 +12,9 @@ workspace = true
 [features]
 default = ["threads"]
 threads = ["dep:rayon"]
+# `ReferenceBackend` and `rate_control_for_tests` for the tests of the crates that drive the
+# backend seam (export, gpu): enabled only in their dev-dependencies, never shipped.
+test-support = []
 
 [dependencies]
 filmcraft-bitstream = { workspace = true }
