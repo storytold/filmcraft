@@ -464,7 +464,12 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     if let Some(clip) = clip {
                         spend(&mut work_left, clip)?;
                     }
-                    let source_in = ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
+                    let mut source_in = signed_ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
+                    if source_in < Tick::ZERO {
+                        // A slip past the source's first frame stores a negative in point.
+                        warning(report, format!("{label}: in point precedes the source start; clip starts at the source start"));
+                        source_in = Tick::ZERO;
+                    }
                     let source_out = match clip.and_then(|s| value(s, "OutPoint")) {
                         Some(raw) => ticks(Some(raw), Tick::ZERO)?,
                         None => Tick(source_in.0.checked_add((end.0 - start.0).max(0)).ok_or_else(|| error("source time overflow"))?),
@@ -976,7 +981,6 @@ mod tests {
             xml.replace("<Start>0", "<Start>NaN"),
             xml.replace(&format!("<End>{}", 3 * TPS), "<End>-1"),
             xml.replace(&format!("<End>{}", 3 * TPS), "<End>invalid"),
-            xml.replace("<InPoint>", "<InPoint>-"),
             xml.replace(&format!("<OutPoint>{}", 10 * TPS), "<OutPoint>-1"),
             xml.replace(&format!("<OutPoint>{}", 10 * TPS), "<OutPoint>invalid"),
             xml.replace("<PlaybackSpeed>2", "<PlaybackSpeed>invalid"),
@@ -984,7 +988,6 @@ mod tests {
             xml.replace("<PremiereData Version=\"3\">", "<!DOCTYPE x [<!ENTITY a SYSTEM 'file:///etc/passwd'>]><PremiereData Version=\"3\">"),
             xml.replace("<Media>", "<Media ObjectID=\"20\">"),
             xml.replace("1080</MZ.Sequence", "4294967295</MZ.Sequence"),
-            mixed_support_fixture(3 * TPS, "-1", "", "1"),
             mixed_support_fixture(3 * TPS, "invalid", "", "1"),
         ];
         for case in cases {
@@ -1312,6 +1315,16 @@ mod tests {
             assert!(tree.sequences[0].tracks[0].items[0].text.is_none());
             assert!(report.mentions("Source Text") && report.mentions("layer name"));
         }
+    }
+    #[test]
+    fn clip_slipped_before_source_start_imports_at_source_start() {
+        // Hand-written: a clip slipped earlier than its source's first frame has a negative in point.
+        let xml = fixture().replace(&format!("<InPoint>{}", 4 * TPS), &format!("<InPoint>-{}", TPS / 3));
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let item = &tree.sequences[0].tracks[0].items[0];
+        assert_eq!((item.start, item.end, item.source_in, item.source_out), (Tick::ZERO, Tick(3 * TPS), Tick::ZERO, Tick(10 * TPS)));
+        assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].source_in, Tick::ZERO);
+        assert!(report.entries.iter().any(|e| e.message.contains("camera.mov") && e.message.contains("in point")), "{report:?}");
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
