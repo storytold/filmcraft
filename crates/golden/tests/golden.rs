@@ -773,7 +773,7 @@ fn gpu_matches_cpu_on_golden_scenes() {
         let s = make();
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), c.caps(), &s.sources);
         let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
         c.composite(&plan);
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
@@ -847,7 +847,7 @@ fn gpu_blend_modes_match_cpu_render() {
         let s = b.at(12);
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), filmcraft_render::plan::DeviceCaps::ALL, &s.sources);
         let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
             failures.push(format!("{mode}: planned as a CPU image"));
             continue;
@@ -884,7 +884,14 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     }
     b.transition(1, "cross_dissolve", ca, cb, 24, 12);
     let s = b.at(22);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(
+        &s.project,
+        s.seq,
+        RATE.tick_of(s.frame),
+        RenderOptions::default(),
+        filmcraft_render::plan::DeviceCaps::ALL,
+        &s.sources,
+    );
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
@@ -938,7 +945,14 @@ fn gpu_effect_chains_match_cpu_render() {
     b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
     b.effect(v5, "emboss", &[]);
     let mut s = b.at(12);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(
+        &s.project,
+        s.seq,
+        RATE.tick_of(s.frame),
+        RenderOptions::default(),
+        filmcraft_render::plan::DeviceCaps::ALL,
+        &s.sources,
+    );
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert_eq!(layers.len(), 5);
     for (i, l) in layers.iter().take(4).enumerate() {
@@ -953,7 +967,7 @@ fn gpu_effect_chains_match_cpu_render() {
     let mut failures = Vec::new();
     for frame in [0, 12, 30] {
         s.frame = frame;
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), c.caps(), &s.sources);
         c.composite(&plan);
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
@@ -971,7 +985,7 @@ fn gpu_effect_chains_match_cpu_render() {
     }
     // ½ playback resolution: the working images (and the effects' pixel radii) shrink with it
     let opts = RenderOptions { scale: 0.5, ..RenderOptions::default() };
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, c.caps(), &s.sources);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("½: planned as a CPU image") };
     assert!(layers.iter().take(4).all(|l| l.fx.is_some()));
     c.composite(&plan);

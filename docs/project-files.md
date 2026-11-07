@@ -102,6 +102,10 @@ Every write of a project file, auto-save, recovery snapshot or preferences file 
 A crash, `kill -9` or power cut at any point leaves either the complete old file or the complete new
 one. If a step fails, the temp file is removed and the old file is untouched.
 
+Atomic writes keep the file whole, but they don't merge: of two sessions that opened the same project,
+the one that saves last replaces what the other saved. `filmcraft-cli --save` runs take turns on a lock
+to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't.
+
 ## Commands
 
 | Id | Menu | |
@@ -113,6 +117,10 @@ one. If a step fails, the temp file is removed and the old file is untouched.
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
+Open Project… shows one too. In the desktop app, when the current project has unsaved changes, it
+then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save** and **Save**, and
+the chosen project opens after Save or Don't Save. File ▸ Open Recent and the Recent list on Home
+ask the same way.
 
 ## Auto Save
 
@@ -188,6 +196,16 @@ without asking; the changes stay available through File ▸ Recover Unsaved Chan
 Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HOME/filmcraft` or
 `~/.local/share/filmcraft` elsewhere. A `portable.txt` file next to the executable (the Windows
 portable zip ships one) makes it `data` next to the executable instead.
+
+### Effect Presets
+
+User effect presets live in `<data dir>/presets.json`. In addition, FilmCraft creates and scans
+`<data dir>/Effect Presets` on startup (and whenever **Effects ▸ Presets ▸ Scan Presets Folder** or
+`presets.scan` runs) for `.prfpset` (Adobe Premiere Pro Effect Preset, plain XML or gzip-compressed)
+and `.json` preset packs. Dropping `.prfpset` files into `<data dir>/Effect Presets`, into the
+application window, or importing them via **File ▸ Import…** / **Effects ▸ Presets ▸ Import Presets…**
+loads their presets with their nested folder hierarchy, static parameters, animated keyframes,
+Bezier curves, and keyframe scaling/anchoring modes.
 
 ### Cost
 
@@ -321,7 +339,10 @@ file just linked, by dropping the common trailing path components (`/Volumes/A/s
 files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
 work. **Align Timecode** keeps clips on the same timecode when the new file starts at a different
 timecode: the clips' source in-points, keyframes, marks and markers move with it
-(`Project::shift_media_time`). One relink, together with the files it pulls along, is one undo step.
+(`Project::shift_media_time`). Media an EDL names starts at timecode 00:00:00:00 until its file is
+linked, because the list's source times are timecodes; relink it with Align Timecode to land on the
+same frames as importing the EDL next to its media. One relink, together with the files it pulls
+along, is one undo step.
 
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
@@ -329,8 +350,9 @@ Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
-broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
-badge (`project.item.<id>.proxy`).
+broken-link badge (`project.item.<id>.offline` in Icon and List view), and items with a proxy get
+a **P** badge (`project.item.<id>.proxy`). Hovering an Unreadable badge shows why the file cannot
+be read, such as "no decoder for Apple Intermediate Codec video".
 
 ### Proxies
 
