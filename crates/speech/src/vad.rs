@@ -9,7 +9,7 @@
 //! frames above −100 dBFS) and its speech level (95th percentile): 30 % of the way up, and at
 //! least 6 dB above the floor. Two passes:
 //!
-//! 1. **A pause inside a word's span ends the word.** A run of at least 200 ms of frames below
+//! 1. **A pause inside a word's span ends the word.** A run of at least 120 ms of frames below
 //!    the threshold with voice on both sides of it is a pause between two words, never part of
 //!    one. The word keeps the voice before the pause and the next word, when it was contiguous,
 //!    starts at the voice after it. When the voice before the pause is too short to be the word
@@ -20,6 +20,13 @@
 //!    first; the rest cascade through the following words.
 //! 2. **Silence at the edges is trimmed.** Each word's start and end are moved inward past
 //!    frames below the threshold. A word keeps at least 60 ms.
+//! 3. **Breath is not voice.** A level threshold cannot tell a breath, a lip smack or a click
+//!    from a word, so at a word that borders a pause the edge is checked for pitch: the
+//!    normalised autocorrelation of a 30 ms window over 60–400 Hz. After its last voiced frame a
+//!    word keeps at most 80 ms of unvoiced sound (a final consonant's release); an unvoiced lead
+//!    longer than 150 ms that sits 8 dB or more under the word's voiced peak is a breath, and the
+//!    word starts after the last silent frame before its voice instead (120 ms ahead of the voice
+//!    when the breath runs straight into it, which keeps an unvoiced first consonant).
 
 use filmcraft_project::Word;
 use filmcraft_time::Tick;
@@ -28,12 +35,34 @@ use crate::{SAMPLE_RATE, TICKS_PER_SAMPLE};
 
 const FRAME: usize = (SAMPLE_RATE / 100) as usize;
 const MIN_WORD_FRAMES: usize = 6;
-/// A run of silence this long (10 ms frames) inside a word's span is a pause between words.
-const MIN_PAUSE_FRAMES: usize = 20;
+/// A run of silence this long (10 ms frames) inside a word's span is a pause between words: longer
+/// than the closure of a stop consonant (up to about 100 ms), shorter than the gaps an editor cuts
+/// on (a 0.12 s dip with voice on both sides is a word boundary, not a hesitation).
+const MIN_PAUSE_FRAMES: usize = 12;
 /// How long a word is expected to sound, per letter (10 ms frames): the rule of pass 1.
 const FRAMES_PER_LETTER: usize = 5;
 /// Letters counted towards the expected length (a longer word is no longer than this).
 const MAX_LETTERS: usize = 40;
+/// Samples in the pitch analysis window (30 ms).
+const PITCH_WINDOW: usize = 3 * FRAME;
+/// Autocorrelation lags searched for pitch: 400 Hz down to 60 Hz.
+const MIN_LAG: usize = SAMPLE_RATE as usize / 400;
+const MAX_LAG: usize = SAMPLE_RATE as usize / 60;
+/// Normalised autocorrelation at or above this is a voiced frame.
+const VOICED: f32 = 0.55;
+/// Unvoiced frames a word keeps after its last voiced one (a consonant's release).
+const RELEASE_FRAMES: usize = 8;
+/// An unvoiced lead longer than this (and quiet, see [`BREATH_DB`]) is a breath, not a consonant.
+const ONSET_FRAMES: usize = 15;
+/// A lead this far under the word's voiced peak is a breath.
+const BREATH_DB: f32 = 8.0;
+/// Unvoiced frames kept ahead of the first voiced one when a breath runs straight into the word
+/// (room for an unvoiced first consonant).
+const ONSET_KEEP_FRAMES: usize = 12;
+/// Frames looked at from a word's edge for its last / first voiced frame.
+const PITCH_SCAN: usize = 100;
+/// A word borders a pause when at least this many frames separate it from its neighbour.
+const PAUSE_EDGE_FRAMES: usize = 10;
 
 /// Frame levels in dBFS (10 ms RMS).
 pub fn frame_db(audio: &[f32]) -> Vec<f32> {
@@ -187,6 +216,96 @@ pub fn tighten_words(audio: &[f32], words: &mut [Word]) {
     let frame_ticks = TICKS_PER_SAMPLE * FRAME as i64;
     split_at_pauses(&voiced, words, frame_ticks);
     trim_edges(&voiced, words, frame_ticks);
+    trim_unvoiced_edges(audio, &db, &voiced, words, frame_ticks);
+}
+
+/// Pitch evidence of the 30 ms window starting at `frame`: the peak normalised autocorrelation
+/// over lags from 400 Hz down to 60 Hz (1 = perfectly periodic, 0 = noise or silence).
+fn periodicity(audio: &[f32], frame: usize) -> f32 {
+    let start = frame.saturating_mul(FRAME);
+    let Some(win) = audio.get(start..(start.saturating_add(PITCH_WINDOW)).min(audio.len())) else { return 0.0 };
+    if win.len() <= MAX_LAG + MIN_LAG {
+        return 0.0;
+    }
+    let mean = win.iter().sum::<f32>() / win.len() as f32;
+    let x: Vec<f32> = win.iter().map(|v| v - mean).collect();
+    let mut best = 0f32;
+    let mut lag = MIN_LAG;
+    while lag <= MAX_LAG && lag < x.len() {
+        let (head, tail) = (&x[..x.len() - lag], &x[lag..]);
+        let (mut num, mut e0, mut e1) = (0f32, 0f32, 0f32);
+        for (a, b) in head.iter().zip(tail) {
+            num += a * b;
+            e0 += a * a;
+            e1 += b * b;
+        }
+        let den = (e0 * e1).sqrt();
+        if den > 1e-12 {
+            best = best.max(num / den);
+        }
+        lag += 2;
+    }
+    best
+}
+
+/// Pass 3 of the module docs: at a word that borders a pause, an unvoiced tail longer than a
+/// consonant's release, or an unvoiced quiet lead longer than a consonant's onset, is a breath or
+/// a noise and leaves the word.
+fn trim_unvoiced_edges(audio: &[f32], db: &[f32], loud: &[bool], words: &mut [Word], frame_ticks: i64) {
+    let tick = |frame: usize| Tick((frame as i64).saturating_mul(frame_ticks));
+    let voiced_at = |f: usize| loud.get(f).copied().unwrap_or(false) && periodicity(audio, f) >= VOICED;
+    let n = words.len();
+    for i in 0..n {
+        let (prev_end, next_start) = (
+            i.checked_sub(1).and_then(|p| words.get(p)).map(|w| frames_of(w, frame_ticks, loud.len()).1),
+            words.get(i + 1).map(|w| frames_of(w, frame_ticks, loud.len()).0),
+        );
+        let Some(w) = words.get(i) else { return };
+        let (a, b) = frames_of(w, frame_ticks, loud.len());
+        if b <= a + MIN_WORD_FRAMES {
+            continue;
+        }
+        let pause_after = next_start.is_none_or(|s| s >= b + PAUSE_EDGE_FRAMES);
+        let pause_before = prev_end.is_none_or(|e| a >= e + PAUSE_EDGE_FRAMES);
+        let mut new_end = b;
+        if pause_after {
+            // the last voiced frame, looking back from the end
+            let last_voiced = (a..b).rev().take(PITCH_SCAN).find(|&f| voiced_at(f));
+            if let Some(v) = last_voiced {
+                new_end = (v + 1 + RELEASE_FRAMES).min(b).max(a + MIN_WORD_FRAMES);
+            }
+        }
+        let mut new_start = a;
+        if pause_before {
+            let first_voiced = (a..new_end).take(PITCH_SCAN).find(|&f| voiced_at(f));
+            if let Some(v) = first_voiced
+                && v > a + ONSET_FRAMES
+            {
+                let peak = |r: std::ops::Range<usize>| r.filter_map(|f| db.get(f)).copied().fold(f32::NEG_INFINITY, f32::max);
+                let lead_peak = peak(a..v);
+                let word_peak = peak(v..(v + 30).min(new_end));
+                if lead_peak < word_peak - BREATH_DB {
+                    // the word starts after the last silent frame before its voice; when the
+                    // breath runs straight into the word, 120 ms ahead of the voice, which keeps
+                    // an unvoiced first consonant (an "s", an "f")
+                    let from = v.saturating_sub(25).max(a);
+                    let start = match (from..v).rev().find(|&f| !loud.get(f).copied().unwrap_or(true)) {
+                        Some(silent) => silent + 1,
+                        None => v.saturating_sub(ONSET_KEEP_FRAMES),
+                    };
+                    new_start = start.min(new_end.saturating_sub(MIN_WORD_FRAMES)).max(a);
+                }
+            }
+        }
+        if let Some(w) = words.get_mut(i) {
+            if new_end < b {
+                w.end = tick(new_end).max(w.start);
+            }
+            if new_start > a {
+                w.start = tick(new_start).min(w.end);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,8 +399,8 @@ mod tests {
 
     #[test]
     fn short_breaks_inside_a_word_are_not_pauses() {
-        // a 150 ms dip (a stop consonant) inside "paper" stays inside it
-        let a = audio(1.0, &[(0.0, 0.3), (0.45, 0.8)]);
+        // a 100 ms dip (a stop consonant's closure) inside "paper" stays inside it
+        let a = audio(1.0, &[(0.0, 0.3), (0.4, 0.8)]);
         let mut w = vec![word("paper", 0.0, 0.8), word("cut", 0.8, 1.0)];
         tighten_words(&a, &mut w);
         assert_eq!(bounds(&w), [(0.0, 0.8), (0.8, 1.0)]);
@@ -295,6 +414,75 @@ mod tests {
         let mut w = vec![word("yeah.", 0.0, 1.41), word("so", 1.41, 1.8)];
         tighten_words(&a, &mut w);
         assert_eq!(bounds(&w), [(0.0, 0.4), (1.4, 1.8)]);
+    }
+
+    /// Unvoiced sound (white noise) at `db` dBFS over `(from, to)`, added to `a`.
+    fn add_noise(a: &mut [f32], from: f64, to: f64, db: f32) {
+        let amp = 10f32.powf(db / 20.0) * 1.7;
+        let mut rng = 12345u32;
+        for v in a.iter_mut().take((to * SAMPLE_RATE as f64) as usize).skip((from * SAMPLE_RATE as f64) as usize) {
+            rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *v += ((rng >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * amp;
+        }
+    }
+
+    #[test]
+    fn a_breath_after_the_last_word_is_not_the_word() {
+        // "yeah." sounds 0.0–0.5, then a 0.4 s breath (noise 20 dB under it), then silence
+        let mut a = audio(1.5, &[(0.0, 0.5)]);
+        add_noise(&mut a, 0.5, 0.9, -40.0);
+        let mut w = vec![word("yeah.", 0.0, 0.9)];
+        tighten_words(&a, &mut w);
+        // the word keeps 80 ms of release after its last voiced frame
+        assert_eq!(bounds(&w), [(0.0, 0.58)]);
+    }
+
+    #[test]
+    fn a_breath_before_the_first_word_is_not_the_word() {
+        // a 0.3 s breath (noise 25 dB under the voice), a 40 ms dip, then "so" sounds 0.34–0.8
+        let mut a = audio(1.2, &[(0.34, 0.8)]);
+        add_noise(&mut a, 0.0, 0.3, -45.0);
+        let mut w = vec![word("so", 0.0, 0.8)];
+        tighten_words(&a, &mut w);
+        assert!((0.28..=0.34).contains(&bounds(&w)[0].0), "start {:?} should sit in the dip before the voice", bounds(&w));
+        assert_eq!(bounds(&w)[0].1, 0.8);
+    }
+
+    #[test]
+    fn a_breath_running_into_the_word_leaves_room_for_a_first_consonant() {
+        // a 0.3 s breath (noise 25 dB under the voice) straight into "fun" sounding 0.3–0.8
+        let mut a = audio(1.2, &[(0.3, 0.8)]);
+        add_noise(&mut a, 0.0, 0.3, -45.0);
+        let mut w = vec![word("fun", 0.0, 0.8)];
+        tighten_words(&a, &mut w);
+        // 120 ms ahead of the first voiced frame (the 30 ms pitch window reaches the voice a frame or
+        // two before it starts)
+        let (start, end) = bounds(&w)[0];
+        assert!((0.14..=0.20).contains(&start), "start {start} should sit about 120 ms before the voice");
+        assert_eq!(end, 0.8);
+    }
+
+    #[test]
+    fn a_consonant_release_and_a_loud_onset_stay() {
+        // 60 ms of unvoiced release after the vowel and a 120 ms unvoiced onset (an "s") at the
+        // word's own level: both inside the word
+        let mut a = audio(1.2, &[(0.12, 0.6)]);
+        add_noise(&mut a, 0.0, 0.12, -22.0);
+        add_noise(&mut a, 0.6, 0.66, -30.0);
+        let mut w = vec![word("stops", 0.0, 0.66)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.66)]);
+    }
+
+    #[test]
+    fn words_in_running_speech_are_left_to_the_pause_rules() {
+        // two contiguous words with a noisy tail inside the second: no pause borders the first
+        // word's end, so pass 3 does not touch it
+        let mut a = audio(1.5, &[(0.0, 0.5), (0.52, 1.0)]);
+        add_noise(&mut a, 0.5, 0.52, -30.0);
+        let mut w = vec![word("one", 0.0, 0.5), word("two", 0.5, 1.0)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.5), (0.5, 1.0)]);
     }
 
     #[test]
