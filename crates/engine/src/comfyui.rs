@@ -106,6 +106,9 @@ pub struct ComfyState {
     /// Every server is reached through this when set (tests, hosts with their own networking).
     pub transport: Option<Arc<dyn Transport>>,
     pending: Vec<Pending>,
+    /// Finished runs are being applied ([`poll`]): applying runs commands, which must not
+    /// start applying again.
+    applying: bool,
     /// Local files confirmed for upload in this session: the input files passed to
     /// `comfyui.newClip` / `comfyui.setInputs` (chosen in the ComfyUI window, or named by a
     /// script or agent). Paths that only came with a project file are not in here.
@@ -139,6 +142,9 @@ struct Pending {
     job: u64,
     items: Vec<ItemId>,
     results: Arc<Mutex<Vec<Done>>>,
+    /// The project the job was started for (`Session::project_instance`): item ids mean nothing
+    /// in another one, so a job whose project was replaced is stopped and its results dropped.
+    project: Arc<()>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -615,7 +621,9 @@ fn version_path(services: &dyn crate::Services, dir: &str, name: &str, ext: &str
     let mut n = 1u32;
     loop {
         let path = std::path::Path::new(dir).join(format!("{stem} {n:03}.{ext}")).to_string_lossy().into_owned();
-        if services.file_size(&path).is_err() || n >= 99_999 {
+        // a `.part` is a file another job is still downloading under this name
+        let taken = services.file_size(&path).is_ok() || services.file_size(&format!("{path}.part")).is_ok();
+        if !taken || n >= 99_999 {
             return path;
         }
         n += 1;
@@ -687,15 +695,28 @@ impl comfy::Sink for OutputFiles<'_> {
     /// file first (or to a buffer for hosts that save through their services).
     fn create(&mut self, o: &comfy::Output) -> std::result::Result<Box<dyn Write + '_>, String> {
         let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1);
-        let path = version_path(self.services, self.dir, self.name, ext);
-        self.current.clone_from(&path);
+        let mut path = version_path(self.services, self.dir, self.name, ext);
         if self.in_memory {
+            self.current.clone_from(&path);
             self.buffer.clear();
             return Ok(Box::new(Stoppable { inner: &mut self.buffer, cancel: self.cancel }));
         }
         std::fs::create_dir_all(self.dir).map_err(|e| format!("{}: {e}", self.dir))?;
-        let part = Self::part(&path);
-        let f = std::fs::File::create(&part).map_err(|e| format!("{part}: {e}"))?;
+        // reserve the name: two jobs (clips with the same name) must never share a file, so the
+        // `.part` is created exclusively and a name another job took first means the next number
+        let mut tries = 0;
+        let f = loop {
+            let part = Self::part(&path);
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+                Ok(f) => break f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 1000 => {
+                    tries += 1;
+                    path = version_path(self.services, self.dir, self.name, ext);
+                }
+                Err(e) => return Err(format!("{part}: {e}")),
+            }
+        };
+        self.current.clone_from(&path);
         Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
     }
 
@@ -857,7 +878,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.comfyui.pending.push(Pending { job: id, items: items.clone(), results });
+    s.comfyui.pending.push(Pending { job: id, items: items.clone(), results, project: s.project_instance.clone() });
     let wait = bool_p(p, "wait").unwrap_or(false);
     if wait || cfg!(target_arch = "wasm32") {
         run();
@@ -875,13 +896,22 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
 /// Apply finished generate jobs (one undo step per clip). Called once per UI frame from
 /// [`Session::poll_persistence`] and after synchronous runs.
 pub fn poll(s: &mut Session) {
-    if s.comfyui.pending.is_empty() {
+    if s.comfyui.pending.is_empty() || s.comfyui.applying {
         return;
     }
     let pending = std::mem::take(&mut s.comfyui.pending);
+    // a job started for a project that has since been replaced (new, open, recover) is stopped
+    // and its results dropped: its item ids would name unrelated items of this project
+    let (current, stale): (Vec<Pending>, Vec<Pending>) = pending.into_iter().partition(|p| Arc::ptr_eq(&p.project, &s.project_instance));
+    for pj in stale {
+        if let Some(j) = s.jobs.iter().find(|j| j.id == pj.job) {
+            j.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
     let (finished, running): (Vec<Pending>, Vec<Pending>) =
-        pending.into_iter().partition(|p| s.jobs.iter().find(|j| j.id == p.job).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed)));
+        current.into_iter().partition(|p| s.jobs.iter().find(|j| j.id == p.job).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed)));
     s.comfyui.pending = running;
+    s.comfyui.applying = true;
     for pj in finished {
         // clips that finished before a stop are kept: they are complete
         let done = std::mem::take(&mut *lock(&pj.results));
@@ -892,6 +922,7 @@ pub fn poll(s: &mut Session) {
             }
         }
     }
+    s.comfyui.applying = false;
 }
 
 /// The output a clip shows: the first video, else image, else audio.
@@ -975,24 +1006,30 @@ fn apply(s: &mut Session, d: Done) -> Result<()> {
             Err(e) => s.error_toast("comfyui.generate", format!("ComfyUI: {path}: {e}")),
         }
     }
+    // what follows can fail after edits were made: the run stays one undo step either way
+    let mut late: Result<()> = Ok(());
     if let (Some(info), Some(audio)) = (&media_info, sound)
         && info.video.is_some()
         && !info.has_audio()
     {
         let dur = s.project.item(audio).map(|i| i.duration()).unwrap_or_default();
-        s.edit(label, |pr, _| add_audio_partners(pr, item, audio, dur))?;
+        late = s.edit(label, |pr, _| add_audio_partners(pr, item, audio, dur));
     }
-    if main.is_none() && !texts.is_empty() {
+    if late.is_ok() && main.is_none() && !texts.is_empty() {
         let text = texts.join("\n");
         let places: Vec<(Tick, Tick)> = s
             .active_sequence()
             .map(|q| q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.item == item).map(|it| (it.start, it.duration)).collect())
             .unwrap_or_default();
         for (start, dur) in places {
-            s.execute("graphics.newText", json!({"text": text, "time": start.0, "seconds": dur.seconds(), "size": 60}))?;
+            if let Err(e) = s.execute("graphics.newText", json!({"text": text, "time": start.0, "seconds": dur.seconds(), "size": 60})) {
+                late = Err(e);
+                break;
+            }
         }
     }
     crate::clip_ops::collapse_history(s, n0, label);
+    late?;
     let name = s.project.item(item).map(|i| i.name.clone()).unwrap_or_default();
     s.toast(format!("ComfyUI: {name} generated"));
     Ok(())

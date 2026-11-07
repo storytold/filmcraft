@@ -782,6 +782,10 @@ impl Session {
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
         }
+        // the same for ComfyUI generations (`comfyui::poll` does not re-enter while it applies)
+        if self.exec_depth == 0 {
+            comfyui::poll(self);
+        }
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);

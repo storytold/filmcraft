@@ -319,7 +319,8 @@ fn background_job_applies_when_polled() {
     let r = s.execute("comfyui.generate", json!({"item": item.0, "dir": dir.to_string_lossy()})).unwrap();
     let job = r["job"].as_u64().unwrap();
     assert!(s.comfyui.generating(item));
-    assert!(s.execute("comfyui.generate", json!({"item": item.0})).is_err(), "already generating");
+    // the command itself, not `execute`: that would first apply a job that already finished
+    assert!(super::generate(&mut s, &json!({"item": item.0})).is_err(), "already generating");
     let t0 = std::time::Instant::now();
     while s.comfyui.generating(item) {
         assert!(t0.elapsed() < std::time::Duration::from_secs(20), "job never finished");
@@ -611,4 +612,100 @@ fn exposed_inputs_are_kept_per_workflow() {
     assert_eq!(s.execute("comfyui.inspect", json!({"workflow": workflow()})).unwrap()["exposed"], json!([{"node": "10", "input": "image"}]));
     s.execute("comfyui.expose", json!({"workflow": workflow(), "set": []})).unwrap();
     assert!(s.prefs.comfyui.exposed.is_empty());
+}
+
+/// Headless sessions (CLI, MCP) have no frame loop: a finished background generation is applied
+/// before the next command.
+#[test]
+fn headless_commands_apply_finished_jobs() {
+    let mut fake = FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]);
+    fake.polls = 3;
+    let mut s = session(Arc::new(fake));
+    let (item, _) = new_clip(&mut s, json!({}));
+    let dir = tmp_dir("comfy-headless");
+    s.execute("comfyui.generate", json!({"item": item.0, "dir": dir.to_string_lossy()})).unwrap();
+    let t0 = std::time::Instant::now();
+    while s.comfyui.generating(item) {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "job never applied");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.execute("comfyui.inspect", json!({"item": item.0})).unwrap();
+    }
+    assert!(matches!(s.project.item(item).unwrap().as_media().unwrap().media, MediaRef::File { .. }));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A generation started before another project was opened changes nothing in that project, even
+/// where an item there has the same id: the job is stopped and its results dropped.
+#[test]
+fn a_job_for_a_replaced_project_is_dropped() {
+    let mut fake = FakeComfy::with_outputs(vec![FakeOutput::file("9", "images", "out.png", png(8, 8))]);
+    fake.polls = 3;
+    let mut s = session(Arc::new(fake));
+    let (item, _) = new_clip(&mut s, json!({}));
+    let dir = tmp_dir("comfy-replaced");
+    let job = s.execute("comfyui.generate", json!({"item": item.0, "dir": dir.to_string_lossy()})).unwrap()["job"].as_u64().unwrap();
+    s.execute("file.newProject", json!({"name": "Other"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Seq", "width": 64, "height": 36, "fps": 24})).unwrap();
+    let (other, _) = new_clip(&mut s, json!({}));
+    let finished = |s: &Session| s.jobs.iter().find(|j| j.id == job).is_none_or(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+    let t0 = std::time::Instant::now();
+    while !finished(&s) {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "job never ended");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    s.poll_persistence();
+    assert!(!s.comfyui.generating(item));
+    assert!(matches!(s.project.item(other).unwrap().as_media().unwrap().media, MediaRef::Generator(_)), "the other project's clip was relinked");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Clips with the same name generating at the same time never share a file: a download in flight
+/// (its `.part`) holds its name, and a name taken first moves on to the next number.
+#[test]
+fn same_named_clips_never_share_a_file() {
+    use filmcraft_comfyui::Sink;
+    let dir = tmp_dir("comfy-names");
+    let d = dir.to_string_lossy().into_owned();
+    let services = crate::FsServices;
+    std::fs::write(dir.join("Shot 001.png.part"), b"in flight").unwrap();
+    assert!(version_path(&services, &d, "Shot", "png").ends_with("Shot 002.png"));
+    let cancel = AtomicBool::new(false);
+    let out = filmcraft_comfyui::Output {
+        node: "9".into(),
+        key: "images".into(),
+        kind: OutputKind::Image,
+        file: Some(filmcraft_comfyui::FileRef { filename: "x.png".into(), subfolder: String::new(), folder: "output".into() }),
+        text: None,
+    };
+    let files = |cancel| OutputFiles {
+        services: &services,
+        dir: &d,
+        name: "Shot",
+        in_memory: false,
+        cancel,
+        current: String::new(),
+        buffer: Vec::new(),
+        written: Vec::new(),
+    };
+    let (mut a, mut b) = (files(&cancel), files(&cancel));
+    drop(a.create(&out).unwrap());
+    drop(b.create(&out).unwrap());
+    assert!(a.current.ends_with("Shot 002.png") && b.current.ends_with("Shot 003.png"), "{} {}", a.current, b.current);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A ComfyUI recipe leaves with its item, and an id a recipe still names is never handed out
+/// again (a new item would become that ComfyUI clip).
+#[test]
+fn recipes_leave_with_their_item_and_keep_their_id() {
+    let mut s = session(Arc::new(FakeComfy::with_outputs(vec![])));
+    let (item, _) = new_clip(&mut s, json!({}));
+    let mut p = (*s.project).clone();
+    let g = p.generated.get(&item).cloned().unwrap();
+    p.generated.insert(ItemId(1_000_000), g);
+    assert!(p.max_id() >= 1_000_000);
+    s.state.project_selection = vec![item];
+    s.execute("project.delete", json!({"items": [item.0]})).unwrap();
+    assert!(s.project.item(item).is_none());
+    assert!(!s.project.generated.contains_key(&item));
 }
