@@ -24,6 +24,7 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
+filmcraft-gpu-export = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }

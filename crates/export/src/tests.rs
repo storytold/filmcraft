@@ -476,6 +476,8 @@ fn hdr_exports_signal_pq_and_hlg() {
 /// process-global and parallel tests would see each other's factories.
 #[test]
 fn gpu_hook_scenarios() {
+    // (the backend tests register GPU pairs, whose renderers this test would take)
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
     // 1. Declining renderer: byte-equal to Off, and an empty registry too.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| None);
@@ -922,4 +924,128 @@ fn a_backend_factory_that_panics_leaves_the_export_on_the_cpu() {
     let st = gpu_render_stats();
     assert_eq!((st.encoded, st.encode_fallbacks), (0, 0), "{st:?}");
     crate::reset_encoder_backends_for_tests();
+}
+
+/// How [`CpuResident`] fails at frame 2: 0 not at all, 1 its resident render declines, 2 it panics
+/// there, 3 it hands a frame the backend does not take.
+static RESIDENT_FAULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// A renderer whose "resident" frames are the planes the read-back path makes for ProRes HQ (the
+/// codec's `ReferenceBackend` takes a `filmcraft_prores::Frame` as the handle): a stand-in for a
+/// GPU pair, to test the export's switch without a device.
+struct CpuResident;
+
+impl FrameRenderer for CpuResident {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::NONE
+    }
+
+    fn resident_supported(&self, post: &PostSettings) -> bool {
+        !(post.hdr || post.image_overlay || post.name_overlay || post.timecode_overlay) && post.content.is_none() && post.limiter.is_none() && post.floats
+    }
+
+    fn render_resident(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+        post: &PostSettings,
+    ) -> Option<ResidentFrame> {
+        let fault = RESIDENT_FAULT.load(Ordering::SeqCst);
+        let at = t == FrameRate::FPS_24.tick_of(2);
+        match (at, fault) {
+            (true, 1) => return None,
+            (true, 2) => panic!("the device is lost"),
+            (true, 3) => return Some(Box::new(42u32)),
+            _ => {}
+        }
+        let img = filmcraft_render::render_sequence(project, seq, t, opts, sources);
+        let (w, h) = (post.width as usize, post.height as usize);
+        let rgb = crate::pipeline::srgb_floats(&img, false);
+        let mut f = filmcraft_prores::Frame::new(post.width, post.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        rgbf_to_yuv422_10(&rgb, w, h, Matrix::new(post.planes.kr, post.planes.kb), &mut f.y, &mut f.cb, &mut f.cr);
+        Some(Box::new(f))
+    }
+}
+
+struct CpuPair;
+
+impl GpuPair for CpuPair {
+    fn renderer(&self) -> Option<Box<dyn FrameRenderer>> {
+        Some(Box::new(CpuResident))
+    }
+    fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+        Some(Box::new(filmcraft_prores::ReferenceBackend::default()))
+    }
+    fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+        None
+    }
+}
+
+fn cpu_pair() -> Option<Box<dyn GpuPair>> {
+    Some(Box::new(CpuPair))
+}
+
+/// With a pair registered and GPU rendering and encoding Auto, frames stay "on the device" from
+/// the renderer into the encoder; a frame whose resident render declines or panics, or whose
+/// planes the backend does not take, is rendered and encoded through the read-back path, and the
+/// file is the read-back path's either way. An overlay the pair has no pass for keeps the whole
+/// export on the read-back path, decided before the first frame.
+#[test]
+fn a_resident_frame_that_fails_takes_the_read_back_path() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+    crate::register_gpu_pair(cpu_pair);
+    let (p, seq, m) = project();
+    let run = |name: &str, on: bool, timecode: bool| -> Vec<u8> {
+        let path = tmp(name);
+        let mut s = ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), path: path.clone(), include_audio: false, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+        s.effects.timecode_overlay.enabled = timecode;
+        (s.gpu_rendering, s.hardware_encoding) = if on { (GpuRendering::Auto, HardwareEncoding::Auto) } else { (GpuRendering::Off, HardwareEncoding::Off) };
+        let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert_eq!(r.frames, BACKEND_FRAMES as u64, "{name}");
+        std::fs::read(&path).unwrap()
+    };
+    let off = run("rs-off.mov", false, false);
+    let n = BACKEND_FRAMES as u64;
+    for fault in 0u8..4 {
+        RESIDENT_FAULT.store(fault, Ordering::SeqCst);
+        let before = gpu_render_stats();
+        let auto = run(&format!("rs-auto-{fault}.mov"), true, false);
+        let st = gpu_render_stats();
+        let (resident, missed) = (st.resident - before.resident, st.resident_fallbacks - before.resident_fallbacks);
+        assert!(auto == off, "fault {fault}: the read-back path's file");
+        assert_eq!(resident + missed, n, "fault {fault}: {st:?}");
+        assert_eq!(st.encoded - before.encoded, n, "fault {fault}: every frame on the backend: {st:?}");
+        match fault {
+            0 => assert_eq!(missed, 0, "every frame stayed resident"),
+            1 | 3 => assert_eq!(missed, 1, "fault {fault}: frame 2 only was read back"),
+            // (the panicking renderer retires the pool: frames from then on render on the CPU)
+            _ => assert!(missed >= 1, "fault {fault}: {st:?}"),
+        }
+    }
+    RESIDENT_FAULT.store(0, Ordering::SeqCst);
+    let off = run("rs-tc-off.mov", false, true);
+    let before = gpu_render_stats();
+    let auto = run("rs-tc-auto.mov", true, true);
+    let st = gpu_render_stats();
+    assert!(auto == off, "the overlay export is the read-back path's");
+    assert_eq!((st.resident, st.resident_fallbacks), (before.resident, before.resident_fallbacks), "no frame tried resident: {st:?}");
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
 }

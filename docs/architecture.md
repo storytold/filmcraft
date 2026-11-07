@@ -24,7 +24,7 @@ Design principles:
 ```text
  L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
  L5  ui-egui · automation · platform
- L4  engine
+ L4  engine · gpu-export
  L3  render · gpu · export · golden (test-only)
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
@@ -76,6 +76,7 @@ and `filmcraft-cli`.
 | `scopes` | L3 | video scope maths: waveform, parade, histogram, YUV / HLS vectorscopes, numeric summaries ([crates/scopes/README.md](../crates/scopes/README.md)) |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
+| `gpu-export` | L4 | glue the apps register: `gpu`'s export renderer and ProRes / DNxHR encoders behind `export`'s hooks, paired on one device so a rendered frame stays on the GPU into the encoder (ADR 0003 Step 2) |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |

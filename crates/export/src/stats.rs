@@ -119,6 +119,10 @@ pub(crate) static GPU_ENCODED: std::sync::atomic::AtomicU64 = std::sync::atomic:
 
 pub(crate) static GPU_ENCODE_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+pub(crate) static GPU_RESIDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) static GPU_RESIDENT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A frame was composited by the registered GPU renderer.
@@ -156,15 +160,29 @@ pub(crate) fn note_gpu_encode_fallback() {
     GPU_ENCODE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// A frame stayed on the GPU from the renderer into the encoder (no read-back).
+pub(crate) fn note_resident() {
+    GPU_RESIDENT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A frame of an export that keeps frames on the GPU went through the read-back path.
+pub(crate) fn note_resident_fallback() {
+    GPU_RESIDENT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// GPU-vs-CPU counters of the export (per-process, like the hardware ones): `frames` and
-/// `fallbacks` of the renderer, `encoded` pictures an encoder backend (ProRes, DNxHR) coded, and
-/// `encode_fallbacks` pictures given to one that the CPU encoder coded instead.
+/// `fallbacks` of the renderer, `encoded` pictures an encoder backend (ProRes, DNxHR) coded,
+/// `encode_fallbacks` pictures given to one that the CPU encoder coded instead, `resident` frames
+/// that stayed on the GPU from the renderer into the encoder, and `resident_fallbacks` frames of
+/// such an export that were read back instead (their render or encode on the GPU failed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuRenderStats {
     pub frames: u64,
     pub fallbacks: u64,
     pub encoded: u64,
     pub encode_fallbacks: u64,
+    pub resident: u64,
+    pub resident_fallbacks: u64,
 }
 
 pub fn gpu_render_stats() -> GpuRenderStats {
@@ -173,5 +191,7 @@ pub fn gpu_render_stats() -> GpuRenderStats {
         fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed),
         encoded: GPU_ENCODED.load(Ordering::Relaxed),
         encode_fallbacks: GPU_ENCODE_FALLBACKS.load(Ordering::Relaxed),
+        resident: GPU_RESIDENT.load(Ordering::Relaxed),
+        resident_fallbacks: GPU_RESIDENT_FALLBACKS.load(Ordering::Relaxed),
     }
 }

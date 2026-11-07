@@ -2,10 +2,11 @@ use super::convert::{
     Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
 };
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
-use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
+use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PlaneFormat, PrepareAhead, ResidentFrame, VideoEncoder};
 use super::stats::{Stage, timed};
 use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
 use super::{HardwareEncoding, build_dnx_backend, build_prores_backend, note_gpu_encode_fallback, note_gpu_encoded};
+use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -141,6 +142,8 @@ struct ProResEncoder {
     signal: ColorSignal,
     /// The GPU (Hardware encoding: Auto); dropped for the rest of the export after a panic.
     backend: Option<Box<dyn filmcraft_prores::SliceBackend>>,
+    /// The backend came from a [`crate::GpuPair`]: it takes the paired renderers' frames.
+    paired: bool,
 }
 
 impl VideoEncoder for ProResEncoder {
@@ -182,6 +185,29 @@ impl VideoEncoder for ProResEncoder {
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+    fn resident_input(&self) -> Option<PlaneFormat> {
+        let chroma_422 = self.profile.chroma() != filmcraft_prores::ChromaFormat::Yuv444;
+        // (the matrix `encode` converts float frames with; RGBA8 ones are BT.709, as SDR is)
+        let (kr, kb) = self.signal.kr_kb();
+        (self.paired && self.backend.is_some()).then_some(PlaneFormat { kr, kb, chroma_422, alpha: self.alpha, bit_depth: 10 })
+    }
+    fn encode_resident(&mut self, frame: &ResidentFrame, _index: u64) -> Option<Vec<EncodedPacket>> {
+        let mut backend = self.backend.take()?;
+        let handle: &dyn Any = &**frame;
+        let data = match catch_unwind(AssertUnwindSafe(|| self.enc.encode_resident(handle, backend.as_mut()))) {
+            Ok(done) => {
+                self.backend = Some(backend);
+                done?
+            }
+            // (the backend is dropped: the rest of the export is read back and coded on the CPU)
+            Err(_) => {
+                note_gpu_encode_fallback();
+                return None;
+            }
+        };
+        note_gpu_encoded();
+        Some(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
 }
 
@@ -234,8 +260,9 @@ pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s:
         cfg.encode_alpha = alpha;
         cfg.interlace = s.prores_interlace();
         let enc = filmcraft_prores::Encoder::with_config(cfg);
-        let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_prores_backend).flatten();
-        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
+        let (backend, paired) = (s.hardware_encoding == HardwareEncoding::Auto).then(build_prores_backend).flatten().unzip();
+        let paired = paired.unwrap_or(false);
+        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal, backend, paired }) as Box<dyn VideoEncoder>)
     })
 }
 
@@ -262,6 +289,8 @@ struct DnxEncoder {
     signal: ColorSignal,
     /// The GPU (Hardware encoding: Auto); dropped for the rest of the export after a panic.
     backend: Option<Box<dyn filmcraft_dnx::MacroblockBackend>>,
+    /// The backend came from a [`crate::GpuPair`]: it takes the paired renderers' frames.
+    paired: bool,
 }
 
 impl VideoEncoder for DnxEncoder {
@@ -295,6 +324,27 @@ impl VideoEncoder for DnxEncoder {
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+    fn resident_input(&self) -> Option<PlaneFormat> {
+        let (kr, kb) = self.signal.kr_kb();
+        (self.paired && self.backend.is_some()).then_some(PlaneFormat { kr, kb, chroma_422: true, alpha: self.alpha, bit_depth: 10 })
+    }
+    fn encode_resident(&mut self, frame: &ResidentFrame, _index: u64) -> Option<Vec<EncodedPacket>> {
+        let mut backend = self.backend.take()?;
+        let handle: &dyn Any = &**frame;
+        let data = match catch_unwind(AssertUnwindSafe(|| self.enc.encode_resident(handle, backend.as_mut()))) {
+            Ok(done) => {
+                self.backend = Some(backend);
+                done?
+            }
+            // (the backend is dropped: the rest of the export is read back and coded on the CPU)
+            Err(_) => {
+                note_gpu_encode_fallback();
+                return None;
+            }
+        };
+        note_gpu_encoded();
+        Some(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
 }
 
@@ -340,8 +390,9 @@ pub(crate) fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
         let alpha = s.keeps_alpha();
         cfg.alpha = alpha.then_some(filmcraft_dnx::AlphaCoding::Lossless);
         let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
-        let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_dnx_backend).flatten();
-        Ok(Box::new(DnxEncoder { enc, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
+        let (backend, paired) = (s.hardware_encoding == HardwareEncoding::Auto).then(build_dnx_backend).flatten().unzip();
+        let paired = paired.unwrap_or(false);
+        Ok(Box::new(DnxEncoder { enc, alpha, w, h, rate, signal: s.signal, backend, paired }) as Box<dyn VideoEncoder>)
     })
 }
 

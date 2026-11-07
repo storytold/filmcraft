@@ -14,7 +14,10 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{
+    ExportError, ExportSettings, FrameRenderer, GpuRendering, PlaneFormat, PostSettings, ResidentFrame, Result, build_frame_renderer, note_gpu_fallback,
+    note_gpu_frame, note_resident_fallback,
+};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -73,19 +76,33 @@ struct RendererPool {
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
     failed: std::sync::atomic::AtomicBool,
+    /// Every renderer came from a [`crate::GpuPair`] (and so shares its device with the pair's
+    /// encoder backends).
+    paired: bool,
 }
 
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
-    fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
-        let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+    fn new(renderers: Vec<(Box<dyn FrameRenderer>, bool)>) -> Option<Self> {
+        let adjust_side = renderers.iter().map(|(r, _)| r.caps().adjust_side).min()?;
+        let paired = renderers.iter().all(|(_, paired)| *paired);
+        let renderers: Vec<Box<dyn FrameRenderer>> = renderers.into_iter().map(|(r, _)| r).collect();
         Some(Self {
             capacity: renderers.len(),
             caps: filmcraft_render::plan::DeviceCaps { adjust_side },
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
+            paired,
         })
+    }
+
+    /// Whether every renderer keeps frames on its device with `post` run there (asked before the
+    /// first frame, while every renderer is in the pool; a panic answers no).
+    fn resident_supported(&self, post: &PostSettings) -> bool {
+        let free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let all = || free.len() == self.capacity && free.iter().all(|r| r.resident_supported(post));
+        self.paired && std::panic::catch_unwind(std::panic::AssertUnwindSafe(all)).unwrap_or(false)
     }
 
     /// Run `f` with a free renderer. Frame batches must respect `Pipeline::render_batch_limit`:
@@ -150,6 +167,13 @@ pub(crate) struct Pipeline {
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
+    /// Size frames are rendered at.
+    rendered: (u32, u32),
+    /// Frames stay on the GPU from the renderer into the encoder, with this post-render work
+    /// ([`Pipeline::choose_resident`]); `None`: every frame is read back.
+    resident: Option<PostSettings>,
+    /// A frame of a resident export was read back: batches are sized for read-back frames again.
+    resident_missed: std::sync::atomic::AtomicBool,
     start_tc: i64,
     drop_frame: bool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
@@ -209,6 +233,7 @@ impl Pipeline {
         let w = u32::try_from(w).map_err(|_| ExportError::Unsupported("rendered picture width is too large".into()))?;
         let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("rendered picture height is too large".into()))?;
         filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
+        let rendered = (w, h);
         let pipe = q.settings.color;
         let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
         let opts = RenderOptions { scale: geom.render_scale, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
@@ -253,7 +278,84 @@ impl Pipeline {
             out_tf,
             effects,
             overlay,
+            rendered,
+            resident: None,
+            resident_missed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// What the export does to a rendered frame, for an encoder that codes `planes`.
+    fn post_settings(&self, planes: PlaneFormat) -> Option<PostSettings> {
+        let fx = &self.effects;
+        let content = match self.geom.content {
+            Some((w, h)) => Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?)),
+            None => None,
+        };
+        let lim = &fx.video_limiter;
+        Some(PostSettings {
+            rendered: self.rendered,
+            width: self.w,
+            height: self.h,
+            content,
+            offset: self.geom.offset,
+            limiter: lim.enabled.then_some((lim.min_percent, lim.max_percent)),
+            hdr: self.hdr_out,
+            floats: self.float_frames,
+            alpha: self.alpha,
+            planes,
+            image_overlay: self.overlay.is_some(),
+            name_overlay: fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty(),
+            timecode_overlay: fx.timecode_overlay.enabled,
+        })
+    }
+
+    /// Decide, once and before the first frame, whether frames stay on the GPU (ADR 0003 Step 2):
+    /// the encoder takes resident frames (`input`, [`crate::VideoEncoder::resident_input`]), the
+    /// renderers came from the same [`crate::GpuPair`] as its backend, and they run every enabled
+    /// post-render step. Anything else (an overlay, HDR, a CPU renderer) keeps the read-back path.
+    pub(crate) fn choose_resident(&mut self, input: Option<PlaneFormat>) {
+        self.resident = input
+            .filter(|planes| planes.alpha == self.alpha)
+            .and_then(|planes| self.post_settings(planes))
+            .filter(|post| self.renderer.as_ref().is_some_and(|pool| pool.resident_supported(post)));
+    }
+
+    /// Whether frames stay on the GPU in this export.
+    pub(crate) fn resident(&self) -> bool {
+        self.resident.is_some()
+    }
+
+    /// Bytes a resident frame holds on the GPU (its planes), while every frame so far stayed
+    /// there; `None` otherwise (frames are read back, see [`crate::job`]'s `frame_bytes`).
+    pub(crate) fn resident_frame_bytes(&self) -> Option<u64> {
+        let post = self.resident.as_ref().filter(|_| !self.resident_missed.load(std::sync::atomic::Ordering::Relaxed))?;
+        let luma = u64::from(self.w) * u64::from(self.h);
+        let chroma = if post.planes.chroma_422 { u64::from(self.w.div_ceil(2)) * u64::from(self.h) } else { luma };
+        Some((luma + 2 * chroma + if post.planes.alpha { luma } else { 0 }) * 2)
+    }
+
+    /// A frame of a resident export takes the read-back path (counted).
+    pub(crate) fn note_resident_missed(&self) {
+        self.resident_missed.store(true, std::sync::atomic::Ordering::Relaxed);
+        note_resident_fallback();
+    }
+
+    /// Output frame `f` rendered and post-processed on the GPU and left there for the encoder;
+    /// `None` when the export is not resident or this frame must be read back ([`Pipeline::frame`]):
+    /// a frame the renderers' device cannot composite, or one whose resident render failed.
+    pub(crate) fn frame_resident(&self, f: i64, sources: &dyn SourceProvider) -> Option<ResidentFrame> {
+        let post = self.resident.as_ref()?;
+        let t = self.rate.tick_of(f);
+        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps))?;
+        let asked = web_time::Instant::now();
+        let frame = pool
+            .with(|r| {
+                crate::note_lock_wait(asked.elapsed());
+                filmcraft_media::cancel::with_gpu_frames(true, || r.render_resident(&self.project, self.seq, t, self.opts, sources, post))
+            })
+            .flatten()?;
+        note_gpu_frame();
+        Some(frame)
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or the encoded R'G'B' floats

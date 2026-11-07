@@ -137,8 +137,16 @@ fn assert_parity(cpu_png: &[u8], gpu_png: &[u8], what: &str) {
     assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
 }
 
+/// The tests of this file share process-wide registries and counters: one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn gpu_export_matches_cpu_and_counts() {
+    let _serial = serial();
     let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
@@ -448,6 +456,7 @@ fn export_codec(media: &Arc<[u8]>, name: &str, format: Format, profile: &str, al
 /// the CPU encoder's (within 0.1 dB against the picture that went in), and do the encoding.
 #[test]
 fn gpu_encoders_export_like_the_cpu() {
+    let _serial = serial();
     use filmcraft_export::HardwareEncoding::{Auto, Off};
     let (Some(_), Some(_)) = (filmcraft_gpu::ProResGpuEncoder::new(), filmcraft_gpu::DnxGpuEncoder::new()) else {
         eprintln!("SKIPPED (gpu encoders): no adapter");
@@ -509,6 +518,389 @@ fn gpu_encoders_export_like_the_cpu() {
             let (c, g) = (psnr(&want, &cpu[i as usize]), psnr(&want, &gpu[i as usize]));
             eprintln!("{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB against the source");
             assert!((c - g).abs() <= 0.1, "{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB");
+        }
+    }
+}
+
+/// What the paired GPU export of the tests below does: 0 no pair (the other tests see the
+/// registries as they left them), 1 a pair whose renderers read every frame back, 2 a pair whose
+/// frames stay on the GPU.
+static PAIR_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Sets [`PAIR_MODE`] and puts it back to 0 when dropped (also when a test fails).
+struct PairMode;
+
+impl PairMode {
+    fn set(mode: u8) -> PairMode {
+        PAIR_MODE.store(mode, std::sync::atomic::Ordering::SeqCst);
+        PairMode
+    }
+}
+
+impl Drop for PairMode {
+    fn drop(&mut self) {
+        PAIR_MODE.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A renderer of the shipped pair whose frames are read back (mode 1): its resident methods are
+/// the trait's defaults.
+struct ReadBack(Box<dyn FrameRenderer>);
+
+impl FrameRenderer for ReadBack {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
+    }
+}
+
+/// The pair the apps register (`filmcraft_gpu_export::gpu_pair`), its renderers wrapped in
+/// [`ReadBack`] in mode 1.
+struct Pair(Box<dyn filmcraft_export::GpuPair>);
+
+impl filmcraft_export::GpuPair for Pair {
+    fn renderer(&self) -> Option<Box<dyn FrameRenderer>> {
+        let r = self.0.renderer()?;
+        Some(if PAIR_MODE.load(std::sync::atomic::Ordering::SeqCst) == 2 { r } else { Box::new(ReadBack(r)) })
+    }
+    fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+        self.0.prores_backend()
+    }
+    fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+        self.0.dnx_backend()
+    }
+}
+
+fn register_pair() {
+    filmcraft_export::register_gpu_pair(|| {
+        if PAIR_MODE.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            return None;
+        }
+        filmcraft_gpu_export::gpu_pair().map(|p| Box::new(Pair(p)) as Box<dyn filmcraft_export::GpuPair>)
+    });
+}
+
+/// A ProRes 4444 clip with an alpha ramp (3 busy frames, 320×180).
+fn alpha_clip() -> Arc<[u8]> {
+    let (w, h) = (320u32, 180u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let profile = filmcraft_prores::Profile::P4444;
+    let mut enc = filmcraft_prores::Encoder::new(profile, w, h);
+    let frames: Vec<Vec<u8>> = (0..3)
+        .map(|k| {
+            let mut f = filmcraft_prores::Frame::new(w, h, profile.chroma(), 10, true);
+            [f.y, f.cb, f.cr] = busy(wu, hu, wu, 10, k + 7);
+            if let Some(a) = f.alpha.as_mut() {
+                for (i, v) in a.iter_mut().enumerate() {
+                    *v = if i % wu < wu / 3 { 1023 } else { ((i % wu) as u32 * 1023 / wu as u32) as u16 };
+                }
+            }
+            enc.encode(&f).unwrap()
+        })
+        .collect();
+    mov(filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(profile.fourcc()), w as u16, h as u16), &frames)
+}
+
+/// One export of the resident tests: the settings, and the frames' coded samples.
+struct Resident {
+    path: String,
+    frames: Vec<Vec<u8>>,
+}
+
+/// Export `media` (3 frames) as `name` with `s`'s format and profile, GPU rendering and encoding,
+/// scaled into a 256×160 frame (rendered at full size, so resampled, and letterboxed), the video
+/// limiter on; the coded samples, each checked to parse.
+fn resident_export(media: &Arc<[u8]>, name: &str, s: &ExportSettings) -> Resident {
+    resident_export_at(media, name, s, (256, 160))
+}
+
+/// [`resident_export`] into a frame of `size`.
+fn resident_export_at(media: &Arc<[u8]>, name: &str, s: &ExportSettings, size: (u32, u32)) -> Resident {
+    let (p, seq, m) = clip_project(media, 320, 180, 3);
+    let ext = if s.format.is_image_sequence() { "" } else { ".mov" };
+    let path = std::env::temp_dir().join(format!("fc-gpu-resident-{}-{name}{ext}", std::process::id())).to_string_lossy().into_owned();
+    let mut s = ExportSettings { path: path.clone(), include_audio: false, gpu_rendering: GpuRendering::Auto, ..s.clone() };
+    s.hardware_encoding = filmcraft_export::HardwareEncoding::Auto;
+    s.frame_size = Some(size);
+    s.max_render_quality = true;
+    s.effects.video_limiter = filmcraft_export::settings::VideoLimiter { enabled: true, min_percent: 8.0, max_percent: 88.0 };
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(3)));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert_eq!(r.frames, 3, "{name}: frame count");
+    if s.format.is_image_sequence() {
+        return Resident { path, frames: Vec::new() };
+    }
+    let data = std::fs::read(&path).unwrap();
+    let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+    let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+    let frames: Vec<Vec<u8>> = (0..file.tracks[vt].samples.len()).map(|i| file.read_sample(data.as_slice(), vt, i).unwrap().to_vec()).collect();
+    assert_eq!(frames.len(), 3, "{name}: samples");
+    for (i, f) in frames.iter().enumerate() {
+        let parses = match s.video_format() {
+            Format::ProRes => filmcraft_prores::layout::frame_layout(f).is_ok(),
+            _ => filmcraft_dnx::frame_layout(f).is_ok(),
+        };
+        assert!(parses, "{name} frame {i}: the frame parses");
+    }
+    Resident { path, frames }
+}
+
+/// The decoded frames of an export (straight RGBA8, every frame must decode).
+fn decoded(r: &Resident) -> Vec<Vec<u8>> {
+    let src = filmcraft_codecs::open_bytes(&r.path, std::fs::read(&r.path).unwrap().into()).unwrap();
+    (0..3).map(|i| src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8().to_vec()).collect()
+}
+
+/// The export's frames as a PNG sequence (the reference picture the encoders' outputs are measured
+/// against: rendered and post-processed the same way, not coded).
+fn reference_frames(media: &Arc<[u8]>, name: &str, alpha: bool) -> Vec<Vec<u8>> {
+    reference_frames_at(media, name, alpha, (256, 160))
+}
+
+/// [`reference_frames`] in a frame of `size`.
+fn reference_frames_at(media: &Arc<[u8]>, name: &str, alpha: bool, size: (u32, u32)) -> Vec<Vec<u8>> {
+    let s = ExportSettings { format: Format::PngSequence, alpha, ..Default::default() };
+    let r = resident_export_at(media, &format!("{name}-png"), &s, size);
+    (0..3)
+        .map(|i| {
+            let file = std::path::PathBuf::from(format!("{}{i:03}.png", r.path));
+            image::load_from_memory(&std::fs::read(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))).unwrap().to_rgba8().into_raw()
+        })
+        .collect()
+}
+
+/// With a GPU pair registered, a ProRes / DNxHR export with scaling and the video limiter keeps
+/// every frame on the GPU from the renderer into the encoder (the counter says so for every frame),
+/// writes frames that parse and decode, and looks like the read-back export of the same pair:
+/// against the same reference picture, its PSNR is within 0.1 dB of the read-back one's.
+#[test]
+fn resident_export_matches_the_read_back_export() {
+    let _serial = serial();
+    if filmcraft_gpu::ExportDevice::shared().is_none() {
+        eprintln!("SKIPPED (resident export): no adapter");
+        return;
+    }
+    register_pair();
+    let media = alpha_clip();
+    let settings = |format, profile: &str, alpha| {
+        let mut s = ExportSettings { format, alpha, ..Default::default() };
+        match format {
+            Format::ProRes => s.prores_profile = profile.into(),
+            _ => s.dnx_profile = profile.into(),
+        }
+        s
+    };
+    let interlaced = ExportSettings { field_order: filmcraft_export::settings::FieldOrder::UpperFirst, ..settings(Format::ProRes, "hq", false) };
+    let cases = [
+        ("prores-hq", settings(Format::ProRes, "hq", false)),
+        ("prores-4444-alpha", settings(Format::ProRes, "4444", true)),
+        ("dnxhr-hqx", settings(Format::DnxHr, "hqx", false)),
+        // 8-bit DNxHR: the 8-bit picture's table, and lossless alpha
+        ("dnxhr-hq-alpha", settings(Format::DnxHr, "hq", true)),
+        ("prores-hq-interlaced", interlaced),
+    ];
+    for (name, s) in cases {
+        let reference = {
+            let _pair = PairMode::set(1);
+            reference_frames(&media, name, s.alpha)
+        };
+        let before = filmcraft_export::gpu_render_stats();
+        let read_back = {
+            let _pair = PairMode::set(1);
+            resident_export(&media, &format!("{name}-read-back"), &s)
+        };
+        let mid = filmcraft_export::gpu_render_stats();
+        assert_eq!(mid.resident, before.resident, "{name}: the read-back export keeps no frame on the GPU");
+        assert!(mid.encoded >= before.encoded + 3, "{name}: the read-back export encodes on the GPU");
+        let resident = {
+            let _pair = PairMode::set(2);
+            resident_export(&media, &format!("{name}-resident"), &s)
+        };
+        let after = filmcraft_export::gpu_render_stats();
+        assert_eq!(after.resident - mid.resident, 3, "{name}: every frame stayed on the GPU ({after:?})");
+        assert_eq!(after.resident_fallbacks, mid.resident_fallbacks, "{name}: no frame was read back");
+        assert_eq!(after.encoded - mid.encoded, 3, "{name}: every frame encoded on the GPU");
+        if name.contains("interlaced") {
+            for f in &resident.frames {
+                assert_eq!(filmcraft_prores::layout::frame_layout(f).unwrap().header.interlace, filmcraft_prores::Interlace::TopFieldFirst, "{name}");
+            }
+        }
+        let (rb, rs) = (decoded(&read_back), decoded(&resident));
+        for i in 0..3 {
+            let (a, b) = (psnr(&reference[i], &rb[i]), psnr(&reference[i], &rs[i]));
+            eprintln!("{name} frame {i}: read-back {a:.3} dB, resident {b:.3} dB against the reference; resident vs read-back {:.2} dB", psnr(&rb[i], &rs[i]));
+            assert!((a - b).abs() <= 0.1, "{name} frame {i}: read-back {a:.3} dB, resident {b:.3} dB");
+        }
+    }
+}
+
+/// A setting the GPU has no pass for (a timecode overlay) keeps the whole export on the read-back
+/// path, decided before the first frame: no frame stays on the GPU or is tried there, and the file
+/// is complete and still encoded on the GPU.
+#[test]
+fn an_unsupported_setting_keeps_the_read_back_path() {
+    let _serial = serial();
+    if filmcraft_gpu::ExportDevice::shared().is_none() {
+        eprintln!("SKIPPED (resident export): no adapter");
+        return;
+    }
+    register_pair();
+    let _pair = PairMode::set(2);
+    let media = alpha_clip();
+    let mut s = ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), ..Default::default() };
+    s.effects.timecode_overlay.enabled = true;
+    let before = filmcraft_export::gpu_render_stats();
+    let r = resident_export(&media, "timecode-overlay", &s);
+    let after = filmcraft_export::gpu_render_stats();
+    assert_eq!(after.resident, before.resident, "no frame stays on the GPU ({after:?})");
+    assert_eq!(after.resident_fallbacks, before.resident_fallbacks, "and none was tried there");
+    assert!(after.encoded >= before.encoded + 3, "the frames are still encoded on the GPU");
+    assert_eq!(decoded(&r).len(), 3);
+    // the control: the same export without the overlay keeps every frame on the GPU
+    s.effects.timecode_overlay.enabled = false;
+    let before = filmcraft_export::gpu_render_stats();
+    resident_export(&media, "timecode-overlay-control", &s);
+    let after = filmcraft_export::gpu_render_stats();
+    assert_eq!((after.resident - before.resident, after.resident_fallbacks - before.resident_fallbacks), (3, 0), "without the overlay: {after:?}");
+}
+
+/// Odd and tiny frames stay on the GPU and match the read-back export too: the export rounds a
+/// video frame to even sides, so 17×13 is coded 16×12 (a picture of 16×9 letterboxed, resampled
+/// by 20) and 255×143 is coded 254×142 (a 252×142 picture between one-column bars). A 1×1 frame (coded
+/// 2×2) reduces the picture 160 times, more than the GPU's scaling pass takes
+/// (`filmcraft_gpu::export_post::MAX_REDUCTION`): that export is read back, decided up front.
+#[test]
+fn resident_frames_of_odd_sizes_match_the_read_back() {
+    let _serial = serial();
+    if filmcraft_gpu::ExportDevice::shared().is_none() {
+        eprintln!("SKIPPED (resident export): no adapter");
+        return;
+    }
+    register_pair();
+    let media = alpha_clip();
+    let cases = [
+        ("prores-hq", ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), ..Default::default() }),
+        ("prores-4444-alpha", ExportSettings { format: Format::ProRes, prores_profile: "4444".into(), alpha: true, ..Default::default() }),
+        ("dnxhr-hq-alpha", ExportSettings { format: Format::DnxHr, dnx_profile: "hq".into(), alpha: true, ..Default::default() }),
+    ];
+    for size in [(17u32, 13u32), (1, 1), (255, 143)] {
+        for (name, s) in &cases {
+            let name = format!("{name}-{}x{}", size.0, size.1);
+            let read_back = {
+                let _pair = PairMode::set(1);
+                resident_export_at(&media, &format!("{name}-read-back"), s, size)
+            };
+            // (the encoders' frame size: video exports round odd sizes to even ones)
+            let coded = {
+                let src = filmcraft_codecs::open_bytes(&read_back.path, std::fs::read(&read_back.path).unwrap().into()).unwrap();
+                let v = src.info().video.clone().unwrap();
+                (v.width, v.height)
+            };
+            let read_back = decoded(&read_back);
+            let reference = {
+                let _pair = PairMode::set(1);
+                reference_frames_at(&media, &name, s.alpha, coded)
+            };
+            let before = filmcraft_export::gpu_render_stats();
+            let resident = {
+                let _pair = PairMode::set(2);
+                decoded(&resident_export_at(&media, &format!("{name}-resident"), s, size))
+            };
+            let after = filmcraft_export::gpu_render_stats();
+            let want = if size == (1, 1) { 0 } else { 3 };
+            assert_eq!((after.resident - before.resident, after.resident_fallbacks - before.resident_fallbacks), (want, 0), "{name}: {after:?}");
+            eprintln!("{name}: coded as {coded:?}");
+            for i in 0..3 {
+                let (a, b) = (psnr(&reference[i], &read_back[i]), psnr(&reference[i], &resident[i]));
+                assert!((a - b).abs() <= 0.1 || (a.is_infinite() && b.is_infinite()), "{name} frame {i}: read-back {a:.3} dB, resident {b:.3} dB");
+            }
+        }
+    }
+}
+
+/// The measurement of ADR 0003 Step 2 (run by hand: `cargo test --release -p filmcraft-gpu --test
+/// export_pipeline -- --ignored --nocapture bench_uhd`): a 100-frame UHD export of a ProRes HQ clip
+/// to ProRes HQ and to DNxHR HQX, on the CPU (rendering and encoding Off), with GPU rendering and
+/// encoding reading every frame back, and with the frames staying on the GPU. Three runs each; the
+/// median's wall time and its export stages (`perf.stats` `export.stages`).
+#[test]
+#[ignore]
+fn bench_uhd_resident_export() {
+    let _serial = serial();
+    if filmcraft_gpu::ExportDevice::shared().is_none() {
+        eprintln!("SKIPPED (bench): no adapter");
+        return;
+    }
+    register_pair();
+    let (w, h) = (3840u32, 2160u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let distinct: Vec<Vec<u8>> = {
+        let mut enc = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h);
+        (0..4)
+            .map(|k| {
+                let mut f = filmcraft_prores::Frame::new(w, h, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+                [f.y, f.cb, f.cr] = busy(wu, hu, wu / 2, 10, k + 1);
+                enc.encode(&f).unwrap()
+            })
+            .collect()
+    };
+    let frames: Vec<Vec<u8>> = (0..100).map(|i| distinct[i % 4].clone()).collect();
+    let media = mov(filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), w as u16, h as u16), &frames);
+    let (p, seq, m) = clip_project(&media, w, h, 100);
+    for (format, profile) in [(Format::ProRes, "hq"), (Format::DnxHr, "hqx")] {
+        for (mode, gpu) in [("cpu", 0u8), ("gpu read-back", 1), ("gpu resident", 2)] {
+            // (the CPU runs take nothing from the pair; mode 1 reads every frame back)
+            let _pair = PairMode::set(gpu.max(1));
+            let mut runs = Vec::new();
+            for run in 0..3 {
+                let path = std::env::temp_dir().join(format!("fc-gpu-bench-{}-{run}.mov", std::process::id())).to_string_lossy().into_owned();
+                let mut s = ExportSettings { format, path: path.clone(), include_audio: false, ..Default::default() };
+                match format {
+                    Format::ProRes => s.prores_profile = profile.into(),
+                    _ => s.dnx_profile = profile.into(),
+                }
+                if gpu == 0 {
+                    (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Off, filmcraft_export::HardwareEncoding::Off);
+                } else {
+                    (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Auto, filmcraft_export::HardwareEncoding::Auto);
+                }
+                let st0 = filmcraft_export::gpu_render_stats();
+                let s0 = filmcraft_export::stage_times();
+                let t0 = std::time::Instant::now();
+                let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+                let secs = t0.elapsed().as_secs_f64();
+                let stages: Vec<(&str, f64)> = filmcraft_export::stage_times()
+                    .iter()
+                    .zip(&s0)
+                    .map(|((st, b), (_, a))| (st.name(), (b - a) as f64 / 1e9))
+                    .filter(|(_, v)| *v > 0.0)
+                    .collect();
+                let st = filmcraft_export::gpu_render_stats();
+                assert_eq!(r.frames, 100);
+                let _ = std::fs::remove_file(&path);
+                runs.push((secs, stages, st.resident - st0.resident, st.encoded - st0.encoded));
+            }
+            runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let (secs, stages, resident, encoded) = &runs[1];
+            let stages = stages.iter().map(|(n, v)| format!("{n} {v:.2}")).collect::<Vec<_>>().join(", ");
+            eprintln!(
+                "BENCH {} {profile} UHD 100 frames, {mode}: median {secs:.2} s ({:.1} ms/frame; runs {:.2} / {:.2} / {:.2}), resident {resident}, gpu-encoded {encoded}; stages: {stages}",
+                format.label(),
+                secs * 10.0,
+                runs[0].0,
+                runs[1].0,
+                runs[2].0
+            );
         }
     }
 }
