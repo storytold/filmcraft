@@ -469,9 +469,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
-            let ph = app.session.playhead().seconds();
-            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
+            crate::panels::timeline::zoom_playhead(app, f);
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
