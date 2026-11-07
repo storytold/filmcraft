@@ -1224,3 +1224,34 @@ fn jobs_stride_y(mbw: usize) -> usize {
 fn jobs_stride_c(mbw: usize) -> usize {
     mbw * 8 + 2 * CHROMA_PAD
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A recycled `MbInfo` buffer must come back as all-default entries, whatever the previous picture left in it.
+    #[test]
+    fn recycled_mb_buffers_are_cleared() {
+        let mut core = Core::<u8>::new(EncoderConfig::new(64, 48, 30, 1)).unwrap();
+        let n = core.params.mbw * core.params.mbh;
+        let mut m = core.new_mbs();
+        assert_eq!(m.len(), n);
+        for (i, mb) in m.iter_mut().enumerate() {
+            mb.slice = 1 + i as u16;
+            mb.qp = 40;
+            mb.cbp = 0x2f;
+            mb.t8x8 = true;
+            mb.nnz = [7; 16];
+            mb.imodes = [3; 16];
+            mb.ref_idx = [[2; 4]; 2];
+            mb.mvd = [[[9; 2]; 16]; 2];
+        }
+        core.recycle_mbs(m);
+        assert_eq!(core.mbs_pool.len(), 1);
+        let again = core.new_mbs();
+        assert!(core.mbs_pool.is_empty(), "the recycled buffer is reused, not reallocated");
+        let want = format!("{:?}", MbInfo::default());
+        assert_eq!(again.len(), n);
+        assert!(again.iter().all(|mb| format!("{mb:?}") == want));
+    }
+}

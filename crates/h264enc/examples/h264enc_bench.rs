@@ -28,7 +28,8 @@ fn run(a: &[String]) -> Res<()> {
         (Ok(w), Ok(h)) if w != 0 && h != 0 && w.is_multiple_of(2) && h.is_multiple_of(2) && w <= 16384 && h <= 16384 => (w, h),
         _ => return Err("dimensions must be non-zero, even and at most 16384".into()),
     };
-    let fs = w * h * 3 / 2;
+    let luma = w.checked_mul(h).ok_or("frame size overflows")?;
+    let fs = luma.checked_mul(3).ok_or("frame size overflows")? / 2;
     let raw = std::fs::read(arg(1, "")).map_err(|e| format!("read input: {e}"))?;
     let n = frames.min(raw.len() / fs);
     if n == 0 {
@@ -63,8 +64,8 @@ fn run(a: &[String]) -> Res<()> {
     let mut out = Vec::new();
     let t0 = Instant::now();
     for (i, f) in raw.chunks_exact(fs).take(n).enumerate() {
-        let (y, rest) = f.split_at(w * h);
-        let (u, v) = rest.split_at(w * h / 4);
+        let (y, rest) = f.split_at(luma);
+        let (u, v) = rest.split_at(luma / 4);
         let fr = YuvFrame { y, u, v, y_stride: w, uv_stride: w / 2 };
         for p in enc.encode(&fr, i as i64).map_err(|e| format!("encode: {e}"))? {
             out.extend_from_slice(&p.data);
@@ -98,10 +99,16 @@ mod tests {
 
     #[test]
     fn bad_dimensions_are_clean_errors() {
-        for (w, h) in [("abc", "16"), ("0", "16"), ("16", "0"), ("15", "16"), ("99999999999", "16")] {
+        // The dimension check runs before the input is read, so the missing file is never reached.
+        for (w, h) in [("0", "16"), ("16", "0"), ("15", "16"), ("16", "15"), ("16386", "16"), ("16", "16386"), ("99999999999", "16")] {
             let r = run(&args(&["/nonexistent.yuv", w, h, "1", "/nonexistent.h264"]));
-            assert!(r.is_err(), "{w}x{h} must be rejected");
+            assert_eq!(r.unwrap_err(), "dimensions must be non-zero, even and at most 16384", "{w}x{h}");
         }
+        let r = run(&args(&["/nonexistent.yuv", "abc", "16", "1", "/nonexistent.h264"]));
+        assert!(r.unwrap_err().starts_with("invalid width"));
+        // Valid dimensions get past the check and fail on the missing file instead.
+        let r = run(&args(&["/nonexistent.yuv", "16384", "16", "1", "/nonexistent.h264"]));
+        assert!(r.unwrap_err().starts_with("read input"));
     }
 
     #[test]
