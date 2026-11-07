@@ -597,10 +597,10 @@ impl FxOp {
 
                 let curves_on = on(e, "curves_on");
                 let has_curves = curves_on && {
-                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
+                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id, cx.t).is_some_and(|c| !is_identity_curve(&c)))
                         || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
                             .iter()
-                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
+                            .any(|id| curve_param(e, id, cx.t).is_some_and(|c| !c.is_empty()))
                 };
 
                 let wheels_on = on(e, "wheels_on");
