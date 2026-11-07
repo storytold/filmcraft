@@ -272,6 +272,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
+    }
 }
 
 fn register_gpu_frame_renderer() {
@@ -563,7 +567,11 @@ async fn cli_mcp(a: &Args) {
 /// `requested` when the result names none.
 fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
-        Some(p) => vec![p.to_string()],
+        // an image sequence: its first and last stills
+        Some(p) => vec![match result.get("lastPath").and_then(Value::as_str) {
+            Some(last) => format!("{p} to {last}"),
+            None => p.to_string(),
+        }],
         None => result
             .get("items")
             .and_then(Value::as_array)

@@ -66,6 +66,8 @@ impl Geometry {
 struct RendererPool {
     /// Initial capacity, also the maximum number of frame tasks admitted at once.
     capacity: usize,
+    /// What every renderer of the pool runs: a frame is planned for whichever one it gets.
+    caps: filmcraft_render::plan::DeviceCaps,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
@@ -75,8 +77,10 @@ struct RendererPool {
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
-        (!renderers.is_empty()).then(|| Self {
+        let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+        Some(Self {
             capacity: renderers.len(),
+            caps: filmcraft_render::plan::DeviceCaps { adjust_side },
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
@@ -248,10 +252,11 @@ impl Pipeline {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
         // draw, any internal error) falls back to the CPU reference renderer below. A frame the
-        // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
-        // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
-        // many frames at a time as there are renderers instead of one per export thread.
-        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        // planner hands back as one CPU image anyway (an adjustment layer the GPU can't run, a
+        // complex transition, HDR) does not take a pooled renderer: it would render on the CPU
+        // inside the pool, as many frames at a time as there are renderers instead of one per
+        // export thread.
+        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
@@ -440,9 +445,21 @@ fn load_overlay(path: &str, width: f32) -> Result<Image> {
 /// Separable resample of a premultiplied image with a triangle filter widened by the reduction
 /// factor (area-correct when downscaling, bilinear when enlarging).
 pub(crate) fn resample(src: &Image, nw: usize, nh: usize) -> Image {
+    // Width first holds an `nw` x `src.h` intermediate, height first a `src.w` x `nh` one. Opposing
+    // thin shapes (1 x 16384 to 16384 x 1) make the first 16384 x 16384: when it is large and the
+    // other order is smaller, take that one (the result is the same filter either way).
+    let (wide, tall) = (nw.saturating_mul(src.h), src.w.saturating_mul(nh));
+    if wide > MAX_RESAMPLE_INTERMEDIATE_PIXELS && tall < wide {
+        let tmp = resample_axis(src, nh, false);
+        return resample_axis(&tmp, nw, true);
+    }
     let tmp = resample_axis(src, nw, true);
     resample_axis(&tmp, nh, false)
 }
+
+/// Pixels of intermediate image a resample may use before it tries the other axis order first
+/// (16 Mi pixels, 256 MiB of float RGBA; HD to UHD is 4 Mi).
+const MAX_RESAMPLE_INTERMEDIATE_PIXELS: usize = 16 << 20;
 
 fn weights(n_src: usize, n_dst: usize) -> Vec<(usize, Vec<f32>)> {
     let scale = n_src as f32 / n_dst as f32;
@@ -538,5 +555,26 @@ mod overlay_budget_tests {
         assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
         assert!(bounded_overlay_dimensions(4097, 4096).is_err());
         assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn either_axis_order_gives_the_same_picture() {
+        let mut src = Image::new(8, 3);
+        for (i, v) in src.px.iter_mut().enumerate() {
+            *v = ((i * 37) % 11) as f32 / 11.0;
+        }
+        let a = resample_axis(&resample_axis(&src, 5, true), 7, false);
+        let b = resample_axis(&resample_axis(&src, 7, false), 5, true);
+        assert!(a.px.iter().zip(&b.px).all(|(x, y)| (x - y).abs() < 1e-5));
+    }
+
+    #[test]
+    fn opposing_thin_shapes_do_not_build_a_huge_intermediate() {
+        // width first would be 6000 x 6000 pixels (576 MiB); height first is 1 x 1
+        let mut src = Image::new(1, 6000);
+        src.px.iter_mut().for_each(|v| *v = 0.5);
+        let out = resample(&src, 6000, 1);
+        assert_eq!((out.w, out.h), (6000, 1));
+        assert!(out.px.iter().all(|v| (v - 0.5).abs() < 1e-4));
     }
 }
