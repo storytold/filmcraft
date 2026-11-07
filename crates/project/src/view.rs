@@ -204,6 +204,12 @@ impl TimelineUiSettings {
         self.video_indicator_color = normalize_hex_color(&self.video_indicator_color).unwrap_or_else(|| "#64b5f6".to_string());
         self.audio_indicator_color = normalize_hex_color(&self.audio_indicator_color).unwrap_or_else(|| "#2e7d32".to_string());
         self.offline_indicator_color = normalize_hex_color(&self.offline_indicator_color).unwrap_or_else(|| "#d32f2f".to_string());
+        // These bindings are project-controlled strings used as UI identifiers/labels. Keep
+        // malformed or hostile project files from carrying arbitrarily large values into UI.
+        self.control_center_on_playhead = bounded_binding(self.control_center_on_playhead);
+        self.control_explode_slider = bounded_binding(self.control_explode_slider);
+        self.control_alternate_drag_speed = bounded_binding(self.control_alternate_drag_speed);
+        self.control_settings = bounded_binding(self.control_settings);
         self
     }
 
@@ -225,7 +231,14 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    // Consume the complete value before attempting the nested decode. If one field is malformed,
+    // deserializing directly from `d` can leave its parent parser midway through this object.
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<TimelineUiSettings>(value).map(|s| s.checked()).unwrap_or_default())
+}
+
+fn bounded_binding(value: String) -> String {
+    value.chars().take(64).collect()
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
@@ -297,6 +310,21 @@ mod tests {
         assert_eq!(s.audio_indicator_color, "#2e7d32");
         assert_eq!(s.offline_indicator_color, "#d32f2f");
         assert_eq!(s.max_zoom_secs(), 3.0);
+    }
+
+    #[test]
+    fn checked_bounds_control_binding_strings_at_character_boundaries() {
+        let s = TimelineUiSettings { control_settings: "é".repeat(80), ..TimelineUiSettings::default() }.checked();
+        assert_eq!(s.control_settings.chars().count(), 64);
+        assert_eq!(s.control_settings.len(), 128);
+    }
+
+    #[test]
+    fn malformed_timeline_ui_does_not_break_its_parent_project_view() {
+        let view: ProjectView = serde_json::from_str(r#"{"timeline_ui":{"smooth_animations":"invalid"},"open_sequences":[],"sequences":{}}"#)
+            .expect("the malformed optional settings block should fall back as a whole");
+        assert!(view.open_sequences.is_empty());
+        assert!(!view.timeline_ui.smooth_animations);
     }
 
     /// In-range values (and short colour strings) pass through untouched, and the read-time
