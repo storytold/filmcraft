@@ -106,6 +106,9 @@ pub struct ComfyState {
     /// Every server is reached through this when set (tests, hosts with their own networking).
     pub transport: Option<Arc<dyn Transport>>,
     pending: Vec<Pending>,
+    /// Output names held by in-memory downloads (hosts that save through their services): shared
+    /// by every job of the session, so two jobs never pick the same name before either is written.
+    held: Arc<Mutex<BTreeSet<String>>>,
     /// Finished runs are being applied ([`poll`]): applying runs commands, which must not
     /// start applying again.
     applying: bool,
@@ -617,15 +620,16 @@ fn file_stem(name: &str) -> String {
     if s.is_empty() { "ComfyUI".into() } else { s }
 }
 
-/// `<dir>/<name> <nnn>.<ext>`, the first number not taken.
-fn version_path(services: &dyn crate::Services, dir: &str, name: &str, ext: &str) -> String {
+/// `<dir>/<name> <nnn>.<ext>`, the first number not taken: no file, no `.part` in flight, and
+/// not `held` by an in-memory download.
+fn version_path(services: &dyn crate::Services, dir: &str, name: &str, ext: &str, held: &BTreeSet<String>) -> String {
     let stem = file_stem(name);
     let ext: String = ext.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
     let mut n = 1u32;
     loop {
         let path = std::path::Path::new(dir).join(format!("{stem} {n:03}.{ext}")).to_string_lossy().into_owned();
         // a `.part` is a file another job is still downloading under this name
-        let taken = services.file_size(&path).is_ok() || services.file_size(&format!("{path}.part")).is_ok();
+        let taken = held.contains(&path) || services.file_size(&path).is_ok() || services.file_size(&format!("{path}.part")).is_ok();
         if !taken || n >= 99_999 {
             return path;
         }
@@ -673,6 +677,8 @@ struct OutputFiles<'a> {
     dir: &'a str,
     name: &'a str,
     in_memory: bool,
+    /// Names held by in-memory downloads of every job of the session ([`ComfyState::held`]).
+    held: &'a Mutex<BTreeSet<String>>,
     cancel: &'a AtomicBool,
     /// The file being downloaded (and its bytes, in memory).
     current: String,
@@ -683,6 +689,61 @@ struct OutputFiles<'a> {
 impl OutputFiles<'_> {
     fn part(path: &str) -> String {
         format!("{path}.part")
+    }
+
+    /// Claim `path` (chosen by [`version_path`]) for the next output, or the next free number when
+    /// another job took it in the meantime, and open its writer. Two jobs (clips with the same
+    /// name) must never share a file:
+    ///
+    /// - on disk the final name is claimed by creating it empty and exclusively, then its `.part`
+    ///   (`close` renames the `.part` over this job's own placeholder), so a name another job
+    ///   claimed or published first fails here and moves on;
+    /// - in memory (hosts that save through their services, which have no exclusive write) the
+    ///   name is held in the session-wide [`ComfyState::held`] set, checked and taken under its
+    ///   lock, until `close` has written it.
+    fn claim(&mut self, mut path: String, ext: &str) -> std::result::Result<Box<dyn Write + '_>, String> {
+        if self.in_memory {
+            let mut held = lock(self.held);
+            if held.contains(&path) || self.services.file_size(&path).is_ok() {
+                path = version_path(self.services, self.dir, self.name, ext, &held);
+            }
+            held.insert(path.clone());
+            drop(held);
+            self.current = path;
+            self.buffer.clear();
+            return Ok(Box::new(Stoppable { inner: &mut self.buffer, cancel: self.cancel }));
+        }
+        std::fs::create_dir_all(self.dir).map_err(|e| format!("{}: {e}", self.dir))?;
+        let create_new = |p: &str| std::fs::OpenOptions::new().write(true).create_new(true).open(p);
+        let taken = |e: &std::io::Error| e.kind() == std::io::ErrorKind::AlreadyExists;
+        let mut tries = 0;
+        let f = loop {
+            if tries >= 1000 {
+                return Err(format!("{}: no free file name", self.dir));
+            }
+            tries += 1;
+            match create_new(&path) {
+                Ok(_) => {}
+                Err(e) if taken(&e) => {
+                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held));
+                    continue;
+                }
+                Err(e) => return Err(format!("{path}: {e}")),
+            }
+            let part = Self::part(&path);
+            match create_new(&part) {
+                Ok(f) => break f,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&path);
+                    if !taken(&e) {
+                        return Err(format!("{part}: {e}"));
+                    }
+                    path = version_path(self.services, self.dir, self.name, ext, &lock(self.held));
+                }
+            }
+        };
+        self.current = path;
+        Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
     }
 
     /// Remove the files written so far: a run that failed or was stopped leaves nothing behind.
@@ -699,49 +760,9 @@ impl comfy::Sink for OutputFiles<'_> {
     /// Start the next output file: a new version path in the output folder, written to a `.part`
     /// file first (or to a buffer for hosts that save through their services).
     fn create(&mut self, o: &comfy::Output) -> std::result::Result<Box<dyn Write + '_>, String> {
-        let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1);
-        let mut path = version_path(self.services, self.dir, self.name, ext);
-        if self.in_memory {
-            self.current.clone_from(&path);
-            self.buffer.clear();
-            return Ok(Box::new(Stoppable { inner: &mut self.buffer, cancel: self.cancel }));
-        }
-        std::fs::create_dir_all(self.dir).map_err(|e| format!("{}: {e}", self.dir))?;
-        // reserve the name: two jobs (clips with the same name) must never share a file. The final
-        // name is claimed first by creating it empty and exclusively (so choosing and claiming it
-        // is one step, and no other job can pick it while this one downloads), then its `.part`;
-        // a name another job took first means the next number. `close` renames the `.part` over
-        // this job's own placeholder.
-        let create_new = |p: &str| std::fs::OpenOptions::new().write(true).create_new(true).open(p);
-        let taken = |e: &std::io::Error| e.kind() == std::io::ErrorKind::AlreadyExists;
-        let mut tries = 0;
-        let f = loop {
-            if tries >= 1000 {
-                return Err(format!("{}: no free file name", self.dir));
-            }
-            tries += 1;
-            match create_new(&path) {
-                Ok(_) => {}
-                Err(e) if taken(&e) => {
-                    path = version_path(self.services, self.dir, self.name, ext);
-                    continue;
-                }
-                Err(e) => return Err(format!("{path}: {e}")),
-            }
-            let part = Self::part(&path);
-            match create_new(&part) {
-                Ok(f) => break f,
-                Err(e) => {
-                    let _ = std::fs::remove_file(&path);
-                    if !taken(&e) {
-                        return Err(format!("{part}: {e}"));
-                    }
-                    path = version_path(self.services, self.dir, self.name, ext);
-                }
-            }
-        };
-        self.current.clone_from(&path);
-        Ok(Box::new(Stoppable { inner: std::io::BufWriter::with_capacity(1 << 20, f), cancel: self.cancel }))
+        let ext = o.file.as_ref().and_then(|f| f.filename.rsplit_once('.')).map_or("bin", |x| x.1).to_string();
+        let path = version_path(self.services, self.dir, self.name, &ext, &lock(self.held));
+        self.claim(path, &ext)
     }
 
     /// Finish the current file: a complete one is renamed from its `.part` (or saved through the
@@ -750,8 +771,11 @@ impl comfy::Sink for OutputFiles<'_> {
         let path = std::mem::take(&mut self.current);
         if self.in_memory {
             let bytes = std::mem::take(&mut self.buffer);
+            // the name stays held until it is written (from then on the file itself holds it)
+            let r = if size.is_some() { self.services.write_file(&path, &bytes).map_err(|e| format!("{path}: {e}")) } else { Ok(()) };
+            lock(self.held).remove(&path);
+            r?;
             if size.is_some() {
-                self.services.write_file(&path, &bytes).map_err(|e| format!("{path}: {e}"))?;
                 self.written.push((o.clone(), path));
             }
             return Ok(());
@@ -817,6 +841,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = output_dir(s, p);
     let services = s.services.clone();
     let in_memory = cfg!(target_arch = "wasm32") || services.export_in_memory();
+    let held = s.comfyui.held.clone();
     let mut opts = RunOptions { timeout: std::time::Duration::from_secs(u64::from(s.prefs.comfyui.timeout_minutes.max(1)) * 60), ..Default::default() };
     if in_memory {
         opts.max_file = opts.max_file.min(MAX_FILE_IN_MEMORY);
@@ -852,6 +877,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
                 dir: &dir,
                 name: &w.name,
                 in_memory,
+                held: &held,
                 cancel: &prog.cancel,
                 current: String::new(),
                 buffer: Vec::new(),
@@ -1197,12 +1223,15 @@ fn fit_clips(pr: &mut Project, item: ItemId, info: &MediaInfo) -> Result<()> {
         if has_v {
             let q = pr.sequence(sid).ok_or(EngineError::NoSequence)?;
             let frame = (q.settings.width, q.settings.height);
-            let video_links: Vec<u64> = q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.item == item).filter_map(|it| it.link).collect();
+            let videos: Vec<&TrackItem> = q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.item == item).collect();
+            // only an audio clip with no video clip of the item over it is a sound-only placement:
+            // the user may have unlinked a video clip's audio, which still sits under its picture
             let lone: Vec<TrackItem> = q
                 .audio_tracks
                 .iter()
                 .flat_map(|t| t.items.iter())
-                .filter(|a| a.item == item && a.link.is_none_or(|l| !video_links.contains(&l)))
+                .filter(|a| a.item == item && a.link.is_none_or(|l| !videos.iter().any(|v| v.link == Some(l))))
+                .filter(|a| !videos.iter().any(|v| v.range().overlaps(&a.range())))
                 .cloned()
                 .collect();
             let src_size = info.video.as_ref().map(|v| (v.width, v.height)).unwrap_or(frame);
@@ -1266,6 +1295,12 @@ fn add_audio_partners(pr: &mut Project, item: ItemId, audio: ItemId, audio_dur: 
                 partner.item = audio;
                 partner.source_in = src_in;
                 partner.duration = partner.duration.min(dur);
+                continue;
+            }
+            // an unlinked audio clip of this sound already under the picture (the user unlinked
+            // them) is its sound: adding another would play it twice
+            let range = TimeRange::new(start, dur);
+            if link.is_none() && q.audio_tracks.iter().flat_map(|t| t.items.iter()).any(|a| a.item == audio && a.link.is_none() && a.range().overlaps(&range)) {
                 continue;
             }
             let link = pr.alloc_id();

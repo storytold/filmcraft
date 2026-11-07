@@ -668,8 +668,9 @@ fn same_named_clips_never_share_a_file() {
     let d = dir.to_string_lossy().into_owned();
     let services = crate::FsServices;
     std::fs::write(dir.join("Shot 001.png.part"), b"in flight").unwrap();
-    assert!(version_path(&services, &d, "Shot", "png").ends_with("Shot 002.png"));
+    assert!(version_path(&services, &d, "Shot", "png", &Default::default()).ends_with("Shot 002.png"));
     let cancel = AtomicBool::new(false);
+    let held = Mutex::default();
     let out = filmcraft_comfyui::Output {
         node: "9".into(),
         key: "images".into(),
@@ -682,6 +683,7 @@ fn same_named_clips_never_share_a_file() {
         dir: &d,
         name: "Shot",
         in_memory: false,
+        held: &held,
         cancel,
         current: String::new(),
         buffer: Vec::new(),
@@ -735,6 +737,7 @@ fn a_finished_name_is_never_taken_over() {
     let d = dir.to_string_lossy().into_owned();
     let services = crate::FsServices;
     let cancel = AtomicBool::new(false);
+    let held = Mutex::default();
     let out = filmcraft_comfyui::Output {
         node: "9".into(),
         key: "images".into(),
@@ -747,6 +750,7 @@ fn a_finished_name_is_never_taken_over() {
         dir: &d,
         name: "Shot",
         in_memory: false,
+        held: &held,
         cancel,
         current: String::new(),
         buffer: Vec::new(),
@@ -863,4 +867,93 @@ fn sound_only_after_a_video_with_sound_keeps_one_audio_clip() {
     assert_eq!(clips.len(), 1, "{clips:?}");
     assert_eq!((clips[0].0, clips[0].2, clips[0].3), (TrackKind::Audio, Tick::from_seconds_f64(0.5), None));
     std::fs::remove_dir_all(dir).ok();
+}
+
+/// A video whose audio the user unlinked keeps exactly its clips when it is generated again,
+/// with sound or without: no second picture over it, no second sound, and the user's audio
+/// clip is not deleted.
+#[test]
+fn unlinked_audio_is_not_a_sound_only_placement() {
+    let dir = tmp_dir("comfy-unlinked");
+    let movie = dir.join("in.mov");
+    make_movie(&movie, DemoScene::Plasma, 64, 36, 24);
+    let mov = std::fs::read(&movie).unwrap();
+    let fake = fake_runs(vec![
+        vec![FakeOutput::file("20", "gifs", "a.mov", mov.clone())],
+        vec![FakeOutput::file("20", "gifs", "b.mov", mov)],
+        vec![FakeOutput::file("9", "images", "frame.png", png(64, 36))],
+    ]);
+    let mut s = session(fake);
+    let (item, clip) = new_clip(&mut s, json!({"duration": 5}));
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(clips_of(&s, item).len(), 2);
+    s.execute("clip.link", json!({"clips": [clip.0]})).unwrap();
+    assert!(clips_of(&s, item).iter().all(|c| c.3.is_none()), "unlinked");
+    let kinds = |s: &Session| {
+        let mut k: Vec<TrackKind> = clips_of(s, item).iter().map(|c| c.0).collect();
+        k.sort_by_key(|k| *k == TrackKind::Audio);
+        k
+    };
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(kinds(&s), [TrackKind::Video, TrackKind::Audio], "video with sound again");
+    generate(&mut s, &dir, json!({"item": item.0})).unwrap();
+    assert_eq!(kinds(&s), [TrackKind::Video, TrackKind::Audio], "a picture without sound");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The interleaving the claim exists for: A chooses a name, B publishes that very name, then A
+/// claims it. A must move on to the next number and leave B's file alone, on disk and in memory
+/// (hosts that save through their services), where in-flight names are held session-wide.
+#[test]
+fn a_chosen_name_published_by_another_job_is_not_overwritten() {
+    use filmcraft_comfyui::Sink;
+    use std::io::Write as _;
+    let out = filmcraft_comfyui::Output {
+        node: "9".into(),
+        key: "images".into(),
+        kind: OutputKind::Image,
+        file: Some(filmcraft_comfyui::FileRef { filename: "x.png".into(), subfolder: String::new(), folder: "output".into() }),
+        text: None,
+    };
+    for in_memory in [false, true] {
+        let dir = tmp_dir("comfy-interleave");
+        let d = dir.to_string_lossy().into_owned();
+        let services = crate::FsServices;
+        let cancel = AtomicBool::new(false);
+        let held = Mutex::default();
+        let files = || OutputFiles {
+            services: &services,
+            dir: &d,
+            name: "Shot",
+            in_memory,
+            held: &held,
+            cancel: &cancel,
+            current: String::new(),
+            buffer: Vec::new(),
+            written: Vec::new(),
+        };
+        let (mut a, mut b) = (files(), files());
+        // A chooses 001 and pauses before claiming it
+        let chosen = version_path(&services, &d, "Shot", "png", &lock(&held));
+        assert!(chosen.ends_with("Shot 001.png"));
+        // B claims, downloads and publishes 001
+        b.create(&out).unwrap().write_all(b"from B").unwrap();
+        b.close(&out, Some(6)).unwrap();
+        // A resumes with its stale choice
+        a.claim(chosen, "png").unwrap().write_all(b"from A").unwrap();
+        a.close(&out, Some(6)).unwrap();
+        assert_eq!(std::fs::read(dir.join("Shot 001.png")).unwrap(), b"from B", "in_memory={in_memory}");
+        assert_eq!(std::fs::read(dir.join("Shot 002.png")).unwrap(), b"from A", "in_memory={in_memory}");
+        // two in-flight downloads at once never share a name either
+        let (mut c, mut e) = (files(), files());
+        c.create(&out).unwrap().write_all(b"from C").unwrap();
+        e.create(&out).unwrap().write_all(b"from E").unwrap();
+        assert_ne!(c.current, e.current, "in_memory={in_memory}");
+        e.close(&out, Some(6)).unwrap();
+        c.close(&out, Some(6)).unwrap();
+        assert_eq!(std::fs::read(dir.join("Shot 003.png")).unwrap(), b"from C", "in_memory={in_memory}");
+        assert_eq!(std::fs::read(dir.join("Shot 004.png")).unwrap(), b"from E", "in_memory={in_memory}");
+        assert!(lock(&held).is_empty(), "names are released once written");
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
