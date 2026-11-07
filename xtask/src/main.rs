@@ -339,7 +339,7 @@ fn web(args: &[String]) -> Result<(), String> {
             let html = std::fs::read_to_string(e.path()).map_err(|e| format!("{name}: {e}"))?;
             std::fs::write(dist.join(&name), html.replace("__FC_BUILD__", &build)).map_err(|e| format!("{name}: {e}"))?;
         } else if !name.ends_with(".attribution") {
-            std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+            copy_web_assets(&e.path(), &dist.join(&name))?;
         }
     }
     let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
@@ -349,6 +349,45 @@ fn web(args: &[String]) -> Result<(), String> {
         serve_dir(&dist, port)?;
     }
     Ok(())
+}
+
+/// Copy static web assets, including nested directories (for icons and future assets).
+/// Attribution sidecars are documentation, not files to serve.
+fn copy_web_assets(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        for entry in std::fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_name().to_string_lossy().ends_with(".attribution") {
+                continue;
+            }
+            copy_web_assets(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    } else if src.is_file() {
+        std::fs::copy(src, dst).map_err(|e| format!("{}: {e}", src.display()))?;
+    } else {
+        return Err(format!("Unsupported web asset: {}", src.display()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod web_asset_tests {
+    use super::copy_web_assets;
+    #[test]
+    fn copies_nested_assets_and_skips_attribution() {
+        let root = std::env::temp_dir().join(format!("filmcraft-web-assets-{}", std::process::id()));
+        let src = root.join("src");
+        let dest = root.join("dest");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(src.join("icons")).unwrap();
+        std::fs::write(src.join("icons").join("icon.png"), b"icon").unwrap();
+        std::fs::write(src.join("icons").join("icon.png.attribution"), b"license").unwrap();
+        copy_web_assets(&src, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("icons").join("icon.png")).unwrap(), b"icon");
+        assert!(!dest.join("icons").join("icon.png.attribution").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 /// A tiny static file server for the web build (localhost only). Sends the cross-origin

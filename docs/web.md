@@ -41,6 +41,14 @@ working" overlay with the panic message and a Reload button instead of a frozen 
 `std::time::{Instant, SystemTime}::now`, `std::thread::sleep`/`spawn` or `std::process::id`: they
 panic on `wasm32-unknown-unknown` (use `filmcraft_engine::temp_dir`, `web_time`, or a `cfg`).
 
+## Install on iPad (experimental PWA)
+
+Serve the output over HTTPS, open it in Safari on iPadOS and select **Share → Add to Home Screen**. The manifest and service worker are bundled by `cargo xtask web`, so no separate patching step is required. The application remains a browser-based WebAssembly build, not a native iPadOS application.
+
+The service worker intentionally caches **no** application assets or media: FilmCraft's WASM payload is large, and duplicating it into the Cache API risks exhausting storage. Install-to-home-screen does **not** promise fully offline operation. Keep the published site available, and test storage recovery on your actual device. The web app stays on the device during editing; it does not upload user footage by default.
+
+Safari/WebKit may impose limits on memory, decoding, importing and exporting media. Basic demo playback/touch interactions have been reported working on an iPad, but complete import/export workflows are not yet validated. On-screen interactions may need further ergonomic changes.
+
 ## How the desktop pieces map to the browser
 
 | Desktop | Web |
