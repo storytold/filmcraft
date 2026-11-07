@@ -210,17 +210,22 @@ impl AudioEffect for DeNoise {
         stream(&mut self.stft, &mut self.spec, channels, len, Plan { hop, scale, pairing: Pairing::SynthesisOnly }, &mut |ch, _, re, im| {
             let st = &mut states[ch];
             let bins = n / 2 + 1;
+            let mut accepted = true;
             for k in 0..bins {
                 let p = re[k] * re[k] + im[k] * im[k];
                 let psd = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
                 // A frame with a NaN or inf input sample would leave the recursion non-finite
-                // for good; skip it instead.
+                // for good; skip it instead, also for the minimum statistics (a rejected bin
+                // would otherwise record its stale zero as the noise floor).
                 if psd.is_finite() {
                     st.psd[k] = psd;
+                    st.cur_min[k] = st.cur_min[k].min(psd);
+                } else {
+                    accepted = false;
                 }
-                st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
             }
-            st.started = true;
+            // the recursion starts with the first frame that was accepted
+            st.started |= accepted;
             st.frames_in_sub += 1;
             let rotate = st.frames_in_sub == sub_frames;
             for k in 0..bins {
@@ -326,5 +331,23 @@ mod tests {
         assert!(red < -10.0, "noise reduction only {red} dB");
         let kept = db(tone_amplitude(&y[onn.clone()], 1000.0, SR as f64) / 0.3);
         assert!(kept.abs() < 1.0, "tone changed by {kept} dB");
+    }
+
+    #[test]
+    fn denoise_recovers_from_a_non_finite_first_frame() {
+        let mut d = DeNoise::new(SR, 1);
+        d.set_param("reduction", 20.0);
+        let n = SR as usize * 4;
+        let mut rng = Rng::new(21);
+        let mut y: Vec<f32> = (0..n).map(|_| rng.uniform() * 0.02).collect();
+        let x = y.clone();
+        y[10] = f32::NAN;
+        d.process(&mut [&mut y]);
+        // the stale zero of the rejected first frame must not become the noise floor: the steady
+        // noise is still reduced once the estimate has settled
+        let tail = n - SR as usize / 2..n;
+        assert!(y[tail.clone()].iter().all(|v| v.is_finite()));
+        let red = db(rms(&y[tail.clone()]) / rms(&x[tail]));
+        assert!(red < -10.0, "noise reduction only {red} dB");
     }
 }
