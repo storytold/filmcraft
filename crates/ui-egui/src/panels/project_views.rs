@@ -1054,9 +1054,13 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
         let cg = ui.painter().layout_no_wrap(tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
         let cw = cg.size().x;
         ui.painter().galley(pos2(th.max.x - cw, th.max.y + 11.0 - cg.size().y / 2.0), cg, t.text_dim);
-        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, nr.width() - cw - 6.0);
-        let elided = g.elided;
-        ui.painter().galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
+        // The name gets only what is left beside the count. At the smallest icon sizes that can be
+        // narrower than one letter and "…", which the layout still emits, so the name is also
+        // clipped to its slot and never runs into the count (#2632).
+        let slot = Rect::from_min_max(nr.min, pos2((nr.max.x - cw - 6.0).max(nr.min.x), nr.max.y));
+        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, slot.width());
+        let elided = g.elided || g.size().x > slot.width();
+        ui.painter().with_clip_rect(slot).galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
         if elided {
             resp = resp.on_hover_text(&b.name);
         }

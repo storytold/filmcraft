@@ -22,6 +22,8 @@ pub mod api;
 pub mod audio;
 pub mod download_pacing;
 pub mod fs;
+pub mod host;
+pub mod hostmode;
 pub mod import;
 pub mod opfs;
 pub mod recovery;
@@ -118,6 +120,10 @@ pub struct WebApp {
     rejected_recovery: Option<RejectedRecovery>,
     recovery_unavailable: Option<String>,
     active_recovery_warning: Option<String>,
+    /// The host bridge in host mode (`?host=parent` / `data-host="page"`): written files go to
+    /// the host instead of downloads, it hears about unsaved changes, and it opens the files it
+    /// sends.
+    pub host: Option<host::Bridge>,
 }
 
 impl eframe::App for WebApp {
@@ -125,7 +131,7 @@ impl eframe::App for WebApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
-    /// Hidden logic pass: host actions, app logic, API replies, jobs, audio, autosave, then IME reset; it does not draw UI.
+    /// Hidden logic pass: host actions, app logic, API replies, jobs, host saves and dirty reports, audio, autosave, then IME reset; it does not draw UI.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         i18n::set_current(self.app.ui.language);
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
@@ -138,10 +144,15 @@ impl eframe::App for WebApp {
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
             ctx.request_repaint();
         }
+        // In host mode: files written this frame (commands, exports) go to the host, and it
+        // hears when unsaved changes appear or go away.
+        if let Some(host) = &self.host {
+            host.sync(&self.app.session);
+        }
         if let Some(a) = &self.audio {
             a.pump();
         }
-        if self.rejected_recovery.is_none() && self.recovery_unavailable.is_none() {
+        if self.host.is_none() && self.rejected_recovery.is_none() && self.recovery_unavailable.is_none() {
             if let Some(error) = self.autosave.tick(&self.app.session, ctx) {
                 if recovery_policy::should_show_warning(&self.app.ui.status, self.active_recovery_warning.as_deref()) {
                     self.app.keep_status_visible(error.clone(), ctx.input(|i| i.time));
@@ -250,6 +261,15 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
 
+    // Host modes (`craft-web-host`): `?host=parent`, a same-origin page framing FilmCraft in an
+    // `<iframe>`, opens files in it and stores what it saves (`host`); unframed there is no parent,
+    // so that URL on its own stays the normal app with downloads. `data-host="page"` on the canvas
+    // opts a page in instead: it runs FilmCraft in its own document and talks over DOM
+    // `CustomEvent`s on the canvas. In host mode the host sends the document to edit, so no demo
+    // project opens and nothing from an earlier visit is recovered.
+    let host = host::Bridge::connect(&canvas);
+    let in_host_mode = host.is_some();
+
     let isolated = js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false);
     // Frame rendering runs cooperatively on this thread. wasm threads need a cross-origin
     // isolated page *and* a build with atomics (nightly `build-std`); this build has none.
@@ -260,33 +280,38 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
     let skip_recovery = query_flag("fresh") || query_flag("norecover");
-    let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
+    let restored = if !in_host_mode && opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
     // A skipped dirty snapshot stays in OPFS as a Blob; do not decode it or load its bytes.
-    let recovered_result = match recovery_policy::startup_recovery_mode(skip_recovery) {
-        recovery_policy::StartupRecoveryMode::Open => {
-            recovery::load_snapshot().await.map(|snapshot| snapshot.map(|(name, bytes)| StartupRecovery::Open(name, bytes)))
-        }
-        recovery_policy::StartupRecoveryMode::HoldForDownload => {
-            recovery::load_snapshot_blob().await.map(|snapshot| snapshot.map(|(name, blob)| StartupRecovery::Skipped(name, blob)))
-        }
-    };
-    let recovered = match recovered_result {
-        Ok(recovered) => recovered,
-        Err(error) => match recovery_policy::recovery_read_fallback(recovery::load_raw_snapshot_blob().await) {
-            recovery_policy::RecoveryReadFallback::Hold(blob) => Some(StartupRecovery::Unreadable(error, blob)),
-            recovery_policy::RecoveryReadFallback::Proceed => {
-                log::warn!("browser recovery metadata ignored because no snapshot exists: {error}");
-                None
+    let recovered = if in_host_mode {
+        None
+    } else {
+        let recovered_result = match recovery_policy::startup_recovery_mode(skip_recovery) {
+            recovery_policy::StartupRecoveryMode::Open => {
+                recovery::load_snapshot().await.map(|snapshot| snapshot.map(|(name, bytes)| StartupRecovery::Open(name, bytes)))
             }
-            recovery_policy::RecoveryReadFallback::Unavailable(fallback_error) => Some(StartupRecovery::Unavailable(format!("{error}; {fallback_error}"))),
-        },
+            recovery_policy::StartupRecoveryMode::HoldForDownload => {
+                recovery::load_snapshot_blob().await.map(|snapshot| snapshot.map(|(name, blob)| StartupRecovery::Skipped(name, blob)))
+            }
+        };
+        let recovered = match recovered_result {
+            Ok(recovered) => recovered,
+            Err(error) => match recovery_policy::recovery_read_fallback(recovery::load_raw_snapshot_blob().await) {
+                recovery_policy::RecoveryReadFallback::Hold(blob) => Some(StartupRecovery::Unreadable(error, blob)),
+                recovery_policy::RecoveryReadFallback::Proceed => {
+                    log::warn!("browser recovery metadata ignored because no snapshot exists: {error}");
+                    None
+                }
+                recovery_policy::RecoveryReadFallback::Unavailable(fallback_error) => Some(StartupRecovery::Unavailable(format!("{error}; {fallback_error}"))),
+            },
+        };
+        recovered
     };
     webcodecs::probe().await;
 
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    let demo = !in_host_mode && !query_flag("empty");
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.
@@ -296,7 +321,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
     }
     let runner = eframe::WebRunner::new();
-    runner
+    let host_for_app = host.clone();
+    let started = runner
         .start(
             canvas,
             web_options,
@@ -305,11 +331,19 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());
-                fs::set_on_write(|path, data| {
-                    if let Err(e) = fs::download(path, data) {
-                        log::warn!("download {path}: {e:?}");
+                // Host mode: written files (saved projects, exports, …) are handed to the host
+                // instead of downloading, and it opens the files it sends. Otherwise the app
+                // offers what it writes as a browser download.
+                match &host_for_app {
+                    Some(bridge) => bridge.install(),
+                    None => {
+                        fs::set_on_write(|path, data| {
+                            if let Err(e) = fs::download(path, data) {
+                                log::warn!("download {path}: {e:?}");
+                            }
+                        });
                     }
-                });
+                }
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 let mut toast = None;
@@ -411,10 +445,19 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     rejected_recovery,
                     recovery_unavailable,
                     active_recovery_warning: None,
+                    host: host_for_app,
                 }))
             }),
         )
-        .await?;
+        .await;
+    // Ready only once the runner is up: starting can still fail after the app is made.
+    if let Some(bridge) = &host {
+        match &started {
+            Ok(()) => bridge.post_ready(),
+            Err(e) => bridge.post_failed(&e.as_string().unwrap_or_else(|| format!("{e:?}"))),
+        }
+    }
+    started?;
     set_info("startupMs", json!(t0.elapsed().as_secs_f64() * 1000.0));
     // keep the runner alive for the page's lifetime
     std::mem::forget(runner);

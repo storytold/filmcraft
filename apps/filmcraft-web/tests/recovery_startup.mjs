@@ -116,6 +116,34 @@ try {
     }
   })()`);
 
+  const hostSetup = await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+    new MutationObserver((_, observer) => {
+      const canvas = document.querySelector('canvas');
+      if (!canvas) return;
+      canvas.setAttribute('data-host', 'page');
+      canvas.addEventListener('filmcraft:ready', () => { window.testHostReady = true; });
+      observer.disconnect();
+    }).observe(document, {childList:true, subtree:true});
+  ` });
+  await send("Page.reload", { ignoreCache: true });
+  await until(async () => await js("!!window.testHostReady && !!window.filmcraftLoad?.readyMs"));
+  assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null);
+  assert.equal(await js("window.filmcraft.info().restoredMedia"), 0);
+  assert.deepEqual(await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})"), []);
+  await js("window.filmcraft.execute('file.newSequence',{name:'Host-owned unsaved edit'})");
+  await sleep(6500);
+  for (const [name, expected] of [
+    ['snapshot.fcproj', 'invalid-fcproj-test'],
+    ['meta.json', JSON.stringify({dirty:true,name:'Unsafe dimensions',revision:7,time:1})],
+  ]) {
+    assert.equal(await js(`(async () => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('recovery');
+      return (await (await dir.getFileHandle(${JSON.stringify(name)})).getFile()).text();
+    })()`), expected, 'host mode must leave browser recovery untouched');
+  }
+  await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: hostSetup.identifier });
+  console.log("host mode bypasses recovery and preserves its snapshot during edits: PASS");
+
   const previousOrigin = await js("performance.timeOrigin");
   await send("Page.reload", { ignoreCache: true });
   await until(async () => await js(`performance.timeOrigin !== ${previousOrigin} && !!window.filmcraftLoad?.readyMs`));
