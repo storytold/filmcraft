@@ -15,6 +15,7 @@ use crate::dct::fdct8x8;
 use crate::header::{self, EOF_SIGNATURE, FieldCode, FrameHeader, SCAN_INDEX_OFFSET};
 use crate::tables::{CidInfo, VlcSet, ZIGZAG, cid_info, vlc};
 use crate::{ChromaFormat, ColorVolume, Error, Frame, Profile, Result};
+use std::any::Any;
 
 /// Encoder configuration.
 #[derive(Debug, Clone)]
@@ -140,11 +141,36 @@ impl Encoder {
         }
     }
 
+    /// `encode_with` for a frame whose planes are already where `backend` works (a GPU export
+    /// renders them there, see [`MacroblockBackend::load_resident`]): `frame` is that backend's
+    /// handle, of Y'CbCr planes as `encode_with` takes them (alpha too when the configuration
+    /// codes it). Lossless alpha that does not fit is coded with the DCT, as `encode_with` does.
+    /// `None` when the backend does not take the handle, fails, answers inconsistently, or the
+    /// frame does not fit: the planes are not here, so the CPU cannot code the frame; the caller
+    /// makes them and calls `encode_with` (which reports a frame that cannot fit).
+    pub fn encode_resident(&mut self, frame: &dyn Any, backend: &mut dyn MacroblockBackend) -> Option<Vec<u8>> {
+        match self.encode_on_backend(Input::Resident(frame), backend, self.budget_bits()) {
+            Ok(out) => Some(out),
+            Err(Missed::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => {
+                self.cfg.alpha = Some(AlphaCoding::Dct);
+                let done = self.encode_on_backend(Input::Resident(frame), backend, self.budget_bits());
+                self.cfg.alpha = Some(AlphaCoding::Lossless);
+                done.ok()
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Bits of a frame after its header and the end-of-frame signature.
+    fn budget_bits(&self) -> u64 {
+        (u64::from(self.frame_size)).saturating_sub(u64::from(self.header_size) + 4) * 8
+    }
+
     fn encode_once(&mut self, f: &Frame, backend: &mut Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
         self.validate(f)?;
-        let budget_bits = (self.frame_size as u64 - self.header_size as u64 - 4) * 8;
+        let budget_bits = self.budget_bits();
         if let Some(backend) = backend.as_deref_mut()
-            && let Some(out) = self.encode_on_backend(f, backend, budget_bits)
+            && let Ok(out) = self.encode_on_backend(Input::Planes(f), backend, budget_bits)
         {
             return Ok((out, true));
         }
@@ -183,28 +209,33 @@ impl Encoder {
     /// The frame coded with the backend's per-macroblock work. `None` when the backend declines,
     /// fails, or its answers do not agree with each other (every length is checked against the
     /// bits it measured, and every macroblock header against its quantiser).
-    fn encode_on_backend(&mut self, f: &Frame, backend: &mut dyn MacroblockBackend, budget_bits: u64) -> Option<Vec<u8>> {
+    fn encode_on_backend(&mut self, input: Input, backend: &mut dyn MacroblockBackend, budget_bits: u64) -> std::result::Result<Vec<u8>, Missed> {
         let nw = self.cfg.width.div_ceil(16) as usize;
         let ns = self.cfg.height.div_ceil(16) as usize;
-        if !backend.load(&self.cfg, f) {
-            return None;
+        let (loaded, rgb) = match input {
+            Input::Planes(f) => (backend.load(&self.cfg, f), f.rgb),
+            // (resident planes are Y'CbCr)
+            Input::Resident(f) => (backend.load_resident(&self.cfg, f), false),
+        };
+        if !loaded {
+            return Err(Missed::Declined);
         }
         let mut measured: Vec<(u32, Vec<u32>)> = Vec::new();
-        let (qs, q) = backend_quantisers(backend, self.last_q, nw, ns, budget_bits, &mut measured)?;
+        let (qs, q) = backend_quantisers(backend, self.last_q, nw, ns, budget_bits, &mut measured).ok_or(Missed::Declined)?;
         // the bits of every macroblock at the quantiser it will be written at
-        let want = bits_at_qs(backend, &mut measured, &qs)?;
+        let want = bits_at_qs(backend, &mut measured, &qs).ok_or(Missed::Declined)?;
         if padded_frame_bits(&want, nw) > budget_bits {
             // the search found no quantiser that fits: the CPU reports it
-            return None;
+            return Err(Missed::DoesNotFit);
         }
-        let written = backend.write(&qs)?;
+        let written = backend.write(&qs).ok_or(Missed::Declined)?;
         let alpha = self.cfg.alpha;
-        let ycbcr444 = self.cfg.chroma() == ChromaFormat::Yuv444 && !f.rgb;
+        let ycbcr444 = self.cfg.chroma() == ChromaFormat::Yuv444 && !rgb;
         let check = Stitch { nw, ns, parts: if alpha.is_some() { 2 } else { 1 }, dct_alpha: alpha == Some(AlphaCoding::Dct), ycbcr444 };
-        let rows = check.rows(&written, &qs, &want)?;
-        let out = self.assemble(rows, f.rgb).ok()?;
+        let rows = check.rows(&written, &qs, &want).ok_or(Missed::Declined)?;
+        let out = self.assemble(rows, rgb).map_err(|_| Missed::Declined)?;
         self.last_q = q;
-        Some(out)
+        Ok(out)
     }
 
     fn prepare(&self, f: &Frame) -> Prepared {
@@ -377,6 +408,13 @@ pub trait MacroblockBackend: Send {
     /// coded) for `cfg`. `false`: this backend cannot encode it (size, profile, a device error);
     /// the encoder then uses its own code.
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool;
+    /// [`MacroblockBackend::load`] for a frame whose planes this backend already holds: `frame`
+    /// is a handle of its own making (a GPU buffer the export rendered into), opaque to the
+    /// encoder ([`Encoder::encode_resident`]). `false` (the default): not a handle it takes.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any) -> bool {
+        let _ = (cfg, frame);
+        false
+    }
     /// Every macroblock's coded bits at quantiser scale factor `q`: the 11-bit qsf, the flag,
     /// DC and AC of its colour blocks (DC predicted along its scan line per component), plus its
     /// alpha part when alpha is coded.
@@ -399,6 +437,21 @@ pub trait MacroblockBackend: Send {
         let _ = (hint, budget);
         None
     }
+}
+
+/// Where the planes of the frame being coded are: here, or already with the backend.
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    Planes(&'a Frame),
+    Resident(&'a dyn Any),
+}
+
+/// Why the backend did not code a frame.
+enum Missed {
+    /// It declined, failed or answered inconsistently.
+    Declined,
+    /// Its measurements say the frame does not fit the budget at any quantiser.
+    DoesNotFit,
 }
 
 /// The most distinct quantisers a backend's `choose` answer may use (each costs a `bits` call).
@@ -650,6 +703,16 @@ pub struct ReferenceBackend {
 }
 
 impl MacroblockBackend for ReferenceBackend {
+    /// A [`Frame`] passed as the handle loads as `load` would.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any) -> bool {
+        match frame.downcast_ref::<Frame>() {
+            Some(frame) => self.load(cfg, frame),
+            None => {
+                self.prep = None;
+                false
+            }
+        }
+    }
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame) -> bool {
         let Ok(enc) = Encoder::with_config(cfg.clone()) else { return false };
         self.prep = Some(enc.prepare(frame));
@@ -1155,6 +1218,46 @@ mod backend_tests {
             }
         }
         assert!(checked > 60 && refused <= checked / 4, "{checked} compared, {refused} refused");
+    }
+
+    /// A frame whose planes the backend holds already (its handle: here the `Frame` itself) codes
+    /// to the CPU's bytes for the same planes, lossless alpha that cannot fit falling back to DCT
+    /// alpha as `encode_with` does; a handle the backend does not take, or a backend that takes
+    /// none, gives nothing.
+    #[test]
+    fn a_resident_frame_codes_like_its_planes() {
+        let (w, h) = (256, 128);
+        let lossless = |profile| EncoderConfig { alpha: Some(AlphaCoding::Lossless), ..EncoderConfig::new(profile, w, h) };
+        let mut noisy = lossless(Profile::Lb);
+        noisy.bit_depth = 8;
+        let mut cases: Vec<(EncoderConfig, Frame)> = [EncoderConfig::new(Profile::Hq, w, h), EncoderConfig::new(Profile::Hqx, w, h), lossless(Profile::Hq)]
+            .into_iter()
+            .map(|cfg| {
+                let f = test_frame(&cfg, 5);
+                (cfg, f)
+            })
+            .collect();
+        // alpha of pure noise: lossless alpha does not fit LB, the frame is coded with DCT alpha
+        let mut f = test_frame(&noisy, 9);
+        let mut s = 0x1234_5678u32;
+        for a in f.alpha.iter_mut().flatten() {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            *a = (s & 255) as u16;
+        }
+        let coded = Encoder::with_config(noisy.clone()).unwrap().encode(&f).unwrap();
+        assert!(!probe(&coded).unwrap().lossless_alpha, "the noisy alpha falls back to DCT alpha");
+        cases.push((noisy, f));
+        for (cfg, f) in cases {
+            let what = format!("{:?} {:?}", cfg.profile, cfg.alpha);
+            let cpu = Encoder::with_config(cfg.clone()).unwrap().encode(&f).unwrap();
+            let mut enc = Encoder::with_config(cfg.clone()).unwrap();
+            assert_eq!(enc.encode_resident(&f, &mut ReferenceBackend::default()), Some(cpu), "{what}");
+            assert!(enc.config().alpha == cfg.alpha, "{what}: the configured alpha coding is kept");
+            assert!(Encoder::with_config(cfg.clone()).unwrap().encode_resident(&7u8, &mut ReferenceBackend::default()).is_none(), "{what}");
+            assert!(Encoder::with_config(cfg).unwrap().encode_resident(&f, &mut CpuMbBackend::default()).is_none(), "{what}");
+        }
     }
 
     #[test]

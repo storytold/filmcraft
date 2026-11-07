@@ -6,6 +6,7 @@ use crate::dct::fdct8x8;
 use crate::header::{FRAME_ID, FrameHeader, PictureHeader, row_slice_widths};
 use crate::tables::{AC_ROUND, DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, ColorInfo, Error, Frame, Interlace, Profile, Result};
+use std::any::Any;
 
 /// Encoder configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +99,7 @@ impl Encoder {
         let jobs = self.slice_jobs();
         let srcs = Source::pictures(&self.cfg, frame, with_alpha);
         if let Some(backend) = backend
-            && let Some((out, qg)) = self.encode_on_backend(frame, &srcs, backend, &jobs)
+            && let Some((out, qg)) = self.encode_on_backend(Input::Planes(frame, &srcs), with_alpha, backend, &jobs)
         {
             self.last_q = qg;
             return Ok((out, true));
@@ -114,6 +115,26 @@ impl Encoder {
         let slices: Option<Vec<Vec<u8>>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q)).into_iter().collect();
         let slices = slices.ok_or(Error::Invalid("slice larger than its 16-bit size field"))?;
         Ok((self.assemble_frame(&slices, with_alpha, srcs.len())?, false))
+    }
+
+    /// `encode_with` for a frame whose planes are already where `backend` works (a GPU export
+    /// renders them there, see [`SliceBackend::load_resident`]): `frame` is that backend's handle.
+    /// The planes must be as `encode_with` takes them (10-bit samples of the profile's chroma
+    /// format, alpha when the configuration codes it). `None` when the backend does not take the
+    /// handle, fails, or answers inconsistently: the planes are not here, so the CPU cannot code
+    /// the frame; the caller makes them and calls `encode_with`.
+    pub fn encode_resident(&mut self, frame: &dyn Any, backend: &mut dyn SliceBackend) -> Option<Vec<u8>> {
+        self.validate_config().ok()?;
+        let with_alpha = self.cfg.encode_alpha && self.cfg.profile.chroma() == ChromaFormat::Yuv444;
+        let jobs = self.slice_jobs();
+        let (out, qg) = self.encode_on_backend(Input::Resident(frame), with_alpha, backend, &jobs)?;
+        self.last_q = qg;
+        Some(out)
+    }
+
+    /// The coded pictures of a frame: one, or an interlaced frame's two fields.
+    fn pictures(&self) -> usize {
+        if self.cfg.interlace == Interlace::Progressive { 1 } else { 2 }
     }
 
     /// The slices of a frame of this encoder's size, in coded order: picture by picture (one, or
@@ -144,9 +165,7 @@ impl Encoder {
         if frame.width != cfg.width || frame.height != cfg.height {
             return Err(Error::Input(format!("frame is {}x{}, encoder is {}x{}", frame.width, frame.height, cfg.width, cfg.height)));
         }
-        if cfg.width == 0 || cfg.height == 0 || cfg.width > 65535 || cfg.height > 65535 {
-            return Err(Error::Input("unsupported frame size".into()));
-        }
+        self.validate_config()?;
         let chroma = cfg.profile.chroma();
         if frame.chroma != chroma {
             return Err(Error::Input(format!("{:?} input for a {:?} profile", frame.chroma, chroma)));
@@ -166,39 +185,54 @@ impl Encoder {
         {
             return Err(Error::Input("alpha plane too small".into()));
         }
+        Ok(with_alpha)
+    }
+
+    /// The checks of `validate` that do not look at a frame.
+    fn validate_config(&self) -> Result<()> {
+        let cfg = &self.cfg;
+        if cfg.width == 0 || cfg.height == 0 || cfg.width > 65535 || cfg.height > 65535 {
+            return Err(Error::Input("unsupported frame size".into()));
+        }
         if cfg.log2_slice_mbs > 3 {
             return Err(Error::Input("log2_slice_mbs must be 0..=3".into()));
         }
-        if cfg.interlace != Interlace::Progressive && h < 2 {
+        if cfg.interlace != Interlace::Progressive && cfg.height < 2 {
             return Err(Error::Input("an interlaced frame needs at least two lines".into()));
         }
-        Ok(with_alpha)
+        Ok(())
     }
 
     /// The frame coded with the backend's per-block work, and its uniform quantiser. `None` when
     /// the backend declines, fails, or its answers do not agree with each other.
-    fn encode_on_backend(&self, frame: &Frame, srcs: &[Source], backend: &mut dyn SliceBackend, jobs: &[SliceJob]) -> Option<(Vec<u8>, u8)> {
+    fn encode_on_backend(&self, input: Input, with_alpha: bool, backend: &mut dyn SliceBackend, jobs: &[SliceJob]) -> Option<(Vec<u8>, u8)> {
         let n = jobs.len();
-        let with_alpha = srcs.first()?.alpha;
-        if n == 0 || !backend.load(&self.cfg, frame, jobs) {
+        let loaded = match input {
+            Input::Planes(frame, _) => backend.load(&self.cfg, frame, jobs),
+            Input::Resident(frame) => backend.load_resident(&self.cfg, frame, jobs),
+        };
+        if n == 0 || !loaded {
             return None;
         }
         let alpha: Vec<Option<Vec<u8>>> = if with_alpha {
-            match backend.alpha() {
-                Some(a) if a.len() == n => a.into_iter().map(Some).collect(),
-                _ => jobs
+            match (backend.alpha(), input) {
+                (Some(a), _) if a.len() == n => a.into_iter().map(Some).collect(),
+                (_, Input::Planes(_, srcs)) => jobs
                     .iter()
                     .map(|j| srcs.get(j.picture as usize).map(|src| encode_alpha_slice(src, j.mb_x as usize * 16, j.mb_y as usize * 16, j.mbs as usize)))
                     .collect::<Option<Vec<Vec<u8>>>>()?
                     .into_iter()
                     .map(Some)
                     .collect(),
+                // (the alpha plane is with the backend only)
+                (_, Input::Resident(_)) => return None,
             }
         } else {
             vec![None; n]
         };
+        let pictures = self.pictures();
         let limits: Vec<u64> = alpha.iter().map(|a| slice_limit_bits(with_alpha, a.as_ref().map_or(0, Vec::len))).collect();
-        let budget = frame_budget(n, slice_header_size(with_alpha), self.bits_per_mb(), jobs, srcs.len());
+        let budget = frame_budget(n, slice_header_size(with_alpha), self.bits_per_mb(), jobs, pictures);
         let mut measured: Vec<(u8, Vec<[u32; 3]>)> = Vec::new();
         let (qs, qg) = backend_quantisers(backend, budget, &limits, self.last_q, &mut measured)?;
         if qs.len() != n {
@@ -229,7 +263,7 @@ impl Encoder {
             }
             slices.push(assemble_slice(hsize, q, [&comps[0], &comps[1], &comps[2]], a.as_deref())?);
         }
-        let out = self.assemble_frame(&slices, with_alpha, srcs.len()).ok()?;
+        let out = self.assemble_frame(&slices, with_alpha, pictures).ok()?;
         Some((out, qg))
     }
 
@@ -309,12 +343,26 @@ pub fn picture_lines(interlace: Interlace, picture: u32) -> (u32, u32) {
     }
 }
 
+/// Where the planes of the frame being coded are: here, or already with the backend.
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    Planes(&'a Frame, &'a [Source<'a>]),
+    Resident(&'a dyn Any),
+}
+
 /// The per-block work of an encode on other hardware: forward DCT, quantisation, entropy coding
 /// of the Y, Cb and Cr components of every slice, exactly as this crate's encoder does them.
 pub trait SliceBackend: Send {
     /// Take `frame` (already validated by the encoder) for `slices`. `false`: this backend cannot
     /// encode it (size, profile, a device error); the encoder then uses its own code.
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, slices: &[SliceJob]) -> bool;
+    /// [`SliceBackend::load`] for a frame whose planes this backend already holds: `frame` is a
+    /// handle of its own making (a GPU buffer the export rendered into), opaque to the encoder
+    /// ([`Encoder::encode_resident`]). `false` (the default): not a handle it takes.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any, slices: &[SliceJob]) -> bool {
+        let _ = (cfg, frame, slices);
+        false
+    }
     /// The coded bits of every slice's Y, Cb, Cr at quantiser index `q`, each padded to whole
     /// bytes (as `component_bits`), in `slices` order.
     fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>>;
@@ -776,6 +824,16 @@ pub struct ReferenceBackend {
 }
 
 impl SliceBackend for ReferenceBackend {
+    /// A [`Frame`] passed as the handle loads as `load` would.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any, jobs: &[SliceJob]) -> bool {
+        match frame.downcast_ref::<Frame>() {
+            Some(frame) => self.load(cfg, frame, jobs),
+            None => {
+                self.slices.clear();
+                false
+            }
+        }
+    }
     fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob]) -> bool {
         let alpha = cfg.encode_alpha && cfg.profile.chroma() == ChromaFormat::Yuv444 && frame.alpha.is_some();
         let srcs = Source::pictures(cfg, frame, alpha);
@@ -1244,6 +1302,53 @@ mod backend_tests {
                 let (gpu, used) = Encoder::new(profile, w, h).encode_with(&f, Some(&mut b)).unwrap();
                 assert!(used, "{profile:?} {w}x{h}");
                 assert_eq!(gpu, cpu, "{profile:?} {w}x{h}");
+            }
+        }
+    }
+
+    /// A [`ReferenceBackend`] that never codes alpha (the encoder must then code it itself).
+    struct NoAlpha(ReferenceBackend);
+
+    impl SliceBackend for NoAlpha {
+        fn load(&mut self, cfg: &EncoderConfig, frame: &Frame, slices: &[SliceJob]) -> bool {
+            self.0.load(cfg, frame, slices)
+        }
+        fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any, slices: &[SliceJob]) -> bool {
+            self.0.load_resident(cfg, frame, slices)
+        }
+        fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+            self.0.bits(q)
+        }
+        fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+            self.0.write(qs)
+        }
+    }
+
+    /// A frame whose planes the backend holds already (its handle: here the `Frame` itself) codes
+    /// to the bytes of the same planes coded on the CPU, progressive and interlaced, with alpha. A
+    /// handle the backend does not take, a backend that takes none, and a 4444 frame whose alpha
+    /// the backend does not code give nothing (the planes are not with the encoder).
+    #[test]
+    fn a_resident_frame_codes_like_its_planes() {
+        for profile in [Profile::Hq, Profile::P4444] {
+            for interlace in [Interlace::Progressive, Interlace::TopFieldFirst] {
+                for (w, h) in [(17, 13), (64, 48)] {
+                    let f = test_frame(profile, w, h, 3);
+                    let cfg = EncoderConfig { interlace, ..EncoderConfig::new(profile, w, h) };
+                    let what = format!("{profile:?} {interlace:?} {w}x{h}");
+                    let cpu = Encoder::with_config(cfg.clone()).encode(&f).unwrap();
+                    let mut enc = Encoder::with_config(cfg.clone());
+                    let resident = enc.encode_resident(&f, &mut ReferenceBackend::default());
+                    assert_eq!(resident.as_deref(), Some(&cpu[..]), "{what}");
+                    // the next frame's search starts where this one ended, as after `encode`
+                    let mut cpu_enc = Encoder::with_config(cfg.clone());
+                    cpu_enc.encode(&f).unwrap();
+                    assert_eq!(enc.encode_resident(&f, &mut ReferenceBackend::default()), Some(cpu_enc.encode(&f).unwrap()), "{what}: second frame");
+                    assert!(Encoder::with_config(cfg.clone()).encode_resident(&42u32, &mut ReferenceBackend::default()).is_none(), "{what}");
+                    assert!(Encoder::with_config(cfg.clone()).encode_resident(&f, &mut CpuBackend::default()).is_none(), "{what}");
+                    let no_alpha = Encoder::with_config(cfg).encode_resident(&f, &mut NoAlpha(ReferenceBackend::default()));
+                    assert_eq!(no_alpha.is_some(), profile == Profile::Hq, "{what}: alpha only the backend could code");
+                }
             }
         }
     }
