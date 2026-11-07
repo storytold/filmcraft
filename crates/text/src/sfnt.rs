@@ -131,7 +131,9 @@ fn name_string(b: &[u8], id: u16) -> Option<String> {
         };
         // Only decode a record that can improve the selected name. A hostile name table may
         // point thousands of records at the same huge string.
-        let raw = b.get(storage + off..storage + off + len)?;
+        let Some(raw) = storage.checked_add(off).and_then(|start| Some(start..start.checked_add(len)?)).and_then(|range| b.get(range)) else {
+            continue;
+        };
         let s = match plat {
             3 => {
                 let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
@@ -227,6 +229,27 @@ mod tests {
         table[second + 6..second + 8].copy_from_slice(&1u16.to_be_bytes());
         table[second + 8..second + 10].copy_from_slice(&u16::MAX.to_be_bytes());
         table.extend_from_slice(&[0, b'A', 0, b'B']);
+        assert_eq!(name_string(&table, 1).as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn later_better_record_with_bad_range_keeps_earlier_name() {
+        // A valid Mac Roman record comes first; a later Windows-English record would rank
+        // higher but points outside the table. It must be skipped, not discard the valid name.
+        let mut table = vec![0; 30];
+        table[2..4].copy_from_slice(&2u16.to_be_bytes());
+        table[4..6].copy_from_slice(&30u16.to_be_bytes());
+        let first = 6usize;
+        table[first..first + 2].copy_from_slice(&1u16.to_be_bytes());
+        table[first + 6..first + 8].copy_from_slice(&1u16.to_be_bytes());
+        table[first + 8..first + 10].copy_from_slice(&2u16.to_be_bytes());
+        let second = first + 12;
+        table[second..second + 2].copy_from_slice(&3u16.to_be_bytes());
+        table[second + 2..second + 4].copy_from_slice(&1u16.to_be_bytes());
+        table[second + 4..second + 6].copy_from_slice(&0x409u16.to_be_bytes());
+        table[second + 6..second + 8].copy_from_slice(&1u16.to_be_bytes());
+        table[second + 8..second + 10].copy_from_slice(&u16::MAX.to_be_bytes());
+        table.extend_from_slice(b"AB");
         assert_eq!(name_string(&table, 1).as_deref(), Some("AB"));
     }
 }
