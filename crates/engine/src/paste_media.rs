@@ -119,5 +119,6 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         enabled: always,
         run: paste_media,
         journal: true,
+        named: crate::commands::NamedKeys::NONE,
     }]
 }

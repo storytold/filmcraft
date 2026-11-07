@@ -323,4 +323,63 @@ mod tests {
             assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{id} stays NaN after one NaN input sample");
         }
     }
+
+    /// Process 2 s of noise in 512-sample blocks with `bad` at input sample 1000 of the left
+    /// channel, at default or moved parameters. Returns the last output sample index (either
+    /// channel) that is not finite, ignoring the bad sample's own latency-delayed output, and
+    /// the position of that own output.
+    fn last_non_finite(id: &str, moved: bool, bad: f32) -> (Option<usize>, usize) {
+        const BAD_AT: usize = 1000;
+        let n = 2 * 48000;
+        let mut fx = crate::create_effect(id, SR as f32, 2).unwrap_or_else(|| panic!("{id}"));
+        if moved {
+            for p in fx.params() {
+                let v = match p.unit {
+                    crate::Unit::Toggle => 1.0,
+                    crate::Unit::Choice => p.max,
+                    _ => p.min + (p.max - p.min) * 0.37,
+                };
+                fx.set_param(p.id, v);
+            }
+        }
+        let mut rng = Rng::new(8);
+        let mut l: Vec<f32> = (0..n).map(|_| 0.5 * rng.uniform()).collect();
+        let mut r: Vec<f32> = (0..n).map(|_| 0.5 * rng.uniform()).collect();
+        l[BAD_AT] = bad;
+        for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            fx.process(&mut [a, b]);
+        }
+        let own = BAD_AT + fx.latency();
+        let last = l.iter().chain(&r).enumerate().map(|(i, v)| (i % n, v)).filter(|&(i, v)| i != own && !v.is_finite()).map(|(i, _)| i).max();
+        (last, own)
+    }
+
+    /// Every registered effect except `pitch_shifter` produces finite output again within 0.5 s
+    /// after one NaN input sample. `pitch_shifter` keeps phase-vocoder state in
+    /// `effects/pitch.rs` that does not go through `flush`; it is covered by a separate change.
+    #[test]
+    fn every_effect_recovers_after_one_nan_sample() {
+        for e in crate::effects() {
+            if e.id == "pitch_shifter" {
+                continue;
+            }
+            for moved in [false, true] {
+                let (last, own) = last_non_finite(e.id, moved, f32::NAN);
+                assert!(last.is_none_or(|i| i < own + 24000), "{} (moved: {moved}) still NaN at sample {last:?}", e.id);
+            }
+        }
+    }
+
+    /// Effects whose state is cleaned outside `flush` recover from NaN and ±inf within two blocks.
+    #[test]
+    fn phaser_click_remover_binauralizer_recover_from_non_finite_input() {
+        for id in ["phaser", "click_remover", "binauralizer"] {
+            for moved in [false, true] {
+                for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    let (last, own) = last_non_finite(id, moved, bad);
+                    assert!(last.is_none_or(|i| i < own + 1024), "{id} (moved: {moved}) still non-finite at sample {last:?} after {bad}");
+                }
+            }
+        }
+    }
 }
