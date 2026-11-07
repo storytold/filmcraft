@@ -698,17 +698,15 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let (k, add) = lift_scale(l, nl);
         v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
-        // keep their distance from white)
+        // continue from the curve's value at white with slope 1, so they keep their distance
+        // from the new white and the signal has no step there)
         if contrast.abs() > 1e-4 {
             let k = 1.0 + contrast;
-            v = v.map(|q| {
-                if hdr && q > 1.0 {
-                    return q;
-                }
-                let q = q.clamp(0.0, 1.0);
+            let curve = |q: f32| {
                 let s = q * q * (3.0 - 2.0 * q);
                 if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
-            });
+            };
+            v = v.map(|q| if hdr && q > 1.0 { curve(1.0) + (q - 1.0) } else { curve(q.clamp(0.0, 1.0)) });
         }
         // HDR Specular: brightness of the highlights above HDR White
         if specular.abs() > 1e-4 {
@@ -1163,6 +1161,28 @@ mod tests {
         let (k_at, add_at) = lift_scale(LIFT_LUMA_FLOOR, LIFT_LUMA_FLOOR + 0.1);
         let (k_under, add_under) = lift_scale(LIFT_LUMA_FLOOR - 1e-4, LIFT_LUMA_FLOOR - 1e-4 + 0.1);
         assert!((k_at - k_under).abs() < 0.05 && (add_at - add_under).abs() < 1e-3, "{k_at} {k_under} {add_at} {add_under}");
+    }
+
+    /// #4435: in a PQ sequence a negative Contrast keeps the signal continuous across HDR White,
+    /// and a value above it keeps its distance from the new white (it used to step back up).
+    #[test]
+    fn lumetri_negative_contrast_is_continuous_at_hdr_white() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("contrast").unwrap().value = ParamValue::Float(-100.0);
+        let mut c = cx();
+        c.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+        let gs = grade_space(&e, &c, "hdr_white");
+        let run = |q: f32| {
+            let lin = gs.decode([q; 3]);
+            let mut img = Image::new(1, 1);
+            img.px[0..4].copy_from_slice(&[lin[0], lin[1], lin[2], 1.0]);
+            apply(&mut img, &e, &c);
+            gs.encode([img.get(0, 0)[0]; 3])[0]
+        };
+        let (below, above) = (run(0.999), run(1.001));
+        assert!((above - below).abs() < 0.01, "step at HDR White: {below} -> {above}");
+        let (white, spec) = (run(1.0), run(1.1));
+        assert!((spec - white - 0.1).abs() < 0.01, "specular distance from white: {}", spec - white);
     }
 
     /// #2094: a Shadows lift on a near-black pixel carrying a trace of blue (4:2:0 chroma bleed
