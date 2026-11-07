@@ -452,3 +452,22 @@ fn premiere_generated_media_is_not_probed_as_a_file() {
     assert!(s.project.items.values().any(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m)
         if m.media == filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BlackVideo))));
 }
+
+#[test]
+fn premiere_project_with_binned_media_and_no_sequence_imports() {
+    // Hand-written: a bin holding one probed media file; the project has no sequence.
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let xml = format!(
+        r#"<PremiereData><Project ObjectID="p"><RootProjectItem ObjectURef="root"/></Project><RootProjectItem ObjectUID="root"><ProjectItemContainer><Items><Item ObjectURef="bin"/></Items></ProjectItemContainer></RootProjectItem><BinProjectItem ObjectUID="bin"><ProjectItem><Name>Stills</Name></ProjectItem><ProjectItemContainer><Items><Item ObjectURef="item"/></Items></ProjectItemContainer></BinProjectItem><ClipProjectItem ObjectUID="item"><ProjectItem><Name>source.png</Name></ProjectItem><MasterClip ObjectURef="master"/></ClipProjectItem><MasterClip ObjectUID="master"><Clips><Clip ObjectRef="clip"/></Clips></MasterClip><VideoClip ObjectID="clip"><Clip><Source ObjectRef="source"/></Clip></VideoClip><VideoMediaSource ObjectID="source"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource><Media ObjectUID="media"><Title>source.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
+        fixture.0.join("source.png").display()
+    );
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("binned")})).unwrap();
+    assert_eq!((result["sequences"].clone(), result["offlineMedia"].clone()), (json!([]), json!([])), "{result}");
+    let item = s.project.items.values().find(|i| i.name == "source.png").unwrap();
+    let bin = s.project.root.parent_of(item.id).and_then(|b| s.project.root.find_bin(b)).unwrap();
+    assert_eq!(bin.name, "Stills");
+    assert_eq!(s.project.workflow.as_ref().unwrap().imports[0].media.len(), 1, "probed through the import policy");
+}
