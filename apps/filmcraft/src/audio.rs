@@ -170,18 +170,26 @@ pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
 /// A preference saved before cpal 0.17 can hold the name 0.16 reported, which a 0.17 device no
 /// longer answers to (see `saved_name_matches`); an exact name always wins. A legacy match is only
 /// taken when `usable` says the device can open a stream, since a hint that merely describes the
-/// card may not play or record.
+/// card may not play or record, and [`legacy_rank`] picks between the endpoints it does match.
 pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str, usable: impl Fn(&cpal::Device) -> bool) -> Option<cpal::Device> {
-    let mut legacy = None;
+    let mut legacy: Option<cpal::Device> = None;
     for d in devs {
         if device_name(&d).is_some_and(|n| n == name) {
             return Some(d);
         }
-        if legacy.is_none() && saved_name_matches(&d, name) && usable(&d) {
+        if saved_name_matches(&d, name) && usable(&d) && legacy.as_ref().is_none_or(|best| legacy_rank(&d) > legacy_rank(best)) {
             legacy = Some(d);
         }
     }
     legacy
+}
+
+/// How well a rewritten name fits a saved 0.16 card name: 1 for the `plughw` PCM, 0 otherwise.
+///
+/// cpal 0.16 opened a card through `plughw` (software conversion, so any format the app asks for),
+/// while 0.17 also lists the raw `hw` endpoint for it. Prefer the one 0.16 would have used.
+fn legacy_rank(d: &cpal::Device) -> u8 {
+    u8::from(device_name(d).is_some_and(|n| n.starts_with("plughw:")))
 }
 
 /// Whether `d` still answers to a name saved before cpal 0.17.
@@ -433,6 +441,7 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
     played.fetch_add((buf.len() / channels.max(1)) as u64, Ordering::SeqCst);
 }
 
+/// Flag what a stream error means for the watchdog: cpal keeps the stream alive after these.
 fn stream_error(health: &Health, e: cpal::StreamError) {
     match e {
         cpal::StreamError::DeviceNotAvailable => health.lost.store(true, Ordering::SeqCst),
