@@ -3699,6 +3699,11 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
+	Welcome to FilmCraft	欢迎使用 FilmCraft
+	Video editing — fast, open, scriptable.	视频编辑 — 快速、开放、可脚本化。
+	New Project	新建项目
+	Recent Projects	最近的项目
+	Start a New Sequence	开始新序列
 
 # The strings the report listed as missing for zh-cn.
 	1 frame ({seconds} s)	1 帧（{seconds} 秒）

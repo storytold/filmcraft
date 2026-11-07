@@ -190,8 +190,10 @@ pub struct CommandSpec {
   a snapshot costs little.
 - **Editor state** (`EditorState`: active sequence, playheads, selection, targeting, edit points…)
   is serde, so agents can read it with `state.inspect`.
-- **Events** (`ProjectChanged`, `Toast`, `OpenSequence`, `OpenSource`) are drained by frontends
-  each frame.
+- **Events** (`ProjectChanged`, `ProjectOpened`, `ProjectClosed`, `Toast`, `OpenSequence`,
+  `OpenSource`) are drained by frontends each frame. `ProjectChanged` follows every edit and view
+  refresh; `ProjectOpened` only a project taking the current one's place (open, recover, new,
+  template, demo), and `ProjectClosed` File ▸ Close Project.
 - **Event log** (`Session::log`, `engine::panels`): every failed top-level command (an error; a
   disabled one is a warning), messages and error toasts, auto-save errors, and background jobs
   starting, finishing, failing or being cancelled. Repeats of the newest entry bump its count. The
