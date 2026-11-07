@@ -102,8 +102,14 @@ source `Content` holds `StartBoundary`/`EndBoundary` and `BoundariesAreHard`) ar
 subclips named after their master clip, on media shared with the timeline when it is the same file;
 their parent media is probed like timeline media. Unreadable or inverted boundaries skip the subclip
 with a warning. Timeline clips keep referencing the parent media with their absolute source range.
-Otherwise only timeline-referenced media is imported; unused bin media and bin organization
-are not reconstructed. Reverse/time-remapped clips, unmapped native effect parameters and unsupported caption
+The bin hierarchy (`BinProjectItem`, each container read once, at most 64 levels) is
+reconstructed. Every clip project item (sequence, media file, generated media, subclip or
+adjustment layer) is filed in its bin: the timeline's own item when it is the same source, a new
+one for bin-only items, which pass the same document-path policy and probe as timeline media. Media
+takes its master clip's name (a panel rename); timeline clips keep their own names. An item listed
+in several bins stays in the first. An audio/video file is filed as its video item; a timeline's
+separate audio item of the same file stays at the root. Smart/search bins are reported, not
+imported; caption files and graphic canvases are not listed. Reverse/time-remapped clips, unmapped native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
 
@@ -122,8 +128,9 @@ text-format specification. `InstanceName` is a layer label and is never substitu
 Missing, unreadable or animated Source Text is reported and left unresolved; fonts, styling and
 text animation are not reconstructed.
 
-Projects containing only settings and no `Sequence` objects currently report an empty-document
-error. They do not create an imported project or destination; settings-only import is unsupported.
+A project with bins or project items but no `Sequence` imports them without a sequence. Projects
+with neither (settings only) report an empty-document error and create no imported project or
+destination.
 
 Input is bounded to 64 MiB compressed gzip and 512 MiB plain/expanded XML, 16,000,000 XML nodes,
 256 sequences, 256 tracks per kind and 100,000 timeline items. The traversal budget is the greater
