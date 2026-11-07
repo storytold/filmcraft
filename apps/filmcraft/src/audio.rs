@@ -581,6 +581,19 @@ mod tests {
         assert_eq!(output.played_frames(), None, "no stream, no clock");
     }
 
+    /// The two `StreamError` variants cpal 0.17 added must not silence playback.
+    #[test]
+    fn the_new_017_stream_errors_leave_playback_alone() {
+        let health = Health::default();
+        stream_error(&health, cpal::StreamError::StreamInvalidated);
+        assert!(health.errored.load(Ordering::SeqCst), "a stream to rebuild is worth a restart");
+        assert!(!health.lost.load(Ordering::SeqCst) && !health.failed.load(Ordering::SeqCst));
+        let health = Health::default();
+        stream_error(&health, cpal::StreamError::BufferUnderrun);
+        assert!(!health.errored.load(Ordering::SeqCst), "cpal keeps the stream after a single underrun");
+        assert!(!health.lost.load(Ordering::SeqCst) && !health.failed.load(Ordering::SeqCst));
+    }
+
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
     }
