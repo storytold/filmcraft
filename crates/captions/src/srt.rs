@@ -34,6 +34,21 @@ fn is_index(line: &str) -> bool {
     !l.is_empty() && l.len() <= 10 && l.bytes().all(|b| b.is_ascii_digit())
 }
 
+const ZWSP: char = '\u{200B}';
+
+/// Keep a text line from reading as a timing line: such a line gains a leading zero-width space.
+fn escape(line: &str) -> String {
+    if parse_timing_line(line.trim_start_matches(ZWSP)).is_some() { format!("{ZWSP}{line}") } else { line.to_string() }
+}
+
+/// Reverse [`escape`]: drop one leading zero-width space when the rest still looks like a timing line.
+fn unescape_line(line: &str) -> &str {
+    match line.strip_prefix(ZWSP) {
+        Some(r) if parse_timing_line(r.trim_start_matches(ZWSP)).is_some() => r,
+        _ => line,
+    }
+}
+
 pub fn parse(text: &str) -> Result<Document> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
@@ -63,7 +78,7 @@ pub fn parse(text: &str) -> Result<Document> {
             if is_index(l) && lines.get(i + 1).is_some_and(|n| parse_timing_line(n).is_some()) {
                 break;
             }
-            text_lines.push(l.trim_end());
+            text_lines.push(unescape_line(l.trim_end()));
             i += 1;
         }
         if end <= start {
@@ -84,7 +99,7 @@ pub fn write(doc: &Document) -> String {
         out.push_str(&format!("{}\n{} --> {}\n", n + 1, format_clock(c.start, ','), format_clock(c.end, ',')));
         // blank lines inside text would end the cue: drop them
         for l in c.text.lines().filter(|l| !l.trim().is_empty()) {
-            out.push_str(l);
+            out.push_str(&escape(l));
             out.push('\n');
         }
         out.push('\n');
@@ -118,6 +133,26 @@ mod tests {
         let d = parse(src).unwrap();
         let got: Vec<(i64, i64, &str)> = d.cues.iter().map(|c| (c.start.0 / TICKS_PER_MS, c.end.0 / TICKS_PER_MS, c.text.as_str())).collect();
         assert_eq!(got, vec![(1500, 2250, "A"), (3000, 4000, "B"), (5000, 6000, "42")]);
+    }
+
+    #[test]
+    fn round_trips_text_line_that_looks_like_timing() {
+        let mut d = parse("1\n00:00:01,000 --> 00:00:02,000\nx\n").unwrap();
+        d.cues[0].text = "Shift:\n9:00 --> 10:00".into();
+        let back = parse(&write(&d)).unwrap();
+        assert_eq!(back.cues.len(), 1);
+        assert_eq!(back.cues[0].text, "Shift:\n9:00 --> 10:00");
+    }
+
+    #[test]
+    fn round_trips_arrow_and_marker_text() {
+        for text in ["a --&gt; b", "a --&amp;gt; b", "a --> b", "Shift:\n9:00 --> 10:00\n\u{200B}9:00 --> 10:00", "5\n9:00 --> 10:00"] {
+            let mut d = parse("1\n00:00:01,000 --> 00:00:02,000\nx\n").unwrap();
+            d.cues[0].text = text.into();
+            let back = parse(&write(&d)).unwrap();
+            assert_eq!(back.cues.len(), 1, "{text:?}");
+            assert_eq!(back.cues[0].text, text);
+        }
     }
 
     #[test]
