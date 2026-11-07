@@ -210,15 +210,15 @@ fn home_recent_with_unsaved_changes_asks_first() {
     let clip = d.edit();
     d.click("header.home");
     let i = d.recent(&other);
-    d.click(&format!("import.recent.{i}"));
+    d.click(&format!("home.recent.{i}"));
     assert_eq!(d.path(), Some(current.clone()), "nothing opens before an answer");
-    assert_eq!(d.app().ui.mode, Mode::Import, "Home stays while it asks");
+    assert_eq!(d.app().ui.mode, Mode::Home, "Home stays while it asks");
     // Cancel: Home stays, with this project and its changes
     d.click("openProject.cancel");
     assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!((d.path(), d.app().ui.mode), (Some(current.clone()), Mode::Import));
+    assert_eq!((d.path(), d.app().ui.mode), (Some(current.clone()), Mode::Home));
     assert!(d.app().session.is_dirty());
-    d.click(&format!("import.recent.{i}"));
+    d.click(&format!("home.recent.{i}"));
     assert!(d.has("openProject.dontSave"));
     d.click("openProject.dontSave");
     assert!(d.app().ui.clip_dialog.is_none());
@@ -241,8 +241,8 @@ fn home_recent_save_on_a_never_saved_project_switches_to_edit_once_it_opens() {
     d.app().hooks.pick_save = Some(Box::new(move |_| Some(saved.clone())));
     d.click("header.home");
     let i = d.recent(&other);
-    d.click(&format!("import.recent.{i}"));
-    assert_eq!(d.app().ui.mode, Mode::Import);
+    d.click(&format!("home.recent.{i}"));
+    assert_eq!(d.app().ui.mode, Mode::Home);
     d.click("openProject.save");
     assert!(d.app().ui.clip_dialog.is_none());
     assert_eq!(d.path(), Some(other));
