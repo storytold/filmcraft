@@ -72,14 +72,21 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     run = Some(("project.freeform.options".into(), json!({"grid": options.grid, "snap": options.snap, "showNames": options.show_names, "showDurations": options.show_durations, "cardSize": options.card_size})));
                 }
             }
-            ProjectDialog::SaveArrangement { name, bin } => {
+            ProjectDialog::SaveArrangement { name, bin, width } => {
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
                     let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(name).desired_width(240.0)), "Name");
                     push(app, "projectDialog.name", &r, "Name");
                 });
                 if ok_cancel(app, ui, &mut close) && !name.trim().is_empty() {
-                    run = Some(("project.freeform.saveArrangement".into(), json!({"name": name, "bin": bin})));
+                    // the bin may have been deleted while the dialog was open
+                    match bin.filter(|b| app.session.project.root.find_bin(filmcraft_project::BinId(*b)).is_none()) {
+                        Some(b) => {
+                            app.ui.status = format!("no bin {b}");
+                            close = true;
+                        }
+                        None => run = Some(("project.freeform.saveArrangement".into(), json!({"name": name, "bin": bin, "width": width}))),
+                    }
                 }
             }
         }

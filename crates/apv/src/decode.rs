@@ -140,7 +140,10 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
         && ahdr.width == hdr.width
         && ahdr.height == hdr.height
     {
-        let mut aframe = Frame::new(ahdr.width, ahdr.height, ahdr.chroma, out_depth, false);
+        // Start from a minimal frame: `decode_pbu_planes` sizes the planes only after every tile
+        // of the auxiliary payload is present and decoded, so a truncated or bogus auxiliary PBU
+        // cannot make us allocate a full-size frame first.
+        let mut aframe = Frame::new(2, 2, ChromaFormat::Yuv422, out_depth, false);
         if decode_pbu_planes(&ahdr, apayload, out_depth, opts.threads, &mut aframe).is_ok() {
             out.alpha = Some(aframe.y);
         }

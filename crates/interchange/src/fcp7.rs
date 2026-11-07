@@ -27,9 +27,9 @@ use filmcraft_time::{FrameRate, Tick, format_timecode_frames};
 use roxmltree::Node;
 
 use crate::common::{
-    Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path, kind_from_ext,
-    label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects, timebase,
-    transition_effect, transition_name, unscaled,
+    Builder, MAX_IMPORTED_TRACKS, MAX_RATE, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path,
+    kind_from_ext, label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, resolve_url, set_param, settings_for,
+    standard_effects, timebase, transition_effect, transition_name, unscaled,
 };
 use crate::xml::{XmlWriter, bool_str, child, child_bool, child_f64, child_i64, child_text, children, elements, num, path_text};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -37,6 +37,10 @@ use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Resul
 // ---------------------------------------------------------------------------------------------
 // Shared vocabulary
 // ---------------------------------------------------------------------------------------------
+
+/// Most members of a link group written into each clip's `<link>` list (a group is a clip's own
+/// video and a few audio channels, so real ones are far smaller).
+const MAX_LINK_MEMBERS: usize = 64;
 
 struct ClipRemap {
     speed: f64,
@@ -156,6 +160,9 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
     let root = doc.root_element();
     if root.tag_name().name() != "xmeml" {
         return Err(Error::parse(Format::Fcp7Xml, "root element is not <xmeml>"));
+    }
+    if root.descendants().any(|n| n.has_tag_name("timebase") && n.text().and_then(|t| t.trim().parse::<f64>().ok()).is_some_and(|tb| tb > MAX_RATE as f64)) {
+        report.warn(format!("a timebase above {MAX_RATE} per second is not a frame rate; it was limited to {MAX_RATE}"));
     }
     let mut imp = Imp {
         b: Builder::new(root.descendants().find(|n| n.has_tag_name("project")).and_then(|p| child_text(p, "name")).unwrap_or("Imported XML")),
@@ -299,7 +306,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let id = match path {
             Some(url) => {
-                let p = resolve_path(url, self.opts.base_dir.as_deref());
+                let p = resolve_url(url, self.opts.base_dir.as_deref());
                 self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
             }
             None => {
@@ -793,6 +800,9 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
         let duration = if out_f > in_f { rate.tick_of(out_f) - start } else { Tick::ZERO };
         let color = child_text(m, "color").and_then(label_from).unwrap_or(Label::Green);
         out.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(b.alloc()),
             start,
             duration,
@@ -824,6 +834,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,
@@ -901,6 +912,11 @@ impl Exp<'_, '_> {
                 }
             }
         }
+        // Each clip lists every member of its group, so a group of n clips writes n * n links.
+        if let Some(n) = link_members.values().map(Vec::len).filter(|&n| n > MAX_LINK_MEMBERS).max() {
+            self.report.warn(format!("a link group of {n} clips was exported with its first {MAX_LINK_MEMBERS} members"));
+            link_members.values_mut().for_each(|m| m.truncate(MAX_LINK_MEMBERS));
+        }
         if seq.all_tracks().any(|t| t.items.iter().any(|i| i.group.is_some())) {
             self.report.info("clip groups have no FCP7 XML equivalent and were not exported");
         }
@@ -934,6 +950,8 @@ impl Exp<'_, '_> {
                         let links: Vec<(String, TrackKind, usize, usize)> = c
                             .link
                             .and_then(|l| link_members.get(&l))
+                            // a clip cut from an over-large group stays unlinked, or its links would restore a larger group on import
+                            .filter(|m| m.contains(&c.id))
                             .map(|m| m.iter().filter_map(|id| clip_xml.get(id).cloned()).collect())
                             .unwrap_or_default();
                         let xid = clip_xml[&c.id].0.clone();

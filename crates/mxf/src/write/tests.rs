@@ -384,3 +384,66 @@ fn long_pcm_reads_backed_by_the_file_are_not_capped() {
     // a request that is mostly not backed by data is refused before allocating
     assert!(m.read_pcm(&f, 0, 0, frames + (1 << 24)).is_err());
 }
+
+/// One `push_sound` of a long clip must not cost more than the clip itself: draining the buffered
+/// PCM from the front for every edit unit made this quadratic (about 16 s for 10 minutes).
+#[test]
+fn long_sound_only_push_stays_linear() {
+    let mut cfg = WriterConfig::new(Pattern::Op1a, Rational::new(25, 1), PackageIds::from_seed("long", "Long Sound"));
+    cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 1, bits: 16 }];
+    let frames = 600 * 48_000;
+    let pcm = (0..frames).flat_map(|k| ((k % 30_000) as i16).to_le_bytes()).collect::<Vec<u8>>();
+    let mut w = MxfWriter::new(Cursor::new(Vec::new()), cfg).unwrap();
+    let t = std::time::Instant::now();
+    w.push_sound(0, &pcm).unwrap();
+    let pushed = t.elapsed();
+    assert_eq!(w.edit_units(), 600 * 25);
+    let f = w.finish().unwrap().into_inner();
+    assert!(pushed < std::time::Duration::from_secs(3), "push_sound took {pushed:?}");
+    let m = open(&f).unwrap();
+    let a = m.track_of_kind(TrackKind::Sound).unwrap();
+    let got = m.read_pcm(&f, a, 0, frames).unwrap();
+    for k in [0, 1, 1919, 1920, frames / 2, frames - 1] {
+        assert_eq!(got[0][k], (k % 30_000) as f32 / 32768.0, "frame {k}");
+    }
+}
+
+/// Opening a file with big pictures must not read most of the file: after a big value the walk
+/// refills its window with a few KiB, not 64 KiB.
+#[test]
+fn open_does_not_read_through_big_pictures() {
+    use std::cell::Cell;
+
+    struct Counting<'a> {
+        data: &'a [u8],
+        bytes: Cell<u64>,
+    }
+    impl crate::ByteSource for Counting<'_> {
+        fn len(&self) -> u64 {
+            self.data.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            self.bytes.set(self.bytes.get() + buf.len() as u64);
+            self.data.read_at(offset, buf)
+        }
+    }
+
+    let mut cfg = op1a_config(Rational::new(25, 1), PictureCoding::ProRes { profile: 3 });
+    cfg.sound.truncate(1);
+    let mut w = MxfWriter::new(Cursor::new(Vec::new()), cfg).unwrap();
+    let frames = 40;
+    w.push_sound(0, &pcm16(0, frames * 1920)).unwrap();
+    for i in 0..frames {
+        let mut pic = prores_like(i);
+        pic.resize(200_000 + i, i as u8);
+        w.push_picture(&pic, FrameInfo::intra()).unwrap();
+    }
+    let f = w.finish().unwrap().into_inner();
+    let src = Counting { data: &f, bytes: Cell::new(0) };
+    let m = open(&src).unwrap();
+    let v = m.track_of_kind(TrackKind::Picture).unwrap();
+    assert_eq!(m.tracks[v].samples.len(), frames);
+    assert!(m.tracks[v].samples.iter().enumerate().all(|(i, s)| s.size as usize == 200_000 + i));
+    let read = src.bytes.get();
+    assert!(read * 5 < f.len() as u64, "open read {read} of {} bytes", f.len());
+}
