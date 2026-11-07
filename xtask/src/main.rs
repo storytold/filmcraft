@@ -468,8 +468,11 @@ fn android(args: &[String]) -> Result<(), String> {
         return Err("cargo-apk is not working: reinstall with `cargo install cargo-apk`".into());
     }
 
-    // Ensure Android launcher icons are synchronized from canonical app-icon assets
-    let res_dir = root().join("apps/filmcraft-android/res");
+    // The Android resources are generated under target/ (gitignored): the launcher icons are
+    // copies of the app icon in assets/app-icon, so no second copy is committed, and aapt would
+    // take an `.attribution` sidecar next to a resource for a resource of its own.
+    let res_dir = root().join("target/android-res");
+    let _ = std::fs::remove_dir_all(&res_dir);
     let icon_sources = [
         ("mipmap-mdpi", "assets/app-icon/hicolor/48x48/apps/ai.storyteller.filmcraft.png"),
         ("mipmap-hdpi", "assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png"),
@@ -483,6 +486,10 @@ fn android(args: &[String]) -> Result<(), String> {
         let (from, to) = (root().join(src), dir_path.join("ic_launcher.png"));
         std::fs::copy(&from, &to).map_err(|e| format!("cannot copy the launcher icon {} to {}: {e}", from.display(), to.display()))?;
     }
+    let values = res_dir.join("values");
+    std::fs::create_dir_all(&values).map_err(|e| format!("cannot create {}: {e}", values.display()))?;
+    let (from, to) = (root().join("apps/filmcraft-android/res/values/strings.xml"), values.join("strings.xml"));
+    std::fs::copy(&from, &to).map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))?;
 
     let action = if run_app { "run" } else { "build" };
     let mut cmd = Command::new("cargo");
