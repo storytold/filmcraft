@@ -1,0 +1,49 @@
+[package]
+name = "filmcraft-android"
+description = "FilmCraft on Android: eframe mobile runner, wgpu (Vulkan/GLES), touch controls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.android]
+package = "ai.storyteller.filmcraft"
+apk_name = "FilmCraft"
+resources = "res"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+
+[package.metadata.android.application]
+icon = "@mipmap/ic_launcher"
+label = "FilmCraft"
+
+[package.metadata.android.application.activity]
+label = "FilmCraft"
+orientation = "sensorLandscape"
+
+[package.metadata.android.sdk]
+target_sdk_version = 35
+min_sdk_version = 24
+
+# Everything is android-only: on other targets this crate is empty (so `cargo test --workspace`
+# and clippy stay cheap).
+[target.'cfg(target_os = "android")'.dependencies]
+filmcraft-engine = { workspace = true }
+filmcraft-ui-egui = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+log = { workspace = true }
+android_logger = "0.14"
+android-activity = { version = "0.6", features = ["native-activity"] }
