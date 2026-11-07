@@ -14,6 +14,7 @@ pub(crate) fn escape(s: &str) -> String {
             '"' => o.push_str("&quot;"),
             '\'' => o.push_str("&apos;"),
             c if (c as u32) < 0x20 && !matches!(c, '\n' | '\r' | '\t') => {}
+            '\u{fffe}' | '\u{ffff}' => {}
             c => o.push(c),
         }
     }
@@ -262,6 +263,19 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
         // A declaration after a CDATA section and a processing instruction is still found.
         assert!(parse("<?pi <!DOCTYPE a> ?><!DOCTYPE x [<!ENTITY a \"b\">]><x/>").is_err());
+    }
+
+    #[test]
+    fn drops_xml_noncharacters_so_output_parses() {
+        let mut w = XmlWriter::new(None);
+        w.open("a", &[("name", "p\u{fffe}q\u{ffff}r")]);
+        w.text("b", "x\u{fffe}y\u{ffff}z");
+        w.close();
+        let s = w.finish();
+        let d = parse(&s).expect("output must be well-formed");
+        let a = d.root_element();
+        assert_eq!(a.attribute("name"), Some("pqr"));
+        assert_eq!(child_text(a, "b"), Some("xyz"));
     }
 
     #[test]
