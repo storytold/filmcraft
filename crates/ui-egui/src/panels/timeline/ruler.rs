@@ -69,7 +69,13 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
                 "nest" => app.session.execute("sequence.nestSequences", json!({})),
                 "snap" => app.session.execute("sequence.snap", json!({})),
                 "linked" => app.session.execute("sequence.linkedSelection", json!({})),
-                "marker" => app.session.execute("markers.add", json!({})),
+                // through the menu path, so a marker under the playhead opens instead of stacking
+                "marker" => {
+                    if let Err(e) = crate::menus::invoke(app, ui.ctx(), "markers.add", json!({"target": "program"})) {
+                        app.ui.status = e;
+                    }
+                    Ok(Value::Null)
+                }
                 _ => Ok(Value::Null),
             };
         }

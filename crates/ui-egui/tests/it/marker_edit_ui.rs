@@ -81,6 +81,86 @@ impl Driver {
     }
 }
 
+fn sequence_markers(d: &Driver) -> usize {
+    d.harness.state().session.active_sequence().unwrap().markers.len()
+}
+
+/// Add Marker on the frame of a marker opens that marker's Edit Marker dialog instead of putting a
+/// second marker on top of it: from the key, the Timeline's button and the Program monitor's.
+#[test]
+fn add_marker_on_a_marker_opens_its_dialog() {
+    let mut d = Driver::demo();
+    let id = d.setup();
+    let before = sequence_markers(&d);
+    for how in ["key", "timeline.toggle.marker", "program.transport.markers.add"] {
+        let at = d.marker(id).start;
+        d.harness.state_mut().session.set_playhead(at);
+        d.ok("ui.set", json!({"focused": "Timeline"}));
+        if how == "key" {
+            d.ok("ui.key", json!({"key": "M"}));
+            d.frames(2);
+        } else {
+            d.click(how, 1);
+        }
+        assert_eq!(d.harness.state().ui.marker_properties.as_ref().map(|m| m.marker), Some(id), "{how}: the marker's dialog");
+        assert_eq!(sequence_markers(&d), before, "{how}: no second marker");
+        d.harness.state_mut().ui.marker_properties = None;
+        d.frames(2);
+    }
+}
+
+/// Two markers already stacked on one frame: Add Marker opens the one drawn on top, the later one.
+#[test]
+fn add_marker_on_stacked_markers_opens_the_top_one() {
+    let mut d = Driver::demo();
+    let first = d.setup();
+    let at = d.marker(first).start;
+    let top = d.exec("markers.add", json!({"time": at.0, "name": "Top"}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let before = sequence_markers(&d);
+    d.harness.state_mut().session.set_playhead(at);
+    d.ok("ui.key", json!({"key": "M"}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.marker_properties.as_ref().map(|m| m.marker), Some(top), "the marker drawn on top");
+    assert_eq!(sequence_markers(&d), before, "no third marker");
+}
+
+/// Off a marker Add Marker adds one, and a time given to it always adds, even on a marker.
+#[test]
+fn add_marker_off_a_marker_or_with_a_time_adds_one() {
+    let mut d = Driver::demo();
+    let id = d.setup();
+    let before = sequence_markers(&d);
+    let at = d.marker(id).start;
+    let rate = d.harness.state().session.sequence_rate();
+    d.harness.state_mut().session.set_playhead(at + rate.frame_duration());
+    d.ok("ui.key", json!({"key": "M"}));
+    d.frames(2);
+    assert_eq!(sequence_markers(&d), before + 1, "a frame later is off the marker");
+    assert!(d.harness.state().ui.marker_properties.is_none());
+    d.ok("ui.menu.invoke", json!({"command": "markers.add", "params": {"time": at.0}}));
+    d.frames(2);
+    assert_eq!(sequence_markers(&d), before + 2, "a time given adds");
+    assert!(d.harness.state().ui.marker_properties.is_none());
+}
+
+/// The Source monitor's Add Marker does the same with the clip's markers.
+#[test]
+fn add_marker_in_the_source_monitor_on_a_marker_opens_its_dialog() {
+    use filmcraft_ui_egui::panels::marker_properties::Owner;
+    let mut d = Driver::demo();
+    d.exec("source.open", json!({"item": 5}));
+    d.frames(4);
+    let id = d.exec("markers.add", json!({"target": "source"}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let count = |d: &Driver| filmcraft_engine::clip_ops::source_view(&d.harness.state().session, filmcraft_project::ItemId(5)).unwrap().markers.len();
+    let before = count(&d);
+    d.click("source.transport.markers.add", 1);
+    let draft = d.harness.state().ui.marker_properties.as_ref().map(|m| (m.marker, m.owner));
+    assert_eq!(draft, Some((id, Owner::Source(5))), "the clip marker's dialog");
+    assert_eq!(count(&d), before, "no second marker on the clip");
+}
+
 #[test]
 fn double_clicking_a_marker_opens_the_dialog_and_ok_applies_the_fields() {
     let mut d = Driver::demo();
