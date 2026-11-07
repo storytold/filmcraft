@@ -1,4 +1,5 @@
-//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF) ↔ the session's project.
+//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF; DaVinci Resolve `.drp`
+//! import) ↔ the session's project.
 
 use serde_json::{Value, json};
 
@@ -9,7 +10,7 @@ use crate::{EngineError, Result, Session};
 
 /// File extensions of the interchange documents `file.import` reads (lower case). The Media
 /// Browser lists the same set.
-pub const EXTENSIONS: [&str; 7] = ["edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi"];
+pub const EXTENSIONS: [&str; 8] = ["edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi", "drp"];
 
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
