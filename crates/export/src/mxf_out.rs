@@ -49,12 +49,16 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
                 H264Profile::Baseline => 66,
                 H264Profile::Main => 77,
                 H264Profile::High => 100,
+                H264Profile::High10 => 110,
             },
-            intra: false,
+            intra: settings.h264_intra_only,
         },
         _ => PictureCoding::Vc3 { cid: crate::dnx_profile(&settings.dnx_profile).cid() },
     };
     let mut d = PictureDesc::new(coding, w, h);
+    if matches!(coding, PictureCoding::Avc { .. }) {
+        d.depth = u32::from(settings.h264_profile.bit_depth());
+    }
     d.color = match settings.signal {
         s if s == ColorSignal::PQ => ColorSpace::Rec2020Pq,
         s if s == ColorSignal::HLG => ColorSpace::Rec2020Hlg,
