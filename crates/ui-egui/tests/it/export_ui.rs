@@ -637,7 +637,7 @@ fn the_export_range_follows_the_sequence_marks() {
 /// Sample Size greys out 32-bit float with the reason.
 #[test]
 fn alac_format_and_audio_format() {
-    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format};
+    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format, SampleFormat};
     let mut d = Driver::new("alac");
     d.ok("ui.set", json!({"mode": "export"}));
     d.frames(4);
@@ -651,7 +651,10 @@ fn alac_format_and_audio_format() {
     assert_eq!(d.app().ui.export.settings.format, Format::Alac);
     assert_eq!(d.app().ui.export.settings.extension(), "m4a");
     // ProRes: Audio Format offers ALAC as its fourth entry
-    d.app().ui.export.settings = ExportSettings { format: Format::ProRes, ..Default::default() };
+    // starting from 32-bit integer, which ALAC does not write
+    let mut prores = ExportSettings { format: Format::ProRes, ..Default::default() };
+    prores.audio.set_sample_format(SampleFormat::Int32);
+    d.app().ui.export.settings = prores;
     d.app().ui.export.open_sections.retain(|k| k != "video");
     d.frames(4);
     d.click("export.audio.codec");
@@ -660,12 +663,18 @@ fn alac_format_and_audio_format() {
     d.snapshot("export-alac-audio-format");
     d.click("export.audio.codec.option.3");
     assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Alac);
-    // 32 bit float is greyed out: clicking it changes nothing
+    d.frames(2);
+    // 32 bit falls back to 24 bit, the largest size ALAC export writes
+    assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Int24);
+    // 32 bit and 32 bit float are greyed out: clicking either changes nothing
     d.click("export.audio.bits");
     d.ok("ui.move", json!({"id": "export.audio.bits.option.3"}));
     d.frames(30);
     d.snapshot("export-alac-sample-size");
     d.click("export.audio.bits.option.3");
     assert!(!d.app().ui.export.settings.audio.float);
+    d.click("export.audio.bits");
+    d.click("export.audio.bits.option.2");
+    assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Int24);
     assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Alac);
 }

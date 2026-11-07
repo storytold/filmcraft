@@ -126,7 +126,7 @@ fn round_trip(planar: &[Vec<i32>], cfg: EncoderConfig) -> usize {
 
 #[test]
 fn every_signal_depth_and_layout_round_trips() {
-    for bits in [16u8, 20, 24, 32] {
+    for bits in [16u8, 20, 24] {
         for kind in ["music", "noise", "clicks", "square", "silence"] {
             for ch in [1u8, 2, 6] {
                 let planar: Vec<Vec<i32>> = (0..ch).map(|c| signal(kind, 10_000, bits, u64::from(c) * 31 + u64::from(bits))).collect();
@@ -156,11 +156,10 @@ fn compresses_music_and_stores_noise_verbatim() {
     let noise = vec![signal("noise", 20_000, 24, 4)];
     let size = round_trip(&noise, EncoderConfig::new(48_000, 1, 24));
     assert!(size <= 20_000 * 3 + 64 * 8, "noise: {size} bytes");
-    // 32-bit stereo stays compressed (ffmpeg cannot decode a verbatim 32-bit pair): full-scale
-    // white noise, the worst case, comes out about 16 % over raw
-    let noise32 = vec![signal("noise", 20_000, 32, 5), signal("noise", 20_000, 32, 6)];
-    let size = round_trip(&noise32, EncoderConfig::new(48_000, 2, 32));
-    assert!(size <= 20_000 * 8 * 120 / 100, "32-bit noise: {size} bytes");
+    // stereo noise too: verbatim pairs at 24 bits
+    let noise2 = vec![signal("noise", 20_000, 24, 5), signal("noise", 20_000, 24, 6)];
+    let size = round_trip(&noise2, EncoderConfig::new(48_000, 2, 24));
+    assert!(size <= 20_000 * 6 + 64 * 8, "stereo noise: {size} bytes");
 }
 
 #[test]
@@ -188,6 +187,7 @@ fn bad_input_is_an_error_not_a_panic() {
         EncoderConfig::new(48_000, 0, 16),
         EncoderConfig::new(48_000, 9, 16),
         EncoderConfig::new(48_000, 2, 8),
+        EncoderConfig::new(48_000, 2, 32),
         EncoderConfig::new(48_000, 2, 33),
         EncoderConfig::new(0, 2, 16),
         EncoderConfig { frame_length: 0, ..EncoderConfig::new(48_000, 2, 16) },
@@ -200,6 +200,8 @@ fn bad_input_is_an_error_not_a_panic() {
     assert_eq!(enc.encode_frames(&[&[0, 1], &[0]]), Err(Error::UnequalChannels));
     assert_eq!(enc.encode_frames(&[&[40_000], &[0]]), Err(Error::SampleRange(40_000)));
     assert!(enc.finish().is_none());
-    let mut enc = Encoder::new(EncoderConfig::new(48_000, 1, 32)).unwrap();
-    assert!(enc.encode_frames(&[&[i32::MIN, i32::MAX]]).is_ok());
+    // the extremes of 24 bits are fine, one past them is not
+    let mut enc = Encoder::new(EncoderConfig::new(48_000, 1, 24)).unwrap();
+    assert!(enc.encode_frames(&[&[-(1 << 23), (1 << 23) - 1]]).is_ok());
+    assert_eq!(enc.encode_frames(&[&[1 << 23]]), Err(Error::SampleRange(1 << 23)));
 }

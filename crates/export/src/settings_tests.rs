@@ -1721,7 +1721,7 @@ fn alac_m4a_is_lossless_against_wav() {
     let dir = Scratch::new("alac");
     // 1.5 s at 48 kHz: 17 frames of 4096 and a last one of 2368
     let range = Some(TimeRange::new(Tick::ZERO, Tick(3 * TICKS_PER_SECOND / 2)));
-    for bits in [16u16, 24, 32] {
+    for bits in [16u16, 24] {
         let audio = AudioSettings { channels: 2, bits, ..Default::default() };
         let (wav, m4a) = (dir.path(&format!("a{bits}.wav")), dir.path(&format!("a{bits}.m4a")));
         export(
@@ -1737,9 +1737,8 @@ fn alac_m4a_is_lossless_against_wav() {
         let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
         assert_eq!(r.frames, 72_000, "1.5 s at 48 kHz");
         let (wb, ab) = (std::fs::read(&wav).unwrap(), std::fs::read(&m4a).unwrap());
-        // a tone compresses; 32-bit sends its low 16 bits verbatim, so it stays over half the WAV
-        let limit = if bits == 32 { wb.len() * 3 / 5 } else { wb.len() / 2 };
-        assert!(ab.len() < limit, "{bits}-bit: ALAC {} bytes, WAV {}", ab.len(), wb.len());
+        // a tone compresses to under half the WAV
+        assert!(ab.len() < wb.len() / 2, "{bits}-bit: ALAC {} bytes, WAV {}", ab.len(), wb.len());
         // the final cookie: frame length 4096, the depth, and a known largest frame and bitrate
         let at = ab.windows(4).rposition(|w| w == b"alac").unwrap() + 8;
         let cookie = &ab[at..at + 24];
@@ -1831,14 +1830,16 @@ fn alac_settings_round_trip_preset_and_refusals() {
     assert_eq!(Format::from_name("m4a"), Some(Format::Aac), "a bare .m4a stays AAC Audio");
     let movie: ExportSettings = serde_json::from_value(serde_json::json!({"format": "prores", "audio": {"codec": "alac"}})).unwrap();
     assert_eq!(movie.audio_codec(), AudioCodec::Alac);
-    // integers only: 16, 24 and 32 bit, not float
+    // 16 and 24 bit only: not 32-bit integer (players decode it inconsistently), not float
     for (format, codec) in [(Format::Alac, AudioCodec::Auto), (Format::ProRes, AudioCodec::Alac), (Format::H264, AudioCodec::Alac)] {
         let s = ExportSettings { format, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
         let ok: Vec<SampleFormat> = SampleFormat::ALL.iter().copied().filter(|&f| s.supports_sample_format(f)).collect();
-        assert_eq!(ok, [SampleFormat::Int16, SampleFormat::Int24, SampleFormat::Int32], "{format:?}");
-        let mut float = s.clone();
-        float.audio.set_sample_format(SampleFormat::Float32);
-        assert!(float.validate().is_err_and(|e| e.to_string().contains("ALAC")), "{format:?}");
+        assert_eq!(ok, [SampleFormat::Int16, SampleFormat::Int24], "{format:?}");
+        for refused in [SampleFormat::Int32, SampleFormat::Float32] {
+            let mut t = s.clone();
+            t.audio.set_sample_format(refused);
+            assert!(t.validate().is_err_and(|e| e.to_string().contains("ALAC")), "{format:?} {refused:?}");
+        }
     }
     let preset = crate::presets::builtin_presets().into_iter().find(|x| x.name == "Apple Lossless 48 kHz 24-bit").unwrap().settings;
     assert_eq!((preset.format, preset.audio.bits, preset.audio.sample_rate), (Format::Alac, 24, Some(48_000)));

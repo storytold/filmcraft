@@ -3748,7 +3748,7 @@
 
 # Export: ALAC (Apple Lossless).
 	ALAC (Apple Lossless)	ALAC (Apple Lossless)
-	ALAC stores whole-number samples only	ALAC lagrar bara heltalssampel
+	ALAC export writes 16 or 24 bit	ALAC-export skriver bara 16 eller 24 bitar
 	Apple Lossless (ALAC)	Apple Lossless (ALAC)
 	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 bitar
 	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) i MPEG-4-ljud (.m4a), stereo 48 kHz 24 bitar

@@ -151,7 +151,7 @@ fn round_trip(name: &str, planar: &[Vec<i32>], cfg: EncoderConfig, chunk: usize)
 #[test]
 fn every_signal_round_trips_exactly() {
     for (kind, seed) in [("music", 1), ("sweep", 2), ("noise", 3), ("square", 4), ("silence", 5), ("click", 6)] {
-        for bits in [16u8, 20, 24, 32] {
+        for bits in [16u8, 20, 24] {
             let planar = vec![signal(kind, 20_000, bits, seed), signal(kind, 20_000, bits, seed + 100)];
             if round_trip(&format!("{kind}-{bits}"), &planar, EncoderConfig::new(48_000, 2, bits), 4800).is_none() {
                 return;

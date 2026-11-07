@@ -737,15 +737,18 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     } else {
         row(ui, t, tl!("Sample Size"), |ui| {
             // every size, the ones this codec and container cannot store greyed out; a size the
-            // audio format no longer takes (float after switching to FLAC) becomes 32-bit integer
-            if !s.supports_sample_format(s.audio.sample_format()) {
-                s.audio.set_sample_format(SampleFormat::Int32);
+            // audio format no longer takes (float after switching to FLAC) becomes the largest
+            // one it does take (32-bit integer, or 24 bit for ALAC)
+            if !s.supports_sample_format(s.audio.sample_format())
+                && let Some(&f) = SampleFormat::ALL.iter().rev().find(|&&f| s.supports_sample_format(f))
+            {
+                s.audio.set_sample_format(f);
             }
             let sizes = [tl!("16 bit"), tl!("24 bit"), tl!("32 bit"), tl!("32 bit float")];
             let why = |f: SampleFormat| match (s.supports_sample_format(f), s.audio_codec()) {
                 (true, _) => None,
                 (false, AudioCodec::Flac) => Some(tl!("FLAC stores whole-number samples only")),
-                (false, AudioCodec::Alac) => Some(tl!("ALAC stores whole-number samples only")),
+                (false, AudioCodec::Alac) => Some(tl!("ALAC export writes 16 or 24 bit")),
                 (false, _) if s.format.is_mxf() => Some(tl!("MXF export writes integer PCM only")),
                 (false, _) => Some(tl!("Not supported by FilmCraft's encoders yet")),
             };

@@ -125,8 +125,8 @@ pub(crate) struct AlacAudio {
 impl AlacAudio {
     pub(crate) fn new(sample_rate: u32, channels: u32, s: &ExportSettings) -> Result<Self> {
         let format = s.audio.sample_format();
-        if format.is_float() {
-            return Err(ExportError::Unsupported("ALAC stores whole-number samples: choose 16, 24 or 32 bit".into()));
+        if !matches!(format, SampleFormat::Int16 | SampleFormat::Int24) {
+            return Err(ExportError::Unsupported("ALAC export writes 16 or 24 bit: choose one of those sample sizes".into()));
         }
         let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("ALAC: too many audio channels".into()))?;
         let cfg = filmcraft_alac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);

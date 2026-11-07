@@ -9,7 +9,7 @@ L0: it depends only on `filmcraft-bitstream` and `thiserror`, has no `unsafe`, a
 ```rust
 use filmcraft_alac::{Encoder, EncoderConfig};
 
-let mut enc = Encoder::new(EncoderConfig::new(48_000, 2, 24))?; // rate, channels (1–8), bits (16/20/24/32)
+let mut enc = Encoder::new(EncoderConfig::new(48_000, 2, 24))?; // rate, channels (1–8), bits (16/20/24)
 let mut frames = enc.encode_frames(&[&left, &right])?;          // planar i32, ALAC channel order → whole frames
 frames.extend(enc.finish());                                     // the last, shorter frame
 let cookie = enc.magic_cookie();                                 // 24-byte ALACSpecificConfig for the `alac` box
@@ -27,8 +27,8 @@ filled in as frames are encoded, so take it again at the end.
 | Prediction | ALAC's adaptive filter, 8 taps, denominator shift 9, mode 0; the coefficients the decoder ends a frame with start the next one (Apple's starting values in the first frame and after a verbatim one) |
 | Stereo | left/right, mid/side and left/side mixing (mixBits 2, mixRes 0 / 2 / 4), the smallest kept per frame |
 | Residual | ALAC's adaptive Golomb code (pb 40, mb 10, kb 14) with zero runs and escapes |
-| High bit depths | 24- and 32-bit samples send their low 8 or 16 bits verbatim (`bytesShifted` 1 or 2), so the predicted part is at most 16 bits plus the pair's extra bit |
-| Fallback | an element that would not shrink is stored verbatim; 32-bit channel pairs stay compressed (ffmpeg refuses verbatim ones) |
+| High bit depths | 24-bit samples send their low 8 bits verbatim (`bytesShifted` 1), so the predicted part is at most 16 bits plus the pair's extra bit. No 32-bit: decoders handle it inconsistently (ffmpeg cannot decode a verbatim 32-bit channel pair), so `Encoder::new` refuses it |
+| Fallback | an element that would not shrink is stored verbatim |
 
 Decoders disagree in two corner cases of the residual code: a value of exactly 2^16 coded right
 after a zero run (ffmpeg resets the running mean, Apple's decoder does not), and zero runs of
@@ -38,13 +38,13 @@ channel that would meet the first falls back to another mix or to verbatim stora
 ## Verification
 
 `cargo test -p filmcraft-alac`: a reference decoder of whole frames (Apple's rules) round-trips
-every depth (16/20/24/32), mono, stereo and 5.1, frame lengths 16–16384 and partial frames; the
+every depth (16/20/24), mono, stereo and 5.1, frame lengths 16–16384 and partial frames; the
 predictor's reconstruction matches the encoder's coefficient adaptation sample for sample, also
 where the 32-bit sums wrap.
 
 `tests/ffmpeg_oracle.rs` (ffmpeg as an external decoder, skipped when absent) wraps the frames in a
 CAF file and requires ffmpeg to decode every stream without a message to exactly the samples that
 went in: music-like tones, a sweep, white noise, a full-scale square, silence and a click at 16,
-20, 24 and 32 bits; mono, 3 channels and 5.1; 1152-, 4096- and 16384-sample frames. On
+20 and 24 bits; mono, 3 channels and 5.1; 1152-, 4096- and 16384-sample frames. On
 music-like stereo the stream is smaller than ffmpeg's own ALAC encoder makes it (204 KB against
 277 KB for two seconds). FilmCraft's own import (symphonia) is checked in the export tests.

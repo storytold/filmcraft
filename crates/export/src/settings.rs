@@ -567,11 +567,13 @@ impl ExportSettings {
     }
 
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
-    /// AIFF and QuickTime takes all four, MXF integers only; FLAC and ALAC integers only; AAC none.
+    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; ALAC 16 and
+    /// 24 bit (32-bit ALAC decodes inconsistently across players); AAC none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
             AudioCodec::Aac => false,
-            AudioCodec::Flac | AudioCodec::Alac => !f.is_float(),
+            AudioCodec::Flac => !f.is_float(),
+            AudioCodec::Alac => matches!(f, SampleFormat::Int16 | SampleFormat::Int24),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
     }

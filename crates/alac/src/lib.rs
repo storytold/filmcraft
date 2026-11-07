@@ -1,14 +1,15 @@
 //! Clean-room ALAC (Apple Lossless Audio Codec) encoder, written from the published format.
 //!
-//! - [`Encoder`]: planar integer samples (16, 20, 24 or 32 bit, 1–8 channels in ALAC channel
+//! - [`Encoder`]: planar integer samples (16, 20 or 24 bit, 1–8 channels in ALAC channel
 //!   order) → frames of [`EncoderConfig::frame_length`] samples, one MP4 / QuickTime sample each,
 //!   and the 24-byte magic cookie ([`Encoder::magic_cookie`]) that goes in the `alac` box.
 //! - Every channel is predicted by ALAC's adaptive filter (8 taps, denominator shift 9) whose
 //!   coefficients carry over from frame to frame, and its residual is coded with ALAC's adaptive
 //!   Golomb code. A channel pair also tries left/right, mid/side and left/side mixing and keeps
-//!   the smallest. 24- and 32-bit samples send their low 8 or 16 bits verbatim (`bytesShifted`),
-//!   as Apple's encoder does. A frame that would not shrink is stored uncompressed (32-bit
-//!   channel pairs excepted: ffmpeg cannot decode those verbatim).
+//!   the smallest. 24-bit samples send their low 8 bits verbatim (`bytesShifted`), as Apple's
+//!   encoder does. A frame that would not shrink is stored uncompressed.
+//! - No 32-bit samples: decoders handle them inconsistently (ffmpeg cannot decode a verbatim
+//!   32-bit channel pair), so the encoder refuses them rather than write files some players reject.
 //! - Lossless: the decoder gets back exactly the samples that went in.
 //!
 //! Layer L0: depends only on `filmcraft-bitstream` (+ `thiserror`); no `unsafe`; builds for
@@ -75,7 +76,7 @@ pub struct EncoderConfig {
     /// 1–8, in ALAC order: mono; L R; C L R; C L R Cs; C L R Ls Rs; C L R Ls Rs LFE (5.1);
     /// C L R Ls Rs Cs LFE; C Lc Rc L R Ls Rs LFE (7.1).
     pub channels: u8,
-    /// 16, 20, 24 or 32.
+    /// 16, 20 or 24 (32-bit ALAC is not written: decoders disagree on it).
     pub bits_per_sample: u8,
     /// Samples per channel per frame, 16–16384 (4096 by default).
     pub frame_length: u32,
@@ -128,8 +129,8 @@ impl Encoder {
         if !(1..=8).contains(&cfg.channels) {
             return Err(Error::InvalidConfig("1 to 8 channels"));
         }
-        if !matches!(cfg.bits_per_sample, 16 | 20 | 24 | 32) {
-            return Err(Error::InvalidConfig("16, 20, 24 or 32 bits per sample"));
+        if !matches!(cfg.bits_per_sample, 16 | 20 | 24) {
+            return Err(Error::InvalidConfig("16, 20 or 24 bits per sample"));
         }
         if !(1..=384_000).contains(&cfg.sample_rate) {
             return Err(Error::InvalidConfig("sample rate 1 to 384000 Hz"));
@@ -242,13 +243,9 @@ impl Encoder {
     }
 }
 
-/// The low bytes ALAC sends verbatim for a bit depth: 24-bit keeps 16 bits predicted, 32-bit too.
+/// The low bytes ALAC sends verbatim for a bit depth: 24-bit keeps 16 bits predicted.
 fn bytes_shifted(bits: u8) -> u32 {
-    match bits {
-        32 => 2,
-        24 => 1,
-        _ => 0,
-    }
+    u32::from(bits == 24)
 }
 
 /// One coded channel of an element: its residuals, the coefficients they start from and the ones
@@ -318,12 +315,8 @@ fn write_element(w: &mut BitWriter, id: u32, tag: u32, chans: &[&Vec<i32>], cfg:
     let side_bits = 16 + chans.len() * (16 + ORDER * 16);
     let shift_bits = n * chans.len() * sh as usize;
     let raw_bits = n * chans.len() * usize::from(cfg.bits_per_sample);
-    // A verbatim channel pair at 32 bits is a 33-bit element to ffmpeg, which refuses it: 32-bit
-    // pairs stay compressed whenever they can be (full-scale white noise, the worst case, comes
-    // out about 16 % over raw)
-    let keep = pair && cfg.bits_per_sample == 32;
     match best {
-        Some((bits, mix_res, coded)) if keep || side_bits + shift_bits + bits < raw_bits => {
+        Some((bits, mix_res, coded)) if side_bits + shift_bits + bits < raw_bits => {
             header(w, shift, false);
             w.write_bits(if pair { MIX_BITS } else { 0 }, 8);
             w.write_bits(u32::from(mix_res as i8 as u8), 8);

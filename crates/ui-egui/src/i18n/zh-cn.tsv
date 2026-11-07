@@ -3767,7 +3767,7 @@
 
 # Export: ALAC (Apple Lossless).
 	ALAC (Apple Lossless)	ALAC（Apple 无损）
-	ALAC stores whole-number samples only	ALAC 只能存储整数采样
+	ALAC export writes 16 or 24 bit	ALAC 导出仅支持 16 位或 24 位
 	Apple Lossless (ALAC)	Apple 无损 (ALAC)
 	Apple Lossless 48 kHz 24-bit	Apple 无损 48 kHz 24 位
 	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	MPEG-4 音频 (.m4a) 中的 Apple 无损 (ALAC)，立体声 48 kHz 24 位
