@@ -3564,6 +3564,11 @@
 	Solid	Jednolite
 	GPU Rendering	Renderowanie GPU
 	Composite on the GPU when available	Kompozytuj na GPU, gdy to możliwe
+	Hardware Encoding	Kodowanie sprzętowe
+	Use the hardware encoder when available	Używaj kodera sprzętowego, gdy to możliwe
+	GPU Encoding	Kodowanie GPU
+	Encode on the GPU when available	Koduj na GPU, gdy to możliwe
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Shadery obliczeniowe karty graficznej wykonują kodowanie; klatka, której GPU nie może zakodować, jest kodowana na CPU.
 	Text to Speech	Zamiana tekstu na mowę
 	Edit Narration	Edytuj narrację
 	Dock Panel	Zadokuj panel

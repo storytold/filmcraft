@@ -3577,6 +3577,11 @@
 	Solid	べた塗り
 	GPU Rendering	GPU レンダリング
 	Composite on the GPU when available	利用可能な場合は GPU で合成
+	Hardware Encoding	ハードウェアエンコード
+	Use the hardware encoder when available	利用可能な場合はハードウェアエンコーダーを使用
+	GPU Encoding	GPU エンコード
+	Encode on the GPU when available	利用可能な場合は GPU でエンコード
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	グラフィックカードのコンピュートシェーダーがエンコード処理を行います。GPU でエンコードできないフレームは CPU でエンコードされます。
 	Text to Speech	テキスト読み上げ
 	Edit Narration	ナレーションを編集
 	Clear Transition	トランジションを消去

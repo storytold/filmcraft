@@ -3552,6 +3552,11 @@
 	Solid	Jednolitá
 	GPU Rendering	Vykreslování na GPU
 	Composite on the GPU when available	Provádět kompozici na GPU, je-li dostupné
+	Hardware Encoding	Hardwarové kódování
+	Use the hardware encoder when available	Použít hardwarový kodér, je-li dostupný
+	GPU Encoding	Kódování na GPU
+	Encode on the GPU when available	Kódovat na GPU, je-li dostupné
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Kódování provádějí výpočetní shadery na grafické kartě; snímek, který GPU nedokáže zakódovat, se zakóduje na CPU.
 	Text to Speech	Převod textu na řeč
 	Edit Narration	Upravit hlasový komentář
 	Dock Panel	Ukotvit panel

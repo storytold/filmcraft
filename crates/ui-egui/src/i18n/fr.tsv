@@ -3557,6 +3557,11 @@
 	Solid	Uni
 	GPU Rendering	Rendu GPU
 	Composite on the GPU when available	Composer sur le GPU si disponible
+	Hardware Encoding	Encodage matériel
+	Use the hardware encoder when available	Utiliser l'encodeur matériel si disponible
+	GPU Encoding	Encodage GPU
+	Encode on the GPU when available	Encoder sur le GPU si disponible
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Des shaders de calcul sur la carte graphique effectuent l'encodage ; une image que le GPU ne peut pas encoder est encodée sur le CPU.
 	Text to Speech	Synthèse vocale
 	Edit Narration	Modifier la narration
 	Project Notes	Notes du projet

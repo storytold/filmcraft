@@ -3567,6 +3567,11 @@
 	Solid	Pieno
 	GPU Rendering	Rendering GPU
 	Composite on the GPU when available	Composizione sulla GPU quando disponibile
+	Hardware Encoding	Codifica hardware
+	Use the hardware encoder when available	Usa il codificatore hardware quando disponibile
+	GPU Encoding	Codifica GPU
+	Encode on the GPU when available	Codifica sulla GPU quando disponibile
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Gli shader di calcolo sulla scheda grafica svolgono la codifica; un fotogramma che la GPU non può codificare viene codificato sulla CPU.
 	Text to Speech	Sintesi vocale
 	Edit Narration	Modifica narrazione
 	Dock Panel	Aggancia pannello

@@ -683,6 +683,11 @@
 	Composite in Linear Color	선형 색상으로 합성
 	Composite on Original	원본에 합성
 	Composite on the GPU when available	가능하면 GPU에서 합성
+	Hardware Encoding	하드웨어 인코딩
+	Use the hardware encoder when available	가능하면 하드웨어 인코더 사용
+	GPU Encoding	GPU 인코딩
+	Encode on the GPU when available	가능하면 GPU에서 인코딩
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	그래픽 카드의 컴퓨트 셰이더가 인코딩 작업을 수행합니다. GPU가 인코딩할 수 없는 프레임은 CPU에서 인코딩됩니다.
 	Composite Using	합성 기준
 	Composite Video	합성 비디오
 	Compound Blur	복합 흐림
