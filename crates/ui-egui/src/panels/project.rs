@@ -700,10 +700,11 @@ pub const NEW_ITEMS: [(&str, &str); 8] = [
     ("Demo Footage", "file.importDemoFootage"),
 ];
 
-/// The bin of a New Item action that carries only that: `Some(None)` is the root, as in the engine
-/// (`bin` null), which the dialogs of Sequence and Color Matte take instead of the shown bin.
+/// The bin of a New Item menu action (`{"bin": .., "newItem": true}`, nothing else): `Some(None)` is
+/// the root, as in the engine (`bin` null). The dialogs of Sequence and Color Matte open with it
+/// instead of the shown bin; the same params without the marker still run the command directly.
 pub fn bin_only(params: &Value) -> Option<Option<u64>> {
-    let m = params.as_object().filter(|m| m.len() == 1)?;
+    let m = params.as_object().filter(|m| m.len() == 2 && m.get("newItem") == Some(&Value::Bool(true)))?;
     let bin = m.get("bin")?;
     if bin.is_null() { Some(None) } else { bin.as_u64().map(Some) }
 }
@@ -716,7 +717,7 @@ pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, bin: 
         app.auto.add(&format!("{pre}.newItem.{c}"), b.rect, label);
         if b.clicked() {
             // Demo Footage has no bin
-            let params = if c == "file.importDemoFootage" { json!({}) } else { json!({"bin": bin}) };
+            let params = if c == "file.importDemoFootage" { json!({}) } else { json!({"bin": bin, "newItem": true}) };
             actions.push((c.into(), params));
             ui.close();
         }
