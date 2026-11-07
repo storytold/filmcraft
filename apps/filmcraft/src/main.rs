@@ -38,6 +38,7 @@ mod logging;
 mod native_color;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod process_runner;
 mod window_raise;
 
 use args::{Cli, Launch};
@@ -76,6 +77,20 @@ fn tell(text: &str, error: bool) {
     {
         let level = if error { rfd::MessageLevel::Error } else { rfd::MessageLevel::Info };
         let _ = rfd::MessageDialog::new().set_level(level).set_title("FilmCraft").set_description(text).show();
+    }
+}
+
+/// Lettering by the animation app: the process runner, and the template bank (a folder with
+/// `atender.py` and `templates/`), from `FILMCRAFT_LETTERING_BANK` or `<data dir>/lettering-banco`.
+/// `FILMCRAFT_LETTERING_PYTHON` names the interpreter that runs the attendant.
+fn install_lettering_fx(session: &mut Session, data_dir: Option<std::path::PathBuf>) {
+    session.lettering_fx.runner = Some(Arc::new(process_runner::OsRunner));
+    session.lettering_fx.bank = std::env::var("FILMCRAFT_LETTERING_BANK")
+        .ok()
+        .filter(|b| !b.is_empty())
+        .or_else(|| data_dir.map(|d| d.join("lettering-banco").to_string_lossy().into_owned()));
+    if let Some(py) = std::env::var("FILMCRAFT_LETTERING_PYTHON").ok().filter(|p| !p.is_empty()) {
+        session.lettering_fx.interpreter = py;
     }
 }
 
@@ -237,6 +252,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 log::warn!("auto-save and crash recovery unavailable: {e}");
             }
         }
+        install_lettering_fx(&mut session, data_dir.clone().or_else(default_data_dir));
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
@@ -571,6 +587,13 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
 #[cfg(target_os = "linux")]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
+}
+
+/// `controlPort` of `<data dir>/decupador.json`, when the Decupador Inteligente is set up.
+fn decupador_control_port() -> Option<String> {
+    let path = filmcraft_engine::autosave::default_data_dir()?.join("decupador.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v.get("controlPort").and_then(serde_json::Value::as_u64).map(|p| p.to_string())
 }
 
 #[cfg(test)]
