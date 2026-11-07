@@ -11,14 +11,21 @@
 //!
 //! AAC, MPEG audio and AC-3 packets each decode to a fixed number of samples, which millisecond
 //! timestamps can't express: their packets run on from one another (see [`audio_starts`]).
+//!
+//! Opening from a reader does not scan the clusters when the file has Cues: the video track is
+//! indexed a Cue span at a time around the frames asked for ([`LazyState`]). Scanning every
+//! cluster reads the block headers of the whole file, which for a long recording touches most of
+//! it: seconds of I/O before the first picture of a 2 GB file that is not in the page cache, and
+//! far worse on a network volume. Audio, and the layouts the window does not cover, use the full
+//! index as before.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use filmcraft_color::{ColorInfo, Matrix, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{AvcConfig, CodecConfig, FourCc, HevcConfig, PcmConfig, SampleEntry, VpcConfig};
-use filmcraft_matroska::{Codec, MkvFile, TrackKind};
+use filmcraft_matroska::{Codec, Demuxer, MkvFile, OpenOptions, Packet, Sample, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -66,7 +73,210 @@ pub struct MkvSource {
     /// The alpha layer of a VP8 / VP9 track with `AlphaMode` 1 (WebM transparency, #402).
     alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
+    /// Empty when the video is indexed lazily: audio is then served by [`MkvSource::indexed`].
     audios: Vec<MkvAudio>,
+    /// The video track's window of scanned Cue spans, when the file was opened without a full
+    /// index; `file`'s sample tables then hold the first span only.
+    lazy: Option<Mutex<LazyState>>,
+    /// The fully indexed source, made on first use by what the lazy window does not serve.
+    full: OnceLock<Result<Box<MkvSource>, String>>,
+}
+
+/// The video track of a file opened from its Cues, indexed one Cue span at a time.
+///
+/// Span `k` holds the video samples from cued keyframe `k` (the file's start for `k = 0`) up to,
+/// not including, the first keyframe at or after cue `k + 1`. The window is a contiguous run of
+/// spans whose samples are numbered from the window's start: playing on extends it at the end,
+/// which keeps every index the frame cache knows; asking for a frame outside it and the next span
+/// replaces it with a new [`Window::table`], which tells the cache the old indices are void.
+/// The lock on this state is held only while the window changes: frames decode from a shared
+/// [`Window`], so intra-only video decodes in parallel and a request nested in a decode (see
+/// [`GopCache::frame`]) does not wait on it.
+///
+/// A span the Cues get wrong (the seek lands on another keyframe, or it fails) makes the source
+/// give up the window for good: from then on frames come from the full index.
+///
+/// A frame presented in span `k` may be STORED in span `k + 1`: an open GOP's leading pictures
+/// (HEVC RASL, MPEG-2 B-frames before an open-GOP I) follow the random-access picture of cue
+/// `k + 1` in the file but show before it, and decode from span `k`'s keyframe. So a request in
+/// span `k` holds spans `k` and `k + 1` both.
+struct LazyState {
+    demux: Demuxer<crate::Src>,
+    /// Index of the video track in `MkvFile::tracks`.
+    track: usize,
+    /// Times of the cued keyframes, in track ticks as stored (before the origin is taken off).
+    spans: Vec<i64>,
+    /// Ticks taken off every timestamp (see [`media_origin`]).
+    origin: i64,
+    /// First and last span of the window.
+    bounds: (usize, usize),
+    window: Arc<Window>,
+    /// The Cues proved wrong: serve every frame from the full index.
+    broken: bool,
+}
+
+/// The scanned spans of [`LazyState`], shared with the decodes that use them.
+#[derive(Clone, Default)]
+struct Window {
+    samples: Vec<Sample>,
+    /// Indices into `samples` of the keyframes, ascending.
+    sync: Vec<usize>,
+    /// Which window this is ([`VideoSamples::table`]): a new value each time it is replaced.
+    table: u64,
+}
+
+impl Window {
+    /// Append `samples`.
+    fn extend(&mut self, samples: Vec<Sample>) {
+        for s in samples {
+            if s.keyframe {
+                self.sync.push(self.samples.len());
+            }
+            self.samples.push(s);
+        }
+    }
+}
+
+/// The sample table entry of a demuxed packet (stored size: without the bytes header stripping
+/// put back).
+fn sample_of(t: &filmcraft_matroska::Track, p: &Packet, origin: i64) -> Sample {
+    let prefix = if t.frames_readable() { t.stripped_header().map_or(0, <[u8]>::len) } else { 0 };
+    Sample {
+        offset: p.offset,
+        size: u32::try_from(p.data.len().saturating_sub(prefix)).unwrap_or(u32::MAX),
+        pts: p.pts.saturating_sub(origin),
+        duration: p.duration,
+        keyframe: p.keyframe,
+        cluster: 0,
+        block_offset: p.offset,
+        lace: p.lace,
+        addition: None,
+    }
+}
+
+impl LazyState {
+    /// Open `bytes` from its Cues, scanning only the first span (of every track: the media origin,
+    /// the frame rate and the audio tracks are read from it). `None` when the file has to be
+    /// indexed whole: no Cues on the video track, no `Info/Duration`, no `DefaultDuration` on the
+    /// video track (the frame rate would be measured from the first span alone), a live Segment,
+    /// or video the window does not handle (VP8's hidden frames, WebM alpha, ProRes, encoded
+    /// frames).
+    fn open(bytes: &crate::Src) -> Option<(MkvFile, LazyState)> {
+        let mut demux = Demuxer::with_options(bytes.clone(), OpenOptions { index: false, ..Default::default() }).ok()?;
+        let mut file = demux.file().clone();
+        if file.live || file.info.duration.is_none() {
+            return None;
+        }
+        let track = file.tracks.iter().position(|t| t.kind == TrackKind::Video)?;
+        let t = file.tracks.get(track)?;
+        if t.default_duration_ns.is_none_or(|ns| ns == 0) {
+            return None;
+        }
+        let plain = t.frames_readable() && !matches!(t.codec, Codec::Vp8 | Codec::ProRes { .. }) && t.video.as_ref().is_none_or(|v| v.alpha_mode == 0);
+        if !plain {
+            return None;
+        }
+        let number = t.number;
+        let mut spans: Vec<i64> = file.cues.iter().filter(|c| c.positions.iter().any(|p| p.track == number)).map(|c| c.time as i64).collect();
+        spans.sort_unstable();
+        spans.dedup();
+        if spans.len() < 2 {
+            return None;
+        }
+        demux.rewind();
+        let stop = *spans.get(1)?;
+        loop {
+            let p = match demux.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => break,
+                Err(_) => return None,
+            };
+            if p.track == track && p.keyframe && p.pts >= stop && file.tracks.get(track).is_some_and(|t| !t.samples.is_empty()) {
+                break;
+            }
+            let Some(ft) = file.tracks.get_mut(p.track) else { continue };
+            let s = sample_of(ft, &p, 0);
+            ft.samples.push(s);
+        }
+        if file.tracks.get(track).is_none_or(|t| t.samples.is_empty()) {
+            return None;
+        }
+        // The audio streams are the audio tracks with samples, so one that starts after the first
+        // span would be missing here and present in the full index the audio is served from,
+        // numbering every later stream differently: index it whole.
+        if file.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.samples.is_empty()) {
+            return None;
+        }
+        let state = LazyState { demux, track, spans, origin: 0, bounds: (0, 0), window: Arc::default(), broken: false };
+        Some((file, state))
+    }
+
+    /// The video samples of span `k`: from its cued keyframe up to, not including, the first
+    /// keyframe at or after the next cue. An error when the Cues are wrong: no such span, or the
+    /// seek lands on a keyframe outside it.
+    fn scan(&mut self, k: usize) -> crate::Result<Vec<Sample>> {
+        let bad = |what: String| CodecError::Container(format!("Matroska Cues: {what}"));
+        let at = *self.spans.get(k).ok_or_else(|| bad(format!("no span {k}")))?;
+        let stop = self.spans.get(k + 1).copied();
+        if k == 0 {
+            self.demux.rewind();
+        } else {
+            let ns = self.demux.tracks().get(self.track).ok_or_else(|| bad("no video track".into()))?.ticks_to_ns(at);
+            self.demux.seek(self.track, ns).map_err(|e| CodecError::Container(e.to_string()))?;
+        }
+        let mut out: Vec<Sample> = Vec::new();
+        while let Some(p) = self.demux.next_packet().map_err(|e| CodecError::Container(e.to_string()))? {
+            if p.track != self.track {
+                continue;
+            }
+            if out.is_empty() && k > 0 && !(p.keyframe && p.pts == at) {
+                // a cue's time is its keyframe's: a seek that lands before it reads on to it, one
+                // that passes it means the Cues are wrong
+                if p.keyframe && p.pts > at {
+                    return Err(bad(format!("cue at {at} lands on a keyframe at {}", p.pts)));
+                }
+                continue;
+            }
+            if p.keyframe && !out.is_empty() && stop.is_some_and(|s| p.pts >= s) {
+                break;
+            }
+            let t = self.demux.tracks().get(self.track).ok_or_else(|| bad("no video track".into()))?;
+            out.push(sample_of(t, &p, self.origin));
+        }
+        if out.is_empty() {
+            return Err(bad(format!("span {k} holds no frames")));
+        }
+        Ok(out)
+    }
+
+    /// The window, made to hold the spans that present `target` (track ticks, origin taken off):
+    /// its own span `k` and `k + 1`, which holds `k`'s last frames when the GOP at cue `k + 1` is
+    /// open. A failed scan leaves the window as it was.
+    fn ensure(&mut self, target: i64) -> crate::Result<Arc<Window>> {
+        let raw = target.saturating_add(self.origin);
+        let k = self.spans.partition_point(|&s| s <= raw).saturating_sub(1);
+        let end = (k + 1).min(self.spans.len().saturating_sub(1));
+        let (first, last) = self.bounds;
+        if first <= k && end <= last {
+            return Ok(self.window.clone());
+        }
+        if first <= k && k <= last.saturating_add(1) {
+            // playing on: append the missing spans, every index the cache knows stays valid
+            for span in last + 1..=end {
+                let samples = self.scan(span)?;
+                Arc::make_mut(&mut self.window).extend(samples);
+                self.bounds.1 = span;
+            }
+            return Ok(self.window.clone());
+        }
+        let mut window = Window { table: self.window.table.wrapping_add(1), ..Window::default() };
+        for span in k..=end {
+            window.extend(self.scan(span)?);
+        }
+        self.window = Arc::new(window);
+        self.bounds = (k, end);
+        Ok(self.window.clone())
+    }
 }
 
 /// Audio packet start positions in source sample frames.
@@ -365,10 +575,25 @@ impl MkvSource {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
     }
 
-    /// Open from a random-access reader: only the index is read now, samples on demand.
+    /// Open from a random-access reader: only the index is read now, samples on demand. A file
+    /// with Cues is not even indexed whole (see [`LazyState`]).
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let mut file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        if let Some((file, lazy)) = LazyState::open(&bytes) {
+            return Self::build(name, bytes, file, Some(lazy));
+        }
+        let file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        Self::build(name, bytes, file, None)
+    }
+
+    /// Open from a reader with every cluster scanned up front.
+    fn open_indexed(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
+        let bytes = crate::Src(reader);
+        let file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        Self::build(name, bytes, file, None)
+    }
+
+    fn build(name: &str, bytes: crate::Src, mut file: MkvFile, lazy: Option<LazyState>) -> crate::Result<Self> {
         let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
         // every audio track is a stream (the track count comes from the file: capped)
         let atracks: Vec<usize> = file
@@ -430,7 +655,9 @@ impl MkvSource {
                 explicit_color = Some(color);
             }
             let secs = duration.seconds();
-            let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
+            // only the first span is indexed when lazy: the file's size stands for the track's
+            let stored = if lazy.is_some() { bytes.0.len() } else { t.samples.iter().map(|s| s.size as u64).sum::<u64>() };
+            let bitrate = (secs > 0.0).then(|| (stored as f64 * 8.0 / secs) as u64);
             let ((w, h), par) = if rotation % 2 == 1 { ((h, w), (v.pixel_aspect().1, v.pixel_aspect().0)) } else { ((w, h), v.pixel_aspect()) };
             VideoStreamInfo {
                 width: w,
@@ -460,6 +687,7 @@ impl MkvSource {
         // `info.audio_streams[k]` was made from `atracks[k]`, so the two stay index-aligned
         let audios: Vec<MkvAudio> = atracks
             .iter()
+            .filter(|_| lazy.is_none())
             .zip(&info.audio_streams)
             .filter_map(|(&i, ainfo)| {
                 let t = file.tracks.get(i)?;
@@ -488,7 +716,54 @@ impl MkvSource {
             let (n, d) = tb(t);
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts), n, d, v.frame_rate)
         });
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), snap, alpha, audios })
+        // Snapping holds only when EVERY stamp sits on the frame grid, and a lazy open has seen
+        // the first span alone. `false` stands (a fine unit, or a stamp already off the grid);
+        // `true` could still be overturned further on, so such a file is indexed whole.
+        if snap && lazy.is_some() {
+            return Self::open_indexed(name, bytes.0);
+        }
+        let lazy = lazy.map(|mut l| {
+            l.origin = origin;
+            let first = file.tracks.get(l.track).map(|t| t.samples.clone()).unwrap_or_default();
+            Arc::make_mut(&mut l.window).extend(first);
+            Mutex::new(l)
+        });
+        Ok(Self {
+            info,
+            bytes,
+            file,
+            vtrack,
+            ventry,
+            video: GopCache::new(explicit_color).with_rotation(rotation),
+            snap,
+            alpha,
+            audios,
+            lazy,
+            full: OnceLock::new(),
+        })
+    }
+
+    /// The fully indexed source, for what the lazy window does not serve (audio).
+    fn indexed(&self) -> Result<&MkvSource, MediaError> {
+        self.full
+            .get_or_init(|| Self::open_indexed(&self.info.name, self.bytes.0.clone()).map(Box::new).map_err(|e| e.to_string()))
+            .as_deref()
+            .map_err(|e| MediaError::Decode(e.clone()))
+    }
+
+    /// The decoder for the video track.
+    fn video_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        let Some(e) = &self.ventry else {
+            let label = self.vtrack.and_then(|i| self.file.tracks.get(i)).map(|t| codec_label(&t.codec)).unwrap_or_default();
+            return Err(CodecError::Unsupported(format!("no decoder for {label} video")));
+        };
+        let color = make_video_decoder(e)?;
+        let Some(layer) = &self.alpha else { return Ok(color) };
+        // the alpha layer always goes through our own decoder (it is luma only)
+        match crate::software_video_decoder(e) {
+            Ok(alpha) => Ok(Box::new(crate::webm_alpha::AlphaDecoder::new(color, alpha, layer.clone()))),
+            Err(_) => Ok(color),
+        }
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -618,16 +893,54 @@ impl VideoSamples for MkvVideo<'_> {
         self.src.read(self.track, i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-        let Some(e) = &self.src.ventry else {
-            return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
-        };
-        let color = make_video_decoder(e)?;
-        let Some(layer) = &self.src.alpha else { return Ok(color) };
-        // the alpha layer always goes through our own decoder (it is luma only)
-        match crate::software_video_decoder(e) {
-            Ok(alpha) => Ok(Box::new(crate::webm_alpha::AlphaDecoder::new(color, alpha, layer.clone()))),
-            Err(_) => Ok(color),
+        self.src.video_decoder()
+    }
+}
+
+/// The lazily indexed video track's window as a [`VideoSamples`] table.
+struct LazyVideo<'a> {
+    src: &'a MkvSource,
+    track: usize,
+    win: &'a Window,
+}
+
+impl VideoSamples for LazyVideo<'_> {
+    fn count(&self) -> usize {
+        self.win.samples.len()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.win.samples.get(i).map_or(i64::MAX, |s| s.pts)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        let k = self.win.sync.partition_point(|&s| s <= i);
+        k.checked_sub(1).and_then(|k| self.win.sync.get(k)).copied().unwrap_or(0)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        // as `Track::sample_at_pts`: the last sample presented at or before `t` (file order
+        // breaks ties), else the first
+        let mut best: Option<(usize, i64)> = None;
+        for (i, x) in self.win.samples.iter().enumerate() {
+            if x.pts <= t && best.is_none_or(|(_, b)| x.pts >= b) {
+                best = Some((i, x.pts));
+            }
         }
+        (!self.win.samples.is_empty()).then(|| best.map_or(0, |(i, _)| i))
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        let t = self.src.file.tracks.get(self.track).ok_or_else(|| CodecError::Container("no video track".into()))?;
+        let s = self.win.samples.get(i).ok_or_else(|| CodecError::Container(format!("no sample {i}")))?;
+        let mut data = t.frame_prefix(u64::from(s.size));
+        let at = data.len();
+        data.resize(at.saturating_add(s.size as usize), 0);
+        let dst = data.get_mut(at..).ok_or_else(|| CodecError::Container(format!("sample {i} too large")))?;
+        self.src.bytes.0.read_at(s.offset, dst).map_err(|e| CodecError::Container(e.to_string()))?;
+        Ok(data)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        self.src.video_decoder()
+    }
+    fn table(&self) -> u64 {
+        self.win.table
     }
 }
 
@@ -642,6 +955,17 @@ impl MediaSource for MkvSource {
         let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
         let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
         let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
+        if let Some(lazy) = &self.lazy {
+            // the lock is held only while the window changes, never while a frame decodes
+            let (track, window) = {
+                let mut st = lazy.lock().unwrap_or_else(PoisonError::into_inner);
+                let window = if st.broken { None } else { st.ensure(target).inspect_err(|e| log::warn!("{}: {e}; using the full index", self.info.name)).ok() };
+                st.broken |= window.is_none();
+                (st.track, window)
+            };
+            let Some(win) = window else { return self.indexed()?.video_frame(req) };
+            return Ok(self.video.frame_late(&LazyVideo { src: self, track, win: &win }, target, late)?);
+        }
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 
@@ -660,6 +984,9 @@ impl MediaSource for MkvSource {
     }
 
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
+        if self.lazy.is_some() {
+            return self.indexed()?.audio_stream(stream, start, frames, sample_rate);
+        }
         let a = self.audios.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let n_packets = self.file.tracks.get(a.track).ok_or(MediaError::NoStream("audio"))?.samples.len();
         let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
@@ -801,5 +1128,308 @@ mod origin_tests {
         let sound = src.audio(0, 48_000 * 2 / 5, 48_000).unwrap();
         assert!(sound.channels[0][9_590].abs() < 0.001, "silent before the delay");
         assert!((sound.channels[0][9_610] - 0.5).abs() < 0.001, "sound 0.2 s after the first picture");
+    }
+}
+
+#[cfg(test)]
+mod lazy_index_tests {
+    use std::sync::Arc;
+
+    use filmcraft_frame::PixelData;
+    use filmcraft_matroska::{MkvWriter, MuxOptions, TrackKind, TrackSpec};
+    use filmcraft_media::{ByteReader, FrameRequest, MediaSource, SharedReader};
+    use filmcraft_time::Tick;
+
+    const FPS: i64 = 10;
+    const FRAMES: i64 = 400;
+
+    /// A 256×256 Motion-JPEG picture whose grey level is `k` (busy enough to weigh tens of KB, so
+    /// the clip is far bigger than the demuxer's read window).
+    fn picture(k: u8) -> Vec<u8> {
+        let img = image::GrayImage::from_fn(256, 256, |x, y| image::Luma([if (x ^ y) & 1 == 0 { k } else { k.wrapping_add(((x * 7 + y * 13) % 5) as u8) }]));
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95).encode_image(&img).unwrap();
+        out
+    }
+
+    /// Forty seconds at 10 fps, a keyframe every second (so a cluster and a Cue every second), with
+    /// a PCM track whose level follows the second it is in.
+    fn clip() -> Arc<[u8]> {
+        clip_with(true, false)
+    }
+
+    /// [`clip`], with or without the video track's `DefaultDuration`, and with or without a
+    /// second video track after the first (whose pictures run the other way: `255 - k`).
+    fn clip_with(default_duration: bool, second_video: bool) -> Arc<[u8]> {
+        let video = || {
+            let mut v = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+            v.video_size = Some((256, 256));
+            v.default_duration_ns = default_duration.then_some(1_000_000_000 / FPS as u64);
+            v
+        };
+        let mut a = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        a.audio = Some((8_000.0, 1, Some(16)));
+        let mut tracks = vec![video(), a];
+        if second_video {
+            tracks.push(video());
+        }
+        let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), tracks, MuxOptions::default()).unwrap();
+        for k in 0..FRAMES {
+            let pts = k * 1_000_000_000 / FPS;
+            w.write_frame(0, pts, k % FPS == 0, &picture(k as u8), None).unwrap();
+            if second_video {
+                w.write_frame(2, pts, k % FPS == 0, &picture(255 - k as u8), None).unwrap();
+            }
+            if k % 5 == 0 {
+                let level = (k / FPS) as i16 * 500;
+                let pcm: Vec<u8> = (0..4000).flat_map(|_| level.to_le_bytes()).collect();
+                w.write_frame(1, pts, true, &pcm, Some(500_000_000)).unwrap();
+            }
+        }
+        w.finish().unwrap().into_inner().into()
+    }
+
+    /// An EBML element ID's or size's length from its first byte.
+    fn vint_len(b: u8) -> usize {
+        b.leading_zeros() as usize + 1
+    }
+
+    /// Call `f` with the ID and value bytes of every leaf in `buf`, going into the Cues masters
+    /// (Cues, CuePoint, CueTrackPositions).
+    fn walk(buf: &mut [u8], f: &mut impl FnMut(u32, &mut [u8])) {
+        let mut at = 0;
+        while at < buf.len() {
+            let il = vint_len(buf[at]);
+            let id = buf[at..at + il].iter().fold(0u32, |a, &b| a << 8 | u32::from(b));
+            let sl = vint_len(buf[at + il]);
+            let mut size = u64::from(buf[at + il] & (0xFF >> sl));
+            for &b in &buf[at + il + 1..at + il + sl] {
+                size = size << 8 | u64::from(b);
+            }
+            let body = at + il + sl;
+            let end = body + size as usize;
+            match id {
+                0x1C53_BB6B | 0xBB | 0xB7 => walk(&mut buf[body..end], f),
+                _ => f(id, &mut buf[body..end]),
+            }
+            at = end;
+        }
+    }
+
+    /// `bytes` with `f` applied to every leaf of its Cues (the last Cues element: the muxer writes
+    /// it after the clusters).
+    fn patch_cues(bytes: &[u8], mut f: impl FnMut(u32, &mut [u8])) -> Arc<[u8]> {
+        let mut out = bytes.to_vec();
+        let at = out.windows(4).rposition(|w| w == [0x1C, 0x53, 0xBB, 0x6B]).expect("the clip has Cues");
+        let il = 4;
+        let sl = vint_len(out[at + il]);
+        let mut size = u64::from(out[at + il] & (0xFF >> sl));
+        for &b in &out[at + il + 1..at + il + sl] {
+            size = size << 8 | u64::from(b);
+        }
+        let body = at + il + sl;
+        walk(&mut out[body..body + size as usize], &mut f);
+        out.into()
+    }
+
+    fn open(bytes: &Arc<[u8]>) -> super::MkvSource {
+        super::MkvSource::open_reader("clip.mkv", Arc::new(filmcraft_media::reader::MemReader(bytes.clone()))).unwrap()
+    }
+
+    fn open_full(bytes: &Arc<[u8]>) -> super::MkvSource {
+        super::MkvSource::open_indexed("clip.mkv", Arc::new(filmcraft_media::reader::MemReader(bytes.clone()))).unwrap()
+    }
+
+    /// Frames of a walk that crosses spans, jumps both ways and hits both ends.
+    fn walk_frames() -> Vec<i64> {
+        (60..90).chain([230, 231, 10, 11, 12, 120, 0, FRAMES - 1, 49, 50, 51]).collect()
+    }
+
+    /// A reader that records which 4 KiB pages of the file were read: the I/O a disk would see
+    /// (reading a page again comes from the page cache).
+    struct Counting(Arc<[u8]>, std::sync::Mutex<std::collections::BTreeSet<usize>>);
+
+    impl Counting {
+        fn new(bytes: Arc<[u8]>) -> Arc<Self> {
+            Arc::new(Self(bytes, Default::default()))
+        }
+        /// Bytes of the pages read so far.
+        fn touched(&self) -> u64 {
+            self.1.lock().unwrap().len() as u64 * 4096
+        }
+    }
+
+    impl ByteReader for Counting {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            let o = offset as usize;
+            let src = self.0.get(o..o + buf.len()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+            buf.copy_from_slice(src);
+            if !buf.is_empty() {
+                self.1.lock().unwrap().extend(o / 4096..=(o + buf.len() - 1) / 4096);
+            }
+            Ok(())
+        }
+    }
+
+    fn pixels(src: &dyn MediaSource, frame: i64) -> Vec<u8> {
+        let f = src.video_frame(FrameRequest::full(Tick::from_rational(frame, 1, FPS))).unwrap();
+        let PixelData::Rgba8(px) = &f.data else { panic!("MJPEG decodes to RGBA8") };
+        px.to_vec()
+    }
+
+    fn sources() -> (super::MkvSource, super::MkvSource) {
+        let bytes = clip();
+        let lazy = super::MkvSource::open_reader("clip.mkv", Arc::new(filmcraft_media::reader::MemReader(bytes.clone()))).unwrap();
+        let full = super::MkvSource::open_indexed("clip.mkv", Arc::new(filmcraft_media::reader::MemReader(bytes))).unwrap();
+        (lazy, full)
+    }
+
+    #[test]
+    fn a_file_with_cues_opens_without_indexing_every_cluster() {
+        let bytes = clip();
+        let reader = Counting::new(bytes.clone());
+        let src = super::MkvSource::open_reader("clip.mkv", reader.clone() as SharedReader).unwrap();
+        assert!(src.lazy.is_some(), "opened from the Cues");
+        let _ = pixels(&src, FRAMES / 2);
+        let read = reader.touched();
+        assert!(read * 8 < bytes.len() as u64, "one frame in the middle read {read} of {} bytes", bytes.len());
+        // the full index, for contrast, reads (nearly) the whole file to find the blocks
+        let counted = Counting::new(bytes.clone());
+        let _ = super::MkvSource::open_indexed("clip.mkv", counted.clone() as SharedReader).unwrap();
+        assert!(counted.touched() * 2 > bytes.len() as u64, "the full index scans the clusters: {}", counted.touched());
+        let (_, full) = sources();
+        assert_eq!(src.info().duration, full.info().duration);
+        assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), full.info().video.as_ref().map(|v| v.frame_rate));
+    }
+
+    #[test]
+    fn the_lazy_window_serves_the_frames_the_full_index_does() {
+        let (lazy, full) = sources();
+        assert!(lazy.lazy.is_some() && full.lazy.is_none());
+        // playing from a jump in, across span boundaries; far jumps both ways; back into a span
+        // the window no longer holds; the first and last frames
+        let walk: Vec<i64> = (60..140).chain([230, 231, 10, 11, 12, 120, 0, FRAMES - 1, 49, 50, 51]).collect();
+        for k in walk {
+            assert_eq!(pixels(&lazy, k), pixels(&full, k), "frame {k}");
+        }
+        let levels: Vec<u8> = (60..140).map(|k| pixels(&lazy, k)[0]).collect();
+        assert!(levels.windows(2).all(|p| p[0] < p[1]), "one picture per frame, in order: {levels:?}");
+    }
+
+    #[test]
+    fn audio_of_a_lazily_opened_file_comes_from_the_full_index() {
+        let (lazy, full) = sources();
+        for start in [0, 8_000 * 3 + 100, 8_000 * 37] {
+            let a = lazy.audio(start, 400, 8_000).unwrap();
+            let b = full.audio(start, 400, 8_000).unwrap();
+            assert_eq!(a.channels, b.channels, "audio at {start}");
+        }
+    }
+
+    #[test]
+    fn a_file_without_default_duration_is_indexed_whole() {
+        // its frame rate is measured from the samples, which a lazy open has only the first span of
+        let src = open(&clip_with(false, false));
+        assert!(src.lazy.is_none());
+    }
+
+    #[test]
+    fn cues_whose_times_name_no_keyframe_fall_back_to_the_full_index() {
+        // every cue a tick after its keyframe: a seek lands before it and passes it
+        let bytes = patch_cues(&clip(), |id, v| {
+            if id == 0xB3
+                && let Some(last) = v.last_mut()
+            {
+                *last += 1;
+            }
+        });
+        let (lazy, full) = (open(&bytes), open_full(&bytes));
+        assert!(lazy.lazy.is_some(), "the Cues look usable at open");
+        for k in walk_frames() {
+            assert_eq!(pixels(&lazy, k), pixels(&full, k), "frame {k}");
+        }
+        assert!(lazy.lazy.as_ref().unwrap().lock().unwrap().broken, "gave up the window");
+    }
+
+    #[test]
+    fn cues_that_point_past_the_end_still_serve_every_frame() {
+        let bytes = patch_cues(&clip(), |id, v| {
+            if id == 0xF1 {
+                v.fill(0xFF);
+            }
+        });
+        let (lazy, full) = (open(&bytes), open_full(&bytes));
+        for k in walk_frames() {
+            assert_eq!(pixels(&lazy, k), pixels(&full, k), "frame {k}");
+        }
+    }
+
+    #[test]
+    fn a_second_video_track_leaves_the_first_one_playing() {
+        let bytes = clip_with(true, true);
+        let (lazy, full) = (open(&bytes), open_full(&bytes));
+        assert!(lazy.lazy.is_some());
+        for k in walk_frames() {
+            let px = pixels(&lazy, k);
+            assert_eq!(px, pixels(&full, k), "frame {k}");
+            assert_eq!(px, pixels(&open(&clip()), k), "frame {k} is the first track's");
+        }
+    }
+
+    #[test]
+    fn an_audio_track_that_starts_late_keeps_the_stream_numbers() {
+        // a dub track whose first block is past the first span: the lazy open must list the same
+        // audio streams as the full index, or stream 0 of one is stream 1 of the other
+        let mut late = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        late.audio = Some((8_000.0, 1, Some(16)));
+        let mut early = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        early.audio = Some((16_000.0, 1, Some(16)));
+        let mut v = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+        v.video_size = Some((256, 256));
+        v.default_duration_ns = Some(1_000_000_000 / FPS as u64);
+        let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![v, late, early], MuxOptions::default()).unwrap();
+        for k in 0..FRAMES {
+            let pts = k * 1_000_000_000 / FPS;
+            w.write_frame(0, pts, k % FPS == 0, &picture(k as u8), None).unwrap();
+            if k % 5 == 0 {
+                if k >= 5 * FPS {
+                    let pcm: Vec<u8> = (0..4000).flat_map(|_| 1_000i16.to_le_bytes()).collect();
+                    w.write_frame(1, pts, true, &pcm, Some(500_000_000)).unwrap();
+                }
+                let pcm: Vec<u8> = (0..8000).flat_map(|_| 3_000i16.to_le_bytes()).collect();
+                w.write_frame(2, pts, true, &pcm, Some(500_000_000)).unwrap();
+            }
+        }
+        let bytes: Arc<[u8]> = w.finish().unwrap().into_inner().into();
+        let (lazy, full) = (open(&bytes), open_full(&bytes));
+        let rates = |s: &super::MkvSource| s.info().audio_streams.iter().map(|a| a.sample_rate).collect::<Vec<_>>();
+        assert_eq!(rates(&full), vec![8_000, 16_000]);
+        assert_eq!(rates(&lazy), rates(&full));
+        for stream in 0..2 {
+            let a = lazy.audio_stream(stream, 16_000 * 10, 400, 16_000).unwrap();
+            let b = full.audio_stream(stream, 16_000 * 10, 400, 16_000).unwrap();
+            assert_eq!(a.channels, b.channels, "stream {stream}");
+        }
+    }
+
+    #[test]
+    fn frames_decode_from_many_threads_at_once() {
+        // the lazy lock is not held while decoding: requests far apart replace the window under
+        // each other's decodes, and every one still gets its own frame
+        let (lazy, full) = sources();
+        let want: Vec<(i64, Vec<u8>)> = (0..FRAMES).step_by(7).map(|k| (k, pixels(&full, k))).collect();
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (lazy, want) = (&lazy, &want);
+                s.spawn(move || {
+                    for (n, (k, px)) in want.iter().enumerate().filter(|(n, _)| n % 8 == t).cycle().take(40) {
+                        assert_eq!(&pixels(lazy, *k), px, "thread {t}, request {n}: frame {k}");
+                    }
+                });
+            }
+        });
     }
 }

@@ -121,6 +121,12 @@ pub trait VideoSamples: Sync {
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
+    /// Which sample table this is: a container that replaces its table (so that the same index
+    /// names another sample, as Matroska's lazily indexed window does) gives the new one another
+    /// value. The cache's decoder position is only kept while it stays the same.
+    fn table(&self) -> u64 {
+        0
+    }
 }
 
 /// The track time (units of `num / den` s) to look up the frame shown at `t` by, for a track whose
@@ -190,6 +196,8 @@ struct State {
     /// Next sample (decode order) to feed, and the sync sample the current run started from.
     next: usize,
     start: usize,
+    /// The sample table `next` and `start` index ([`VideoSamples::table`]).
+    table: u64,
     /// Highest pts the running decoder has output since it started (pictures leave in pts order).
     out_max: i64,
     /// Decoded frames by presentation pts (bounded).
@@ -598,6 +606,7 @@ impl GopCache {
                 spare: Vec::new(),
                 next: usize::MAX,
                 start: 0,
+                table: 0,
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
@@ -804,6 +813,12 @@ impl GopCache {
         let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _decoding = DecodingGuard::enter(me);
+        if st.table != s.table() {
+            // another table: its indices name other samples, so the running decoder's position
+            // means nothing (decoded frames stay, keyed by pts)
+            st.table = s.table();
+            st.next = usize::MAX;
+        }
         st.last_used = Instant::now();
         st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
