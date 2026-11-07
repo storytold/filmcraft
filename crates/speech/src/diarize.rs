@@ -96,6 +96,8 @@ pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
     merged
 }
 
+/// Per 10 ms frame of `audio`: the number of frames, each frame's energy (dB, the sum of its mel
+/// energies) and its `N_MFCC` MFCCs (the DCT-II of the log mel energies), frame-major.
 fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
     let (frames, mel) = crate::mel::mel_energies(audio, N_MELS);
     // per frame: log energies (dB-ish) and the DCT-II of the log mel
@@ -197,6 +199,7 @@ fn chunk_voice(audio: &[f32], a: usize, b: usize) -> ChunkVoice {
     out
 }
 
+/// Root-mean-square difference between two voice vectors (zero when either is empty).
 fn rms_distance(a: &[f32], b: &[f32]) -> f32 {
     (a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>() / a.len().max(1) as f32).sqrt()
 }
@@ -534,6 +537,7 @@ mod tests {
         (audio, Transcript { words, ..Default::default() })
     }
 
+    /// How many turns of a `dialogue` transcript carry the wrong speaker (voice A is speaker 0).
     fn wrong_turns(t: &Transcript, turns: &[bool]) -> usize {
         turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count()
     }
