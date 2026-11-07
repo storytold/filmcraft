@@ -71,6 +71,9 @@ pub(crate) struct Shared {
     /// for the next ones, at most `max_bufs`.
     bufs: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
     max_bufs: usize,
+    /// Picture jobs dispatched but not yet reported; [`Shared::wait_reports`] waits for zero.
+    jobs: Mutex<usize>,
+    reported: std::sync::Condvar,
 }
 
 impl Shared {
@@ -90,9 +93,24 @@ impl Shared {
         }
     }
 
+    /// A picture job is about to be dispatched; its [`Shared::report`] is expected.
+    fn job_started(&self) {
+        *self.jobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+    }
+
+    /// Block until every dispatched job has reported (rows are published before the report, so
+    /// waiting for the rows alone can read the statistics and the error too early).
+    fn wait_reports(&self) {
+        let mut n = self.jobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *n > 0 {
+            n = self.reported.wait(n).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     /// A picture is done: count it and its blocks, keep the first error.
     pub(crate) fn report<S: Sample>(&self, pic: &PicState<S>, err: Option<Error>, parallel: bool) {
-        if let Ok(mut s) = self.stats.lock() {
+        {
+            let mut s = self.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             s.pictures += 1;
             s.parallel_pictures += parallel as u64;
             let [intra, skip, inter] = block_counts(&pic.blk);
@@ -100,8 +118,13 @@ impl Shared {
             s.skip_4x4_blocks += skip;
             s.inter_4x4_blocks += inter;
         }
-        if let (Some(e), Ok(mut slot)) = (err, self.error.lock()) {
-            slot.get_or_insert(e);
+        if let Some(e) = err {
+            self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert(e);
+        }
+        let mut n = self.jobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            self.reported.notify_all();
         }
     }
 }
@@ -281,6 +304,7 @@ impl Decoder {
         while let Some(f) = self.in_flight.pop_front() {
             f.wait_complete();
         }
+        self.shared.wait_reports();
         self.first_picture = true;
         self.gray_reference = None;
         pics
@@ -288,7 +312,7 @@ impl Decoder {
 
     /// Statistics accumulated so far.
     pub fn stats(&self) -> DecodeStats {
-        self.shared.stats.lock().map(|s| s.clone()).unwrap_or_default()
+        self.shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     fn stat(&self, f: impl FnOnce(&mut DecodeStats)) {
@@ -316,7 +340,7 @@ impl Decoder {
     }
 
     pub fn take_error(&mut self) -> Option<Error> {
-        self.shared.error.lock().ok().and_then(|mut e| e.take())
+        self.shared.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
     fn handle_nal(&mut self, nal: &[u8], pts: i64) -> Result<()> {
@@ -559,6 +583,7 @@ impl Decoder {
 
     fn dispatch(&mut self, job: PicJob) {
         let shared = self.shared.clone();
+        shared.job_started();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
             self.in_flight.retain(|f| !f.is_complete());
