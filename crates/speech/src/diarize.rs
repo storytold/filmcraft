@@ -46,11 +46,12 @@ impl Default for Params {
 const N_MELS: usize = 40;
 const N_MFCC: usize = 20;
 const FRAME_TICKS: i64 = TICKS_PER_SAMPLE * crate::mel::HOP as i64;
-/// Agglomerative linkage is cubic in the number of chunks, so at most this many are clustered (the
-/// heaviest chunk of each of that many equal stretches of the file); every other chunk then joins
-/// the cluster whose clustered members it is closest to on average, which is linear in the number
-/// of chunks. Folding a small cluster afterwards compares each of its chunks with every other chunk,
-/// at worst quadratic, which `MAX_CHUNKS` bounds. A 48-minute interview has about 800 chunks.
+/// Agglomerative linkage is cubic in the number of chunks, so at most this many are clustered: one
+/// chunk from each of that many equal stretches of the file, at a quasi-random position in the
+/// stretch (see [`sample_chunks`]); every other chunk then joins the cluster whose clustered members
+/// it is closest to on average, which is linear in the number of chunks. Folding a small cluster
+/// afterwards compares each of its chunks with every other chunk, at worst quadratic, which
+/// `MAX_CHUNKS` bounds. A 48-minute interview has about 800 chunks.
 const MAX_CLUSTER_CHUNKS: usize = 256;
 /// Beyond this many chunks (about eight hours of dense dialogue) the assignment pass, the small-cluster
 /// fold and the per-chunk vectors would still be a document-controlled amount of work, so the
@@ -118,6 +119,30 @@ fn rms_distance(a: &[f32], b: &[f32]) -> f32 {
     (a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>() / a.len().max(1) as f32).sqrt()
 }
 
+/// The chunks that take part in the agglomerative step: all of them when there are at most
+/// [`MAX_CLUSTER_CHUNKS`], otherwise one from each of that many equal stretches of the file. The
+/// pick inside a stretch follows the golden-ratio sequence, so it is spread over the stretch's
+/// positions rather than tied to one of them: taking the heaviest (or the first, or the last) chunk
+/// of every stretch would sample one voice only from a dialogue whose turns alternate two chunks per
+/// stretch, or whose answers always outweigh the questions. A chunk with no voiced frames carries no
+/// voice, so the heaviest chunk of the stretch stands in for it.
+fn sample_chunks(n: usize, weight: &[f32]) -> Vec<usize> {
+    if n <= MAX_CLUSTER_CHUNKS {
+        return (0..n).collect();
+    }
+    const GOLDEN: f64 = 0.618_033_988_749_895;
+    let w = |i: usize| weight.get(i).copied().unwrap_or(0.0);
+    (0..MAX_CLUSTER_CHUNKS)
+        .filter_map(|k| {
+            let lo = k * n / MAX_CLUSTER_CHUNKS;
+            let hi = ((k + 1) * n / MAX_CLUSTER_CHUNKS).clamp(lo + 1, n);
+            let pos = ((k + 1) as f64 * GOLDEN).fract();
+            let pick = lo + ((pos * (hi - lo) as f64) as usize).min(hi - lo - 1);
+            if w(pick) > 0.0 { Some(pick) } else { (lo..hi).max_by(|&a, &b| w(a).total_cmp(&w(b))) }
+        })
+        .collect()
+}
+
 /// Label the speakers of `t` from `audio` (mono 16 kHz, the transcript's time base). Replaces
 /// `t.speakers` and every word's speaker; returns the number of speakers found.
 pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
@@ -178,17 +203,7 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
     }
     // the chunks that take part in the agglomerative step (all of them on a short file)
     let n = vecs.len();
-    let sample: Vec<usize> = if n <= MAX_CLUSTER_CHUNKS {
-        (0..n).collect()
-    } else {
-        (0..MAX_CLUSTER_CHUNKS)
-            .filter_map(|k| {
-                let lo = k * n / MAX_CLUSTER_CHUNKS;
-                let hi = ((k + 1) * n / MAX_CLUSTER_CHUNKS).clamp(lo + 1, n);
-                (lo..hi).max_by(|&a, &b| weight.get(a).copied().unwrap_or(0.0).total_cmp(&weight.get(b).copied().unwrap_or(0.0)))
-            })
-            .collect()
-    };
+    let sample = sample_chunks(n, &weight);
     let m = sample.len();
     let vec_of = |s: usize| vecs.get(sample.get(s).copied().unwrap_or(0)).map(Vec::as_slice).unwrap_or(&[]);
     // average-linkage agglomerative clustering over the sample (indices into `sample`)
@@ -416,6 +431,58 @@ mod tests {
         assert_eq!(n, 2);
         let wrong = turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count();
         assert_eq!(wrong, 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    /// `turns` of two voices (`true` is voice A) with per-voice turn lengths, 0.3 s apart; three
+    /// equal "words" per turn. Returns the audio and the transcript.
+    fn dialogue(turns: &[bool], secs_a: f32, secs_b: f32) -> (Vec<f32>, Transcript) {
+        let silence = vec![0f32; 4800];
+        let mut audio = Vec::new();
+        let mut words = Vec::new();
+        for (k, &is_a) in turns.iter().enumerate() {
+            let t0 = audio.len() as f64 / 16_000.0;
+            let secs = if is_a { secs_a } else { secs_b };
+            audio.extend(if is_a {
+                voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], secs, k as u32)
+            } else {
+                voice(230.0, [(400.0, 80.0), (2600.0, 150.0)], secs, k as u32)
+            });
+            let step = secs as f64 / 3.0;
+            for w in 0..3 {
+                let s = t0 + w as f64 * step;
+                words.push(Word::new(format!("w{k}.{w}"), seconds_tick(s), seconds_tick(s + step * 0.9)));
+            }
+            audio.extend(&silence);
+        }
+        (audio, Transcript { words, ..Default::default() })
+    }
+
+    fn wrong_turns(t: &Transcript, turns: &[bool]) -> usize {
+        turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count()
+    }
+
+    #[test]
+    fn strictly_alternating_equal_turns_are_sampled_from_both_voices() {
+        // 512 turns, A B A B..., all the same length: two chunks per sampling stretch, and the two
+        // weigh the same, so a tie-break that always takes the same side would sample one voice only
+        let turns: Vec<bool> = (0..512).map(|k| k % 2 == 0).collect();
+        let (audio, mut t) = dialogue(&turns, 0.8, 0.8);
+        assert_eq!(chunks(&t, &Params::default()).len(), 512);
+        assert_eq!(diarize(&audio, &mut t, &Params::default()), 2);
+        assert_eq!(wrong_turns(&t, &turns), 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn short_questions_between_long_answers_are_still_a_speaker() {
+        // 512 turns, a 0.8 s question then a 1.6 s answer: the answer outweighs the question in every
+        // two-chunk stretch, so a sample of the heaviest chunks would hold the answering voice only
+        let turns: Vec<bool> = (0..512).map(|k| k % 2 == 0).collect();
+        let (audio, mut t) = dialogue(&turns, 0.8, 1.6);
+        assert_eq!(chunks(&t, &Params::default()).len(), 512);
+        assert_eq!(diarize(&audio, &mut t, &Params::default()), 2);
+        assert_eq!(wrong_turns(&t, &turns), 0, "turns labelled with the wrong speaker");
         t.check().unwrap();
     }
 
