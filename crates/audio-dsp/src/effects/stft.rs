@@ -103,10 +103,16 @@ pub(crate) fn stream(
                 let (lo, hi) = stft.split_at_mut(ch + 1);
                 let x = (channels[ch][i], channels[ch + 1][i]);
                 let (ya, yb) = StftChannel::tick_pair(&mut lo[ch], &mut hi[0], x, hop, &mut |a, b, out_a, out_b| {
-                    if all_finite(a) && all_finite(b) {
+                    // Finite samples can still overflow the unscaled FFT: for `Full` the packed
+                    // analysis itself is checked before either callback sees it.
+                    let mut shared = all_finite(a) && all_finite(b);
+                    if shared && pairing == Pairing::Full {
+                        spec.analyse_pair(a, b);
+                        shared = spec.pair_finite(half);
+                    }
+                    if shared {
                         match pairing {
                             Pairing::Full => {
-                                spec.analyse_pair(a, b);
                                 bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
                                 bins(ch + 1, false, &mut spec.re2, &mut spec.im2);
                             }
@@ -131,8 +137,9 @@ pub(crate) fn stream(
                             spec.synthesise_add_split(out_a, out_b, scale);
                         }
                     } else {
-                        // A non-finite sample would leak into the other channel through the
-                        // packed FFT: keep the channels isolated for this frame.
+                        // A non-finite sample (or a non-finite packed spectrum) would leak into
+                        // the other channel: keep the channels isolated for this frame. Each
+                        // callback still runs exactly once per channel.
                         spec.analyse(a);
                         bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
                         spec.synthesise_add(out_a, scale);
@@ -256,9 +263,13 @@ impl Spectral {
             self.im2[k] = 0.5 * (wr - zr);
         }
     }
-    /// Whether both half spectra of `analyse_pair` (bins 0..half) are finite.
+    /// Whether both half spectra of `analyse_pair` (bins 0..half) are finite and small enough that
+    /// the shared unscaled FFT cannot overflow. Every FFT value sums at most 4 * half unit-twiddle
+    /// terms (two mirrored bins, two channels), so for FFT sizes up to 16384 a per-bin limit of
+    /// `f32::MAX / 65536` is safe. NaN fails the comparison. Branch-free so it vectorises.
     pub(crate) fn pair_finite(&self, half: usize) -> bool {
-        [&self.re[..half], &self.im[..half], &self.re2[..half], &self.im2[..half]].iter().all(|s| s.iter().fold(true, |ok, v| ok & v.is_finite()))
+        const LIMIT: f32 = f32::MAX / 65536.0;
+        [&self.re[..half], &self.im[..half], &self.re2[..half], &self.im2[..half]].iter().all(|s| s.iter().fold(true, |ok, v| ok & (v.abs() <= LIMIT)))
     }
     /// `synthesise_add_pair` without sharing the inverse FFT: the two spectra stay isolated.
     pub(crate) fn synthesise_add_split(&mut self, out_a: &mut [f32], out_b: &mut [f32], scale: f32) {
@@ -298,6 +309,52 @@ impl Spectral {
 mod tests {
     use super::*;
     use crate::testutil::Rng;
+
+    /// Finite samples near `f32::MAX` overflow the unscaled FFT, forward or inverse. The packed
+    /// analysis is checked before any callback sees it (and the spectra again before the shared
+    /// inverse), so the clean partner stays as it is mono and every channel's callback still runs
+    /// once per frame.
+    #[test]
+    fn finite_overflow_in_one_channel_stays_in_its_channel() {
+        let (n, len) = (1024, 4096);
+        let hop = n / 4;
+        let scale = 1.0 / (n as f32 * 2.0);
+        let run = |src: &[Vec<f32>]| -> (Vec<Vec<f32>>, Vec<usize>) {
+            let mut stft = vec![StftChannel::new(n); src.len()];
+            let mut spec = Spectral::new(n, true);
+            let mut y = src.to_vec();
+            let mut calls = vec![0usize; src.len()];
+            let mut firsts = 0;
+            {
+                let mut chans: Vec<&mut [f32]> = y.iter_mut().map(|c| c.as_mut_slice()).collect();
+                stream(&mut stft, &mut spec, &mut chans, len, Plan { hop, scale, pairing: Pairing::Full }, &mut |ch, first, _, _| {
+                    calls[ch] += 1;
+                    firsts += usize::from(first);
+                });
+            }
+            assert_eq!(firsts, calls[0], "`first` must fire once per frame");
+            (y, calls)
+        };
+        let mut bad = vec![0.0f32; len];
+        bad[1000..1008].iter_mut().for_each(|v| *v = f32::MAX / 4.0);
+        let clean = vec![0.0f32; len];
+        let mut mono_calls = 0;
+        for bad_left in [true, false] {
+            let src = if bad_left { vec![bad.clone(), clean.clone()] } else { vec![clean.clone(), bad.clone()] };
+            let (y, calls) = run(&src);
+            let good = &y[usize::from(bad_left)];
+            assert!(
+                good.iter().all(|v| v.is_finite()),
+                "bad_left={bad_left}: clean channel has non-finite samples at {:?}",
+                good.iter().position(|v| !v.is_finite())
+            );
+            let (want, mono) = run(std::slice::from_ref(&clean));
+            mono_calls = mono[0];
+            assert!(good.iter().zip(&want[0]).all(|(p, q)| p.to_bits() == q.to_bits()));
+            assert_eq!(calls, vec![mono_calls; 2]);
+        }
+        assert!(mono_calls > 0);
+    }
 
     #[test]
     fn paired_channels_match_separate_ones_to_rounding() {
