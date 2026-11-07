@@ -33,12 +33,12 @@ fn main() {
         if per_au {
             count = 0;
             for (i, au) in aus.iter().enumerate() {
-                count += dec.decode(au, i as i64).expect("decode").len();
+                count += decode_checked(&mut dec, au, i as i64).len();
             }
             count += flush_checked(&mut dec).len();
             continue;
         }
-        pics = dec.decode(&data, 0).expect("decode");
+        pics = decode_checked(&mut dec, &data, 0);
         pics.extend(flush_checked(&mut dec));
         count = pics.len();
     }
@@ -53,6 +53,14 @@ fn main() {
         }
         std::fs::write(out, buf).expect("write output");
     }
+}
+
+/// Decode `data`, reporting a decode error on stderr and exiting instead of panicking.
+fn decode_checked(dec: &mut Decoder, data: &[u8], pts: i64) -> Vec<filmcraft_hevc::Picture> {
+    dec.decode(data, pts).unwrap_or_else(|e| {
+        eprintln!("decode: {e}");
+        std::process::exit(1);
+    })
 }
 
 /// Flush the decoder and fail on an error from work that was still in flight (a picture that
