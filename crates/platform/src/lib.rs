@@ -68,36 +68,62 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    register_encoders();
+    // the probe creates a hardware session (0.1-0.5 s): answer it now, off the UI thread,
+    // before the first draw of the format list asks
+    #[cfg(target_os = "macos")]
+    hardware_encode::warm_hevc_probe();
+    #[cfg(target_os = "windows")]
+    nvenc::warm_hevc_probe();
+    register_decoders()
+}
+
+/// Register the platform's hardware encoders and format probes, and defer hardware video decoder
+/// probing until [`filmcraft_codecs::make_video_decoder`] first needs a decoder (headless CLI and
+/// MCP startup, #4266).
+pub fn register_deferred() {
+    register_encoders();
+    filmcraft_codecs::register_video_decoder_init(init_decoders);
+}
+
+/// One-time initializer callback passed to [`filmcraft_codecs::register_video_decoder_init`].
+fn init_decoders() {
+    register_decoders();
+}
+
+/// Register the platform's hardware video encoders and export format probes (function pointers
+/// only; no GPU session is opened until an export or format check asks for one).
+fn register_encoders() {
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
     {
-        filmcraft_codecs::register_video_decoder(videotoolbox_factory);
         filmcraft_export::register_encoder(hardware_encode::videotoolbox_encoder_factory);
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, hardware_encode::hevc_available);
-        // the probe creates a hardware session (about 0.1 s): answer it now, off the UI thread,
-        // before the first draw of the format list asks
-        hardware_encode::warm_hevc_probe();
-        filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
-        Availability::Available("VideoToolbox")
-    }
-    // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows, so the format is available
-    // when a small HEVC session opens. That takes about half a second, so it is asked on a thread of
-    // its own now rather than by the first draw of the format list.
-    #[cfg(target_os = "windows")]
-    {
-        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
-        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
-        // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
-        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
-        nvenc::warm_hevc_probe();
     }
     #[cfg(target_os = "windows")]
     {
         static ENCODERS: std::sync::Once = std::sync::Once::new();
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+        // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
+        // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
         // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
         // export only when asked for and when NVENC can do it
         ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+    }
+}
+
+/// Probe and register the platform's hardware video decoders.
+fn register_decoders() -> Availability {
+    #[cfg(target_os = "macos")]
+    {
+        filmcraft_codecs::register_video_decoder(videotoolbox_factory);
+        filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
+        Availability::Available("VideoToolbox")
+    }
+    #[cfg(target_os = "windows")]
+    {
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")

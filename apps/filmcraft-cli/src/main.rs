@@ -278,14 +278,22 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     }
 }
 
+/// Register the GPU export frame renderer hook.
 fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });
 }
 
+/// Probe and register the platform's hardware video decoders immediately.
+#[cfg(test)]
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
+}
+
+/// Defer hardware video decoder probes until a video decoder is first needed (#4266).
+fn defer_hardware_decoders() {
+    filmcraft_platform::register_deferred();
 }
 
 /// `path` made absolute against the working directory, as the project stores it. Unlike
@@ -303,6 +311,7 @@ async fn main() {
     }
 }
 
+/// Parse command-line arguments, register deferred hardware hooks, and dispatch the subcommand.
 async fn cli() {
     // `std::env::args` panics on an argument that is not Unicode (a Linux file name in Latin-1)
     let a = Args::parse(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
@@ -317,7 +326,7 @@ async fn cli() {
         outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    register_hardware_decoders();
+    defer_hardware_decoders();
     register_gpu_frame_renderer();
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
@@ -665,10 +674,12 @@ mod format_tests {
         assert_eq!(super::render_at_playhead(&s, 0.5).unwrap().0.w, 8);
     }
 
-    /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
-    /// decoders at start-up.
+    /// The CLI (and MCP / headless runs, which share its entry point) defers hardware decoder
+    /// probes at start-up (#4266) and registers the decoders when requested.
     #[test]
     fn startup_registers_the_hardware_decoders() {
+        super::defer_hardware_decoders();
+        assert!(!filmcraft_platform::registered(), "deferred until a video decoder is needed");
         let hardware = super::register_hardware_decoders();
         // always on macOS and Windows; on Linux when a VA-API driver or NVIDIA's driver (NVDEC) is there
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
