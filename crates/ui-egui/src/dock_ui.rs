@@ -471,6 +471,14 @@ fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
     style
 }
 
+/// The focused panel's top edge, drawn inside `frame` across the selected `tab` only, so the line
+/// under the tab strip marks that tab. `None` when the tab's rect is not known yet.
+fn focus_tab_edge(frame: Rect, tab: Option<Rect>) -> Option<[egui::Pos2; 2]> {
+    let (x0, x1) = (tab?.left().max(frame.left()), tab?.right().min(frame.right()));
+    let y = frame.top() + 0.5;
+    (x0 < x1).then(|| [egui::pos2(x0, y), egui::pos2(x1, y)])
+}
+
 /// FilmCraft's side of the dock area for one frame.
 struct FilmContent<'a> {
     app: &'a mut FilmcraftApp,
@@ -512,7 +520,16 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         ui.allocate_rect(ui.max_rect(), Sense::hover());
         // Painted after the body so child backgrounds cannot hide the focus outline (#1075).
         if self.app.ui.focused == *panel {
-            ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            // The outline's top edge would run under the whole tab strip: clip it away and redraw it
+            // across the selected tab only (#4432). The other three edges stay one rect for #1075.
+            // One extra physical pixel: at fractional scales the stroke's feathering reaches past the 1 pt edge.
+            let ppp = ui.ctx().pixels_per_point().max(1.0);
+            let below_top = Rect::from_min_max(frame.min + vec2(0.0, 1.0 + 1.0 / ppp), frame.max);
+            ui.painter().with_clip_rect(below_top.intersect(ui.clip_rect())).rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            let tab = DockArea::<PanelKind>::hit_rects(ui.ctx(), area_id()).into_iter().find_map(|(hit, r)| (hit == Hit::Tab(*panel)).then_some(r));
+            if let Some(edge) = focus_tab_edge(frame, tab) {
+                ui.painter().line_segment(edge, Stroke::new(1.0, t.focus));
+            }
         }
     }
 
@@ -632,8 +649,17 @@ mod tests {
     use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
     use craft_ui::layout::{SplitAxis, SplitSize};
 
-    use super::tab_group;
+    use super::{focus_tab_edge, tab_group};
     use crate::dock::{Layout, PanelKind};
+
+    #[test]
+    fn focus_outline_top_edge_spans_only_the_selected_tab() {
+        let frame = egui::Rect::from_min_max(egui::pos2(0.0, 32.0), egui::pos2(300.0, 200.0));
+        let tab = egui::Rect::from_min_max(egui::pos2(60.0, 0.0), egui::pos2(120.0, 32.0));
+        let [a, b] = focus_tab_edge(frame, Some(tab)).expect("a tab gives a top edge");
+        assert_eq!((a.x, b.x, a.y, b.y), (60.0, 120.0, 32.5, 32.5));
+        assert!(focus_tab_edge(frame, None).is_none(), "no tab, no top edge");
+    }
 
     /// The Timeline beside a dock column holding `group`.
     fn beside_dock(group: Group<PanelKind>, iconic: bool) -> Layout {
