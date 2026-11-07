@@ -328,20 +328,24 @@ fn a_placed_subclip_is_measured_by_its_parent_picture() {
     }
 }
 
-/// A source graphic made in a 1280 x 720 sequence is a 1280 x 720 picture. Placed again, its anchor
-/// is centred in that picture, like the clip it was made from, not in a 1920 x 1080 one (#3933).
+/// A source graphic made in a 1280 x 720 sequence is a 1280 x 720 picture. Placed in a 1920 x 1080
+/// sequence, its anchor is centred in that picture, like the clip it was made from, not in the frame (#3933).
 #[test]
 fn a_placed_source_graphic_is_measured_by_its_own_canvas() {
     let mut s = Session::default();
+    let centre = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(640.0, 360.0));
+    let anchor = |s: &Session, c: u64| {
+        s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.effect("motion").unwrap().params["anchor"].value.clone()
+    };
     s.execute("file.newSequence", json!({"name":"Graphic size","width":1280,"height":720,"fps":24})).unwrap();
     let made = s.execute("graphics.newRectangle", json!({"position":[640,360],"size":[400,200],"seconds":2,"time":0})).unwrap()["clip"].as_u64().unwrap();
     let item = s.execute("graphics.upgradeToSourceGraphic", json!({"clip":made})).unwrap()["item"].as_u64().unwrap();
+    assert_eq!(anchor(&s, made), centre, "the clip the graphic was made from");
+    // measured by this 1920 x 1080 frame instead of its canvas, the graphic would be anchored at (960, 540)
+    s.execute("file.newSequence", json!({"name":"Larger sequence","width":1920,"height":1080,"fps":24})).unwrap();
     let r = s.execute("timeline.place", json!({"item":item,"track":"V1","time":Tick::from_seconds_f64(10.0).0})).unwrap();
     let placed = r["clips"][0].as_u64().unwrap();
-    let q = s.active_sequence().unwrap();
-    let anchor = |c: u64| q.find_item(filmcraft_project::ClipId(c)).unwrap().1.effect("motion").unwrap().params["anchor"].value.clone();
-    assert_eq!(anchor(made), filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(640.0, 360.0)));
-    assert_eq!(anchor(placed), anchor(made));
+    assert_eq!(anchor(&s, placed), centre, "the graphic placed in a 1920 x 1080 sequence");
 }
 
 #[test]
