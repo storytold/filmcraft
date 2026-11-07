@@ -320,3 +320,45 @@ fn color_info_says_which_values_no_tag_gave() {
     let item = s.active_sequence().unwrap().find_item(clip).unwrap().1.item;
     assert_eq!(s.execute("media.colorInfo", json!({"item": item.0})).unwrap()["assumed"], serde_json::Value::Null);
 }
+
+#[test]
+fn lumetri_commands_target_the_indexed_instance() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    // at least two Lumetri instances on the clip
+    loop {
+        let n = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().filter(|e| e.effect == "lumetri").count();
+        if n >= 2 {
+            break;
+        }
+        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    }
+    let idxs: Vec<usize> = {
+        let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+        it.effects.iter().enumerate().filter(|(_, e)| e.effect == "lumetri").map(|(i, _)| i).collect()
+    };
+    assert_eq!(idxs.len(), 2);
+    let (first, second) = (idxs[0], idxs[1]);
+    let section = |s: &Session, i: usize| {
+        s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[i].param("basic_on").map(|p| p.value.as_bool().unwrap_or(false)).unwrap_or(false)
+    };
+    let first_before = section(&s, first);
+    // explicit `effect` index targets the second instance only
+    s.execute("lumetri.setSection", json!({"clip": clip.0, "effect": second, "section": "basic"})).unwrap();
+    assert_eq!(section(&s, second), !first_before, "second instance toggled");
+    assert_eq!(section(&s, first), first_before, "first instance untouched");
+    // a bogus index is refused, never silently mapped to the first instance
+    assert!(s.execute("lumetri.setSection", json!({"clip": clip.0, "effect": 999, "section": "basic"})).is_err());
+    // `selected_effect` wins when no explicit index is given
+    let effects = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
+    s.state.selected_effect = crate::EffectSel::of(clip, &effects, second);
+    s.execute("lumetri.setSection", json!({"clip": clip.0, "section": "basic"})).unwrap();
+    assert_eq!(section(&s, second), first_before, "selected instance toggled back");
+    assert_eq!(section(&s, first), first_before, "first instance still untouched");
+    // selecting a mask clears `selected_effect`, so the masked instance wins
+    s.state.selected_effect = None;
+    s.state.selected_mask = Some(crate::masks::MaskSel { clip, effect: second, mask: 0 });
+    s.execute("lumetri.setSection", json!({"clip": clip.0, "section": "basic"})).unwrap();
+    assert_eq!(section(&s, second), !first_before, "masked instance toggled");
+    assert_eq!(section(&s, first), first_before, "first instance still untouched");
+}

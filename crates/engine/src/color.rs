@@ -13,7 +13,7 @@ use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, checked_u32_p, clip_p, has_seq, item_p, str_p, time_p};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -58,17 +58,17 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         query("lut.list", "List LUTs", "{}", list),
         spec("lut.remove", "Remove LUT", &[], r#"{"id":str}"#, always, remove),
         query("lut.export", "Export LUT", r#"{"lut":"lib:<id>"|"builtin:<id>","path":str,"format":"cube"|"3dl"?}"#, export),
-        spec("lumetri.setInputLut", "Set Input LUT", &[], r#"{"clip":id?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
+        spec("lumetri.setInputLut", "Set Input LUT", &[], r#"{"clip":id?,"effect":n?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
             set_lut(s, p, "input_lut")
         }),
-        spec("lumetri.setLook", "Set Creative Look", &[], r#"{"clip":id?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
+        spec("lumetri.setLook", "Set Creative Look", &[], r#"{"clip":id?,"effect":n?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
             set_lut(s, p, "look_lut")
         }),
         spec(
             "lumetri.applyMatch",
             "Apply Match",
             &[],
-            r#"{"clip":id?,"referenceTime":ticks?|"referenceFrame":n?|"referenceTimecode":str?,"faceDetection":bool=true}"#,
+            r#"{"clip":id?,"effect":n?,"referenceTime":ticks?|"referenceFrame":n?|"referenceTimecode":str?,"faceDetection":bool=true}"#,
             has_seq,
             apply_match,
         ),
@@ -76,7 +76,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "lumetri.setSection",
             "Toggle Lumetri Section",
             &[],
-            r#"{"clip":id?,"section":"basic"|"creative"|"curves"|"wheels"|"hsl"|"vignette","on":bool?}"#,
+            r#"{"clip":id?,"effect":n?,"section":"basic"|"creative"|"curves"|"wheels"|"hsl"|"vignette","on":bool?}"#,
             has_seq,
             set_section,
         ),
@@ -166,6 +166,11 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
+///
+/// An explicit `"effect"` index (as `effects.setParam` takes) wins, so a panel showing the
+/// second Lumetri instance edits that instance. Otherwise `selected_effect` from Effect
+/// Controls or the `selected_mask`'s effect wins when it is a Lumetri instance of this clip,
+/// (selecting a mask clears `selected_effect`); the first Lumetri instance is the fallback.
 pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
@@ -182,7 +187,31 @@ pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(Cli
         s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
     }
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
-    let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+    let explicit = match checked_u32_p(p, "effect", cmd)? {
+        Some(n) => Some(n as usize),
+        None => match p.get("index") {
+            Some(Value::Null) | None => None,
+            Some(_) => checked_u32_p(p, "index", cmd)?.map(|n| n as usize),
+        },
+    };
+    let idx = match explicit {
+        Some(i) => match it.effects.get(i) {
+            Some(e) if e.effect == "lumetri" => i,
+            _ => return Err(bad(cmd, "no Lumetri at that `effect` index")),
+        },
+        None => s
+            .state
+            .selected_effect
+            .as_ref()
+            .filter(|sel| sel.clip == clip && sel.effect == "lumetri")
+            .and_then(|sel| sel.index(&it.effects))
+            .or_else(|| {
+                s.state.selected_mask.filter(|m| m.clip == clip).and_then(|m| it.effects.get(m.effect).filter(|e| e.effect == "lumetri").map(|_| m.effect))
+            })
+            .or_else(|| it.effects.iter().position(|e| e.effect == "lumetri"))
+            .ok_or_else(|| bad(cmd, "no Lumetri"))?,
+    };
     Ok((clip, idx))
 }
 
