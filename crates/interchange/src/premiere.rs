@@ -61,6 +61,9 @@ mod motion;
 #[path = "premiere_audio.rs"]
 mod audio;
 
+#[path = "premiere_markers.rs"]
+mod markers;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub sequences: Vec<Sequence>,
@@ -77,6 +80,8 @@ pub struct Sequence {
     #[serde(default)]
     pub sample_rate: Option<u32>,
     pub work_out: Tick,
+    #[serde(default)]
+    pub markers: Vec<filmcraft_project::Marker>,
     pub tracks: Vec<Track>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +117,9 @@ pub struct Item {
     pub source_out: Tick,
     pub speed: f64,
     pub media_path: Option<String>,
+    /// Markers of the source media's master clip.
+    #[serde(default)]
+    pub media_markers: Vec<filmcraft_project::Marker>,
     pub nested_sequence: Option<String>,
     pub text: Option<String>,
     pub audio_category: Option<String>,
@@ -636,6 +644,15 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     if let Some(path) = &media_path {
                         work_left = work_left.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
                     }
+                    let mut media_markers = Vec::new();
+                    if media_path.is_some() {
+                        let master = referred(sub.and_then(|s| child(s, "MasterClip")), &uids, "ObjectURef");
+                        let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
+                        if let Some(master_clip) = referred(first, &ids, "ObjectRef").and_then(|c| child(c, "Clip")) {
+                            spend(&mut work_left, master_clip)?;
+                            media_markers = markers::read(master_clip, &ids, &mut work_left, report, &label)?;
+                        }
+                    }
                     items.push(Item {
                         object_id: item.attribute("ObjectID").unwrap_or("").into(),
                         link: item.attribute("ObjectID").and_then(|id| links.get(id)).map(|id| (*id).to_string()),
@@ -645,6 +662,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         disabled,
                         motion_keys,
                         media_path,
+                        media_markers,
                         nested_sequence,
                         label,
                         start,
@@ -663,6 +681,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             }
         }
         let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
+        let markers = markers::read(n, &ids, &mut work_left, report, &name)?;
         sequences.push(Sequence {
             object_uid,
             name,
@@ -671,6 +690,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
             frame_rate,
             sample_rate,
             work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?,
+            markers,
             tracks,
         });
     }
@@ -749,6 +769,9 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
         if src.work_out > Tick::ZERO {
             seq.work_area = Some(filmcraft_time::TimeRange::new(Tick::ZERO, src.work_out));
         }
+        for marker in &src.markers {
+            seq.markers.push(filmcraft_project::Marker { id: filmcraft_project::MarkerId(b.alloc()), ..marker.clone() });
+        }
         for track in &src.tracks {
             if track.kind == "caption" {
                 let mut captions = CaptionTrack::new(TrackId(b.alloc()), format!("Captions {}", track.index + 1), CaptionFormat::Subtitle);
@@ -801,10 +824,19 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                         ..Default::default()
                     };
                     let id = b.file_media(&format!("{}:{path}", track.kind), &item.label, &path, &spec, None);
+                    let media_markers: Vec<_> = item
+                        .media_markers
+                        .iter()
+                        .map(|marker| filmcraft_project::Marker { id: filmcraft_project::MarkerId(b.alloc()), ..marker.clone() })
+                        .collect();
                     if let Some(pi) = b.p.item_mut(id)
                         && let ItemKind::Media(m) = &mut pi.kind
                     {
                         m.offline = true;
+                        // Several timeline clips share one media item; its first markers win.
+                        if m.markers.is_empty() {
+                            m.markers = media_markers;
+                        }
                     }
                     if item.media_path.is_none() {
                         warning(&mut report, format!("{}: media unresolved; kept offline placeholder", item.label));
@@ -1271,6 +1303,7 @@ mod tests {
             source_out: Tick(TPS),
             speed: 1.0,
             media_path: None,
+            media_markers: Vec::new(),
             nested_sequence: Some(name),
             text: None,
             audio_category: None,
@@ -1290,6 +1323,7 @@ mod tests {
                 frame_rate: None,
                 sample_rate: None,
                 work_out: Tick::ZERO,
+                markers: Vec::new(),
                 tracks: vec![Track { kind: "video".into(), index: 0, muted: false, name: None, locked: false, items }],
             });
         }
@@ -1390,6 +1424,69 @@ mod tests {
         assert_eq!(blank.name, track.name, "a blank stored name keeps the generated name");
         let long = xml.replace("Interviews", &"n".repeat(4097));
         assert!(import(long.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string().contains("track name"));
+    }
+    // Hand-written marker records in the DVAMarker JSON shape; colours are 0xAABBGGRR.
+    fn marker_fixture() -> String {
+        let record = |id: &str, json: &str| format!(r#"<Marker ObjectID="{id}"><DVAMarker>{}</DVAMarker></Marker>"#, json.replace('"', "&quot;"));
+        let markers = [
+            record("m-comment", r#"{"DVAMarker":{"mComment":"with end","mCuePointList":[{"mKey":"k","mValue":"{\"color\":4281740498}"}],"mDuration":{"ticks":254016000000},"mName":"comment","mStartTime":{"ticks":127008000000},"mType":"Comment"}}"#),
+            record("m-web", r#"{"DVAMarker":{"mLocation":"https://example.com","mName":"web","mStartTime":{"ticks":"381024000000"},"mType":"WebLink"}}"#),
+            record("m-chapter", r#"{"DVAMarker":{"mName":"chapter","mStartTime":{"ticks":0},"mType":"Chapter"}}"#),
+            record("m-bad", "not json"),
+            record("m-media", r#"{"DVAMarker":{"mName":"media note","mStartTime":{"ticks":63504000000},"mType":"Segmentation"}}"#),
+        ]
+        .concat();
+        fixture()
+            .replace("<Name>Sequence 01</Name>", r#"<MarkerOwner><Markers ObjectRef="seq-markers"/></MarkerOwner><Name>Sequence 01</Name>"#)
+            .replace(r#"<Name>camera.mov</Name><Clip ObjectRef="22"/>"#, r#"<Name>camera.mov</Name><MasterClip ObjectURef="master"/><Clip ObjectRef="22"/>"#)
+            .replace(
+                "</PremiereData>",
+                &format!(
+                    r#"<Markers ObjectID="seq-markers"><Markers><Marker Index="0"><Second ObjectRef="m-comment"/></Marker><Marker Index="1"><Second ObjectRef="m-web"/></Marker><Marker Index="2"><Second ObjectRef="m-chapter"/></Marker><Marker Index="3"><Second ObjectRef="m-bad"/></Marker></Markers></Markers>
+<MasterClip ObjectUID="master"><Clips><Clip Index="0" ObjectRef="master-clip"/></Clips></MasterClip>
+<VideoClip ObjectID="master-clip"><Clip><MarkerOwner><Markers ObjectRef="media-markers"/></MarkerOwner></Clip></VideoClip>
+<Markers ObjectID="media-markers"><Markers><Marker Index="0"><Second ObjectRef="m-media"/></Marker></Markers></Markers>
+{markers}</PremiereData>"#
+                ),
+            )
+    }
+    #[test]
+    fn sequence_and_master_clip_markers_are_imported() {
+        let (fragment, _, report) = import(marker_fixture().as_bytes(), &ImportOptions::default(), None).unwrap();
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        let got: Vec<_> = seq.markers.iter().map(|m| (m.start, m.duration, m.name.as_str(), m.comment.as_str(), m.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                (Tick::ZERO, Tick::ZERO, "chapter", "", filmcraft_project::MarkerKind::Chapter),
+                (Tick(TPS / 2), Tick(TPS), "comment", "with end", filmcraft_project::MarkerKind::Comment),
+                (Tick(3 * TPS / 2), Tick::ZERO, "web", "", filmcraft_project::MarkerKind::WebLink),
+            ]
+        );
+        assert_eq!(seq.markers[1].color, Label::Rose, "red cue-point colour");
+        assert_eq!(seq.markers[0].color, Label::Green, "Premiere's default marker colour");
+        assert!(seq.markers.iter().all(|m| seq.markers.iter().filter(|o| o.id == m.id).count() == 1));
+        assert!(report.mentions("web") && report.mentions("URL"), "{report:?}");
+        assert!(report.mentions("marker could not be read"), "{report:?}");
+        let clip = &seq.video_tracks[0].items[0];
+        let ItemKind::Media(media) = &fragment.project.item(clip.item).unwrap().kind else { panic!() };
+        assert_eq!(
+            media.markers.iter().map(|m| (m.start, m.name.as_str(), m.kind)).collect::<Vec<_>>(),
+            [(Tick(TPS / 4), "media note", filmcraft_project::MarkerKind::Segmentation)]
+        );
+    }
+    #[test]
+    fn hostile_marker_records_never_panic_or_escape_bounds() {
+        let base = marker_fixture();
+        for bad in ["{\"ticks\":-5}", "{\"ticks\":9223372036854775807}", "{\"ticks\":1.5}", "{\"ticks\":\"x\"}", "[]", "null"] {
+            let xml = base.replace("{&quot;ticks&quot;:0}", &bad.replace('"', "&quot;"));
+            let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None)).unwrap();
+            let (fragment, _, _) = result.unwrap_or_else(|e| panic!("{bad}: {e}"));
+            let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+            assert!(seq.markers.iter().all(|m| m.start >= Tick::ZERO && m.duration >= Tick::ZERO && m.start.0 + m.duration.0 <= Tick::MAX.0), "{bad}");
+        }
+        let cyclic = base.replace(r#"<Second ObjectRef="m-comment"/>"#, r#"<Second ObjectRef="seq-markers"/>"#);
+        assert!(std::panic::catch_unwind(|| import(cyclic.as_bytes(), &ImportOptions::default(), None)).unwrap().is_ok());
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {

@@ -298,7 +298,7 @@ niche requests among the bug reports about two to one, and nobody reports having
 **Alpha.** It passes the core-workflow gate ([roadmap.md](roadmap.md#alpha-gate): all six of Premiere's core daily workflows work end to end on macOS and the project saves and reopens). Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
 round-trip through XML / AAF), but ready-for-real-work is ~56%, below the ~75% beta bar, and the
 standard's beta condition "opens and saves the target's main format reliably" is not yet met:
-FilmCraft opens a bounded subset of `.prproj` projects; bins, markers and full effect fidelity
+FilmCraft opens a bounded subset of `.prproj` projects; bins and full effect fidelity
 remain unsupported ([limits](premiere-import.md)). The readiness scores and effort estimates
 below have not been re-measured for this importer.
 Distance to beta: ~19 points of ready-for-real-work plus broader `.prproj` coverage, ~400–700 agent-hours:

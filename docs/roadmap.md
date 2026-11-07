@@ -47,7 +47,7 @@ Beta = ready for real work ≥ ~75% and `.prproj` opens reliably ([target-app-pa
 | # | Milestone | Status | Est. |
 |---|---|---|---|
 | B1 | PR CI on three OSs + launch-crash fixes | ⬜ | 40–80 |
-| B2 | `.prproj` import: sequences/clips/timing/provenance available; markers, bins and full effect fidelity remain ([limits](premiere-import.md)) | partial | not re-estimated |
+| B2 | `.prproj` import: sequences/clips/timing/provenance and markers available; bins and full effect fidelity remain ([limits](premiere-import.md)) | partial | not re-estimated |
 | B3 | Camera media: H.264 High 10 / 4:2:2, HEVC 4:2:2, E-AC-3, AVI, multi-track audio confirmed | 🟡 (multi-stream audio #361) | 50–90 |
 | B4 | Fidelity harness + `cargo xtask parity` + media corpus + workflow tests | ⬜ | 90–160 |
 | B5 | Hardware: zero-copy, more GPU effects, Windows vendor encoders, VideoToolbox Main 10 | 🟡 | 60–100 |
