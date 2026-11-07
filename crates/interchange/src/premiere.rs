@@ -97,6 +97,9 @@ pub struct Item {
     pub video_effects: Vec<filmcraft_project::EffectInstance>,
     #[serde(default)]
     pub graphic: bool,
+    /// Clip > Enable turned off (`ClipTrackItem/IsMuted`).
+    #[serde(default)]
+    pub disabled: bool,
     pub label: String,
     pub start: Tick,
     pub end: Tick,
@@ -592,6 +595,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         }
                     }
                     let audio_category = value(item, "ESP.Tag").map(str::to_string);
+                    let disabled =
+                        child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
                     let target = source_target(clip, &ids, &uids, &mut work_left)?;
                     let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
                     let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
@@ -621,6 +626,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                         audio,
                         video_effects,
                         graphic,
+                        disabled,
                         motion_keys,
                         media_path,
                         nested_sequence,
@@ -783,6 +789,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
                 };
                 let mut clip = b.clip(source, kind, &item.label, item.start, item.end - item.start, item.source_in);
                 clip.speed = item.speed;
+                clip.enabled = !item.disabled;
                 if let Some(link) = &item.link {
                     clip.link = Some(*link_ids.entry(link.clone()).or_insert_with(|| b.alloc()));
                 }
@@ -1232,6 +1239,7 @@ mod tests {
             audio: BTreeMap::new(),
             video_effects: Vec::new(),
             graphic: false,
+            disabled: false,
             label: name.clone(),
             start: Tick::ZERO,
             end: Tick(TPS),
@@ -1325,6 +1333,18 @@ mod tests {
         assert_eq!((item.start, item.end, item.source_in, item.source_out), (Tick::ZERO, Tick(3 * TPS), Tick::ZERO, Tick(10 * TPS)));
         assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].source_in, Tick::ZERO);
         assert!(report.entries.iter().any(|e| e.message.contains("camera.mov") && e.message.contains("in point")), "{report:?}");
+    }
+    #[test]
+    fn disabled_clips_import_disabled() {
+        // Hand-written: Clip > Enable is stored as the clip track item's IsMuted.
+        let xml = fixture().replace("<SubClip ObjectRef=\"21\"/></ClipTrackItem>", "<SubClip ObjectRef=\"21\"/><IsMuted>true</IsMuted></ClipTrackItem>");
+        let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(tree.sequences[0].tracks[0].items[0].disabled);
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        assert!(!seq.video_tracks[0].items[0].enabled);
+        assert!(seq.video_tracks[0].enabled, "a disabled clip does not disable its track");
+        let (fragment, _, _) = import(fixture().as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].enabled);
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {

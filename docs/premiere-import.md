@@ -55,7 +55,7 @@ Copying just the `.fcproj` does not include its linked media or source snapshot.
 available at their recorded locations; automatic portable-project conversion is outside this importer.
 
 Supported: video/audio tracks (track `IsMuted` only; the track-fader mute checkbox is not read),
-exact tick ranges, constant positive speed, nested
+disabled clips (`ClipTrackItem/IsMuted`), exact tick ranges, constant positive speed, nested
 sequences, still media, caption text, plain text graphics, editable Motion scale/position/rotation,
 intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
 records without absolute timing retain clip-edge fades. Unknown effects remain
