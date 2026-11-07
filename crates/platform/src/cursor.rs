@@ -22,7 +22,44 @@ pub fn cursor_screen_position() -> Option<(i32, i32)> {
     Some((p.x, p.y))
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Whether [`cursor_screen_position`] reports points (macOS: AppKit's coordinates) rather than physical pixels.
+pub const CURSOR_IN_POINTS: bool = cfg!(target_os = "macos");
+
+/// macOS: winit's AppKit backend reports no pointer position while files are dragged in from Finder (#4296),
+/// so read it from Quartz: global points, origin at the main display's top-left, as winit's window positions use.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn cursor_screen_position() -> Option<(i32, i32)> {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        fn CGEventGetLocation(event: *const c_void) -> CGPoint;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+    // SAFETY: a null source is allowed and yields an event stamped with the current state; the event is
+    // checked for null, read once, and released exactly once (CGEventCreate follows the Create rule).
+    let (x, y) = unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let p = CGEventGetLocation(event);
+        CFRelease(event);
+        (p.x, p.y)
+    };
+    (x.is_finite() && y.is_finite()).then_some((x.round() as i32, y.round() as i32))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn cursor_screen_position() -> Option<(i32, i32)> {
     None
 }
