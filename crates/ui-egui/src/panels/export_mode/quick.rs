@@ -82,7 +82,12 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let q = &mut app.ui.export;
     let area = egui::Area::new(egui::Id::unique("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.set_width(340.0);
+            let row_w = presets
+                .iter()
+                .map(|name| ui.painter().layout_no_wrap(crate::i18n::t(name).to_string(), Tokens::ui(12.5), t.text).size().x + 12.0)
+                .fold(320.0_f32, f32::max)
+                .min(420.0);
+            ui.set_width(row_w + 20.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(tl!("Quick Export")).strong().size(14.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -101,7 +106,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
                 ui.label(egui::RichText::new(tl!("Preset")).color(t.text_dim).size(11.5));
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     for name in &presets {
-                        let r = list_row(ui, &t, preset_key(name) == preset_key(&q.quick_preset), crate::i18n::t(name), 320.0);
+                        let r = list_row(ui, &t, preset_key(name) == preset_key(&q.quick_preset), crate::i18n::t(name), row_w);
                         reg.add(format!("quickExport.preset.{name}"), r.rect, name.clone());
                         if r.clicked() {
                             q.quick_preset = name.clone();
@@ -150,7 +155,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     }
 }
 
-/// A left-aligned selectable list row of a fixed width.
+/// A left-aligned selectable list row of a fixed width, with its text clipped to the row's padded
+/// bounds so a long preset name cannot bleed over adjacent columns.
 pub(super) fn list_row(ui: &mut egui::Ui, t: &Tokens, selected: bool, text: &str, width: f32) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click());
     let bg = if selected {
@@ -161,6 +167,8 @@ pub(super) fn list_row(ui: &mut egui::Ui, t: &Tokens, selected: bool, text: &str
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(r, 3.0, bg);
-    ui.painter().text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.5), if selected { Color32::WHITE } else { t.text });
+    let col = if selected { Color32::WHITE } else { t.text };
+    let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(r.shrink2(vec2(6.0, 0.0))));
+    p.text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.5), col);
     resp
 }
