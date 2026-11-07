@@ -95,6 +95,103 @@ fn aaf_embedded_trimmed_audio_round_trips_sample_exact() {
 }
 
 #[test]
+fn separate_projects_do_not_share_embedded_audio_extractions() {
+    for extension in ["aaf", "omf"] {
+        let (mut first, _, seq, dir) = setup(&format!("separate-project-{extension}"));
+        let path = dir.join(format!("cut.{extension}")).to_string_lossy().into_owned();
+        let command = if extension == "aaf" { "file.exportAaf" } else { "file.exportOmf" };
+        first.execute(command, json!({"path": path, "audio": "embedded", "sequence": seq.0})).unwrap();
+        let result = first.execute("file.import", json!({"paths": [path]})).unwrap();
+        let first_item = first.project.sequence(imported_seq(&result)).unwrap().audio_tracks[0].items[0].item;
+        let first_path = path_of(&first, first_item);
+        let bytes = std::fs::read(&first_path).unwrap();
+        let saved = dir.join("first.fcproj").to_string_lossy().into_owned();
+        first.execute("file.save", json!({"path": saved})).unwrap();
+        let mut second = Session::default();
+        let result = second.execute("file.import", json!({"paths": [path]})).unwrap();
+        let second_item = second.project.sequence(imported_seq(&result)).unwrap().audio_tracks[0].items[0].item;
+        let second_path = path_of(&second, second_item);
+        assert_ne!(first_path, second_path, "different projects need independent extractions");
+        let result = second.execute("media.makeOffline", json!({"items": [second_item.0], "deleteFiles": true})).unwrap();
+        assert_eq!(result["deleted"], json!([second_path]));
+        assert_eq!(std::fs::read(&first_path).unwrap(), bytes);
+        let mut reopened = Session::default();
+        reopened.execute("file.open", json!({"path": saved})).unwrap();
+        assert_eq!(audio_of(&first, first_item, 0, 480), audio_of(&reopened, first_item, 0, 480));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn malformed_serialized_item_ids_cannot_hide_shared_audio_references() {
+    let (mut s, _, seq, dir) = setup("malformed-shared-ids");
+    let path = dir.join("cut.aaf").to_string_lossy().into_owned();
+    s.execute("file.exportAaf", json!({"path": path, "audio": "embedded", "sequence": seq.0})).unwrap();
+    let first = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let older = s.project.sequence(imported_seq(&first)).unwrap().audio_tracks[0].items[0].item;
+    let second = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    let newer = s.project.sequence(imported_seq(&second)).unwrap().audio_tracks[0].items[0].item;
+    let shared = path_of(&s, older);
+    assert_eq!(shared, path_of(&s, newer));
+    Arc::make_mut(&mut s.project).item_mut(newer).unwrap().id = older;
+    let loaded = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+    s.project = Arc::new(loaded.project);
+    assert_eq!(s.project.item(newer).unwrap().id, older);
+    let project = s.project.clone();
+    let bytes = std::fs::read(&shared).unwrap();
+    let history = (s.history.undo.len(), s.history.redo.len());
+    assert!(s.execute("media.makeOffline", json!({"items": [older.0], "deleteFiles": true})).is_err());
+    assert!(Arc::ptr_eq(&s.project, &project));
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+    assert_eq!(std::fs::read(&shared).unwrap(), bytes);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn reused_embedded_audio_cannot_be_deleted_while_another_item_needs_it() {
+    for extension in ["aaf", "omf"] {
+        let (mut s, _, seq, dir) = setup(&format!("shared-delete-{extension}"));
+        let path = dir.join(format!("cut.{extension}")).to_string_lossy().into_owned();
+        let command = if extension == "aaf" { "file.exportAaf" } else { "file.exportOmf" };
+        s.execute(command, json!({"path": path, "audio": "embedded", "sequence": seq.0})).unwrap();
+        let first = s.execute("file.import", json!({"paths": [path]})).unwrap();
+        let older = s.project.sequence(imported_seq(&first)).unwrap().audio_tracks[0].items[0].item;
+        let second = s.execute("file.import", json!({"paths": [path]})).unwrap();
+        let newer = s.project.sequence(imported_seq(&second)).unwrap().audio_tracks[0].items[0].item;
+        let shared = path_of(&s, older);
+        assert_eq!(shared, path_of(&s, newer));
+        let bytes = std::fs::read(&shared).unwrap();
+        let project = s.project.clone();
+        let history = (s.history.undo.len(), s.history.redo.len());
+        let revision = s.revision;
+        let error = s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).unwrap_err();
+        assert!(error.to_string().contains("referenced"), "{error}");
+        assert_eq!(std::fs::read(&shared).unwrap(), bytes);
+        assert!(Arc::ptr_eq(&s.project, &project));
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+        assert_eq!(s.revision, revision);
+        let shared_path = std::path::Path::new(&shared);
+        let alias = shared_path.parent().unwrap().join(".").join(shared_path.file_name().unwrap()).to_string_lossy().into_owned();
+        Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: alias };
+        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "path aliases still refer to the same file");
+        let media = Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap();
+        media.media = MediaRef::File { path: dir.join("a.mov").to_string_lossy().into_owned() };
+        media.proxy = Some(MediaRef::File { path: shared.clone() });
+        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "an unselected proxy still needs the file");
+        let media = Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap();
+        media.media = MediaRef::File { path: shared.clone() };
+        media.proxy = None;
+        s.execute("media.makeOffline", json!({"items": [older.0]})).unwrap();
+        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "offline references still need their backing file");
+        let result = s.execute("media.makeOffline", json!({"items": [older.0, newer.0], "deleteFiles": true})).unwrap();
+        assert_eq!(result["deleted"], json!([shared]));
+        assert!(!std::path::Path::new(&shared).exists());
+        assert!(s.project.item(newer).unwrap().as_media().unwrap().offline);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
     for (format, extension) in [(filmcraft_interchange::Format::Aaf, "aaf"), (filmcraft_interchange::Format::Omf, "omf")] {
         let (mut s, _items, seq, dir) = setup(&format!("embedded-collision-{extension}"));

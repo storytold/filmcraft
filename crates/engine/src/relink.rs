@@ -12,7 +12,7 @@
 //!   prefix → the new one) and applies it to every other missing file, checking each one.
 //! - **Search.** [`search`] walks a folder for files named like the missing ones.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use filmcraft_media::MediaInfo;
@@ -560,6 +560,37 @@ fn deletable_media(s: &Session, id: ItemId, path: &str) -> bool {
     recorded.is_some_and(|want| identity_of(&*s.services, path).is_ok_and(|have| have == want))
 }
 
+/// Refuse deleting backing files still used by unselected items, including offline media and
+/// proxies. Reimported embedded audio can share one extracted file across several project items.
+fn check_shared_deletions(s: &Session, files: &[(ItemId, String)]) -> Result<()> {
+    let selected: BTreeSet<_> = files.iter().map(|(id, _)| *id).collect();
+    let candidates: BTreeSet<_> = files
+        .iter()
+        .filter_map(|(id, path)| {
+            let resolved = s.media.follow(path).ok()?;
+            deletable_media(s, *id, &resolved).then(|| std::fs::canonicalize(&resolved).unwrap_or_else(|_| PathBuf::from(resolved)))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    for (_, item) in s.project.items.iter().filter(|(id, _)| !selected.contains(*id)) {
+        let Some(media) = item.as_media() else { continue };
+        for reference in std::iter::once(&media.media).chain(media.proxy.iter()) {
+            let MediaRef::File { path } = reference else { continue };
+            let Ok(resolved) = s.media.follow(path) else { continue };
+            let canonical = std::fs::canonicalize(&resolved).unwrap_or_else(|_| PathBuf::from(resolved));
+            if candidates.contains(&canonical) {
+                return Err(bad(
+                    "media.makeOffline",
+                    "a file is still referenced by an unselected project item; select all references or take the items offline without deleting files",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `media.makeOffline {items?, deleteFiles?}`.
 pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
@@ -577,6 +608,9 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("media.makeOffline", "select file-based media items"));
     }
     let delete = bool_p(p, "deleteFiles").unwrap_or(false);
+    if delete {
+        check_shared_deletions(s, &files)?;
+    }
     s.edit("Make Offline", |proj, _| {
         for (i, _) in &files {
             if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {

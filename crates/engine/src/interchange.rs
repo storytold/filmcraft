@@ -28,10 +28,31 @@ fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
     matches!(&item.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::File { .. }))
 }
 
-/// Write embedded audio or reuse an identical regular file; never replace an occupied path.
+fn audio_path_key(s: &Session, path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(s.media.follow(path).ok()?);
+    #[cfg(not(target_arch = "wasm32"))]
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    Some(path)
+}
+
+fn reusable_audio_paths(s: &Session) -> std::collections::BTreeSet<std::path::PathBuf> {
+    s.project
+        .items
+        .values()
+        .filter_map(|item| item.as_media())
+        .flat_map(|media| std::iter::once(&media.media).chain(media.proxy.iter()))
+        .filter_map(|reference| match reference {
+            MediaRef::File { path } => audio_path_key(s, path),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Reuse only identical regular files already referenced by this project: a different project
+/// must get its own extraction rather than inherit another project's destructive file lifecycle.
 /// Return the path used. A numbered
 /// name changes only the file name: the folder keeps its separators as written (`/` or `\`).
-fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
+fn write_embedded_audio(s: &Session, path: &str, wav: &[u8], reusable: &std::collections::BTreeSet<std::path::PathBuf>) -> Result<String> {
     let (folder, name) = path.split_at(path.rfind(['/', '\\']).map_or(0, |i| i + 1));
     if matches!(name, "" | "." | "..") {
         return Err(EngineError::Other(format!("{path}: missing audio file name")));
@@ -51,7 +72,7 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
         Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Some(std::collections::HashSet::new()),
         _ => None,
     };
-    // Two passes: every numbered name is checked for an identical file before any file is
+    // Two passes: eligible numbered names are checked for an identical file before any file is
     // created, so a free earlier slot does not win over a match at a later one (one loop that
     // creates at the first free name would write a duplicate there).
     for number in 1..=1_000 {
@@ -60,7 +81,7 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
             continue;
         }
         let candidate = format!("{folder}{name}");
-        if s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
+        if audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key)) && s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
             return Ok(candidate);
         }
     }
@@ -71,7 +92,9 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // An occupied name is compared again rather than taken as a mismatch: another
                 // import may have written these same bytes there since the search pass.
-                if s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
+                if audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key))
+                    && s.services.existing_file_matches(&candidate, wav).unwrap_or(false)
+                {
                     return Ok(candidate);
                 }
             }
@@ -101,13 +124,14 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
             let (mut fragment, extracted, report) = r.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            let reusable = reusable_audio_paths(s);
             for m in extracted {
                 let media = fragment
                     .project
                     .item_mut(m.item)
                     .and_then(|item| item.as_media_mut())
                     .ok_or_else(|| EngineError::Other(format!("{}: embedded audio has no media item", m.path)))?;
-                let written_path = write_embedded_audio(s, &m.path, &m.wav)?;
+                let written_path = write_embedded_audio(s, &m.path, &m.wav, &reusable)?;
                 if written_path != m.path {
                     media.media = MediaRef::File { path: written_path };
                 }
@@ -235,7 +259,18 @@ mod embedded_audio_tests {
 
     use crate::{Services, Session};
 
-    use super::write_embedded_audio;
+    // These matcher tests make every numbered candidate eligible; command tests cover project scope.
+    fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> crate::Result<String> {
+        let (folder, name) = path.split_at(path.rfind(['/', '\\']).map_or(0, |i| i + 1));
+        let (stem, ext) = name.rfind('.').map(|i| name.split_at(i)).unwrap_or((name, ""));
+        let reusable = (1..=1_000)
+            .filter_map(|n| {
+                let candidate = if n == 1 { path.to_owned() } else { format!("{folder}{stem} ({n}){ext}") };
+                super::audio_path_key(s, &candidate)
+            })
+            .collect();
+        super::write_embedded_audio(s, path, wav, &reusable)
+    }
 
     #[derive(Default)]
     struct VirtualFiles(Mutex<HashMap<String, Vec<u8>>>, AtomicUsize, AtomicBool);
