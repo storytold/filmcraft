@@ -177,6 +177,97 @@ fn gpu_export_matches_cpu_and_counts() {
 
     // (the frame renderer registry is process-wide: the coded-media exports run here, after it)
     coded_media_exports_decode_on_the_gpu();
+    gpu_rendered_ten_bit_ramp_keeps_its_luma_codes();
+}
+
+const RAMP_W: u32 = 1024;
+const RAMP_H: u32 = 128;
+
+/// A 10-bit 4:2:2 picture: luma 64..=940 from left to right, every row alike, neutral chroma.
+struct Ramp(filmcraft_media::MediaInfo);
+
+impl MediaSource for Ramp {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let row = (0..RAMP_W).map(|x| (64 + 876 * x / (RAMP_W - 1)) as u16);
+        let y: Vec<u16> = (0..RAMP_H).flat_map(|_| row.clone()).collect();
+        let c = Arc::new(vec![512u16; (RAMP_W / 2 * RAMP_H) as usize]);
+        let data = filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), c.clone(), c], chroma: filmcraft_frame::Chroma::C422, bits: 10, alpha: None };
+        Ok(Arc::new(filmcraft_frame::VideoFrame {
+            width: RAMP_W,
+            height: RAMP_H,
+            data,
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        }))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        Err(filmcraft_media::MediaError::NoStream("audio"))
+    }
+}
+
+/// Distinct 10-bit luma codes on the middle row of the first frame of the file at `path`.
+fn luma_codes(path: &str) -> usize {
+    let bytes: Arc<[u8]> = std::fs::read(path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes(path, bytes).unwrap();
+    let f = src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+    let (w, row) = (f.width as usize, f.height as usize / 2);
+    let filmcraft_frame::PixelData::Yuv16 { planes, bits, .. } = &f.data else { panic!("{path}: unexpected frame {:?}", f.data) };
+    let mut codes: Vec<u32> = planes[0][row * w..(row + 1) * w].iter().map(|&v| u32::from(v) << 10 >> bits).collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes.len()
+}
+
+/// A 10-bit ramp rendered by the GPU and exported to ProRes HQ keeps its luma codes: the GPU
+/// renderer hands the encoder 16-bit floats, not an RGBA8 picture (about 256 of the 877 codes).
+/// Needs the GPU frame renderer registered (the registry is process-wide).
+fn gpu_rendered_ten_bit_ramp_keeps_its_luma_codes() {
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let g = GeneratorSource::new(Generator::ColorMatte { color: [0.0; 4] }, RAMP_W, RAMP_H, r, filmcraft_time::Tick(TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let mut p = filmcraft_project::Project::new("ramp");
+    let item = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let seq = p.new_sequence("s", SequenceSettings { width: RAMP_W, height: RAMP_H, frame_rate: r, ..Default::default() }, 1, 0, None);
+    let ti = p.make_track_item(item, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(2)), r).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+    let mut m = SourceMap::default();
+    m.0.insert(item, Arc::new(Ramp(info)));
+
+    let dir = std::env::temp_dir().join(format!("fc-gpu-ramp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ramp-hq.mov").to_string_lossy().into_owned();
+    let s = ExportSettings {
+        format: Format::ProRes,
+        prores_profile: "hq".into(),
+        path: path.clone(),
+        include_audio: false,
+        gpu_rendering: GpuRendering::Auto,
+        ..Default::default()
+    };
+    let frames = filmcraft_gpu::export_renderer::timing::get().frames;
+    export(&Arc::new(p), seq, &s, &m, &Progress::default()).unwrap();
+    assert!(filmcraft_gpu::export_renderer::timing::get().frames > frames, "the ramp was rendered on the GPU");
+    let levels = luma_codes(&path);
+    assert!(levels > 850, "GPU-rendered ramp in ProRes HQ: {levels} of 877 luma codes");
 }
 
 /// A MOV of `frames` (VC-3 or ProRes, one per frame at 24 fps).
