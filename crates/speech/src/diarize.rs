@@ -57,6 +57,10 @@ const MAX_CLUSTER_CHUNKS: usize = 256;
 /// fold and the per-chunk vectors would still be a document-controlled amount of work, so the
 /// transcript keeps a single speaker instead.
 const MAX_CHUNKS: usize = 8_192;
+/// Frames of a chunk that feed its voice vector (60 s). The spectrum, mel and MFCC buffers are built
+/// per chunk, never for the whole file (eight hours of power spectrum would be 2.3 GB), so a chunk
+/// longer than this, which only hostile parameters allow, is represented by its first minute.
+const MAX_CHUNK_FRAMES: usize = 6_000;
 
 /// Word index ranges of the chunks.
 pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
@@ -115,6 +119,20 @@ fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
     (frames, energy, mfcc)
 }
 
+/// Energy and MFCCs of frames `a..b` of `audio`, computed from that stretch alone (plus one analysis
+/// window past it, so the last frames are centred as they would be in the whole file). Returns the
+/// number of frames produced, at most `b - a`.
+fn chunk_mfcc(audio: &[f32], a: usize, b: usize) -> (usize, Vec<f32>, Vec<f32>) {
+    let lo = a.saturating_mul(crate::mel::HOP).min(audio.len());
+    let hi = b.saturating_mul(crate::mel::HOP).saturating_add(crate::mel::N_FFT).min(audio.len());
+    let Some(slice) = audio.get(lo..hi) else { return (0, Vec::new(), Vec::new()) };
+    let (frames, mut energy, mut mfcc) = mfcc_frames(slice);
+    let keep = frames.min(b.saturating_sub(a));
+    energy.truncate(keep);
+    mfcc.truncate(keep * N_MFCC);
+    (keep, energy, mfcc)
+}
+
 fn rms_distance(a: &[f32], b: &[f32]) -> f32 {
     (a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>() / a.len().max(1) as f32).sqrt()
 }
@@ -163,16 +181,22 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
     if ch.len() > MAX_CHUNKS {
         return one(t);
     }
-    let (frames, energy, mfcc) = mfcc_frames(audio);
-    // chunk vectors: mean and std of MFCC 1..N over voiced frames
+    let frames = audio.len() / crate::mel::HOP;
+    // chunk vectors: mean and std of MFCC 1..N over the chunk's voiced frames. Features are computed
+    // chunk by chunk, so memory is bounded by the longest chunk, not by the file.
     let dim = 2 * (N_MFCC - 1);
     let mut vecs: Vec<Vec<f32>> = Vec::new();
     let mut weight: Vec<f32> = Vec::new();
+    // running sums of the MFCCs over every chunk's voiced frames, for the yardstick below
+    let mut sum = [0f64; N_MFCC];
+    let mut sumsq = [0f64; N_MFCC];
+    let mut count = 0f64;
     for c in &ch {
         let a = ((t.words[c.start].start.0 / FRAME_TICKS).max(0) as usize).min(frames);
-        let b = ((t.words[c.end - 1].end.0 / FRAME_TICKS).max(0) as usize).min(frames).max(a);
-        let peak = energy[a..b].iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let voiced: Vec<usize> = (a..b).filter(|&f| energy[f] > peak - 30.0).collect();
+        let b = ((t.words[c.end - 1].end.0 / FRAME_TICKS).max(0) as usize).min(frames).max(a).min(a.saturating_add(MAX_CHUNK_FRAMES));
+        let (cf, energy, mfcc) = chunk_mfcc(audio, a, b);
+        let peak = energy.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let voiced: Vec<usize> = (0..cf).filter(|&f| energy[f] > peak - 30.0).collect();
         let mut v = vec![0f32; dim];
         if !voiced.is_empty() {
             let n = voiced.len() as f32;
@@ -181,23 +205,25 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
                 let var = voiced.iter().map(|&f| (mfcc[f * N_MFCC + k] - mean).powi(2)).sum::<f32>() / n;
                 v[k - 1] = mean;
                 v[N_MFCC - 1 + k - 1] = var.sqrt();
+                for &f in &voiced {
+                    let x = mfcc[f * N_MFCC + k] as f64;
+                    sum[k] += x;
+                    sumsq[k] += x * x;
+                }
             }
+            count += n as f64;
         }
         vecs.push(v);
         weight.push(voiced.len() as f32);
     }
-    // scale each dimension by its spread over all voiced frames of the file (an absolute yardstick:
-    // one voice stays close to itself however many chunks there are)
-    let all: Vec<usize> = {
-        let peak = energy.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        (0..frames).filter(|&f| energy[f] > peak - 40.0).collect()
-    };
-    let nf = all.len().max(1) as f32;
+    // scale each dimension by its spread over the voiced frames of every chunk (an absolute
+    // yardstick: one voice stays close to itself however many chunks there are)
+    let nf = count.max(1.0);
     for k in 1..N_MFCC {
-        let mean = all.iter().map(|&f| mfcc[f * N_MFCC + k]).sum::<f32>() / nf;
-        let sd = (all.iter().map(|&f| (mfcc[f * N_MFCC + k] - mean).powi(2)).sum::<f32>() / nf).sqrt().max(1e-6);
+        let mean = sum[k] / nf;
+        let sd = ((sumsq[k] / nf - mean * mean).max(0.0).sqrt() as f32).max(1e-6);
         for v in &mut vecs {
-            v[k - 1] = (v[k - 1] - mean) / sd;
+            v[k - 1] = (v[k - 1] - mean as f32) / sd;
             v[N_MFCC - 1 + k - 1] /= sd;
         }
     }
