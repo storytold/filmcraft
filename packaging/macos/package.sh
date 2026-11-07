@@ -16,6 +16,8 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/macos"
+# shellcheck source=dmg.sh
+. "$HERE/dmg.sh"
 
 ARCH=universal
 SKIP_BUILD=0
@@ -126,6 +128,10 @@ plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 # licences of the embedded craft-fonts fonts (builds with CRAFT_FONTS_DIR)
 copy_font_licences "$APP/Contents/Resources"
+# `codesign --verify --strict` rejects Finder info and resource forks in a bundle (#882), and `cp`
+# copies extended attributes, so a local checkout can bring them in on the icon or a licence.
+# Apple's xattr: a Homebrew `xattr` earlier on PATH has no -r.
+/usr/bin/xattr -cr "$APP"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
 # Today the only nested code is the main executable; frameworks/helpers would be signed here too.
@@ -151,15 +157,18 @@ ln -s /Applications "$STAGE/Applications"
 mkdir -p "$STAGE/.background"
 cp "$HERE/dmg/background.tiff" "$STAGE/.background/background.tiff"
 cp "$HERE/dmg/dmg-layout.DS_Store" "$STAGE/.DS_Store"
-rm -f "$DMG" "$WORK/raw.dmg"
-# makehybrid + convert builds the image without attaching a device, unlike `create -srcfolder`,
-# which is flaky on CI runners ("Resource busy") and hangs in sandboxed sessions.
+rm -f "$DMG"
+# `hdiutil create -srcfolder` writes the files as they are. `makehybrid -hfs` gave every file a
+# com.apple.FinderInfo (a Finder location of -1,-1), which `codesign --verify --strict` rejects on
+# the app in the image and on a copy installed from it (#882; the sibling apps made the same
+# change in storytold/pdfcraft#823 and storytold/vectorcraft#1121). `create` attaches a device
+# while it copies: see hdiutil_retry in dmg.sh for CI and sandboxes.
 # The volume name has no version: .DS_Store finds the background through an alias that includes it.
-hdiutil makehybrid -hfs -hfs-volume-name "FilmCraft" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
-hdiutil convert "$WORK/raw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-rm -f "$WORK/raw.dmg"
+hdiutil_retry create create -srcfolder "$STAGE" -volname "FilmCraft" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$DMG"
 sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
+# Before notarizing: the app in the image must still pass --strict, so this can't regress unseen.
+check_dmg_app "$DMG" FilmCraft.app
 if [[ "$NOTARIZE" = 1 ]]; then
   notarize "$DMG"
   stapler_retry staple "$DMG"
