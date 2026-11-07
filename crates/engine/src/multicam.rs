@@ -139,7 +139,7 @@ fn base_commands() -> Vec<CommandSpec> {
             "clip.synchronize",
             "Synchronize…",
             &["Clip"],
-            r#"{"method":"in|out|timecode|marker|audio","clips":[id]?,"reference":clip?,"track":"V1"|"A1"?,"ignoreHours":bool?,"marker":str?,"offset":frames?}"#,
+            r#"{"method":"in|out|timecode|marker|audio","clips":[id]?,"reference":clip?,"track":"V1"|"A1"?,"ignoreHours":bool?,"marker":str?,"offset":frames?,"moveUnreliable":bool?}"#,
             can_synchronize,
             synchronize,
             true,
@@ -412,17 +412,23 @@ fn synchronize(s: &mut Session, p: &Value) -> Result<Value> {
     // timeline time of each unit's anchor must equal the reference's
     let at = |u: &Unit, a: Tick| u.rep.start + Tick(((a - u.rep.source_in).0 as f64 / u.rep.speed.abs().max(1e-9)).round() as i64);
     let t_ref = at(&units[reference], anchors[reference].anchor);
-    let mut deltas: Vec<Tick> = units.iter().zip(&anchors).map(|(u, a)| t_ref - at(u, a.anchor)).collect();
-    // nothing may move before the sequence start: shift everything (reference too) right
+    // a clip whose audio match is not reliable stays where it is unless asked otherwise
+    let move_unreliable = bool_p(p, "moveUnreliable").unwrap_or(false);
+    let synced: Vec<bool> = anchors.iter().map(|a| move_unreliable || a.audio.is_none_or(|r| r.reliable())).collect();
+    let mut deltas: Vec<Tick> = units.iter().zip(&anchors).zip(&synced).map(|((u, a), ok)| if *ok { t_ref - at(u, a.anchor) } else { Tick::ZERO }).collect();
+    // nothing may move before the sequence start: shift every synchronized unit (reference too) right
     let min_start = units
         .iter()
         .zip(&deltas)
-        .flat_map(|(u, d)| u.members.iter().filter_map(|m| pos(*m)).map(move |x| x.2.start + *d).collect::<Vec<_>>())
+        .zip(&synced)
+        .filter(|(_, ok)| **ok)
+        .flat_map(|((u, d), _)| u.members.iter().filter_map(|m| pos(*m)).map(move |x| x.2.start + *d).collect::<Vec<_>>())
         .min()
         .unwrap_or(Tick::ZERO);
     if min_start < Tick::ZERO {
-        deltas.iter_mut().for_each(|d| *d -= min_start);
+        deltas.iter_mut().zip(&synced).filter(|(_, ok)| **ok).for_each(|(d, _)| *d -= min_start);
     }
+    let unsynchronized: Vec<u64> = units.iter().zip(&synced).filter(|(_, ok)| !**ok).map(|(u, _)| u.rep.id.0).collect();
     let mut moved = 0usize;
     let mut placements: Vec<(TrackId, TrackItem)> = Vec::new();
     let mut remove: Vec<ClipId> = Vec::new();
@@ -461,7 +467,7 @@ fn synchronize(s: &mut Session, p: &Value) -> Result<Value> {
             })
         })?;
     }
-    Ok(json!({"moved": moved, "reference": reference, "clips": rep}))
+    Ok(json!({"moved": moved, "reference": reference, "clips": rep, "unsynchronized": unsynchronized}))
 }
 
 // ---------------------------------------------------------------- Merge Clips / Create Multi-Camera
