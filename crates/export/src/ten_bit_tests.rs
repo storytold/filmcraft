@@ -178,7 +178,8 @@ fn frame_bytes_is_what_a_frame_holds() {
         ("ProRes 4444", &sdr, ExportSettings { prores_profile: "4444".into(), ..settings(Format::ProRes, "a.mov") }, false, 12),
         ("ProRes 4444 with alpha", &sdr, with_alpha("4444"), false, 16),
         ("ProRes HQ ignores alpha", &sdr, with_alpha("hq"), false, 12),
-        ("HDR ProRes 4444 with alpha", &hdr, with_alpha("4444"), true, 12),
+        ("HDR ProRes 4444 with alpha", &hdr, with_alpha("4444"), true, 16),
+        ("HDR ProRes HQ ignores alpha", &hdr, with_alpha("hq"), true, 12),
     ];
     for (what, p, s, hdr_out, per_pixel) in cases {
         let pipe = Pipeline::new(p.clone(), seq, &s, hdr_out).unwrap();
@@ -306,4 +307,85 @@ fn a_dnxhr_export_with_alpha_keeps_its_alpha() {
         let sample = file.read_sample(data.as_slice(), vt, 0).unwrap();
         assert!(!filmcraft_dnx::probe(&sample).unwrap().alpha, "{profile}: no alpha without the setting");
     }
+}
+
+/// A smooth full-frame alpha ramp (every pixel differs from its neighbour: the worst case for
+/// lossless alpha) over a flat colour.
+struct AlphaRamp(MediaInfo);
+
+impl MediaSource for AlphaRamp {
+    fn info(&self) -> &MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let px: Vec<u8> = (0..W * H).flat_map(|i| [60, 120, 200, ((i % W) * 255 / (W - 1) + (i / W) * 3 % 7) as u8]).collect();
+        Ok(Arc::new(VideoFrame { width: W, height: H, data: PixelData::Rgba8(Arc::new(px)), color: ColorInfo::REC709, par: (1, 1), pts: Tick::ZERO }))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<AudioBuffer> {
+        Err(MediaError::NoStream("audio"))
+    }
+}
+
+/// A feathered alpha over the whole frame is ordinary content: where it does not fit lossless
+/// alpha's share of the frame size, that frame is coded with DCT alpha (its header says so)
+/// instead of failing the export, and its decoded alpha stays close to the source.
+#[test]
+fn a_busy_alpha_falls_back_to_dct_alpha_per_frame() {
+    let (p, seq, m) = project_of([0.0; 4], |g| Arc::new(AlphaRamp(g.info().clone())));
+    let source = AlphaRamp(any_info()).video_frame(FrameRequest::full(Tick::ZERO)).unwrap().to_rgba8();
+    let mut fell_back = 0;
+    for profile in ["lb", "sq", "hq", "hqx"] {
+        let s = ExportSettings { dnx_profile: profile.into(), alpha: true, ..settings(Format::DnxHr, &format!("busy-{profile}.mov")) };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{profile}: {e}"));
+        let data = std::fs::read(&s.path).unwrap();
+        let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+        let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        assert_eq!(file.tracks[vt].samples.len(), 4, "{profile}: every frame");
+        for i in 0..file.tracks[vt].samples.len() {
+            let sample = file.read_sample(data.as_slice(), vt, i).unwrap();
+            let header = filmcraft_dnx::probe(&sample).unwrap();
+            assert!(header.alpha, "{profile} frame {i}: alpha flag");
+            let frame = filmcraft_dnx::decode_frame(&sample).unwrap();
+            let got = frame.alpha.as_ref().unwrap();
+            let shift = u32::from(frame.bit_depth) - 8;
+            let worst = got.iter().zip(source.as_chunks::<4>().0).map(|(&g, c)| ((u32::from(g) >> shift) as i32 - i32::from(c[3])).abs()).max().unwrap();
+            if header.lossless_alpha {
+                // (the 8-bit source goes through 10 bits and back: one code at most)
+                assert!(worst <= 1, "{profile} frame {i}: lossless alpha is {worst} codes off");
+            } else {
+                fell_back += 1;
+                assert!(worst <= 24, "{profile} frame {i}: DCT alpha is {worst} codes off");
+            }
+        }
+    }
+    assert!(fell_back > 0, "the ramp is too much for lossless alpha in at least one profile");
+}
+
+/// An HDR (PQ) export with Include Alpha Channel keeps the picture's alpha, in DNxHR and ProRes 4444.
+#[test]
+fn an_hdr_export_with_alpha_keeps_its_alpha() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    let (sdr, seq, m) = project_of([0.0; 4], |g| Arc::new(SoftDisc(g.info().clone())));
+    let mut hdr = (*sdr).clone();
+    hdr.sequence_mut(seq).unwrap().settings.color = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+    let hdr = Arc::new(hdr);
+    let source = SoftDisc(any_info()).video_frame(FrameRequest::full(Tick::ZERO)).unwrap().to_rgba8();
+    let cases = [
+        ExportSettings { dnx_profile: "hqx".into(), alpha: true, ..settings(Format::DnxHr, "hdr-alpha.mov") },
+        ExportSettings { prores_profile: "4444".into(), alpha: true, ..settings(Format::ProRes, "hdr-alpha-prores.mov") },
+    ];
+    for s in cases {
+        export(&hdr, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes: Arc<[u8]> = std::fs::read(&s.path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes(&s.path, bytes).unwrap();
+        let px = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap().to_rgba8();
+        assert_eq!(px.len(), source.len(), "{}", s.path);
+        let worst = px.as_chunks::<4>().0.iter().zip(source.as_chunks::<4>().0).map(|(a, b)| (i32::from(a[3]) - i32::from(b[3])).abs()).max().unwrap();
+        assert!(worst <= 2, "{}: alpha is {worst} codes off", s.path);
+        assert!(px.as_chunks::<4>().0.iter().any(|c| c[3] > 0 && c[3] < 255), "{}: soft edge kept", s.path);
+    }
+}
+
+fn any_info() -> MediaInfo {
+    GeneratorSource::new(Generator::BlackVideo, W, H, FrameRate::FPS_24, Tick(TICKS_PER_SECOND)).info().clone()
 }

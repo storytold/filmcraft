@@ -183,9 +183,9 @@ impl Pipeline {
     /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
     /// Keep the immutable capacity even after a failed renderer retires the pool.
     /// Whether [`Pipeline::frame`] returns the RGBA8 picture next to the floats: an SDR float frame
-    /// with alpha keeps it for the alpha channel (HDR frames carry none).
+    /// with alpha keeps it for the alpha channel; so does an HDR frame (its floats are straight colour).
     pub(crate) fn keeps_rgba_with_floats(&self) -> bool {
-        self.float_frames && !self.hdr_out && self.alpha
+        self.float_frames && self.alpha
     }
 
     pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
@@ -298,17 +298,25 @@ impl Pipeline {
         let lim = &self.effects.video_limiter;
         if let Some(tf) = self.out_tf.as_ref().filter(|_| self.hdr_out) {
             let mut out = vec![0f32; img.w * img.h * 3];
+            let straight = self.alpha;
             out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
                 for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                    o.copy_from_slice(&tf.encode([p[0], p[1], p[2]]));
+                    // with alpha the colour is straight, next to the alpha channel
+                    let k = match straight {
+                        false => 1.0,
+                        true if p[3] > 0.0 => 1.0 / p[3].min(1.0),
+                        true => 0.0,
+                    };
+                    o.copy_from_slice(&tf.encode([p[0] * k, p[1] * k, p[2] * k]));
                 }
             });
             if lim.enabled {
                 limit_f32(&mut out, lim.min_percent, lim.max_percent);
             }
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return (rgba, out);
         }
         if self.float_frames {
             let mut out = srgb_floats(&img, self.alpha);

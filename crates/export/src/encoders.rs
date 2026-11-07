@@ -305,7 +305,7 @@ impl DnxEncoder {
             match catch_unwind(AssertUnwindSafe(|| self.enc.encode_with(fr, Some(backend.as_mut())))) {
                 Ok(done) => {
                     self.backend = Some(backend);
-                    let (data, used) = done.map_err(|e| ExportError::Encode(e.to_string()))?;
+                    let (data, used) = done.map_err(|e| self.error(e))?;
                     if used {
                         note_gpu_encoded();
                     } else {
@@ -318,7 +318,16 @@ impl DnxEncoder {
                 }
             }
         }
-        self.enc.encode(fr).map_err(|e| ExportError::Encode(e.to_string()))
+        self.enc.encode(fr).map_err(|e| self.error(e))
+    }
+
+    fn error(&self, e: filmcraft_dnx::Error) -> ExportError {
+        match (e, self.alpha) {
+            (filmcraft_dnx::Error::DoesNotFit, true) => {
+                ExportError::Encode("The alpha channel is too detailed for this DNxHR profile; choose HQ or HQX, or simplify the alpha.".into())
+            }
+            (e, _) => ExportError::Encode(e.to_string()),
+        }
     }
 }
 

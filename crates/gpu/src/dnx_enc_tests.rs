@@ -258,9 +258,16 @@ fn noise_and_black_frames_stay_within_the_profile_limits() {
         eprintln!("{name}: GPU {} bytes, CPU {} bytes, identical {}", gpu.len(), cpu.len(), gpu == cpu);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    // lossless noise does not fit any frame: both refuse it, and the GPU never hands one out
+    // lossless noise does not fit an LB frame: the encoder codes that frame with DCT alpha instead
+    // (CPU and GPU alike), and the header says so
     let cfg = with(Profile::Lb, 256, 64, 8, Some(AlphaCoding::Lossless));
-    assert!(both(&mut enc, &cfg, &noise_frame(Profile::Lb, 256, 64, 8, true)).is_none(), "lossless alpha noise fitted an LB frame");
+    let frame = noise_frame(Profile::Lb, 256, 64, 8, true);
+    let (cpu, gpu, _) = both(&mut enc, &cfg, &frame).expect("lossless alpha noise falls back to DCT alpha");
+    for (who, bytes) in [("CPU", &cpu), ("GPU", &gpu)] {
+        let h = filmcraft_dnx::probe(bytes).expect("a parsable frame");
+        assert!(h.alpha && !h.lossless_alpha, "{who}: the fallback frame says DCT alpha");
+        assert!(filmcraft_dnx::decode_frame(bytes).is_ok(), "{who}: the fallback frame decodes");
+    }
 }
 
 /// Bits of every scan line (macroblock bits summed, padded to 4 bytes), added up.

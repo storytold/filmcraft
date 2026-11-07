@@ -123,10 +123,27 @@ impl Encoder {
     /// `encode`, with the per-macroblock work on `backend` when it takes the frame. Returns the
     /// frame and whether the backend coded it. When the backend declines, fails or answers
     /// inconsistently, the whole frame is coded here instead.
-    pub fn encode_with(&mut self, f: &Frame, backend: Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
+    ///
+    /// Lossless alpha ([`AlphaCoding::Lossless`]) is not rate-controlled: its bits have to fit what
+    /// the colour leaves of the frame size. A frame whose alpha is too detailed for that is coded
+    /// with DCT alpha instead (rate-controlled, with the frame's header saying so), so a stream may
+    /// mix both codings; every decoder reads the coding from each frame's header.
+    pub fn encode_with(&mut self, f: &Frame, mut backend: Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
+        match self.encode_once(f, &mut backend) {
+            Err(Error::DoesNotFit) if self.cfg.alpha == Some(AlphaCoding::Lossless) => {
+                self.cfg.alpha = Some(AlphaCoding::Dct);
+                let done = self.encode_once(f, &mut backend);
+                self.cfg.alpha = Some(AlphaCoding::Lossless);
+                done
+            }
+            done => done,
+        }
+    }
+
+    fn encode_once(&mut self, f: &Frame, backend: &mut Option<&mut dyn MacroblockBackend>) -> Result<(Vec<u8>, bool)> {
         self.validate(f)?;
         let budget_bits = (self.frame_size as u64 - self.header_size as u64 - 4) * 8;
-        if let Some(backend) = backend
+        if let Some(backend) = backend.as_deref_mut()
             && let Some(out) = self.encode_on_backend(f, backend, budget_bits)
         {
             return Ok((out, true));
@@ -340,7 +357,7 @@ impl Encoder {
         }
         let end = self.frame_size as usize - 4;
         if out.len() > end {
-            return Err(Error::Input("rate control overflow".into()));
+            return Err(Error::DoesNotFit);
         }
         out.resize(end, 0);
         out.extend_from_slice(&EOF_SIGNATURE);

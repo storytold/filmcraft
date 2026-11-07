@@ -46,6 +46,9 @@ pub enum Error {
     Row(usize),
     #[error("invalid encoder input: {0}")]
     Input(String),
+    /// The frame does not fit the profile's frame size at the coarsest quantiser.
+    #[error("the frame does not fit the profile's frame size")]
+    DoesNotFit,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
