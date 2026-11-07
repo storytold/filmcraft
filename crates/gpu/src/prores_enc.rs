@@ -15,10 +15,9 @@ use std::sync::atomic::AtomicBool;
 
 use filmcraft_prores::layout::tables;
 use filmcraft_prores::{ChromaFormat, EncoderConfig, Frame, Interlace, SliceBackend, SliceJob};
-use rayon::prelude::*;
 
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
-use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device};
+use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
 
 /// Words of the constants (see `prores_enc.wgsl`): basis, scan, codebooks, AC rounding and
 /// contexts, then `1 / (4 qscale(q))` for every quantiser index from `C_INV`.
@@ -189,24 +188,6 @@ fn slice_table(jobs: &[SliceJob], mb_w: u32, mb_h: u32, bpm: u32) -> Option<(Vec
     let base = u32::try_from(words.len()).ok()?;
     words.extend_from_slice(&cols);
     Some((words, base))
-}
-
-/// The input planes as little-endian 16-bit samples, one after the other, in `out` (reused).
-fn pack_planes(out: &mut Vec<u8>, planes: &[&[u16]], bytes: usize) -> Option<()> {
-    const CHUNK: usize = 1 << 16;
-    out.truncate(bytes);
-    out.resize(bytes, 0);
-    let mut rest = &mut out[..];
-    for p in planes {
-        let (head, tail) = rest.split_at_mut_checked(p.len().checked_mul(2)?)?;
-        head.par_chunks_mut(2 * CHUNK).zip(p.par_chunks(CHUNK)).for_each(|(d, s)| {
-            for (d, v) in d.as_chunks_mut::<2>().0.iter_mut().zip(s) {
-                *d = v.to_le_bytes();
-            }
-        });
-        rest = tail;
-    }
-    Some(())
 }
 
 struct Pipes {
@@ -547,11 +528,6 @@ impl ProResGpuEncoder {
         }
         r
     }
-}
-
-/// Little-endian words of `data`.
-fn words_of(data: &[u8]) -> Vec<u32> {
-    data.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
 }
 
 /// The coded bytes of every component from the read-back `data` (laid out by `aux`'s word

@@ -39,6 +39,7 @@ use filmcraft_render::Blend;
 use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
+mod dnx_enc;
 pub mod export_renderer;
 pub mod fx;
 mod intra;
@@ -47,6 +48,7 @@ pub mod lut;
 pub mod mask;
 mod prores_enc;
 mod transition;
+pub use dnx_enc::DnxGpuEncoder;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
@@ -1494,6 +1496,8 @@ fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
 
 #[cfg(test)]
 mod blend_tests;
+#[cfg(test)]
+mod dnx_enc_tests;
 #[cfg(test)]
 mod dnx_tests;
 #[cfg(test)]

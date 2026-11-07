@@ -1,8 +1,10 @@
-//! What the GPU intra encoders share (ProRes: [`crate::ProResGpuEncoder`]): the device they run
-//! on, how a step's wgpu errors are caught and counted, the limit checks every buffer passes before
-//! it is created, and read-back with a bound on the wait.
+//! What the GPU intra encoders share (ProRes: [`crate::ProResGpuEncoder`], DNxHR:
+//! [`crate::DnxGpuEncoder`]): the device they run on, how a step's wgpu errors are caught and
+//! counted, the limit checks every buffer passes before it is created, plane packing, and read-back
+//! with a bound on the wait.
 //!
-//! The encoders are backends of the CPU encoders (`filmcraft_prores::SliceBackend`): a call that
+//! The encoders are backends of the CPU encoders (`filmcraft_prores::SliceBackend`,
+//! `filmcraft_dnx::MacroblockBackend`): a call that
 //! fails returns nothing and the CPU encodes the frame. A wgpu error (validation, out of memory), a
 //! failed map or a read-back that takes longer than two seconds is a *device error*; the next frame
 //! tries again, and a second device error (or a lost device) retires the backend for its life.
@@ -44,6 +46,30 @@ pub(crate) fn fits(limits: &wgpu::Limits, coeff_bytes: u64, out_bytes: u64, w: u
 /// `words` as little-endian bytes (what storage buffers hold).
 pub(crate) fn le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// Little-endian words of `data`.
+pub(crate) fn words_of(data: &[u8]) -> Vec<u32> {
+    data.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
+}
+
+/// The input planes as little-endian 16-bit samples, one after the other, in `out` (reused).
+pub(crate) fn pack_planes(out: &mut Vec<u8>, planes: &[&[u16]], bytes: usize) -> Option<()> {
+    use rayon::prelude::*;
+    const CHUNK: usize = 1 << 16;
+    out.truncate(bytes);
+    out.resize(bytes, 0);
+    let mut rest = &mut out[..];
+    for p in planes {
+        let (head, tail) = rest.split_at_mut_checked(p.len().checked_mul(2)?)?;
+        head.par_chunks_mut(2 * CHUNK).zip(p.par_chunks(CHUNK)).for_each(|(d, s)| {
+            for (d, v) in d.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+                *d = v.to_le_bytes();
+            }
+        });
+        rest = tail;
+    }
+    Some(())
 }
 
 /// The two error scopes around one encoder step.
