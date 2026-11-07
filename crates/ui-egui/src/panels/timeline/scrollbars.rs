@@ -2799,6 +2799,7 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(2.0);
     let speed = app.session.state.timeline_ui.track_slider_shift_drag_speed;
+    let mut speed_changed = false;
     // once the Value has been typed the tick slider stays on Custom, even when the number
     // happens to match a preset (the main slider's `shift_drag_custom` the same way)
     let custom = app.session.state.timeline_ui.track_slider_shift_drag_custom;
@@ -2829,7 +2830,7 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 app.session.state.timeline_ui.track_slider_shift_drag_custom = true;
             }
         }
-        app.session.project_view_changed();
+        speed_changed = true;
     }
     // the Custom value row: 0.1x-10x
     ui.allocate_ui_with_layout(egui::vec2(row_w, 24.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
@@ -2847,9 +2848,17 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             app.session.state.timeline_ui.track_slider_shift_drag_speed = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_last_custom = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_custom = true;
-            app.session.project_view_changed();
+            speed_changed = true;
         }
     });
+    let pending_key = ui.make_persistent_id("timeline-track-slider-speed-pending");
+    if speed_changed {
+        ui.data_mut(|d| d.insert_temp(pending_key, true));
+    }
+    if ui.data(|d| d.get_temp::<bool>(pending_key)).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
+        ui.data_mut(|d| d.remove_temp::<bool>(pending_key));
+        app.session.project_view_changed();
+    }
 }
 
 /// The track sliders' settings popup opened from the Timeline's own menu ("Track Slider
