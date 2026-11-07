@@ -518,8 +518,9 @@ fn start_drag(
             let sel = &app.session.state.selection;
             if mods.shift {
                 let _ = app.session.execute("timeline.select", json!({"clips": [clip.0], "toggle": true, "linked": !mods.alt}));
-            } else if !sel.contains(&clip) || (mods.alt && resp.clicked()) {
-                // Alt-click isolates one side; Alt-drag keeps the selected group to copy.
+            } else if !sel.contains(&clip) || resp.clicked() {
+                // Alt-click isolates one side; a click on one of several selected clips makes it
+                // the primary (or sole, if unlinked) selection; a drag moves the selected group.
                 let _ = app.session.execute("timeline.select", json!({"clips": [clip.0], "linked": !mods.alt}));
             }
             if resp.drag_started() {
@@ -1388,13 +1389,12 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                     let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
                     app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
                     if r.clicked() {
+                        let menu_clip = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id)).filter(|c| app.session.state.selection.contains(c));
                         match crate::menus::invoke(app, &ctx, cmd, json!({})) {
                             // Unlink (#220): the clips were selected together because they were linked;
                             // keep only the one right-clicked, so it can be dragged away from the others
                             Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
-                                if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
-                                    && app.session.state.selection.contains(&clip)
-                                {
+                                if let Some(clip) = menu_clip {
                                     let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                                 }
                             }

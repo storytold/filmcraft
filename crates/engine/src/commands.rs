@@ -2400,12 +2400,15 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("clip.link", "Link", ["Clip"], Some("Cmd+L"), r#"{"clips":[id]?}"#, has_selection, |s, p| {
+            let explicit = p.get("clips").is_some() || p.get("clip").is_some();
             let sel = clips_p(s, p);
             // Unlink when any selected clip is linked, as the Timeline's context menu says (#1103):
             // a title or a music clip among the selection must not turn Unlink into a re-link
             let linked = sel.iter().any(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
-            s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
+            s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, st| {
                 if linked {
+                    let first_link = sel.first().and_then(|c| q.find_item(*c)).and_then(|(_, i)| i.link);
+                    let single_link = first_link.is_some_and(|l| sel.iter().all(|c| q.find_item(*c).and_then(|(_, i)| i.link) == Some(l)));
                     let mut links = Vec::new();
                     for c in &sel {
                         if let Some((_, i)) = q.find_item_mut(*c) {
@@ -2421,6 +2424,11 @@ fn build() -> Vec<CommandSpec> {
                         {
                             i.link = None;
                         }
+                    }
+                    // Unlinking a linked selection keeps only the primary clip selected (#4377),
+                    // so dragging or editing it immediately acts on that half alone.
+                    if !explicit && single_link {
+                        st.selection.truncate(1);
                     }
                 } else {
                     // each selected clip with its track kind, worked out once

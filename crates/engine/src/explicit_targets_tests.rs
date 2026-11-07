@@ -454,3 +454,19 @@ fn deletion_commands_fall_back_to_the_selection_only_when_no_target_is_named() {
     s.execute("timeline.delete", json!({"ripple": true})).unwrap();
     assert!(clip(&s, b.id).is_none(), "timeline.delete ripple falls back to the selection");
 }
+
+/// Unlinking a single linked pair via `clip.link` keeps only the primary selected clip (#4377).
+#[test]
+fn unlinking_selected_pair_keeps_only_primary_clip_selected() {
+    let mut s = demo();
+    let (v, au) = (v1(&s)[0].clone(), a1(&s)[0].clone());
+    assert!(v.link.is_some() && v.link == au.link);
+
+    s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+    assert_eq!(s.state.selection, vec![v.id, au.id]);
+
+    s.execute("clip.link", json!({})).unwrap();
+    assert_eq!(clip(&s, v.id).unwrap().link, None);
+    assert_eq!(clip(&s, au.id).unwrap().link, None);
+    assert_eq!(s.state.selection, vec![v.id]);
+}
