@@ -36,7 +36,11 @@ fn off_uses_the_software_decoder() {
     let d = filmcraft_codecs::make_video_decoder(&s.entry).unwrap();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     assert!(filmcraft_platform::registered(), "first hardware-enabled decode registers the decoders");
+    #[cfg(target_os = "linux")]
+    let deferred_registered = filmcraft_platform::registered();
     let available = filmcraft_platform::register();
+    #[cfg(target_os = "linux")]
+    assert_eq!(deferred_registered, matches!(available, filmcraft_platform::Availability::Available(_)), "first decode registers available decoders");
     assert_eq!(filmcraft_platform::register(), available, "registering twice is harmless");
     let hw = filmcraft_platform::hardware_decoder_for(&s.entry);
     if !hw {

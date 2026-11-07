@@ -286,6 +286,7 @@ fn register_gpu_frame_renderer() {
 }
 
 /// Probe and register the platform's hardware video decoders immediately.
+#[cfg(test)]
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
 }
