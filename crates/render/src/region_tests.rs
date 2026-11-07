@@ -229,6 +229,10 @@ fn shortcuts_give_the_general_paths_bits() {
     check("banner at zero opacity", &[cam(), Spec { opacity: 0.0, ..ban(bar) }], 1.0);
     // not placed as it is, or with effects: the general path
     check("moved camera", &[Spec { motion_scale: Some(50.0), ..cam() }, ban(bar)], 1.0);
+    // an enlarged picture filling the frame is not opaque at its edges, and still becomes the canvas
+    check("enlarged camera filling the frame", &[Spec { motion_scale: Some(177.78), ..cam() }], 1.0);
+    check("enlarged camera filling the frame + bar banner", &[Spec { motion_scale: Some(177.78), ..cam() }, ban(bar)], 1.0);
+    check("enlarged camera at half scale", &[Spec { motion_scale: Some(177.78), ..cam() }, ban(corner)], 0.5);
     check("scaled banner", &[cam(), Spec { motion_scale: Some(60.0), ..ban(corner) }], 1.0);
     check("camera with an effect", &[Spec { effect: Some("brightness_contrast"), ..cam() }, ban(bar)], 1.0);
     check("banner with an effect", &[cam(), Spec { effect: Some("gaussian_blur"), ..ban(bar) }], 1.0);

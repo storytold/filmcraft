@@ -238,6 +238,26 @@ fn hash2(x: usize, y: usize) -> f32 {
     (h >> 40) as f32 / (1u64 << 24) as f32
 }
 
+/// What [`composite`] gives for `img` at opacity 1 in Normal mode over a transparent black
+/// image, worked out in place: each pixel `s` becomes `s + 0 × (1 − a)`, and transparent black where
+/// its alpha is not above zero, the same arithmetic as the mix, so the bits are the same.
+pub fn over_transparent_black(img: &mut Image) {
+    if img.w == 0 || img.px.len() != img.w * img.h * 4 {
+        return;
+    }
+    img.px.par_chunks_mut(img.w * 4).for_each(|row| {
+        for p in row.as_chunks_mut::<4>().0 {
+            let sp = *p;
+            if sp[3] <= 0.0 {
+                *p = [0.0; 4];
+                continue;
+            }
+            let k = 1.0 - sp[3];
+            *p = sp.map(|c| c + 0.0 * k);
+        }
+    });
+}
+
 /// Composite `src` over `dst` (same size) with `opacity` and `mode`.
 pub fn composite(dst: &mut Image, src: &Image, opacity: f32, mode: Blend) {
     debug_assert_eq!((dst.w, dst.h), (src.w, src.h));
@@ -301,6 +321,33 @@ mod tests {
         let s = Image::filled(2, 1, [0.0, 0.25, 0.0, 0.5]);
         composite(&mut d, &s, 1.0, Blend::Normal);
         assert_eq!(d.get(0, 0), [0.25, 0.25, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn over_transparent_black_in_place_gives_the_mixs_bits() {
+        // well-formed pixels and the ones an effect can leave: alpha 0, below 0 or above 1, -0.0,
+        // NaN and infinities
+        let odd = [
+            [0.2, 0.4, 0.6, 1.0],
+            [0.1, 0.05, 0.0, 0.25],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.3, 0.2, 0.1, 0.0],
+            [-0.0, -0.0, 0.0, 0.5],
+            [-0.0, 0.1, -0.0, 1.5],
+            [0.4, 0.4, 0.4, -0.2],
+            [0.1, f32::NAN, 0.2, 0.7],
+            [0.1, 0.2, 0.3, f32::NAN],
+            [0.1, 0.2, 0.3, f32::INFINITY],
+            [f32::NEG_INFINITY, 0.2, 0.3, 0.6],
+            [1e-30, 2.0, -0.5, 1e-38],
+        ];
+        let src = Image { w: 4, h: 3, px: odd.iter().flatten().copied().collect() };
+        let mut mixed = Image::new(4, 3);
+        composite(&mut mixed, &src, 1.0, Blend::Normal);
+        let mut in_place = src.clone();
+        over_transparent_black(&mut in_place);
+        let bits = |i: &Image| i.px.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&in_place), bits(&mixed));
     }
 
     #[test]
