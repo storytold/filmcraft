@@ -13,7 +13,8 @@ pub(crate) fn escape(s: &str) -> String {
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
             '\'' => o.push_str("&apos;"),
-            c if (c as u32) < 0x20 && !matches!(c, '\n' | '\r' | '\t') => {}
+            '\r' => o.push_str("&#13;"),
+            c if (c as u32) < 0x20 && !matches!(c, '\n' | '\t') => {}
             c => o.push(c),
         }
     }
@@ -194,6 +195,17 @@ mod tests {
         assert_eq!(num(100.0), "100");
         assert_eq!(num(-0.0), "0");
         assert_eq!(num(0.1 + 0.2).parse::<f64>().unwrap(), 0.1 + 0.2);
+    }
+
+    #[test]
+    fn text_carriage_return_roundtrip() {
+        let mut w = XmlWriter::new(None);
+        w.open("a", &[]);
+        w.text("v", "x\r\ny\rz");
+        let s = w.finish();
+        assert!(s.contains("x&#13;\ny&#13;z"));
+        let d = parse(&s).unwrap();
+        assert_eq!(child_text(d.root_element(), "v"), Some("x\r\ny\rz"));
     }
 
     #[test]
