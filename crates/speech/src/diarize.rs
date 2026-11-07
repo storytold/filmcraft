@@ -46,9 +46,15 @@ impl Default for Params {
 const N_MELS: usize = 40;
 const N_MFCC: usize = 20;
 const FRAME_TICKS: i64 = TICKS_PER_SAMPLE * crate::mel::HOP as i64;
-/// Agglomerative linkage is cubic in the number of turns; beyond this, retain a safe single-speaker
-/// transcript instead of making a document-controlled amount of work.
+/// Agglomerative linkage is cubic in the number of chunks, so at most this many are clustered (the
+/// heaviest chunk of each of that many equal stretches of the file); every other chunk then joins
+/// the cluster whose clustered members it is closest to on average, which is linear in the number
+/// of chunks. A 48-minute interview has about 800 chunks.
 const MAX_CLUSTER_CHUNKS: usize = 256;
+/// Beyond this many chunks (about eight hours of dense dialogue) the assignment pass and the
+/// per-chunk vectors would still be a document-controlled amount of work, so the transcript keeps a
+/// single speaker instead.
+const MAX_CHUNKS: usize = 8_192;
 
 /// Word index ranges of the chunks.
 pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
@@ -128,7 +134,7 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
     if ch.len() < 2 {
         return one(t);
     }
-    if ch.len() > MAX_CLUSTER_CHUNKS {
+    if ch.len() > MAX_CHUNKS {
         return one(t);
     }
     let (frames, energy, mfcc) = mfcc_frames(audio);
@@ -169,25 +175,39 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
             v[N_MFCC - 1 + k - 1] /= sd;
         }
     }
-    // average-linkage agglomerative clustering
+    // the chunks that take part in the agglomerative step (all of them on a short file)
     let n = vecs.len();
-    let mut dist = vec![0f32; n * n];
-    for i in 0..n {
-        for j in i + 1..n {
-            let d = rms_distance(&vecs[i], &vecs[j]);
-            dist[i * n + j] = d;
-            dist[j * n + i] = d;
+    let sample: Vec<usize> = if n <= MAX_CLUSTER_CHUNKS {
+        (0..n).collect()
+    } else {
+        (0..MAX_CLUSTER_CHUNKS)
+            .filter_map(|k| {
+                let lo = k * n / MAX_CLUSTER_CHUNKS;
+                let hi = ((k + 1) * n / MAX_CLUSTER_CHUNKS).clamp(lo + 1, n);
+                (lo..hi).max_by(|&a, &b| weight.get(a).copied().unwrap_or(0.0).total_cmp(&weight.get(b).copied().unwrap_or(0.0)))
+            })
+            .collect()
+    };
+    let m = sample.len();
+    let vec_of = |s: usize| vecs.get(sample.get(s).copied().unwrap_or(0)).map(Vec::as_slice).unwrap_or(&[]);
+    // average-linkage agglomerative clustering over the sample (indices into `sample`)
+    let mut dist = vec![0f32; m * m];
+    for i in 0..m {
+        for j in i + 1..m {
+            let d = rms_distance(vec_of(i), vec_of(j));
+            dist[i * m + j] = d;
+            dist[j * m + i] = d;
         }
     }
-    let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut clusters: Vec<Vec<usize>> = (0..m).map(|i| vec![i]).collect();
     let link = |a: &[usize], b: &[usize]| -> f32 {
         let mut s = 0f32;
         for &i in a {
             for &j in b {
-                s += dist[i * n + j];
+                s += dist.get(i * m + j).copied().unwrap_or(0.0);
             }
         }
-        s / (a.len() * b.len()) as f32
+        s / (a.len() * b.len()).max(1) as f32
     };
     let max_speakers = p.max_speakers.max(1);
     loop {
@@ -209,26 +229,61 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         let b = clusters.remove(best.2);
         clusters[best.1].extend(b);
     }
-    // fold clusters with < 5 % of the voiced frames into their nearest neighbour
+    // every chunk's cluster: a sampled chunk keeps its own, any other joins the cluster whose
+    // sampled members it is closest to on average
+    let mut label = vec![usize::MAX; n];
+    for (ci, c) in clusters.iter().enumerate() {
+        for &s in c {
+            if let Some(l) = sample.get(s).and_then(|&i| label.get_mut(i)) {
+                *l = ci;
+            }
+        }
+    }
+    for i in 0..n {
+        if label[i] != usize::MAX {
+            continue;
+        }
+        let v = vecs.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let nearest = clusters
+            .iter()
+            .enumerate()
+            .map(|(ci, c)| (c.iter().map(|&s| rms_distance(v, vec_of(s))).sum::<f32>() / c.len().max(1) as f32, ci))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|x| x.1)
+            .unwrap_or(0);
+        label[i] = nearest;
+    }
+    // fold clusters with < 5 % of the voiced frames into their nearest neighbour (over all chunks)
+    let mut members: Vec<Vec<usize>> = (0..clusters.len()).map(|ci| (0..n).filter(|&i| label[i] == ci).collect()).collect();
+    let link_all = |a: &[usize], b: &[usize]| -> f32 {
+        let mut s = 0f32;
+        for &i in a {
+            for &j in b {
+                s += rms_distance(vecs.get(i).map(Vec::as_slice).unwrap_or(&[]), vecs.get(j).map(Vec::as_slice).unwrap_or(&[]));
+            }
+        }
+        s / (a.len() * b.len()).max(1) as f32
+    };
     let total: f32 = weight.iter().sum::<f32>().max(1.0);
     loop {
-        if clusters.len() <= 1 {
+        if members.len() <= 1 {
             break;
         }
-        let small = clusters.iter().position(|c| c.iter().map(|&i| weight[i]).sum::<f32>() < 0.05 * total);
+        let small = members.iter().position(|c| c.iter().map(|&i| weight.get(i).copied().unwrap_or(0.0)).sum::<f32>() < 0.05 * total);
         let Some(si) = small else { break };
-        let s = clusters.remove(si);
-        let near = (0..clusters.len()).min_by(|&a, &b| link(&s, &clusters[a]).total_cmp(&link(&s, &clusters[b]))).unwrap_or(0);
-        clusters[near].extend(s);
+        let s = members.remove(si);
+        let near = (0..members.len()).min_by(|&a, &b| link_all(&s, &members[a]).total_cmp(&link_all(&s, &members[b]))).unwrap_or(0);
+        members[near].extend(s);
     }
-    if clusters.len() == 1 {
+    if members.len() <= 1 {
         return one(t);
     }
     // number speakers by first appearance
-    let mut label = vec![0usize; n];
-    for (ci, c) in clusters.iter().enumerate() {
+    for (ci, c) in members.iter().enumerate() {
         for &i in c {
-            label[i] = ci;
+            if let Some(l) = label.get_mut(i) {
+                *l = ci;
+            }
         }
     }
     let mut order: Vec<usize> = Vec::new();
@@ -337,8 +392,35 @@ mod tests {
     }
 
     #[test]
-    fn excessive_turns_fall_back_without_clustering() {
-        let words = (0..=MAX_CLUSTER_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
+    fn a_long_file_with_more_chunks_than_are_clustered_still_gets_its_speakers() {
+        // two voices taking 300 turns of 1.5 s: about 300 chunks, more than MAX_CLUSTER_CHUNKS
+        let a = |s| voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 1.5, s);
+        let b = |s| voice(230.0, [(400.0, 80.0), (2600.0, 150.0)], 1.5, s);
+        let silence = vec![0f32; 8000];
+        let turns: Vec<bool> = (0..300).map(|k| matches!(k % 5, 0 | 2 | 3)).collect();
+        let mut audio = Vec::new();
+        let mut words = Vec::new();
+        for (k, &is_a) in turns.iter().enumerate() {
+            let t0 = audio.len() as f64 / 16_000.0;
+            audio.extend(if is_a { a(k as u32) } else { b(k as u32) });
+            for w in 0..3 {
+                let s = t0 + w as f64 * 0.5;
+                words.push(Word::new(format!("w{k}.{w}"), seconds_tick(s), seconds_tick(s + 0.45)));
+            }
+            audio.extend(&silence);
+        }
+        let mut t = Transcript { words, ..Default::default() };
+        assert!(chunks(&t, &Params::default()).len() > MAX_CLUSTER_CHUNKS);
+        let n = diarize(&audio, &mut t, &Params::default());
+        assert_eq!(n, 2);
+        let wrong = turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count();
+        assert_eq!(wrong, 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn excessive_chunks_fall_back_without_clustering() {
+        let words = (0..=MAX_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
         let mut t = Transcript { words, ..Default::default() };
         assert_eq!(diarize(&[], &mut t, &Params::default()), 1);
         assert!(t.words.iter().all(|word| word.speaker == Some(0)));
