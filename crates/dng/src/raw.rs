@@ -24,7 +24,7 @@ pub struct RawLayout {
     pub height: usize,
     pub samples_per_pixel: usize,
     pub bits: u32,
-    /// 1 uncompressed, 7 lossless JPEG.
+    /// 1 uncompressed, 7 lossless JPEG, 34892 lossy JPEG.
     pub compression: u64,
     pub photometric: u64,
 }
@@ -110,7 +110,12 @@ pub fn layout(t: &Tiff, ifd: &Ifd) -> Result<RawLayout> {
         }
         7 => {}
         8 => return Err(Error::Unsupported("deflate-compressed DNG".into())),
-        34892 => return Err(Error::Unsupported("lossy JPEG DNG".into())),
+        // DNG 1.4: lossy JPEG only for 8-bit LinearRaw (or mask) data
+        34892 if photometric != PHOTOMETRIC_LINEAR_RAW => {
+            return Err(Error::Unsupported("lossy JPEG DNG of CFA data (DNG allows it only for 8-bit LinearRaw)".into()));
+        }
+        34892 if bits != 8 => return Err(Error::Unsupported(format!("lossy JPEG DNG with {bits}-bit samples (DNG allows only 8)"))),
+        34892 => {}
         52546 => return Err(Error::Unsupported("JPEG XL DNG".into())),
         c => return Err(Error::Unsupported(format!("DNG compression {c}"))),
     }
@@ -213,6 +218,7 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     let need = c.w * c.h * l.samples_per_pixel;
     match l.compression {
         1 => unpack(c.bytes, c.w, c.h, l.samples_per_pixel, l.bits, big_endian),
+        34892 => lossy_jpeg(c.bytes, need, l.samples_per_pixel),
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
@@ -229,6 +235,41 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     }
 }
 
+/// Decode a baseline (lossy) JPEG tile or strip (Compression 34892) into `need` 8-bit samples:
+/// one component (greyscale) or three (colour, converted from YCbCr by the JPEG decoder as the
+/// JPEG says), in raster order.
+fn lossy_jpeg(bytes: &[u8], need: usize, spp: usize) -> Result<Vec<u16>> {
+    use image::ImageDecoder;
+    let bad = |_| Error::Malformed("lossy JPEG tile");
+    let decode = || -> Result<Vec<u16>> {
+        let mut d = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes)).map_err(bad)?;
+        let channels = match d.color_type() {
+            image::ColorType::L8 => 1usize,
+            image::ColorType::Rgb8 => 3,
+            c => return Err(Error::Unsupported(format!("lossy JPEG DNG tile of colour type {c:?}"))),
+        };
+        if channels != spp {
+            return Err(Error::Malformed("lossy JPEG components differ from SamplesPerPixel"));
+        }
+        let (w, h) = d.dimensions();
+        let total = (w as usize).checked_mul(h as usize).and_then(|v| v.checked_mul(channels)).ok_or(Error::TooLarge)?;
+        if total < need {
+            return Err(Error::Malformed("lossy JPEG smaller than its tile or strip"));
+        }
+        if total > need.saturating_mul(4).saturating_add(65_536) || total > MAX_SAMPLES {
+            return Err(Error::TooLarge);
+        }
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(total as u64 * 4 + (1 << 20));
+        d.set_limits(limits).map_err(bad)?;
+        let mut buf = vec![0u8; total];
+        d.read_image(&mut buf).map_err(bad)?;
+        Ok(buf.iter().take(need).map(|&v| u16::from(v)).collect())
+    };
+    // a third-party decoder: a panic in it is an error for this file, not a crash
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or(Err(Error::Malformed("lossy JPEG decoder failed")))
+}
+
 /// Read the raw image of `ifd`.
 pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     let l = layout(t, ifd)?;
@@ -238,9 +279,12 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         return Err(Error::TooLarge);
     }
     let chunks = chunks(t, ifd, &l)?;
-    // every sample takes at least one bit of file (a Huffman code is at least one bit long)
+    // every sample takes at least one bit of file (a Huffman code is at least one bit long);
+    // lossy JPEG at least two bits per 8 × 8 block and component (a DC code and an end of
+    // block), so a tiny file cannot claim a huge picture
+    let per_byte = if l.compression == 34892 { 256 } else { 8 };
     let coded: usize = chunks.iter().map(|c| c.bytes.len()).fold(0usize, usize::saturating_add);
-    if total.div_ceil(8) > coded {
+    if total.div_ceil(per_byte) > coded {
         return Err(Error::Truncated);
     }
     let mut decoded_samples = 0usize;
@@ -250,7 +294,7 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         if n > MAX_SAMPLES || decoded_samples > MAX_DECODED_TILE_SAMPLES {
             return Err(Error::TooLarge);
         }
-        if n.div_ceil(8) > c.bytes.len() {
+        if n.div_ceil(per_byte) > c.bytes.len() {
             return Err(Error::Truncated);
         }
     }

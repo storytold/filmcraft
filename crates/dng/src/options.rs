@@ -70,6 +70,10 @@ pub struct ProcessOptions {
     /// smaller than the target; [`crate::Image`]'s `width` and `height` give the size made,
     /// [`crate::Info`] still the full one.
     pub target_size: Option<(usize, usize)>,
+    /// Apply the file's OpcodeList1–3 (lens shading, warps, bad pixels, trims). **Off by default**:
+    /// the opcode interpretations have not yet been compared with real camera files (see the
+    /// README), so a file's lists are ignored unless this is set.
+    pub apply_opcodes: bool,
 }
 
 impl ProcessOptions {

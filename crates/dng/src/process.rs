@@ -19,6 +19,7 @@ use rayon::prelude::*;
 
 use crate::color::{M3, V3};
 use crate::demosaic::Pattern;
+use crate::opcode::{self, Opcode};
 use crate::options::ProcessOptions;
 use crate::raw::RawImage;
 use crate::{Error, Result};
@@ -41,6 +42,8 @@ pub struct Params {
     pub crop_size: Option<(f64, f64)>,
     /// CFA pattern in camera planes (`None`: LinearRaw).
     pub cfa: Option<Pattern>,
+    /// OpcodeList1–3.
+    pub opcodes: crate::opcode::Lists,
 }
 
 /// A rectangle: x, y, width, height.
@@ -249,10 +252,52 @@ pub fn reduction(target: Option<(usize, usize)>, cw: usize, ch: usize) -> usize 
     f
 }
 
+/// Whether `list` has an opcode to apply (`preview`: those marked as needed only for full
+/// quality are left out).
+fn active(list: &[Opcode], preview: bool) -> bool {
+    list.iter().any(|o| !(preview && o.preview_skippable()))
+}
+
+/// Whether this development is a reduced-resolution preview: a target size smaller than the
+/// crop, and no OpcodeList3 work that has to be done at full size.
+pub fn preview(p: &Params, o: &ProcessOptions, info: &crate::Info) -> bool {
+    let reduced = reduction(o.target_size, info.width, info.height) > 1 && p.cfa.as_ref().is_none_or(Pattern::is_bayer);
+    reduced && !active(&p.opcodes.list3, true)
+}
+
+/// OpcodeList1 on the stored samples (integer range 0–65535).
+pub fn apply_list1(raw: &mut RawImage, p: &Params, preview: bool) -> Result<()> {
+    if !active(&p.opcodes.list1, preview) {
+        return Ok(());
+    }
+    let mut data: Vec<f32> = raw.data.iter().map(|&v| f32::from(v)).collect();
+    let mut img = opcode::Image {
+        data: &mut data,
+        width: raw.width,
+        height: raw.height,
+        planes: raw.samples_per_pixel,
+        max: 65_535.0,
+        mosaic: p.cfa.is_some(),
+        allow_trim: false,
+        origin: (0, 0),
+    };
+    opcode::apply(&p.opcodes.list1, &mut img, preview)?;
+    raw.data = data.iter().map(|&v| v.clamp(0.0, 65_535.0) as u16).collect();
+    Ok(())
+}
+
 /// [`develop`] with raw settings. White balance and exposure are already in `neutral` and
 /// `matrix` ([`crate::Dng::develop_with`] solves them); this applies the demosaic quality and the
 /// reduced-resolution path.
 pub fn develop_with(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3, o: &ProcessOptions) -> Result<Developed> {
+    // the opcode lists count only when asked for ([`ProcessOptions::apply_opcodes`])
+    let plain;
+    let p = if o.apply_opcodes || p.opcodes == opcode::Lists::default() {
+        p
+    } else {
+        plain = Params { opcodes: opcode::Lists::default(), ..p.clone() };
+        &plain
+    };
     let spp = raw.samples_per_pixel;
     if p.cfa.is_some() && spp != 1 {
         return Err(Error::Malformed("a CFA image with more than one sample per pixel"));
@@ -263,15 +308,38 @@ pub fn develop_with(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3, o: &P
     if raw.data.len() < raw.width.saturating_mul(raw.height).saturating_mul(spp) {
         return Err(Error::Truncated);
     }
-    let active = active_rect(p, raw.width, raw.height)?;
-    let (_, _, aw, ah) = active;
+    let active_r = active_rect(p, raw.width, raw.height)?;
+    let (_, _, aw, ah) = active_r;
     let planes = if p.cfa.is_some() { 3 } else { spp };
-    let norm = normalise(raw, p, active, neutral, planes)?;
     let crop = crop_rect(p, aw, ah);
     let m: [[f32; 3]; 3] = matrix.map(|r| r.map(|v| v as f32));
     let f = reduction(o.target_size, crop.2, crop.3);
-    if f > 1 && p.cfa.as_ref().is_none_or(Pattern::is_bayer) {
+    let preview = f > 1 && p.cfa.as_ref().is_none_or(Pattern::is_bayer) && !active(&p.opcodes.list3, true);
+    let norm = if active(&p.opcodes.list2, preview) {
+        // OpcodeList2 works on the linear reference values, before the white balance
+        let mut norm = normalise_with(raw, p, active_r, neutral, planes, false)?;
+        let mut img =
+            opcode::Image { data: &mut norm, width: aw, height: ah, planes: spp, max: 1.0, mosaic: p.cfa.is_some(), allow_trim: false, origin: (0, 0) };
+        opcode::apply(&p.opcodes.list2, &mut img, preview)?;
+        let inv: Vec<f32> = (0..planes).map(|c| (1.0 / neutral.get(c).copied().unwrap_or(1.0)) as f32).collect();
+        for_rows(&mut norm, aw * spp, |y, row| {
+            for (i, v) in row.iter_mut().enumerate() {
+                let plane = match &p.cfa {
+                    Some(c) => usize::from(c.color(i, y)),
+                    None => i % spp,
+                };
+                *v = (*v * inv.get(plane).copied().unwrap_or(1.0)).min(1.0);
+            }
+        });
+        norm
+    } else {
+        normalise(raw, p, active_r, neutral, planes)?
+    };
+    if preview {
         return Ok(binned(&norm, aw, spp, p.cfa.as_ref(), crop, f, &m));
+    }
+    if active(&p.opcodes.list3, false) {
+        return with_list3(norm, aw, ah, spp, p, crop, o, &m, neutral);
     }
     Ok(full(norm, (aw, ah, spp), p.cfa.as_ref(), crop, o, &m))
 }
@@ -329,6 +397,81 @@ fn full(
         }
     }
     Developed { width: cw, height: ch, rgba }
+}
+
+/// Steps 5–7 with OpcodeList3: demosaic the whole active area, apply the list to the camera
+/// values (white balance taken out again, range 0–1), then crop (within what TrimBounds left)
+/// and colour.
+#[allow(clippy::too_many_arguments)]
+fn with_list3(
+    norm: Vec<f32>,
+    aw: usize,
+    ah: usize,
+    spp: usize,
+    p: &Params,
+    crop: Rect,
+    o: &ProcessOptions,
+    m: &[[f32; 3]; 3],
+    neutral: &V3,
+) -> Result<Developed> {
+    let mono = p.cfa.is_none() && spp == 1;
+    let planes = if mono { 1 } else { 3 };
+    let mut rgb = match &p.cfa {
+        Some(pat) if pat.is_bayer() && aw >= 3 && ah >= 3 => {
+            let mut rgb = vec![0f32; aw * ah * 3];
+            let norm = &norm;
+            for_rows(&mut rgb, aw * 3, |y, out| {
+                let mut out = out.as_chunks_mut::<3>().0.iter_mut();
+                crate::demosaic::BayerRow::new(norm, aw, ah, pat, o.demosaic, y).span(0, aw, |c| {
+                    if let Some(d) = out.next() {
+                        *d = c;
+                    }
+                });
+            });
+            rgb
+        }
+        Some(pat) => crate::demosaic::demosaic_with(&norm, aw, ah, pat, o.demosaic),
+        None => norm,
+    };
+    let n: Vec<f32> = (0..planes).map(|c| if mono { 1.0 } else { neutral.get(c).copied().unwrap_or(1.0) as f32 }).collect();
+    for px in rgb.chunks_exact_mut(planes) {
+        for (v, k) in px.iter_mut().zip(&n) {
+            *v *= k;
+        }
+    }
+    let mut img = opcode::Image { data: &mut rgb, width: aw, height: ah, planes, max: 1.0, mosaic: false, allow_trim: true, origin: (0, 0) };
+    opcode::apply(&p.opcodes.list3, &mut img, false)?;
+    let (tw, th, (ox, oy)) = (img.width, img.height, img.origin);
+    for px in rgb.chunks_exact_mut(planes) {
+        for (v, k) in px.iter_mut().zip(&n) {
+            *v /= k;
+        }
+    }
+    // the default crop, inside the trimmed picture
+    let (cx, cy, cw, ch) = crop;
+    let (x0, y0) = (cx.max(ox), cy.max(oy));
+    let (x1, y1) = ((cx + cw).min(ox + tw), (cy + ch).min(oy + th));
+    if x0 >= x1 || y0 >= y1 {
+        return Err(Error::Malformed("TrimBounds outside the default crop"));
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let mut rgba = vec![0f32; w * h * 4];
+    let rgb = &rgb;
+    for_rows(&mut rgba, w * 4, |y, out| {
+        let src = (y0 - oy + y) * tw + (x0 - ox);
+        for (x, d) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let i = (src + x) * planes;
+            let c = if mono {
+                let v = rgb.get(i).copied().unwrap_or(0.0);
+                [v, v, v]
+            } else {
+                let Some(c) = rgb.get(i..i + 3) else { continue };
+                [c[0], c[1], c[2]]
+            };
+            to_output(m, mono, c, d);
+        }
+    });
+    Ok(Developed { width: w, height: h, rgba })
 }
 
 /// Steps 5–7 at 1/`f` resolution: each output pixel averages every colour over an `f` × `f`

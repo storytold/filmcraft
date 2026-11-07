@@ -16,6 +16,9 @@ serde = ["dep:serde"]
 
 [dependencies]
 rayon = { workspace = true, optional = true }
+# Baseline (lossy) JPEG for Compression 34892 tiles: the JPEG decoder the workspace already uses
+# (crates/codecs, crates/media), pure Rust.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 

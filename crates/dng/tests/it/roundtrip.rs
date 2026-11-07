@@ -365,7 +365,7 @@ fn cyclic_ifds_huge_sizes_and_bad_offsets() {
     assert!(matches!(decode(&write(&px, &o)), Err(Error::Malformed(_))));
     // unsupported compressions and depths are named
     let o = Options { raw_tags: vec![(tags::COMPRESSION, Value::Short(vec![34892]))], ..Default::default() };
-    assert_eq!(decode(&write(&px, &o)).err(), Some(Error::Unsupported("lossy JPEG DNG".into())));
+    assert!(matches!(decode(&write(&px, &o)), Err(Error::Unsupported(m)) if m.contains("lossy JPEG")));
 }
 
 #[test]

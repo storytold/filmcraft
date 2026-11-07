@@ -1,7 +1,8 @@
 # filmcraft-dng
 
-Clean-room DNG and CinemaDNG camera RAW decoder in pure Rust. Layer L0: depends only on
-`thiserror` and (optional, feature `threads`, default on) `rayon`. Builds for
+Clean-room DNG and CinemaDNG camera RAW decoder in pure Rust. Layer L0: depends on `thiserror`,
+`image` (its baseline JPEG decoder only, for lossy JPEG DNG; the workspace already uses it in
+`codecs` and `media`) and (optional, feature `threads`, default on) `rayon`. Builds for
 `wasm32-unknown-unknown`; no `unsafe`. Implemented from the public specifications below only; the
 source of no other raw decoder (dcraw, LibRaw, rawspeed, darktable, RawTherapee, FFmpeg, the Adobe
 DNG SDK…) was read. LibRaw's `unprocessed_raw` sample program is run as an external test oracle
@@ -11,12 +12,12 @@ when it is installed, never linked.
 
 | Document | Edition | Used for |
 |---|---|---|
-| Adobe Digital Negative (DNG) Specification | 1.4.0.0 (2012) – 1.7.1.0 (2023) | raw IFD selection (NewSubFileType 0), CFA / LinearRaw data, BitsPerSample packing, LinearizationTable, BlackLevel (+ RepeatDim, DeltaH / DeltaV), WhiteLevel, ActiveArea, DefaultCrop, the colour model of chapter 6 (ColorMatrix, CameraCalibration, AnalogBalance, ForwardMatrix, AsShotNeutral / AsShotWhiteXY, CalibrationIlluminant interpolation, BaselineExposure) |
+| Adobe Digital Negative (DNG) Specification | 1.4.0.0 (2012) – 1.7.1.0 (2023) | Compression 34892 (lossy JPEG: 8-bit LinearRaw only), raw IFD selection (NewSubFileType 0), CFA / LinearRaw data, BitsPerSample packing, LinearizationTable, BlackLevel (+ RepeatDim, DeltaH / DeltaV), WhiteLevel, ActiveArea, DefaultCrop, the colour model of chapter 6 (ColorMatrix, CameraCalibration, AnalogBalance, ForwardMatrix, AsShotNeutral / AsShotWhiteXY, CalibrationIlluminant interpolation, BaselineExposure), opcode lists (chapter 7: OpcodeList1–3 and opcodes 1–14) |
 | TIFF Revision 6.0 | June 1992 | header, IFDs, field types, strips and tiles, PlanarConfiguration, row padding |
 | TIFF/EP, ISO 12234-2 | 2001 | CFARepeatPatternDim, CFAPattern |
 | TIFF Technical Note 1 (SubIFDs) | 1993 | the SubIFD tree |
 | ITU-T T.81 \| ISO/IEC 10918-1 | 09/1992 | lossless JPEG (process 14, SOF3): Annex B syntax, Annex C Huffman tables, F.2.2.3 decoding, Annex H prediction and point transform |
-| CinemaDNG Image Data Format Specification | 1.1.0.0 (2009) | frames as numbered DNG files, FrameRate, TimeCodes, ReelName tags |
+| CinemaDNG Image Data Format Specification | 1.0.0.0 (September 2009) | frames as numbered DNG files, FrameRate, TimeCodes, ReelName tags |
 | SMPTE ST 12-1 | 2014 | time code BCD packing (via the CinemaDNG TimeCodes tag) |
 | CIPA DC-008 (Exif) | 2.3 | LightSource codes → illuminant temperatures |
 | Malvar, He, Cutler, "High-quality linear interpolation for demosaicing of Bayer-patterned color images", IEEE ICASSP | 2004 | the Bayer demosaic filters |
@@ -46,7 +47,7 @@ white as kelvin and tint, the starting point of a white-balance control; tempera
 are a point on the Planckian locus (Krystek 1985) and a CIE 1960 Δuv (tint 150 = Δuv +0.05, a
 greener white, so a more magenta picture; D65 is about tint +10).
 
-`writer` (feature `writer`, tests only) writes synthetic DNGs: uncompressed at any depth or
+`writer` (feature `writer`, tests only) writes synthetic DNGs: uncompressed at any depth, lossy JPEG (through `image`'s encoder) or
 lossless JPEG with any predictor, strips or tiles, either byte order, an optional preview IFD with
 the raw image in a SubIFD, and arbitrary extra tags.
 
@@ -56,7 +57,9 @@ the raw image in a SubIFD, and arbitrary extra tags.
   cycles end the walk). The main image is the largest NewSubFileType 0 IFD with a CFA or LinearRaw
   photometric interpretation.
 - **Raw data:** 1–16-bit unsigned samples, uncompressed (8 and 16-bit in file byte order, other
-  depths packed most significant bit first) or lossless JPEG (all predictors 1–7, 1–4 components,
+  depths packed most significant bit first), lossy JPEG (Compression 34892: baseline DCT tiles or
+  strips of one or three components, 8-bit LinearRaw only, as DNG 1.4 allows; the JPEG's own
+  colour transform applies) or lossless JPEG (all predictors 1–7, 1–4 components,
   point transform, restart intervals of whole lines), in strips or tiles; tiles decode in
   parallel.
 - **Processing:** ActiveArea, LinearizationTable, per-site black levels with row / column deltas,
@@ -64,6 +67,22 @@ the raw image in a SubIFD, and arbitrary extra tags.
   (Malvar–He–Cutler for 2 × 2 Bayer patterns of any phase, bilinear for other patterns up to
   8 × 8), DefaultCrop, the DNG colour model to XYZ D50 and Bradford to linear Rec. 709, and
   BaselineExposure. LinearRaw (3 samples) skips the demosaic; monochrome LinearRaw is grey.
+- **Opcode lists (DNG chapter 7), opt-in (`ProcessOptions::apply_opcodes`, off by default
+  until the interpretations below are compared with real camera files):** OpcodeList1 on the stored samples (0–65535), OpcodeList2 on
+  the linear reference values before white balance, OpcodeList3 on the demosaiced camera values
+  (white balance taken out, 0–1), values clipped after every opcode. WarpRectilinear,
+  WarpFisheye, WarpRectilinear2 (with the skip rule for a following warp), FixVignetteRadial,
+  FixBadPixelsConstant / List, TrimBounds, MapTable, MapPolynomial, GainMap, DeltaPerRow /
+  Column, ScalePerRow / Column. Unknown opcodes, and opcodes from a DNG version above 1.7.1.0,
+  are skipped when optional and an error naming them when not; preview-only opcodes are skipped
+  on the reduced-resolution path. Where the specification leaves room: OpcodeList1 uses stored
+  image coordinates, OpcodeList2 and 3 ActiveArea coordinates; GainMap positions are row / height
+  and column / width of the whole picture; Delta and MapPolynomial values are in the 0–1 range at
+  every stage (×65535 on OpcodeList1), MapTable indexes 16-bit values; warps resample with a
+  Catmull–Rom cubic; warps on a CFA mosaic and TrimBounds before OpcodeList3 are not applied
+  (an error unless optional). A TrimBounds makes the developed picture smaller than `Info`'s
+  size. At most 256 opcodes per list; counts are checked against the parameter bytes before
+  anything is allocated.
 - **Output:** scene-linear Rec. 709 floats: a white the sensor clipped is 1.0 × 2^BaselineExposure;
   brighter values are kept (FilmCraft's compositor works in linear float). Negative results of the
   colour matrix are clipped to 0. Black levels scale per pixel by (white − black).
@@ -89,11 +108,18 @@ the raw image in a SubIFD, and arbitrary extra tags.
 
 ## Not supported (errors name them)
 
-Lossy JPEG and JPEG XL DNG, deflate / floating-point DNG (HDR merges), planar raw data, colour
-filters other than red / green / blue (CMY, RGBE), non-rectangular CFA layouts, opcode lists
-(warp, vignette, bad pixels: ignored), DefaultScale and BestQualityScale (non-square pixels are
-shown square), DNG 1.6 IlluminantData for illuminant 255 (calibration 1 is used), lossless JPEG
-restart intervals that split a line, and MXF-wrapped CinemaDNG.
+JPEG XL DNG, deflate / floating-point DNG (HDR merges), planar raw data, colour
+filters other than red / green / blue (CMY, RGBE), non-rectangular CFA layouts, DefaultScale and
+BestQualityScale (non-square pixels are shown square), DNG 1.6 IlluminantData for illuminant 255
+(calibration 1 is used) and lossless JPEG restart intervals that split a line. This crate reads
+DNG frames only; MXF-wrapped CinemaDNG is unwrapped by the MXF reader (`crates/mxf`, #1078),
+which hands the frames to it.
+
+Known deviation: the rescale step divides by WhiteLevel minus each pixel's own black level;
+DNG chapter 5 uses the plane's largest black level. The two agree unless the black levels
+differ across a plane (BlackLevelRepeatDim sites of one colour or BlackLevelDeltaH / V), where
+our scale differs by the black-level spread over the white level (well under 1 % for usual
+files). Kept for now so the faster pipeline stays bit-identical to the first one.
 
 ## Tests
 
@@ -104,6 +130,11 @@ restart intervals that split a line, and MXF-wrapped CinemaDNG.
   white balance, ForwardMatrix, BaselineExposure, ActiveArea, DefaultCrop, LinearRaw); CinemaDNG
   FrameRate / TimeCodes / ReelName; hostile files (every truncation, 12 000 mutations under
   `catch_unwind`, cyclic IFDs, huge sizes, bad offsets, zero denominators).
+- `tests/it/lossy.rs`: lossy JPEG tiles and strips with one and three components, samples equal to
+  the JPEG decoder's, a LinearizationTable expanding 8-bit codes, CFA and 12-bit lossy files
+  refused, a tiny file claiming a huge picture, truncations and 3000 mutations.
+- `tests/it/opcodes.rs`, `tests/it/equivalence.rs`: opcode lists per stage; the faster pipeline
+  against the reference.
 - `tests/it/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic
   files (uncompressed 8–16-bit in both byte orders, lossless JPEG predictors 1–7 with one and two
   components). Skipped when it is not installed.
