@@ -722,6 +722,18 @@ pub(crate) fn param_row(
     }
 }
 
+/// Convert an sRGB-encoded parameter colour (`0.0..=1.0`) to an opaque `Color32` for the colour picker.
+pub(crate) fn srgba_color32(c: [f32; 4]) -> Color32 {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]))
+}
+
+/// Convert a picked `Color32` back to an sRGB-encoded parameter colour (`0.0..=1.0`) with alpha `a`.
+pub(crate) fn srgba_param(c: Color32, a: f32) -> [f32; 4] {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    [f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, a]
+}
+
 /// The value editor of one parameter row: number, point, checkbox, choice, colour (with the
 /// eyedropper), path or text field. Returns the edited value, if any.
 #[allow(clippy::too_many_arguments)]
@@ -796,9 +808,9 @@ fn param_value_widget(
             crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            let mut srgba = srgba_color32(*c);
+            if egui::color_picker::color_edit_button_srgba(vui, &mut srgba, egui::color_picker::Alpha::Opaque).changed() {
+                set = Some(json!(srgba_param(srgba, c[3])));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
             let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
@@ -1028,9 +1040,9 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
                         }
                     } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        let mut srgba = srgba_color32(c);
+                        if egui::color_picker::color_edit_button_srgba(ui, &mut srgba, egui::color_picker::Alpha::Opaque).changed() {
+                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": srgba_param(srgba, 1.0)}));
                         }
                     }
                 });
@@ -2024,5 +2036,32 @@ mod frame_hold_tests {
             assert!(moving != held, "{panel:?}: with Hold Filters on it shows the held frame's values");
             assert!(observe(app(Some(false)), panel) == moving, "{panel:?}: with Hold Filters off it shows the values it shows without the hold");
         }
+    }
+
+    /// #4408: Effect Controls colour pickers and the Program monitor eyedropper keep parameter
+    /// colours in sRGB (`0.0..=1.0`), so picking RGB 66 66 66 renders a graphic shape at RGB 66 66 66.
+    #[test]
+    fn srgba_parameter_colours_round_trip_and_render_without_double_gamma() {
+        let picked = Color32::from_rgb(66, 66, 66);
+        let param = srgba_param(picked, 1.0);
+        assert_eq!(srgba_color32(param), picked);
+
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let r = s.execute("graphics.newShape", json!({"shape": "rectangle", "position": [8, 8], "size": [16, 16]})).unwrap();
+        let clip = ClipId(r["clip"].as_u64().unwrap());
+        let effect = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "graphic_shape").unwrap();
+        let armed = crate::state::Eyedropper { clip: clip.0, effect, param: "fill_color".into(), mask: None };
+        s.execute("effects.setParam", crate::panels::monitor::eyedropper_set_param(&armed, [66, 66, 66])).unwrap();
+        let stored = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[effect].params["fill_color"].value_at(Tick::ZERO).as_color().unwrap();
+        assert_eq!(srgba_color32(stored), picked);
+
+        let mut shape = filmcraft_project::graphic::new_shape_layer(0, Vec2::new(8.0, 8.0), Vec2::new(16.0, 16.0), Vec::new());
+        shape.params.get_mut("fill_color").unwrap().value = ParamValue::Color(stored);
+        let mut img = filmcraft_render::Image::new(16, 16);
+        filmcraft_render::graphic_clip::render_graphic_layers(&[shape], Tick::ZERO, (16, 16), &filmcraft_geom::Affine::IDENTITY, &mut img);
+        let px = img.over_black_rgba8();
+        let center = (8 * 16 + 8) * 4;
+        assert_eq!(&px[center..center + 4], &[66, 66, 66, 255]);
     }
 }

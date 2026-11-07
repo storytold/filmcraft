@@ -714,15 +714,20 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
         return;
     };
-    // the parameter stores linear values, like the colour picker beside it
-    let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
-    if let Some(k) = armed.mask {
-        params["mask"] = json!(k);
-    }
+    let params = eyedropper_set_param(&armed, rgb);
     if let Err(e) = app.session.execute("effects.setParam", params) {
         app.ui.status = e.to_string();
     }
+}
+
+/// Build the `effects.setParam` payload that writes a sampled 8-bit sRGB pixel (`rgb`) into `armed`.
+pub(crate) fn eyedropper_set_param(armed: &crate::state::Eyedropper, rgb: [u8; 3]) -> serde_json::Value {
+    let srgb = crate::panels::effect_controls::srgba_param(Color32::from_rgb(rgb[0], rgb[1], rgb[2]), 1.0);
+    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": srgb});
+    if let Some(k) = armed.mask {
+        params["mask"] = json!(k);
+    }
+    params
 }
 
 /// The average colour of the 5×5 pixels around `uv` (0..1 across and down) of a frame, so a noisy
