@@ -112,3 +112,44 @@ fn unlinking_from_the_sound_keeps_the_sound_selected_and_link_keeps_both() {
     both.sort_by_key(|c| c.0);
     assert_eq!(d.selection(), both);
 }
+
+/// Unlinking with `Cmd+L` (or `Clip ▸ Unlink`) immediately narrows the selection to the clicked clip (#4377).
+#[test]
+fn unlinking_with_shortcut_keeps_clicked_clip_selected_and_drags_immediately() {
+    let mut d = Driver::new();
+    let (v, a) = d.linked_pair();
+    let (v0, a0) = (d.item(v).start, d.item(a).start);
+    let mut both = vec![v, a];
+    both.sort_by_key(|c| c.0);
+
+    // Click the picture clip on V1: both halves are selected while linked
+    let v_id = format!("timeline.clip.{}", v.0);
+    d.ok("ui.click", json!({"id": &v_id}));
+    d.frames(2);
+    assert_eq!(d.selection(), both);
+
+    // Press Cmd+L: the pair is unlinked and only the clicked picture clip stays selected
+    d.ok("ui.key", json!({"key": "L", "command": true}));
+    d.frames(2);
+    assert_eq!((d.item(v).link, d.item(a).link), (None, None), "unlinked via shortcut");
+    assert_eq!(d.selection(), [v], "partner is deselected immediately without re-clicking");
+
+    // Dragging the picture clip right away moves only the picture, leaving the audio in place
+    d.ok("ui.drag", json!({"from": {"id": &v_id, "fx": 0.3}, "to": {"id": &v_id, "fx": 0.6}, "steps": 12}));
+    d.frames(4);
+    assert_ne!(d.item(v).start, v0, "the picture moved");
+    assert_eq!(d.item(a).start, a0, "its sound stayed");
+
+    // Undo the drag and the unlink, then click the audio half and press Cmd+L
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    assert!(d.item(v).link.is_some() && d.item(v).link == d.item(a).link, "undo restores the link");
+    assert_eq!(d.selection(), both, "undo restores the linked selection");
+    let a_id = format!("timeline.clip.{}", a.0);
+    d.ok("ui.click", json!({"id": &a_id}));
+    d.frames(2);
+    assert_eq!(d.selection(), both);
+    d.ok("ui.key", json!({"key": "L", "command": true}));
+    d.frames(2);
+    assert_eq!(d.selection(), [a], "clicking the audio half before Cmd+L keeps the audio half selected");
+}

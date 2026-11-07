@@ -1109,22 +1109,40 @@ impl Session {
         }
     }
 
+    /// Undo the most recent project edit, restoring the linked selection when undoing an unlink.
     pub fn undo(&mut self) -> Option<String> {
         let (label, prev, origin) = self.history.undo.pop()?;
         self.history.merge_key = None;
+        let re_linked = origin.as_deref() == Some("clip.link") && label == "Unlink";
         let cur = std::mem::replace(&mut self.project, prev);
         self.history.redo.push((label.clone(), cur, origin));
         self.fix_state();
+        if re_linked {
+            self.state.selection = commands::with_links(self, &self.state.selection);
+        }
         self.bump();
         Some(label)
     }
 
+    /// Redo the most recently undone project edit, narrowing a single-link selection on unlink.
     pub fn redo(&mut self) -> Option<String> {
         let (label, next, origin) = self.history.redo.pop()?;
         self.history.merge_key = None;
+        let single_link_before = origin.as_deref() == Some("clip.link")
+            && label == "Unlink"
+            && self
+                .active_sequence()
+                .and_then(|q| {
+                    let first = self.state.selection.first().and_then(|c| q.find_item(*c)).and_then(|(_, i)| i.link)?;
+                    self.state.selection.iter().all(|c| q.find_item(*c).and_then(|(_, i)| i.link) == Some(first)).then_some(true)
+                })
+                .unwrap_or(false);
         let cur = std::mem::replace(&mut self.project, next);
         self.history.undo.push((label.clone(), cur, origin));
         self.fix_state();
+        if single_link_before {
+            self.state.selection.truncate(1);
+        }
         self.bump();
         Some(label)
     }
