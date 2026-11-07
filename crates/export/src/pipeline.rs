@@ -254,7 +254,7 @@ impl Pipeline {
             let count = rayon::current_num_threads().clamp(2, 4);
             let mut list = Vec::with_capacity(count);
             for _ in 0..count {
-                if let Some(r) = build_frame_renderer() {
+                if let Some(r) = build_frame_renderer(settings.uses_gpu_encoder()) {
                     list.push(r);
                 } else {
                     break;

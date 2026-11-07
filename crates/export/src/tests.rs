@@ -1098,3 +1098,62 @@ fn a_resident_frame_that_fails_takes_the_read_back_path() {
     crate::reset_encoder_backends_for_tests();
     crate::reset_frame_renderers_for_tests();
 }
+
+/// Renderers taken from [`CountingPair`].
+static PAIR_RENDERERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A [`GpuPair`] that counts the renderers taken from it (each one renders like the CPU).
+struct CountingPair;
+
+impl GpuPair for CountingPair {
+    fn renderer(&self) -> Option<Box<dyn FrameRenderer>> {
+        PAIR_RENDERERS.fetch_add(1, Ordering::SeqCst);
+        Some(Box::new(CpuResident))
+    }
+    fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+        Some(Box::new(RefusingBackend::default()))
+    }
+    fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+        None
+    }
+}
+
+/// The renderers of a GPU pair share the device of its encoder backends: an export takes them only
+/// when it will use a GPU encoder (Hardware encoding Auto and ProRes / DNxHR video, MXF included).
+/// Any other GPU-rendered export (H.264, an image sequence, ProRes with Hardware encoding Off)
+/// takes the plain renderer factory's.
+#[test]
+fn only_an_export_with_a_gpu_encoder_renders_on_the_pair() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    crate::register_gpu_pair(|| Some(Box::new(CountingPair) as Box<dyn GpuPair>));
+    let (p, seq, m) = project();
+    let cases = [
+        ("h264", Format::H264, MxfVideoCodec::default(), HardwareEncoding::Auto, false),
+        ("png", Format::PngSequence, MxfVideoCodec::default(), HardwareEncoding::Auto, false),
+        ("prores-hw-off", Format::ProRes, MxfVideoCodec::default(), HardwareEncoding::Off, false),
+        ("mxf-h264", Format::MxfOp1a, MxfVideoCodec::H264, HardwareEncoding::Auto, false),
+        ("prores", Format::ProRes, MxfVideoCodec::default(), HardwareEncoding::Auto, true),
+        ("dnxhr", Format::DnxHr, MxfVideoCodec::default(), HardwareEncoding::Auto, true),
+        ("mxf-prores", Format::MxfOp1a, MxfVideoCodec::ProRes, HardwareEncoding::Auto, true),
+    ];
+    for (name, format, mxf_video_codec, hardware_encoding, paired) in cases {
+        let ext = match format {
+            Format::H264 => "mp4",
+            Format::PngSequence => "png",
+            Format::MxfOp1a => "mxf",
+            _ => "mov",
+        };
+        let mut s = ExportSettings { format, mxf_video_codec, path: tmp(&format!("pair-{name}.{ext}")), include_audio: false, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Auto, hardware_encoding);
+        let (taken, frames) = (PAIR_RENDERERS.load(Ordering::SeqCst), gpu_render_stats().frames);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert!(gpu_render_stats().frames > frames, "{name}: rendered on a GPU renderer");
+        assert_eq!(PAIR_RENDERERS.load(Ordering::SeqCst) > taken, paired, "{name}: the pair's renderers taken");
+    }
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+}

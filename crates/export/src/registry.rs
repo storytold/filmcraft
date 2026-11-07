@@ -221,8 +221,10 @@ pub type FrameRendererFactory = fn() -> Option<Box<dyn FrameRenderer>>;
 
 /// Frame renderers and encoder backends made on one device, so that a rendered frame can stay
 /// there for the encoder (ADR 0003 Step 2): the app registers one ([`register_gpu_pair`]) next to
-/// (or instead of) its separate factories. The export takes its renderers and its encoder's
-/// backend from a pair first; it keeps frames on the device only when both came from one.
+/// its separate factories. The export takes its encoder's backend from a pair first, and its
+/// renderers too when it will use that GPU encoder ([`ExportSettings::uses_gpu_encoder`]; any
+/// other GPU-rendered export takes the separate renderer factory's); it keeps frames on the
+/// device only when both came from one.
 pub trait GpuPair: Send + Sync {
     fn renderer(&self) -> Option<Box<dyn FrameRenderer>>;
     fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>>;
@@ -281,10 +283,13 @@ pub(crate) fn reset_frame_renderers_for_tests() {
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
 }
 
-/// A renderer for one export: from a registered [`GpuPair`] (`true`), or else from the first
-/// registered factory that can build one for this host (`false`).
-pub(crate) fn build_frame_renderer() -> Option<(Box<dyn FrameRenderer>, bool)> {
-    if let Some(r) = from_pairs(|pair| pair.renderer()) {
+/// A renderer for one export: from a registered [`GpuPair`] (`true`) when `gpu_encoder` (the
+/// export will code on a pair's backend, [`ExportSettings::uses_gpu_encoder`]), or else from the
+/// first registered factory that can build one for this host (`false`). An export without a GPU
+/// encoder never takes the pair's: it would render on the encoders' device (other limits, other
+/// device caps) and its device errors would retire GPU encoding for the whole process.
+pub(crate) fn build_frame_renderer(gpu_encoder: bool) -> Option<(Box<dyn FrameRenderer>, bool)> {
+    if gpu_encoder && let Some(r) = from_pairs(|pair| pair.renderer()) {
         return Some((r, true));
     }
     let g = frame_renderer_factories().read().unwrap_or_else(PoisonError::into_inner);

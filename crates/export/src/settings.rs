@@ -515,6 +515,15 @@ impl ExportSettings {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }
     }
 
+    /// Whether the video encoder may code on a GPU backend: Hardware encoding Auto with ProRes or
+    /// DNxHR video (on their own or in MXF). Only such an export renders on a [`GpuPair`]'s
+    /// renderers (the encoders' device); the others take the plain renderer factory's.
+    ///
+    /// [`GpuPair`]: crate::GpuPair
+    pub fn uses_gpu_encoder(&self) -> bool {
+        self.hardware_encoding == HardwareEncoding::Auto && matches!(self.video_format(), Format::ProRes | Format::DnxHr)
+    }
+
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF,
     /// Targa and OpenEXR sequences, GIF (binary transparency), and ProRes 4444 / 4444 XQ movies.
     pub fn supports_alpha(&self) -> bool {
