@@ -40,6 +40,7 @@ use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
 mod dnx_enc;
+pub mod export_post;
 pub mod export_renderer;
 pub mod fx;
 mod intra;
@@ -49,7 +50,9 @@ pub mod mask;
 mod prores_enc;
 mod transition;
 pub use dnx_enc::DnxGpuEncoder;
+pub use export_post::{PostConfig, ResidentPlanes};
 pub use export_renderer::ExportRenderer;
+pub use intra_enc::ExportDevice;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
 pub use prores_enc::ProResGpuEncoder;
@@ -1500,6 +1503,8 @@ mod blend_tests;
 mod dnx_enc_tests;
 #[cfg(test)]
 mod dnx_tests;
+#[cfg(test)]
+mod export_post_tests;
 #[cfg(test)]
 mod fx_tests;
 #[cfg(test)]

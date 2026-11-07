@@ -22,6 +22,9 @@ use std::sync::atomic::AtomicBool;
 use filmcraft_prores::layout::tables;
 use filmcraft_prores::{ChromaFormat, EncoderConfig, Frame, Interlace, SliceBackend, SliceJob, picture_lines};
 
+use std::any::Any;
+
+use crate::export_post::ResidentPlanes;
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
 use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
 
@@ -141,9 +144,37 @@ struct Plan {
     alpha_bytes: u64,
 }
 
+/// What a frame to load is, whether its planes come from the CPU or are on the GPU already.
+struct Shape {
+    width: u32,
+    height: u32,
+    chroma: ChromaFormat,
+    bit_depth: u8,
+    /// It has an alpha plane.
+    alpha: bool,
+}
+
+impl Shape {
+    fn of(frame: &Frame) -> Shape {
+        Shape { width: frame.width, height: frame.height, chroma: frame.chroma, bit_depth: frame.bit_depth, alpha: frame.alpha.is_some() }
+    }
+
+    fn of_resident(planes: &ResidentPlanes) -> Shape {
+        let chroma = if planes.chroma_422 { ChromaFormat::Yuv422 } else { ChromaFormat::Yuv444 };
+        Shape { width: planes.width, height: planes.height, chroma, bit_depth: planes.bit_depth, alpha: planes.alpha }
+    }
+}
+
+/// Whether `frame`'s planes hold the samples `plan` reads.
+fn planes_cover(plan: &Plan, frame: &Frame) -> bool {
+    let (luma, croma) = (u64::from(plan.params.off_cb), u64::from(plan.params.off_cr - plan.params.off_cb));
+    let short = |p: &[u16], n: u64| (p.len() as u64) < n;
+    !(short(&frame.y, luma) || short(&frame.cb, croma) || short(&frame.cr, croma) || (plan.alpha && frame.alpha.as_deref().is_none_or(|a| short(a, luma))))
+}
+
 impl Plan {
     /// `None` when the frame is not one this backend codes, or does not fit `limits`.
-    fn new(cfg: &EncoderConfig, frame: &Frame, jobs: &[SliceJob], limits: &wgpu::Limits) -> Option<Plan> {
+    fn new(cfg: &EncoderConfig, frame: &Shape, jobs: &[SliceJob], limits: &wgpu::Limits) -> Option<Plan> {
         let (w, h) = (cfg.width, cfg.height);
         let chroma = cfg.profile.chroma();
         // (the frame's own interlace flag is metadata: the configuration says how it is coded)
@@ -151,12 +182,8 @@ impl Plan {
             return None;
         }
         let cw = chroma.chroma_width(w);
-        let alpha = cfg.encode_alpha && chroma == ChromaFormat::Yuv444 && frame.alpha.is_some();
+        let alpha = cfg.encode_alpha && chroma == ChromaFormat::Yuv444 && frame.alpha;
         let (luma, croma) = (u64::from(w) * u64::from(h), u64::from(cw) * u64::from(h));
-        let short = |p: &[u16], n: u64| (p.len() as u64) < n;
-        if short(&frame.y, luma) || short(&frame.cb, croma) || short(&frame.cr, croma) || (alpha && frame.alpha.as_deref().is_none_or(|a| short(a, luma))) {
-            return None;
-        }
         let pics = Pictures::new(cfg.interlace, h)?;
         let (mb_w, mb_h) = (w.div_ceil(16), pics.mb_rows);
         let cpm: u32 = if chroma == ChromaFormat::Yuv444 { 4 } else { 2 };
@@ -378,6 +405,11 @@ impl ProResGpuEncoder {
         Self::build(device, queue, Arc::new(AtomicBool::new(false)))
     }
 
+    /// An encoder on the export device, taking the frames a renderer on it leaves there.
+    pub(crate) fn on(dev: &crate::intra_enc::ExportDevice) -> Option<Self> {
+        Self::build(dev.device.clone(), dev.queue.clone(), dev.lost.clone())
+    }
+
     fn build(device: wgpu::Device, queue: wgpu::Queue, lost: Arc<AtomicBool>) -> Option<Self> {
         let l = device.limits();
         if l.max_storage_buffers_per_shader_stage < 7
@@ -468,28 +500,34 @@ impl ProResGpuEncoder {
 
     /// Upload the planes and run `fdct` (and `alpha`): the loaded frame.
     fn upload(&mut self, plan: Plan, frame: &Frame) -> Result<Loaded, Fail> {
-        let Plan { params, n, alpha, mbs, slice_words, plane_bytes, coeff_bytes, alpha_bytes } = plan;
-        let (luma, croma) = (params.off_cb as usize, (params.off_cr - params.off_cb) as usize);
+        let (luma, croma) = (plan.params.off_cb as usize, (plan.params.off_cr - plan.params.off_cb) as usize);
         let mut planes = vec![frame.y.get(..luma), frame.cb.get(..croma), frame.cr.get(..croma)];
-        if alpha {
+        if plan.alpha {
             planes.push(frame.alpha.as_deref().and_then(|a| a.get(..luma)));
         }
         let planes: Vec<&[u16]> = planes.into_iter().collect::<Option<_>>().ok_or(Fail::Decline)?;
-        pack_planes(&mut self.staging, &planes, usize::try_from(plane_bytes).map_err(|_| Fail::Decline)?).ok_or(Fail::Decline)?;
+        pack_planes(&mut self.staging, &planes, usize::try_from(plan.plane_bytes).map_err(|_| Fail::Decline)?).ok_or(Fail::Decline)?;
+        let buffer = self.pools.planes.get(&self.gpu.device, plan.plane_bytes);
+        self.gpu.queue.write_buffer(&buffer, 0, &self.staging);
+        self.start(plan, buffer)
+    }
+
+    /// Run `fdct` (and `alpha`) over the planes in `planes`: the loaded frame.
+    fn start(&mut self, plan: Plan, planes: wgpu::Buffer) -> Result<Loaded, Fail> {
+        let Plan { params, n, alpha, mbs, slice_words, plane_bytes: _, coeff_bytes, alpha_bytes } = plan;
         let device = &self.gpu.device;
         let f = Loaded {
             params,
             n,
             alpha,
             mbs,
-            planes: self.pools.planes.get(device, plane_bytes),
+            planes,
             slices: self.pools.slices.get(device, slice_words.len() as u64 * 4),
             coeffs: self.pools.coeffs.get(device, coeff_bytes),
             alpha_buf: self.pools.alpha.get(device, alpha_bytes),
             measured: Vec::new(),
         };
         let queue = &self.gpu.queue;
-        queue.write_buffer(&f.planes, 0, &self.staging);
         queue.write_buffer(&f.slices, 0, &le_bytes(&slice_words));
         let out = self.pools.out.get(device, 16);
         let aux = self.pools.aux.get(device, 16);
@@ -724,10 +762,30 @@ impl SliceBackend for ProResGpuEncoder {
         if self.gpu.disabled() || slices.is_empty() {
             return false;
         }
-        let Some(plan) = Plan::new(cfg, frame, slices, &self.gpu.device.limits()) else { return false };
+        let Some(plan) = Plan::new(cfg, &Shape::of(frame), slices, &self.gpu.device.limits()).filter(|p| planes_cover(p, frame)) else { return false };
         let scopes = self.gpu.scopes();
         let r = self.upload(plan, frame);
         self.frame = self.gpu.settle("loading a ProRes frame", scopes, r);
+        self.frame.is_some()
+    }
+
+    /// Planes a renderer on this device left there ([`ResidentPlanes`]): coded from that buffer,
+    /// without an upload. Planes of another device, size, chroma format or alpha are declined.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any, slices: &[SliceJob]) -> bool {
+        self.frame = None;
+        let Some(planes) = frame.downcast_ref::<ResidentPlanes>() else { return false };
+        if self.gpu.disabled() || slices.is_empty() {
+            return false;
+        }
+        let Some(plan) = Plan::new(cfg, &Shape::of_resident(planes), slices, &self.gpu.device.limits()) else { return false };
+        let chroma_422 = cfg.profile.chroma() == ChromaFormat::Yuv422;
+        // (the planes carry exactly the alpha the frame codes: the layout has no room for more)
+        if !planes.fits(&self.gpu.device, (cfg.width, cfg.height), chroma_422, plan.alpha, plan.plane_bytes) {
+            return false;
+        }
+        let scopes = self.gpu.scopes();
+        let r = self.start(plan, planes.buffer.clone());
+        self.frame = self.gpu.settle("loading a resident ProRes frame", scopes, r);
         self.frame.is_some()
     }
 

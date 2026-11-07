@@ -186,9 +186,44 @@ impl Gpu {
     }
 }
 
+/// The device GPU export work shares when the app pairs it (ADR 0003 Step 2): the encoders' own
+/// ([`own_device`]), on which a paired [`crate::ExportRenderer`] composites too, so that a rendered
+/// frame's planes ([`crate::export_post::ResidentPlanes`]) reach the encoder without leaving the
+/// GPU. Made by [`ExportDevice::shared`]; renderers and encoders made from it share its lost flag.
+#[derive(Clone)]
+pub struct ExportDevice {
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) lost: Arc<AtomicBool>,
+}
+
+impl ExportDevice {
+    /// The process's export device, `None` without a usable adapter or once it was lost (or
+    /// reported an error outside an encoder step).
+    pub fn shared() -> Option<ExportDevice> {
+        let (device, queue, lost) = own_device()?;
+        Some(ExportDevice { device, queue, lost })
+    }
+
+    /// A frame renderer on this device, whose frames can stay on it.
+    pub fn renderer(&self) -> Option<crate::ExportRenderer> {
+        crate::ExportRenderer::on(self)
+    }
+
+    /// A ProRes encoder on this device (as [`crate::ProResGpuEncoder::new`]).
+    pub fn prores_encoder(&self) -> Option<crate::ProResGpuEncoder> {
+        crate::ProResGpuEncoder::on(self)
+    }
+
+    /// A DNxHR encoder on this device (as [`crate::DnxGpuEncoder::new`]).
+    pub fn dnx_encoder(&self) -> Option<crate::DnxGpuEncoder> {
+        crate::DnxGpuEncoder::on(self)
+    }
+}
+
 /// The off-screen device the encoders open for themselves (shared by every encoder of the
-/// process, as export renderers share theirs), with its lost flag; `None` without an adapter, or
-/// once it is lost.
+/// process, and by the export renderers [`ExportDevice`] makes), with its lost flag; `None` without
+/// an adapter, or once it is lost.
 pub(crate) fn own_device() -> Option<(wgpu::Device, wgpu::Queue, Arc<AtomicBool>)> {
     type Shared = (wgpu::Instance, wgpu::Device, wgpu::Queue, Arc<AtomicBool>);
     static SHARED: OnceLock<Option<Shared>> = OnceLock::new();
@@ -206,10 +241,11 @@ pub(crate) fn own_device() -> Option<(wgpu::Device, wgpu::Queue, Arc<AtomicBool>
             log::info!("GPU encoding on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
             let lost = Arc::new(AtomicBool::new(false));
             // wgpu's default handler panics; every encoder step runs inside error scopes, so an
-            // error that reaches this handler is unexplained: retire the device
+            // error that reaches this handler is unexplained (or a paired renderer's, whose
+            // compositing runs outside them): retire the device
             let l = lost.clone();
             device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
-                log::error!("GPU encoding device error outside a step: {e}; the CPU encodes");
+                log::error!("GPU export device error outside an encoder step: {e}; the CPU renders and encodes");
                 l.store(true, Ordering::SeqCst);
             }));
             let l = lost.clone();

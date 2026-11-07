@@ -10,12 +10,20 @@
 //! machine, unsupported GPU) [`ExportRenderer::new`] returns `None` and the export falls back to
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
+//!
+//! A renderer made on the GPU encoders' device ([`ExportDevice::renderer`]) can also keep a frame
+//! there ([`ExportRenderer::render_resident`], ADR 0003 Step 2): the export's post-render work runs
+//! in a compute pass ([`crate::export_post`]) and the encoder codes the planes it leaves, so only
+//! the coded frame crosses the bus.
 
+use crate::export_post::{PostConfig, PostPass, ResidentPlanes};
+use crate::intra_enc::ExportDevice;
 use crate::{GpuCompositor, prepare};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
+use std::sync::atomic::Ordering;
 
 /// Where export rendering spends its time (process-wide totals, for the bench).
 pub mod timing {
@@ -107,11 +115,13 @@ pub(crate) fn offscreen_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapt
 }
 
 pub struct ExportRenderer {
-    _instance: wgpu::Instance,
+    _instance: Option<wgpu::Instance>,
     device: wgpu::Device,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
     compositor: GpuCompositor,
+    /// Made on the [`ExportDevice`]: its lost flag (instead of the renderers' own device's), and
+    /// the pass that keeps a frame on the GPU for the encoders there (`None` if it failed to build).
+    paired: Option<(std::sync::Arc<std::sync::atomic::AtomicBool>, Option<PostPass>)>,
 }
 
 impl ExportRenderer {
@@ -144,7 +154,41 @@ impl ExportRenderer {
             return None;
         }
         let compositor = GpuCompositor::new(&device, &queue);
-        Some(Self { _instance: instance, device, queue, compositor })
+        Some(Self { _instance: Some(instance), device, queue, compositor, paired: None })
+    }
+
+    /// A renderer on the export device the GPU encoders use, whose frames can stay there
+    /// ([`Self::render_resident`]). `None` once that device is lost.
+    pub(crate) fn on(dev: &ExportDevice) -> Option<Self> {
+        if dev.lost.load(Ordering::SeqCst) {
+            return None;
+        }
+        let (device, queue) = (dev.device.clone(), dev.queue.clone());
+        let compositor = GpuCompositor::new(&device, &queue);
+        // (the pipeline is made inside error scopes: a device that cannot build it keeps the
+        // renderer, without resident frames)
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pass = PostPass::new(&device, &queue);
+        let error = crate::poll_now(validation.pop());
+        let pass = matches!(error, Some(None)).then_some(pass);
+        if pass.is_none() {
+            log::warn!("GPU export: the post-render pass did not build ({error:?}); rendered frames are read back");
+        }
+        Some(Self { _instance: None, device, queue, compositor, paired: Some((dev.lost.clone(), pass)) })
+    }
+
+    /// Whether this renderer's device failed: the renderers' own, or the export device.
+    fn failed(&self) -> bool {
+        match &self.paired {
+            Some((lost, _)) => lost.load(Ordering::SeqCst),
+            None => device_failed(),
+        }
+    }
+
+    /// Whether [`Self::render_resident`] can run `post` on this renderer: made on the export
+    /// device, with its post-render pass, for a configuration the pass runs entirely.
+    pub fn resident_supported(&self, post: &PostConfig) -> bool {
+        matches!(&self.paired, Some((_, Some(_)))) && !self.failed() && post.supported(&self.device.limits())
     }
 
     /// What this renderer's device runs: frames are planned with it, here and by the export
@@ -166,7 +210,7 @@ impl ExportRenderer {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
-                if device_failed() {
+                if self.failed() {
                     return None;
                 }
                 let prep = prepare(&plan);
@@ -176,13 +220,62 @@ impl ExportRenderer {
                 // on, but an exported frame is final, so this one goes to the CPU renderer.
                 let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
                 // an error reported while this frame was drawn leaves its pixels untrusted
-                if device_failed() || has_corrupt_coded_picture(&plan) {
+                if self.failed() || has_corrupt_coded_picture(&plan) {
                     return None;
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }
+    }
+
+    /// One frame rendered and post-processed into the encoders' planes, left on the export
+    /// device (ADR 0003 Step 2): `post` says what the export does to it after rendering. `None`
+    /// when this frame must take the read-back path ([`Self::render`]): a renderer not on the
+    /// export device or without its post pass, a frame planned as one CPU image, a rendered size
+    /// other than `post.rendered`, a corrupt coded picture, or any device error.
+    pub fn render_resident(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+        post: &PostConfig,
+    ) -> Option<ResidentPlanes> {
+        if !self.resident_supported(post) {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        if matches!(plan, FramePlan::Image(_)) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let t0 = std::time::Instant::now();
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (view, size) = self.compositor.render_plan(&plan, Some(&prep), true, false);
+        let planes = match (&self.paired, size == post.rendered) {
+            (Some((_, Some(pass))), true) => pass.run(&self.device, &self.queue, &view, post),
+            _ => None,
+        };
+        let errors = [crate::poll_now(validation.pop()), crate::poll_now(oom.pop())];
+        timing::add_submit(t0.elapsed());
+        // (a scope that has not resolved counts as an error)
+        if let Some(e) = errors.iter().find(|e| !matches!(e, Some(None))) {
+            log::warn!("GPU export: a resident frame failed ({e:?}); it is rendered again and read back");
+            return None;
+        }
+        let planes = planes?;
+        let t0 = std::time::Instant::now();
+        // the corrupt-picture report of a GPU decode (see `render`) is known once the frame is done
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        timing::add_map_wait(t0.elapsed());
+        if self.failed() || has_corrupt_coded_picture(&plan) {
+            return None;
+        }
+        timing::add_frame();
+        Some(planes)
     }
 }
 

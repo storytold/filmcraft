@@ -19,6 +19,9 @@ use std::sync::atomic::AtomicBool;
 use filmcraft_dnx::layout::tables;
 use filmcraft_dnx::{AlphaCoding, ChromaFormat, EncoderConfig, Frame, Interlace, MacroblockBackend};
 
+use std::any::Any;
+
+use crate::export_post::ResidentPlanes;
 use crate::intra::{Pooled, bind, dispatch, groups, storage, uniform};
 use crate::intra_enc::{Fail, Gpu, fits, le_bytes, max_binding, own_device, pack_planes, words_of};
 
@@ -141,25 +144,61 @@ struct Plan {
     coeff_bytes: u64,
 }
 
+/// What a frame to load is, whether its planes come from the CPU or are on the GPU already.
+struct Shape {
+    width: u32,
+    height: u32,
+    chroma: ChromaFormat,
+    bit_depth: u8,
+    progressive: bool,
+    /// Chroma width and height.
+    cw: u32,
+    ch: u32,
+    rgb: bool,
+}
+
+impl Shape {
+    fn of(frame: &Frame) -> Shape {
+        Shape {
+            width: frame.width,
+            height: frame.height,
+            chroma: frame.chroma,
+            bit_depth: frame.bit_depth,
+            progressive: frame.interlace == Interlace::Progressive,
+            cw: frame.chroma_width(),
+            ch: frame.chroma_height(),
+            rgb: frame.rgb,
+        }
+    }
+
+    /// Resident planes are progressive Y'CbCr.
+    fn of_resident(planes: &ResidentPlanes) -> Shape {
+        let (chroma, cw) = if planes.chroma_422 { (ChromaFormat::Yuv422, planes.width.div_ceil(2)) } else { (ChromaFormat::Yuv444, planes.width) };
+        Shape { width: planes.width, height: planes.height, chroma, bit_depth: planes.bit_depth, progressive: true, cw, ch: planes.height, rgb: false }
+    }
+}
+
+/// Whether `frame`'s planes hold the samples `plan` reads.
+fn planes_cover(plan: &Plan, frame: &Frame) -> bool {
+    let (luma, croma) = (u64::from(plan.params.off_cb), u64::from(plan.params.off_cr - plan.params.off_cb));
+    let short = |p: &[u16], n: u64| (p.len() as u64) < n;
+    !(short(&frame.y, luma) || short(&frame.cb, croma) || short(&frame.cr, croma) || (plan.alpha && frame.alpha.as_deref().is_none_or(|a| short(a, luma))))
+}
+
 impl Plan {
     /// `None` when the frame is not one this backend codes, or does not fit `limits`.
-    fn new(cfg: &EncoderConfig, frame: &Frame, limits: &wgpu::Limits) -> Option<Plan> {
+    fn new(cfg: &EncoderConfig, frame: &Shape, limits: &wgpu::Limits) -> Option<Plan> {
         let (w, h) = (cfg.width, cfg.height);
         let chroma = cfg.chroma();
-        let progressive = frame.interlace == Interlace::Progressive;
-        if frame.width != w || frame.height != h || frame.chroma != chroma || !progressive || !(8..=16).contains(&frame.bit_depth) {
+        if frame.width != w || frame.height != h || frame.chroma != chroma || !frame.progressive || !(8..=16).contains(&frame.bit_depth) {
             return None;
         }
         if !matches!(cfg.bit_depth, 8 | 10 | 12) || !matches!(chroma, ChromaFormat::Yuv422 | ChromaFormat::Yuv444) {
             return None;
         }
-        let (cw, ch) = (frame.chroma_width(), frame.chroma_height());
+        let (cw, ch) = (frame.cw, frame.ch);
         let alpha = cfg.alpha.is_some();
         let (luma, croma) = (u64::from(w) * u64::from(h), u64::from(cw) * u64::from(ch));
-        let short = |p: &[u16], n: u64| (p.len() as u64) < n;
-        if short(&frame.y, luma) || short(&frame.cb, croma) || short(&frame.cr, croma) || (alpha && frame.alpha.as_deref().is_none_or(|a| short(a, luma))) {
-            return None;
-        }
         let consts = consts(cfg)?;
         let (nw, ns) = (w.div_ceil(16), h.div_ceil(16));
         let nmb = u64::from(nw) * u64::from(ns);
@@ -374,6 +413,11 @@ impl DnxGpuEncoder {
         Self::build(device, queue, Arc::new(AtomicBool::new(false)))
     }
 
+    /// An encoder on the export device, taking the frames a renderer on it leaves there.
+    pub(crate) fn on(dev: &crate::intra_enc::ExportDevice) -> Option<Self> {
+        Self::build(dev.device.clone(), dev.queue.clone(), dev.lost.clone())
+    }
+
     fn build(device: wgpu::Device, queue: wgpu::Queue, lost: Arc<AtomicBool>) -> Option<Self> {
         let l = device.limits();
         if l.max_storage_buffers_per_shader_stage < 6
@@ -452,24 +496,31 @@ impl DnxGpuEncoder {
 
     /// Upload the planes and constants, run `transform` (and `rle`): the loaded frame.
     fn upload(&mut self, plan: Plan, frame: &Frame) -> Result<Loaded, Fail> {
-        let Plan { params, consts, alpha, plane_bytes, coeff_bytes } = plan;
-        let (luma, croma) = (params.off_cb as usize, (params.off_cr - params.off_cb) as usize);
+        let (luma, croma) = (plan.params.off_cb as usize, (plan.params.off_cr - plan.params.off_cb) as usize);
         let mut planes = vec![frame.y.get(..luma), frame.cb.get(..croma), frame.cr.get(..croma)];
-        if alpha {
+        if plan.alpha {
             planes.push(frame.alpha.as_deref().and_then(|a| a.get(..luma)));
         }
         let planes: Vec<&[u16]> = planes.into_iter().collect::<Option<_>>().ok_or(Fail::Decline)?;
-        pack_planes(&mut self.staging, &planes, usize::try_from(plane_bytes).map_err(|_| Fail::Decline)?).ok_or(Fail::Decline)?;
+        pack_planes(&mut self.staging, &planes, usize::try_from(plan.plane_bytes).map_err(|_| Fail::Decline)?).ok_or(Fail::Decline)?;
+        let buffer = self.pools.planes.get(&self.gpu.device, plan.plane_bytes);
+        self.gpu.queue.write_buffer(&buffer, 0, &self.staging);
+        self.start(plan, buffer)
+    }
+
+    /// Upload the constants and run `transform` (and `rle`) over the planes in `planes`: the
+    /// loaded frame.
+    fn start(&mut self, plan: Plan, planes: wgpu::Buffer) -> Result<Loaded, Fail> {
+        let Plan { params, consts, alpha: _, plane_bytes: _, coeff_bytes } = plan;
         let device = &self.gpu.device;
         let f = Loaded {
             params,
-            planes: self.pools.planes.get(device, plane_bytes),
+            planes,
             consts: self.pools.consts.get(device, consts.len() as u64 * 4),
             coeffs: self.pools.coeffs.get(device, coeff_bytes),
             measured: Vec::new(),
         };
         let queue = &self.gpu.queue;
-        queue.write_buffer(&f.planes, 0, &self.staging);
         queue.write_buffer(&f.consts, 0, &le_bytes(&consts));
         let out = self.pools.out.get(device, 16);
         let aux = self.pools.aux.get(device, 16);
@@ -651,10 +702,29 @@ impl MacroblockBackend for DnxGpuEncoder {
         if self.gpu.disabled() {
             return false;
         }
-        let Some(plan) = Plan::new(cfg, frame, &self.gpu.device.limits()) else { return false };
+        let Some(plan) = Plan::new(cfg, &Shape::of(frame), &self.gpu.device.limits()).filter(|p| planes_cover(p, frame)) else { return false };
         let scopes = self.gpu.scopes();
         let r = self.upload(plan, frame);
         self.frame = self.gpu.settle("loading a DNxHR frame", scopes, r);
+        self.frame.is_some()
+    }
+
+    /// Planes a renderer on this device left there ([`ResidentPlanes`]): coded from that buffer,
+    /// without an upload. Planes of another device, size, chroma format or alpha are declined.
+    fn load_resident(&mut self, cfg: &EncoderConfig, frame: &dyn Any) -> bool {
+        self.frame = None;
+        let Some(planes) = frame.downcast_ref::<ResidentPlanes>() else { return false };
+        if self.gpu.disabled() {
+            return false;
+        }
+        let Some(plan) = Plan::new(cfg, &Shape::of_resident(planes), &self.gpu.device.limits()) else { return false };
+        let chroma_422 = cfg.chroma() == ChromaFormat::Yuv422;
+        if !planes.fits(&self.gpu.device, (cfg.width, cfg.height), chroma_422, plan.alpha, plan.plane_bytes) {
+            return false;
+        }
+        let scopes = self.gpu.scopes();
+        let r = self.start(plan, planes.buffer.clone());
+        self.frame = self.gpu.settle("loading a resident DNxHR frame", scopes, r);
         self.frame.is_some()
     }
 
