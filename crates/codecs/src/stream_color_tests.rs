@@ -254,8 +254,11 @@ fn colr_wins_over_the_bitstream() {
     // HLG in colr, PQ in the VUI: HLG
     let hlg = Nclx { primaries: 9, transfer: 18, matrix: 9, full_range: false };
     assert_eq!(mp4_color(sps(), 1920, 1080, Some(hlg)).transfer, Transfer::Hlg);
-    // limited range in colr beats a full-range VUI
-    assert_eq!(mp4_color(avc(h264_sps(80, 45, Some(FULL_ONLY))), 1280, 720, Some(colr)).range, Range::Limited);
+    // limited range in colr beats a VUI that doesn't say full range (the range is the exception: see
+    // `a_full_range_bitstream_beats_a_limited_colr`)
+    let limited = Signal { codes: Some((1, 1, 1)), full_range: false };
+    assert_eq!(mp4_color(avc(h264_sps(80, 45, Some(limited))), 1280, 720, Some(colr.clone())).range, Range::Limited);
+    assert_eq!(mp4_color(avc(h264_sps(80, 45, None)), 1280, 720, Some(colr)).range, Range::Limited);
     // what colr leaves unspecified comes from the VUI
     let partial = Nclx { primaries: 2, transfer: 16, matrix: 2, full_range: false };
     assert_eq!(mp4_color(sps(), 1920, 1080, Some(partial)), mp4_color(sps(), 1920, 1080, None));
@@ -265,6 +268,29 @@ fn colr_wins_over_the_bitstream() {
     // an ICC profile has no code points: the bitstream decides
     let icc = filmcraft_isobmff::ColorInfo::Icc { kind: filmcraft_isobmff::FourCc(*b"prof"), profile: vec![0; 8] };
     assert_eq!(mp4_color(sps(), 1920, 1080, Some(icc)).transfer, Transfer::Pq);
+}
+
+/// #4476: Android phone clips carry an `nclx` box that says limited range and an SPS whose VUI says
+/// full range. The decoders output full-range pictures, and ffmpeg and Premiere show them as such:
+/// the bitstream's full range wins, while the box still decides everything else.
+#[test]
+fn a_full_range_bitstream_beats_a_limited_colr() {
+    use filmcraft_isobmff::ColorInfo::Nclx;
+    let phone = Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
+    let full_709 = Signal { codes: Some((1, 1, 1)), full_range: true };
+    for vui in [FULL_ONLY, full_709] {
+        let c = mp4_color(avc(h264_sps(80, 45, Some(vui))), 1280, 720, Some(phone.clone()));
+        assert_eq!(c, ColorInfo { range: Range::Full, ..ColorInfo::REC709 });
+        let c = mp4_color(hevc(hevc_sps(1920, 1080, Some(vui))), 1920, 1080, Some(phone.clone()));
+        assert_eq!(c, ColorInfo { range: Range::Full, ..ColorInfo::REC709 });
+    }
+    // only the range: a PQ full-range VUI under a BT.709 box is BT.709, full range
+    let pq_full = Signal { codes: Some((9, 16, 9)), full_range: true };
+    let c = mp4_color(hevc(hevc_sps(1920, 1080, Some(pq_full))), 1920, 1080, Some(phone));
+    assert_eq!(c, ColorInfo { range: Range::Full, ..ColorInfo::REC709 });
+    // a box that says full range keeps it whatever the VUI says
+    let full_box = Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: true };
+    assert_eq!(mp4_color(avc(h264_sps(80, 45, None)), 1280, 720, Some(full_box)).range, Range::Full);
 }
 
 #[test]
