@@ -542,6 +542,8 @@ fn text_section_header(
     open
 }
 
+/// Draws the Properties panel for the selected graphic clip, including its layer stack,
+/// template controls, responsive design settings, transform, text formatting, and appearance.
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -799,6 +801,16 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, tl!("   Distance"), NumberField { id: "shadow_distance", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
                 cx.number(ui, tl!("   Size"), NumberField { id: "shadow_size", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
                 cx.number(ui, tl!("   Blur"), NumberField { id: "shadow_blur", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
+            }
+            let (_, mut vui) = cx.row(ui, tl!("Burn"));
+            let bu = cx.check(&mut vui, "burn", "");
+            if bu {
+                vui.add_space(6.0);
+                cx.choice(&mut vui, "burn_direction", tl!("Burn Direction"), &["Up", "Down", "Left", "Right"], 80.0);
+                cx.number(ui, tl!("   Progress"), NumberField { id: "burn_progress", speed: 0.5, range: (0.0, 100.0), decimals: 1, unit: " %" });
+                let (_, mut gui) = cx.row(ui, tl!("   Orange Glow"));
+                cx.check(&mut gui, "burn_glow", "");
+                cx.color(&mut gui, "burn_glow_color");
             }
         }
         actions.append(&mut cx.actions);

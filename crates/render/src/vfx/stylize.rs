@@ -845,3 +845,119 @@ pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
     });
 }
+
+/// TV Static: vintage analog television static, with RF snow, scanlines, rolling hum bar and jitter.
+pub fn tv_static(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let intensity = (fv(e, "intensity", cx) / 100.0).clamp(0.0, 1.0);
+    if intensity <= 0.0 || img.w == 0 || img.h == 0 {
+        return;
+    }
+    let grain_size = (fv(e, "grain_size", cx) * cx.px_scale).max(1.0);
+    let monochrome = bv(e, "monochrome");
+    let scanline_opacity = (fv(e, "scanlines", cx) / 100.0).clamp(0.0, 1.0) * intensity;
+    let bar_intensity = (fv(e, "bar_intensity", cx) / 100.0).clamp(0.0, 1.0) * intensity;
+    let bar_speed = fv(e, "bar_speed", cx);
+    let jitter_amt = (fv(e, "jitter", cx) / 100.0).clamp(0.0, 1.0) * intensity;
+
+    let frame = crate::effects::noise_frame_seed(cx);
+    let (w, h) = (img.w, img.h);
+
+    // If jitter is active, snapshot original pixels to allow horizontal displacement without race conditions.
+    let src = if jitter_amt > 0.001 { Some(img.clone()) } else { None };
+
+    // Rolling bar phase in [0, 1)
+    let time_sec = cx.seconds as f32;
+    let bar_phase = (time_sec * bar_speed * 0.5).fract();
+    let bar_phase = if bar_phase < 0.0 { bar_phase + 1.0 } else { bar_phase };
+
+    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        // 1. Horizontal Jitter (Tear) offset for this row
+        let row_offset_x: i32 = if src.is_some() {
+            let row_hash = hash01(y as i64, 0, 77, frame);
+            if row_hash < jitter_amt * 0.7 {
+                let shift = (hash01(y as i64, 1, 999, frame) - 0.5) * 2.0 * jitter_amt * (w as f32 * 0.15);
+                shift.round() as i32
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // 2. Rolling bar factor for this row: Gaussian hum band
+        let norm_y = y as f32 / h.max(1) as f32;
+        let mut dy = (norm_y - bar_phase).abs();
+        if dy > 0.5 {
+            dy = 1.0 - dy;
+        }
+        let bar_factor = if bar_intensity > 0.0 {
+            let width = 0.08f32;
+            let d = dy / width;
+            if d < 3.0 { (-d * d * 0.5).exp() * bar_intensity } else { 0.0 }
+        } else {
+            0.0
+        };
+
+        // 3. Scanline factor for alternating rows (even/odd)
+        let scanline_factor = if scanline_opacity > 0.0 && (y % 2 == 1) { 1.0 - scanline_opacity } else { 1.0 };
+
+        let gy = (y as f32 / grain_size).floor() as i64;
+
+        for x in 0..w {
+            let p = match row.get_mut(x * 4..x * 4 + 4) {
+                Some(slice) => slice,
+                None => continue,
+            };
+            let a = p[3];
+            if a <= 1e-6 {
+                continue;
+            }
+
+            let [base_r, base_g, base_b] = if let Some(src_img) = &src {
+                let sx = (x as i32 + row_offset_x).clamp(0, w as i32 - 1) as usize;
+                let s_idx = (y * w + sx) * 4;
+                if let Some(src_px) = src_img.px.get(s_idx..s_idx + 4) {
+                    Image::unpremul([src_px[0], src_px[1], src_px[2], src_px[3]])
+                } else {
+                    Image::unpremul([p[0], p[1], p[2], a])
+                }
+            } else {
+                Image::unpremul([p[0], p[1], p[2], a])
+            };
+
+            // RF static noise in 0.0..1.0
+            let gx = (x as f32 / grain_size).floor() as i64;
+            let n0 = hash01(gx, gy, 0, frame);
+            let (nr, ng, nb) = if monochrome {
+                (n0, n0, n0)
+            } else {
+                let n1 = hash01(gx, gy, 1, frame.wrapping_add(7777));
+                let n2 = hash01(gx, gy, 2, frame.wrapping_add(99_991));
+                (n0, n1, n2)
+            };
+
+            // Blend base with noise snow
+            let mut r = base_r * (1.0 - intensity) + nr * intensity;
+            let mut g = base_g * (1.0 - intensity) + ng * intensity;
+            let mut b = base_b * (1.0 - intensity) + nb * intensity;
+
+            // Apply rolling bar (luminance hum boost)
+            if bar_factor > 0.0 {
+                r += bar_factor;
+                g += bar_factor;
+                b += bar_factor;
+            }
+
+            // Apply scanlines
+            if scanline_factor < 1.0 {
+                r *= scanline_factor;
+                g *= scanline_factor;
+                b *= scanline_factor;
+            }
+
+            p[0] = (r * a).max(0.0);
+            p[1] = (g * a).max(0.0);
+            p[2] = (b * a).max(0.0);
+        }
+    });
+}

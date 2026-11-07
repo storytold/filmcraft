@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
+use filmcraft_project::graphic::{BurnAppearance, LayerContent, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
 use filmcraft_project::graphic_design::{GraphicMeta, PinNode, remap_time, resolve_pins, roll_offset};
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_text::raster::{Xform, apply, fill_into, xform_scale};
@@ -509,11 +509,76 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     for stroke in strokes.iter().rev() {
         stroke_cover.visit(stroke, |k| !outer(k), |sm, style| over_mask(&mut px, sm, premul_linear(style.color)));
     }
+    if let Some(burn) = &ap.burn {
+        apply_burn_to_layer(&mut px, w, h, burn, x0, y0);
+    }
     let op = spec.transform.opacity;
     if op < 1.0 {
         px.iter_mut().for_each(|v| *v *= op);
     }
     Some(LayerRaster { x: x0, y: y0, img: Image { w, h, px } })
+}
+
+/// Applies a directional Perlin-noise burn wipe and optional glowing edge to a rasterized
+/// graphic layer buffer in premultiplied linear RGBA.
+fn apply_burn_to_layer(px: &mut [f32], w: usize, h: usize, burn: &BurnAppearance, x0: i32, y0: i32) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let soft = 0.08f32;
+    let thr = -soft + burn.progress * (1.0 + 2.0 * soft);
+    let time_z = burn.time * burn.noise_speed;
+    let seed: u64 = 0x57a1_101e;
+    let glow_lin = premul_linear(burn.glow_color);
+    let wf = w.max(1) as f32;
+    let hf = h.max(1) as f32;
+    let noise_scale = burn.noise_scale.clamp(1.0, 1000.0);
+
+    px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        let v = (y as f32 / hf).clamp(0.0, 1.0);
+        let py = y0.saturating_add(y.min(i32::MAX as usize) as i32) as f32 / noise_scale;
+
+        for x in 0..w {
+            let p = &mut row[x * 4..x * 4 + 4];
+            let a = p[3];
+            if a <= 0.0 {
+                continue;
+            }
+            let u = (x as f32 / wf).clamp(0.0, 1.0);
+            let sweep = match burn.direction {
+                1 => v,
+                2 => 1.0 - u,
+                3 => u,
+                _ => 1.0 - v,
+            };
+
+            let px_coord = x0.saturating_add(x.min(i32::MAX as usize) as i32) as f32 / noise_scale;
+            let n = crate::vfx::fbm(px_coord, py, time_z, 3.0, seed);
+            let noise_val = (n * 0.5 + 0.5).clamp(0.0, 1.0);
+
+            let burn_val = 0.65 * sweep + 0.35 * noise_val;
+            let d = burn_val - thr;
+
+            let vis = crate::vfx::smoothstep(-soft * 0.5, soft * 0.5, d);
+            let char_factor = if d > 0.0 { 1.0 - 0.7 * (-(d / soft).powi(2)).exp() } else { 0.3 };
+
+            for c in 0..3 {
+                p[c] *= vis * char_factor;
+            }
+            p[3] *= vis;
+
+            if burn.glow {
+                let edge = (-(d / (soft * 0.7)).powi(2)).exp();
+                let glow_strength = edge * 2.5 * a;
+                if glow_strength > 0.001 {
+                    for c in 0..3 {
+                        p[c] += glow_lin[c] * glow_strength;
+                    }
+                    p[3] = (p[3] + (1.0 - p[3]) * (glow_strength * 0.5).min(1.0)).clamp(0.0, 1.0);
+                }
+            }
+        }
+    });
 }
 
 type Cache = Mutex<HashMap<u64, (u64, Option<Arc<LayerRaster>>)>>;

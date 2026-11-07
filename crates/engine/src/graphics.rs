@@ -227,6 +227,7 @@ pub(crate) fn to_param(template: &ParamValue, id: &str, v: &Value) -> Option<Par
             "caps" => graphic::CAPS_OPTS,
             "stroke_type" | "stroke2_type" => graphic::STROKE_OPTS,
             "fill_kind" => graphic::FILL_KIND_OPTS,
+            "burn_direction" => graphic::BURN_DIR_OPTS,
             "shape" => SHAPE_OPTS,
             _ => &[],
         };
