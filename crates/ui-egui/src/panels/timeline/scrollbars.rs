@@ -130,6 +130,7 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
     });
     let settings = &mut app.session.state.timeline_ui;
+    let mut max_zoom_changed = false;
 
     // Smooth Animations: a centered pill switch (left) + label group instead of a checkbox
     let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
@@ -209,6 +210,7 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     changed |= moved;
     app.auto.add("timeline.zoomBar.settings.maxZoomLevel.slider", r.rect, "Maximum zoom level");
     if moved {
+        max_zoom_changed = true;
         match zoom_choice {
             0..=3 => {
                 settings.max_zoom_seconds = zoom_presets[zoom_choice];
@@ -240,12 +242,13 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             settings.max_zoom_seconds = value;
             settings.max_zoom_last_custom = value;
             settings.max_zoom_custom = true;
+            max_zoom_changed = true;
             changed = true;
         }
     });
     // a zoom established under the old ceiling must obey the new one at once: the same cap the
     // control channel applies when `maxZoomLevel` changes
-    {
+    if max_zoom_changed {
         let cap = max_pps(app.last_timeline_width, settings.max_zoom_secs());
         app.ui.timeline.target_pps = app.ui.timeline.target_pps.min(cap);
         app.ui.timeline.pps = app.ui.timeline.pps.min(cap);
@@ -902,6 +905,11 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
         {
             ui.data_mut(|d| d.insert_temp(color_open_key(), None::<egui::Id>));
         }
+    }
+    let remains_open = ui.data(|d| d.get_temp::<Option<egui::Id>>(color_open_key())).flatten() == Some(id);
+    if (open_now && !remains_open) || ((rresp.clicked() || resp.clicked()) && !open_now) {
+        // Do not let a stale edit buffer replace a later Reset or a newly opened picker value.
+        ui.data_mut(|d| d.remove_temp::<String>(id.with("hex")));
     }
     changed
 }
