@@ -330,7 +330,7 @@ pub fn open<S: ByteSource + ?Sized>(src: &S) -> Result<File> {
     }
 }
 
-/// Unwraps the 33-bit PTS/DTS of ONE stream into an i64 timeline. Values are absolute, not
+/// Unwraps the 33-bit PTS/DTS of one clock into an i64 timeline. Values are absolute, not
 /// relative to the first one: the first timestamp comes back unchanged, every later wrap adds
 /// 2^33, and a timestamp from just before a wrap that arrives after it (B pictures, slightly
 /// out-of-order audio) is mapped below the wrap (negative if the stream started after it).

@@ -96,7 +96,8 @@ fn skip_flags(p: &[u8]) -> (bool, bool) {
 
 /// Drops an exact duplicate packet (§2.4.3.3: a packet may be sent twice, same continuity counter
 /// and same content). Conservative: only a payload-bearing packet with the previous payload-bearing
-/// packet's counter and identical payload bytes counts; anything else is kept.
+/// packet's counter and identical payload bytes counts; a packet that signals a discontinuity
+/// starts a new sequence and is never a duplicate; anything else is kept.
 struct DupGuard {
     cc: Option<u8>,
     len: usize,
@@ -115,7 +116,7 @@ impl DupGuard {
         if !pk.has_payload {
             return false;
         }
-        let dup = self.cc == Some(pk.cc) && self.data.get(..self.len) == Some(pk.payload);
+        let dup = !pk.discontinuity && self.cc == Some(pk.cc) && self.data.get(..self.len) == Some(pk.payload);
         if !dup {
             self.cc = Some(pk.cc);
             self.len = pk.payload.len().min(self.data.len());
@@ -449,6 +450,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     let mut warnings: Vec<String> = Vec::new();
     let mut pat = Psi::default();
     let mut pmt = PmtState::default();
+    let mut psi_dup: HashMap<u16, DupGuard> = HashMap::new();
     let mut es: HashMap<u16, EsState> = HashMap::new();
     let mut order: Vec<u16> = Vec::new();
     // one timestamp unwrapper for the program: its streams share one clock, so a stream whose
@@ -515,6 +517,13 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                     e.cc = Some(pk.cc);
                 }
                 continue;
+            }
+            if pk.pid == 0 || Some(pk.pid) == pmt.pmt_pid {
+                // a repeated packet would append its payload to the section in progress
+                if psi_dup.entry(pk.pid).or_default().is_dup(&pk) {
+                    duplicates += 1;
+                    continue;
+                }
             }
             if pk.pid == 0 {
                 feed_pat(&pk, &mut pat, &mut pmt, &mut crc_errors);
@@ -641,4 +650,19 @@ pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         off += (whole * packet_size) as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod dup_tests {
+    use super::*;
+
+    #[test]
+    fn a_discontinuity_packet_is_never_a_duplicate() {
+        let payload = [7u8; 20];
+        let pk = |discontinuity| Packet { pusi: true, pid: 0x100, cc: 3, has_payload: true, discontinuity, pcr: None, payload: &payload };
+        let mut g = DupGuard::default();
+        assert!(!g.is_dup(&pk(false)));
+        assert!(!g.is_dup(&pk(true)), "same counter and payload, but the stream restarts here");
+        assert!(g.is_dup(&pk(false)), "the discontinuity packet is the new reference");
+    }
 }

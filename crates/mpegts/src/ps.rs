@@ -96,8 +96,6 @@ fn lpcm_format(h: &[u8]) -> Option<LpcmFormat> {
 struct EsState {
     stream: Stream,
     split: Splitter,
-    /// timestamps are unwrapped per stream
-    unwrap: Unwrap,
 }
 
 /// Length of the packet (pack header, system header, PES…) starting at `b` (which begins with a
@@ -132,6 +130,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
     let mut pos = 0u64;
     let mut streams: HashMap<(u8, Option<u8>), EsState> = HashMap::new();
     let mut order = Vec::new();
+    // one timestamp unwrapper for the program: its streams share one clock (as in the TS scan)
+    let mut unwrap = Unwrap::default();
     let mut psm: HashMap<u8, u8> = HashMap::new();
     let mut scr = ClockRange::default();
     let mut resyncs = 0u64;
@@ -223,10 +223,10 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                         pes_packets: 0,
                         skipped_bytes: 0,
                     };
-                    EsState { stream, split: Splitter::new(&codec), unwrap: Unwrap::default() }
+                    EsState { stream, split: Splitter::new(&codec) }
                 });
                 e.stream.pes_packets += 1;
-                let (pts, dts) = (h.pts.map(|t| e.unwrap.unwrap(t)), h.dts.map(|t| e.unwrap.unwrap(t)));
+                let (pts, dts) = (h.pts.map(|t| unwrap.unwrap(t)), h.dts.map(|t| unwrap.unwrap(t)));
                 e.split.pes_start(pts, dts);
                 e.split.feed(pos, &payload[skip..]);
             }

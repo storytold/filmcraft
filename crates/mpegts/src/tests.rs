@@ -966,3 +966,38 @@ fn transport_stream_resyncs_after_garbage() {
         }
     }
 }
+
+#[test]
+fn program_stream_streams_share_one_clock_across_the_33_bit_wrap() {
+    // video-like stream just before the wrap, audio just after: one clock, so audio is 2^33 + 500
+    let w = 1i64 << 33;
+    let mut out = Vec::new();
+    for k in 0..3u8 {
+        out.extend([0, 0, 1, 0xBA, 0x44, 0, 4, 0, 4, 1, 1, 0x89, 0xC3, 0xF8]);
+        out.extend(pes(0xC0, Some((w - 1000 + 2160 * k as i64) % w), None, &mp2_frame(k), true));
+        out.extend(pes(0xC1, Some(500 + 2160 * k as i64), None, &mp2_frame(k), true));
+    }
+    out.extend([0, 0, 1, 0xB9]);
+    let f = open(&out).unwrap();
+    assert_eq!(f.streams.len(), 2);
+    let pts = |s: usize| f.streams[s].units.iter().map(|u| u.pts.unwrap()).collect::<Vec<_>>();
+    let (a, b) = (pts(0), pts(1));
+    assert_eq!(b[0] - a[0], 1500, "{a:?} {b:?}");
+}
+
+#[test]
+fn repeated_pat_and_pmt_packets_are_dropped_before_the_section_parser() {
+    let clean = audio_ts(2);
+    let first = |pid: u16| {
+        (0..clean.len() / 188).map(|i| i * 188).find(|&o| (((clean[o + 1] & 0x1F) as u16) << 8 | clean[o + 2] as u16) == pid).expect("packet exists")
+    };
+    let mut dup = clean.clone();
+    for pid in [0x100, 0] {
+        let o = first(pid);
+        let copy = dup[o..o + 188].to_vec();
+        dup.splice(o + 188..o + 188, copy);
+    }
+    let f = open(&dup).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("2 duplicate packet(s) dropped")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("continuity") || w.contains("CRC")), "{:?}", f.warnings);
+}
