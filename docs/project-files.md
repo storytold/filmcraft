@@ -57,6 +57,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
+| 18 | ComfyUI clips | generated media: `project.generated` (the recipes of ComfyUI clips, [comfyui.md](comfyui.md)); no-op step |
 
 ### Migrations
 

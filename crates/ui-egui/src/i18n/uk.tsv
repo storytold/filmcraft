@@ -360,7 +360,54 @@
 	Zoom In	Збільшити
 	Zoom Out	Зменшити
 	Zoom to Sequence	Умістити секвенцію
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	Згенерувати кліп ComfyUI
 	Project Notes	Нотатки проєкту
+	A project can come from anyone: its files are sent to the server only after you allow them	Проєкт може надійти від будь-кого: його файли надсилаються на сервер лише після вашого дозволу
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Робочий процес, збережений у ComfyUI командою Workflow ▸ Export (API)
+	All Inputs ({count})	Усі входи ({count})
+	Allow Uploads	Дозволити вивантаження
+	Applied	Застосовано
+	Apply	Застосувати
+	Back to the workflow's value	Повернути значення з робочого процесу
+	Choose a file to upload	Вибрати файл для вивантаження
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Параметри кліпу ComfyUI
+	ComfyUI Settings	Параметри ComfyUI
+	ComfyUI workflow (API)	Робочий процес ComfyUI (API)
+	Connected (ComfyUI {ver})	Під’єднано (ComfyUI {ver})
+	Create & Generate	Створити й згенерувати
+	Create Clip	Створити кліп
+	Created {name}	Створено: {name}
+	Expose ComfyUI Inputs	Винести входи ComfyUI
+	Expose: show this input first for this workflow	Винести: показувати цей вхід першим для цього робочого процесу
+	Exposed	Винесені
+	Exposed {input}	Вхід винесено: {input}
+	Exposed: shown first for this workflow (click to stop)	Винесено: показується першим для цього робочого процесу (натисніть, щоб прибрати)
+	Generate	Згенерувати
+	Generate again with new random seeds	Згенерувати знову з новими випадковими сідами
+	Generating…	Генерування…
+	Inspect ComfyUI Workflow	Переглянути робочий процес ComfyUI
+	Load Workflow…	Завантажити робочий процес…
+	Load a workflow, or select a ComfyUI clip	Завантажте робочий процес або виберіть кліп ComfyUI
+	Media	Медіа
+	Named by the project file: uploaded only after Allow Uploads	Вказано у файлі проєкту: вивантажується лише після «Дозволити вивантаження»
+	New ComfyUI Clip	Новий кліп ComfyUI
+	New Seeds	Нові сіди
+	New clip	Новий кліп
+	Selected ComfyUI clip	Вибраний кліп ComfyUI
+	Send these files to the ComfyUI server when the clip is generated	Надіслати ці файли на сервер ComfyUI під час генерування кліпу
+	Server	Сервер
+	Test	Перевірити
+	Text output	Текстовий вихід
+	This clip uploads files named by the project file: {files}	Цей кліп вивантажує файли, вказані у файлі проєкту: {files}
+	not reachable	недоступний
+	select a ComfyUI clip	виберіть кліп ComfyUI
+	{input} no longer exposed	Вхід більше не винесено: {input}
+	{n} file(s) allowed	Дозволено файлів: {n}
+	{n} inputs	Входів: {n}
 
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Тривалість маркера діапазону має бути додатною

@@ -3626,3 +3626,47 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; 10-bitni master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Projekat može doći od bilo koga: njegove datoteke se šalju na server tek kada ih dozvolite
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Tok rada sačuvan pomoću Workflow ▸ Export (API) u ComfyUI-ju
+	All Inputs ({count})	Svi ulazi ({count})
+	Allow Uploads	Dozvoli otpremanje
+	Applied	Primijenjeno
+	Back to the workflow's value	Vrati na vrijednost iz toka rada
+	Choose a file to upload	Odaberite datoteku za otpremanje
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Postavke ComfyUI klipa
+	ComfyUI Settings	Postavke ComfyUI-ja
+	ComfyUI workflow (API)	ComfyUI tok rada (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Povezano (ComfyUI {ver})
+	Create & Generate	Kreiraj i generiši
+	Create Clip	Kreiraj klip
+	Created {name}	Kreirano: {name}
+	Expose ComfyUI Inputs	Izloži ComfyUI ulaze
+	Expose: show this input first for this workflow	Izloži: prikaži ovaj ulaz prvi za ovaj tok rada
+	Exposed	Izloženi
+	Exposed {input}	Izložen ulaz: {input}
+	Exposed: shown first for this workflow (click to stop)	Izložen: prikazuje se prvi za ovaj tok rada (kliknite da prestane)
+	Generate ComfyUI Clip	Generiši ComfyUI klip
+	Generate again with new random seeds	Generiši ponovo s novim nasumičnim sjemenima
+	Generating…	Generisanje…
+	Inspect ComfyUI Workflow	Pregledaj ComfyUI tok rada
+	Load Workflow…	Učitaj tok rada…
+	Load a workflow, or select a ComfyUI clip	Učitajte tok rada ili odaberite ComfyUI klip
+	Named by the project file: uploaded only after Allow Uploads	Navedeno u datoteci projekta: otprema se tek nakon Dozvoli otpremanje
+	New ComfyUI Clip	Novi ComfyUI klip
+	New Seeds	Nova sjemena
+	New clip	Novi klip
+	Selected ComfyUI clip	Odabrani ComfyUI klip
+	Send these files to the ComfyUI server when the clip is generated	Pošalji ove datoteke na ComfyUI server kada se klip generiše
+	Server	Server
+	Test	Testiraj
+	Text output	Tekstualni izlaz
+	This clip uploads files named by the project file: {files}	Ovaj klip otprema datoteke navedene u datoteci projekta: {files}
+	not reachable	nedostupan
+	select a ComfyUI clip	odaberite ComfyUI klip
+	{input} no longer exposed	Ulaz više nije izložen: {input}
+	{n} file(s) allowed	Dozvoljeno datoteka: {n}
+	{n} inputs	Ulaza: {n}

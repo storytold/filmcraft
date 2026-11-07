@@ -3745,3 +3745,47 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bitar 4:2:0) i sekvensens storlek, konstant kvalitet CRF 16, AAC 320 kbit/s; en 10-bitars master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bitar 4:2:0, varje bildruta en nyckelbildruta), CRF 12, AAC 320 kbit/s; ett redigeringsvänligt mellanformat
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Ett projekt kan komma från vem som helst: dess filer skickas till servern först när du tillåter dem
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Ett arbetsflöde sparat med Workflow ▸ Export (API) i ComfyUI
+	All Inputs ({count})	Alla indata ({count})
+	Allow Uploads	Tillåt uppladdning
+	Applied	Tillämpat
+	Back to the workflow's value	Tillbaka till arbetsflödets värde
+	Choose a file to upload	Välj en fil att ladda upp
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Inställningar för ComfyUI-klipp
+	ComfyUI Settings	ComfyUI-inställningar
+	ComfyUI workflow (API)	ComfyUI-arbetsflöde (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Ansluten (ComfyUI {ver})
+	Create & Generate	Skapa och generera
+	Create Clip	Skapa klipp
+	Created {name}	Skapade {name}
+	Expose ComfyUI Inputs	Exponera ComfyUI-indata
+	Expose: show this input first for this workflow	Exponera: visa denna indata först för det här arbetsflödet
+	Exposed	Exponerade
+	Exposed {input}	Exponerade {input}
+	Exposed: shown first for this workflow (click to stop)	Exponerad: visas först för det här arbetsflödet (klicka för att sluta)
+	Generate ComfyUI Clip	Generera ComfyUI-klipp
+	Generate again with new random seeds	Generera igen med nya slumpmässiga frön
+	Generating…	Genererar…
+	Inspect ComfyUI Workflow	Granska ComfyUI-arbetsflöde
+	Load Workflow…	Läs in arbetsflöde…
+	Load a workflow, or select a ComfyUI clip	Läs in ett arbetsflöde eller markera ett ComfyUI-klipp
+	Named by the project file: uploaded only after Allow Uploads	Angiven av projektfilen: laddas upp först efter Tillåt uppladdning
+	New ComfyUI Clip	Nytt ComfyUI-klipp
+	New Seeds	Nya frön
+	New clip	Nytt klipp
+	Selected ComfyUI clip	Markerat ComfyUI-klipp
+	Send these files to the ComfyUI server when the clip is generated	Skicka dessa filer till ComfyUI-servern när klippet genereras
+	Server	Server
+	Test	Testa
+	Text output	Textutdata
+	This clip uploads files named by the project file: {files}	Detta klipp laddar upp filer som projektfilen anger: {files}
+	not reachable	kan inte nås
+	select a ComfyUI clip	markera ett ComfyUI-klipp
+	{input} no longer exposed	{input} är inte längre exponerad
+	{n} file(s) allowed	{n} fil(er) tillåtna
+	{n} inputs	{n} indata

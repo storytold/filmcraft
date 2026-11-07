@@ -3,6 +3,7 @@
 
 use crate::{Dialog, FilmcraftApp};
 
+/// Draw the open dialogs and windows (each panel's own first, then the one in `app.dialog`).
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::marker_properties::show(app, ctx);
     crate::panels::custom_colors::show(app, ctx);
@@ -21,6 +22,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);
     crate::panels::remix::show(app, ctx);
+    crate::panels::comfyui::show(app, ctx);
     crate::links::show_failed(app, ctx);
     crate::panels::interchange_export::show(app, ctx);
     crate::panels::caption_export::show(app, ctx);

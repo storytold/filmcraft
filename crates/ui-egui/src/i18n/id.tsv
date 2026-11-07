@@ -3680,3 +3680,47 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) pada ukuran sekuens, kualitas konstan CRF 16, AAC 320 kbps; master 10-bit
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, setiap bingkai adalah bingkai kunci), CRF 12, AAC 320 kbps; intermediate yang mudah disunting
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Proyek bisa berasal dari siapa saja: berkasnya dikirim ke server hanya setelah Anda mengizinkannya
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Alur kerja yang disimpan dengan Workflow ▸ Export (API) di ComfyUI
+	All Inputs ({count})	Semua Input ({count})
+	Allow Uploads	Izinkan Unggahan
+	Applied	Diterapkan
+	Back to the workflow's value	Kembali ke nilai alur kerja
+	Choose a file to upload	Pilih berkas untuk diunggah
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Pengaturan Klip ComfyUI
+	ComfyUI Settings	Pengaturan ComfyUI
+	ComfyUI workflow (API)	Alur kerja ComfyUI (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Terhubung (ComfyUI {ver})
+	Create & Generate	Buat & Hasilkan
+	Create Clip	Buat Klip
+	Created {name}	{name} dibuat
+	Expose ComfyUI Inputs	Tampilkan Input ComfyUI
+	Expose: show this input first for this workflow	Tampilkan: tunjukkan input ini lebih dulu untuk alur kerja ini
+	Exposed	Ditampilkan
+	Exposed {input}	{input} ditampilkan
+	Exposed: shown first for this workflow (click to stop)	Ditampilkan: muncul lebih dulu untuk alur kerja ini (klik untuk berhenti)
+	Generate ComfyUI Clip	Hasilkan Klip ComfyUI
+	Generate again with new random seeds	Hasilkan lagi dengan seed acak baru
+	Generating…	Menghasilkan…
+	Inspect ComfyUI Workflow	Periksa Alur Kerja ComfyUI
+	Load Workflow…	Muat Alur Kerja…
+	Load a workflow, or select a ComfyUI clip	Muat alur kerja, atau pilih klip ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Ditentukan oleh berkas proyek: diunggah hanya setelah Izinkan Unggahan
+	New ComfyUI Clip	Klip ComfyUI Baru
+	New Seeds	Seed Baru
+	New clip	Klip baru
+	Selected ComfyUI clip	Klip ComfyUI terpilih
+	Send these files to the ComfyUI server when the clip is generated	Kirim berkas ini ke server ComfyUI saat klip dihasilkan
+	Server	Server
+	Test	Uji
+	Text output	Keluaran teks
+	This clip uploads files named by the project file: {files}	Klip ini mengunggah berkas yang ditentukan oleh berkas proyek: {files}
+	not reachable	tidak dapat dijangkau
+	select a ComfyUI clip	pilih klip ComfyUI
+	{input} no longer exposed	{input} tidak lagi ditampilkan
+	{n} file(s) allowed	{n} berkas diizinkan
+	{n} inputs	{n} input

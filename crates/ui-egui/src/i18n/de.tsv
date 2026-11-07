@@ -3694,3 +3694,47 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 Bit 4:2:0) in der Größe der Sequenz, konstante Qualität CRF 16, AAC 320 kbps; ein 10-Bit-Master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 Bit 4:2:0, jedes Bild ein Keyframe), CRF 12, AAC 320 kbps; ein schnittfreundliches Zwischenformat
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Ein Projekt kann von überall stammen: Seine Dateien werden erst an den Server gesendet, wenn du sie erlaubst
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Ein Workflow, gespeichert mit „Workflow ▸ Export (API)“ in ComfyUI
+	All Inputs ({count})	Alle Eingänge ({count})
+	Allow Uploads	Uploads erlauben
+	Applied	Angewendet
+	Back to the workflow's value	Zurück zum Wert des Workflows
+	Choose a file to upload	Datei zum Hochladen wählen
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	ComfyUI-Clip-Einstellungen
+	ComfyUI Settings	ComfyUI-Einstellungen
+	ComfyUI workflow (API)	ComfyUI-Workflow (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Verbunden (ComfyUI {ver})
+	Create & Generate	Erstellen und erzeugen
+	Create Clip	Clip erstellen
+	Created {name}	{name} erstellt
+	Expose ComfyUI Inputs	ComfyUI-Eingänge freigeben
+	Expose: show this input first for this workflow	Freigeben: diesen Eingang bei diesem Workflow zuerst zeigen
+	Exposed	Freigegeben
+	Exposed {input}	{input} freigegeben
+	Exposed: shown first for this workflow (click to stop)	Freigegeben: wird bei diesem Workflow zuerst gezeigt (klicken zum Aufheben)
+	Generate ComfyUI Clip	ComfyUI-Clip erzeugen
+	Generate again with new random seeds	Mit neuen zufälligen Seeds erneut erzeugen
+	Generating…	Wird erzeugt…
+	Inspect ComfyUI Workflow	ComfyUI-Workflow untersuchen
+	Load Workflow…	Workflow laden…
+	Load a workflow, or select a ComfyUI clip	Lade einen Workflow oder wähle einen ComfyUI-Clip aus
+	Named by the project file: uploaded only after Allow Uploads	Von der Projektdatei angegeben: wird erst nach „Uploads erlauben“ hochgeladen
+	New ComfyUI Clip	Neuer ComfyUI-Clip
+	New Seeds	Neue Seeds
+	New clip	Neuer Clip
+	Selected ComfyUI clip	Ausgewählter ComfyUI-Clip
+	Send these files to the ComfyUI server when the clip is generated	Diese Dateien beim Erzeugen des Clips an den ComfyUI-Server senden
+	Server	Server
+	Test	Testen
+	Text output	Textausgabe
+	This clip uploads files named by the project file: {files}	Dieser Clip lädt von der Projektdatei angegebene Dateien hoch: {files}
+	not reachable	nicht erreichbar
+	select a ComfyUI clip	wähle einen ComfyUI-Clip aus
+	{input} no longer exposed	{input} nicht mehr freigegeben
+	{n} file(s) allowed	{n} Datei(en) erlaubt
+	{n} inputs	{n} Eingänge

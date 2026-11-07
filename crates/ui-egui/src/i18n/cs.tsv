@@ -3644,3 +3644,47 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10bitové 4:2:0) ve velikosti sekvence, konstantní kvalita CRF 16, AAC 320 kb/s; 10bitový master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10bitové 4:2:0, každý snímek klíčový), CRF 12, AAC 320 kb/s; mezilehlý formát vhodný pro střih
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Projekt může pocházet od kohokoli: jeho soubory se na server odešlou až poté, co je povolíte
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Pracovní postup uložený v ComfyUI pomocí Workflow ▸ Export (API)
+	All Inputs ({count})	Všechny vstupy ({count})
+	Allow Uploads	Povolit nahrávání
+	Applied	Použito
+	Back to the workflow's value	Zpět na hodnotu z pracovního postupu
+	Choose a file to upload	Vyberte soubor k nahrání
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Nastavení klipu ComfyUI
+	ComfyUI Settings	Nastavení ComfyUI
+	ComfyUI workflow (API)	Pracovní postup ComfyUI (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Připojeno (ComfyUI {ver})
+	Create & Generate	Vytvořit a vygenerovat
+	Create Clip	Vytvořit klip
+	Created {name}	Vytvořeno: {name}
+	Expose ComfyUI Inputs	Zpřístupnit vstupy ComfyUI
+	Expose: show this input first for this workflow	Zpřístupnit: zobrazit tento vstup u tohoto postupu jako první
+	Exposed	Zpřístupněné
+	Exposed {input}	Vstup zpřístupněn: {input}
+	Exposed: shown first for this workflow (click to stop)	Zpřístupněno: u tohoto postupu se zobrazuje jako první (kliknutím zrušíte)
+	Generate ComfyUI Clip	Vygenerovat klip ComfyUI
+	Generate again with new random seeds	Vygenerovat znovu s novými náhodnými semínky
+	Generating…	Generování…
+	Inspect ComfyUI Workflow	Prozkoumat pracovní postup ComfyUI
+	Load Workflow…	Načíst pracovní postup…
+	Load a workflow, or select a ComfyUI clip	Načtěte pracovní postup nebo vyberte klip ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Určeno souborem projektu: nahraje se až po Povolit nahrávání
+	New ComfyUI Clip	Nový klip ComfyUI
+	New Seeds	Nová semínka
+	New clip	Nový klip
+	Selected ComfyUI clip	Vybraný klip ComfyUI
+	Send these files to the ComfyUI server when the clip is generated	Odeslat tyto soubory na server ComfyUI při generování klipu
+	Server	Server
+	Test	Vyzkoušet
+	Text output	Textový výstup
+	This clip uploads files named by the project file: {files}	Tento klip nahrává soubory určené souborem projektu: {files}
+	not reachable	nedostupný
+	select a ComfyUI clip	vyberte klip ComfyUI
+	{input} no longer exposed	Vstup už není zpřístupněn: {input}
+	{n} file(s) allowed	Povolené soubory: {n}
+	{n} inputs	Vstupy: {n}

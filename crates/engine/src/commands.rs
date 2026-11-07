@@ -3988,6 +3988,8 @@ fn build() -> Vec<CommandSpec> {
                 for i in &gone {
                     pr.items.remove(i);
                     pr.root.remove_item(*i);
+                    // a ComfyUI recipe belongs to its item: a later item taking the id must not inherit it
+                    pr.generated.remove(i);
                 }
                 let seq_ids: Vec<ItemId> = pr.sequences().map(|q| q.id).collect();
                 for sid in seq_ids {
@@ -4109,6 +4111,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
     v.extend(crate::narration::commands());
+    v.extend(crate::comfyui::commands());
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
