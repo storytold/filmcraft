@@ -220,6 +220,23 @@ fn finished(s: &Session, id: u64) -> Value {
     }
 }
 
+/// A FIFO with no writer is refused without being opened (opening it would wait for a writer).
+#[cfg(unix)]
+#[test]
+fn a_fifo_client_file_is_refused_without_waiting() {
+    let (mut s, dir) = session("fifo");
+    let fifo = dir.join("client.fifo");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if !made.is_ok_and(|st| st.success()) {
+        eprintln!("mkfifo unavailable; skipped");
+        return;
+    }
+    let t0 = std::time::Instant::now();
+    let e = s.execute("publish.youtube.setClient", json!({"path": fifo})).unwrap_err().to_string();
+    assert!(e.contains("not a regular file"), "{e}");
+    assert!(t0.elapsed() < Duration::from_secs(5));
+}
+
 fn desktop_client_file() -> String {
     json!({"installed": {
         "client_id": CLIENT_ID, "project_id": "filmcraft-test", "client_secret": "GOCSPX-test",

@@ -99,12 +99,18 @@ fn load_client(s: &Session) -> std::result::Result<ClientConfig, String> {
 
 /// A regular file of at most `max` bytes. The bound is on what is read, not on what the file system
 /// reports, so a device or a pipe (which report no length) or a file growing meanwhile can't make it
-/// read without end.
+/// read without end. The type is checked before opening too: opening a FIFO that has no writer
+/// waits for one (Unix), so it must not be opened at all.
 fn read_small(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
+    let not_regular = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file");
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
     let file = std::fs::File::open(path)?;
+    // and again on what was opened, in case the path changed in between
     if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+        return Err(not_regular());
     }
     let mut bytes = Vec::new();
     file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
