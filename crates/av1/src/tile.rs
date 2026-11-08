@@ -131,6 +131,61 @@ pub(crate) struct TileRecord {
     /// Bytes recorded and the most allowed.
     pub bytes: usize,
     pub limit: usize,
+    /// The decoder-wide budget the recorded bytes are reserved from, and how much is reserved.
+    pub budget: Option<std::sync::Arc<RecordBudget>>,
+    reserved: usize,
+}
+
+impl Drop for TileRecord {
+    fn drop(&mut self) {
+        if let Some(b) = &self.budget {
+            b.release(self.reserved);
+        }
+    }
+}
+
+/// The parse record bytes all frames of a decoder may hold at once (frames in flight decode in
+/// one pass once it is used up).
+pub(crate) struct RecordBudget {
+    used: std::sync::atomic::AtomicUsize,
+    max: usize,
+    /// Most bytes ever reserved at once (tests).
+    #[cfg(test)]
+    pub peak: std::sync::atomic::AtomicUsize,
+}
+
+/// Bytes reserved from a [`RecordBudget`] at a time.
+const RESERVE_STEP: usize = 1 << 20;
+
+impl RecordBudget {
+    pub fn new(max: usize) -> RecordBudget {
+        RecordBudget {
+            used: Default::default(),
+            max,
+            #[cfg(test)]
+            peak: Default::default(),
+        }
+    }
+
+    /// Reserve `n` bytes; false (nothing reserved) if that would go over the budget.
+    fn reserve(&self, n: usize) -> bool {
+        use std::sync::atomic::Ordering;
+        let ok = self.used.try_update(Ordering::AcqRel, Ordering::Acquire, |u| u.checked_add(n).filter(|&v| v <= self.max)).is_ok();
+        #[cfg(test)]
+        if ok {
+            self.peak.fetch_max(self.used.load(Ordering::Acquire), Ordering::AcqRel);
+        }
+        ok
+    }
+
+    fn release(&self, n: usize) {
+        self.used.fetch_sub(n, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// Bytes reserved now.
+    pub fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 /// The motion of a recorded block (what a reference row wait depends on).
@@ -155,7 +210,21 @@ impl TileRecord {
     /// Account for `n` more recorded bytes; false once over the limit (nothing more is kept).
     fn grow(&mut self, n: usize) -> bool {
         self.bytes = self.bytes.saturating_add(n);
-        self.bytes <= self.limit
+        if self.bytes > self.limit {
+            return false;
+        }
+        if self.bytes > self.reserved
+            && let Some(b) = &self.budget
+        {
+            let step = (self.bytes - self.reserved).max(RESERVE_STEP);
+            if !b.reserve(step) {
+                // The decoder-wide budget is used up: this frame is decoded in one pass.
+                self.limit = 0;
+                return false;
+            }
+            self.reserved += step;
+        }
+        true
     }
     /// The recorded blocks of superblock rows [first, end), for a tile `sbs_per_row` superblocks wide.
     pub fn row_blocks(&self, sbs_per_row: usize, first: usize, end: usize) -> impl Iterator<Item = BlockMotion> + '_ {

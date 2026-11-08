@@ -286,6 +286,8 @@ struct FrameJob {
     /// Overrides [`RECORD_BYTES_PER_SAMPLE`] (tests).
     #[cfg(test)]
     record_limit: Option<usize>,
+    /// The decoder's parse record budget.
+    record_budget: Arc<crate::tile::RecordBudget>,
 }
 
 /// A shown picture in output order.
@@ -390,6 +392,8 @@ pub struct Decoder {
     draft: bool,
     stats: Arc<Mutex<DecodeStats>>,
     pool: Pool,
+    /// Parse record bytes all frames in flight may hold together.
+    record_budget: Arc<crate::tile::RecordBudget>,
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     workers: Option<Workers>,
     /// Frames submitted to the workers and not known to be finished (oldest first).
@@ -476,6 +480,7 @@ impl Decoder {
             draft: false,
             stats,
             pool,
+            record_budget: Arc::new(crate::tile::RecordBudget::new(RECORD_BUDGET_BYTES)),
             #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
             workers,
             in_flight: VecDeque::new(),
@@ -766,6 +771,7 @@ impl Decoder {
             panic_at_row: self.panic_at_row.filter(|&(f, _)| f == self.frame_number).map(|(_, r)| r),
             #[cfg(test)]
             record_limit: self.record_limit,
+            record_budget: self.record_budget.clone(),
         }));
         #[cfg(test)]
         {
@@ -1017,15 +1023,17 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     let record_limit = RECORD_BYTES_PER_SAMPLE;
     #[cfg(test)]
     let record_limit = job.record_limit.unwrap_or(RECORD_BYTES_PER_SAMPLE);
-    let mut tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, if split { Pass::Parse } else { Pass::Full }, record_limit)?;
+    let mut tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, if split { Pass::Parse } else { Pass::Full }, record_limit, &job.record_budget)?;
     // A frame whose record would take too much memory (pathological streams) is decoded again
     // in one pass, as on one thread.
     let one_pass = split && tiles.records.iter().any(|(_, r)| r.over_limit());
     if one_pass {
+        // The fallback starts again from the tile data: release the records first.
+        drop(tiles);
         let wait = Timer::start();
         (fs, cdfs) = setup(true)?;
         waited = wait.secs();
-        tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, Pass::Full, record_limit)?;
+        tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, Pass::Full, record_limit, &job.record_budget)?;
     }
     stats.tiles += job.tiles.len() as u64;
     if !fh.disable_frame_end_update_cdf
@@ -1306,6 +1314,11 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
 /// coefficient coded) the frame is decoded in one pass instead, so memory stays bounded.
 const RECORD_BYTES_PER_SAMPLE: usize = 32;
 
+/// Most parse record bytes all frames of a decoder hold at once. Past it, the frames that
+/// cannot reserve more are decoded in one pass, so the frames in flight together stay bounded
+/// too (typical streams need a few bytes per luma sample: under 100 MB for a 2160p frame).
+const RECORD_BUDGET_BYTES: usize = 1 << 30;
+
 /// The tiles of a frame between parsing and reconstruction.
 struct FrameTiles {
     /// One state per tile (decoded in parallel into private buffers), or one for the whole
@@ -1337,7 +1350,16 @@ impl FrameTiles {
 
 /// Run `pass` (Full or Parse) over the tiles of a frame.
 /// `record_limit`: most record bytes per luma sample of a tile (see [`RECORD_BYTES_PER_SAMPLE`]).
-fn parse_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)], pass: Pass, record_limit: usize) -> Result<FrameTiles> {
+/// `budget`: the decoder-wide budget the records are reserved from.
+fn parse_tiles(
+    pool: &Pool,
+    fs: &mut FrameState,
+    cdfs: &Cdfs,
+    tiles: &[(usize, Vec<u8>)],
+    pass: Pass,
+    record_limit: usize,
+    budget: &Arc<crate::tile::RecordBudget>,
+) -> Result<FrameTiles> {
     let ti = fs.fh.tile_info.clone();
     let ctx_tile = ti.context_update_tile_id as usize;
     let run = |sh: &FrameShared, t: &mut TileState, num: usize, data: &[u8]| -> Result<(Option<Box<Cdfs>>, TileRecord)> {
@@ -1346,6 +1368,7 @@ fn parse_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, V
         td.pass = pass;
         let (rows, cols) = (td.mi_row_end.saturating_sub(td.mi_row_start), td.mi_col_end.saturating_sub(td.mi_col_start));
         td.record.limit = rows.saturating_mul(cols).saturating_mul(16 * record_limit);
+        td.record.budget = Some(budget.clone());
         td.decode_tile()?;
         let rec = std::mem::take(&mut td.record);
         Ok(((num == ctx_tile).then_some(td.cdf), rec))
@@ -1613,6 +1636,7 @@ mod tests {
             panic_at_row: None,
             #[cfg(test)]
             record_limit: None,
+            record_budget: decoder.record_budget.clone(),
         }));
         decoder
     }
@@ -1885,6 +1909,27 @@ mod tests {
                 });
                 assert_eq!(errors, 0, "{name}: threads {threads}, limit {limit}");
                 assert!(got == want, "{name}: threads {threads}, limit {limit}: pictures differ");
+            }
+        }
+    }
+
+    #[test]
+    fn the_parse_records_of_all_frames_stay_within_the_decoder_budget() {
+        for stream in [STREAMS[0], STREAMS[3]] {
+            let Some(tus) = inter_stream(stream) else { return };
+            let name = stream.0;
+            let (want, _) = decode_tus(Decoder::with_threads(1), &tus);
+            // Room for about one frame's records: the other frames in flight decode in one pass.
+            for (threads, budget) in [(3, 0), (8, 3 << 20), (16, 1 << 20)] {
+                let tus = tus.clone();
+                let b = Arc::new(crate::tile::RecordBudget::new(budget));
+                let mut dec = Decoder::with_threads(threads);
+                dec.record_budget = b.clone();
+                let (got, errors) = within_a_minute(move || decode_tus(dec, &tus));
+                assert_eq!(errors, 0, "{name}: threads {threads}, budget {budget}");
+                assert!(got == want, "{name}: threads {threads}, budget {budget}: pictures differ");
+                assert!(b.peak.load(std::sync::atomic::Ordering::Acquire) <= budget, "{name}: threads {threads}: over the budget");
+                assert_eq!(b.used(), 0, "{name}: threads {threads}: records not released");
             }
         }
     }
