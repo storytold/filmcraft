@@ -755,11 +755,9 @@ fn timeline_slider_settings_is_the_menus_row_while_the_bar_is_hidden() {
     assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide Slider brings the bar back");
 }
 
-/// The rows this session added to both slider menus: the Controls row and Invert Scrolling on the
-/// Timeline slider, the Controls row and Snap to Tracks on the track sliders -- and Snap to
-/// Tracks toggles and persists even though it drives nothing yet.
+/// Timeline Controls remain in their menu, and Track Slider settings keep their own options.
 #[test]
-fn both_slider_menus_carry_the_controls_rows_and_snap_to_tracks() {
+fn timeline_controls_and_track_slider_settings_stay_separate() {
     let mut d = Driver::demo();
     let bar = d.rect("timeline.zoomBar.track");
     d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
@@ -774,7 +772,7 @@ fn both_slider_menus_carry_the_controls_rows_and_snap_to_tracks() {
     let slider = d.rect("timeline.trackSlider.video");
     d.click_at(slider[0] + slider[2] / 2.0, slider[1] + slider[3] / 2.0, "right");
     d.frames(2);
-    assert!(d.has("timeline.trackSlider.settings.controls"), "the Controls row on the track sliders' menu");
+    assert!(!d.has("timeline.trackSlider.settings.controls"), "Track Slider settings do not duplicate Timeline Controls");
     assert!(d.has("timeline.trackSlider.settings.snapToTracks"), "Snap to Tracks");
     assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
     d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));
@@ -813,4 +811,73 @@ fn clicking_a_controls_box_takes_the_next_key_and_that_key_does_the_action() {
     d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.reset0"}));
     d.frames(2);
     assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "Reset restores the default gesture");
+}
+
+#[test]
+fn track_slider_end_drag_snaps_only_when_snap_to_tracks_is_enabled() {
+    fn drag_edge(snap: bool) -> (f32, f32) {
+        let mut d = Driver::tall();
+        d.app().session.state.timeline_ui.track_slider_snap = snap;
+        d.app().ui.timeline.v_scroll = 33.0;
+        d.frames(3);
+        let circle = d.rect("timeline.trackSlider.video.topCircle");
+        let (x, y) = (circle[0] + circle[2] / 2.0, circle[1] + circle[3] / 2.0);
+        d.press(x, y);
+        d.move_to(x, y + 9.0);
+        d.release(x, y + 9.0);
+        let app = d.app();
+        (app.ui.timeline.v_scroll, app.ui.timeline.video_track_h)
+    }
+
+    let (snapped, h) = drag_edge(true);
+    assert!((snapped / h - (snapped / h).round()).abs() < 0.01, "landing aligns with a track divider: scroll={snapped}, height={h}");
+    let (unsnapped, h) = drag_edge(false);
+    assert!((unsnapped / h - (unsnapped / h).round()).abs() > 0.01, "disabled snapping preserves the free landing: scroll={unsnapped}, height={h}");
+}
+
+/// The Controls boxes: clicking one listens ("Enter Shortcut"), the next key becomes the binding
+/// and then that chord does what the gesture did -- fitting the Playhead Centering Range.
+
+#[test]
+fn alternate_drag_speed_uses_its_rebound_key_while_dragging() {
+    fn drag_with_binding(binding: Option<&str>) -> f32 {
+        let mut d = Driver::tall();
+        d.app().session.state.timeline_ui.control_alternate_drag_speed = binding.unwrap_or_default().to_owned();
+        let circle = d.rect("timeline.trackSlider.video.topCircle");
+        let (x, y) = (circle[0] + circle[2] / 2.0, circle[1] + circle[3] / 2.0);
+        d.press(x, y);
+        if binding.is_some() {
+            d.harness.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::K,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            d.frames(1);
+            assert!(d.harness.ctx.input(|i| i.keys_down.contains(&egui::Key::K)), "the rebound key remains held during the drag");
+        }
+        d.move_to(x, y + 60.0);
+        let height = d.app().ui.timeline.video_track_h;
+        d.release(x, y + 60.0);
+        height
+    }
+
+    let plain = drag_with_binding(None);
+    let rebound = drag_with_binding(Some("K"));
+    assert!((rebound - 60.0).abs() < (plain - 60.0).abs(), "the rebound K chord scales the drag toward the slower 1x rate: plain={plain}, rebound={rebound}");
+}
+
+#[test]
+fn a_mouse_button_binding_fires_only_when_clicked_on_the_zoom_bar() {
+    let mut d = Driver::demo();
+    d.app().session.state.timeline_ui.control_center_on_playhead = "Right Click".to_owned();
+    d.ok("ui.set", json!({"timeline": {"pps": 20.0}}));
+    d.frames(3);
+    let before = d.app().ui.timeline.target_pps;
+    d.click_at(10.0, 10.0, "right");
+    assert_eq!(d.app().ui.timeline.target_pps, before, "the mouse binding does not hijack right-clicks elsewhere");
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    assert_ne!(d.app().ui.timeline.target_pps, before, "the accepted Right Click binding fires over the slider");
 }

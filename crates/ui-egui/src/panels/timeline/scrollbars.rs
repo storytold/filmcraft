@@ -728,6 +728,41 @@ fn control_binding(app: &mut FilmcraftApp, slot: usize) -> &mut String {
     }
 }
 
+/// Whether an assigned Alternate Drag Speed binding is held. Shortcut names use egui's Key debug
+/// spelling, matching the names captured by the Controls flyout.
+pub(super) fn control_binding_down(ui: &egui::Ui, binding: &str) -> bool {
+    if binding.is_empty() || controls_listening(ui.ctx()) {
+        return false;
+    }
+    match binding {
+        "Left Click" => return ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)),
+        "Right Click" => return ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary)),
+        "Middle Click" => return ui.input(|i| i.pointer.button_down(egui::PointerButton::Middle)),
+        "Extra Click" => {
+            return ui.input(|i| i.pointer.button_down(egui::PointerButton::Extra1) || i.pointer.button_down(egui::PointerButton::Extra2));
+        }
+        _ => {}
+    }
+    let key_name = binding.rsplit(" + ").next().unwrap_or(binding);
+    let wants_ctrl = binding.split(" + ").any(|part| part == "Ctrl");
+    let wants_shift = binding.split(" + ").any(|part| part == "Shift");
+    let wants_alt = binding.split(" + ").any(|part| part == "Alt");
+    if ui.ctx().text_edit_focused() && !wants_ctrl && !wants_alt {
+        return false;
+    }
+    ui.input(|i| {
+        let m = i.modifiers;
+        let key_down = i.keys_down.iter().any(|key| format!("{key:?}") == key_name);
+        key_down && (m.ctrl || m.mac_cmd) == wants_ctrl && m.shift == wants_shift && m.alt == wants_alt
+    })
+}
+
+fn snap_track_scroll(value: f32, max: f32, track_h: f32) -> f32 {
+    if !value.is_finite() || !max.is_finite() || !track_h.is_finite() || track_h <= 0.0 {
+        return value;
+    }
+    (value / track_h).round().mul_add(track_h, 0.0).clamp(0.0, max.max(0.0))
+}
 /// The width the Controls flyout always has -- the main slider's -- in every menu.
 const CONTROLS_FLYOUT_W: f32 = 257.4;
 
@@ -1387,14 +1422,7 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 }
 
 /// Extend a short edge run to the semicircle tangent instead of flattening its cap.
-fn minimap_indicator_bounds(
-    mut xa: f32,
-    mut xb: f32,
-    left_tangent: f32,
-    right_tangent: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> (f32, f32) {
+fn minimap_indicator_bounds(mut xa: f32, mut xb: f32, left_tangent: f32, right_tangent: f32, hug_left: bool, hug_right: bool) -> (f32, f32) {
     if hug_left {
         xb = xb.max(left_tangent);
     }
@@ -1410,13 +1438,7 @@ fn minimap_indicator_hugs_edges(index: usize, run_count: usize, left_gap: f32, r
 }
 
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
-fn minimap_indicator_filled(
-    fill_clips: bool,
-    width: f32,
-    min_outline_width: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> bool {
+fn minimap_indicator_filled(fill_clips: bool, width: f32, min_outline_width: f32, hug_left: bool, hug_right: bool) -> bool {
     fill_clips || (width < min_outline_width && !hug_left && !hug_right)
 }
 
@@ -1562,6 +1584,24 @@ mod controls_tests {
         assert!((SHIFT_CONTENT_RATE * one / (SHIFT_THUMB_RATE * one) - 10.0 / 3.0).abs() < 0.01);
         // the setting scales both rates together, never one slider's alone
         assert!((SHIFT_CONTENT_RATE * ten / (SHIFT_CONTENT_RATE * one) - 100.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod track_scroll_snap_tests {
+    use super::snap_track_scroll;
+
+    #[test]
+    fn end_drag_lands_on_the_nearest_track_divider_and_respects_the_scroll_range() {
+        assert_eq!(snap_track_scroll(24.0, 200.0, 60.0), 0.0);
+        assert_eq!(snap_track_scroll(35.0, 200.0, 60.0), 60.0);
+        assert_eq!(snap_track_scroll(178.0, 180.0, 60.0), 180.0);
+    }
+
+    #[test]
+    fn invalid_track_heights_leave_the_current_scroll_untouched() {
+        assert_eq!(snap_track_scroll(37.0, 180.0, 0.0), 37.0);
+        assert_eq!(snap_track_scroll(37.0, f32::NAN, 60.0), 37.0);
     }
 }
 
@@ -1716,14 +1756,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
             let cap_rr = (bot - top) / 2.0;
-            (xa, xb) = minimap_indicator_bounds(
-                xa,
-                xb,
-                bar.min.x + ins + sh + cap_r,
-                bar.max.x - ins - sh - cap_rr,
-                hug_left,
-                hug_right,
-            );
+            (xa, xb) = minimap_indicator_bounds(xa, xb, bar.min.x + ins + sh + cap_r, bar.max.x - ins - sh - cap_rr, hug_left, hug_right);
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1767,13 +1800,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // "very near the beginning" / "very near the end": within the pill's cap zones
             let (hug_left, hug_right) = minimap_indicator_hugs_edges(index, runs.len(), x0 - bar.min.x, bar.max.x - x1, rad);
             let col = color_for(k);
-            if minimap_indicator_filled(
-                fill,
-                x1 - x0,
-                5.0 * px,
-                hug_left,
-                hug_right,
-            ) {
+            if minimap_indicator_filled(fill, x1 - x0, 5.0 * px, hug_left, hug_right) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
@@ -1901,15 +1928,15 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let s = &app.session.state.timeline_ui;
         [s.control_center_on_playhead.clone(), s.control_explode_slider.clone(), s.control_alternate_drag_speed.clone(), s.control_settings.clone()]
     };
-    // mouse buttons are capturable and shown in the box, but only a key chord triggers an
-    // action here -- a "Left Click" binding must never hijack every click in the app
     let bound = |slot: usize| -> bool {
-        chord_ok && !binds[slot].is_empty() && chord.as_deref() == Some(binds[slot].as_str()) && chord.as_deref().is_some_and(|c| !c.ends_with("Click"))
+        let pointer_in_bar = ui.input(|i| i.pointer.interact_pos().is_some_and(|p| bar.contains(p)));
+        chord_ok && !binds[slot].is_empty() && chord.as_deref() == Some(binds[slot].as_str()) && (!binds[slot].ends_with("Click") || pointer_in_bar)
     };
     let center_bound = bound(0);
     let explode_bound = bound(1);
     // the Settings binding opens the bar's own menu, so it only fires over the bar
     let settings_bound = bound(3) && ui.rect_contains_pointer(bar);
+    let alternate_speed_down = control_binding_down(ui, &binds[2]);
     let right_click = ui.input(|input| {
         input.pointer.button_clicked(egui::PointerButton::Secondary).then(|| input.pointer.interact_pos()).flatten().filter(|pos| bar.contains(*pos))
     });
@@ -2092,6 +2119,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         && resp.dragged()
     {
         let shift = ui.input(|i| i.modifiers.shift);
+        let slow_drag = shift || alternate_speed_down;
         // While Shift is held in a zoom-bar drag the OS cursor is made invisible with a fully
         // transparent 1x1 cursor bitmap, confined to the app window, and PINNED to the exact
         // position where Shift went down: every frame it is warped back there, so it never moves
@@ -2139,7 +2167,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // The Alternate Drag Speed setting scales Shift's sensitivity above/below the tuned curve
         // for the view's current zoom (see [`shift_drag_base`]). Without Shift the drag is exactly
         // 1:1 -- the thumb moves with the mouse, one point moves it one point.
-        let base = if shift && app.tl.zoombar_cursor_lock.is_some() {
+        let base = if slow_drag {
             let full_view = timeline_extent(seq_seconds) * view_w.max(1.0) as f64 / f64::from(bar.width().max(1.0));
             let pps = app.ui.timeline.pps;
             let visible = if pps.is_finite() && pps > 0.0 { view_w.max(1.0) as f64 / pps } else { full_view };
@@ -2175,7 +2203,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                 let vis = view_w.max(1.0) as f64 / v.pps.max(1e-9);
                 // Alternate Drag Speed adjusts edge grabs only -- the middle is never touched by
                 // the extra zoomed-in sensitivity ([`shift_edge_speed_multiplier`]).
-                let dx = if shift && app.tl.zoombar_cursor_lock.is_some() { dx * shift_edge_speed_multiplier(vis) } else { dx };
+                let dx = if slow_drag { dx * shift_edge_speed_multiplier(vis) } else { dx };
                 let f0 = log_frac(vis, total, min_view);
                 // the thumb is MIN_THUMB_W + f * (bar - MIN_THUMB_W) wide, so this keeps the
                 // growth at exactly 2 points of thumb per point of drag
@@ -2398,6 +2426,8 @@ pub(super) fn vertical_scrollbar(
     smooth: bool,
     inverted: bool,
     decouple: bool,
+    snap_to_tracks: bool,
+    alternate_speed_down: bool,
     shift_speed: f32,
     t: &Tokens,
     id: &str,
@@ -2455,6 +2485,9 @@ pub(super) fn vertical_scrollbar(
     }
     let mode: u8 = ui.data(|d| d.get_temp(mode_key)).unwrap_or(0);
     if resp.drag_stopped() {
+        if snap_to_tracks && mode != 0 {
+            *value = snap_track_scroll(*value, max, *track_h);
+        }
         ui.data_mut(|d| d.remove_temp::<u8>(mode_key));
     }
     let hp = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
@@ -2511,6 +2544,7 @@ pub(super) fn vertical_scrollbar(
         // Confined grab, and a warp back to the pin every frame; the motion is measured by hand
         // against the pin. Without Shift the drag is ordinary pointer motion.
         let shift = ui.input(|i| i.modifiers.shift);
+        let slow_drag = shift || alternate_speed_down;
         let mut pinned_dy = 0.0f64;
         if shift && let Some(origin) = ui.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) {
             if tl.zoombar_cursor_lock.is_none() {
@@ -2543,7 +2577,7 @@ pub(super) fn vertical_scrollbar(
         // pointer motion -- the same rate on both sliders whatever their track counts, so a 12
         // track video slider and a 3 track audio slider feel 1:1 with each other. 1x is slow,
         // Custom 10x is a hundred times it (many times faster than the plain drag).
-        let shift_on = shift && tl.zoombar_cursor_lock.is_some();
+        let shift_on = slow_drag;
         let rate = shift_drag_rate(shift_speed);
         // the height zoom moves the THUMB (0.06 thumb points per pointer point at 1x), the scroll
         // moves the CONTENT (0.2 content points): each rate is a constant, never one the track
@@ -2729,31 +2763,6 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.tl.track_slider_settings_pos = None;
         ui.ctx().request_repaint();
     }
-    // "Controls": not a switch -- the slider's gestures in a flyout beside the menu (the Minimap
-    // Settings flyout's exact recipe, in this menu too).
-    let (arow, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::hover());
-    let alabel = tl!("Controls");
-    let agalley = ui.painter().layout_no_wrap(alabel.to_string(), Tokens::ui(11.5), t.text);
-    ui.painter().galley(pos2(arow.center().x - agalley.size().x / 2.0, arow.center().y - agalley.size().y / 2.0), agalley, t.text);
-    controls_arrow(ui, arow, CONTENT_W, r.max.x, flyout_to_the_right(ui, arow, r.max.x, CONTROLS_FLYOUT_W), t.text_dim);
-    app.auto.add("timeline.trackSlider.settings.controls", arow, "Controls");
-    hover_flyout(
-        app,
-        ui,
-        egui::Id::unique("timeline-track-slider-advanced-flyout"),
-        arow,
-        r.max.x,
-        CONTROLS_FLYOUT_W,
-        true,
-        "timeline.trackSlider.settings.controlsFlyout",
-        "Controls",
-        &[
-            (tl!("Center on Playhead:"), "Double Click", 0),
-            (tl!("Explode Slider:"), "Triple Click", 1),
-            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
-            (tl!("Settings:"), "Right Click", 3),
-        ],
-    );
     // Smooth Animations eases the double-click moves (which land on the OTHER slider);
     // Alternate Slider Position moves the sliders to the left edge of the Timeline.
     let smooth = app.session.state.timeline_ui.track_slider_smooth;

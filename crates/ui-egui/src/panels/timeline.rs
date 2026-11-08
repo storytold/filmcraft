@@ -559,6 +559,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let inverted = app.session.state.timeline_ui.inverted_controls;
         let decouple = app.session.state.timeline_ui.track_slider_decouple;
         let shift_speed = app.session.state.timeline_ui.track_slider_shift_drag_speed as f32;
+        let snap_to_tracks = app.session.state.timeline_ui.track_slider_snap;
+        let alternate_speed_down = scrollbars::control_binding_down(ui, &app.session.state.timeline_ui.control_alternate_drag_speed);
         // a few points clear of the A/V divider's black band at each end, so the line never
         // clips over the sliders' rounded caps; the column sits against the body's edge --
         // right normally, left (in front of the headers) with Alternate Slider Position
@@ -587,6 +589,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             smooth,
             inverted,
             decouple,
+            snap_to_tracks,
+            alternate_speed_down,
             shift_speed,
             &t,
             "vs",
@@ -604,6 +608,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             smooth,
             inverted,
             decouple,
+            snap_to_tracks,
+            alternate_speed_down,
             shift_speed,
             &t,
             "as",
