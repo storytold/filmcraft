@@ -20,10 +20,10 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -72,6 +72,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_seq,
             apply_match,
         ),
+        query("lumetri.exportCube", "Export .cube…", r#"{"clip":id?,"path":str,"size":n=33}"#, export_cube),
         spec(
             "lumetri.setSection",
             "Toggle Lumetri Section",
@@ -85,6 +86,9 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
 
 fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String, Value)> {
     let text = std::fs::read_to_string(path).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
+    if text.len() > filmcraft_project::MAX_LUT_TEXT_BYTES {
+        return Err(bad("lut.import", format!("{path}: LUT source exceeds the {} byte limit", filmcraft_project::MAX_LUT_TEXT_BYTES)));
+    }
     let fmt = LutFormat::from_path(path).ok_or_else(|| bad("lut.import", "expected a .cube or .3dl file"))?;
     let lut = Lut::parse(&text, Some(fmt)).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
     let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "LUT".into());
@@ -160,6 +164,44 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     };
     std::fs::write(path, &text).map_err(|e| bad("lut.export", format!("{path}: {e}")))?;
     Ok(json!({"path": path, "bytes": text.len()}))
+}
+
+/// `lumetri.exportCube`: the grade of a clip's Lumetri Color (also the result of `lumetri.applyMatch`)
+/// as a 3D `.cube` LUT: its per-pixel colour pipeline sampled on a `size³` lattice in the sequence's
+/// output encoding, so the table applied to the ungraded frame gives the render. `clip` defaults to
+/// the first selected clip that has Lumetri. The vignette, sharpen and the HSL Secondary denoise
+/// and blur cannot live in a LUT: they are left out and named, with the other effects on the clip,
+/// in `leftOut`. The grade is sampled at the playhead (inside the clip). Nothing in the project
+/// changes.
+fn export_cube(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "lumetri.exportCube";
+    let path = str_p(p, "path").ok_or_else(|| bad(CMD, "need `path`"))?;
+    let size = crate::commands::checked_u32_p(p, "size", CMD)?.unwrap_or(33) as usize;
+    let q = s.active_sequence().ok_or_else(|| bad(CMD, "no active sequence"))?;
+    let has_lumetri = |c: &ClipId| q.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri"));
+    let clip = match clip_p(p, "clip") {
+        Some(c) => c,
+        None if p.get("clip").is_some_and(|v| !v.is_null()) => return Err(bad(CMD, "`clip` must be a clip id")),
+        None => s.state.selection.iter().copied().find(has_lumetri).ok_or_else(|| bad(CMD, "select a clip with Lumetri Color (or pass `clip`)"))?,
+    };
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {}", clip.0)))?;
+    if !has_lumetri(&clip) {
+        return Err(bad(CMD, "the clip has no enabled Lumetri Color to export"));
+    }
+    let t = it.effect_time_at(s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start)));
+    let lumetri: Vec<&filmcraft_project::EffectInstance> = it.effects.iter().filter(|e| e.effect == "lumetri").collect();
+    let title: String = it.name.chars().filter(|c| !c.is_control()).collect();
+    let sample = filmcraft_render::lumetri_cube::sample_lumetri(&lumetri, Some(&s.project), t, q.settings.frame_rate.as_f64(), &q.settings.color, size, &title)
+        .map_err(|e| bad(CMD, e))?;
+    let mut left_out: Vec<String> = sample.left_out.iter().map(|n| n.to_string()).collect();
+    for e in it.effects.iter().filter(|e| e.enabled && e.effect != "lumetri") {
+        if let Some(d) = e.def().filter(|d| !d.intrinsic) {
+            left_out.push(d.name.to_string());
+        }
+    }
+    let text = sample.lut.to_cube();
+    s.services.write_file(path, text.as_bytes()).map_err(|e| bad(CMD, format!("{path}: {e}")))?;
+    Ok(json!({"clip": clip.0, "path": path, "size": size, "bytes": text.len(), "leftOut": left_out}))
 }
 
 /// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
@@ -363,6 +405,8 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         "detected": detected.map(|c| c.id()),
         "detectedLabel": detected.map(|c| c.label()),
         "metadata": m.info.video.as_ref().map(|v| json!({"transfer": format!("{:?}", v.color.transfer), "primaries": format!("{:?}", v.color.primaries), "matrix": format!("{:?}", v.color.matrix), "range": format!("{:?}", v.color.range)})),
+        // which `metadata` values no tag in the file gave (FilmCraft's defaults); null when unknown
+        "assumed": m.info.video.as_ref().and_then(|v| v.color_assumed),
         "override": m.interpret.color_space.map(|c| c.id()),
         "effective": effective.map(|c| c.id()),
         "effectiveLabel": effective.map(|c| c.label()),
@@ -389,7 +433,7 @@ fn list_presets(_: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Lumetri Presets ▸ apply: a new Lumetri Color configured as the preset on each video clip
-/// (standard effects go before the intrinsic ones, like `effects.apply`).
+/// (added at the end of the clip's effects, like `effects.apply`).
 fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.applyPreset";
     let name = str_p(p, "name").ok_or_else(|| bad(cmd, "need `name`"))?;
@@ -403,8 +447,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for t in q.video_tracks.iter_mut() {
             for it in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
-                it.effects.insert(pos, inst.clone());
+                it.effects.push(inst.clone());
                 n += 1;
             }
         }
@@ -416,7 +459,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"preset": preset.name, "clips": n}))
 }
 
-fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
+fn preset_thumbnails(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.presetThumbnails";
     let presets = presets_of(p);
     if presets.is_empty() {
@@ -424,12 +467,15 @@ fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
     }
     let w = p.get("width").and_then(Value::as_u64).unwrap_or(160).clamp(16, 1920) as usize;
     let h = (w * 9 / 16).max(9);
-    let cols = p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize;
+    // No wider than the presets shown: extra columns are empty cells, and 32 of them at the
+    // largest width made a grid of over a gigabyte for ten thumbnails.
+    let cols = (p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize).min(presets.len());
     let img = filmcraft_render::lumetri_presets::grid(&presets, cols, w, h);
     let mut out = json!({"presets": presets.iter().map(|x| x.name).collect::<Vec<_>>(), "width": img.w, "height": img.h, "cell": [w, h], "columns": cols});
     if let Some(path) = str_p(p, "path") {
         let png = filmcraft_export::encode_png(img.over_black_rgba8(), img.w as u32, img.h as u32).map_err(|e| bad(cmd, e.to_string()))?;
-        std::fs::write(path, png).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
+        // Through the host, like every other export (#379): `std::fs` traps on the web.
+        s.services.write_file(path, &png).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
         out["path"] = json!(path);
     }
     Ok(out)

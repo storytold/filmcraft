@@ -78,6 +78,15 @@ struct R<'a> {
     open: Vec<MobId>,
 }
 
+struct NestClip<'a> {
+    mob_id: MobId,
+    slot_id: u32,
+    rate: (i64, i64),
+    kind: CKind,
+    name: String,
+    mob: &'a Obj,
+}
+
 /// Compositions nested deeper than this are read as gaps.
 const MAX_NESTING: usize = 16;
 
@@ -100,13 +109,15 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let mut r = R { report, mobs, essence, doc: Document::default(), sources: HashMap::new(), nests: HashMap::new(), open: Vec::new() };
     // Top-level compositions: those no other composition uses, among the ones tagged top-level
     // when any are. (Premiere Pro tags a nested sequence's composition top-level too; it is still
-    // only a nested sequence.) Compositions that only use each other in a circle all count.
+    // only a nested sequence.) Compositions that only use each other in a circle all count. The
+    // label older FilmCraft versions wrote for top-level counts as top-level too.
     let comps: Vec<&Obj> = content.objs(pid::MOBS).iter().filter(|m| m.class == cls::COMPOSITION_MOB).collect();
     let mut referenced = HashSet::new();
     for c in &comps {
         collect_refs(c, &mut referenced);
     }
-    let tagged_top: Vec<&Obj> = comps.iter().copied().filter(|c| c.auid(pid::USAGE_CODE) == Some(def::USAGE_TOP_LEVEL)).collect();
+    let is_top = |c: &&Obj| c.auid(pid::USAGE_CODE).is_some_and(|u| u == def::USAGE_TOP_LEVEL || u == def::USAGE_TOP_LEVEL_OLD);
+    let tagged_top: Vec<&Obj> = comps.iter().copied().filter(is_top).collect();
     let pool = if tagged_top.is_empty() { comps } else { tagged_top };
     let unused: Vec<&Obj> = pool.iter().copied().filter(|c| c.mob_id(pid::MOB_ID).is_none_or(|id| !referenced.contains(&id))).collect();
     let top = if unused.is_empty() { pool } else { unused };
@@ -366,7 +377,7 @@ impl R<'_> {
             return CItem::Filler(len);
         }
         if let Some(mob) = self.mobs.get(&id).copied().filter(|m| m.class == cls::COMPOSITION_MOB) {
-            return self.nest_clip(c, mob, id, slot, rate, kind, name);
+            return self.nest_clip(c, NestClip { mob, mob_id: id, slot_id: slot, rate, kind, name });
         }
         match self.resolve(id, slot, start, kind, master_key, 0) {
             Some((source, t)) => CItem::Clip(CClip { len, source, start: t, gain: None, name }),
@@ -376,7 +387,8 @@ impl R<'_> {
 
     /// A source clip that points at a composition: a nested sequence (Premiere Pro writes its
     /// nested sequences this way). The composition is read once, however many clips use it.
-    fn nest_clip(&mut self, c: &Obj, mob: &Obj, id: MobId, slot_id: u32, rate: (i64, i64), kind: CKind, name: String) -> CItem {
+    fn nest_clip(&mut self, c: &Obj, clip: NestClip<'_>) -> CItem {
+        let NestClip { mob, mob_id: id, slot_id, rate, kind, name } = clip;
         let len = units_to_ticks(len_of(c), rate.0, rate.1);
         let index = match self.nests.get(&id) {
             Some(&i) => i,
@@ -540,7 +552,7 @@ impl R<'_> {
             channels: if channel.is_some() { 1 } else { file_channels },
             file_channels,
             width: d.u32(pid::STORED_WIDTH).unwrap_or(0),
-            height: if matches!(layout, 1 | 3) { stored_h * 2 } else { stored_h },
+            height: if matches!(layout, 1 | 3) { stored_h.saturating_mul(2) } else { stored_h },
             frame_rate: if seg_kind == CKind::Picture { fr } else { FrameRate::FPS_25 },
             sample_rate: d.rational(pid::AUDIO_SAMPLING_RATE).filter(|r| r.1 > 0 && r.0 > 0).map(|r| (r.0 / r.1) as u32).unwrap_or(file_rate.0 as u32),
             bits: d.u32(pid::QUANTIZATION_BITS).unwrap_or(16).clamp(8, 32) as u16,

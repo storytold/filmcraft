@@ -5,10 +5,57 @@ use std::sync::OnceLock;
 
 use crate::frame::Plane;
 use crate::mvpred::round2_signed64;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    BLOCK_8X8, BLOCK_SIZES, COMPOUND_AVERAGE, COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_WEDGE, DIV_LUT, DIV_LUT_BITS, DIV_LUT_PREC_BITS,
+    EIGHTTAP, EIGHTTAP_SHARP, EIGHTTAP_SMOOTH, FILTER_BITS, GLOBAL_GLOBALMV, GLOBALMV, II_H_PRED, II_SMOOTH_PRED, II_V_PRED, II_WEIGHTS_1D, INTRA_FRAME,
+    LAST_FRAME, LOCALWARP, LS_MV_MAX, MASK_MASTER_SIZE, MAX_FRAME_DISTANCE, MAX_SB_SIZE, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH,
+    NUM_4X4_BLOCKS_WIDE, OBMC, OBMC_MASK_2, OBMC_MASK_4, OBMC_MASK_8, OBMC_MASK_16, OBMC_MASK_32, QUANT_DIST_LOOKUP, QUANT_DIST_WEIGHT, REF_SCALE_SHIFT,
+    SCALE_SUBPEL_BITS, SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, TRANSLATION, WARP_PARAM_REDUCE_BITS, WARPED_FILTERS, WARPEDDIFF_PREC_BITS,
+    WARPEDMODEL_NONDIAGAFFINE_CLAMP, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP, WARPEDPIXEL_PREC_SHIFTS, WEDGE_BITS, WEDGE_CODEBOOK, WEDGE_HORIZONTAL,
+    WEDGE_MASTER_OBLIQUE_EVEN, WEDGE_MASTER_OBLIQUE_ODD, WEDGE_MASTER_VERTICAL, WEDGE_OBLIQUE27, WEDGE_OBLIQUE63, WEDGE_OBLIQUE117, WEDGE_OBLIQUE153,
+    WEDGE_TYPES, WEDGE_VERTICAL,
+};
 use crate::tile::TileDecoder;
 
 const PRED_STRIDE: usize = 128;
+
+/// A w x h region of `plane` at (x, y) that inter prediction fills.
+#[derive(Clone, Copy)]
+pub(crate) struct PredBlock {
+    pub plane: usize,
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+/// Position (1/1024-sample units) and step of a block in a reference plane, from the motion vector scaling process.
+#[derive(Clone, Copy)]
+struct McSource {
+    plane: usize,
+    ref_idx: i32,
+    x: i32,
+    y: i32,
+    x_step: i32,
+    y_step: i32,
+}
+
+/// Start position (1/1024-sample units) and size of a block predicted without reference scaling.
+#[derive(Clone, Copy)]
+struct McBlock {
+    x: i32,
+    y: i32,
+    w: usize,
+    h: usize,
+}
+
+/// Warp used to predict a block from one reference.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WarpKind {
+    None,
+    Local,
+    Global,
+}
 
 #[inline(always)]
 fn round2(x: i32, n: u32) -> i32 {
@@ -189,22 +236,8 @@ impl TileDecoder<'_, '_> {
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
     /// the intermediate (horizontally filtered) rows.
-    #[allow(clippy::too_many_arguments)]
-    fn block_inter_prediction(
-        &self,
-        plane: usize,
-        ref_idx: i32,
-        x: i32,
-        y: i32,
-        x_step: i32,
-        y_step: i32,
-        w: usize,
-        h: usize,
-        filters: [u8; 2],
-        rnd: (u32, u32, u32),
-        pred: &mut [i32],
-        tmp: &mut [i32],
-    ) {
+    fn block_inter_prediction(&self, src: McSource, (w, h): (usize, usize), filters: [u8; 2], rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+        let McSource { plane, ref_idx, x, y, x_step, y_step } = src;
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
         let mut fh = filters[1] as usize;
@@ -225,20 +258,9 @@ impl TileDecoder<'_, '_> {
         }
         let unit = 1 << SCALE_SUBPEL_BITS;
         if x_step == unit && y_step == unit {
-            mc_unscaled(
-                refp,
-                last_x,
-                last_y,
-                x,
-                y,
-                w,
-                h,
-                &SUBPEL_FILTERS[fh][((x >> 6) & SUBPEL_MASK as i32) as usize],
-                &SUBPEL_FILTERS[fv][((y >> 6) & SUBPEL_MASK as i32) as usize],
-                rnd,
-                pred,
-                tmp,
-            );
+            let hf = &SUBPEL_FILTERS[fh][((x >> 6) & SUBPEL_MASK as i32) as usize];
+            let vf = &SUBPEL_FILTERS[fv][((y >> 6) & SUBPEL_MASK as i32) as usize];
+            mc_unscaled(refp, (last_x, last_y), McBlock { x, y, w, h }, (hf, vf), rnd, pred, tmp);
             return;
         }
         let inter_h = ((((h as i32 - 1) * y_step + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8) as usize;
@@ -271,21 +293,9 @@ impl TileDecoder<'_, '_> {
     }
 
     /// Block warp process (7.11.3.5) for the 8x8 section (i8, j8).
-    #[allow(clippy::too_many_arguments)]
-    fn block_warp(
-        &self,
-        params: &[i32; 6],
-        plane: usize,
-        ref_idx: i32,
-        x: i32,
-        y: i32,
-        i8: usize,
-        j8: usize,
-        w: usize,
-        h: usize,
-        rnd: (u32, u32, u32),
-        pred: &mut [i32],
-    ) {
+    fn block_warp(&self, params: &[i32; 6], ref_idx: i32, blk: PredBlock, (i8, j8): (usize, usize), rnd: (u32, u32, u32), pred: &mut [i32]) {
+        let PredBlock { plane, x, y, w, h } = blk;
+        let (x, y) = (x as i32, y as i32);
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
         let (sx, sy) = if plane > 0 { (self.fs.ssx as i32, self.fs.ssy as i32) } else { (0, 0) };
@@ -388,125 +398,186 @@ impl TileDecoder<'_, '_> {
         }
     }
 
-    /// Inter prediction process (7.11.3.1) for a w x h region of `plane` at (x, y).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn predict_inter(&mut self, plane: usize, x: usize, y: usize, w: usize, h: usize, cand_row: usize, cand_col: usize) {
+    /// Inter prediction process (7.11.3.1) for the region `blk`, using the motion of the block at (cand_row, cand_col).
+    pub(crate) fn predict_inter(&mut self, blk: PredBlock, cand_row: usize, cand_col: usize) {
         let bd = self.fs.bit_depth;
         let mi_i = self.t.mi.idx(cand_row, cand_col);
         let cand_refs = self.t.mi.ref_frame[mi_i];
-        let cand_mvs = self.t.mi.mv[mi_i];
-        let filters = self.t.mi.interp_filter[mi_i];
         let is_compound = cand_refs[1] > INTRA_FRAME as i8;
         let rnd = rounding(is_compound, bd);
-        if plane == 0 && self.b.motion_mode as usize == LOCALWARP {
-            self.warp_estimation();
-            if self.b.local_valid {
-                let p = self.b.local_warp_params;
-                self.b.local_valid = setup_shear(&p).0;
-            }
+        if blk.plane == 0 && self.b.motion_mode as usize == LOCALWARP {
+            self.update_local_warp_validity();
         }
         let mut preds = [std::mem::take(&mut self.pred_buf[0]), std::mem::take(&mut self.pred_buf[1])];
         let mut tmp = std::mem::take(&mut self.mc_tmp);
-        let fh = &self.fs.fh;
-        for ref_list in 0..1 + is_compound as usize {
-            let ref_frame = cand_refs[ref_list];
-            let ym = self.b.y_mode;
-            let global = (ym == GLOBALMV || ym == GLOBAL_GLOBALMV) && ref_frame > INTRA_FRAME as i8 && fh.gm_type[ref_frame as usize] as usize > TRANSLATION;
-            let global_valid = global && setup_shear(&fh.gm_params[ref_frame as usize]).0;
-            let ref_idx: i32 = if self.b.use_intrabc { -1 } else { fh.ref_frame_idx[ref_frame as usize - LAST_FRAME] as i32 };
-            let use_warp = if w < 8 || h < 8 || fh.force_integer_mv {
-                0
-            } else if self.b.motion_mode as usize == LOCALWARP && self.b.local_valid {
-                1
-            } else if global && !self.is_scaled_ref(ref_idx) && global_valid {
-                2
-            } else {
-                0
-            };
-            let mv = [cand_mvs[ref_list].row as i32, cand_mvs[ref_list].col as i32];
-            if use_warp != 0 {
-                let params = if use_warp == 1 { self.b.local_warp_params } else { fh.gm_params[ref_frame as usize] };
-                for i8 in 0..=((h - 1) >> 3) {
-                    for j8 in 0..=((w - 1) >> 3) {
-                        self.block_warp(&params, plane, ref_idx, x as i32, y as i32, i8, j8, w, h, rnd, &mut preds[ref_list]);
-                    }
-                }
-            } else {
-                let (sx, sy, stx, sty) = self.mv_scaling(plane, ref_idx, x as i32, y as i32, mv);
-                self.block_inter_prediction(plane, ref_idx, sx, sy, stx, sty, w, h, filters, rnd, &mut preds[ref_list], &mut tmp);
+        let is_inter_intra = self.b.is_inter && self.b.ref_frame[1] == INTRA_FRAME as i8;
+        let copied = !is_compound && !is_inter_intra && self.b.motion_mode as usize != OBMC && self.copy_fullpel_from_reference(blk, mi_i);
+        if !copied {
+            for ref_list in 0..1 + is_compound as usize {
+                self.predict_from_reference(blk, mi_i, ref_list, rnd, &mut preds[ref_list], &mut tmp);
             }
         }
         let ct = self.b.compound_type;
-        if ct == COMPOUND_WEDGE && plane == 0 {
-            let m = &wedge_masks()[self.b.mi_size][self.b.wedge_index][self.b.wedge_sign];
-            for i in 0..h {
-                for j in 0..w {
-                    self.mask[i * PRED_STRIDE + j] = m[i * w + j] as i32;
-                }
-            }
+        if ct == COMPOUND_WEDGE && blk.plane == 0 {
+            self.fill_wedge_mask(blk);
         } else if ct == COMPOUND_INTRA {
-            let size_scale = MAX_SB_SIZE / h.max(w);
-            let im = self.b.interintra_mode;
-            for i in 0..h {
-                for j in 0..w {
-                    self.mask[i * PRED_STRIDE + j] = if im == II_V_PRED {
-                        II_WEIGHTS_1D[i * size_scale] as i32
-                    } else if im == II_H_PRED {
-                        II_WEIGHTS_1D[j * size_scale] as i32
-                    } else if im == II_SMOOTH_PRED {
-                        II_WEIGHTS_1D[i.min(j) * size_scale] as i32
-                    } else {
-                        32
-                    };
-                }
-            }
-        } else if ct == COMPOUND_DIFFWTD && plane == 0 {
-            for i in 0..h {
-                for j in 0..w {
-                    let k = i * PRED_STRIDE + j;
-                    let diff = (preds[0][k] - preds[1][k]).abs();
-                    let diff = round2(diff, (bd - 8) + rnd.2);
-                    let m = (38 + diff / 16).clamp(0, 64);
-                    self.mask[k] = if self.b.mask_type == 1 { 64 - m } else { m };
-                }
-            }
+            self.fill_interintra_mask(blk);
+        } else if ct == COMPOUND_DIFFWTD && blk.plane == 0 {
+            self.fill_diffwtd_mask(blk, &preds, (bd - 8) + rnd.2);
         }
-        let (fwd, bck) = if ct == COMPOUND_DISTANCE { self.distance_weights(cand_refs) } else { (0, 0) };
-        let max = (1i32 << bd) - 1;
-        let is_inter_intra = self.b.is_inter && self.b.ref_frame[1] == INTRA_FRAME as i8;
-        if !is_compound && !is_inter_intra {
-            let pl = &mut self.t.cur.planes[plane];
-            for i in 0..h {
-                let row = &mut pl.row_from_mut(y + i, x)[..w];
-                for j in 0..w {
-                    row[j] = preds[0][i * PRED_STRIDE + j].clamp(0, max) as u16;
-                }
-            }
-        } else if ct == COMPOUND_AVERAGE {
-            let pl = &mut self.t.cur.planes[plane];
-            for i in 0..h {
-                let row = &mut pl.row_from_mut(y + i, x)[..w];
-                for j in 0..w {
-                    let k = i * PRED_STRIDE + j;
-                    row[j] = round2(preds[0][k] + preds[1][k], 1 + rnd.2).clamp(0, max) as u16;
-                }
-            }
-        } else if ct == COMPOUND_DISTANCE {
-            let pl = &mut self.t.cur.planes[plane];
-            for i in 0..h {
-                let row = &mut pl.row_from_mut(y + i, x)[..w];
-                for j in 0..w {
-                    let k = i * PRED_STRIDE + j;
-                    row[j] = round2(fwd * preds[0][k] + bck * preds[1][k], 4 + rnd.2).clamp(0, max) as u16;
-                }
-            }
-        } else {
-            self.mask_blend(&preds, plane, x, y, w, h, rnd.2, max);
+        if !copied {
+            self.store_prediction(blk, &preds, cand_refs, rnd.2);
         }
         self.pred_buf = preds;
         self.mc_tmp = tmp;
         if self.b.motion_mode as usize == OBMC {
-            self.overlapped_motion_compensation(plane, w, h);
+            self.overlapped_motion_compensation(blk.plane, blk.w, blk.h);
+        }
+    }
+
+    /// Re-estimates the local warp model for the block and records whether it is usable.
+    fn update_local_warp_validity(&mut self) {
+        self.warp_estimation();
+        if self.b.local_valid {
+            let p = self.b.local_warp_params;
+            self.b.local_valid = setup_shear(&p).0;
+        }
+    }
+
+    /// Which warp (if any) predicts `blk` from `ref_frame`.
+    fn select_warp(&self, blk: PredBlock, ref_frame: i8, ref_idx: i32) -> WarpKind {
+        let fh = &self.fs.fh;
+        let ym = self.b.y_mode;
+        let global = (ym == GLOBALMV || ym == GLOBAL_GLOBALMV) && ref_frame > INTRA_FRAME as i8 && fh.gm_type[ref_frame as usize] as usize > TRANSLATION;
+        let global_valid = global && setup_shear(&fh.gm_params[ref_frame as usize]).0;
+        if blk.w < 8 || blk.h < 8 || fh.force_integer_mv {
+            WarpKind::None
+        } else if self.b.motion_mode as usize == LOCALWARP && self.b.local_valid {
+            WarpKind::Local
+        } else if global && !self.is_scaled_ref(ref_idx) && global_valid {
+            WarpKind::Global
+        } else {
+            WarpKind::None
+        }
+    }
+
+    /// Predicts `blk` from one reference list of the candidate at `mi_i` into `pred`.
+    fn predict_from_reference(&self, blk: PredBlock, mi_i: usize, ref_list: usize, rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+        let PredBlock { plane, x, y, w, h } = blk;
+        let fh = &self.fs.fh;
+        let ref_frame = self.t.mi.ref_frame[mi_i][ref_list];
+        let cand_mv = self.t.mi.mv[mi_i][ref_list];
+        let ref_idx: i32 = if self.b.use_intrabc { -1 } else { fh.ref_frame_idx[ref_frame as usize - LAST_FRAME] as i32 };
+        let warp = self.select_warp(blk, ref_frame, ref_idx);
+        if warp == WarpKind::None {
+            let mv = [cand_mv.row as i32, cand_mv.col as i32];
+            let filters = self.t.mi.interp_filter[mi_i];
+            let (sx, sy, stx, sty) = self.mv_scaling(plane, ref_idx, x as i32, y as i32, mv);
+            let src = McSource { plane, ref_idx, x: sx, y: sy, x_step: stx, y_step: sty };
+            self.block_inter_prediction(src, (w, h), filters, rnd, pred, tmp);
+        } else {
+            let params = if warp == WarpKind::Local { self.b.local_warp_params } else { fh.gm_params[ref_frame as usize] };
+            for i8 in 0..=((h - 1) >> 3) {
+                for j8 in 0..=((w - 1) >> 3) {
+                    self.block_warp(&params, ref_idx, blk, (i8, j8), rnd, pred);
+                }
+            }
+        }
+    }
+
+    /// Single-reference prediction of `blk` that needs no filtering (unscaled, whole-sample motion, no warp): copies the
+    /// reference samples straight into the picture. Returns false when the block needs the full process.
+    fn copy_fullpel_from_reference(&mut self, blk: PredBlock, mi_i: usize) -> bool {
+        let PredBlock { plane, x, y, w, h } = blk;
+        let ref_frame = self.t.mi.ref_frame[mi_i][0];
+        let ref_idx: i32 = if self.b.use_intrabc { -1 } else { self.fs.fh.ref_frame_idx[ref_frame as usize - LAST_FRAME] as i32 };
+        if self.select_warp(blk, ref_frame, ref_idx) != WarpKind::None {
+            return false;
+        }
+        let cand_mv = self.t.mi.mv[mi_i][0];
+        let (sx, sy, stx, sty) = self.mv_scaling(plane, ref_idx, x as i32, y as i32, [cand_mv.row as i32, cand_mv.col as i32]);
+        let unit = 1 << SCALE_SUBPEL_BITS;
+        let phase = |p: i32| (p >> 6) & SUBPEL_MASK as i32;
+        if stx != unit || sty != unit || phase(sx) != 0 || phase(sy) != 0 {
+            return false;
+        }
+        let fs = self.fs;
+        let Some(r) = usize::try_from(ref_idx).ok().and_then(|i| fs.refs.get(i)).and_then(|r| r.as_ref()) else {
+            return false;
+        };
+        let dims = self.ref_plane_dims(ref_idx, plane);
+        let max = ((1u32 << fs.bit_depth) - 1) as u16;
+        copy_fullpel(&r.buf.planes[plane], dims, McBlock { x: sx, y: sy, w, h }, &mut self.t.cur.planes[plane], (x, y), max);
+        true
+    }
+
+    /// Wedge compound mask (7.11.3.11) for the luma block.
+    fn fill_wedge_mask(&mut self, blk: PredBlock) {
+        let m = &wedge_masks()[self.b.mi_size][self.b.wedge_index][self.b.wedge_sign];
+        for i in 0..blk.h {
+            for j in 0..blk.w {
+                self.mask[i * PRED_STRIDE + j] = m[i * blk.w + j] as i32;
+            }
+        }
+    }
+
+    /// Inter-intra smooth mask (7.11.3.13).
+    fn fill_interintra_mask(&mut self, blk: PredBlock) {
+        let size_scale = MAX_SB_SIZE / blk.h.max(blk.w);
+        let im = self.b.interintra_mode;
+        for i in 0..blk.h {
+            for j in 0..blk.w {
+                self.mask[i * PRED_STRIDE + j] = if im == II_V_PRED {
+                    II_WEIGHTS_1D[i * size_scale] as i32
+                } else if im == II_H_PRED {
+                    II_WEIGHTS_1D[j * size_scale] as i32
+                } else if im == II_SMOOTH_PRED {
+                    II_WEIGHTS_1D[i.min(j) * size_scale] as i32
+                } else {
+                    32
+                };
+            }
+        }
+    }
+
+    /// Difference-weight compound mask (7.11.3.12) for the luma block; `diff_shift` rounds the sample difference.
+    fn fill_diffwtd_mask(&mut self, blk: PredBlock, preds: &[Vec<i32>; 2], diff_shift: u32) {
+        for i in 0..blk.h {
+            for j in 0..blk.w {
+                let k = i * PRED_STRIDE + j;
+                let diff = round2((preds[0][k] - preds[1][k]).abs(), diff_shift);
+                let m = (38 + diff / 16).clamp(0, 64);
+                self.mask[k] = if self.b.mask_type == 1 { 64 - m } else { m };
+            }
+        }
+    }
+
+    /// Writes the clamped value of `value(k)` (k indexes the prediction buffers) for every sample of `blk`.
+    fn store_samples(&mut self, blk: PredBlock, max: i32, value: impl Fn(usize) -> i32) {
+        let pl = &mut self.t.cur.planes[blk.plane];
+        for i in 0..blk.h {
+            let row = &mut pl.row_from_mut(blk.y + i, blk.x)[..blk.w];
+            for (j, out) in row.iter_mut().enumerate() {
+                *out = value(i * PRED_STRIDE + j).clamp(0, max) as u16;
+            }
+        }
+    }
+
+    /// Combines the reference predictions into the picture according to the compound type (7.11.3.1).
+    fn store_prediction(&mut self, blk: PredBlock, preds: &[Vec<i32>; 2], cand_refs: [i8; 2], post_round: u32) {
+        let ct = self.b.compound_type;
+        let max = (1i32 << self.fs.bit_depth) - 1;
+        let is_compound = cand_refs[1] > INTRA_FRAME as i8;
+        let is_inter_intra = self.b.is_inter && self.b.ref_frame[1] == INTRA_FRAME as i8;
+        if !is_compound && !is_inter_intra {
+            self.store_samples(blk, max, |k| preds[0][k]);
+        } else if ct == COMPOUND_AVERAGE {
+            self.store_samples(blk, max, |k| round2(preds[0][k] + preds[1][k], 1 + post_round));
+        } else if ct == COMPOUND_DISTANCE {
+            let (fwd, bck) = self.distance_weights(cand_refs);
+            self.store_samples(blk, max, |k| round2(fwd * preds[0][k] + bck * preds[1][k], 4 + post_round));
+        } else {
+            self.mask_blend(preds, blk, post_round, max);
         }
     }
 
@@ -521,8 +592,8 @@ impl TileDecoder<'_, '_> {
         xs != 1 << REF_SCALE_SHIFT || ys != 1 << REF_SCALE_SHIFT
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn mask_blend(&mut self, preds: &[Vec<i32>; 2], plane: usize, dx: usize, dy: usize, w: usize, h: usize, post: u32, max: i32) {
+    fn mask_blend(&mut self, preds: &[Vec<i32>; 2], blk: PredBlock, post: u32, max: i32) {
+        let PredBlock { plane, x: dx, y: dy, w, h } = blk;
         let (sx, sy) = if plane > 0 { (self.fs.ssx, self.fs.ssy) } else { (0, 0) };
         let interintra = self.b.interintra;
         let wedge_ii = self.b.wedge_interintra;
@@ -596,7 +667,9 @@ impl TileDecoder<'_, '_> {
                 _ => &OBMC_MASK_32,
             }
         };
-        let mut jobs: Vec<(usize, usize, usize, usize, usize, usize, usize)> = Vec::new(); // (pass, cand_row, cand_col, x4, y4, predW, predH)
+        // (pass, cand_row, cand_col, x4, y4, predW, predH); at most 4 above and 4 left
+        let mut jobs = [(0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize); 8];
+        let mut n_jobs = 0;
         if self.b.avail_u && self.fs.plane_residual_size(self.b.mi_size, plane) >= BLOCK_8X8 {
             let w4 = self.b.bw4;
             let mut x4 = self.b.mi_col;
@@ -613,7 +686,8 @@ impl TileDecoder<'_, '_> {
                     n += 1;
                     let pw = w.min((step4 * 4) >> sx);
                     let ph = (h >> 1).min(32 >> sy);
-                    jobs.push((0, cr, cc, x4, y4, pw, ph));
+                    jobs[n_jobs] = (0, cr, cc, x4, y4, pw, ph);
+                    n_jobs += 1;
                 }
                 x4 += step4;
             }
@@ -634,13 +708,14 @@ impl TileDecoder<'_, '_> {
                     n += 1;
                     let pw = (w >> 1).min(32 >> sx);
                     let ph = h.min((step4 * 4) >> sy);
-                    jobs.push((1, cr, cc, x4, y4, pw, ph));
+                    jobs[n_jobs] = (1, cr, cc, x4, y4, pw, ph);
+                    n_jobs += 1;
                 }
                 y4 += step4;
             }
         }
         // the above pass completes before the left pass reads samples; jobs keep that order
-        for (pass, cr, cc, x4, y4, pw, ph) in jobs {
+        for &(pass, cr, cc, x4, y4, pw, ph) in &jobs[..n_jobs] {
             let ci = self.t.mi.idx(cr, cc);
             let m = self.t.mi.mv[ci][0];
             let mv = [m.row as i32, m.col as i32];
@@ -650,20 +725,51 @@ impl TileDecoder<'_, '_> {
             let (stx, sty, sxs, sys) = self.mv_scaling(plane, ref_idx, px as i32, py as i32, mv);
             let filters = self.t.mi.interp_filter[ci];
             let rnd = rounding(false, bd);
-            self.block_inter_prediction(plane, ref_idx, stx, sty, sxs, sys, pw, ph, filters, rnd, &mut obmc, &mut tmp);
+            let src = McSource { plane, ref_idx, x: stx, y: sty, x_step: sxs, y_step: sys };
+            self.block_inter_prediction(src, (pw, ph), filters, rnd, &mut obmc, &mut tmp);
             let mask = get_mask(if pass == 0 { ph } else { pw });
             let pl = &mut self.t.cur.planes[plane];
             for i in 0..ph {
-                for j in 0..pw {
-                    let mm = if pass == 0 { mask[i] } else { mask[j] } as i32;
-                    let o = obmc[i * PRED_STRIDE + j].clamp(0, max);
-                    let c = pl.at(px + j, py + i) as i32;
-                    pl.set(px + j, py + i, round2(mm * c + (64 - mm) * o, 6) as u16);
+                let row = &mut pl.row_from_mut(py + i, px)[..pw];
+                let o = &obmc[i * PRED_STRIDE..i * PRED_STRIDE + pw];
+                if pass == 0 {
+                    let mm = mask[i] as i32;
+                    for (c, &o) in row.iter_mut().zip(o) {
+                        *c = round2(mm * *c as i32 + (64 - mm) * o.clamp(0, max), 6) as u16;
+                    }
+                } else {
+                    for ((c, &o), &mm) in row.iter_mut().zip(o).zip(&mask[..pw]) {
+                        let mm = mm as i32;
+                        *c = round2(mm * *c as i32 + (64 - mm) * o.clamp(0, max), 6) as u16;
+                    }
                 }
             }
         }
         self.pred_buf[0] = obmc;
         self.mc_tmp = tmp;
+    }
+}
+
+/// Unscaled single-reference prediction at a whole-sample position: both filter phases are the
+/// identity and Round2(128 * Round2(128 * v, InterRound0), InterRound1) == v for every bit
+/// depth, so the prediction is the (clamped) reference sample.
+fn copy_fullpel(refp: &Plane, (last_x, last_y): (i32, i32), src_blk: McBlock, dst: &mut Plane, (dx, dy): (usize, usize), max: u16) {
+    let McBlock { x, y, w, h } = src_blk;
+    let x0 = x >> 10;
+    let y0 = y >> 10;
+    let inside = x0 >= 0 && x0 + w as i32 <= last_x + 1;
+    for i in 0..h {
+        let src = refp.row((y0 + i as i32).clamp(0, last_y) as usize);
+        let out = &mut dst.row_from_mut(dy + i, dx)[..w];
+        if inside {
+            for (o, &v) in out.iter_mut().zip(&src[x0 as usize..x0 as usize + w]) {
+                *o = v.min(max);
+            }
+        } else {
+            for (j, o) in out.iter_mut().enumerate() {
+                *o = src[(x0 + j as i32).clamp(0, last_x) as usize].min(max);
+            }
+        }
     }
 }
 
@@ -714,21 +820,16 @@ fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32
 
 /// Block inter prediction without reference scaling: every column / row uses the same filter
 /// phase, so the filters run over whole rows (bit-identical to the per-sample process).
-#[allow(clippy::too_many_arguments)]
 fn mc_unscaled(
     refp: &Plane,
-    last_x: i32,
-    last_y: i32,
-    x: i32,
-    y: i32,
-    w: usize,
-    h: usize,
-    hf: &[i16; 8],
-    vf: &[i16; 8],
+    (last_x, last_y): (i32, i32),
+    blk: McBlock,
+    (hf, vf): (&[i16; 8], &[i16; 8]),
     rnd: (u32, u32, u32),
     pred: &mut [i32],
     tmp: &mut [i32],
 ) {
+    let McBlock { x, y, w, h } = blk;
     let x0 = (x >> 10) - 3;
     let y0 = (y >> 10) - 3;
     let h_copy = *hf == IDENTITY_TAPS;
@@ -807,6 +908,83 @@ fn mc_unscaled(
                     }
                     for (o, &a) in out.iter_mut().zip(acc.iter()) {
                         *o = (a + half1) >> r1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subpel_phase_zero_is_identity() {
+        for f in SUBPEL_FILTERS.iter() {
+            assert_eq!(f[0], IDENTITY_TAPS);
+        }
+    }
+
+    /// The per-sample 8-tap process of 7.11.3.4 (unscaled) with the phase 0 taps of filter `f`.
+    fn spec_phase0(refp: &Plane, (last_x, last_y): (i32, i32), (px, py): (i32, i32), (j, i): (usize, usize), f: usize, rnd: (u32, u32, u32)) -> i32 {
+        let taps = &SUBPEL_FILTERS[f][0];
+        let mut s1 = 0;
+        for t1 in 0..8 {
+            let ry = (py + i as i32 + t1 as i32 - 3).clamp(0, last_y) as usize;
+            let mut s0 = 0;
+            for t0 in 0..8 {
+                let rx = (px + j as i32 + t0 as i32 - 3).clamp(0, last_x) as usize;
+                s0 += taps[t0] as i32 * refp.at(rx, ry) as i32;
+            }
+            s1 += taps[t1] as i32 * round2(s0, rnd.0);
+        }
+        round2(s1, rnd.1)
+    }
+
+    #[test]
+    fn fullpel_copy_matches_filter_path() {
+        let (pw, ph) = (150usize, 140usize);
+        let (last_x, last_y) = (pw as i32 - 1, ph as i32 - 1);
+        let mut seed = 0x2545_f491u32;
+        let sizes = [2usize, 4, 8, 16, 32, 64, 128];
+        let mut tmp = vec![0i32; (2 * 128 + 8) * 128];
+        let mut pred = vec![0i32; 128 * PRED_STRIDE];
+        for bd in [8u32, 10, 12] {
+            let max = (1u16 << bd) - 1;
+            let mut refp = Plane::new(pw, ph);
+            for (k, v) in refp.data.iter_mut().enumerate() {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                // Mostly in range, with the extremes and a few out-of-range samples.
+                *v = match k % 61 {
+                    0 => 0,
+                    1 => max,
+                    2 => max + 1 + (seed as u16 & 7),
+                    _ => (seed % (max as u32 + 1)) as u16,
+                };
+            }
+            let rnd = rounding(false, bd);
+            for &w in &sizes {
+                for &h in &sizes {
+                    for (px, py) in [(0, 0), (-5, -3), (7, 9), (last_x - w as i32 / 2, last_y - h as i32 / 2), (last_x + 3, last_y + 2), (-(w as i32) - 4, 3)] {
+                        let (x, y) = ((px << 10) | 32, (py << 10) | 32);
+                        mc_unscaled(&refp, (last_x, last_y), McBlock { x, y, w, h }, (&IDENTITY_TAPS, &IDENTITY_TAPS), rnd, &mut pred, &mut tmp);
+                        let mut dst = Plane::new(w + 3, h);
+                        copy_fullpel(&refp, (last_x, last_y), McBlock { x, y, w, h }, &mut dst, (3, 0), max);
+                        for i in 0..h {
+                            for j in 0..w {
+                                let want =
+                                    spec_phase0(&refp, (last_x, last_y), (px, py), (j, i), (w * 3 + h) % SUBPEL_FILTERS.len(), rnd).clamp(0, max as i32) as u16;
+                                assert_eq!(
+                                    pred[i * PRED_STRIDE + j].clamp(0, max as i32) as u16,
+                                    want,
+                                    "filter bd {bd} {w}x{h} at ({px}, {py}) sample ({j}, {i})"
+                                );
+                                assert_eq!(dst.at(3 + j, i), want, "copy bd {bd} {w}x{h} at ({px}, {py}) sample ({j}, {i})");
+                            }
+                        }
                     }
                 }
             }

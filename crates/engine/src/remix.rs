@@ -102,13 +102,17 @@ fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick) -> Result<Arc
     let sr = s.active_sequence().map(|q| q.settings.sample_rate).unwrap_or(48_000).max(1);
     let m0 = source_in.to_units_floor(sr as i64);
     let len = (source_in + dur).to_units_floor(sr as i64) - m0;
+    let max = i64::try_from(u64::from(sr).saturating_mul(dsp::MAX_ANALYSIS_SECONDS)).unwrap_or(i64::MAX);
+    if !(0..=max).contains(&len) {
+        return Err(EngineError::Other(format!("cannot remix: audio is longer than {} minutes", dsp::MAX_ANALYSIS_SECONDS / 60)));
+    }
     let key = (item.0, m0, len, sr);
     if let Some((_, a)) = cache().lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
         return Ok(a.clone());
     }
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let src = filmcraft_render::SourceProvider::source(&provider, item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
-    let buf = src.audio(m0, len.max(0) as usize, sr).map_err(|e| EngineError::Other(format!("reading the clip's audio: {e}")))?;
+    let buf = src.audio(m0, len as usize, sr).map_err(|e| EngineError::Other(format!("reading the clip's audio: {e}")))?;
     let refs: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
     let a = Arc::new(dsp::analyze(&refs, sr).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?);
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -266,6 +270,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: can_enable,
             run: enable,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "clip.remix.properties",
@@ -276,6 +281,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: is_remixed,
             run: |s, p| remix(s, p, "clip.remix.properties", "Remix Properties"),
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "clip.remix.revert",
@@ -286,6 +292,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: is_remixed,
             run: revert,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "clip.remix",
@@ -296,6 +303,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: |s, p| remix(s, p, "clip.remix", "Remix"),
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

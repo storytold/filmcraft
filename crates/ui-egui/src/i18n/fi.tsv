@@ -1,8 +1,7 @@
 # Finnish (fi) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
 #
 #   context  empty          a plain UI string; `source` is the English text in the code
-#   escapes  
-  	  \  inside a column. `{name}` placeholders must appear in both columns;
+#   escapes  \n  \t  \\  inside a column. `{name}` placeholders must appear in both columns;
 #            translators may reorder them. A trailing "…" (dialog commands) is kept.
 #   lines starting with # and blank lines are ignored.
 #
@@ -12,16 +11,16 @@
 	About FilmCraft	Tietoja FilmCraftista
 	Add Audio Submix Track	Lisää äänen alimiksausraita
 	Add Caption at Playhead	Lisää tekstitys toistopäähän
-	Add Chapter Marker…	Lisää luvun merkitsin…
+	Add Chapter Marker…	Lisää luvun merkki…
 	Add Edit	Lisää leikkaus
 	Add Edit to All Tracks	Lisää leikkaus kaikkiin raitoihin
-	Add Flash Cue Marker…	Lisää Flash-cue-merkitsin…
+	Add Flash Cue Marker…	Lisää Flash-cue-merkki…
 	Add Frame Hold	Lisää kuvan pito
 	Add Guide…	Lisää apulinja…
-	Add Marker	Lisää merkitsin
+	Add Marker	Lisää merkki
 	Add New Caption Track…	Lisää uusi tekstitysraita…
-	Add Range Marker	Lisää aluemerkitsin
-	Add Range Marker to In and Out	Lisää aluemerkitsin alku- ja loppupisteiden välille
+	Add Range Marker	Lisää aluemerkki
+	Add Range Marker to In and Out	Lisää aluemerkki alku- ja loppupisteiden välille
 	Add Tracks…	Lisää raitoja…
 	Adjustment Layer…	Säätötaso…
 	Align to Selection	Tasaa valintaan
@@ -54,7 +53,7 @@
 	Automate to Sequence…	Automatisoi sekvenssiin…
 	Avid Log Exchange…	Avid Log Exchange…
 	Bars and Tone…	Väripalkit ja testiääni…
-	Bin	Bin
+	Bin	Kansio
 	Bin From Selection	Bin valinnasta
 	Black Video…	Musta video…
 	Blue	Sininen
@@ -74,9 +73,9 @@
 	Clear Guides	Poista apulinjat
 	Clear In	Poista alkupiste
 	Clear In and Out	Poista alku- ja loppupiste
-	Clear Markers	Poista merkitsimet
+	Clear Markers	Poista merkit
 	Clear Out	Poista loppupiste
-	Clear Selected Marker	Poista valittu merkitsin
+	Clear Selected Marker	Poista valittu merkki
 	Clip	Leike
 	Close	Sulje
 	Close All Other Projects	Sulje kaikki muut projektit
@@ -91,7 +90,7 @@
 	Composite Video	Komposiittivideo
 	Consolidate Duplicates	Yhdistä kaksoiskappaleet
 	Copy	Kopioi
-	Copy Paste Includes Sequence Markers	Kopioi-liitä sisältää sekvenssin merkitsimet
+	Copy Paste Includes Sequence Markers	Kopioi-liitä sisältää sekvenssin merkit
 	Create Captions from Transcript…	Luo tekstitys transkriptiosta…
 	Create Multi-Camera Source Sequence…	Luo monikameran lähdesekvenssi…
 	Create Proxies…	Luo proxit…
@@ -121,8 +120,8 @@
 	Edit Subclip…	Muokkaa alileikettä…
 	Edit Workspaces…	Muokkaa työtiloja…
 	Editing	Leikkaus
-	Effect Controls	Efektin ohjaus
-	Effects	Efektit
+	Effect Controls	Tehosteen ohjaus
+	Effects	Tehosteet
 	Ellipse	Ellipsi
 	Enable	Ota käyttöön
 	Enable Remix	Ota remix käyttöön
@@ -131,7 +130,7 @@
 	Events	Tapahtumat
 	Export	Vie
 	Export As Motion Graphics Template…	Vie liikkuvan grafiikan mallina…
-	Export Markers as CSV…	Vie merkitsimet CSV-tiedostona…
+	Export Markers as CSV…	Vie merkit CSV-tiedostona…
 	Extract	Poimi
 	Extract Audio	Poimi ääni
 	FCPXML…	FCPXML…
@@ -163,10 +162,10 @@
 	Go to Gap	Siirry aukkoon
 	Go to In	Siirry alkupisteeseen
 	Go to Next Caption Segment	Siirry seuraavaan tekstitysositsoon
-	Go to Next Marker	Siirry seuraavaan merkitsimeen
+	Go to Next Marker	Siirry seuraavaan merkkiin
 	Go to Out	Siirry loppupisteeseen
 	Go to Previous Caption Segment	Siirry edelliseen tekstitysositsoon
-	Go to Previous Marker	Siirry edelliseen merkitsimeen
+	Go to Previous Marker	Siirry edelliseen merkkiin
 	Go to Split	Siirry jakokohtaan
 	Graphics and Titles	Grafiikka ja otsikot
 	Graphics…	Grafiikka…
@@ -219,7 +218,7 @@
 	Mark Out	Merkitse loppupiste
 	Mark Selection	Merkitse valinta
 	Mark Split	Merkitse jakokohta
-	Markers	Merkitsimet
+	Markers	Merkit
 	Match Frame	Vastaava kuva
 	Media Analysis & Transcription…	Media-analyysi ja transkriptio…
 	Media Browser	Mediaselain
@@ -283,7 +282,7 @@
 	Remove Unused	Poista käyttämättömät
 	Rename…	Nimeä uudelleen…
 	Render Audio	Renderöi ääni
-	Render Effects In to Out	Renderöi efektit alkupisteestä loppupisteeseen
+	Render Effects In to Out	Renderöi tehosteet alkupisteestä loppupisteeseen
 	Render In to Out	Renderöi alkupisteestä loppupisteeseen
 	Render Selection	Renderöi valinta
 	Replace Fonts in Projects…	Korvaa fontit projekteissa…
@@ -301,7 +300,7 @@
 	Right	Oikea
 	Ripple Delete	Poista ja sulje aukko
 	Ripple Delete Head Frame	Poista alkukuva ja sulje aukko
-	Ripple Sequence Markers	Siirrä sekvenssin merkitsimiä
+	Ripple Sequence Markers	Siirrä sekvenssin merkkejä
 	Rose	Ruusu
 	Safe Margins	Turva-alueet
 	Save	Tallenna
@@ -336,7 +335,7 @@
 	Settings	Asetukset
 	Show Active Caption Tracks Only	Näytä vain aktiiviset tekstitysraidat
 	Show All Caption Tracks	Näytä kaikki tekstitysraidat
-	Show All Marker Colors	Näytä kaikki merkitsinvärit
+	Show All Marker Colors	Näytä kaikki merkkivärit
 	Show Guides	Näytä apulinjat
 	Show Rulers	Näytä viivaimet
 	Show Through Edits	Näytä jatkuvat leikkauskohdat
@@ -477,7 +476,7 @@
 	Demo footage	Demomateriaali
 	Six procedural 1080p clips with sound	Kuusi proseduraalista 1080p-leikettä äänellä
 	Demo project	Demoprojekti
-	A cut sequence with transitions, effects and music	Leikattu sekvenssi, jossa on siirtymiä, efektejä ja musiikkia
+	A cut sequence with transitions, effects and music	Leikattu sekvenssi, jossa on siirtymiä, tehosteita ja musiikkia
 	Bars and Tone	Väripalkit ja testiääni
 	SMPTE HD bars with 1 kHz reference tone	SMPTE HD -väripalkit ja 1 kHz:n testiääni
 	Community	Yhteisö
@@ -498,18 +497,18 @@
 	Rendering:	Renderöinti:
 	Trim audio files	Rajaa äänitiedostoja
 	Handle Frames:	Varakuvat:
-	Render audio clip effects	Renderöi leikkeen ääniefektit
+	Render audio clip effects	Renderöi leikkeen äänitehosteet
 	Breakout to mono	Erota monoiksi
 	Exported {path}	Viety: {path}
 	Select a clip to view its metadata.	Valitse leike nähdäksesi sen metatiedot.
 	Clip: {name}	Leike: {name}
 	Open	Avaa
 	(no sequence)	(ei sekvenssiä)
-	Show or hide {color} markers	Näytä tai piilota {color} merkitsimet
-	Marker	Merkitsin
+	Show or hide {color} markers	Näytä tai piilota {color} merkit
+	Marker	Merkki
 	{tc}  Chapter	{tc}  Luku
-	No markers. Press M to add one.	Ei merkitsimiä. Paina M lisätäksesi sellaisen.
-	All markers are hidden by the colour filter.	Kaikki merkitsimet on piilotettu värisuodattimalla.
+	No markers. Press M to add one.	Ei merkkejä. Paina M lisätäksesi sellaisen.
+	All markers are hidden by the colour filter.	Kaikki merkit on piilotettu värisuodattimalla.
 	Type:	Tyyppi:
 	Video:	Video:
 	Codec:	Koodekki:
@@ -533,7 +532,7 @@
 	Delete Preset	Poista esiasetus
 	Export Preset…	Vie esiasetus…
 	Import Presets…	Tuo esiasetukset…
-	Effect presets	Efektien esiasetukset
+	Effect presets	Tehosteiden esiasetukset
 	Save Preset	Tallenna esiasetus
 	Name:	Nimi:
 	Type	Tyyppi
@@ -566,7 +565,7 @@
 	Edit Workspaces	Muokkaa työtiloja
 	Rename	Nimeä uudelleen
 	Restore Original	Palauta alkuperäinen
-	Search effects	Hae efektejä
+	Search effects	Hae tehosteita
 	Apply to Selected Clips	Käytä valituissa leikkeissä
 	Metadata Display	Metatietojen näyttö
 	Save As New View Preset	Tallenna uutena näkymäesiasetuksena
@@ -647,7 +646,7 @@
 	 seconds	 sekuntia
 	Post-roll:	Post-roll:
 	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Toisto aloittaa pre-rollin ennen toistopäätä (tai alkupistettä); kun alku- ja loppupiste on merkitty, äänitys alkaa ja päättyy niissä.
-	Effect	Efekti
+	Effect	Tehoste
 	Clip Fx Editor	Leikkeen Fx-editori
 	Track Fx Editor	Raidan Fx-editori
 	Master Gain	Kokonaisvahvistus
@@ -688,7 +687,7 @@
 	Multi-Camera Layout	Monikameran asettelu
 	Automatic	Automaattinen
 	Edit Cameras…	Muokkaa kameroita…
-	Add Marker (M)	Lisää merkitsin (M)
+	Add Marker (M)	Lisää merkki (M)
 	Mark In (I)	Merkitse alkupiste (I)
 	Mark Out (O)	Merkitse loppupiste (O)
 	Go to In (Shift+I)	Siirry alkupisteeseen (Shift+I)
@@ -710,7 +709,7 @@
 	{first} Multicam	{first} Monikamera
 	In Points	Alkupisteet
 	Out Points	Loppupisteet
-	Clip Marker	Leikkeen merkitsin
+	Clip Marker	Leikkeen merkki
 	Merge Clips	Yhdistä leikkeet
 	Create Multi-Camera Source Sequence	Luo monikameran lähdesekvenssi
 	Synchronize Clips	Synkronoi leikkeet
@@ -720,7 +719,7 @@
 	{n} clip(s) selected; the clip on the reference track stays put.	{n} leikettä valittu; viiteraidan leike pysyy paikallaan.
 	Synchronize Point	Synkronointipiste
 	Ignore Hours	Ohita tunnit
-	first marker	ensimmäinen merkitsin
+	first marker	ensimmäinen merkki
 	Offset Audio by:	Siirrä ääntä:
 	Offset:	Siirto:
 	 frames	 kuvaa
@@ -781,7 +780,7 @@
 	Sequence Time	Sekvenssin aika
 	Video Attributes	Videon ominaisuudet
 	Audio Attributes	Äänen ominaisuudet
-	No effects	Ei efektejä
+	No effects	Ei tehosteita
 	Scale Attribute Times	Skaalaa ominaisuusaikoja
 	File Name:	Tiedostonimi:
 	Tape Name:	Nauhan nimi:
@@ -1000,7 +999,7 @@
 	Deleted {n} file(s), {size}.	Poistettu {n} tiedostoa, {size}.
 	Reset…	Nollaa…
 	Source · {name}	Lähde · {name}
-	Reset Effect	Nollaa efekti
+	Reset Effect	Nollaa tehoste
 	Reset Parameter	Nollaa parametri
 	Save Preset…	Tallenna esiasetus…
 	Custom Setup	Mukautetut asetukset
@@ -1114,14 +1113,14 @@
 	{f} (missing)	{f} (puuttuu)
 	Replace:	Korvaa:
 	Replaced {n} font uses	Korvattiin {n} fontin käyttökohtaa
-	Show/Hide Effects and Sends	Näytä/piilota efektit ja lähetykset
+	Show/Hide Effects and Sends	Näytä/piilota tehosteet ja lähetykset
 	Audio Track Mixer menu	Raidan äänimikserin valikko
 	Show/Hide Tracks…	Näytä/piilota raidat…
 	Meter Input(s) Only	Mittaa vain sisääntulot
 	Show/Hide Tracks	Näytä/piilota raidat
 	Show All	Näytä kaikki
 	Post-Fader	Post-fader
-	Remove Effect	Poista efekti
+	Remove Effect	Poista tehoste
 	Fill the slots above first	Täytä ensin yläpuoleiset paikat
 	pre 	pre 
 	Pre-Fader	Pre-fader
@@ -1188,7 +1187,7 @@
 	Position:	Sijainti:
 	No saved guide templates.	Ei tallennettuja apulinjamalleja.
 	Project: {name}	Projekti: {name}
-	Bin: {name}	Bin: {name}
+	Bin: {name}	Kansio: {name}
 	Up one level	Yksi taso ylöspäin
 	Video Usage: {vu}  Audio Usage: {au}	Videokäyttö: {vu}  Äänikäyttö: {au}
 	Icon View	Kuvakenäkymä
@@ -1300,7 +1299,7 @@
 	Aggressive	Aggressiivinen
 	Align and Transform	Kohdista ja muunna
 	All lines	Kaikki rivit
-	Allow Selection tool to choose Roll and Ripple trims without modifier key	Salli valintatyökalun valita rullaus- ja aaltokarsinnat ilman muunnosnäppäintä
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Salli valintatyökalun valita rullaus- ja siirtävät rajaukset ilman muunnosnäppäintä
 	Allow current tool to change trim type of previously selected edit point	Salli nykyisen työkalun muuttaa aiemmin valitun leikkauspisteen karsintatyyppiä
 	Allow duplicate media during project import	Salli duplikaattimedia projektin tuonnin aikana
 	Alpha Adjust	Alfasäätö
@@ -1929,8 +1928,8 @@
 	Japanese	Japani
 	JetBrains Mono	JetBrains Mono
 	Join Through Edits	Yhdistä läpileikkaukset
-	Ripple Trim In	Aaltoileva alkurajaus
-	Ripple Trim Out	Aaltoileva loppurajaus
+	Ripple Trim In	Siirtävä alkurajaus
+	Ripple Trim Out	Siirtävä loppurajaus
 	Roll Edit	Vierivä leikkaus
 	Trim In	Alkurajaus
 	Trim Out	Loppurajaus
@@ -2219,15 +2218,15 @@
 	Podcast Voice	Podcast-ääni
 	Point 1	Piste 1
 	Point 1 Color	Pisteen 1 väri
-	Point 1 Latitude	Pisteen 1 leveyspiiri
+	Point 1 Latitude	Pisteen 1 leveysaste
 	Point 1 Longitude	Pisteen 1 pituuspiiri
 	Point 2	Piste 2
 	Point 2 Color	Pisteen 2 väri
-	Point 2 Latitude	Pisteen 2 leveyspiiri
+	Point 2 Latitude	Pisteen 2 leveysaste
 	Point 2 Longitude	Pisteen 2 pituuspiiri
 	Point 3	Piste 3
 	Point 3 Color	Pisteen 3 väri
-	Point 3 Latitude	Pisteen 3 leveyspiiri
+	Point 3 Latitude	Pisteen 3 leveysaste
 	Point 3 Longitude	Pisteen 3 pituuspiiri
 	Point 4	Piste 4
 	Point 5	Piste 5
@@ -2327,7 +2326,7 @@
 	Right - Right	Oikea - oikea
 	Right channel to device output	Oikea kanava laitteen ulostuloon
 	Right to left	Oikealta vasemmalle
-	Ripple trim adds edits to keep both sides of trim in sync	Aaltoileva rajaus lisää leikkauksia pitämään rajauksen molemmat puolet synkronoituna
+	Ripple trim adds edits to keep both sides of trim in sync	Siirtävä rajaus lisää leikkauksia pitämään rajauksen molemmat puolet synkronoituna
 	Roll (Z Axis)	Kallistus (Z-akseli)
 	Room Size	Huoneen koko
 	Rotation Amount	Kierron määrä
@@ -2387,7 +2386,7 @@
 	Sharp Colors	Terävät värit
 	Sharpen Amount	Terävöinnin määrä
 	Shift Center To	Siirrä keskipiste
-	Shift clips that overlap trim point during ripple trimming	Siirrä rajauskohdan kanssa päällekkäin olevat leikkeet aaltoilevan rajauksen aikana
+	Shift clips that overlap trim point during ripple trimming	Siirrä rajauskohdan kanssa päällekkäin olevat leikkeet siirtävän rajauksen aikana
 	Shot	Otos
 	Show "Project:" and "Bin:" in Project panel tab	Näytä "Projekti:" ja "Bin:" projektipaneelin välilehdessä
 	Show Clip Mismatch Warning dialog	Näytä varoitusikkuna leikkeen yhteensopimattomuudesta
@@ -2603,7 +2602,7 @@
 	Uniform Spacing	Yhtenäinen välistys
 	Unsharp Mask	Epäterävämaski
 	Update it at least every	Päivitä se vähintään joka
-	Update timeline dynamically during ripple edits.	Päivitä aikajana dynaamisesti aaltomuokkausten aikana.
+	Update timeline dynamically during ripple edits.	Päivitä aikajana dynaamisesti siirtävien muokkausten aikana.
 	Upper Frequency	Ylempi taajuus
 	Upper Left	Vasen yläkulma
 	Upper Right	Oikea yläkulma
@@ -2711,7 +2710,7 @@
 	Wrap Back	Kiertyminen taaksepäin
 	Write	Kirjoita
 	Write XMP ID to files on import	Kirjoita XMP-tunnus tiedostoihin tuonnin yhteydessä
-	Write clip markers to XMP	Kirjoita leikkeiden merkitsimet XMP:hen
+	Write clip markers to XMP	Kirjoita leikkeiden merkit XMP:hen
 	Write-on	Piirtyvä kirjoitus
 	X Rotation	X-kierto
 	Y Rotation	Y-kierto
@@ -2753,7 +2752,7 @@
 	Find in:	Etsi kohteesta:
 	Find:	Etsi:
 	Search:	Hae:
-	Clip Names and Markers	Leikkeiden nimet ja merkitsimet
+	Clip Names and Markers	Leikkeiden nimet ja merkit
 	Match:	Täsmäys:
 	All	Kaikki
 	Any	Mikä tahansa
@@ -2797,7 +2796,7 @@
 	Selection Order	Valintajärjestys
 	Placement:	Sijoittelu:
 	Sequentially	Peräkkäin
-	At Unnumbered Markers	Numeroimattomiin merkitsimiin
+	At Unnumbered Markers	Numeroimattomiin merkkeihin
 	Method:	Menetelmä:
 	Insert Edit	Lisäysmuokkaus
 	Overwrite Edit	Ylikirjoitusmuokkaus
@@ -2811,7 +2810,7 @@
 	Ignore Video	Ohita video
 	Apply a cut at each detected cut point	Lisää leikkaus jokaiseen tunnistettuun leikkauspisteeseen
 	Create a bin of subclips from each detected cut point	Luo alileikekansio jokaisesta tunnistetusta leikkauspisteestä
-	Create a clip marker at each detected cut point	Lisää leikemerkitsin jokaiseen tunnistettuun leikkauspisteeseen
+	Create a clip marker at each detected cut point	Lisää leikemerkki jokaiseen tunnistettuun leikkauspisteeseen
 	Sensitivity:	Herkkyys:
 	Normalize Mix Track to:	Normalisoi miksausraita arvoon:
 	Disabled clips	Käytöstä poistetut leikkeet
@@ -2968,7 +2967,7 @@
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Napsauta valitaksesi, tai napsauta tyhjään kohtaan ja vedä suorakulmiovalinnan tekemiseksi. Käytä Shift-, Opt- ja Cmd-näppäimiä muihin vaihtoehtoihin.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Napsauta valitaksesi kaikki oikealla olevat leikkeet kaikilla raidoilla. Shift+napsautus valitsee vain yhden raidan.
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	Napsauta valitaksesi kaikki vasemmalla olevat leikkeet kaikilla raidoilla. Shift+napsautus valitsee vain yhden raidan.
-	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Vedä leikkauspistettä tehdäksesi aaltomuokkauksen; myöhemmät leikkeet siirtyvät pitämään välin suljettuna.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Vedä leikkauspistettä tehdäksesi siirtävän rajauksen; myöhemmät leikkeet siirtyvät pitämään välin suljettuna.
 	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Vedä leikkauspistettä vierittääksesi sitä: yhden leikkeen loppupiste ja seuraavan leikkeen alkupiste siirtyvät yhdessä.
 	Drag an edge to change the clip's speed so it fills the new duration.	Vedä reunaa muuttaaksesi leikkeen nopeutta niin, että se täyttää uuden keston.
 	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Vedä musiikkileikkeen reunaa remixataksesi sen uuteen kestoon musiikillisesti sopiviin iskuihin.
@@ -3242,9 +3241,9 @@
 	Rectangle Tool	Suorakulmiotyökalu
 	Remix Tool	Remiksaustyökalu
 	Right align text	Tasaa teksti oikealle
-	Ripple Edit Tool	Aaltomuokkaustyökalu
-	Ripple Trim Next Edit to Playhead	Aaltomuokkaa seuraava leikkaus toistopäähän
-	Ripple Trim Previous Edit to Playhead	Aaltomuokkaa edellinen leikkaus toistopäähän
+	Ripple Edit Tool	Siirtävän muokkauksen työkalu
+	Ripple Trim Next Edit to Playhead	Rajaa seuraava leikkaus toistopäähän siirtäen
+	Ripple Trim Previous Edit to Playhead	Rajaa edellinen leikkaus toistopäähän siirtäen
 	Rolling Edit Tool	Vierivä leikkaustyökalu
 	Select Camera 1	Valitse kamera 1
 	Select Camera 2	Valitse kamera 2
@@ -3459,7 +3458,7 @@
 	Clip Speed / Duration	Leikkeen nopeus / kesto
 	Speed:	Nopeus:
 	Reverse Speed	Käänteinen nopeus
-	Ripple Edit, Shifting Trailing Clips	Aaltomuokkaus, perässä olevat leikkeet siirtyvät
+	Ripple Edit, Shifting Trailing Clips	Siirtävä muokkaus, perässä olevat leikkeet siirtyvät
 	About	Tietoja
 	Contributors	Avustajat
 	Models	Mallit
@@ -3531,7 +3530,7 @@
 	{rate} fps Timecode	{rate} fps aikakoodi
 	horizontal	vaakasuora
 	vertical	pystysuora
-	Scale motion effects proportionally when changing frame size	Skaalaa liike-efektit suhteellisesti, kun kuvakokoa muutetaan
+	Scale motion effects proportionally when changing frame size	Skaalaa liiketehosteet suhteellisesti, kun kuvakokoa muutetaan
 	Maximum Bit Depth	Suurin bittisyvyys
 	Maximum Render Quality	Suurin renderöintilaatu
 	Composite in Linear Color	Kompositoi lineaarisessa väritilassa
@@ -3572,7 +3571,7 @@
 	Get Project Notes	Hae projektin muistiinpanot
 	Edit Project Notes	Muokkaa projektin muistiinpanoja
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Tämän projektin muistiinpanot: tehtävät, ohjeet, kuvanumerot… Tallennetaan projektin mukana.
-	Use Effect Shutter Angle	Käytä efektin sulkinastetta
+	Use Effect Shutter Angle	Käytä tehosteen sulkinastetta
 	Appearance Settings…	Ulkoasuasetukset…
 	Add to favorites	Lisää suosikkeihin
 	Remove from favorites	Poista suosikeista

@@ -12,8 +12,8 @@ const POOL_MIN_LEN: usize = 1 << 16;
 /// Samples kept at most (96 M samples = 192 MB, a few 4K frames).
 const POOL_MAX_SAMPLES: usize = 96 << 20;
 
-/// A zeroed buffer of `len` samples (recycled memory for large ones).
-fn zeroed(len: usize) -> Vec<u16> {
+/// An empty buffer with room for `len` samples (recycled memory for large ones).
+fn recycled(len: usize) -> Vec<u16> {
     if len >= POOL_MIN_LEN {
         let found = {
             let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
@@ -21,11 +21,17 @@ fn zeroed(len: usize) -> Vec<u16> {
         };
         if let Some(mut v) = found {
             v.clear();
-            v.resize(len, 0);
             return v;
         }
     }
-    vec![0; len]
+    Vec::with_capacity(len)
+}
+
+/// A zeroed buffer of `len` samples (recycled memory for large ones).
+fn zeroed(len: usize) -> Vec<u16> {
+    let mut v = recycled(len);
+    v.resize(len, 0);
+    v
 }
 
 /// One plane of samples (u16 at every bit depth), or a rectangular region of one.
@@ -42,8 +48,8 @@ pub struct Plane {
 
 impl Clone for Plane {
     fn clone(&self) -> Plane {
-        let mut data = zeroed(self.data.len());
-        data.copy_from_slice(&self.data);
+        let mut data = recycled(self.data.len());
+        data.extend_from_slice(&self.data);
         Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
     }
 }
@@ -82,11 +88,6 @@ impl Plane {
     pub fn row(&self, y: usize) -> &[u16] {
         let o = (y - self.oy) * self.stride;
         &self.data[o..o + self.stride]
-    }
-    #[inline(always)]
-    pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
-        let o = (y - self.oy) * self.stride;
-        &mut self.data[o..o + self.stride]
     }
     /// Row `y` from column `x` (frame coordinates) to the end of the stored row.
     #[inline(always)]
@@ -139,10 +140,6 @@ pub struct RowBand<'a> {
 }
 
 impl RowBand<'_> {
-    #[inline(always)]
-    pub fn set(&mut self, x: usize, y: usize, v: u16) {
-        self.data[(y - self.y0) * self.stride + x] = v;
-    }
     #[inline(always)]
     pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
         let o = (y - self.y0) * self.stride;
@@ -208,14 +205,6 @@ impl FrameBuf {
         let [p0, p1, p2] = &mut self.planes;
         let (b1, b2) = (p1.row_bands(&chroma), p2.row_bands(&chroma));
         p0.row_bands(luma).into_iter().zip(b1).zip(b2).map(|((y, u), v)| [y, u, v]).collect()
-    }
-
-    pub fn plane_width(&self, plane: usize) -> usize {
-        if plane == 0 { self.width } else { (self.width + self.subsampling_x) >> self.subsampling_x }
-    }
-
-    pub fn plane_height(&self, plane: usize) -> usize {
-        if plane == 0 { self.height } else { (self.height + self.subsampling_y) >> self.subsampling_y }
     }
 }
 

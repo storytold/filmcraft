@@ -1,8 +1,7 @@
 # Danish (da) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
 #
 #   context  empty          a plain UI string; `source` is the English text in the code
-#   escapes  
-  	  \  inside a column. `{name}` placeholders must appear in both columns;
+#   escapes  \n  \t  \\  inside a column. `{name}` placeholders must appear in both columns;
 #            translators may reorder them. A trailing "…" (dialog commands) is kept.
 #   lines starting with # and blank lines are ignored.
 #

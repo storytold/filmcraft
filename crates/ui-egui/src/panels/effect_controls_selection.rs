@@ -11,8 +11,9 @@ use crate::{
     state::KeyframeRef,
 };
 
+/// Key for the keyframe-selection gesture state in egui's temp store; `begin` resets it when the clip changes.
 fn state_id() -> Id {
-    Id::new("effect-controls-keyframe-selection")
+    Id::unique("effect-controls-keyframe-selection")
 }
 
 #[derive(Clone)]
@@ -103,6 +104,8 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
 }
 
 impl Interaction {
+    /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
+    /// gestures as UI-only previews.
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
         if state.clip != clip {
@@ -112,7 +115,13 @@ impl Interaction {
         if cancelled {
             state.gesture = None;
         }
-        let background = ui.interact(area, Id::new(("ec-select", clip)), Sense::click_and_drag());
+        // A key that left the selection mid-drag (deleted, or on a row that turned disabled: Scale
+        // Width once Uniform Scale is on, through an undo or the control channel) is no longer
+        // dragged, so the drop doesn't move it.
+        if let Some(Gesture::Group(group)) = &mut state.gesture {
+            group.keys.retain(|k| app.ui.keyframe_selection.contains(k));
+        }
+        let background = ui.interact(area, Id::unique(("ec-select", clip)), Sense::click_and_drag());
         if background.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
             app.ui.keyframe_selection.clear();
         }
@@ -161,7 +170,8 @@ impl Interaction {
         }
         let time = super::timeline_time_of(it, key.time);
         let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
-        if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
+        // A disabled row's keyframes (Scale Width under Uniform Scale) can't be marquee-selected either.
+        if ui.is_enabled() && self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
         if !self.cancelled && response.drag_started_by(egui::PointerButton::Primary) {
