@@ -219,3 +219,17 @@ fn the_sequence_frame_is_the_video_frame_rect_not_the_preview_size() {
         assert!(result.unwrap().is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_volume_component_named_only_by_match_name_is_still_volume() {
+    // The caller accepts `MatchName` before `FilterMatchName`; the reader must agree, or the
+    // level would land on Channel Volume's Left.
+    let xml = fixture().replace(
+        "<FilterMatchName>Internal Volume Stereo</FilterMatchName></AudioFilterComponent>",
+        "<MatchName>Internal Volume Stereo</MatchName></AudioFilterComponent>",
+    );
+    let (p, _, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+    let c = &p.project.sequence(p.sequences[0]).unwrap().audio_tracks[0].items[0];
+    assert_eq!(c.effect("volume").unwrap().param("level").unwrap().keyframes.len(), 3);
+    assert!((c.effect("channel_volume").unwrap().param("left").unwrap().value.as_f64().unwrap() + 6.0).abs() < 1e-6);
+}

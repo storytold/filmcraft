@@ -730,7 +730,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             } else if kind == "audio"
                                 && match_name.is_some_and(|m| m.starts_with("Internal Volume") || m.starts_with("Internal Channel Volume"))
                             {
-                                audio::read(c, &ids, &mut work_left, &mut audio, report)?;
+                                audio::read(c, match_name.unwrap_or_default(), &ids, &mut work_left, &mut audio, report)?;
                             } else if !is_text && !is_shape {
                                 let count = unsupported_effects.entry((effect.clone(), match_name.unwrap_or("unknown").to_string())).or_insert(0usize);
                                 *count = count.saturating_add(1);

@@ -2,7 +2,7 @@
 //! Raw normalized 0.17782794 reads as 0 dB in Premiere; zero represents silence.
 //! Original work, MIT OR Apache-2.0. Temporal handles are explicitly approximate.
 use super::{error, referred, spend, value, warning};
-use crate::xml::{child, child_text};
+use crate::xml::child;
 use crate::{Report, Result};
 use filmcraft_project::{Keyframe, Param, ParamValue};
 use filmcraft_time::Tick;
@@ -17,8 +17,11 @@ fn level(raw: &str) -> Result<ParamValue> {
     Ok(ParamValue::Float(if n == 0.0 { -287.5 } else { (20.0 * n.log10() + 15.0).max(-287.5) }))
 }
 
+/// `match_name` is the caller's (`MatchName`, else `FilterMatchName`), so both agree on which
+/// control this component is.
 pub(super) fn read<'a, 'i>(
     component: Node<'a, 'i>,
+    match_name: &str,
     ids: &BTreeMap<&str, Node<'a, 'i>>,
     work: &mut usize,
     out: &mut BTreeMap<String, Param>,
@@ -27,7 +30,7 @@ pub(super) fn read<'a, 'i>(
     // Parameters are matched by their `Param@Index`: `Name` is localised (a Spanish Premiere
     // writes Nivel / Izquierda / Derecha) while the index layout is not. Volume is Mute (0),
     // Level (1); Channel Volume is Bypass (0), Left (1), Right (2).
-    let volume = child_text(component, "FilterMatchName").is_some_and(|m| m.starts_with("Internal Volume"));
+    let volume = match_name.starts_with("Internal Volume");
     for ptr in component.descendants().filter(|n| n.has_tag_name("Param")) {
         let Some(p) = referred(Some(ptr), ids, "ObjectRef") else { continue };
         spend(work, p)?;
