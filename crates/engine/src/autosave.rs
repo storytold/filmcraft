@@ -709,6 +709,7 @@ pub enum WorkerEvent {
     SavedProject {
         path: String,
         revision: u64,
+        view_epoch: u64,
     },
     Error(String),
 }
@@ -1157,7 +1158,7 @@ impl Worker {
                 {
                     match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                         Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision, view_epoch: s.view_epoch });
                         }
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }

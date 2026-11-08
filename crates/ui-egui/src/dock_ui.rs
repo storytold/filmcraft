@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use craft_ui::docking::{
     Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, WindowKind, Workspace,
 };
-use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
@@ -500,10 +500,10 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if self.app.ui.focused == *panel {
             let alternate_top = *panel == PanelKind::Timeline && self.app.session.state.timeline_ui.alternate_slider_position;
             if alternate_top {
-                // the group body plus its tab strip: a floating window can hold several groups,
-                // and the window rect would draw the ring around the neighbours too
+                // Draw the same 2px focus line along the window edge. A floating window can hold
+                // several groups, and the window rect would highlight the neighbours too.
                 let window = Rect::from_min_max(pos2(frame.min.x, frame.min.y - t.tab_h), frame.max);
-                ui.ctx().layer_painter(ui.layer_id()).rect_stroke(window, 0.0, Stroke::new(2.0, Color32::from_rgb(0x74, 0xb0, 0xff)), StrokeKind::Inside);
+                ui.ctx().layer_painter(ui.layer_id()).rect_stroke(window, 0.0, Stroke::new(2.0, t.focus), StrokeKind::Inside);
             } else {
                 ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
             }

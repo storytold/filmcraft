@@ -1,6 +1,6 @@
 //! Headless UI tests of scrolling the Timeline: what the wheel does with each modifier, how far
 //! the view can go, and the zoom scroll bar. Premiere Pro 26.5.2 on macOS, checked in the app: the
-//! wheel moves the tracks up and down, Cmd + wheel moves the Timeline sideways, Option + wheel
+//! wheel moves the Timeline sideways, Cmd + wheel moves the tracks, Option + wheel
 //! zooms, and the view stops ten minutes past the end of the sequence.
 
 use std::sync::mpsc::{Sender, channel};
@@ -178,14 +178,14 @@ fn ctrl_wheel_moves_the_tracks_up_and_down() {
 #[test]
 fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     let mut d = Driver::tall();
-    // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
+    // Plain wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
     d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "100 points at 50 points a second: 2 s later");
     d.wheel(0.8, 0.0, 250.0, none());
     assert_eq!(d.view(), (1.0, 50.0, 0.0, 0.0));
     d.wheel(0.8, 0.0, 1e5, none());
     assert_eq!(d.view().0, 0.0, "not before the start");
-    // Option + wheel: zoom about the pointer; it is not what Cmd + wheel does
+    // Option + wheel: zoom about the pointer; it is not what plain wheel does
     d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
     d.frames(3);
     let tracks = d.rect("timeline.tracks");
@@ -203,7 +203,7 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
