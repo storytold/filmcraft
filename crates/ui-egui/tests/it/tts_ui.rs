@@ -130,6 +130,8 @@ fn write_add_click_to_edit_and_save_in_place() {
         assert!(ids.iter().any(|i| i == id), "missing {id} in {ids:?}");
     }
     // type a script and add a pause
+    d.harness.state_mut().ui.tts.text.clear();
+    d.frames(1);
     d.click("tts.text");
     d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Hello from the panel.");
@@ -227,8 +229,9 @@ fn russian_language_selection_and_narration() {
     assert_eq!(d.draft()["language"], "ru-RU");
     assert_eq!(d.draft()["voice"], "basic-russian-female");
 
+    d.harness.state_mut().ui.tts.text.clear();
+    d.frames(1);
     d.click("tts.text");
-    d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Привет мир.");
     d.click("tts.save");
     d.settle();

@@ -580,4 +580,14 @@ fn russian_normalization() {
     assert_eq!(words("42 рубля.", Lang::RuRu), "сорок два рубля |");
     assert_eq!(words("1000 рублей.", Lang::RuRu), "одна тысяча рублей |");
     assert_eq!(words("10% скидка.", Lang::RuRu), "десять процентов скидка |");
+    assert_eq!(words("₽1", Lang::RuRu), "один рубль");
+    assert_eq!(words("₽2", Lang::RuRu), "два рубля");
+    assert_eq!(words("₽5", Lang::RuRu), "пять рублей");
+    assert_eq!(words("₽21", Lang::RuRu), "двадцать один рубль");
+    assert_eq!(words("₽1.01", Lang::RuRu), "один рубль и одна копейка");
+    assert_eq!(words("₽1.02", Lang::RuRu), "один рубль и две копейки");
+    assert_eq!(words("₽1.05", Lang::RuRu), "один рубль и пять копеек");
+    assert_eq!(words("1.5", Lang::RuRu), "один точка пять");
+    assert_eq!(words(".5", Lang::RuRu), "точка пять");
+    assert_eq!(words("1500 рублей.", Lang::RuRu), "одна тысяча пятьсот рублей |");
 }

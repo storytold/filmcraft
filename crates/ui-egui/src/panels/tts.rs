@@ -60,10 +60,12 @@ pub struct Pending {
 impl Default for TtsDraft {
     /// Creates a default Text-to-Speech draft configured with the default English voice and sample sentence.
     fn default() -> Self {
+        let models = filmcraft_engine::transcript::models_dir();
+        let voices = filmcraft_tts::voices_in(models.as_deref());
         TtsDraft {
             text: filmcraft_tts::sample_sentence_for_language("en-US").into(),
             language: "en-US".into(),
-            voice: if natural_installed() { "kokoro-heart".into() } else { filmcraft_tts::default_voice_id().into() },
+            voice: default_voice_for_lang("en-US", &voices),
             pitch: VocalPitch::Default,
             pace: 1.0,
             advanced_open: true,
@@ -83,7 +85,11 @@ impl TtsDraft {
         let models = filmcraft_engine::transcript::models_dir();
         let voices = filmcraft_tts::voices_in(models.as_deref());
         let (voice, pitch, pace) = if let Some(lp) = prefs.languages.get(&lang) {
-            let voice = if voices.iter().any(|v| v.id == lp.voice && v.language == lang) { lp.voice.clone() } else { default_voice_for_lang(&lang, &voices) };
+            let voice = if voices.iter().any(|v| v.id == lp.voice && v.language == lang && v.installed) {
+                lp.voice.clone()
+            } else {
+                default_voice_for_lang(&lang, &voices)
+            };
             (voice, lp.pitch, lp.pace)
         } else {
             (default_voice_for_lang(&lang, &voices), VocalPitch::Default, 1.0)
@@ -106,8 +112,8 @@ impl TtsDraft {
 
 /// Selects the preferred default voice for `language`, preferring installed neural voices when available.
 pub fn default_voice_for_lang(language: &str, voices: &[filmcraft_tts::VoiceInfo]) -> String {
-    if language == "en-US" && natural_installed() {
-        return "kokoro-heart".into();
+    if let Some(v) = voices.iter().find(|v| v.language == language && v.installed && v.id == "kokoro-heart") {
+        return v.id.to_string();
     }
     if let Some(v) = voices.iter().find(|v| v.language == language && v.installed) {
         return v.id.to_string();
@@ -116,12 +122,6 @@ pub fn default_voice_for_lang(language: &str, voices: &[filmcraft_tts::VoiceInfo
         return v.id.to_string();
     }
     filmcraft_tts::default_voice_id().into()
-}
-
-/// The natural voice package is downloaded and usable in this build.
-fn natural_installed() -> bool {
-    let models = filmcraft_engine::transcript::models_dir();
-    filmcraft_tts::voices_in(models.as_deref()).iter().any(|v| v.engine == "neural" && v.installed)
 }
 
 /// State of job `id`: `None` while running, else its result.

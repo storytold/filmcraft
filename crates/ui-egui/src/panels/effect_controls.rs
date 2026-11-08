@@ -603,7 +603,6 @@ fn properties_nav(
     }
 }
 
-<<<<<<< HEAD
 /// Whether `param` is Scale Width with the effect's Uniform Scale on at media time `mt` of `it`:
 /// Motion, Transform and graphic layers then scale both axes by Scale (Transform's Scale Height)
 /// and the render ignores Scale Width. Uniform Scale is read exactly as the render reads it, so the

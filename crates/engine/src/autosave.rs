@@ -441,6 +441,10 @@ impl Preferences {
         self.playback.preroll_seconds = secs(self.playback.preroll_seconds);
         self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
+        for lang in self.tts.languages.values_mut() {
+            lang.pace =
+                if lang.pace.is_finite() { lang.pace.clamp(filmcraft_project::narration::MIN_PACE, filmcraft_project::narration::MAX_PACE) } else { 1.0 };
+        }
         self.labels.sanitize_labels();
         self.appearance.sync_color_theme();
         self.version = settings::PREFS_VERSION;

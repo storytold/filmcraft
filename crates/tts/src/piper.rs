@@ -18,7 +18,7 @@ use crate::catalog;
 use crate::{Audio, MAX_SECONDS, Params, TtsError, Voice, VoiceInfo, check_text};
 
 const SENTENCE_GAP_MS: u32 = 120;
-const BUCKET_SIZES: [usize; 7] = [32, 64, 96, 128, 192, 256, 384];
+const BUCKET_SIZES: [usize; 11] = [32, 64, 96, 128, 192, 256, 384, 512, 640, 768, 832];
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct PiperAudioConfig {

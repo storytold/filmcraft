@@ -130,8 +130,8 @@ pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
             '.' if peek(rest, 1).is_some_and(|c| c.is_ascii_digit()) => {
                 // A decimal with no integer part: ".5" → "point five".
                 pos += 1;
-                out.push(Token::Word("point".into()));
-                let (frac, used) = digit_run_as_words(rest.get(1..).unwrap_or(""));
+                out.push(Token::Word(if lang == Lang::RuRu { "точка".into() } else { "point".into() }));
+                let (frac, used) = digit_run_as_words(rest.get(1..).unwrap_or(""), lang);
                 pos += used;
                 push_words(&mut out, &frac);
             }
@@ -295,7 +295,7 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
     if digits > MAX_CARDINAL_DIGITS || has_leading_zero(&value, digits) {
         // Oversized amounts: every digit, unit-free, no overflow.
         let all = rest.get(skip..skip + used)?.chars().filter(char::is_ascii_digit).collect::<String>();
-        let (words, _) = digit_run_as_words(&all);
+        let (words, _) = digit_run_as_words(&all, lang);
         return Some((words, used + skip));
     }
     let (unit, sub) = money_units(symbol, lang);
@@ -306,7 +306,7 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
             let amount = rest.get(skip..skip + used)?;
             let frac = amount.split_once('.').map_or("", |(_, f)| f);
             words.push(if lang == Lang::RuRu { "точка".into() } else { "point".into() });
-            words.extend(digit_run_as_words(frac).0);
+            words.extend(digit_run_as_words(frac, lang).0);
         }
         words.push(scale.into());
         words.push(unit.into());
@@ -316,14 +316,15 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
     let mut words = Vec::new();
     if !sub_unit_only {
         words = cardinal_words(value, lang);
-        push_unit(&mut words, unit, value == 1);
+        push_unit(&mut words, unit, value, lang);
     }
     if had_minor && minor > 0 {
         if !sub_unit_only {
             words.push(if lang == Lang::RuRu { "и".into() } else { "and".into() });
         }
-        let mut cents = cardinal_words(u64::from(minor), lang);
-        push_unit(&mut cents, sub, minor == 1);
+        let mut cents =
+            if lang == Lang::RuRu && sub == "копеек" { russian_cardinal_gender(u64::from(minor), true) } else { cardinal_words(u64::from(minor), lang) };
+        push_unit(&mut cents, sub, u64::from(minor), lang);
         words.extend(cents);
     }
     Some((words, used + skip))
@@ -354,11 +355,56 @@ fn money_units(symbol: char, lang: Lang) -> (&'static str, &'static str) {
     }
 }
 
-fn push_unit(words: &mut Vec<String>, unit: &str, singular: bool) {
-    if singular {
+fn push_unit(words: &mut Vec<String>, unit: &str, count: u64, lang: Lang) {
+    if lang == Lang::RuRu {
+        words.push(russian_unit_form(unit, count).into());
+    } else if count == 1 {
         words.push(unit_singular(unit).into());
     } else {
         words.push(unit.into());
+    }
+}
+
+/// Returns the correct grammatical declension form of a Russian currency unit based on count.
+fn russian_unit_form(unit: &str, count: u64) -> &str {
+    let rem100 = count % 100;
+    let rem10 = count % 10;
+    if (11..=14).contains(&rem100) {
+        unit
+    } else if rem10 == 1 {
+        unit_nominative_singular(unit)
+    } else if (2..=4).contains(&rem10) {
+        unit_genitive_singular(unit)
+    } else {
+        unit
+    }
+}
+
+/// Returns the nominative singular form of a currency unit.
+fn unit_nominative_singular(unit: &str) -> &str {
+    match unit {
+        "рублей" => "рубль",
+        "копеек" => "копейка",
+        "долларов" => "доллар",
+        "центов" => "цент",
+        "фунтов" => "фунт",
+        "пенсов" => "пенс",
+        "евро" => "евро",
+        other => unit_singular(other),
+    }
+}
+
+/// Returns the genitive singular form of a currency unit for counts ending in 2-4.
+fn unit_genitive_singular(unit: &str) -> &str {
+    match unit {
+        "рублей" => "рубля",
+        "копеек" => "копейки",
+        "долларов" => "доллара",
+        "центов" => "цента",
+        "фунтов" => "фунта",
+        "пенсов" => "пенса",
+        "евро" => "евро",
+        other => other,
     }
 }
 
@@ -724,8 +770,8 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
         let words: Vec<Token> = digits.chars().map(|c| Token::Word(digit_word(c, lang).into())).collect();
         return Some((words, used));
     }
-    // A year is a bare, ungrouped 4-digit number standing alone.
-    if !grouped && digits.len() == 4 && (1100..=2099).contains(&value) && year_is_standalone(rest, used) {
+    // A year is a bare, ungrouped 4-digit number standing alone (English only; Russian reads standalone 4-digit numbers as cardinals).
+    if lang != Lang::RuRu && !grouped && digits.len() == 4 && (1100..=2099).contains(&value) && year_is_standalone(rest, used) {
         return Some((year_words(value, lang), used));
     }
     // A decade such as "1990s" reads as a plural year: "nineteen nineties".
@@ -736,6 +782,11 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
         && matches!(peek(rest, used), Some('s'))
         && !peek(rest, used + 1).is_some_and(char::is_alphanumeric)
     {
+        if lang == Lang::RuRu {
+            let mut words: Vec<Token> = russian_cardinal(value).into_iter().map(Token::Word).collect();
+            words.push(Token::Word("годы".into()));
+            return Some((words, used + 1));
+        }
         let mut words = year_words(value, lang);
         if let Some(Token::Word(last)) = words.last_mut() {
             *last = pluralize_decade(last);
@@ -790,7 +841,7 @@ fn parse_continuation(rest: &str, used: usize, value: u64, digits: &str, lang: L
         Some('.') if peek(after, 1).is_some_and(|c| c.is_ascii_digit()) => {
             let mut words = spoken_integer(value, digits, lang);
             words.push(if lang == Lang::RuRu { "точка".into() } else { "point".into() });
-            let (frac, frac_used) = digit_run_as_words(after.get(1..)?);
+            let (frac, frac_used) = digit_run_as_words(after.get(1..)?, lang);
             if frac.is_empty() {
                 return None;
             }
@@ -907,14 +958,14 @@ fn year_is_standalone(rest: &str, used: usize) -> bool {
 }
 
 /// A digit run read digit by digit.
-fn digit_run_as_words(s: &str) -> (Vec<String>, usize) {
+fn digit_run_as_words(s: &str, lang: Lang) -> (Vec<String>, usize) {
     let mut words = Vec::new();
     let mut used = 0usize;
     for (i, ch) in s.char_indices() {
         if !ch.is_ascii_digit() {
             break;
         }
-        words.push(english_digit_word(ch).into());
+        words.push(digit_word(ch, lang).into());
         used = i + 1;
     }
     (words, used)
@@ -973,6 +1024,11 @@ fn russian_digit_word(c: char) -> &'static str {
 
 /// Converts an unsigned integer value into spelled Russian cardinal words with declension.
 fn russian_cardinal(value: u64) -> Vec<String> {
+    russian_cardinal_gender(value, false)
+}
+
+/// Converts an unsigned integer value into spelled Russian cardinal words with grammatical gender option.
+fn russian_cardinal_gender(value: u64, is_feminine: bool) -> Vec<String> {
     if value == 0 {
         return vec!["ноль".into()];
     }
@@ -987,7 +1043,8 @@ fn russian_cardinal(value: u64) -> Vec<String> {
         if g == 0 {
             continue;
         }
-        words.extend(russian_below_thousand(g, i == 1));
+        let fem = if i == 0 { is_feminine } else { i == 1 };
+        words.extend(russian_below_thousand(g, fem));
         match i {
             1 => {
                 let rest_tens = g % 100;

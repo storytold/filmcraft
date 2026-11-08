@@ -130,8 +130,7 @@ fn cache_put(c: &SynthCache, key: String, a: Arc<tts::Audio>) {
 /// Serializes neural voice package metadata into JSON.
 fn package_json(pkg: Option<&str>) -> Value {
     let dir = crate::transcript::models_dir();
-    let is_piper = pkg == Some(tts::catalog::PIPER_RU_PACKAGE_ID);
-    if is_piper {
+    if pkg == Some(tts::catalog::PIPER_RU_PACKAGE_ID) {
         json!({
             "id": tts::catalog::PIPER_RU_PACKAGE_ID,
             "name": tts::catalog::PIPER_RU_PACKAGE_NAME,
@@ -140,6 +139,17 @@ fn package_json(pkg: Option<&str>) -> Value {
             "missingBytes": dir.as_deref().map_or(tts::catalog::piper_ru_size(), tts::catalog::piper_ru_missing_bytes),
             "license": tts::catalog::PIPER_RU_LICENSE,
             "source": tts::catalog::PIPER_RU_SOURCE,
+            "available": cfg!(feature = "neural-voices"),
+        })
+    } else if pkg == Some(tts::catalog::KOKORO_RU_PACKAGE_ID) {
+        json!({
+            "id": tts::catalog::KOKORO_RU_PACKAGE_ID,
+            "name": tts::catalog::KOKORO_RU_PACKAGE_NAME,
+            "installed": dir.as_deref().is_some_and(tts::catalog::kokoro_ru_installed),
+            "size": tts::catalog::kokoro_ru_size(),
+            "missingBytes": dir.as_deref().map_or(tts::catalog::kokoro_ru_size(), tts::catalog::kokoro_ru_missing_bytes),
+            "license": tts::catalog::KOKORO_RU_LICENSE,
+            "source": tts::catalog::KOKORO_RU_SOURCE,
             "available": cfg!(feature = "neural-voices"),
         })
     } else {
@@ -165,6 +175,7 @@ fn voices(_s: &mut Session, p: &Value) -> Result<Value> {
         "packages": [
             package_json(Some(tts::catalog::PACKAGE_ID)),
             package_json(Some(tts::catalog::PIPER_RU_PACKAGE_ID)),
+            package_json(Some(tts::catalog::KOKORO_RU_PACKAGE_ID)),
         ],
         "languages": tts::LANGUAGES.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>(),
         "voices": tts::voices_in(dir.as_deref()),
@@ -555,7 +566,7 @@ fn spec(
 /// Returns command specifications exposed by the narration engine module.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
-        spec("tts.voices", "List Narration Voices", "{}", always, voices, false),
+        spec("tts.voices", "List Narration Voices", r#"{"package":"natural-voices"|"piper-ru"|"kokoro-ru"?,"voice":str?}"#, always, voices, false),
         spec(
             "tts.preview",
             "Preview Narration",
@@ -582,6 +593,13 @@ pub fn commands() -> Vec<CommandSpec> {
             render_job,
             false,
         ),
-        spec("tts.downloadVoices", "Download Natural Voices", r#"{"wait":bool?}"#, download_voices_enabled, download_voices, false),
+        spec(
+            "tts.downloadVoices",
+            "Download Natural Voices",
+            r#"{"package":"natural-voices"|"piper-ru"|"kokoro-ru"?,"voice":str?,"wait":bool?}"#,
+            download_voices_enabled,
+            download_voices,
+            false,
+        ),
     ]
 }
