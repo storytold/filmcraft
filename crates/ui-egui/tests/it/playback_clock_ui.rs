@@ -49,6 +49,15 @@ fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
     let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
     h.step();
     h.state_mut().play(1.0);
+    // The preroll waits for the first frames (up to `PREROLL_MAX_S`), and the harness steps
+    // outrun the frame workers: run until it is over, then time the clock.
+    for _ in 0..120 {
+        h.step();
+        if h.state().playback.preroll.is_none() {
+            break;
+        }
+    }
+    assert!(h.state().playback.preroll.is_none(), "the preroll did not end");
     for _ in 0..steps {
         h.step();
     }

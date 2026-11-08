@@ -53,6 +53,18 @@ impl Driver {
         }
     }
 
+    /// Runs playback until the preroll is over (it waits for the first frames, which the harness
+    /// steps outrun), so the meters get program audio and not the silence of a waiting transport.
+    fn until_playing(&mut self) {
+        for _ in 0..120 {
+            self.frames(1);
+            if self.harness.state().playback.preroll.is_none() {
+                return;
+            }
+        }
+        panic!("the preroll did not end");
+    }
+
     fn call(&mut self, method: &str, params: Value) -> Value {
         let (req, reply) = ControlRequest::new(method, params.clone());
         self.tx.send(req).unwrap();
@@ -478,6 +490,7 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         let mut d = Driver::demo_with_step_dt(Some(0.1));
         d.ok("ui.set", json!({"workspace": workspace}));
         d.ok("ui.playback", json!({"action": "play"}));
+        d.until_playing();
         d.frames(10);
         let prefix = if workspace == "Audio" { "mixer.Mix.meter" } else { "audioMeters.channel." };
         let playing = d.ok("ui.elements", json!({"prefix": prefix}));
