@@ -528,3 +528,26 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
 }
+
+/// #4383: View ▸ Zoom In and Zoom Out (`=` and `-`) keep a visible playhead where it is on every
+/// frame of the eased zoom, as in Premiere Pro.
+#[test]
+fn keyboard_zoom_keeps_the_playhead_still_on_screen() {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": 10 * 254_016_000_000_i64}));
+    d.frames(3);
+    let ph = d.app().session.playhead().seconds();
+    let x = |d: &mut Driver| {
+        let v = &d.app().ui.timeline;
+        (ph - v.scroll) * v.pps
+    };
+    let x0 = x(&mut d);
+    assert!((290.0..310.0).contains(&x0), "about 10 s at 50 points a second from 4 s: {x0}");
+    for (step, command) in ["view.zoomIn", "view.zoomOut", "view.zoomOut"].into_iter().enumerate() {
+        d.exec(command, json!({}));
+        for frame in 0..12 {
+            assert!((x(&mut d) - x0).abs() < 0.5, "{command} (step {step}), frame {frame}: the playhead moved to {}", x(&mut d));
+            d.frames(1);
+        }
+    }
+}

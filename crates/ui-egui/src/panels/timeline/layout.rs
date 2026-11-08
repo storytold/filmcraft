@@ -144,3 +144,14 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
 }
+
+/// View ▸ Zoom In and Zoom Out (`=` and `-`): zoom about the playhead and hold it at that screen
+/// x on every frame of the eased zoom, not only once it settles, replacing any wheel anchor (#4383).
+pub(crate) fn zoom_playhead(app: &mut FilmcraftApp, factor: f64) {
+    let ph = app.session.playhead().seconds();
+    let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
+    let v = &mut app.ui.timeline;
+    zoom_about(v, factor, ph, app.last_timeline_width, seconds);
+    let x = ((ph - v.target_scroll) * v.target_pps) as f32;
+    app.tl.zoom_anchor = app.tl.layout.as_ref().map(|l| (ph, l.content.min.x + x));
+}
