@@ -238,7 +238,7 @@ impl Driver {
             unit: egui::MouseWheelUnit::Point,
             source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, dy),
-            modifiers: egui::Modifiers::NONE,
+            modifiers: egui::Modifiers { command: true, ..egui::Modifiers::NONE },
             phase: egui::TouchPhase::Move,
         });
     }
