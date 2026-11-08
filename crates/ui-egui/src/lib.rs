@@ -277,6 +277,14 @@ pub struct FilmcraftApp {
     /// Control requests that need a fresh layout/response; processed only in a real UI pass.
     ui_requests: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
+    /// The last [`PASS_LOG`] UI passes, newest last: `[host time (s), logic + ui ms, GPU submit ms
+    /// (0 without a composite), frame due at the playhead, frame on the Program monitor]`
+    /// (`-1` for no sequence / no picture). `perf.stats` reports it as `passes`, so a dropped
+    /// frame can be traced to a late pass, a GPU stall or a picture that was not ready, which the
+    /// playback meter's totals cannot tell apart.
+    pub(crate) pass_log: std::collections::VecDeque<[f64; 5]>,
+    /// Duration of this pass's logic callback (ms), added to the UI callback's in `pass_log`.
+    pass_logic_ms: f64,
     pub(crate) synthetic: Vec<egui::Event>,
     /// One synthetic step handed to `raw_input_hook` but not yet consumed by a real UI pass.
     /// Hidden `run_logic` callbacks do not process raw input: the same step is offered again until
@@ -417,6 +425,8 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
+    /// A composite ran in this UI pass (cleared when the pass is logged).
+    pub submitted: bool,
     /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
     /// device, out of memory). The app then drops it and composites on the CPU.
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,

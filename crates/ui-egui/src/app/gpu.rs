@@ -24,7 +24,17 @@ impl FilmcraftApp {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.frames.set_uploader(Some(compositor.uploader()));
-                self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
+                self.gpu = Some(GpuState {
+                    render_state: rs,
+                    compositor,
+                    texture: None,
+                    last_key: None,
+                    size: (0, 0),
+                    last_ms: 0.0,
+                    submitted: false,
+                    broken,
+                    max_texture,
+                });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
         }
@@ -69,6 +79,7 @@ impl FilmcraftApp {
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        g.submitted = true;
         let mut renderer = g.render_state.renderer.write();
         let id = match g.texture {
             Some(id) => {
