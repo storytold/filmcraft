@@ -150,6 +150,18 @@ alternating runs against upstream `6909e461`, 2026-11-08), wall time for the who
 Peak RSS at 16 threads goes from 278 to 365 MB (1080p) and from 1031 to 1217 MB (2160p, +18%):
 every frame in flight holds its parse record and its final samples are kept in 64-row bands.
 
+With one frame worker per thread, the row wavefront for frames with several tiles and parse
+waits limited to what parsing reads (same machine, median of 5 alternating runs, 2026-11-08):
+
+| Fixture | Threads | Before (`6909e461`) | After | Speed-up | Peak RSS before / after |
+|---|---|---|---|---|---|
+| `perf_1080p_gop` | 4 | 95.7 fps | 185.2 fps | 1.94x | 148 / 236 MB |
+| `perf_1080p_gop` | 16 | 155.0 fps | 259.7 fps | 1.68x | 274 / 560 MB |
+| `perf_2160p_gop` | 4 | 23.6 fps | 47.1 fps | 2.00x | 512 / 798 MB |
+| `perf_2160p_gop` | 16 | 39.9 fps | 65.8 fps | 1.65x | 994 / 1353 MB |
+| `perf_1080p_gop_tiles` (4x2 tiles) | 16 | 186.3 fps | 237.2 fps | 1.27x | 328 / 617 MB |
+| SVT-AV1 2160p, 4x2 tiles (30 frames) | 16 | 57.1 fps | 70.8 fps | 1.24x | 1197 / 1502 MB |
+
 Known limitations of the frame threading (the output is the same in every case, only the
 overlap is smaller):
 
