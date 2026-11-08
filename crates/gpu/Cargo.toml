@@ -17,6 +17,8 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+# 16-bit planes as the bytes they are, for upload (Zlib OR Apache-2.0 OR MIT)
+bytemuck = "1"
 log = { workspace = true }
 pollster = "1"
 tempfile = "3"

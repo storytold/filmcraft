@@ -58,6 +58,43 @@ fn yuv16_frames_draw_the_same_however_they_reach_the_gpu() {
     assert_eq!(up.pooled(), pooled0 + 3);
 }
 
+/// Planes go up through a staging buffer whose rows are padded to the copy alignment: a 10-bit
+/// 4:2:2 frame whose rows are not a multiple of it draws as the CPU does, and a frame whose
+/// planes are shorter than its size (a hostile file) uploads without panicking.
+#[test]
+fn padded_and_short_planes_upload() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    // 1000 * 2 bytes per row: 7.8 copy alignments; chroma rows 500 * 2
+    let (w, h) = (1000u32, 6u32);
+    let (cw, ch) = (w / 2, h);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..cw * ch).map(|i| (200 + (i / cw) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..cw * ch).map(|i| (800 - (i % cw)) as u16).collect();
+    let frame = |y: Vec<u16>, cb: Vec<u16>, cr: Vec<u16>| {
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C422, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let plan = frame(y.clone(), cb.clone(), cr.clone());
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    let prep = prepare(&plan, Some(&up));
+    c.composite_prepared(&plan, Some(&prep));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes");
+    // short planes: the rows that exist go up, the rest stay zero
+    let short = frame(y[..y.len() / 2].to_vec(), cb[..7].to_vec(), Vec::new());
+    let prep = prepare(&short, Some(&up));
+    assert!(prep.layers[0].as_ref().is_some_and(Prepared::uploaded));
+    c.composite_prepared(&short, Some(&prep));
+    assert!(c.read_output().is_some());
+}
+
 #[test]
 fn yuv_code_range_uniforms() {
     let mut mismatches = Vec::new();
