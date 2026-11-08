@@ -78,6 +78,9 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
 /// [`export`] on the threads it is called from.
 fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
     settings.validate()?;
+    if settings.video_mode == super::VideoMode::CopyRequired {
+        return super::packet_copy::export(project, seq, settings, sources, progress);
+    }
     if stepped(settings.format) {
         let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
         loop {
@@ -247,5 +250,5 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
     // an image sequence writes numbered stills, never `settings.path` itself: report its first
     // still, the name `file.import` and `probe --image-sequence` take for the sequence (#4009)
     let path = if settings.format.is_image_sequence() && nframes > 0 { pcm::image_sequence_path(&settings.path, 0, nframes) } else { settings.path.clone() };
-    Ok(Report { path, frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    Ok(Report { copied_video_frames: 0, path, frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
 }

@@ -252,6 +252,9 @@ pub enum H264Pass {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExportSettings {
+    /// Strict compressed-video copying is opt-in; older presets retain normal rendering.
+    #[serde(default)]
+    pub video_mode: super::VideoMode,
     pub format: Format,
     pub path: String,
     /// Timeline range (default: In/Out if set, else the whole sequence).
@@ -423,6 +426,7 @@ impl ColorSignal {
 impl Default for ExportSettings {
     fn default() -> Self {
         Self {
+            video_mode: super::VideoMode::Render,
             format: Format::H264,
             path: String::new(),
             range: None,
@@ -516,6 +520,11 @@ impl ExportSettings {
 
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        // The engine writes sidecars before starting the export worker; reject
+        // here so strict copying cannot leave a sidecar for an ineligible job.
+        if self.video_mode == super::VideoMode::CopyRequired && self.caption_sidecar.is_some() {
+            return Err(super::packet_copy::rejected("conversion", "caption sidecars are unsupported in strict copy mode"));
+        }
         if let Some(range) = self.range {
             validate_range(range)?;
         }

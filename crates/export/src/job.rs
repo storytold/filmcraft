@@ -238,6 +238,9 @@ fn pick_encoder(factories: &[EncoderFactory], format: Format, w: u32, h: u32, ra
 impl Exporter {
     /// Set up an export (encoder, output size, colour signalling); sets `progress.total`.
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
+        if settings.video_mode == crate::VideoMode::CopyRequired {
+            return Err(crate::packet_copy::rejected("host", "use native blocking export for packet copying"));
+        }
         timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
     }
 
@@ -536,6 +539,7 @@ impl Exporter {
             progress.set_status(format!("Done in {secs:.1}s"));
         }
         Ok(Step::Done(Report {
+            copied_video_frames: 0,
             path: self.settings.path.clone(),
             frames: nframes,
             seconds: secs,

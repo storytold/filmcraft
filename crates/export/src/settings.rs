@@ -8,6 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ExportSettings, Format};
 
+/// Video export policy. CopyRequired never silently renders an ineligible edit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoMode {
+    #[default]
+    Render,
+    /// Native MP4 H.264 whole-file hard cuts, without audio, effects or conversions.
+    CopyRequired,
+}
+
 /// How the sequence picture is fitted into a different output frame size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

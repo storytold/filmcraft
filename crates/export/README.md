@@ -50,3 +50,57 @@ Run all export unit tests with `cargo test -p filmcraft-export --lib`.
 `filmcraft-ui-egui`'s `export_ui::gif_export_exposes_binary_alpha_option` uses the control
 channel to select GIF, toggle alpha and inspect the explanatory label. Set
 `FILMCRAFT_UI_SNAPSHOT_DIR` to render its Export-mode screenshot.
+
+## Strict H.264 packet-copy joins (#4516)
+
+Native CLI/API callers can opt into `ExportSettings.videoMode = "copyRequired"`.
+The default is `"render"`, including old presets. This is compressed-sample copying,
+not a lossless encoder setting or a decoded-frame fast path: the source AVC sample
+bytes, codec configuration and per-sample composition offsets go to the MP4 writer
+without calling a source decoder, compositor or video encoder.
+
+```
+filmcraft-cli --project edit.fcproj export joined.mp4 --format h264 --no-audio \
+  --settings '{"videoMode":"copyRequired"}'
+```
+
+The first supported case is **video-only MP4, whole-file hard cuts** of compatible
+native `avc1` files: same SPS/PPS/configuration and video parameters, timescale and
+presentation origin; CFR at the sequence rate and size; limited-range BT.709,
+progressive, square pixels, identity track matrix and no display crop. Whole-file
+B-frame sources are supported when their constant decode grid and reordered
+presentation grid cover exactly the complete clip; their composition offsets and
+single initial edit are preserved. No partial-GOP smart rendering is attempted.
+
+Gaps/overlaps, transitions, nested/generator/subclip media, proxy attachments,
+interpretation overrides, retiming/reverse/frame holds, modified clip effects or
+motion, output scaling/rate/color changes and graphics/caption overlays reject.
+Frame-accurate trims never silently snap to a keyframe. Parameter sets changed
+in-band, fragmented inputs, unsupported edit lists, non-CFR timestamps, rotation,
+non-BT.709/unknown color signaling, or differing codec configurations also reject.
+These restrictions are deliberately conservative, not claims that every rejected
+case is inherently impossible to remux. Encoder quality/profile/bitrate controls do
+not rewrite copied samples; the source configuration is retained. Explicit intra-only
+or level conversion requests reject.
+
+`ExportError::CopyIneligible { code, detail }` carries a stable reason code. CLI/engine
+errors retain `copyRequired[code]: detail`; this mode **never** falls back to rendering.
+Successful reports include `copied_video_frames`; ordinary rendered exports report 0.
+
+All source descriptions, sample bounds, AVCC lengths, random-access starts, exact
+sample/display timestamps, codec compatibility and edit coverage are checked before
+creating output. Allocations/file counts are bounded; packets are read on demand.
+The destination must be a new file (existing paths, including source aliases and
+hardlinks, are not truncated). Sources must remain unchanged during export. Cancellation
+or an I/O error during writing can leave an incomplete new destination for diagnosis;
+remove that owned partial file before retrying. In-memory/pre-reserved-file outputs
+and the stepped `Exporter` API are not supported in this initial native path; use
+blocking `export` (the native engine runs it on its normal background job worker).
+Audio stays a separate export/mux concern for this MVP.
+
+Tests generate sources using Filmcraft's own encoder: bit-identical copied payloads,
+exact rational 24 and 30000/1001 fps timing, intra-only and reordered B-frame files,
+distinct compatible sources, own/optional FFmpeg decoded pictures, preserved input
+files/hardlinks, and strict rejection/cancellation. Malformed AVC length/header
+mutations run under `catch_unwind`; no media fixtures or external runtime codec
+dependency are added. Run `cargo test -p filmcraft-export packet_copy`.
