@@ -256,8 +256,11 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 p.insert("path".into(), json!(path));
                 let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+                // effects the LUT cannot hold (vignette, sharpen, other effects on the clip) are named
+                let left_out: Vec<&str> = r.as_ref().ok().and_then(|v| v["leftOut"].as_array()).into_iter().flatten().filter_map(Value::as_str).collect();
                 app.ui.status = match &r {
-                    Ok(_) => tlf!("Exported {path}", path),
+                    Ok(_) if left_out.is_empty() => tlf!("Exported {path}", path),
+                    Ok(_) => tlf!("Exported {path}; not in the LUT: {effects}", path, effects = left_out.join(", ")),
                     Err(e) => e.clone(),
                 };
                 r

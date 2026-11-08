@@ -607,3 +607,53 @@ fn export_cube_dialog_honours_an_explicit_clip_without_a_selection() {
     assert!(std::fs::read_to_string(&path).unwrap().contains("LUT_3D_SIZE 9"));
     std::fs::remove_file(&path).unwrap();
 }
+
+/// The panel menu's Export .cube… follows the clip the Lumetri panel shows (the first selected
+/// video clip), not another selected clip with Lumetri, and the status names what the LUT leaves out.
+#[test]
+fn panel_export_cube_uses_the_shown_clip_and_names_what_is_left_out() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["video"][0]["items"].as_array().unwrap().clone();
+    let (a, b) = (items[0]["clip"].as_u64().unwrap(), items[1]["clip"].as_u64().unwrap());
+    d.exec("effects.apply", json!({"clips": [a, b], "effect": "lumetri"}));
+    d.exec("timeline.select", json!({"clips": [a, b]}));
+    let shown = d.harness.state().session.state.selection[0].0;
+    let other = if shown == a { b } else { a };
+    let toggle = |d: &mut Driver, clip: u64| {
+        let idx = lumetri_index(d, clip);
+        d.exec("effects.toggleEnabled", json!({"clip": clip, "index": idx}));
+    };
+    // the shown clip's Lumetri is off, the other selected clip's is on: nothing to export
+    toggle(&mut d, shown);
+    d.frames(3);
+    d.click("panel.menu.LumetriColor");
+    let entry = d.ok("ui.elements", json!({"prefix": "panel.menu.LumetriColor.exportCube"}));
+    assert_eq!(entry[0]["enabled"], json!(false), "{entry}");
+    // now the shown clip has an enabled Lumetri with a vignette, the other clip has none enabled
+    toggle(&mut d, shown);
+    toggle(&mut d, other);
+    d.exec("effects.setParam", json!({"clip": shown, "effect": "lumetri", "param": "vignette_amount", "value": -2.0}));
+    let path = std::env::temp_dir().join(format!("filmcraft-shown-grade-{}.cube", std::process::id()));
+    let answer = path.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    d.frames(3);
+    // the open menu follows the change
+    let entry = d.ok("ui.elements", json!({"prefix": "panel.menu.LumetriColor.exportCube"}));
+    assert_eq!(entry[0]["enabled"], json!(true), "{entry}");
+    d.click("panel.menu.LumetriColor.exportCube");
+    let status = d.harness.state().ui.status.clone();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("LUT_3D_SIZE"), "{status}");
+    std::fs::remove_file(&path).unwrap();
+    assert!(status.contains(&*path.to_string_lossy()) && status.contains("Vignette"), "{status}");
+}
+
+/// The index of the Lumetri Color effect on `clip`.
+fn lumetri_index(d: &mut Driver, clip: u64) -> usize {
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["video"][0]["items"].as_array().unwrap().clone();
+    let it = items.into_iter().find(|i| i["clip"] == clip).unwrap();
+    it["effects"].as_array().unwrap().iter().position(|e| e["effect"] == "lumetri").unwrap()
+}
