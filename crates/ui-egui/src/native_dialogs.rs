@@ -40,7 +40,7 @@ use crate::{FilmcraftApp, HostHooks, RelinkHint};
 #[derive(Clone, Debug)]
 pub enum FileDialog {
     /// Choose one or more files (File ▸ Import; one file where only the first is used).
-    OpenFiles { exts: Vec<String> },
+    OpenFiles { exts: Vec<String>, at: Option<String> },
     /// Choose one file.
     OpenFile { filter: String, exts: Vec<String> },
     /// Choose a FilmCraft project to open.
@@ -92,7 +92,11 @@ fn strings(v: &[&str]) -> Vec<String> {
 
 impl FileDialog {
     pub fn open_files(exts: &[&str]) -> Self {
-        Self::OpenFiles { exts: strings(exts) }
+        Self::OpenFiles { exts: strings(exts), at: None }
+    }
+    /// Prompts the user to choose one or more files matching extensions, optionally starting at directory `at`.
+    pub fn open_files_at(exts: &[&str], at: Option<String>) -> Self {
+        Self::OpenFiles { exts: strings(exts), at }
     }
     pub fn open_file(filter: &str, exts: &[&str]) -> Self {
         Self::OpenFile { filter: filter.to_string(), exts: strings(exts) }
@@ -121,13 +125,13 @@ impl FileDialog {
     pub fn available(&self, hooks: &HostHooks) -> bool {
         hooks.run_dialog.is_some()
             || match self {
-                Self::OpenFiles { .. } => hooks.pick_files.is_some(),
+                Self::OpenFiles { .. } => hooks.pick_files.is_some() || hooks.pick_files_at.is_some(),
                 Self::OpenFile { .. } => hooks.pick_open_file.is_some(),
                 Self::OpenProject => hooks.pick_open_project.is_some(),
                 Self::SaveProject { .. } => hooks.pick_save.is_some(),
                 Self::SaveAs { .. } => hooks.pick_save_as.is_some(),
                 Self::Folder { at } => hooks.pick_folder.is_some() || (at.is_some() && hooks.pick_folder_at.is_some()),
-                Self::Relink { .. } => hooks.pick_file_for_relink.is_some() || hooks.pick_files.is_some(),
+                Self::Relink { .. } => hooks.pick_file_for_relink.is_some() || hooks.pick_files.is_some() || hooks.pick_files_at.is_some(),
             }
     }
 
@@ -135,7 +139,11 @@ impl FileDialog {
     fn run_now(self, hooks: &mut HostHooks) -> Vec<String> {
         let one = |p: Option<String>| p.into_iter().collect::<Vec<_>>();
         match self {
-            Self::OpenFiles { exts } => hooks.pick_files.as_mut().map(|f| f(&refs(&exts))).unwrap_or_default(),
+            Self::OpenFiles { exts, at } => match (at, hooks.pick_files_at.as_mut()) {
+                (Some(dir), Some(f)) => f(&refs(&exts), Some(&dir)),
+                (_, Some(f)) => f(&refs(&exts), None),
+                _ => hooks.pick_files.as_mut().map(|f| f(&refs(&exts))).unwrap_or_default(),
+            },
             Self::OpenFile { filter, exts } => one(hooks.pick_open_file.as_mut().and_then(|f| f(&filter, &refs(&exts)))),
             Self::OpenProject => one(hooks.pick_open_project.as_mut().and_then(|f| f())),
             Self::SaveProject { name } => one(hooks.pick_save.as_mut().and_then(|f| f(&name))),

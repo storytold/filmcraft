@@ -62,6 +62,36 @@ pub static VOICES: &[VoiceSpec] = &[
         formant_scale: 1.0,
         breath: 0.03,
     },
+    VoiceSpec {
+        info: VoiceInfo {
+            id: "basic-russian-female",
+            name: "Basic Russian Female",
+            language: "ru-RU",
+            gender: Gender::Female,
+            engine: "basic",
+            description: "Built-in Russian voice. No download; robotic.",
+            license: LICENSE,
+            installed: true,
+        },
+        f0: 215.0,
+        formant_scale: 1.15,
+        breath: 0.05,
+    },
+    VoiceSpec {
+        info: VoiceInfo {
+            id: "basic-russian-male",
+            name: "Basic Russian Male",
+            language: "ru-RU",
+            gender: Gender::Male,
+            engine: "basic",
+            description: "Built-in Russian voice. No download; robotic.",
+            license: LICENSE,
+            installed: true,
+        },
+        f0: 115.0,
+        formant_scale: 1.0,
+        breath: 0.03,
+    },
 ];
 
 /// A built-in voice ready to speak.
@@ -80,6 +110,7 @@ impl Voice for FormantVoice {
         self.spec.info
     }
 
+    /// Synthesizes speech from script text using rule-based formant acoustic models.
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError> {
         check_text(text)?;
         params.check()?;
@@ -95,7 +126,7 @@ impl Voice for FormantVoice {
                     plan.push(Piece::Pause(*millis));
                 }
                 Segment::Speech(s) => {
-                    let ph = phones(s);
+                    let ph = phones(s, self.spec.info.language);
                     spoken |= ph.iter().any(|p| p.kind != Kind::Silence);
                     total_ms += ph.iter().map(|p| f64::from(p.dur_ms)).sum::<f64>() / params.pace;
                     plan.push(Piece::Speech(ph));
@@ -225,32 +256,148 @@ fn diphthong(out: &mut Vec<Phone>, a: [f32; 3], b: [f32; 3], stressed: bool) {
 }
 
 const DIGITS: [&str; 10] = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+const RU_DIGITS: [&str; 10] = ["ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"];
 
 fn is_vowel(c: char) -> bool {
     matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')
 }
 
+/// Returns true when `c` falls within the Unicode Cyrillic blocks.
+fn is_cyrillic(c: char) -> bool {
+    matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0500}'..='\u{052F}')
+}
+
+// Russian formant vowel targets (male average F1, F2, F3)
+const RU_A: [f32; 3] = [700.0, 1220.0, 2450.0];
+const RU_O: [f32; 3] = [530.0, 950.0, 2450.0];
+const RU_U: [f32; 3] = [340.0, 780.0, 2300.0];
+const RU_E: [f32; 3] = [500.0, 1850.0, 2500.0];
+const RU_Y: [f32; 3] = [360.0, 1550.0, 2400.0];
+const RU_I: [f32; 3] = [280.0, 2250.0, 3000.0];
+const RU_J: [f32; 3] = [280.0, 2200.0, 2900.0];
+
+/// Generates rule-based formant acoustic phonemes for a Russian Cyrillic word.
+fn speak_russian_word(word: &str, out: &mut Vec<Phone>) {
+    let chars: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+    let n = chars.len();
+    if n == 0 {
+        return;
+    }
+    for i in 0..n {
+        let ch = chars[i];
+        let next = chars.get(i + 1).copied();
+        let soft = next.is_some_and(|c| matches!(c, 'е' | 'ё' | 'и' | 'ю' | 'я' | 'ь'));
+        let is_last = i + 1 == n;
+        let next_unvoiced = next.is_some_and(|c| matches!(c, 'п' | 'ф' | 'к' | 'т' | 'ш' | 'с' | 'х' | 'ц' | 'ч' | 'щ'));
+        let devoice = is_last || next_unvoiced;
+        match ch {
+            'а' => out.push(vowel(RU_A, 85.0)),
+            'о' => out.push(vowel(RU_O, 85.0)),
+            'у' => out.push(vowel(RU_U, 85.0)),
+            'э' => out.push(vowel(RU_E, 80.0)),
+            'ы' => out.push(vowel(RU_Y, 80.0)),
+            'и' => out.push(vowel(RU_I, 80.0)),
+            'я' => {
+                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                if prev.is_none() || prev.is_some_and(|p| matches!(p, 'а' | 'о' | 'у' | 'э' | 'ы' | 'и' | 'я' | 'ё' | 'ю' | 'е' | 'ь' | 'ъ')) {
+                    out.push(glide(RU_J));
+                }
+                out.push(vowel(RU_A, 80.0));
+            }
+            'ё' => {
+                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                if prev.is_none() || prev.is_some_and(|p| matches!(p, 'а' | 'о' | 'у' | 'э' | 'ы' | 'и' | 'я' | 'ё' | 'ю' | 'е' | 'ь' | 'ъ')) {
+                    out.push(glide(RU_J));
+                }
+                out.push(vowel(RU_O, 80.0));
+            }
+            'ю' => {
+                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                if prev.is_none() || prev.is_some_and(|p| matches!(p, 'а' | 'о' | 'у' | 'э' | 'ы' | 'и' | 'я' | 'ё' | 'ю' | 'е' | 'ь' | 'ъ')) {
+                    out.push(glide(RU_J));
+                }
+                out.push(vowel(RU_U, 80.0));
+            }
+            'е' => {
+                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                if prev.is_none() || prev.is_some_and(|p| matches!(p, 'а' | 'о' | 'у' | 'э' | 'ы' | 'и' | 'я' | 'ё' | 'ю' | 'е' | 'ь' | 'ъ')) {
+                    out.push(glide(RU_J));
+                }
+                out.push(vowel(RU_E, 80.0));
+            }
+            'б' => stop(out, 900.0, !devoice),
+            'п' => stop(out, 900.0, false),
+            'в' => out.push(fricative(3500.0, 1500.0, 0.45, !devoice, 60.0)),
+            'ф' => out.push(fricative(3500.0, 1500.0, 0.55, false, 60.0)),
+            'г' => stop(out, 2000.0, !devoice),
+            'к' => stop(out, 2000.0, false),
+            'д' => stop(out, 3500.0, !devoice),
+            'т' => stop(out, 3500.0, false),
+            'ж' => out.push(fricative(2500.0, 1500.0, 0.65, !devoice, 70.0)),
+            'ш' => out.push(fricative(2600.0, 1600.0, 0.75, false, 75.0)),
+            'щ' => out.push(fricative(3600.0, 1800.0, 0.85, false, 95.0)),
+            'з' => out.push(fricative(5500.0, 2000.0, 0.65, !devoice, 65.0)),
+            'с' => out.push(fricative(6000.0, 2000.0, 0.8, false, 70.0)),
+            'х' => out.push(fricative(1800.0, 1200.0, 0.65, false, 65.0)),
+            'ц' => {
+                stop(out, 3500.0, false);
+                out.push(fricative(6000.0, 2000.0, 0.8, false, 45.0));
+            }
+            'ч' => {
+                stop(out, 3500.0, false);
+                out.push(fricative(3600.0, 1800.0, 0.8, false, 55.0));
+            }
+            'м' => out.push(nasal([280.0, 1100.0, 2400.0])),
+            'н' => out.push(nasal([280.0, 1500.0, 2400.0])),
+            'р' => {
+                out.push(Phone { voice: 0.7, ..base(Kind::Glide, [450.0, 1300.0, 1800.0], 50.0) });
+            }
+            'л' => {
+                let f = if soft { [300.0, 1800.0, 2700.0] } else { [350.0, 1050.0, 2600.0] };
+                out.push(Phone { voice: 0.7, ..base(Kind::Glide, f, 60.0) });
+            }
+            'й' => out.push(glide(RU_J)),
+            'ъ' | 'ь' => {}
+            _ => {}
+        }
+    }
+}
+
+/// Synthesizes acoustic phone sequence for a word, detecting Cyrillic text or Russian language setting.
+fn speak_any_word(word: &str, lang: &str, out: &mut Vec<Phone>) {
+    if word.chars().any(is_cyrillic) || lang == "ru-RU" {
+        speak_russian_word(word, out);
+    } else {
+        speak_word(word, out);
+    }
+}
+
 /// Phones for a piece of speech (no pause markers).
-fn phones(text: &str) -> Vec<Phone> {
+fn phones(text: &str, lang: &str) -> Vec<Phone> {
     let mut out = Vec::new();
     let mut word = String::new();
     let mut question_from = 0usize;
     for c in text.chars().chain(std::iter::once(' ')) {
-        let c = c.to_ascii_lowercase();
-        if c.is_ascii_alphabetic() || c == '\'' {
+        if c.is_alphabetic() || c == '\'' {
             if c != '\'' {
                 word.push(c);
             }
             continue;
         }
         if !word.is_empty() {
-            speak_word(&word, &mut out);
+            speak_any_word(&word, lang, &mut out);
             word.clear();
         }
         match c {
             '0'..='9' => {
-                let d = DIGITS.get(c as usize - '0' as usize).copied().unwrap_or("");
-                speak_word(d, &mut out);
+                let idx = (c as u32).saturating_sub('0' as u32) as usize;
+                if lang == "ru-RU" {
+                    let d = RU_DIGITS.get(idx).copied().unwrap_or("");
+                    speak_russian_word(d, &mut out);
+                } else {
+                    let d = DIGITS.get(idx).copied().unwrap_or("");
+                    speak_word(d, &mut out);
+                }
                 out.push(silence(30.0));
             }
             ',' | ';' | ':' | '-' | '(' | ')' => out.push(silence(170.0)),
@@ -801,6 +948,21 @@ mod tests {
         assert!(matches!(v.synthesize("hi", &Params { pace: f64::NAN, ..Default::default() }), Err(TtsError::Invalid(_))));
         // 64 KB of letters would be over the 30-minute limit: refused before rendering
         assert_eq!(v.synthesize(&"a ".repeat(crate::MAX_TEXT_BYTES / 2), &Params { pace: 0.5, ..Default::default() }), Err(TtsError::AudioTooLong));
+    }
+
+    #[test]
+    fn speaks_russian_deterministically() {
+        let text = "Привет, это FilmCraft! Как дела? 1 2 3.";
+        let a = say("basic-russian-female", text, Params::default());
+        let b = say("basic-russian-female", text, Params::default());
+        assert_eq!(a, b);
+        assert_eq!(a.sample_rate, SAMPLE_RATE);
+        assert!(a.seconds() > 1.0, "{}", a.seconds());
+        assert!(a.samples.iter().all(|s| s.is_finite() && s.abs() <= 0.8001));
+
+        let m = say("basic-russian-male", text, Params::default());
+        assert_eq!(m.sample_rate, SAMPLE_RATE);
+        assert!(m.seconds() > 1.0);
     }
 
     #[test]

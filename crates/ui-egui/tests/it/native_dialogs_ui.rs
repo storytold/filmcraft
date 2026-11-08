@@ -130,7 +130,7 @@ fn the_app_keeps_running_while_the_import_dialog_is_open_and_imports_when_it_ans
     assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.import"})), json!({"dialog": "open"}));
     assert!(d.app().native_dialog_open());
     let (dialog, answer) = d.asked();
-    assert!(matches!(&dialog, FileDialog::OpenFiles { exts } if exts.iter().any(|e| e == "wav")), "{dialog:?}");
+    assert!(matches!(&dialog, FileDialog::OpenFiles { exts, .. } if exts.iter().any(|e| e == "wav")), "{dialog:?}");
     // the frame loop runs and requests are answered while the dialog is open
     for _ in 0..5 {
         d.ok("ui.inspect", json!({}));
@@ -143,6 +143,26 @@ fn the_app_keeps_running_while_the_import_dialog_is_open_and_imports_when_it_ans
     assert!(!d.app().native_dialog_open());
     assert_eq!(d.items(), before + 1);
     assert!(d.app().session.project.items.values().any(|i| i.name == "tone.wav"));
+}
+
+#[test]
+fn import_dialog_uses_and_updates_last_import_dir() {
+    let mut d = Driver::new(true);
+    let initial_dir = "/media/test_folder";
+    d.app().session.prefs.media.last_import_dir = initial_dir.into();
+
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    let (dialog, answer) = d.asked();
+    match dialog {
+        FileDialog::OpenFiles { at, .. } => assert_eq!(at, Some(initial_dir.to_string())),
+        other => panic!("unexpected dialog: {other:?}"),
+    }
+
+    let imported = wav();
+    let parent = imported.parent().unwrap().to_string_lossy().into_owned();
+    answer.send(vec![imported.to_string_lossy().into_owned()]).unwrap();
+    d.frames(2);
+    assert_eq!(d.app().session.prefs.media.last_import_dir, parent);
 }
 
 #[test]

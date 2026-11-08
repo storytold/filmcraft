@@ -15,6 +15,10 @@ pub mod formant;
 pub mod kokoro;
 #[cfg(feature = "kokoro")]
 pub mod neural;
+#[cfg(feature = "kokoro")]
+pub mod neural_ru;
+#[cfg(feature = "piper")]
+pub mod piper;
 pub mod script;
 
 use serde::Serialize;
@@ -122,14 +126,22 @@ pub trait Voice: Send + Sync {
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError>;
 }
 
-/// Languages offered (English only for now).
-pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)")];
+/// Languages offered.
+pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)"), ("ru-RU", "Russian (Русский)")];
 
 /// Every voice FilmCraft knows: the built-in voices, then the neural voices (installed when their
 /// package is downloaded into `models_dir`).
 pub fn voices_in(models_dir: Option<&std::path::Path>) -> Vec<VoiceInfo> {
-    let installed = models_dir.is_some_and(catalog::installed) && cfg!(feature = "kokoro");
-    formant::VOICES.iter().map(|v| v.info).chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed, ..v.info })).collect()
+    let kokoro_installed = models_dir.is_some_and(catalog::installed) && cfg!(feature = "kokoro");
+    let kokoro_ru_installed = models_dir.is_some_and(catalog::kokoro_ru_installed) && cfg!(feature = "kokoro");
+    let piper_installed = models_dir.is_some_and(catalog::piper_ru_installed) && cfg!(feature = "piper");
+    formant::VOICES
+        .iter()
+        .map(|v| v.info)
+        .chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed: kokoro_installed, ..v.info }))
+        .chain(catalog::KOKORO_RU_VOICES.iter().map(|v| VoiceInfo { installed: kokoro_ru_installed, ..v.info }))
+        .chain(catalog::PIPER_RU_VOICES.iter().map(|v| VoiceInfo { installed: piper_installed, ..v.info }))
+        .collect()
 }
 
 /// The built-in voices (always available).
@@ -146,15 +158,39 @@ pub fn voice(id: &str) -> Result<Box<dyn Voice>, TtsError> {
         .ok_or_else(|| TtsError::UnknownVoice(id.to_string()))
 }
 
-/// The voice `id`: built in, or (feature `kokoro`) a neural voice from the package in `models_dir`.
+/// The voice `id`: built in, or (feature `kokoro` / `piper`) a neural voice from the package in `models_dir`.
 pub fn voice_in(id: &str, models_dir: Option<&std::path::Path>) -> Result<Box<dyn Voice>, TtsError> {
-    if catalog::find(id).is_some() {
+    if catalog::VOICES.iter().any(|v| v.info.id == id) {
         #[cfg(feature = "kokoro")]
         {
             let dir = models_dir.ok_or(TtsError::NotInstalled)?;
             return neural::load(id, dir).map(|v| Box::new(v) as Box<dyn Voice>);
         }
         #[cfg(not(feature = "kokoro"))]
+        {
+            let _ = models_dir;
+            return Err(TtsError::Unavailable);
+        }
+    }
+    if catalog::KOKORO_RU_VOICES.iter().any(|v| v.info.id == id) {
+        #[cfg(feature = "kokoro")]
+        {
+            let dir = models_dir.ok_or(TtsError::NotInstalled)?;
+            return neural_ru::load(id, dir).map(|v| Box::new(v) as Box<dyn Voice>);
+        }
+        #[cfg(not(feature = "kokoro"))]
+        {
+            let _ = models_dir;
+            return Err(TtsError::Unavailable);
+        }
+    }
+    if catalog::PIPER_RU_VOICES.iter().any(|v| v.info.id == id) {
+        #[cfg(feature = "piper")]
+        {
+            let dir = models_dir.ok_or(TtsError::NotInstalled)?;
+            return piper::load(id, dir).map(|v| Box::new(v) as Box<dyn Voice>);
+        }
+        #[cfg(not(feature = "piper"))]
         {
             let _ = models_dir;
             return Err(TtsError::Unavailable);
@@ -168,8 +204,21 @@ pub fn default_voice_id() -> &'static str {
     formant::VOICES.first().map(|v| v.info.id).unwrap_or("basic-female")
 }
 
+/// The default voice for a given language.
+pub fn default_voice_for_language(lang: &str) -> &'static str {
+    formant::VOICES.iter().find(|v| v.info.language == lang).map(|v| v.info.id).unwrap_or_else(default_voice_id)
+}
+
 /// The sentence "Hear this voice" plays.
 pub const SAMPLE_SENTENCE: &str = "Hello! This is how I sound when I read your script.";
+
+/// Sample sentence for a given language.
+pub fn sample_sentence_for_language(lang: &str) -> &'static str {
+    match lang {
+        "ru-RU" => "Привет! Это пример текста для озвучивания вашего видео.",
+        _ => SAMPLE_SENTENCE,
+    }
+}
 
 /// Validate a script before synthesis: length, and that it says something.
 pub fn check_text(text: &str) -> Result<(), TtsError> {

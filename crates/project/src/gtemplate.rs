@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use crate::effect::EffectInstance;
 use crate::graphic::{self, new_shape_layer, new_text_layer};
 use crate::graphic_design::{GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode};
-use crate::keyframe::{Param, ParamValue};
+use crate::keyframe::{Interpolation, Keyframe, Param, ParamValue};
 
 pub const TEMPLATE_FORMAT: &str = "filmcraft.graphicsTemplate";
 pub const TEMPLATE_VERSION: u32 = 1;
@@ -597,6 +597,36 @@ pub fn builtin_templates() -> Vec<GraphicsTemplate> {
             ],
         ));
     }
+    // Burning title with dynamic Perlin noise and orange glow edge.
+    {
+        let mut title = text(1, "Title", "BURNING", (960.0, 540.0), 96.0, "Regular");
+        set(&mut title, "font", ParamValue::Text("Stalinist One".into()));
+        set(&mut title, "align", ParamValue::Choice(1));
+        set(&mut title, "fill_color", rgb(0xffffff));
+        set(&mut title, "burn", ParamValue::Bool(true));
+        set(&mut title, "burn_progress", ParamValue::Float(0.0));
+        set(&mut title, "burn_direction", ParamValue::Choice(0));
+        set(&mut title, "burn_glow", ParamValue::Bool(true));
+        set(&mut title, "burn_glow_color", ParamValue::Color([1.0, 0.42, 0.05, 1.0]));
+        v.push(builtin(
+            "title-burning",
+            "Title – Burning",
+            "Titles",
+            "Burning title with dynamic Perlin noise and bright orange burn edge.",
+            5,
+            vec![title],
+            vec![
+                ctl("title", "Title", 1, "text"),
+                ctl("font", "Font", 1, "font"),
+                slider("title_size", "Title Size", 1, "size", 40.0, 240.0),
+                ctl("title_color", "Title Color", 1, "fill_color"),
+                slider("burn_progress", "Burn Progress", 1, "burn_progress", 0.0, 100.0),
+                ctl("burn_direction", "Burn Direction", 1, "burn_direction"),
+                ctl("burn_glow", "Orange Burn Glow", 1, "burn_glow"),
+                ctl("position", "Position", 1, "position"),
+            ],
+        ));
+    }
     // End credits that roll from below the frame to above it.
     {
         let mut heading = text(1, "Heading", "CREDITS", (960.0, 160.0), 72.0, "Bold");
@@ -702,6 +732,52 @@ pub fn builtin_templates() -> Vec<GraphicsTemplate> {
         );
         t.graphic.roll = Roll { mode: RollMode::CrawlLeft, start_off_screen: true, end_off_screen: true, ..Default::default() };
         v.push(t);
+    }
+    // Meme: "We'll be right back" retro TV bumper (freeze frame, deep fry, badge & animated text).
+    {
+        let mut badge = shape(2, "Badge", 1, (180.0, 930.0), (64.0, 64.0), 0xfacc15);
+        set(&mut badge, "stroke", ParamValue::Bool(true));
+        set(&mut badge, "stroke_color", rgb(0x000000));
+        set(&mut badge, "stroke_width", ParamValue::Float(6.0));
+        set(&mut badge, "shadow", ParamValue::Bool(true));
+        set(&mut badge, "shadow_distance", ParamValue::Float(4.0));
+        set(&mut badge, "shadow_blur", ParamValue::Float(12.0));
+        set(&mut badge, "shadow_opacity", ParamValue::Float(80.0));
+        pin(&mut badge, 1, [true, false, false, false], [-76.0, 0.0, 0.0, 0.0]);
+
+        let mut text_layer = text(1, "Text", "We'll be right back", (260.0, 930.0), 64.0, "Bold");
+        set(&mut text_layer, "fill_color", rgb(0xfacc15));
+        set(&mut text_layer, "stroke", ParamValue::Bool(true));
+        set(&mut text_layer, "stroke_color", rgb(0x000000));
+        set(&mut text_layer, "stroke_width", ParamValue::Float(8.0));
+        set(&mut text_layer, "shadow", ParamValue::Bool(true));
+        set(&mut text_layer, "shadow_distance", ParamValue::Float(6.0));
+        set(&mut text_layer, "shadow_blur", ParamValue::Float(16.0));
+        set(&mut text_layer, "shadow_opacity", ParamValue::Float(85.0));
+
+        // Animate position: slide up from +140 px with EaseOut over 0.3 s
+        let mut k0 = Keyframe::new(Tick(0), ParamValue::Vec2(Vec2::new(260.0, 1070.0)));
+        k0.interp = Interpolation::EaseOut;
+        let k1 = Keyframe::new(Tick(TICKS_PER_SECOND * 3 / 10), ParamValue::Vec2(Vec2::new(260.0, 930.0)));
+        let mut pos_param = Param::new(ParamValue::Vec2(Vec2::new(260.0, 930.0)));
+        pos_param.keyframes = vec![k0, k1];
+        text_layer.params.insert("position".into(), pos_param);
+
+        v.push(builtin(
+            "bumper-right-back",
+            "Meme – We'll Be Right Back",
+            "Memes",
+            "Retro \"We'll be right back\" bumper animation with freeze and fry.",
+            3,
+            vec![badge, text_layer],
+            vec![
+                ctl("text", "Text", 1, "text"),
+                ctl("text_color", "Text Color", 1, "fill_color"),
+                ctl("badge_color", "Badge Color", 2, "fill_color"),
+                ctl("font", "Font", 1, "font"),
+                slider("size", "Font Size", 1, "size", 24.0, 140.0),
+            ],
+        ));
     }
     v
 }

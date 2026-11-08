@@ -137,3 +137,25 @@ fn a_resolution_choice_and_clear_guides_close_each_monitors_wrench() {
         assert!(!has(&mut d, &format!("{monitor}.settings.showGuides")), "{monitor}: Clear Guides closes the menu");
     }
 }
+
+#[test]
+fn playback_speed_dropdown_plays_at_half_speed() {
+    let mut d = Driver::demo();
+    // Program monitor
+    d.ok("ui.click", json!({"id": "program.speed"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "program.speed.0.5×"}));
+    d.frames(2);
+    assert!(d.harness.state().playback.playing);
+    assert_eq!(d.harness.state().playback.speed, 0.5);
+
+    // Source monitor
+    d.ok("ui.menu.invoke", json!({"id": "source.open", "params": {"item": 5}}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "source.speed"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "source.speed.0.5×"}));
+    d.frames(2);
+    assert!(d.harness.state().source_playback.clock.playing);
+    assert_eq!(d.harness.state().source_playback.clock.speed, 0.5);
+}

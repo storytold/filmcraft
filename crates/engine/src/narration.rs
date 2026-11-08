@@ -127,24 +127,45 @@ fn cache_put(c: &SynthCache, key: String, a: Arc<tts::Audio>) {
     c.drain(..extra);
 }
 
-fn package_json() -> Value {
+/// Serializes neural voice package metadata into JSON.
+fn package_json(pkg: Option<&str>) -> Value {
     let dir = crate::transcript::models_dir();
-    json!({
-        "id": tts::catalog::PACKAGE_ID,
-        "name": tts::catalog::PACKAGE_NAME,
-        "installed": dir.as_deref().is_some_and(tts::catalog::installed),
-        "size": tts::catalog::size(),
-        "missingBytes": dir.as_deref().map_or(tts::catalog::size(), tts::catalog::missing_bytes),
-        "license": tts::catalog::LICENSE,
-        "source": tts::catalog::SOURCE,
-        "available": cfg!(feature = "neural-voices"),
-    })
+    let is_piper = pkg == Some(tts::catalog::PIPER_RU_PACKAGE_ID);
+    if is_piper {
+        json!({
+            "id": tts::catalog::PIPER_RU_PACKAGE_ID,
+            "name": tts::catalog::PIPER_RU_PACKAGE_NAME,
+            "installed": dir.as_deref().is_some_and(tts::catalog::piper_ru_installed),
+            "size": tts::catalog::piper_ru_size(),
+            "missingBytes": dir.as_deref().map_or(tts::catalog::piper_ru_size(), tts::catalog::piper_ru_missing_bytes),
+            "license": tts::catalog::PIPER_RU_LICENSE,
+            "source": tts::catalog::PIPER_RU_SOURCE,
+            "available": cfg!(feature = "neural-voices"),
+        })
+    } else {
+        json!({
+            "id": tts::catalog::PACKAGE_ID,
+            "name": tts::catalog::PACKAGE_NAME,
+            "installed": dir.as_deref().is_some_and(tts::catalog::installed),
+            "size": tts::catalog::size(),
+            "missingBytes": dir.as_deref().map_or(tts::catalog::size(), tts::catalog::missing_bytes),
+            "license": tts::catalog::LICENSE,
+            "source": tts::catalog::SOURCE,
+            "available": cfg!(feature = "neural-voices"),
+        })
+    }
 }
 
-fn voices(_s: &mut Session, _p: &Value) -> Result<Value> {
+/// Returns catalogue information about available speech synthesis voices and packages.
+fn voices(_s: &mut Session, p: &Value) -> Result<Value> {
     let dir = crate::transcript::models_dir();
+    let pkg = str_p(p, "package").or_else(|| str_p(p, "voice").and_then(tts::catalog::package_for_voice));
     Ok(json!({
-        "package": package_json(),
+        "package": package_json(pkg),
+        "packages": [
+            package_json(Some(tts::catalog::PACKAGE_ID)),
+            package_json(Some(tts::catalog::PIPER_RU_PACKAGE_ID)),
+        ],
         "languages": tts::LANGUAGES.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>(),
         "voices": tts::voices_in(dir.as_deref()),
         "defaultVoice": tts::default_voice_id(),
@@ -156,12 +177,15 @@ fn voices(_s: &mut Session, _p: &Value) -> Result<Value> {
     }))
 }
 
+/// Synthesizes and plays preview audio for the requested text and narration settings.
 fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.preview";
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        let voice_id = str_p(p, "voice").unwrap_or_else(|| base.as_ref().map_or("basic-female", |b| &b.voice));
+        let lang = tts::voices_in(crate::transcript::models_dir().as_deref()).iter().find(|v| v.id == voice_id).map_or("en-US", |v| v.language);
+        q["text"] = json!(tts::sample_sentence_for_language(lang));
     }
     let n = settings(cmd, &q, base.as_ref())?;
     let audio = synthesize(s, cmd, &n)?;
@@ -420,7 +444,9 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        let voice_id = str_p(p, "voice").unwrap_or_else(|| base.as_ref().map_or("basic-female", |b| &b.voice));
+        let lang = tts::voices_in(crate::transcript::models_dir().as_deref()).iter().find(|v| v.id == voice_id).map_or("en-US", |v| v.language);
+        q["text"] = json!(tts::sample_sentence_for_language(lang));
     }
     let n = settings(cmd, &q, base.as_ref())?;
     let key = cache_key(&n);
@@ -447,45 +473,72 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id, "cached": false}))
 }
 
-/// Download the natural voices (Kokoro-82M, its voices and CMUdict) in the background.
+/// Download the natural voices in the background.
 fn download_voices(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.downloadVoices";
     let dir = crate::transcript::models_dir().ok_or_else(|| bad(cmd, "no data directory for voice models"))?;
-    if tts::catalog::installed(&dir) {
+    let pkg = str_p(p, "package").or_else(|| str_p(p, "voice").and_then(tts::catalog::package_for_voice)).unwrap_or(tts::catalog::PACKAGE_ID);
+
+    let (already_installed, name, missing) = match pkg {
+        tts::catalog::PIPER_RU_PACKAGE_ID => {
+            (tts::catalog::piper_ru_installed(&dir), tts::catalog::PIPER_RU_PACKAGE_NAME, tts::catalog::piper_ru_missing_bytes(&dir))
+        }
+        tts::catalog::KOKORO_RU_PACKAGE_ID => {
+            (tts::catalog::kokoro_ru_installed(&dir), tts::catalog::KOKORO_RU_PACKAGE_NAME, tts::catalog::kokoro_ru_missing_bytes(&dir))
+        }
+        _ => (tts::catalog::installed(&dir), tts::catalog::PACKAGE_NAME, tts::catalog::missing_bytes(&dir)),
+    };
+    if already_installed {
         return Ok(json!({"job": null, "installed": true}));
     }
     if !cfg!(feature = "neural-voices") {
         return Err(bad(cmd, "natural voices are not available in this build (built without the `neural-voices` feature)"));
     }
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
-    let job = new_job(s, format!("Downloading {}", tts::catalog::PACKAGE_NAME));
-    job.progress.total.store(tts::catalog::missing_bytes(&dir), std::sync::atomic::Ordering::Relaxed);
+
+    let job = new_job(s, format!("Downloading {name}"));
+    job.progress.total.store(missing, std::sync::atomic::Ordering::Relaxed);
     let (prog, res) = (job.progress.clone(), job.result.clone());
+    let pkg_id = pkg.to_string();
     let id = spawn(s, job, wait, "filmcraft-tts-download", move || {
         let t0 = web_time::Instant::now();
-        let r = download_package(&dir, &prog);
+        let r = download_package(&dir, &pkg_id, &prog);
         finish(&prog, &res, r.map(|()| "Natural voices installed".to_string()), t0);
     })?;
     Ok(json!({"job": id, "installed": false}))
 }
 
+/// Downloads model files for the specified neural voice package into `dir` with progress reporting.
 #[cfg(feature = "neural-voices")]
-fn download_package(dir: &std::path::Path, prog: &filmcraft_export::Progress) -> std::result::Result<(), String> {
+fn download_package(dir: &std::path::Path, pkg: &str, prog: &filmcraft_export::Progress) -> std::result::Result<(), String> {
     use std::sync::atomic::Ordering;
+    let (target_dir, raw_files) = match pkg {
+        tts::catalog::PIPER_RU_PACKAGE_ID => (tts::catalog::piper_ru_package_dir(dir), tts::catalog::PIPER_RU_FILES),
+        tts::catalog::KOKORO_RU_PACKAGE_ID => (tts::catalog::kokoro_ru_package_dir(dir), tts::catalog::KOKORO_RU_FILES),
+        _ => (tts::catalog::package_dir(dir), tts::catalog::FILES),
+    };
     let files: Vec<filmcraft_speech::models::ModelFile> =
-        tts::catalog::FILES.iter().map(|f| filmcraft_speech::models::ModelFile { name: f.name, url: f.url, sha256: f.sha256, size: f.size }).collect();
+        raw_files.iter().map(|f| filmcraft_speech::models::ModelFile { name: f.name, url: f.url, sha256: f.sha256, size: f.size }).collect();
     let mut progress = |done: u64, total: u64, file: &str| {
         prog.done.store(done, Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);
         *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = format!("Downloading {file}");
         !prog.cancel.load(Ordering::Relaxed)
     };
-    filmcraft_speech::models::download_files(&tts::catalog::package_dir(dir), &files, &mut progress).map_err(|e| e.to_string())
+    filmcraft_speech::models::download_files(&target_dir, &files, &mut progress).map_err(|e| e.to_string())
 }
 
 #[cfg(not(feature = "neural-voices"))]
-fn download_package(_: &std::path::Path, _: &filmcraft_export::Progress) -> std::result::Result<(), String> {
+fn download_package(_: &std::path::Path, _: &str, _: &filmcraft_export::Progress) -> std::result::Result<(), String> {
     Err("natural voices are not available in this build".into())
+}
+
+/// Validates whether natural voice downloads are supported by the engine build.
+fn download_voices_enabled(_: &Session) -> std::result::Result<(), String> {
+    if !cfg!(feature = "neural-voices") {
+        return Err("natural voices are not available in this build (built without the `neural-voices` feature)".into());
+    }
+    Ok(())
 }
 
 fn spec(
@@ -499,6 +552,7 @@ fn spec(
     CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
+/// Returns command specifications exposed by the narration engine module.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         spec("tts.voices", "List Narration Voices", "{}", always, voices, false),
@@ -528,6 +582,6 @@ pub fn commands() -> Vec<CommandSpec> {
             render_job,
             false,
         ),
-        spec("tts.downloadVoices", "Download Natural Voices", r#"{"wait":bool?}"#, always, download_voices, false),
+        spec("tts.downloadVoices", "Download Natural Voices", r#"{"wait":bool?}"#, download_voices_enabled, download_voices, false),
     ]
 }

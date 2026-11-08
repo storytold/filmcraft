@@ -32,9 +32,12 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
-    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+    let hover_part = ui.input(|i| i.pointer.hover_pos()).map(|pos| ZoomThumbPart::at(thumb, pos));
+    let left_active = matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1, .. })) || (app.tl.drag.is_none() && hover_part == Some(ZoomThumbPart::Left));
+    let right_active = matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 2, .. })) || (app.tl.drag.is_none() && hover_part == Some(ZoomThumbPart::Right));
+    for (x, active) in [(thumb.min.x + thumb.height() / 2.0, left_active), (thumb.max.x - thumb.height() / 2.0, right_active)] {
         p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
-        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, t.icon_active));
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, if active { t.accent } else { t.icon_active }));
     }
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
     app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");

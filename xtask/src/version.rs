@@ -56,6 +56,46 @@ pub fn validate(v: &str) -> Result<(), String> {
     Ok(())
 }
 
+const UNRELEASED_HEADER: &str = "## [Unreleased]";
+
+const BLANK_UNRELEASED_TEMPLATE: &str = "## [Unreleased]\n\n### Added\n\n### Changed\n\n### Deprecated\n\n### Removed\n\n### Fixed\n\n### Security\n\n";
+
+/// Rotates `## [Unreleased]` into a new version section stamped with `date`,
+/// inserting a fresh `## [Unreleased]` section above it.
+pub fn rotate_changelog(changelog: &str, new_version: &str, date: &str) -> Result<String, String> {
+    validate(new_version)?;
+    let target_header = format!("## [{new_version}]");
+    if changelog.contains(&target_header) {
+        return Err(format!("CHANGELOG.md already contains version entry for `{new_version}`"));
+    }
+
+    let unreleased_idx = changelog.find(UNRELEASED_HEADER).ok_or_else(|| "CHANGELOG.md missing `## [Unreleased]` section".to_string())?;
+
+    let eol = if changelog.contains("\r\n") { "\r\n" } else { "\n" };
+    let template = if eol == "\r\n" { BLANK_UNRELEASED_TEMPLATE.replace('\n', "\r\n") } else { BLANK_UNRELEASED_TEMPLATE.to_string() };
+
+    let before = &changelog[..unreleased_idx];
+    let after_unreleased = &changelog[unreleased_idx + UNRELEASED_HEADER.len()..];
+
+    let new_entry_header = format!("## [{new_version}] - {date}");
+
+    let mut out = String::with_capacity(changelog.len() + template.len() + new_entry_header.len() + 16);
+    out.push_str(before);
+    out.push_str(&template);
+    out.push_str(&new_entry_header);
+    out.push_str(after_unreleased);
+
+    Ok(out)
+}
+
+/// Validates that `CHANGELOG.md` contains the required `## [Unreleased]` section.
+pub fn validate_changelog(changelog: &str) -> Result<(), String> {
+    if !changelog.contains(UNRELEASED_HEADER) {
+        return Err("CHANGELOG.md missing `## [Unreleased]` section".into());
+    }
+    Ok(())
+}
+
 /// Index and text of the `version` line in `[workspace.package]`.
 fn find_line(manifest: &str) -> Result<(usize, &str), String> {
     let mut in_section = false;
@@ -75,6 +115,7 @@ fn find_line(manifest: &str) -> Result<(usize, &str), String> {
     Err("no `version = \"…\"` in [workspace.package] of the root Cargo.toml".into())
 }
 
+/// Executes workspace version inspection, bumping, or changelog rotation commands.
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let path = root.join("Cargo.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -86,11 +127,24 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         ["set", new] => {
             let old = read(&text)?;
             let updated = replace(&text, new)?;
+            let changelog_path = root.join("CHANGELOG.md");
+            let updated_changelog = if changelog_path.exists() {
+                let cl_text = std::fs::read_to_string(&changelog_path).map_err(|e| format!("read {}: {e}", changelog_path.display()))?;
+                let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                Some(rotate_changelog(&cl_text, new, &today)?)
+            } else {
+                None
+            };
             // Write atomically: a half-written root manifest breaks every build in the workspace.
             let tmp = root.join("target").join("Cargo.toml.xtask-version");
             std::fs::create_dir_all(root.join("target")).map_err(|e| format!("create target/: {e}"))?;
             std::fs::write(&tmp, updated).map_err(|e| format!("write {}: {e}", tmp.display()))?;
             std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))?;
+            if let Some(cl_content) = updated_changelog {
+                let cl_tmp = root.join("target").join("CHANGELOG.md.xtask-version");
+                std::fs::write(&cl_tmp, cl_content).map_err(|e| format!("write {}: {e}", cl_tmp.display()))?;
+                std::fs::rename(&cl_tmp, &changelog_path).map_err(|e| format!("replace {}: {e}", cl_tmp.display()))?;
+            }
             // Refresh the workspace members' entries in Cargo.lock (no dependency upgrades).
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
             if crate::run(std::process::Command::new(&cargo).args(["update", "--workspace", "--offline"])).is_err() {
@@ -145,5 +199,25 @@ mod tests {
     fn the_real_manifest_has_a_valid_version() {
         let text = std::fs::read_to_string(crate::root().join("Cargo.toml")).unwrap();
         validate(&read(&text).unwrap()).unwrap();
+    }
+
+    const CHANGELOG_SAMPLE: &str = "# Changelog\n\n## [Unreleased]\n\n### Added\n- Foo feature\n\n## [0.1.0] - 2026-01-01\n\n### Added\n- Initial\n";
+
+    #[test]
+    fn rotates_unreleased_changelog() {
+        let rotated = rotate_changelog(CHANGELOG_SAMPLE, "0.2.0", "2026-02-01").unwrap();
+        assert!(rotated.contains("## [Unreleased]\n\n### Added"));
+        assert!(rotated.contains("## [0.2.0] - 2026-02-01\n\n### Added\n- Foo feature"));
+        assert!(rotated.contains("## [0.1.0] - 2026-01-01"));
+        assert!(rotate_changelog(CHANGELOG_SAMPLE, "0.1.0", "2026-02-01").is_err());
+        assert!(rotate_changelog("# No unreleased", "0.2.0", "2026-02-01").is_err());
+    }
+
+    #[test]
+    fn validates_changelog_format() {
+        assert!(validate_changelog(CHANGELOG_SAMPLE).is_ok());
+        assert!(validate_changelog("# No header").is_err());
+        let real = std::fs::read_to_string(crate::root().join("CHANGELOG.md")).unwrap();
+        assert!(validate_changelog(&real).is_ok());
     }
 }

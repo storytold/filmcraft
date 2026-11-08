@@ -8,6 +8,7 @@ impl FilmcraftApp {
         panels::project::view_of(self, panels::project::shown_inst(self)).bin
     }
 
+    /// Opens a native file dialog corresponding to action `id` and executes completion handler on selection.
     pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
@@ -19,9 +20,20 @@ impl FilmcraftApp {
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
-                self.pick(FileDialog::open_files(&exts), move |app, paths| {
+                let at = if self.session.prefs.media.last_import_dir.is_empty() { None } else { Some(self.session.prefs.media.last_import_dir.clone()) };
+                self.pick(FileDialog::open_files_at(&exts, at), move |app, paths| {
                     if paths.is_empty() {
                         return Ok(Value::Null);
+                    }
+                    if let Some(first) = paths.first()
+                        && let Some(parent) = std::path::Path::new(first).parent()
+                    {
+                        let dir = parent.to_string_lossy().into_owned();
+                        if !dir.is_empty() && dir != app.session.prefs.media.last_import_dir {
+                            let mut prefs = app.session.prefs.clone();
+                            prefs.media.last_import_dir = dir;
+                            let _ = app.session.set_prefs(prefs);
+                        }
                     }
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
                     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
@@ -43,14 +55,25 @@ impl FilmcraftApp {
                 })
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
-            "file.importImageSequence" => self.pick(FileDialog::open_files(filmcraft_media::STILL_EXTENSIONS), |app, paths| {
-                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
-                if let Err(e) = &r {
-                    app.ui.status = e.clone();
-                }
-                r
-            }),
+            "file.importImageSequence" => {
+                let at = if self.session.prefs.media.last_import_dir.is_empty() { None } else { Some(self.session.prefs.media.last_import_dir.clone()) };
+                self.pick(FileDialog::open_files_at(filmcraft_media::STILL_EXTENSIONS, at), |app, paths| {
+                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    if let Some(parent) = std::path::Path::new(&path).parent() {
+                        let dir = parent.to_string_lossy().into_owned();
+                        if !dir.is_empty() && dir != app.session.prefs.media.last_import_dir {
+                            let mut prefs = app.session.prefs.clone();
+                            prefs.media.last_import_dir = dir;
+                            let _ = app.session.set_prefs(prefs);
+                        }
+                    }
+                    let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
+                    if let Err(e) = &r {
+                        app.ui.status = e.clone();
+                    }
+                    r
+                })
+            }
             "file.saveAs" | "file.save" | "file.saveCopy" => {
                 let suggested =
                     if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };

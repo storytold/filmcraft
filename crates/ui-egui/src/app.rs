@@ -31,7 +31,7 @@ impl FilmcraftApp {
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
         let ime_document_epoch = session.document_epoch;
         let ime_active_sequence = session.state.active_sequence;
-        Self {
+        let mut app = Self {
             session,
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
@@ -127,7 +127,9 @@ impl FilmcraftApp {
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
-        }
+        };
+        app.ui.tts = crate::panels::tts::TtsDraft::from_prefs(&app.session.prefs.tts);
+        app
     }
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
@@ -499,13 +501,15 @@ impl eframe::App for FilmcraftApp {
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
-    /// state, and shut the session down so its recovery journal is flushed or removed.
+    /// state, snapshot the active workspace layout for next launch, and shut the session down so
+    /// its recovery journal is flushed or removed.
     fn on_exit(&mut self) {
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {
             self.ime_reset.end_viewport(viewport);
         }
+        self.save_session_workspace();
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();

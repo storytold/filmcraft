@@ -228,6 +228,7 @@ impl FilmcraftApp {
             || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
 
+    /// Renders the multi-panel dock layout tree inside rectangle `body`.
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
@@ -611,6 +612,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 /// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
 /// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
 fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+    /// Recursively searches layout nodes for the tab or dock group containing `panel`.
     fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
         match node {
             Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),

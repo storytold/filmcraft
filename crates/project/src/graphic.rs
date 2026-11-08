@@ -124,6 +124,13 @@ fn appearance() -> Vec<ParamDef> {
         fl("shadow_distance", "Shadow Distance", 10.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_size", "Shadow Size", 0.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_blur", "Shadow Blur", 40.0, (0.0, 1000.0), (0.0, 200.0), "", A),
+        bo("burn", "Burn", false, A),
+        fl("burn_progress", "Burn Progress", 0.0, (0.0, 100.0), (0.0, 100.0), "%", A),
+        chc("burn_direction", "Burn Direction", &["Up", "Down", "Left", "Right"], 0, A),
+        bo("burn_glow", "Burn Glow", true, A),
+        co("burn_glow_color", "Burn Glow Color", [1.0, 0.42, 0.05, 1.0], A),
+        fl("burn_noise_scale", "Burn Noise Scale", 40.0, (1.0, 500.0), (5.0, 200.0), "", A),
+        fl("burn_noise_speed", "Burn Noise Speed", 2.5, (0.0, 50.0), (0.0, 10.0), "", A),
     ]
 }
 
@@ -212,6 +219,55 @@ pub struct Appearance {
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+    pub burn: Option<BurnAppearance>,
+}
+
+/// Dynamic burning effect on a graphic layer (perlin noise + orange glow wipe).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BurnAppearance {
+    pub progress: f32,
+    pub direction: u32,
+    pub glow: bool,
+    pub glow_color: [f32; 4],
+    pub noise_scale: f32,
+    pub noise_speed: f32,
+    pub time: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stroke {
+    pub style: StrokeStyle,
+    /// Resolved styles in the same order as `TextProps::runs`.
+    pub runs: Vec<StrokeStyle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokeStyle {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    /// Width in layer pixels.
+    pub width: f32,
+    /// 0 outer, 1 centre, 2 inner.
+    pub kind: u32,
+}
+
+impl StrokeStyle {
+    /// Returns true when stroke is enabled and has finite positive width.
+    pub fn active(&self) -> bool {
+        self.enabled && self.width.is_finite() && self.width > 0.0
+    }
+
+    /// Overrides stroke properties with character-level style overrides.
+    fn with_char_style(self, c: &crate::graphic_design::CharStyle, second: bool) -> Self {
+        let (enabled, color, width, kind) =
+            if second { (c.stroke2, c.stroke2_color, c.stroke2_width, c.stroke2_type) } else { (c.stroke, c.stroke_color, c.stroke_width, c.stroke_type) };
+        Self {
+            enabled: enabled.unwrap_or(self.enabled),
+            color: color.unwrap_or(self.color),
+            width: width.filter(|v| v.is_finite()).map_or(self.width, |v| v.clamp(0.0, 1000.0)),
+            kind: kind.filter(|v| *v <= 2).unwrap_or(self.kind),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -444,6 +500,15 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             strokes,
             background,
             shadow,
+            burn: bb(e, "burn", t).then(|| BurnAppearance {
+                progress: (ff(e, "burn_progress", t) / 100.0).clamp(0.0, 1.0),
+                direction: ch(e, "burn_direction", t),
+                glow: bb(e, "burn_glow", t),
+                glow_color: cc(e, "burn_glow_color", t),
+                noise_scale: ff(e, "burn_noise_scale", t).clamp(1.0, 1000.0),
+                noise_speed: ff(e, "burn_noise_speed", t).clamp(0.0, 100.0),
+                time: t.seconds() as f32,
+            }),
         },
         transform: LayerTransform {
             position,

@@ -1006,7 +1006,10 @@ fn export_interchange_refuses_an_unknown_format() {
         let e = s.execute("file.exportInterchange", json!({"format": bad, "path": path("bad.out")})).unwrap_err();
         assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "file.exportInterchange"), "{bad}: {e:?}");
         let e = e.to_string();
-        assert!(e.contains("unknown format") && e.ends_with("use one of edl, xml, fcpxml, otio, aaf, omf"), "the error lists exactly the accepted names: {e}");
+        assert!(
+            e.contains("unknown format") && e.ends_with("use one of edl, xml, fcpxml, otio, aaf, omf, prproj"),
+            "the error lists exactly the accepted names: {e}"
+        );
         assert!(!d.join("bad.out").exists(), "nothing is written for {bad}");
     }
     // the documented formats still export (in either case), and no format still means FCP7 XML

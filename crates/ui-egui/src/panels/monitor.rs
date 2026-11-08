@@ -422,6 +422,29 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     transport(app, ui, row3, which);
 }
 
+const SPEED_PRESETS: &[f64] = &[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0];
+
+/// Formats a playback speed multiplier into a short label (e.g. `1×`, `0.5×`, `-1×`).
+fn format_speed(speed: f64) -> String {
+    let sign = if speed < 0.0 { "-" } else { "" };
+    let abs = speed.abs();
+    if (abs - 1.0).abs() < 1e-4 {
+        format!("{sign}1×")
+    } else if (abs - 0.5).abs() < 1e-4 {
+        format!("{sign}0.5×")
+    } else if (abs - 0.25).abs() < 1e-4 {
+        format!("{sign}0.25×")
+    } else if (abs - 0.75).abs() < 1e-4 {
+        format!("{sign}0.75×")
+    } else if (abs - 1.5).abs() < 1e-4 {
+        format!("{sign}1.5×")
+    } else if abs.fract().abs() < 1e-4 {
+        format!("{sign}{:.0}×", abs)
+    } else {
+        format!("{sign}{:.2}×", abs)
+    }
+}
+
 /// The controls row under the picture: timecode, duration, zoom, resolution, the wrench menu
 /// and the source-drag controls. Returns the mini-timeline and zoom bars below it.
 #[allow(clippy::too_many_arguments)]
@@ -463,14 +486,18 @@ fn controls_row(
     ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, dur_tc, Tokens::timecode(), t.text_dim);
     // At compact widths, timecodes and view settings need separate rows.
     let settings_y = row1.min.y + if stacked_controls { 26.0 } else { 0.0 };
+    let (zoom_w, res_w, speed_w) = if rect.width() < 300.0 { (56.0, 52.0, 48.0) } else { (70.0, 62.0, 52.0) };
+    let gap = if rect.width() < 300.0 { 4.0 } else { 6.0 };
+    let total_settings_w = zoom_w + gap + res_w + gap + speed_w + gap + 22.0;
+
     let zoom_x = if stacked_controls && which == Which::Source && !separate_source_drag {
         row1.min.x
     } else if stacked_controls {
-        row1.center().x - 83.0
+        row1.center().x - total_settings_w / 2.0
     } else {
         row1.min.x + 116.0
     };
-    let zr = Rect::from_min_size(pos2(zoom_x, settings_y), vec2(70.0, 24.0));
+    let zr = Rect::from_min_size(pos2(zoom_x, settings_y), vec2(zoom_w, 24.0));
     let zoom_label = match mv.zoom {
         None => tl!("Fit").to_string(),
         Some(z) => format!("{}%", (z * 100.0).round() as i32),
@@ -480,13 +507,13 @@ fn controls_row(
     monitor_view::zoom_menu(app, &zresp, which);
     let res = mv.res;
     let resolution_x = if stacked_controls && which == Which::Source && !separate_source_drag {
-        row1.max.x - 90.0
+        row1.max.x - (res_w + gap + speed_w + gap + 22.0)
     } else if stacked_controls {
-        zr.max.x + 6.0
+        zr.max.x + gap
     } else {
-        row1.max.x - 196.0
+        row1.max.x - 100.0 - (res_w + gap + speed_w + gap + 22.0)
     };
-    let rr = Rect::from_min_size(pos2(resolution_x, settings_y), vec2(62.0, 24.0));
+    let rr = Rect::from_min_size(pos2(resolution_x, settings_y), vec2(res_w, 24.0));
     if which == Which::Source && rr.min.x > zr.max.x + 12.0 {
         crate::panels::source_drag::controls(app, ui, Rect::from_min_max(pos2(zr.max.x + 6.0, settings_y), pos2(rr.min.x - 6.0, settings_y + 24.0)));
     }
@@ -502,7 +529,35 @@ fn controls_row(
             }
         }
     });
-    let wr = Rect::from_min_size(pos2(rr.max.x + 6.0, settings_y + 1.0), vec2(22.0, 22.0));
+    let speed_x = rr.max.x + gap;
+    let sr = Rect::from_min_size(pos2(speed_x, settings_y), vec2(speed_w, 24.0));
+    let active_speed = if which == Which::Program {
+        if app.playback.playing { app.playback.speed } else { 1.0 }
+    } else if app.source_playback.clock.playing {
+        app.source_playback.clock.speed
+    } else {
+        1.0
+    };
+    let speed_label = format_speed(active_speed);
+    let sresp = crate::widgets::dropdown_text(ui, sr, &speed_label, &t, egui::Id::unique((prefix, "speed"))).on_hover_text(tl!("Playback Speed"));
+    app.auto.add(&format!("{prefix}.speed"), sr, "Select Playback Speed");
+    egui::Popup::menu(&sresp).show(|ui| {
+        for &preset in SPEED_PRESETS {
+            let label = format_speed(preset);
+            let selected = (active_speed - preset).abs() < 1e-4;
+            let resp = ui.selectable_label(selected, &label);
+            app.auto.add_response(&format!("{prefix}.speed.{label}"), &resp, &label);
+            if resp.clicked() {
+                if which == Which::Program {
+                    app.play(preset);
+                } else if let Err(e) = app.shuttle_source(preset) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
+    });
+    let wr = Rect::from_min_size(pos2(sr.max.x + gap, settings_y + 1.0), vec2(22.0, 22.0));
     let wresp = ui.interact(wr, egui::Id::unique((prefix, "wrench")), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
@@ -826,9 +881,14 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
-    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
+    let drag_mode = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id)).map(|(_, _, m)| m);
+    let hover_part = ui.input(|i| i.pointer.hover_pos()).map(|pos| ZoomThumbPart::at(thumb, pos));
+    let left_active = drag_mode == Some(1) || (drag_mode.is_none() && hover_part == Some(ZoomThumbPart::Left));
+    let right_active = drag_mode == Some(2) || (drag_mode.is_none() && hover_part == Some(ZoomThumbPart::Right));
+    for (x, active) in [(thumb.min.x + thumb.height() / 2.0, left_active), (thumb.max.x - thumb.height() / 2.0, right_active)] {
         p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
-        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, t.icon_active));
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, if active { t.accent } else { t.icon_active }));
     }
     app.auto.add(&format!("{prefix}.zoomBar"), thumb, "zoom scroll bar");
     app.auto.add(&format!("{prefix}.zoomBar.track"), bar, "zoom scroll bar track");
@@ -844,7 +904,6 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
-    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
     if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {

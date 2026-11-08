@@ -227,6 +227,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "anymap3"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -734,7 +746,7 @@ dependencies = [
  "num-traits",
  "num_cpus",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "rayon",
  "safetensors",
  "thiserror 2.0.21",
@@ -1337,6 +1349,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
+name = "derive-new"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1402,6 +1425,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "downcast-rs"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
+
+[[package]]
 name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1418,6 +1447,12 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "dyn-hash"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fdab65db9274e0168143841eb8f864a0a21f8b1b8d2ba6812bbe6024346e99e"
 
 [[package]]
 name = "dyn-stack"
@@ -1527,7 +1562,7 @@ dependencies = [
  "bitflags 2.13.2",
  "emath",
  "epaint",
- "itertools",
+ "itertools 0.15.0",
  "log",
  "nohash-hasher",
  "profiling",
@@ -1769,6 +1804,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erased-serde"
+version = "0.4.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e59b668157f32d3459d4bd634861a06ffa2503a461ca5f0916b9f0252605e66"
+dependencies = [
+ "serde",
+ "serde_core",
+ "typeid",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1884,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "arboard",
  "chrono",
@@ -1919,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-aac"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -1929,7 +1975,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-ac3"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -1938,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-apv"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -1948,14 +1994,14 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-audio-dsp"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
 ]
 
 [[package]]
 name = "filmcraft-automation"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "base64",
  "filmcraft-engine",
@@ -1972,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-av1"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -1983,21 +2029,21 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-avi"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
 ]
 
 [[package]]
 name = "filmcraft-bitstream"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "craft-media",
 ]
 
 [[package]]
 name = "filmcraft-captions"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-project",
@@ -2010,11 +2056,11 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-cfb"
-version = "0.17.0"
+version = "0.17.1"
 
 [[package]]
 name = "filmcraft-cli"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-automation",
  "filmcraft-codecs",
@@ -2036,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-codecs"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-ac3",
@@ -2074,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-color"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2082,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-dng"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-dng",
  "rayon",
@@ -2091,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-dnx"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2101,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-edit"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
@@ -2114,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-engine"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "chrono",
  "craft-docpath",
@@ -2151,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-export"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-apv",
@@ -2182,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-flac"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2191,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-format"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "chrono",
  "filmcraft-media",
@@ -2206,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-frame"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
@@ -2216,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-geom"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2224,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-golden"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-frame",
@@ -2241,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-gpu"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-export",
@@ -2260,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-h264"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2270,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-h264enc"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2280,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-hevc"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2290,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-interchange"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-cfb",
  "filmcraft-color",
@@ -2298,6 +2344,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
+ "flate2",
  "proptest",
  "roxmltree",
  "serde",
@@ -2307,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-isobmff"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "craft-media",
  "filmcraft-testkit",
@@ -2317,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-matroska"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "craft-media",
  "filmcraft-testkit",
@@ -2326,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-media"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-dng",
@@ -2342,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-mpa"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2351,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-mpeg2v"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
  "rayon",
@@ -2360,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-mpegts"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
  "thiserror 2.0.21",
@@ -2368,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-mxf"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "chrono",
  "filmcraft-testkit",
@@ -2376,21 +2423,21 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-ogg"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
 ]
 
 [[package]]
 name = "filmcraft-opus"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
 ]
 
 [[package]]
 name = "filmcraft-platform"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-codecs",
@@ -2416,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-project"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-geom",
@@ -2431,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-prores"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2441,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-render"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-captions",
@@ -2461,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-scopes"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "serde",
@@ -2470,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-speech"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -2489,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-testkit"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "chrono",
  "png",
@@ -2498,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-text"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-color",
  "harfrust",
@@ -2511,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-time"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2519,22 +2566,24 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-tts"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "candle-core",
  "candle-nn",
  "filmcraft-audio-dsp",
  "filmcraft-tts-text",
+ "prost",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tract-onnx",
  "zip 7.2.0",
 ]
 
 [[package]]
 name = "filmcraft-tts-text"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2542,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-ui-egui"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "cpu-time",
  "craft-ui",
@@ -2585,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-vp8"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-testkit",
  "thiserror 2.0.21",
@@ -2593,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-vp9"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
@@ -2603,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-web"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "craft-web-api",
  "craft-web-host",
@@ -2662,6 +2711,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-ord"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ce81f49ae8a0482e4c55ea62ebbd7e5a686af544c00b9d090bba3ff9be97b3d"
+
+[[package]]
 name = "float8"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2670,7 +2725,7 @@ dependencies = [
  "half",
  "num-traits",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
 ]
 
 [[package]]
@@ -3390,7 +3445,7 @@ dependencies = [
  "crunchy",
  "num-traits",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "zerocopy",
 ]
 
@@ -3774,6 +3829,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6928282826c822ad91bf1c9a1cb90a30ba1c26770749929b4656cd6be829cd7c"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "is-docker"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3790,6 +3854,15 @@ checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
 dependencies = [
  "is-docker",
  "once_cell",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
 ]
 
 [[package]]
@@ -4052,6 +4125,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "maplit"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
+
+[[package]]
+name = "matrixmultiply"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
+dependencies = [
+ "autocfg",
+ "rawpointer",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4074,6 +4163,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "metrics"
+version = "0.24.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
+dependencies = [
+ "portable-atomic",
+ "rapidhash",
+]
+
+[[package]]
+name = "minijinja"
+version = "3.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f5a04892e86ddb4fc254e9160835370b63a0d44042d3ab4725bc2dbcbab136"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4182,6 +4290,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ndarray"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d"
+dependencies = [
+ "matrixmultiply",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "portable-atomic",
+ "portable-atomic-util",
+ "rawpointer",
+]
+
+[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4236,6 +4359,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "nom-language"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2de2bc5b451bfedaef92c90b8939a8fff5770bdcc1fafd6239d086aab8fa6b29"
+dependencies = [
+ "nom",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -4296,6 +4438,17 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
 dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
  "num-integer",
  "num-traits",
 ]
@@ -5202,6 +5355,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
+name = "primal-check"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc0d895b311e3af9902528fbb8f928688abbd95872819320517cc24ca6b2bd08"
+dependencies = [
+ "num-integer",
+]
+
+[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5296,6 +5458,29 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -5404,6 +5589,7 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
+ "chacha20 0.10.2",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
 ]
@@ -5463,6 +5649,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_distr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
+dependencies = [
+ "num-traits",
+ "rand 0.10.3",
+]
+
+[[package]]
 name = "rand_xorshift"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5476,6 +5672,15 @@ name = "range-alloc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
+
+[[package]]
+name = "rapidhash"
+version = "4.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "raw-cpuid"
@@ -5503,6 +5708,12 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
 ]
+
+[[package]]
+name = "rawpointer"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
 name = "rayon"
@@ -5736,6 +5947,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "rustfft"
+version = "6.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21db5f9893e91f41798c88680037dba611ca6674703c1a18601b01a72c8adb89"
+dependencies = [
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "primal-check",
+ "strength_reduce",
+ "transpose",
 ]
 
 [[package]]
@@ -6328,6 +6553,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "strength_reduce"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
+
+[[package]]
+name = "string-interner"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad3df9b59e2eded8d825c7c4363ad339a20fb6bc0b9a4778560f518f59910b15"
+dependencies = [
+ "hashbrown 0.16.1",
+ "serde",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6587,6 +6828,7 @@ checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
+ "xattr",
 ]
 
 [[package]]
@@ -6881,6 +7123,185 @@ dependencies = [
 ]
 
 [[package]]
+name = "tract-core"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5690191b7344a995507bed7523aeea052f907aa1316c0500540eec801e824a1c"
+dependencies = [
+ "anyhow",
+ "anymap3",
+ "bit-set 0.11.1",
+ "derive-new",
+ "downcast-rs 2.0.2",
+ "dyn-clone",
+ "erased-serde",
+ "inventory",
+ "lazy_static",
+ "log",
+ "maplit",
+ "metrics",
+ "ndarray",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "pastey",
+ "rustfft",
+ "serde",
+ "smallvec",
+ "tract-data",
+ "tract-linalg",
+]
+
+[[package]]
+name = "tract-data"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5feff0e09b8cf92be4932457bda1b2156e348bbaf8311753da7f9b102c4af0b3"
+dependencies = [
+ "anyhow",
+ "downcast-rs 2.0.2",
+ "dyn-clone",
+ "dyn-hash",
+ "half",
+ "inventory",
+ "itertools 0.15.0",
+ "lazy_static",
+ "libm",
+ "maplit",
+ "ndarray",
+ "nom",
+ "nom-language",
+ "num-integer",
+ "num-traits",
+ "parking_lot",
+ "smallvec",
+ "string-interner",
+]
+
+[[package]]
+name = "tract-extra"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da9b3105cbc51d3a24e6b640e18c7d6cdedebeef5b9435a74518e7658ee93578"
+dependencies = [
+ "tract-nnef",
+]
+
+[[package]]
+name = "tract-hir"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a84e8187c517f1a641dcd1b764f1dca2b6b8d39d4c78b2743e1b69874e65b735"
+dependencies = [
+ "derive-new",
+ "log",
+ "tract-core",
+]
+
+[[package]]
+name = "tract-linalg"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88d389398bb62713b4dd4fc92c3a36ae1552faf522e17b1ae3f636537893a55c"
+dependencies = [
+ "byteorder",
+ "cc",
+ "derive-new",
+ "downcast-rs 2.0.2",
+ "dyn-clone",
+ "dyn-hash",
+ "half",
+ "inventory",
+ "lazy_static",
+ "libc",
+ "log",
+ "minijinja",
+ "num-traits",
+ "pastey",
+ "tract-data",
+ "walkdir",
+]
+
+[[package]]
+name = "tract-nnef"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "def0bced596beb4318148cac90de95dc9953089bb1df86ce2ef4c733ee450773"
+dependencies = [
+ "byteorder",
+ "erased-serde",
+ "log",
+ "nom",
+ "nom-language",
+ "serde",
+ "serde_json",
+ "simd-adler32",
+ "tar",
+ "tract-core",
+ "walkdir",
+]
+
+[[package]]
+name = "tract-onnx"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "994cd1cb5ea6747ac82707e39ae9588784f6794f96a4a86d137e71ebc49e2689"
+dependencies = [
+ "bytes",
+ "derive-new",
+ "log",
+ "memmap2",
+ "nom",
+ "nom-language",
+ "num-integer",
+ "num-rational",
+ "num-traits",
+ "prost",
+ "smallvec",
+ "tract-extra",
+ "tract-hir",
+ "tract-nnef",
+ "tract-onnx-opl",
+ "tract-transformers",
+]
+
+[[package]]
+name = "tract-onnx-opl"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee1b86a41af0b03fa2bb6d50c86d79ec363ba12e8c76fb0bff1d899d584bf310"
+dependencies = [
+ "getrandom 0.4.3",
+ "log",
+ "rand 0.10.3",
+ "rand_distr 0.6.0",
+ "rustfft",
+ "tract-extra",
+ "tract-nnef",
+]
+
+[[package]]
+name = "tract-transformers"
+version = "0.23.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77f24c7b447fb64b64e90b2e8194d33f729efe9022ac9136c10ed2e70abb6de0"
+dependencies = [
+ "float-ord",
+ "rayon",
+ "tract-nnef",
+]
+
+[[package]]
+name = "transpose"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad61aed86bc3faea4300c7aee358b4c6d0c8d6ccc36524c96e4c92ccf26e77e"
+dependencies = [
+ "num-integer",
+ "strength_reduce",
+]
+
+[[package]]
 name = "tree_magic_mini"
 version = "3.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6911,6 +7332,12 @@ name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"
@@ -7210,7 +7637,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
 dependencies = [
  "cc",
- "downcast-rs",
+ "downcast-rs 1.2.1",
  "rustix 1.1.5",
  "scoped-tls",
  "smallvec",
@@ -8071,6 +8498,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8103,8 +8540,9 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
+ "chrono",
  "filmcraft-testkit",
  "serde_json",
 ]

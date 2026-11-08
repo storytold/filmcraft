@@ -661,6 +661,7 @@ impl Shortcuts {
         v
     }
 
+    /// Resolves the filesystem path for a shortcut preset JSON file, disambiguating reserved names.
     pub(crate) fn preset_path(&self, name: &str) -> Option<PathBuf> {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
         let mut file = format!("{}.json", safe.trim());

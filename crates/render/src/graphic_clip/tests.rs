@@ -488,3 +488,35 @@ fn responsive_time_remaps_layer_keyframes_not_the_clips_own_effects() {
     assert!((own_at(&item, 2.5) - 0.5).abs() < 1e-4, "media 4.5 s: {}", own_at(&item, 2.5));
     assert!((own_at(&item, 0.0) - 1.0).abs() < 1e-4, "media 2 s: {}", own_at(&item, 0.0));
 }
+
+#[test]
+fn graphic_text_layer_burn_appearance() {
+    let mut e = new_text_layer("BURNING", Vec2::new(100.0, 150.0), 64.0);
+    set(&mut e, "font", ParamValue::Text("Stalinist One".into()));
+    set(&mut e, "burn", ParamValue::Bool(true));
+    set(&mut e, "burn_progress", ParamValue::Float(0.0));
+    set(&mut e, "burn_direction", ParamValue::Choice(0));
+    set(&mut e, "burn_glow", ParamValue::Bool(true));
+
+    let render = |e: &EffectInstance, t: Tick| {
+        let mut img = Image::new(400, 300);
+        render_graphic_layers(std::slice::from_ref(e), t, (400, 300), &Affine::IDENTITY, &mut img);
+        img
+    };
+
+    let out0 = render(&e, Tick::ZERO);
+    assert!(ink_box(&out0).is_some());
+
+    set(&mut e, "burn_progress", ParamValue::Float(100.0));
+    set(&mut e, "burn_glow", ParamValue::Bool(false));
+    let out100 = render(&e, Tick::ZERO);
+    assert!(ink_box(&out100).is_none());
+
+    set(&mut e, "burn_progress", ParamValue::Float(50.0));
+    set(&mut e, "burn_glow", ParamValue::Bool(false));
+    let out_noglow = render(&e, Tick::ZERO);
+
+    set(&mut e, "burn_glow", ParamValue::Bool(true));
+    let out_glow = render(&e, Tick::ZERO);
+    assert_ne!(out_noglow.px, out_glow.px);
+}
