@@ -287,8 +287,10 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     assert_eq!(st["workingSpace"], "rec2100-pq");
     // the scopes switch to the HDR waveform (cd/m², PQ scale)
     d.ok("ui.panel.show", json!({"panel": "LumetriScopes"}));
-    d.frames(6);
-    assert!(d.ids("scopes.").iter().any(|i| i == "scopes.hdrWaveform"), "{:?}", d.ids("scopes."));
+    // (the HDR render runs on the scope worker; the waveform appears when it is done)
+    d.wait_for("scopes.hdrWaveform");
+    // the program slot's own result, so a texture job on the worker cannot satisfy it
+    assert_eq!(filmcraft_ui_egui::panels::scopes::worker_signal_pq(d.app(), "program"), Some(true), "the HDR scope render ran on the scope worker");
     d.snapshot("color-hdr-scopes", None);
     // undo the working space and the interpretation
     d.exec("edit.undo", json!({}));
@@ -328,6 +330,18 @@ fn apply_match_from_the_color_wheels_section() {
 impl Driver {
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()
+    }
+
+    /// Run frames until `id` is on screen (work done off the UI pass, such as the scopes).
+    fn wait_for(&mut self, id: &str) {
+        for _ in 0..400 {
+            if self.ids(id).iter().any(|i| i == id) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.frames(1);
+        }
+        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap_or(id)));
     }
 }
 
