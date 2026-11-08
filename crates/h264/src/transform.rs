@@ -29,16 +29,34 @@ impl LevelScale {
     }
 }
 
-/// Scale one 4x4 AC coefficient (8.5.12.1, not the DC of Intra16x16 / chroma blocks).
-#[inline(always)]
-pub fn scale4(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 24 { c.wrapping_mul(ls) << (qp / 6 - 4) } else { c.wrapping_mul(ls).wrapping_add(1 << (3 - qp / 6)) >> (4 - qp / 6) }
+/// Coefficient scaling of one block (8.5.12.1 for 4x4 AC, 8.5.13.1 for 8x8) with the qP-dependent
+/// shift and rounding resolved once per block.
+#[derive(Clone, Copy)]
+pub struct Dequant {
+    shl: u32,
+    shr: u32,
+    round: i32,
 }
 
-/// Scale one 8x8 coefficient (8.5.13.1).
-#[inline(always)]
-pub fn scale8(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 36 { c.wrapping_mul(ls) << (qp / 6 - 6) } else { c.wrapping_mul(ls).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) }
+impl Dequant {
+    /// 4x4 blocks (not the DC of Intra16x16 / chroma blocks).
+    pub fn new4(qp: i32) -> Self {
+        Self::new(qp / 6 - 4)
+    }
+
+    /// 8x8 blocks.
+    pub fn new8(qp: i32) -> Self {
+        Self::new(qp / 6 - 6)
+    }
+
+    fn new(shift: i32) -> Self {
+        if shift >= 0 { Dequant { shl: shift as u32, shr: 0, round: 0 } } else { Dequant { shl: 0, shr: -shift as u32, round: 1 << (-shift - 1) } }
+    }
+
+    #[inline(always)]
+    pub fn apply(self, c: i32, ls: i32) -> i32 {
+        (c.wrapping_mul(ls) << self.shl).wrapping_add(self.round) >> self.shr
+    }
 }
 
 /// Intra16x16 luma DC: inverse Hadamard + scaling (8.5.10). `c` is raster order (row*4+col);
@@ -314,10 +332,26 @@ mod tests {
 
     #[test]
     fn scale_functions() {
-        assert_eq!(scale4(2, 160, 24), 2 * 160);
-        assert_eq!(scale4(2, 160, 12), (2 * 160 + 2) >> 2);
-        assert_eq!(scale8(1, 320, 36), 320);
-        assert_eq!(scale8(1, 320, 30), (320 + 1) >> 1);
+        assert_eq!(Dequant::new4(24).apply(2, 160), 2 * 160);
+        assert_eq!(Dequant::new4(12).apply(2, 160), (2 * 160 + 2) >> 2);
+        assert_eq!(Dequant::new8(36).apply(1, 320), 320);
+        assert_eq!(Dequant::new8(30).apply(1, 320), (320 + 1) >> 1);
+    }
+
+    /// The 8.5.12.1 / 8.5.13.1 formulas, per coefficient.
+    #[test]
+    fn dequant_matches_spec_formulas() {
+        for qp in 0..52 {
+            let (d4, d8) = (Dequant::new4(qp), Dequant::new8(qp));
+            for c in [-2047, -300, -17, -1, 1, 2, 5, 64, 1000, 2047] {
+                for ls in [10, 16, 25, 160, 288, 2880, 18 * 255] {
+                    let want4 = if qp >= 24 { (c * ls) << (qp / 6 - 4) } else { (c * ls + (1 << (3 - qp / 6))) >> (4 - qp / 6) };
+                    let want8 = if qp >= 36 { (c * ls) << (qp / 6 - 6) } else { (c * ls + (1 << (5 - qp / 6))) >> (6 - qp / 6) };
+                    assert_eq!(d4.apply(c, ls), want4, "4x4 qp {qp} c {c} ls {ls}");
+                    assert_eq!(d8.apply(c, ls), want8, "8x8 qp {qp} c {c} ls {ls}");
+                }
+            }
+        }
     }
 
     /// Corrupt streams can carry huge coefficient levels: dequantisation wraps (as release
@@ -327,9 +361,9 @@ mod tests {
     fn huge_levels_dequantise_without_overflow_panics() {
         let mut c = [i32::MAX / 2, i32::MAX / 3, -i32::MAX / 2, 7];
         chroma_dc_dequant_420(&mut c, 51, 16 * 25);
-        let _ = scale4(i32::MAX, 16 * 25, 51);
-        let _ = scale4(i32::MAX, 16 * 25, 0);
-        let _ = scale8(i32::MIN, 16 * 25, 51);
-        let _ = scale8(i32::MIN, 16 * 25, 0);
+        let _ = Dequant::new4(51).apply(i32::MAX, 16 * 25);
+        let _ = Dequant::new4(0).apply(i32::MAX, 16 * 25);
+        let _ = Dequant::new8(51).apply(i32::MIN, 16 * 25);
+        let _ = Dequant::new8(0).apply(i32::MIN, 16 * 25);
     }
 }
