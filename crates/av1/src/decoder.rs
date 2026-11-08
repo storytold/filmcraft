@@ -107,6 +107,8 @@ impl Progress {
 
     /// Rows [0, rows) are final. A smaller value than already published is ignored.
     pub fn publish(&self, rows: usize) {
+        #[cfg(test)]
+        tests::jitter();
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if rows > g.rows {
             g.rows = rows;
@@ -123,6 +125,8 @@ impl Progress {
 
     /// Blocks until rows [0, rows) are final; an error when the frame failed first.
     pub fn wait(&self, rows: usize) -> Result<()> {
+        #[cfg(test)]
+        tests::jitter();
         let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if g.rows >= rows {
@@ -267,6 +271,9 @@ struct FrameJob {
     draft: bool,
     #[cfg(test)]
     force_panic: bool,
+    /// Panic in the row wavefront after reconstructing this superblock row (tests).
+    #[cfg(test)]
+    panic_at_row: Option<usize>,
 }
 
 /// A shown picture in output order.
@@ -383,6 +390,12 @@ pub struct Decoder {
     /// Make every frame job panic (tests of the worker panic handling).
     #[cfg(test)]
     force_panic: bool,
+    /// (frame number, superblock row): that frame panics in the row wavefront after the row,
+    /// once it has published rows that later frames may already be using (tests).
+    #[cfg(test)]
+    panic_at_row: Option<(usize, usize)>,
+    #[cfg(test)]
+    frame_number: usize,
 }
 
 fn default_threads() -> usize {
@@ -444,6 +457,10 @@ impl Decoder {
             pts: 0,
             #[cfg(test)]
             force_panic: false,
+            #[cfg(test)]
+            panic_at_row: None,
+            #[cfg(test)]
+            frame_number: 0,
         }
     }
 
@@ -716,7 +733,13 @@ impl Decoder {
             draft,
             #[cfg(test)]
             force_panic: self.force_panic,
+            #[cfg(test)]
+            panic_at_row: self.panic_at_row.filter(|&(f, _)| f == self.frame_number).map(|(_, r)| r),
         }));
+        #[cfg(test)]
+        {
+            self.frame_number += 1;
+        }
         Ok(None)
     }
 
@@ -1144,6 +1167,8 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
             publish_final(&job.slot, done, fh.frame_height as usize);
         }
         other += f.secs();
+        #[cfg(test)]
+        assert!(job.panic_at_row != Some(row), "forced panic in the row wavefront");
     }
     // A reference that failed after publishing the rows used here still fails this frame, as
     // it does when frames are decoded one after another.
@@ -1453,6 +1478,8 @@ mod tests {
             draft: false,
             #[cfg(test)]
             force_panic: false,
+            #[cfg(test)]
+            panic_at_row: None,
         }));
         decoder
     }
@@ -1593,6 +1620,230 @@ mod tests {
         assert!(frame_size_allowed(8192, 4352)); // exactly MaxPicSize
         assert!(frame_size_allowed(7680, 4320)); // 8K UHD
         assert!(frame_size_allowed(1, 1));
+    }
+
+    /// Random short sleeps in row progress publishing and waiting, to shake out scheduling
+    /// orders a quiet machine never produces (enabled by [`JitterGuard`]).
+    static JITTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    pub(super) fn jitter() {
+        use std::cell::Cell;
+        use std::sync::atomic::Ordering;
+        if JITTER.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x2545_f491_4f6c_dd1d);
+        thread_local!(static RNG: Cell<u64> = Cell::new(SEED.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed) | 1));
+        let r = RNG.with(|c| {
+            let mut x = c.get();
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            c.set(x);
+            x
+        });
+        match r % 4 {
+            0 => std::thread::yield_now(),
+            1 => std::thread::sleep(std::time::Duration::from_micros(r % 300)),
+            _ => {}
+        }
+    }
+
+    struct JitterGuard;
+    impl JitterGuard {
+        fn on() -> JitterGuard {
+            JITTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            JitterGuard
+        }
+    }
+    impl Drop for JitterGuard {
+        fn drop(&mut self) {
+            JITTER.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The temporal units of a generated inter fixture (made by the oracle tests with ffmpeg),
+    /// or None (reported) when it is not there.
+    fn inter_fixture(name: &str) -> Option<Vec<Vec<u8>>> {
+        let path = filmcraft_testkit::fixtures_dir("av1").join(name);
+        let Ok(d) = std::fs::read(&path) else {
+            filmcraft_testkit::skip("av1 wavefront", &format!("{} is missing (run the oracle tests first)", path.display()));
+            return None;
+        };
+        let mut pos = usize::from(u16::from_le_bytes([*d.get(6)?, *d.get(7)?]));
+        let mut out = Vec::new();
+        while let Some(h) = d.get(pos..pos + 12) {
+            let n = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
+            pos += 12;
+            out.push(d.get(pos..pos + n)?.to_vec());
+            pos += n;
+        }
+        Some(out)
+    }
+
+    /// Decode `tus` with `dec`: (pictures, errors).
+    fn decode_tus(mut dec: Decoder, tus: &[Vec<u8>]) -> (Vec<Picture>, usize) {
+        let (mut pics, mut errors) = (Vec::new(), 0);
+        for (i, tu) in tus.iter().enumerate() {
+            match dec.decode_pts(tu, i as i64) {
+                Ok(p) => pics.extend(p),
+                Err(_) => errors += 1,
+            }
+        }
+        match dec.flush_result() {
+            Ok(p) => pics.extend(p),
+            Err(_) => errors += 1,
+        }
+        (pics, errors)
+    }
+
+    #[test]
+    fn jittered_wavefront_gives_the_single_thread_pictures() {
+        for name in ["inter_testsrc_p3.ivf", "inter_noise_odd_p6.ivf", "inter_superres.ivf", "inter_tiles_odd_10bit.ivf"] {
+            let Some(tus) = inter_fixture(name) else { continue };
+            let (want, errors) = decode_tus(Decoder::with_threads(1), &tus);
+            assert_eq!(errors, 0, "{name}");
+            let _jitter = JitterGuard::on();
+            for threads in [2, 3, 5, 8] {
+                for round in 0..2 {
+                    let tus = tus.clone();
+                    let (got, errors) = within_a_minute(move || decode_tus(Decoder::with_threads(threads), &tus));
+                    assert_eq!(errors, 0, "{name}: threads {threads} round {round}");
+                    assert!(got == want, "{name}: threads {threads} round {round}: pictures differ");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_reference_panicking_after_publishing_rows_fails_without_a_hang() {
+        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        let _jitter = JitterGuard::on();
+        // Frame 1 is the first inter frame; later frames predict from it.
+        for threads in [2, 3, 8] {
+            for frame in [0, 1, 2] {
+                let tus = tus.clone();
+                let (pics, errors) = within_a_minute(move || {
+                    let mut dec = Decoder::with_threads(threads);
+                    dec.panic_at_row = Some((frame, 1));
+                    decode_tus(dec, &tus)
+                });
+                assert!(errors > 0, "threads {threads}, frame {frame}: the panic was not reported ({} pictures)", pics.len());
+            }
+        }
+    }
+
+    #[test]
+    fn dropping_a_busy_decoder_does_not_hang() {
+        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        for threads in [2, 3, 8, 16] {
+            for cut in [1, 3, tus.len() / 2] {
+                let tus = tus.clone();
+                within_a_minute(move || {
+                    let mut dec = Decoder::with_threads(threads);
+                    for (i, tu) in tus.iter().take(cut).enumerate() {
+                        let _ = dec.decode_pts(tu, i as i64);
+                    }
+                    drop(dec);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn a_flush_mid_stream_keeps_the_pictures() {
+        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        let (want, _) = decode_tus(Decoder::with_threads(1), &tus);
+        for threads in [2, 8] {
+            for cut in [2, 5, tus.len() / 2] {
+                let tus = tus.clone();
+                let got = within_a_minute(move || {
+                    let mut dec = Decoder::with_threads(threads);
+                    let mut pics = Vec::new();
+                    for (i, tu) in tus.iter().enumerate() {
+                        if i == cut {
+                            pics.extend(dec.flush_result().expect("flush"));
+                        }
+                        pics.extend(dec.decode_pts(tu, i as i64).expect("decode"));
+                    }
+                    pics.extend(dec.flush_result().expect("flush"));
+                    pics
+                });
+                assert!(got == want, "threads {threads}, flush before unit {cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn progress_wakes_every_waiter_with_the_rows_or_the_failure() {
+        let p = Arc::new(Progress::new());
+        let waiters: Vec<_> = (1..=8)
+            .map(|k| {
+                let p = p.clone();
+                std::thread::spawn(move || p.wait(k * 10))
+            })
+            .collect();
+        p.publish(40);
+        p.publish(20); // never goes back
+        assert_eq!(p.wait(40), Ok(()));
+        p.fail();
+        let res: Vec<_> = waiters.into_iter().map(|w| w.join().expect("waiter")).collect();
+        assert!(res[..4].iter().all(|r| r.is_ok()), "{res:?}");
+        assert!(res[4..].iter().all(|r| r.is_err()), "{res:?}");
+        assert_eq!(p.wait(40), Ok(()), "rows published before a failure stay readable");
+    }
+
+    #[test]
+    fn a_failed_frame_keeps_its_published_parse_results() {
+        let slot = FrameSlot::new(BandFrame::new(16, 16, 1, 0, 0));
+        let parsed = Parsed { cdfs: Cdfs::new(0), segment_ids: vec![], mi_cols: 4, mi_rows: 4, saved_ref_frames: vec![], saved_mvs: vec![] };
+        slot.set_parsed(Ok(Arc::new(parsed)));
+        slot.finish(Err(Error::Invalid("x")), 16);
+        assert!(slot.wait_parsed().is_ok());
+        assert!(slot.wait().is_err());
+        assert!(slot.progress.wait(1).is_err());
+        // A frame failing before its parse results: every waiter gets the error.
+        let slot = FrameSlot::new(BandFrame::new(16, 16, 1, 0, 0));
+        slot.finish(Err(Error::Invalid("y")), 16);
+        assert!(slot.wait_parsed().is_err());
+    }
+
+    fn motion(mi_row: usize, bh4: usize, ref_frame: [i8; 2], mv: [[i32; 2]; 2]) -> crate::tile::BlockMotion {
+        crate::tile::BlockMotion { mi_row, bh4, inter: true, ref_frame, mv, motion_mode: 0, y_mode: crate::spec_tables::NEARESTMV }
+    }
+
+    #[test]
+    fn rows_needed_follow_the_motion_vectors() {
+        let mut fh = FrameHeader { frame_width: 64, upscaled_width: 64, frame_height: 256, ..Default::default() };
+        fh.ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
+        let mut ri: [RefInfo; NUM_REF_FRAMES] = Default::default();
+        for r in ri.iter_mut() {
+            (r.upscaled_width, r.frame_height) = (64, 256);
+        }
+        let none = [[0; 2]; 2];
+        // 41/8 rows down rounds up to 6; upward motion needs only the block's own rows.
+        let need = rows_needed(&fh, &ri, [motion(0, 16, [1, -1], [[41, 0], [0, 0]]), motion(0, 16, [2, 3], [[-80, 0], [7, 0]])].into_iter(), 64);
+        assert_eq!(need[0], 64 + 6 + ROW_WAIT_MARGIN);
+        assert_eq!(need[1], 64 + ROW_WAIT_MARGIN);
+        assert_eq!(need[2], 64 + 1 + ROW_WAIT_MARGIN);
+        assert_eq!(need[3], 0);
+        // Intra blocks and intra block copy read no reference.
+        let intra = crate::tile::BlockMotion { inter: false, ..motion(0, 16, [1, -1], none) };
+        assert_eq!(rows_needed(&fh, &ri, [intra].into_iter(), 64), [0; NUM_REF_FRAMES]);
+        // Blocks reaching below the superblock row count from their own bottom.
+        assert_eq!(rows_needed(&fh, &ri, [motion(12, 8, [1, -1], none)].into_iter(), 64)[0], 80 + ROW_WAIT_MARGIN);
+        // Local warp: the whole of every reference the rows use.
+        let warp = crate::tile::BlockMotion { motion_mode: crate::spec_tables::LOCALWARP as u8, ..motion(0, 16, [1, -1], none) };
+        let need = rows_needed(&fh, &ri, [warp, motion(0, 16, [2, -1], none)].into_iter(), 64);
+        assert_eq!((need[0], need[1], need[2]), (usize::MAX, usize::MAX, 0));
+        // Global motion beyond translation for GLOBALMV blocks.
+        fh.gm_type[3] = (TRANSLATION + 1) as u8;
+        let global = crate::tile::BlockMotion { y_mode: GLOBALMV, ..motion(0, 16, [1, -1], none) };
+        assert_eq!(rows_needed(&fh, &ri, [global].into_iter(), 64)[0], usize::MAX);
+        fh.gm_type[3] = 0;
+        // A scaled reference.
+        ri[0].frame_height = 128;
+        assert_eq!(rows_needed(&fh, &ri, [motion(0, 16, [1, -1], none)].into_iter(), 64)[0], usize::MAX);
     }
 
     #[test]
