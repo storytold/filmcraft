@@ -61,6 +61,63 @@ fn probe_media(s: &Session, original: &str, document: &Path) -> std::result::Res
     Ok((canonical, source.info().clone()))
 }
 
+/// Probe the stored path, then the project-relative path (a project moved between computers),
+/// then either one with its file name matched without regard to letter case (a project saved
+/// on Windows or macOS keeps `clip.mov` for a file that is `clip.MOV` on a case-sensitive disk).
+/// Every candidate passes the same document policy and probe.
+fn probe_with_fallbacks(
+    s: &Session,
+    original: &str,
+    relative: Option<&String>,
+    document: &Path,
+    report: &mut filmcraft_interchange::Report,
+) -> std::result::Result<(PathBuf, filmcraft_media::MediaInfo), String> {
+    let error = match probe_media(s, original, document) {
+        Ok(found) => return Ok(found),
+        Err(error) => error,
+    };
+    let mut errors = error.clone();
+    if let Some(relative) = relative {
+        match probe_media(s, relative, document) {
+            Ok(found) => {
+                filmcraft_interchange::premiere::warning(report, format!("{original}: {error}; using its project-relative path {relative}"));
+                return Ok(found);
+            }
+            Err(relative_error) => errors = format!("{error}; project-relative path {relative}: {relative_error}"),
+        }
+    }
+    for candidate in std::iter::once(original).chain(relative.map(String::as_str)) {
+        let Some(variant) = crate::doc_path::resolve(candidate, Some(document)).ok().and_then(|p| case_variant(Path::new(&p))) else { continue };
+        let variant = stored_path(&variant);
+        if let Ok(found) = probe_media(s, &variant, document) {
+            filmcraft_interchange::premiere::warning(report, format!("{original}: {error}; using {variant}, whose name differs only in letter case"));
+            return Ok(found);
+        }
+    }
+    Err(errors)
+}
+
+/// The one entry of `path`'s folder whose name equals its file name apart from letter case, when
+/// `path` itself does not exist. None when there is no such entry, or more than one.
+fn case_variant(path: &Path) -> Option<PathBuf> {
+    const MAX_ENTRIES: usize = 100_000;
+    if std::fs::symlink_metadata(path).is_ok() {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?.to_lowercase();
+    let mut found = None;
+    for entry in std::fs::read_dir(path.parent()?).ok()?.take(MAX_ENTRIES) {
+        let Ok(entry) = entry else { continue };
+        if entry.file_name().to_str().is_some_and(|n| n.to_lowercase() == name) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(entry.path());
+        }
+    }
+    found
+}
+
 pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
     let mut f = std::fs::File::open(path).map_err(io)?;
     if !f.metadata().map_err(io)?.is_file() {
@@ -187,16 +244,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
             let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None, identity: None };
             // A project moved between computers keeps a project-relative path. It is tried only
             // when the stored path fails, and passes the same document policy and probe.
-            let probed_media = match (probe_media(s, &original, &source), tree.relative_media.get(&original)) {
-                (Err(error), Some(relative)) => match probe_media(s, relative, &source) {
-                    Ok(found) => {
-                        filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; using its project-relative path {relative}"));
-                        Ok(found)
-                    }
-                    Err(relative_error) => Err(format!("{error}; project-relative path {relative}: {relative_error}")),
-                },
-                (result, _) => result,
-            };
+            let probed_media = probe_with_fallbacks(s, &original, tree.relative_media.get(&original), &source, &mut report);
             match probed_media {
                 Ok((src, info)) => {
                     record.original_path = stored_path(&src);
