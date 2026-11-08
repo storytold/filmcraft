@@ -1665,7 +1665,7 @@
 	Elliptical	Eliptyczne
 	Emboss	Wytłoczenie
 	Enable HSL Secondary	Włącz drugorzędne HSL
-	Enable Mercury Transmit	Włącz Mercury Transmit
+	Enable External Video Output	Włącz zewnętrzne wyjście wideo
 	Enable ProRes hardware accelerated encoding, if available	Włącz sprzętowe kodowanie ProRes, jeśli jest dostępne
 	Enable clip and XMP metadata linking	Włącz łączenie metadanych klipu i XMP
 	Enable developer mode	Włącz tryb deweloperski
@@ -2079,7 +2079,7 @@
 	Monoscopic	Monoskopowe
 	Monospace only	Tylko o stałej szerokości
 	More colour in the less saturated areas	Więcej koloru w mniej nasyconych obszarach
-	Morph Cut	Morph Cut
+	Optical Flow Dissolve	Przenikanie z przepływem optycznym
 	Mosaic	Mozaika
 	Mosaic (Legacy)	Mozaika (starsza)
 	Motion Blur	Rozmycie ruchu
@@ -2582,7 +2582,7 @@
 	Twist	Skręcenie
 	Twist Smoother	Gładsze skręcenie
 	Typewriter	Maszyna do pisania
-	Ultra Key	Ultra Key
+	Chroma Key	Kluczowanie kolorem
 	Uniform Scale	Skala jednolita
 	Uniform Spacing	Jednolite odstępy
 	Unsharp Mask	Maska wyostrzająca
@@ -2664,7 +2664,7 @@
 	Warm print stock with gentle roll-off	Ciepła taśma kopiowa z łagodnym spadkiem
 	Warm, soft late-afternoon light	Ciepłe, miękkie światło późnego popołudnia
 	Warning	Ostrzeżenie
-	Warp Stabilizer	Stabilizator Warp
+	Motion Stabilizer	Stabilizacja ruchu
 	Wave	Fala
 	Wave Height	Wysokość fali
 	Wave Speed	Szybkość fali

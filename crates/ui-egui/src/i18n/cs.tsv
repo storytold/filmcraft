@@ -1666,7 +1666,7 @@
 	Elliptical	Eliptický
 	Emboss	Reliéf
 	Enable HSL Secondary	Povolit sekundární korekci HSL
-	Enable Mercury Transmit	Povolit Mercury Transmit
+	Enable External Video Output	Povolit externí výstup videa
 	Enable ProRes hardware accelerated encoding, if available	Povolit hardwarově akcelerované kódování ProRes, je-li dostupné
 	Enable clip and XMP metadata linking	Povolit propojení metadat klipu a XMP
 	Enable developer mode	Povolit vývojářský režim
@@ -2080,7 +2080,7 @@
 	Monoscopic	Monoskopický
 	Monospace only	Pouze neproporcionální písma
 	More colour in the less saturated areas	Více barvy v méně sytých oblastech
-	Morph Cut	Morfovací střih
+	Optical Flow Dissolve	Prolnutí optickým tokem
 	Mosaic	Mozaika
 	Mosaic (Legacy)	Mozaika (starší)
 	Motion Blur	Pohybové rozostření
@@ -2583,7 +2583,7 @@
 	Twist	Zkroucení
 	Twist Smoother	Vyhlazení zkroucení
 	Typewriter	Psací stroj
-	Ultra Key	Pokročilé klíčování
+	Chroma Key	Klíčování barvou
 	Uniform Scale	Jednotné měřítko
 	Uniform Spacing	Rovnoměrné rozestupy
 	Unsharp Mask	Doostření maskou
@@ -2665,7 +2665,7 @@
 	Warm print stock with gentle roll-off	Teplé podání filmové kopie s jemným útlumem světel
 	Warm, soft late-afternoon light	Teplé, měkké světlo pozdního odpoledne
 	Warning	Varování
-	Warp Stabilizer	Deformační stabilizátor
+	Motion Stabilizer	Stabilizátor pohybu
 	Wave	Vlna
 	Wave Height	Výška vlny
 	Wave Speed	Rychlost vlny

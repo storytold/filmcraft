@@ -1659,7 +1659,7 @@
 	Elliptical	Эллиптический
 	Emboss	Рельеф
 	Enable HSL Secondary	Включить вторичную коррекцию HSL
-	Enable Mercury Transmit	Включить Mercury Transmit
+	Enable External Video Output	Включить внешний видеовыход
 	Enable ProRes hardware accelerated encoding, if available	Включить аппаратное ускорение кодирования ProRes, если доступно
 	Enable clip and XMP metadata linking	Включить связывание метаданных клипов и XMP
 	Enable developer mode	Включить режим разработчика
@@ -2075,7 +2075,7 @@
 	Monoscopic	Моноскопический
 	Monospace only	Только моноширинные
 	More colour in the less saturated areas	Больше цвета в менее насыщенных областях
-	Morph Cut	Morph Cut
+	Optical Flow Dissolve	Наплыв с оптическим потоком
 	Mosaic	Мозаика
 	Mosaic (Legacy)	Мозаика (устаревшая)
 	Motion Blur	Размытие в движении
@@ -2579,7 +2579,7 @@
 	Twist	Кручение
 	Twist Smoother	Кручение сглаженное
 	Typewriter	Печатная машинка
-	Ultra Key	Ultra Key
+	Chroma Key	Хромакей
 	Uniform Scale	Равномерный масштаб
 	Uniform Spacing	Равномерные отступы
 	Unsharp Mask	Контурная резкость
@@ -2661,7 +2661,7 @@
 	Warm print stock with gentle roll-off	Тёплая плёночная копия с мягким спадом
 	Warm, soft late-afternoon light	Тёплый мягкий предвечерний свет
 	Warning	Предупреждение
-	Warp Stabilizer	Warp Stabilizer
+	Motion Stabilizer	Стабилизация движения
 	Wave	Волна
 	Wave Height	Высота волны
 	Wave Speed	Скорость волны

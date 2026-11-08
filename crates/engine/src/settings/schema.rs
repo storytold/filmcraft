@@ -521,7 +521,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             f("playback.postrollSeconds", "Postroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.stepManyFrames", "Step forward/back many", int(1.0, 1000.0, "frames"), true),
             b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
-            b("playback.enableTransmit", "Enable Mercury Transmit", false),
+            b("playback.enableTransmit", "Enable External Video Output", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
             f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),

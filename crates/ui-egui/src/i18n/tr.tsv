@@ -1665,7 +1665,7 @@
 	Elliptical	Eliptik
 	Emboss	Kabartma
 	Enable HSL Secondary	İkincil HSL'yi Etkinleştir
-	Enable Mercury Transmit	Mercury Transmit'i Etkinleştir
+	Enable External Video Output	Harici Video Çıkışını Etkinleştir
 	Enable ProRes hardware accelerated encoding, if available	Varsa ProRes donanım hızlandırmalı kodlamayı etkinleştir
 	Enable clip and XMP metadata linking	Klip ve XMP üstveri bağlantısını etkinleştir
 	Enable developer mode	Geliştirici modunu etkinleştir
@@ -2081,7 +2081,7 @@
 	Monoscopic	Monoskopik
 	Monospace only	Yalnızca eş aralıklı
 	More colour in the less saturated areas	Daha az doymuş alanlarda daha fazla renk
-	Morph Cut	Biçim Değiştirme Kesimi
+	Optical Flow Dissolve	Optik Akışla Geçiş
 	Mosaic	Mozaik
 	Mosaic (Legacy)	Mozaik (Eski)
 	Motion Blur	Hareket Bulanıklığı
@@ -2585,7 +2585,7 @@
 	Twist	Burulma
 	Twist Smoother	Daha Yumuşak Burulma
 	Typewriter	Daktilo
-	Ultra Key	Ultra Key
+	Chroma Key	Renk Anahtarı
 	Uniform Scale	Tekdüze Ölçek
 	Uniform Spacing	Tekdüze Boşluk
 	Unsharp Mask	Keskinliği Azaltma Maskesi
@@ -2667,7 +2667,7 @@
 	Warm print stock with gentle roll-off	Yumuşak düşüşlü sıcak baskı filmi
 	Warm, soft late-afternoon light	Sıcak, yumuşak ikindi ışığı
 	Warning	Uyarı
-	Warp Stabilizer	Warp Stabilizer
+	Motion Stabilizer	Hareket Sabitleyici
 	Wave	Dalga
 	Wave Height	Dalga Yüksekliği
 	Wave Speed	Dalga Hızı

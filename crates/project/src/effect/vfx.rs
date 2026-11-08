@@ -376,7 +376,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
         ),
         video(
             "warp_stabilizer",
-            "Warp Stabilizer",
+            "Motion Stabilizer",
             DISTORT,
             vec![
                 grp(ch("result", "Result", &["Smooth Motion", "No Motion"], 0), "Stabilization"),
@@ -1022,7 +1022,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
     v
 }
 
-/// Parameter values written when Ultra Key's Setting is Default, Relaxed or Aggressive.
+/// Parameter values written when Chroma Key's Setting is Default, Relaxed or Aggressive.
 /// Custom (index 3) leaves the current values. Aggressive matches the matte that cleans
 /// light and dark clothing on a typical green screen.
 pub fn ultra_key_setting(setting: u32) -> Option<&'static [(&'static str, f64)]> {
@@ -1192,7 +1192,7 @@ mod tests {
             ],
         ),
         ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
-        ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
+        ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Motion Stabilizer", "Wave Warp"]),
         ("Generate", &["4-Color Gradient", "Gradient"]),
         ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),
         (
@@ -1211,7 +1211,7 @@ mod tests {
                 "VR Sharpen",
             ],
         ),
-        ("Keying", &["Alpha Adjust", "Color Key", "Logo Cutout", "Luma Key", "Track Matte Key", "Ultra Key"]),
+        ("Keying", &["Alpha Adjust", "Color Key", "Logo Cutout", "Luma Key", "Track Matte Key", "Chroma Key"]),
         ("Lights & Glows", &["Echo Glow", "Edge Glow", "Glint", "Lens Flare", "Light Leaks", "RGB Split", "Volumetric Rays", "Wonder Glow"]),
         ("Noise & Grain", &["Noise"]),
         ("Perspective", &["Basic 3D", "Drop Shadow", "Long Shadow"]),

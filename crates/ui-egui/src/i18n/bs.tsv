@@ -1683,7 +1683,7 @@
 	Elliptical	Eliptično
 	Emboss	Reljef
 	Enable HSL Secondary	Omogući HSL sekundarno
-	Enable Mercury Transmit	Omogući Mercury Transmit
+	Enable External Video Output	Omogući vanjski video izlaz
 	Enable ProRes hardware accelerated encoding, if available	Omogući hardverski ubrzano ProRes kodiranje, ako je dostupno
 	Enable clip and XMP metadata linking	Omogući povezivanje metapodataka klipa i XMP-a
 	Enable developer mode	Omogući razvojni način
@@ -2094,7 +2094,7 @@
 	Monoscopic	Monoskopsko
 	Monospace only	Samo neproporcionalni
 	More colour in the less saturated areas	Više boje u manje zasićenim područjima
-	Morph Cut	Morph rez
+	Optical Flow Dissolve	Pretapanje optičkim tokom
 	Mosaic	Mozaik
 	Mosaic (Legacy)	Mozaik (naslijeđeno)
 	Motion Blur	Zamućenje pokreta
@@ -2597,7 +2597,7 @@
 	Twist	Uvrtanje
 	Twist Smoother	Zaglađivač uvrtanja
 	Typewriter	Pisaća mašina
-	Ultra Key	Ultra ključ
+	Chroma Key	Hromatski ključ
 	Uniform Scale	Ujednačena skala
 	Uniform Spacing	Ujednačen razmak
 	Unsharp Mask	Maska izoštravanja
@@ -2679,7 +2679,7 @@
 	Warm print stock with gentle roll-off	Topla filmska traka s blagim opadanjem
 	Warm, soft late-afternoon light	Toplo, meko svjetlo kasnog popodneva
 	Warning	Upozorenje
-	Warp Stabilizer	Warp stabilizator
+	Motion Stabilizer	Stabilizator pokreta
 	Wave	Talas
 	Wave Height	Visina talasa
 	Wave Speed	Brzina talasa

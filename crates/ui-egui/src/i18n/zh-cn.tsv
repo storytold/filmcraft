@@ -1672,7 +1672,7 @@
 	Elliptical	椭圆
 	Emboss	浮雕
 	Enable HSL Secondary	启用 HSL 辅助
-	Enable Mercury Transmit	启用 Mercury 传输
+	Enable External Video Output	启用外部视频输出
 	Enable ProRes hardware accelerated encoding, if available	如可用，启用 ProRes 硬件加速编码
 	Enable clip and XMP metadata linking	启用剪辑与 XMP 元数据链接
 	Enable developer mode	启用开发者模式
@@ -2081,7 +2081,7 @@
 	Monoscopic	单视
 	Monospace only	仅等宽
 	More colour in the less saturated areas	在饱和度较低区域增加色彩
-	Morph Cut	变形剪切
+	Optical Flow Dissolve	光流溶解
 	Mosaic	马赛克
 	Mosaic (Legacy)	马赛克（旧版）
 	Motion Blur	运动模糊
@@ -2584,7 +2584,7 @@
 	Twist	扭转
 	Twist Smoother	扭转平滑器
 	Typewriter	打字机
-	Ultra Key	超级键
+	Chroma Key	色度键
 	Uniform Scale	等比缩放
 	Uniform Spacing	均匀间距
 	Unsharp Mask	锐化遮罩
@@ -2666,7 +2666,7 @@
 	Warm print stock with gentle roll-off	带柔和滚降的暖色正片
 	Warm, soft late-afternoon light	温暖柔和的午后光线
 	Warning	警告
-	Warp Stabilizer	变形稳定器
+	Motion Stabilizer	运动稳定器
 	Wave	波浪
 	Wave Height	波浪高度
 	Wave Speed	波浪速度

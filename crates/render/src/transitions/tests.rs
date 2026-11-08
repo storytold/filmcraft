@@ -268,7 +268,7 @@ fn jump_cut_frame(x0: f32, textured: bool) -> Image {
 
 #[test]
 fn morph_cut_moves_the_subject_instead_of_double_exposing() {
-    // the subject jumps 12 px between the shots; at the midpoint Morph Cut shows it once, 6 px
+    // the subject jumps 12 px between the shots; at the midpoint Optical Flow Dissolve shows it once, 6 px
     // along, where a cross dissolve shows two half-bright copies
     let (a, b) = (jump_cut_frame(96.0, false), jump_cut_frame(108.0, false));
     let want = jump_cut_frame(102.0, false);

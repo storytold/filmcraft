@@ -507,3 +507,39 @@ mod bcp47_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod feature_name_tests {
+    #[test]
+    fn renamed_feature_labels_have_translations_in_every_catalog() {
+        let catalogs = [
+            ("bs", include_str!("i18n/bs.tsv")),
+            ("cs", include_str!("i18n/cs.tsv")),
+            ("de", include_str!("i18n/de.tsv")),
+            ("es", include_str!("i18n/es.tsv")),
+            ("fr", include_str!("i18n/fr.tsv")),
+            ("id", include_str!("i18n/id.tsv")),
+            ("it", include_str!("i18n/it.tsv")),
+            ("ja", include_str!("i18n/ja.tsv")),
+            ("ko", include_str!("i18n/ko.tsv")),
+            ("pl", include_str!("i18n/pl.tsv")),
+            ("pt-br", include_str!("i18n/pt-br.tsv")),
+            ("ru", include_str!("i18n/ru.tsv")),
+            ("sv", include_str!("i18n/sv.tsv")),
+            ("tr", include_str!("i18n/tr.tsv")),
+            ("uk", include_str!("i18n/uk.tsv")),
+            ("zh-cn", include_str!("i18n/zh-cn.tsv")),
+        ];
+        for (language, catalog) in catalogs {
+            for key in ["Chroma Key", "Motion Stabilizer", "Optical Flow Dissolve", "Enable External Video Output"] {
+                assert!(
+                    catalog.lines().any(|line| {
+                        let mut fields = line.split('\t');
+                        fields.next() == Some("") && fields.next() == Some(key) && fields.next().is_some_and(|text| !text.is_empty())
+                    }),
+                    "{language}: missing {key}"
+                );
+            }
+        }
+    }
+}

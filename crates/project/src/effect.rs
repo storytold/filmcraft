@@ -709,7 +709,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "ultra_key",
-            "Ultra Key",
+            "Chroma Key",
             KEYING,
             vec![
                 col("key_color", "Key Color", [0.0, 0.8, 0.2, 1.0]),
@@ -895,7 +895,14 @@ pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
 /// Case-insensitive lookup by id or display name.
 pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
     let n = name.to_ascii_lowercase();
-    effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n)
+    // Old human-readable names are import/automation aliases, never display labels.
+    let legacy_id = match n.as_str() {
+        "ultra key" => Some("ultra_key"),
+        "warp stabilizer" => Some("warp_stabilizer"),
+        "morph cut" => Some("morph_cut"),
+        _ => None,
+    };
+    legacy_id.and_then(find_effect).or_else(|| effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
 }
 
 /// Intrinsic video effects every video track item carries (Motion, Opacity, Time Remapping).
@@ -922,5 +929,24 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn descriptive_names_preserve_legacy_lookup_and_project_ids() {
+        for (id, old, label) in [
+            ("ultra_key", "Ultra Key", "Chroma Key"),
+            ("warp_stabilizer", "Warp Stabilizer", "Motion Stabilizer"),
+            ("morph_cut", "Morph Cut", "Optical Flow Dissolve"),
+        ] {
+            let def = find_effect(id).unwrap();
+            assert_eq!(def.name, label);
+            assert_eq!(find_effect_by_name(old).unwrap().id, id);
+            assert_eq!(find_effect_by_name(&old.to_uppercase()).unwrap().id, id);
+            assert_eq!(find_effect_by_name(label).unwrap().id, id);
+            let saved = serde_json::to_value(def.instance()).unwrap();
+            assert_eq!(saved["effect"], id);
+            let loaded: EffectInstance = serde_json::from_value(saved).unwrap();
+            assert_eq!(loaded, def.instance());
+        }
     }
 }

@@ -1668,7 +1668,7 @@
 	Elliptical	Elliptisk
 	Emboss	Relief
 	Enable HSL Secondary	Aktivera HSL-sekundär
-	Enable Mercury Transmit	Aktivera Mercury Transmit
+	Enable External Video Output	Aktivera extern videoutgång
 	Enable ProRes hardware accelerated encoding, if available	Aktivera hårdvaruaccelererad ProRes-kodning om tillgänglig
 	Enable clip and XMP metadata linking	Aktivera länkning av klipp- och XMP-metadata
 	Enable developer mode	Aktivera utvecklarläge
@@ -2084,7 +2084,7 @@
 	Monoscopic	Monoskopisk
 	Monospace only	Endast fast teckenbredd
 	More colour in the less saturated areas	Mer färg i de mindre mättade områdena
-	Morph Cut	Morph Cut
+	Optical Flow Dissolve	Övertoning med optiskt flöde
 	Mosaic	Mosaik
 	Mosaic (Legacy)	Mosaik (äldre)
 	Motion Blur	Rörelseoskärpa
@@ -2588,7 +2588,7 @@
 	Twist	Vridning
 	Twist Smoother	Mjukare vridning
 	Typewriter	Skrivmaskin
-	Ultra Key	Ultra Key
+	Chroma Key	Färgnyckling
 	Uniform Scale	Enhetlig skala
 	Uniform Spacing	Enhetligt avstånd
 	Unsharp Mask	Oskarp mask
@@ -2670,7 +2670,7 @@
 	Warm print stock with gentle roll-off	Varm kopiefilm med mjukt avrundade högdagrar
 	Warm, soft late-afternoon light	Varmt, mjukt ljus från sen eftermiddag
 	Warning	Varning
-	Warp Stabilizer	Warp Stabilizer
+	Motion Stabilizer	Rörelsestabilisering
 	Wave	Våg
 	Wave Height	Våghöjd
 	Wave Speed	Våghastighet

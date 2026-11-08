@@ -441,3 +441,7 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+	Chroma Key	Хромакей
+	Motion Stabilizer	Стабілізація руху
+	Optical Flow Dissolve	Наплив з оптичним потоком
+	Enable External Video Output	Увімкнути зовнішній відеовихід

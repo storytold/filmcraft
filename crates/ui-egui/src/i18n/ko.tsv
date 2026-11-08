@@ -1033,7 +1033,7 @@
 	Enable hardware accelerated decoding (requires restart)	하드웨어 가속 디코딩 사용(재시작 필요)
 	Enable HSL Secondary	HSL 보조 사용
 	Enable language auto-detection	언어 자동 감지 사용
-	Enable Mercury Transmit	Mercury Transmit 사용
+	Enable External Video Output	외부 비디오 출력 사용
 	Enable ProRes hardware accelerated encoding, if available	가능한 경우 ProRes 하드웨어 가속 인코딩 사용
 	Enable proxies	프록시 사용
 	Enable Remix	리믹스 사용
@@ -1933,7 +1933,7 @@
 	More colour in the less saturated areas	채도 낮은 영역에 색상 추가
 	More presets…	사전 설정 더 보기…
 	More transport controls	전송 컨트롤 더 보기
-	Morph Cut	모프 컷
+	Optical Flow Dissolve	광학 흐름 디졸브
 	Mosaic	모자이크
 	Mosaic (Legacy)	모자이크(레거시)
 	Mosaic In	모자이크 인
@@ -3301,7 +3301,7 @@
 	Typewriter	타자기
 	UI Scale	UI 배율
 	UI:	UI:
-	Ultra Key	울트라 키
+	Chroma Key	크로마 키
 	Uncompressed (PCM)	비압축(PCM)
 	Underline	밑줄
 	Strikethrough	취소선
@@ -3465,7 +3465,7 @@
 	Warm, soft late-afternoon light	따뜻하고 부드러운 늦은 오후 빛
 	Warning	경고
 	Warnings and Errors	경고 및 오류
-	Warp Stabilizer	워프 안정기
+	Motion Stabilizer	동작 안정화
 	WAV, stereo 48 kHz 16-bit PCM	WAV, 스테레오 48 kHz 16비트 PCM
 	WAV, stereo 48 kHz 24-bit PCM	WAV, 스테레오 48 kHz 24비트 PCM
 	Wave	파형
