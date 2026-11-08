@@ -329,6 +329,25 @@ fn a_twelve_hour_sequence_zooms_out_until_it_is_all_in_view() {
 }
 
 #[test]
+fn menu_zoom_in_respects_the_configured_limit_without_zooming_out() {
+    let mut d = Driver::tall();
+    let width = d.rect("timeline.tracks")[2];
+    let max = f64::from(width);
+    let before = max * 0.9;
+    {
+        let app = d.app();
+        app.session.state.timeline_ui.max_zoom_seconds = 1.0;
+        app.ui.timeline.target_pps = before;
+        app.ui.timeline.pps = before;
+    }
+    d.exec("view.zoomIn", json!({}));
+    d.frames(4);
+    let after = d.view().1;
+    assert!(after > before, "Zoom In reduced the zoom from {before} to {after}");
+    assert!(after <= max * 1.01, "Zoom In exceeded the configured maximum {max}: {after}");
+}
+
+#[test]
 fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let mut d = Driver::tall();
     let seconds = d.seconds();
