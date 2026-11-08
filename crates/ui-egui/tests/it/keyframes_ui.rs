@@ -916,3 +916,25 @@ fn effect_controls_delete_key_removes_every_selected_keyframe() {
     d.exec("edit.undo", json!({}));
     assert_eq!((d.scale(&clip).0.len(), d.parameter(&clip, "motion", "position").keyframes.len()), (2, 1), "undo restores every deleted keyframe");
 }
+
+/// Delete in Effect Controls with nothing selected does nothing: it must not fall through to the
+/// application-wide Clear and delete the selected timeline clip, nor touch the keyframes or history.
+#[test]
+fn effect_controls_delete_with_no_selection_leaves_the_clip_and_keyframes() {
+    let (mut d, clip) = Driver::demo();
+    d.seek(1.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let scale_before = d.scale(&clip).0;
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().len();
+    let clips_before = items(&mut d);
+    d.ok("ui.set", json!({"keyframeSelection": [], "focused": "EffectControls"}));
+    d.frames(2);
+    let selected = d.ok("ui.inspect", json!({}))["ui"]["keyframe_selection"].as_array().map_or(0, Vec::len);
+    assert_eq!(selected, 0, "no keyframe is selected");
+    let undo_before = d.undo_len();
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    assert_eq!(d.scale(&clip).0, scale_before, "the keyframes are untouched");
+    assert_eq!(items(&mut d), clips_before, "the selected timeline clip is not deleted");
+    assert_eq!(d.undo_len(), undo_before, "no undo step was created");
+}

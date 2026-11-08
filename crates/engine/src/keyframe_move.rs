@@ -131,9 +131,10 @@ pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-/// `effects.deleteKeyframes` given a `keyframes` list: every listed key is removed in one undo
-/// step, so the keyframe menu's Clear and the Delete key act on the whole selection, across
-/// parameters and lanes, not just the one keyframe clicked.
+/// `effects.deleteKeyframes` removes every listed keyframe (1 to 4096) in one undo step,
+/// all-or-nothing, replying `{"removed": count}`. The Effect Controls Delete key uses it on the
+/// whole selection; the right-click Clear stays single (#265). The reference shape matches the other
+/// bulk commands (`effects.moveKeyframes`, `effects.setInterpolation`), not the singular `deleteKeyframe`.
 pub(crate) fn delete_many(s: &mut Session, p: &Value) -> Result<Value> {
     const DEL: &str = "effects.deleteKeyframes";
     let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(DEL, "need keyframes"))?;
@@ -141,6 +142,10 @@ pub(crate) fn delete_many(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(DEL, "keyframe count must be between 1 and 4096"));
     }
     let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(DEL, "invalid keyframe reference"))?;
+    // A key listed more than once (possible over the control channel) is removed once, not rejected:
+    // dropping a keyframe twice is the same as dropping it once.
+    let mut seen = HashSet::new();
+    let keys: Vec<Key> = keys.into_iter().filter(|k| seen.insert(k.clone())).collect();
     let removed = s.edit_sequence("Delete Keyframes", |sequence, _, _| {
         let mut removed = 0usize;
         for key in &keys {
@@ -309,6 +314,16 @@ mod tests {
             assert!(Arc::ptr_eq(&before, &s.project));
             assert_eq!(s.history.undo.len(), undo);
         }
+    }
+
+    /// A key listed twice is removed once rather than failing the whole atomic delete on the second
+    /// pass finding it already gone.
+    #[test]
+    fn deleting_a_duplicated_key_removes_it_once() {
+        let (mut s, keys) = fixture();
+        let r = s.execute("effects.deleteKeyframes", json!({"keyframes":[keys[0],keys[0]]})).unwrap();
+        assert_eq!(r["removed"], json!(1), "the duplicate collapses to a single removal");
+        assert!(values(&s, &keys[0]).iter().all(|k| k.time.0 != keys[0]["time"].as_i64().unwrap()), "the key is gone");
     }
 
     #[test]

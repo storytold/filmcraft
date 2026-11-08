@@ -153,8 +153,10 @@ impl FilmcraftApp {
             if self.ui.focused == PanelKind::EffectControls && id == "effects.deleteKeyframes" {
                 if !self.ui.keyframe_selection.is_empty() {
                     let params = json!({ "keyframes": self.ui.keyframe_selection });
-                    if let Err(e) = menus::invoke(self, ctx, &id, params) {
-                        self.ui.status = e;
+                    match menus::invoke(self, ctx, &id, params) {
+                        // Drop the now-deleted keys so a second Delete does not reference stale refs.
+                        Ok(_) => self.ui.keyframe_selection.clear(),
+                        Err(e) => self.ui.status = e,
                     }
                 }
                 continue;
