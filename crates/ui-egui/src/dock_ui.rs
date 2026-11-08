@@ -472,11 +472,19 @@ fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
 }
 
 /// The focused panel's top edge, drawn inside `frame` across the selected `tab` only, so the line
-/// under the tab strip marks that tab. `None` when the tab's rect is not known yet.
+/// under the tab strip marks that tab, clamped to the frame. `None` when the tab's rect is not
+/// known yet, or when the tab does not overlap the frame horizontally (touching counts as none).
 fn focus_tab_edge(frame: Rect, tab: Option<Rect>) -> Option<[egui::Pos2; 2]> {
     let (x0, x1) = (tab?.left().max(frame.left()), tab?.right().min(frame.right()));
     let y = frame.top() + 0.5;
     (x0 < x1).then(|| [egui::pos2(x0, y), egui::pos2(x1, y)])
+}
+
+/// The clip that keeps the focus outline's other three edges but drops its top one: `frame` below
+/// its 1 pt top edge plus one physical pixel, since at fractional scales the stroke's feathering
+/// reaches past the 1 pt edge.
+fn focus_clip_below_top(frame: Rect, pixels_per_point: f32) -> Rect {
+    Rect::from_min_max(frame.min + vec2(0.0, 1.0 + 1.0 / pixels_per_point.max(1.0)), frame.max)
 }
 
 /// FilmCraft's side of the dock area for one frame.
@@ -522,10 +530,9 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if self.app.ui.focused == *panel {
             // The outline's top edge would run under the whole tab strip: clip it away and redraw it
             // across the selected tab only (#4432). The other three edges stay one rect for #1075.
-            // One extra physical pixel: at fractional scales the stroke's feathering reaches past the 1 pt edge.
-            let ppp = ui.ctx().pixels_per_point().max(1.0);
-            let below_top = Rect::from_min_max(frame.min + vec2(0.0, 1.0 + 1.0 / ppp), frame.max);
+            let below_top = focus_clip_below_top(frame, ui.ctx().pixels_per_point());
             ui.painter().with_clip_rect(below_top.intersect(ui.clip_rect())).rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            // hit_rects is last frame's, so right after a tab switch the top edge lags one frame.
             let tab = DockArea::<PanelKind>::hit_rects(ui.ctx(), area_id()).into_iter().find_map(|(hit, r)| (hit == Hit::Tab(*panel)).then_some(r));
             if let Some(edge) = focus_tab_edge(frame, tab) {
                 ui.painter().line_segment(edge, Stroke::new(1.0, t.focus));
@@ -649,7 +656,7 @@ mod tests {
     use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
     use craft_ui::layout::{SplitAxis, SplitSize};
 
-    use super::{focus_tab_edge, tab_group};
+    use super::{focus_clip_below_top, focus_tab_edge, tab_group};
     use crate::dock::{Layout, PanelKind};
 
     #[test]
@@ -659,6 +666,30 @@ mod tests {
         let [a, b] = focus_tab_edge(frame, Some(tab)).expect("a tab gives a top edge");
         assert_eq!((a.x, b.x, a.y, b.y), (60.0, 120.0, 32.5, 32.5));
         assert!(focus_tab_edge(frame, None).is_none(), "no tab, no top edge");
+    }
+
+    #[test]
+    fn focus_outline_top_edge_is_clamped_to_the_frame() {
+        let frame = egui::Rect::from_min_max(egui::pos2(100.0, 32.0), egui::pos2(300.0, 200.0));
+        let tab = |x0: f32, x1: f32| egui::Rect::from_min_max(egui::pos2(x0, 0.0), egui::pos2(x1, 32.0));
+        let xs = |t| focus_tab_edge(frame, Some(t)).map(|[a, b]| (a.x, b.x));
+        assert_eq!(xs(tab(80.0, 160.0)), Some((100.0, 160.0)), "past the left edge");
+        assert_eq!(xs(tab(250.0, 340.0)), Some((250.0, 300.0)), "past the right edge");
+        assert_eq!(xs(tab(50.0, 350.0)), Some((100.0, 300.0)), "past both edges");
+        assert_eq!(xs(tab(20.0, 90.0)), None, "entirely left of the frame");
+        assert_eq!(xs(tab(310.0, 380.0)), None, "entirely right of the frame");
+        assert_eq!(xs(tab(40.0, 100.0)), None, "touching the left edge");
+        assert_eq!(xs(tab(150.0, 150.0)), None, "zero width");
+    }
+
+    #[test]
+    fn focus_outline_clip_drops_the_top_edge_plus_one_physical_pixel() {
+        let frame = egui::Rect::from_min_max(egui::pos2(10.0, 32.0), egui::pos2(300.0, 200.0));
+        for (ppp, top) in [(1.0, 34.0), (1.25, 33.8), (1.5, 32.0 + 1.0 + 1.0 / 1.5), (2.0, 33.5)] {
+            let clip = focus_clip_below_top(frame, ppp);
+            assert!((clip.top() - top).abs() < 1e-4, "ppp {ppp}: top {} != {top}", clip.top());
+            assert_eq!((clip.left(), clip.right(), clip.bottom()), (10.0, 300.0, 200.0), "ppp {ppp}");
+        }
     }
 
     /// The Timeline beside a dock column holding `group`.
