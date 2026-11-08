@@ -280,6 +280,25 @@ fn recovery_keeps_original_when_journal_is_disabled() {
 }
 
 #[test]
+fn scan_keeps_clean_journal_when_session_lock_is_held() {
+    let d = temp_dir("clean-lock-held");
+    let dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("snapshot.fcproj"), b"snapshot").unwrap();
+    std::fs::write(dir.join("session.json"), serde_json::to_vec(&autosave::JournalMeta { dirty: false, ..Default::default() }).unwrap()).unwrap();
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(dir.join("lock")).unwrap();
+    lock.lock().unwrap();
+
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(dir.join("snapshot.fcproj").is_file(), "an active session's journal must be preserved");
+
+    drop(lock);
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(!dir.exists(), "the unlocked clean journal can now be removed");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
 fn recovery_can_retry_after_a_failed_journal_write() {
     let d = temp_dir("recover-retry");
     let old_dir = autosave::recovery_root(&d).join("1-1");

@@ -841,10 +841,25 @@ mod tests {
         let p = path.to_string_lossy().to_string();
         let r = crate::FsServices.reader(&p).expect("a reader").unwrap();
         assert_eq!(r.len(), wav.len() as u64);
-        assert!(MediaPool::default().open_file(&p, &crate::FsServices).unwrap().info().has_audio());
+        let source = MediaPool::default().open_file(&p, &crate::FsServices).unwrap();
+        assert!(source.info().has_audio());
+        drop(source);
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
-        std::fs::remove_dir_all(&dir).unwrap();
+        drop(r);
+        let deadline = web_time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => break,
+                Err(_) if web_time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    if !dir.exists() {
+                        break;
+                    }
+                }
+                Err(e) => panic!("temporary media folder cleanup failed: {e}"),
+            }
+        }
     }
 
     /// A file whose first frame decodes and whose later frames need a decoder FilmCraft lacks.

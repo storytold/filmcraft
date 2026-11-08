@@ -573,14 +573,16 @@ pub fn recovery_root(data_dir: &Path) -> PathBuf {
 }
 
 /// Is the session directory's lock free (owner gone)?
-fn lock_is_stale(dir: &Path) -> bool {
-    let Ok(f) = File::options().read(true).write(true).open(dir.join(LOCK)) else { return true };
+fn try_lock_stale_session(dir: &Path) -> Option<File> {
+    // Legacy/incomplete journals may not have created the lock file yet. Creating and locking it
+    // lets the scanner make a positive stale decision while keeping unknown I/O failures safe.
+    let Ok(f) = File::options().create(true).truncate(false).read(true).write(true).open(dir.join(LOCK)) else { return None };
     match f.try_lock() {
-        Ok(()) => true,
-        Err(fs::TryLockError::WouldBlock) => false,
+        Ok(()) => Some(f),
+        Err(fs::TryLockError::WouldBlock) => None,
         // Locking unsupported on this file system: fall back to the meta's pid being gone is not
-        // knowable portably, so treat as stale (the snapshot is offered, never deleted silently).
-        Err(fs::TryLockError::Error(_)) => true,
+        // knowable portably, so preserve the journal and skip this scan rather than deleting it.
+        Err(fs::TryLockError::Error(_)) => None,
     }
 }
 
@@ -591,12 +593,16 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
     let mut out = Vec::new();
     for e in rd.filter_map(|e| e.ok()) {
         let dir = e.path();
-        if !dir.is_dir() || Some(dir.as_path()) == skip || !lock_is_stale(&dir) {
+        if !dir.is_dir() || Some(dir.as_path()) == skip {
             continue;
         }
+        // Hold the lock while examining and removing clean journals so a session cannot start
+        // writing between the stale check and cleanup. Unknown lock status is conservatively kept.
+        let Some(lock) = try_lock_stale_session(&dir) else { continue };
         let snap = dir.join(SNAPSHOT);
         if !snap.is_file() {
             // Empty leftover dirs (clean exit, or a crash before the first snapshot).
+            drop(lock);
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
@@ -610,9 +616,13 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         if !meta.dirty {
             // a clean project's view-only journal is not unsaved work: never offered as
             // recovery, and not left behind either
+            let _ = fs::remove_file(&snap);
+            let _ = fs::remove_file(dir.join(META));
+            drop(lock);
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
+        drop(lock);
         out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
     }
     out.sort_by(|a, b| b.meta.saved_unix.cmp(&a.meta.saved_unix).then(b.id.cmp(&a.id)));
@@ -1066,11 +1076,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view)) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();

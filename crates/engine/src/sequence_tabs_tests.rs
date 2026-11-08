@@ -23,6 +23,19 @@ fn view(pps: f64, scroll: f64) -> SequenceView {
     SequenceView { pps, scroll, v_scroll: 12.0, a_scroll: 7.0, video_track_h: 90.0, audio_track_h: 40.0 }
 }
 
+#[test]
+fn project_view_changes_do_not_dirty_project_content() {
+    let mut s = Session::default();
+    let revision = s.revision;
+    let epoch = s.view_epoch;
+
+    s.project_view_changed();
+
+    assert_eq!(s.revision, revision);
+    assert_eq!(s.view_epoch, epoch.wrapping_add(1));
+    assert!(!s.is_dirty());
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("filmcraft-tabs-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -50,7 +63,7 @@ fn close_others_keeps_one_tab_and_shows_it() {
 #[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
-    let (revision, steps) = (s.revision, s.history.undo.len());
+    let (view_epoch, steps) = (s.view_epoch, s.history.undo.len());
     let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
@@ -60,9 +73,8 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step and not an edit: the revision may move (it is a view change, and that is
-    // what carries the new tab order into the autosave journal) but a clean project stays clean
-    let _ = revision;
+    // not an undo step or content edit: the tab order is journaled as view state
+    assert_ne!(s.view_epoch, view_epoch, "a tab move is a view change");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();

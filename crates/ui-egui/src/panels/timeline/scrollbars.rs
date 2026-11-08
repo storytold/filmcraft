@@ -779,7 +779,15 @@ fn controls_listen_key() -> egui::Id {
 /// application must not hear the key: the shortcut matcher consumes presses from the frame's
 /// events (which is also why the capture used to miss them), and a bound key would fire its
 /// action in the background while the user is naming a new binding.
-pub fn controls_listening(ctx: &egui::Context) -> bool {
+pub fn controls_listening(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    let settings_open = app.tl.zoombar_settings_pos.is_some() || app.tl.track_slider_settings_pos.is_some();
+    if !settings_open {
+        // A closed Controls session must not keep swallowing application shortcuts. The menu's
+        // transient flyout may flicker closed while its settings window remains open, so use the
+        // owning settings session rather than flyout visibility as the lifetime boundary.
+        ctx.data_mut(|d| d.insert_temp(controls_listen_key(), None::<usize>));
+        return false;
+    }
     ctx.data(|d| d.get_temp::<Option<usize>>(controls_listen_key())).flatten().is_some()
 }
 
@@ -1387,14 +1395,7 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 }
 
 /// Extend a short edge run to the semicircle tangent instead of flattening its cap.
-fn minimap_indicator_bounds(
-    mut xa: f32,
-    mut xb: f32,
-    left_tangent: f32,
-    right_tangent: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> (f32, f32) {
+fn minimap_indicator_bounds(mut xa: f32, mut xb: f32, left_tangent: f32, right_tangent: f32, hug_left: bool, hug_right: bool) -> (f32, f32) {
     if hug_left {
         xb = xb.max(left_tangent);
     }
@@ -1410,13 +1411,7 @@ fn minimap_indicator_hugs_edges(index: usize, run_count: usize, left_gap: f32, r
 }
 
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
-fn minimap_indicator_filled(
-    fill_clips: bool,
-    width: f32,
-    min_outline_width: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> bool {
+fn minimap_indicator_filled(fill_clips: bool, width: f32, min_outline_width: f32, hug_left: bool, hug_right: bool) -> bool {
     fill_clips || (width < min_outline_width && !hug_left && !hug_right)
 }
 
@@ -1716,14 +1711,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
             let cap_rr = (bot - top) / 2.0;
-            (xa, xb) = minimap_indicator_bounds(
-                xa,
-                xb,
-                bar.min.x + ins + sh + cap_r,
-                bar.max.x - ins - sh - cap_rr,
-                hug_left,
-                hug_right,
-            );
+            (xa, xb) = minimap_indicator_bounds(xa, xb, bar.min.x + ins + sh + cap_r, bar.max.x - ins - sh - cap_rr, hug_left, hug_right);
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1767,13 +1755,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // "very near the beginning" / "very near the end": within the pill's cap zones
             let (hug_left, hug_right) = minimap_indicator_hugs_edges(index, runs.len(), x0 - bar.min.x, bar.max.x - x1, rad);
             let col = color_for(k);
-            if minimap_indicator_filled(
-                fill,
-                x1 - x0,
-                5.0 * px,
-                hug_left,
-                hug_right,
-            ) {
+            if minimap_indicator_filled(fill, x1 - x0, 5.0 * px, hug_left, hug_right) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
@@ -1896,7 +1878,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // with Ctrl/Alt fires even in a text field (it is a shortcut, not typing); a plain key only
     // when no text field has focus (`egui_wants_keyboard_input` is not enough: any clicked widget
     // counts there, including the box itself).
-    let chord_ok = !controls_listening(ui.ctx()) && (chord_text.contains("Ctrl") || chord_text.contains("Alt") || !ui.ctx().text_edit_focused());
+    let chord_ok = !controls_listening(app, ui.ctx()) && (chord_text.contains("Ctrl") || chord_text.contains("Alt") || !ui.ctx().text_edit_focused());
     let binds = {
         let s = &app.session.state.timeline_ui;
         [s.control_center_on_playhead.clone(), s.control_explode_slider.clone(), s.control_alternate_drag_speed.clone(), s.control_settings.clone()]
@@ -2847,9 +2829,14 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             app.session.state.timeline_ui.track_slider_shift_drag_speed = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_last_custom = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_custom = true;
-            app.session.project_view_changed();
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-track-slider-view-pending"), true));
         }
     });
+    let pending = egui::Id::unique("tl-track-slider-view-pending");
+    if ui.data(|d| d.get_temp::<bool>(pending)).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
+        ui.data_mut(|d| d.remove_temp::<bool>(pending));
+        app.session.project_view_changed();
+    }
 }
 
 /// The track sliders' settings popup opened from the Timeline's own menu ("Track Slider
