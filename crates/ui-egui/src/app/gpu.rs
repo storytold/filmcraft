@@ -35,8 +35,22 @@ impl FilmcraftApp {
                     broken,
                     max_texture,
                 });
+                self.gpu_warm_up();
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
+        }
+    }
+
+    /// Ready the compositor for the active sequence's frame size ([`filmcraft_gpu::GpuCompositor::warm_up`])
+    /// when the compositor is up and a sequence is open: on opening one, and on enabling the GPU.
+    pub fn gpu_warm_up(&mut self) {
+        let Some((w, h)) = self.session.active_sequence().map(|q| (q.settings.width, q.settings.height)) else { return };
+        let Some(g) = self.gpu.as_mut() else { return };
+        if w.max(h) > g.max_texture {
+            return;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.warm_up(w, h))).is_err() {
+            self.disable_gpu("compositor panicked");
         }
     }
 

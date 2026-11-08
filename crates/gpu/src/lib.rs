@@ -67,6 +67,9 @@ type PlaneKey = (u32, u32, wgpu::TextureFormat);
 /// Plane textures the pool keeps for reuse (a few frames' worth: a frame has three or four).
 const POOL_MAX: usize = 48;
 
+/// Texels uploaded at most by [`GpuCompositor::warm_up`] (four 4K 10-bit 4:2:2 frames).
+const WARM_UP_BYTES: usize = 136 << 20;
+
 /// Texture rows in a staging buffer start at a multiple of this many bytes.
 const ROW_ALIGN: u64 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
 
@@ -954,6 +957,66 @@ impl GpuCompositor {
         });
         self.queue.write_buffer(&buf, 0, &bytes);
         buf
+    }
+
+    /// Draw a few texels of each kind of frame (8-bit and 16-bit YUV, RGBA) at `w` x `h` once, so
+    /// the first frame of a sequence does not pay for the render targets and the driver's first
+    /// use of the pipelines: the first composites of a process took 40-60 ms, and a 4K50p frame
+    /// has 20. Nothing waits for the GPU.
+    pub fn warm_up(&mut self, w: u32, h: u32) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let yuv16 = PixelData::Yuv16 {
+            planes: [Arc::new(vec![512; 4]), Arc::new(vec![512; 2]), Arc::new(vec![512; 2])],
+            chroma: filmcraft_frame::Chroma::C422,
+            bits: 10,
+            alpha: None,
+        };
+        let yuv8 = PixelData::Yuv8 {
+            planes: [Arc::new(vec![128; 4]), Arc::new(vec![128; 1]), Arc::new(vec![128; 1])],
+            chroma: filmcraft_frame::Chroma::C420,
+            alpha: None,
+        };
+        let rgba = PixelData::Rgba8(Arc::new(vec![0; 16]));
+        for data in [yuv16, yuv8, rgba] {
+            let frame = Arc::new(VideoFrame { width: 2, height: 2, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+            let plan = FramePlan::Layers {
+                width: w as usize,
+                height: h as usize,
+                layers: vec![PlanLayer::new(frame, filmcraft_geom::Affine::IDENTITY, 1.0, Blend::Normal)],
+            };
+            self.composite(&plan);
+        }
+        // Full-size 10-bit 4:2:2 frames (the camera formats) through the uploader, on a thread
+        // of their own (130 MB of texels), held together and then let go: the plane textures of
+        // a few frames are in the pool and the device has grown its staging memory before the
+        // first frames are due, instead of during them (the first play of a 4K sequence had
+        // 30 ms composites while that happened).
+        let (cw, ch) = (w.div_ceil(2), h);
+        let (luma, chroma) = (w as usize * h as usize, cw as usize * ch as usize);
+        let frames = (WARM_UP_BYTES / ((luma + 2 * chroma) * 2).max(1)).clamp(1, 4);
+        let up = self.uploader.clone();
+        let warm = move || {
+            let held: Vec<GpuPlanes> = (0..frames)
+                .map(|_| {
+                    let plane = |n: usize| Arc::new(vec![512u16; n]);
+                    let data =
+                        PixelData::Yuv16 { planes: [plane(luma), plane(chroma), plane(chroma)], chroma: filmcraft_frame::Chroma::C422, bits: 10, alpha: None };
+                    let frame = VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() };
+                    up.frame(&frame, None)
+                })
+                .collect();
+            drop(held);
+        };
+        let spawned = std::thread::Builder::new().name("filmcraft-warm-up".into()).spawn(move || {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(warm)).is_err() {
+                log::warn!("the GPU warm-up panicked; the first frames upload as they come");
+            }
+        });
+        if spawned.is_err() {
+            log::warn!("no thread for the GPU warm-up; the first frames upload as they come");
+        }
     }
 
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
