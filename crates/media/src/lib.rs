@@ -131,6 +131,11 @@ pub struct VideoStreamInfo {
     /// HDR static metadata (mastering display, content light level) when the file carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<filmcraft_color::HdrMetadata>,
+    /// Which values of `color` are FilmCraft's defaults rather than read from the file. `None`
+    /// where the source doesn't say: stills, generated media, MPEG program and transport streams,
+    /// and media info saved before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_assumed: Option<filmcraft_color::ColorAssumed>,
 }
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
@@ -212,6 +217,12 @@ pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
+    /// Like [`video_frame`](Self::video_frame), but a source may leave the container's display
+    /// rotation to the caller: the frame comes with the clockwise quarter turns still to apply
+    /// to it (0: upright, as `video_frame` returns it).
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8)> {
+        self.video_frame(req).map(|f| (f, 0))
+    }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into
@@ -294,7 +305,10 @@ impl MediaSource for OfflineSource {
         Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is not there to check)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
@@ -309,6 +323,25 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn offline_media_does_not_allocate_from_stored_metadata() {
+        let info = MediaInfo {
+            name: "gone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(0),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 60_000, codec: "pcm".into(), bits_per_sample: None }],
+            container: String::new(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = OfflineSource { info };
+        // a 100-day transcription request at the stored channel count
+        // computed as u64: the product overflows a 32-bit usize (x86 Windows), where it must still be rejected
+        let frames = usize::try_from(48_000u64 * 86_400 * 100).unwrap_or(usize::MAX);
+        assert!(src.audio(0, frames, 48_000).is_err());
     }
 
     #[test]

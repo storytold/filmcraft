@@ -568,11 +568,11 @@ fn frame_blending_renders_in_between_frames() {
     s.execute("playhead.set", json!({"time": t.0})).unwrap();
     let it = clip(&s, c.id.0);
     let src_rate = filmcraft_time::FrameRate::FPS_23_976;
-    assert!(filmcraft_render::interpolation_blend(&it, t, src_rate).is_none(), "frame sampling");
+    assert!(filmcraft_render::interpolation_blend(&it, t, src_rate, rate).is_none(), "frame sampling");
     let sampled = s.render_program(0.125).unwrap();
     s.execute("clip.timeInterpolation.frameBlending", json!({})).unwrap();
     let it = clip(&s, c.id.0);
-    let (next, w) = filmcraft_render::interpolation_blend(&it, t, src_rate).unwrap();
+    let (next, w) = filmcraft_render::interpolation_blend(&it, t, src_rate, rate).unwrap();
     assert!((w - 0.5).abs() < 0.01, "half-way: {w}");
     assert_eq!(next, src_rate.tick_of(src_rate.frame_at(it.source_time_at(t)) + 1));
     let blended = s.render_program(0.125).unwrap();
@@ -596,7 +596,42 @@ fn frame_blending_renders_in_between_frames() {
     assert!(d < mean_abs_diff(&blended, &sampled), "optical flow stays near the blend on mostly static footage: {d}");
     // at 100 % nothing is blended
     s.execute("clip.speedDuration", json!({"speed": 100.0})).unwrap();
-    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate).is_none());
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, rate).is_none());
+}
+
+#[test]
+fn time_interpolation_applies_to_a_frame_rate_conform() {
+    // 23.976 fps media on a 29.97 sequence at 100 %: Frame Sampling shows every fourth source frame
+    // twice, Optical Flow synthesises the frames in between instead (#3948)
+    let mut s = demo();
+    let c = v1(&s)[2].clone();
+    assert!((c.speed - 1.0).abs() < 1e-9);
+    let own = s.sequence_rate();
+    let src_rate = filmcraft_time::FrameRate::FPS_23_976;
+    s.execute("sequence.settings", json!({"fps": 29.97})).unwrap();
+    let rate = s.sequence_rate();
+    assert_eq!(rate, filmcraft_time::FrameRate::FPS_29_97);
+    select(&mut s, &[c.id.0]);
+    s.execute("clip.timeInterpolation.opticalFlow", json!({})).unwrap();
+    let it = clip(&s, c.id.0);
+    // a sequence frame that falls well inside a source frame
+    let first = rate.frame_at(it.start) + 1;
+    let (t, (next, w)) = (first..first + 5)
+        .map(|f| rate.tick_of(f))
+        .find_map(|t| filmcraft_render::interpolation_blend(&it, t, src_rate, rate).filter(|(_, w)| (0.1..0.9).contains(w)).map(|b| (t, b)))
+        .expect("a 29.97 frame between two 23.976 frames");
+    assert_eq!(next, src_rate.tick_of(src_rate.frame_at(it.source_time_at(t)) + 1));
+    s.execute("playhead.set", json!({"time": t.0})).unwrap();
+    let flowed = s.render_program(0.125).unwrap();
+    s.execute("clip.timeInterpolation.frameSampling", json!({})).unwrap();
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, rate).is_none());
+    let sampled = s.render_program(0.125).unwrap();
+    assert!(mean_abs_diff(&flowed, &sampled) > 1e-4, "optical flow changes the conformed frame (weight {w})");
+    // back at the media's own rate, 100 % needs no in-between frame
+    s.execute("clip.timeInterpolation.opticalFlow", json!({})).unwrap();
+    s.execute("sequence.settings", json!({"fps": own.as_f64()})).unwrap();
+    assert_eq!(s.sequence_rate(), src_rate);
+    assert!(filmcraft_render::interpolation_blend(&clip(&s, c.id.0), t, src_rate, src_rate).is_none());
 }
 
 #[test]
@@ -1320,6 +1355,17 @@ fn set_param_rejects_colour_component_that_overflows_f32() {
     s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "tint"})).unwrap();
     let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "tint", "param": "black", "value": [1e300, 0, 0, 1]}));
     assert!(r.is_err(), "an overflowing colour component must be refused");
+    let bytes = filmcraft_format::encode(&s.project, false);
+    filmcraft_format::decode(&bytes).unwrap();
+}
+
+#[test]
+fn set_param_rejects_curve_coordinate_that_overflows_f32() {
+    let mut s = demo();
+    let a = v1(&s)[0].clone();
+    s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "lumetri"})).unwrap();
+    let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "lumetri", "param": "curve_luma", "value": [[1e300, 0.5], [1.0, 1.0]]}));
+    assert!(r.is_err(), "an overflowing curve coordinate must be refused");
     let bytes = filmcraft_format::encode(&s.project, false);
     filmcraft_format::decode(&bytes).unwrap();
 }
