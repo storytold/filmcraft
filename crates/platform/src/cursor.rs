@@ -22,11 +22,14 @@ pub fn cursor_screen_position() -> Option<(i32, i32)> {
     Some((p.x, p.y))
 }
 
-/// Whether [`cursor_screen_position`] reports points (macOS: AppKit's coordinates) rather than physical pixels.
+/// Whether [`cursor_screen_position`] reports points rather than physical pixels: on macOS it reads
+/// Quartz/CoreGraphics global points (`CGEventGetLocation`), not AppKit's bottom-left coordinates.
 pub const CURSOR_IN_POINTS: bool = cfg!(target_os = "macos");
 
 /// macOS: winit's AppKit backend reports no pointer position while files are dragged in from Finder (#4296),
 /// so read it from Quartz: global points, origin at the main display's top-left, as winit's window positions use.
+/// `None` when CoreGraphics returns a null event or a non-finite location; otherwise rounded to whole points
+/// (negative on displays left of or above the main one), see [`quartz_point_to_px`].
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub fn cursor_screen_position() -> Option<(i32, i32)> {
@@ -56,10 +59,44 @@ pub fn cursor_screen_position() -> Option<(i32, i32)> {
         CFRelease(event);
         (p.x, p.y)
     };
+    quartz_point_to_px(x, y)
+}
+
+/// A Quartz global point rounded to whole points; `None` if either coordinate is non-finite. Out-of-range
+/// values saturate (`as` casts), and negative coordinates (displays left of or above the main one) are kept.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn quartz_point_to_px(x: f64, y: f64) -> Option<(i32, i32)> {
     (x.is_finite() && y.is_finite()).then_some((x.round() as i32, y.round() as i32))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn cursor_screen_position() -> Option<(i32, i32)> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CURSOR_IN_POINTS, quartz_point_to_px};
+
+    #[test]
+    fn quartz_points_round_to_whole_points() {
+        assert_eq!(quartz_point_to_px(10.4, 20.6), Some((10, 21)));
+    }
+
+    #[test]
+    fn secondary_display_points_stay_negative() {
+        assert_eq!(quartz_point_to_px(-1440.6, -12.2), Some((-1441, -12)));
+    }
+
+    #[test]
+    fn non_finite_points_are_none() {
+        for (x, y) in [(f64::NAN, 0.0), (0.0, f64::INFINITY), (f64::NEG_INFINITY, f64::NAN)] {
+            assert_eq!(quartz_point_to_px(x, y), None);
+        }
+    }
+
+    #[test]
+    fn only_macos_reports_points() {
+        assert_eq!(CURSOR_IN_POINTS, cfg!(target_os = "macos"));
+    }
 }

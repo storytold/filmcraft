@@ -49,9 +49,10 @@ pub struct HostHooks {
     /// Optional native custom-color editor; presets and project palette stay in FilmCraft.
     pub pick_color: Option<crate::widgets::color_picker::NativeColorPicker>,
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
-    /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
+    /// The cursor on the screen: physical pixels, except on macOS where it is points (see `cursor_in_points`). Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
-    /// `cursor_screen_position` is in points, not physical pixels (macOS, #4296): no scale to divide out.
+    /// `cursor_screen_position` is in points, not physical pixels (macOS, #4296): it is not divided by the
+    /// display scale, but is divided by the UI zoom (egui's UI points are native points over the zoom).
     pub cursor_in_points: bool,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,

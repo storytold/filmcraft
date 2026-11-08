@@ -83,14 +83,10 @@ impl FilmcraftApp {
     /// (winit, Windows), so ask it through the host hook, else use `last` (a native window's last
     /// pointer position), else the last pointer position egui saw in the main window.
     fn drop_pointer(&self, ctx: &egui::Context, viewport: egui::ViewportId, last: Option<egui::Pos2>) -> Option<egui::Pos2> {
-        let in_points = self.hooks.cursor_in_points;
-        // OS points (macOS) are native points; egui's UI points are those divided by the UI zoom.
-        let zoom = ctx.zoom_factor();
-        let os_pointer = self.hooks.cursor_screen_position.as_ref().and_then(|f| f()).and_then(|px| {
-            ctx.input_for(viewport, |i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, if in_points { zoom } else { i.pixels_per_point }, r.min)))
-        });
+        let os_px = self.hooks.cursor_screen_position.as_ref().and_then(|f| f());
+        let (ppp, content_min) = ctx.input_for(viewport, |i| (i.pixels_per_point, i.viewport().inner_rect.map(|r| r.min)));
         let fallback = || if viewport == egui::ViewportId::ROOT { ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) } else { None };
-        os_pointer.or(last).or_else(fallback)
+        os_drop_pointer(os_px, self.hooks.cursor_in_points, ctx.zoom_factor(), ppp, content_min, last).or_else(fallback)
     }
 
     /// Whether keyboard focus is on any dock divider or floating-window resize grip, as drawn last pass.
@@ -142,6 +138,20 @@ fn is_project_file(path: &str) -> bool {
     std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
 }
 
+/// The OS cursor `os_px` in the window's UI space, else `last`. OS points (macOS) are native points, and egui's
+/// UI points are those divided by the UI `zoom`; physical pixels are divided by `pixels_per_point`.
+fn os_drop_pointer(
+    os_px: Option<(i32, i32)>,
+    in_points: bool,
+    zoom: f32,
+    pixels_per_point: f32,
+    content_min: Option<egui::Pos2>,
+    last: Option<egui::Pos2>,
+) -> Option<egui::Pos2> {
+    let os = os_px.zip(content_min).map(|(px, min)| screen_px_to_ui(px, if in_points { zoom } else { pixels_per_point }, min));
+    os.or(last)
+}
+
 /// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
 ///
 /// Assumes the whole virtual screen uses the window's `pixels_per_point`: with monitors of mixed
@@ -153,20 +163,34 @@ fn screen_px_to_ui(px: (i32, i32), pixels_per_point: f32, content_min: egui::Pos
 
 #[cfg(test)]
 mod screen_px_tests {
-    use super::screen_px_to_ui;
+    use super::{os_drop_pointer, screen_px_to_ui};
 
-    // macOS reports points (#4296): the hook's host passes scale 1 whatever the display's scale, as `drop_pointer` does.
+    // macOS points are divided by the UI zoom, not the display scale (#4296 review).
     #[test]
-    fn points_are_not_divided_by_the_display_scale() {
-        let p = screen_px_to_ui((650, 450), 1.0, egui::pos2(100.0, 50.0));
-        assert_eq!((p.x, p.y), (550.0, 400.0));
+    fn points_are_divided_by_the_ui_zoom_not_the_display_scale() {
+        let p = os_drop_pointer(Some((1300, 900)), true, 2.0, 3.0, Some(egui::pos2(100.0, 50.0)), None);
+        assert_eq!(p.map(|p| (p.x, p.y)), Some((550.0, 400.0)));
     }
 
-    // At a UI zoom of 2 a native point is half a UI point, so the scale handed over is the zoom (#4296 review).
     #[test]
-    fn points_are_divided_by_the_ui_zoom() {
-        let p = screen_px_to_ui((1300, 900), 2.0, egui::pos2(100.0, 50.0));
-        assert_eq!((p.x, p.y), (550.0, 400.0));
+    fn pixels_are_divided_by_the_display_scale_not_the_ui_zoom() {
+        let p = os_drop_pointer(Some((1950, 1350)), false, 2.0, 3.0, Some(egui::pos2(100.0, 50.0)), None);
+        assert_eq!(p.map(|p| (p.x, p.y)), Some((550.0, 400.0)));
+    }
+
+    #[test]
+    fn no_os_cursor_falls_back_to_last() {
+        let last = Some(egui::pos2(7.0, 8.0));
+        assert_eq!(os_drop_pointer(None, true, 2.0, 3.0, Some(egui::pos2(100.0, 50.0)), last), last);
+        // Without the window's origin the OS cursor cannot be placed either.
+        assert_eq!(os_drop_pointer(Some((1, 2)), false, 1.0, 1.0, None, last), last);
+    }
+
+    // A window on a display left of the main one has a negative origin (#4296 review).
+    #[test]
+    fn maps_a_window_left_of_the_main_display() {
+        let p = screen_px_to_ui((-1000, 300), 1.0, egui::pos2(-1440.0, 0.0));
+        assert_eq!((p.x, p.y), (440.0, 300.0));
     }
 
     #[test]
