@@ -124,7 +124,7 @@ impl Display {
             // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
             let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
-            adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
+            adapter.and_then(|a| pollster::block_on(a.request_device(&filmcraft_gpu::device_descriptor(&a))).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
                 (c, d)
             })
@@ -851,8 +851,9 @@ pub fn cli_main() {
                 // A fresh frame server per run so caches start cold, as after opening a project.
                 let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), args.workers);
                 server.set_profiling(true);
-                let bench = Bench { trace: args.trace.clone(), server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 let mut display = Display::new(args.gpu);
+                server.set_uploader(display.gpu.as_ref().map(|(c, _)| c.uploader()));
+                let bench = Bench { trace: args.trace.clone(), server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 if args.gpu && display.gpu.is_none() {
                     eprintln!("no GPU adapter; using the CPU path");
                 }
