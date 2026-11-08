@@ -290,6 +290,14 @@ pub fn apply_list1(raw: &mut RawImage, p: &Params, preview: bool) -> Result<()> 
 /// `matrix` ([`crate::Dng::develop_with`] solves them); this applies the demosaic quality and the
 /// reduced-resolution path.
 pub fn develop_with(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3, o: &ProcessOptions) -> Result<Developed> {
+    // the opcode lists count only when asked for ([`ProcessOptions::apply_opcodes`])
+    let plain;
+    let p = if o.apply_opcodes || p.opcodes == opcode::Lists::default() {
+        p
+    } else {
+        plain = Params { opcodes: opcode::Lists::default(), ..p.clone() };
+        &plain
+    };
     let spp = raw.samples_per_pixel;
     if p.cfa.is_some() && spp != 1 {
         return Err(Error::Malformed("a CFA image with more than one sample per pixel"));

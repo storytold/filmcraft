@@ -82,7 +82,7 @@ SUBCOMMANDS
          [--scale f] [--quality 0-100] [--no-audio] [--queue] [--allow-offline]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac, guessed
+                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac|mp3, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
@@ -250,6 +250,7 @@ fn format_for(path: &str) -> Option<&'static str> {
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
         "m4a" | "aac" => "aac",
+        "mp3" => "mp3",
         _ => return None,
     })
 }
@@ -271,6 +272,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 
@@ -563,7 +568,11 @@ async fn cli_mcp(a: &Args) {
 /// `requested` when the result names none.
 fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
-        Some(p) => vec![p.to_string()],
+        // an image sequence: its first and last stills
+        Some(p) => vec![match result.get("lastPath").and_then(Value::as_str) {
+            Some(last) => format!("{p} to {last}"),
+            None => p.to_string(),
+        }],
         None => result
             .get("items")
             .and_then(Value::as_array)

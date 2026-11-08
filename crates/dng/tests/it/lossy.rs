@@ -2,7 +2,7 @@
 //! components, usually with a LinearizationTable taking the 8-bit codes back to linear values.
 
 use filmcraft_dng::tiff::tags;
-use filmcraft_dng::writer::{Compression, Layout, Options, Value, lossy_jpeg, write};
+use filmcraft_dng::writer::{Compression, Layout, Options, Value, lossy_jpeg, try_write, write};
 use filmcraft_dng::{Dng, Error, decode, probe};
 
 /// A smooth 8-bit picture (what JPEG is good at).
@@ -58,7 +58,7 @@ fn samples_are_the_jpeg_decoders_exactly() {
     for spp in [1, 3] {
         let px = smooth(w, h, spp);
         let f = lossy(&px, w, h, spp, Layout::Strips { rows: h }, 75, vec![]);
-        let jpeg = lossy_jpeg(&px, w, h, spp, 75);
+        let jpeg = lossy_jpeg(&px, w, h, spp, 75).unwrap();
         let want: Vec<u16> = match image::load_from_memory(&jpeg).unwrap() {
             image::DynamicImage::ImageLuma8(g) => g.into_raw().into_iter().map(u16::from).collect(),
             image::DynamicImage::ImageRgb8(c) => c.into_raw().into_iter().map(u16::from).collect(),
@@ -127,4 +127,28 @@ fn only_8_bit_linear_raw_and_hostile_lossy_files() {
         }
         assert!(std::panic::catch_unwind(|| decode(&g).map(|_| ())).is_ok(), "mutation {i}");
     }
+}
+
+#[test]
+fn jpeg_components_must_match_samples_per_pixel() {
+    // a colour JPEG in a one-sample file, and a grey one in a three-sample file, is no picture
+    let (w, h) = (16, 16);
+    let spp_tag = |n: u16| vec![(tags::SAMPLES_PER_PIXEL, Value::Short(vec![n]))];
+    for (jpeg_spp, declared) in [(3, 1), (1, 3)] {
+        let f = lossy(&smooth(w, h, jpeg_spp), w, h, jpeg_spp, Layout::Strips { rows: h }, 90, spp_tag(declared as u16));
+        let r = Dng::parse(&f).and_then(|d| d.raw());
+        assert!(matches!(r, Err(Error::Malformed(_))), "{jpeg_spp} component JPEG, SamplesPerPixel {declared}: {:?}", r.map(|r| r.data.len()));
+    }
+}
+
+#[test]
+fn writer_rejects_what_it_cannot_encode() {
+    let px = vec![0u16; 4 * 4 * 2];
+    assert!(lossy_jpeg(&px, 4, 4, 2, 75).is_err(), "two samples per pixel");
+    assert!(lossy_jpeg(&[0u16; 4 * 4 * 4], 4, 4, 4, 75).is_err(), "four samples per pixel");
+    assert!(lossy_jpeg(&[0u16; 65_536], 65_536, 1, 1, 75).is_err(), "a chunk past the JPEG size limit");
+    let bad = Options { compression: Compression::LossyJpeg { quality: 75 }, ..Default::default() };
+    assert!(try_write(&[0u16; 64], &bad).is_err(), "16-bit CFA options");
+    let two = Options { samples_per_pixel: 2, bits: 8, cfa: None, ..bad.clone() };
+    assert!(try_write(&[0u16; 128], &two).is_err(), "two samples per pixel");
 }
