@@ -95,6 +95,45 @@ fn padded_and_short_planes_upload() {
     assert!(c.read_output().is_some());
 }
 
+/// A frame worker records its uploads and submits nothing; the compositor submits them before
+/// its own commands, so the frame is complete when drawn. (wgpu fails a surface reconfigure
+/// when another thread submits during it: the GPU compositor went off on a window resize.)
+#[test]
+fn uploads_from_a_worker_wait_for_the_compositors_submit() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let worker = {
+        let up = up.clone();
+        std::thread::spawn(move || {
+            let (w, h) = (64u32, 8u32);
+            let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+            let cb: Vec<u16> = (0..w * h).map(|i| (300 + (i / w) * 40) as u16).collect();
+            let cr: Vec<u16> = (0..w * h).map(|i| (700 - (i % w)) as u16).collect();
+            let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+            let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+            let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+            let prep = prepare(&plan, Some(&up));
+            (plan, prep)
+        })
+    };
+    let (plan, prep) = worker.join().expect("worker");
+    assert!(prep.layers[0].as_ref().is_some_and(Prepared::uploaded));
+    assert_eq!(up.pending_copies(), 1, "the worker recorded its copies and submitted nothing");
+    c.composite_prepared(&plan, Some(&prep));
+    assert_eq!(up.pending_copies(), 0, "the composite submitted the copies first");
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes");
+    // a flush with nothing pending submits nothing
+    c.flush_uploads();
+    assert_eq!(up.pending_copies(), 0);
+}
+
 /// Warming up makes the render targets of the sequence's size and draws each kind of frame
 /// through the pipelines; a degenerate size is ignored, and frames still draw right afterwards.
 #[test]

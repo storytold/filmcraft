@@ -82,6 +82,8 @@ struct UploaderInner {
     /// as they are, as `R16Unorm`, instead of as half floats converted sample by sample.
     norm16: bool,
     pool: Mutex<Vec<(wgpu::Texture, PlaneKey)>>,
+    /// Copies recorded by the uploading threads and not yet submitted ([`Uploader::queue_copies`]).
+    pending: Mutex<Vec<wgpu::CommandBuffer>>,
 }
 
 /// Uploads frames' planes to textures, from any thread: the frame workers call it from
@@ -90,6 +92,13 @@ struct UploaderInner {
 /// that has 20 ms per frame to draw everything. Textures are pooled by size and format and
 /// go back to the pool when their [`GpuPlanes`] drop; a write into a reused texture is queued
 /// after the draws that read it (one queue, in order).
+///
+/// The uploading thread only records its copies: the compositor's thread submits them, before
+/// anything of its own ([`GpuCompositor::flush_uploads`]). It is the device's only submitter on
+/// purpose: wgpu refuses to reconfigure the window's surface (every resize, on the UI thread)
+/// when another thread submits during its wait for the GPU, and the GPU compositor was switched
+/// off for the whole session by one such resize while the workers submitted their uploads
+/// themselves.
 #[derive(Clone)]
 pub struct Uploader(Arc<UploaderInner>);
 
@@ -148,6 +157,7 @@ impl Uploader {
             dummy: dummy_tex.create_view(&Default::default()),
             norm16: device.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
             pool: Mutex::new(Vec::new()),
+            pending: Mutex::new(Vec::new()),
         }))
     }
 
@@ -163,7 +173,8 @@ impl Uploader {
 
     /// A `w` x `h` texture of `format` holding `bytes` (`bpp` bytes per texel, rows packed): from
     /// the pool when one of that size is free, else new. The bytes go into a staging buffer
-    /// mapped on this thread, and `enc` copies them into the texture, so no other thread waits
+    /// mapped on this thread (host-visible, `MAP_WRITE`: neither the map nor the unmap goes
+    /// through the queue), and `enc` copies them into the texture, so no other thread waits
     /// while they are copied: `Queue::write_texture` copies under the queue's lock, and at 4K50p
     /// the UI thread stalled behind the frame workers' 33 MB frames for milliseconds per pass.
     /// Rows short of `w * bpp` bytes stay zero.
@@ -193,7 +204,7 @@ impl Uploader {
             let staging = self.0.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("filmcraft-plane-staging"),
                 size,
-                usage: wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: true,
             });
             let mapped = match staging.slice(..).get_mapped_range_mut() {
@@ -249,6 +260,23 @@ impl Uploader {
         self.0.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-upload") })
     }
 
+    /// Keep the copies recorded in `enc` for the compositor's next submit ([`Uploader::take_copies`]);
+    /// this thread submits nothing (see [`Uploader`]).
+    fn queue_copies(&self, enc: wgpu::CommandEncoder) {
+        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).push(enc.finish());
+    }
+
+    /// The recorded copies not yet submitted, in the order they were recorded: the caller
+    /// submits them before any command buffer that reads the textures they fill.
+    fn take_copies(&self) -> Vec<wgpu::CommandBuffer> {
+        std::mem::take(&mut *self.0.pending.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Recorded copies waiting for the compositor's submit.
+    pub fn pending_copies(&self) -> usize {
+        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
     /// One RGBA texture of `format` as a frame's planes.
     fn rgba(&self, enc: &mut wgpu::CommandEncoder, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8]) -> GpuPlanes {
         // (the two RGBA formats uploaded: sRGB bytes, or linear premultiplied half floats)
@@ -262,7 +290,7 @@ impl Uploader {
     fn rgba_f16(&self, w: u32, h: u32, half: &[u8]) -> GpuPlanes {
         let mut enc = self.encoder();
         let planes = self.rgba(&mut enc, w, h, wgpu::TextureFormat::Rgba16Float, half);
-        self.0.queue.submit(Some(enc.finish()));
+        self.queue_copies(enc);
         planes
     }
 
@@ -270,7 +298,7 @@ impl Uploader {
     fn frame(&self, f: &VideoFrame, prep: Option<&Prepared>) -> GpuPlanes {
         let mut enc = self.encoder();
         let planes = self.frame_in(&mut enc, f, prep);
-        self.0.queue.submit(Some(enc.finish()));
+        self.queue_copies(enc);
         planes
     }
 
@@ -774,6 +802,30 @@ impl GpuCompositor {
         self.uploader.clone()
     }
 
+    /// Submit `cb` after the uploads recorded so far ([`Uploader`]): every submit of this
+    /// compositor goes through here, so a frame's textures are filled before anything reads
+    /// them, and this thread stays the device's only submitter.
+    fn submit(&self, cb: wgpu::CommandBuffer) {
+        Self::submit_on(&self.uploader, &self.queue, cb);
+    }
+
+    /// [`Self::submit`] for a site that holds a mutable borrow of another field.
+    fn submit_on(uploader: &Uploader, queue: &wgpu::Queue, cb: wgpu::CommandBuffer) {
+        let mut cbs = uploader.take_copies();
+        cbs.push(cb);
+        queue.submit(cbs);
+    }
+
+    /// Submit the uploads the frame workers recorded so far, so that the GPU copies them while
+    /// the frames are still ahead of the playhead instead of all at once before the composite
+    /// that first needs one. Called once per UI pass; nothing happens when there are none.
+    pub fn flush_uploads(&self) {
+        let cbs = self.uploader.take_copies();
+        if !cbs.is_empty() {
+            self.queue.submit(cbs);
+        }
+    }
+
     fn target(
         device: &wgpu::Device,
         slot: &mut Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
@@ -1247,7 +1299,7 @@ impl GpuCompositor {
             pass.set_bind_group(0, &final_bg, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
+        self.submit(enc.finish());
         (if resolve { out_view } else { accum_view }, (w, h))
     }
 
@@ -1384,7 +1436,7 @@ impl GpuCompositor {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..6, 0..1);
         }
-        self.queue.submit([enc.finish()]);
+        self.submit(enc.finish());
         Some(())
     }
 
@@ -1397,7 +1449,7 @@ impl GpuCompositor {
         self.render_plan(plan, prep, true, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
         let size = self.copy_accumulator(&mut enc)?;
-        self.queue.submit([enc.finish()]);
+        self.submit(enc.finish());
         export_renderer::timing::add_submit(t.elapsed());
         self.map_accumulator(size)
     }
@@ -1443,7 +1495,7 @@ impl GpuCompositor {
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        Self::submit_on(&self.uploader, &self.queue, enc.finish());
         stage.end_frame();
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1471,7 +1523,7 @@ impl GpuCompositor {
     pub fn read_accumulator(&mut self) -> Option<(u32, u32, Vec<f32>)> {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let size = self.copy_accumulator(&mut enc)?;
-        self.queue.submit([enc.finish()]);
+        self.submit(enc.finish());
         self.map_accumulator(size)
     }
 
@@ -1568,7 +1620,7 @@ impl GpuCompositor {
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(*h) } },
             wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        self.submit(enc.finish());
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
