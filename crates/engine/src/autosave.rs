@@ -1092,9 +1092,7 @@ impl Worker {
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
         meta.dirty = s.content_dirty;
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        let r = write_recovery_pair(&self.session_dir, &bytes, &meta, filmcraft_format::atomic_write);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
@@ -1169,6 +1167,21 @@ impl Worker {
     }
 }
 
+/// Write the snapshot and its metadata in an order that cannot hide a completed dirty snapshot.
+/// Dirty metadata is published first; clean metadata is published only after its snapshot.
+fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let snapshot_path = dir.join(SNAPSHOT);
+    let meta_path = dir.join(META);
+    let meta_bytes = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    if meta.dirty {
+        write(&meta_path, &meta_bytes)?;
+        write(&snapshot_path, snapshot)
+    } else {
+        write(&snapshot_path, snapshot)?;
+        write(&meta_path, &meta_bytes)
+    }
+}
+
 #[cfg(test)]
 mod durability_tests {
     use super::*;
@@ -1191,6 +1204,32 @@ mod durability_tests {
         assert_eq!(session.recovery_candidates().len(), 1);
         assert!(result.unwrap_err().to_string().contains("worker stopped"));
         session.shutdown();
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn interrupted_clean_to_dirty_journal_write_keeps_the_snapshot_recoverable() {
+        let d = std::env::temp_dir().join(format!("fc-recovery-dirty-transition-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let session = recovery_root(&d).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let clean_snapshot = filmcraft_format::encode(&Project::new("Saved"), false);
+        filmcraft_format::atomic_write(&session.join(SNAPSHOT), &clean_snapshot).unwrap();
+        filmcraft_format::atomic_write(&session.join(META), &serde_json::to_vec_pretty(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap())
+            .unwrap();
+        let unsaved_snapshot = filmcraft_format::encode(&Project::new("Unsaved"), false);
+        let result = write_recovery_pair(&session, &unsaved_snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            if path.file_name().is_some_and(|name| name == SNAPSHOT) {
+                Err(io::Error::other("simulated interruption before snapshot replacement"))
+            } else {
+                filmcraft_format::atomic_write(path, bytes)
+            }
+        });
+        assert!(result.is_err());
+        let candidates = scan_candidates(&d, None);
+        assert_eq!(candidates.len(), 1, "dirty metadata must not let the scan delete the snapshot");
+        assert!(candidates[0].meta.dirty);
+        assert_eq!(filmcraft_format::decode(&fs::read(session.join(SNAPSHOT)).unwrap()).unwrap().project.name, "Saved");
         fs::remove_dir_all(&d).unwrap();
     }
 }
