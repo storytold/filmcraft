@@ -79,6 +79,15 @@ fn tell(text: &str, error: bool) {
     }
 }
 
+/// The process allocator. The Windows process heap serialises every allocation of a size the
+/// low-fragmentation heap does not serve behind one lock, and 4K playback allocates from 16+
+/// threads at once (decoder pictures, NAL buffers, the frame workers' texel conversions, the
+/// UI pass). Sampled at 4K50p with the system heap, the UI thread spent most of its waiting time
+/// in that lock (heap calls under `ZwWaitForAlertByThreadId`) and repainted at 24–50 fps;
+/// mimalloc's per-thread heaps have no such lock.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> eframe::Result {
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
