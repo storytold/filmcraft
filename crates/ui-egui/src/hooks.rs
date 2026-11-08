@@ -17,6 +17,10 @@ pub trait AudioOut {
     /// dropped (a driver error, an unplugged device), keeping the clock and `fill`. A stream that
     /// cannot be restarted reports `played_frames() == None`.
     fn recover(&mut self) {}
+    /// Called when playback begins, before its preroll: open the device ahead of `start`, so
+    /// that starting the clock costs nothing on the UI thread (opening a stream took 20-30 ms,
+    /// dropping the first frame of a play). A no-op where opening is cheap.
+    fn prepare(&mut self) {}
     /// Hosts and devices that can be chosen in Settings ▸ Audio Hardware.
     fn devices(&self) -> AudioDevices {
         AudioDevices::default()

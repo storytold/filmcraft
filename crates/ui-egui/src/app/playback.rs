@@ -44,8 +44,13 @@ impl FilmcraftApp {
         self.playback.preroll_ready = false;
         self.playback.preroll_pending = false;
         self.playback.preroll_revision = None;
+        // The scrub output gives its device back first (#2633): playback's stream opens below, and
+        // waiting for the scrub stream to close belongs here too, not at the moment the clock starts.
+        self.release_scrub_output();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
+            // the device opens now, while the preroll decodes and nothing is due on screen
+            a.prepare();
         }
         self.playback.audio_clock = false;
         self.playback.audio_retry_at = 0.0;
@@ -57,7 +62,12 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
+        let t0 = web_time::Instant::now();
         self.start_audio(now);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        if ms > 4.0 {
+            log::info!("audio start took {ms:.1} ms on the UI thread");
+        }
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
@@ -170,7 +180,10 @@ impl FilmcraftApp {
         let sr = a.sample_rate();
         // Output frames still follow the accelerated timeline. The pitch preference selects
         // either the original rate conversion or pitch-corrected program audio.
-        let Some((mix_rate, mix)) = shuttle::mix(&self.session, seq_id, sr, self.playback.speed) else {
+        let t0 = web_time::Instant::now();
+        let mixed = shuttle::mix(&self.session, seq_id, sr, self.playback.speed);
+        let mix_ms = t0.elapsed().as_secs_f64() * 1e3;
+        let Some((mix_rate, mix)) = mixed else {
             a.stop();
             self.playback.audio_retry_at = 0.0;
             return;
@@ -189,7 +202,13 @@ impl FilmcraftApp {
                 cursor += (buf.len() / ch.max(1)) as i64;
             })
         };
-        match a.start(fill) {
+        let t1 = web_time::Instant::now();
+        let started = a.start(fill);
+        let start_ms = t1.elapsed().as_secs_f64() * 1e3;
+        if mix_ms + start_ms > 4.0 {
+            log::info!("audio: mixer built in {mix_ms:.1} ms, stream started in {start_ms:.1} ms");
+        }
+        match started {
             Ok(_) => {
                 self.playback.audio_clock = true;
                 self.playback.audio_retry_at = 0.0;
