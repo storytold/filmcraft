@@ -1733,32 +1733,94 @@ fn save_arrangement_refuses_an_unknown_bin() {
     assert!(d.app().ui.project_panel.dialog.is_some());
 }
 
-#[test]
-fn a_dragged_item_moves_into_a_bin_in_list_and_icon_views() {
-    // #4397: dragging media onto a bin did nothing (no ghost, no drop)
-    for (view, maximized) in [("list", true), ("icon", true), ("list", false), ("icon", false)] {
-        let mut d = Driver::demo();
-        d.ok("ui.panel.show", json!({"panel": "Project"}));
-        d.ok("ui.set", json!({"focused": "Project"}));
-        if maximized {
-            d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
-        }
-        d.frames(3);
-        d.exec("project.view.set", json!({"view": view}));
-        // a long project, as in the report: the panel scrolls
-        for _ in 0..70 {
-            d.exec("file.newBlackVideo", json!({}));
-        }
-        let target = d.exec("file.newBin", json!({"name": "Target"}))["bin"].as_u64().unwrap();
-        d.exec("project.select", json!({"items": []}));
-        d.frames(3);
-        // an item the scrolled view shows
-        let ids: Vec<u64> = d.app().session.project.items.values().map(|i| i.id.0).collect();
-        let item = ids.into_iter().find(|i| d.has(&format!("project.item.{i}")) && d.rect(&format!("project.item.{i}"))[3] > 10.0).expect("a visible item");
-        let parent = |d: &mut Driver| d.app().session.project.root.parent_of(filmcraft_project::ItemId(item)).map(|b| b.0);
-        assert_ne!(parent(&mut d), Some(target), "{view} {maximized}: starts outside the bin");
-        d.ok("ui.drag", json!({"from": {"id": format!("project.item.{item}")}, "to": {"id": format!("project.bin.{target}")}, "steps": 12}));
-        d.frames(3);
-        assert_eq!(parent(&mut d), Some(target), "{view} {maximized}: the item moved into the bin");
+/// The automation ids of the root bin's items and bins drawn whole inside the Project panel
+/// (rows and cards are registered clipped, so a cut-off one is shorter than the rest).
+fn fully_shown(d: &mut Driver) -> Vec<String> {
+    let panel = d.rect("panel.Project");
+    let v = d.ok("ui.elements", json!({"prefix": "project."}));
+    let rects: Vec<(String, [f32; 4])> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| {
+            let id = e["id"].as_str()?;
+            let n = id.strip_prefix("project.item.").or(id.strip_prefix("project.bin."))?;
+            n.parse::<u64>().ok()?;
+            let r: Vec<f32> = e["rect"].as_array()?.iter().filter_map(|x| x.as_f64().map(|x| x as f32)).collect();
+            Some((id.to_string(), [r[0], r[1], r[2], r[3]]))
+        })
+        .collect();
+    let full = rects.iter().map(|(_, r)| r[3]).fold(0.0, f32::max);
+    let inside = |r: &[f32; 4]| r[0] >= panel[0] && r[1] >= panel[1] && r[0] + r[2] <= panel[0] + panel[2] && r[1] + r[3] <= panel[1] + panel[3];
+    rects.into_iter().filter(|(_, r)| r[3] >= full - 0.5 && inside(r)).map(|(id, _)| id).collect()
+}
+
+/// #4397: dragging media onto a bin did nothing (no ghost, no drop) in a long project whose
+/// panel scrolls. In List view the dragged item is one the panel had to be scrolled to.
+fn drag_into_bin(view: &str, maximized: bool) {
+    let ctx = format!("{view} view, maximized {maximized}");
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    if maximized {
+        d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
     }
+    d.frames(3);
+    d.exec("project.view.set", json!({"view": view}));
+    let mode = if view == "list" { ViewMode::List } else { ViewMode::Icon };
+    assert_eq!(d.app().session.prefs.project_panel.view.mode, mode, "{ctx}: the view switched");
+    let target = d.exec("file.newBin", json!({"name": "Target"}))["bin"].as_u64().unwrap();
+    let root = d.app().session.project.root.id;
+    // the fewest new items that push one below the panel's end
+    let (mut items, mut below) = (Vec::new(), Vec::new());
+    for _ in 0..200 {
+        d.exec("file.newBlackVideo", json!({}));
+        d.frames(2);
+        let shown = fully_shown(&mut d);
+        let p = &d.app().session.project;
+        items = p.items.values().map(|i| i.id).filter(|i| p.root.parent_of(*i) == Some(root)).map(|i| format!("project.item.{}", i.0)).collect();
+        below = items.iter().filter(|i| !shown.contains(i)).cloned().collect();
+        if !below.is_empty() {
+            break;
+        }
+    }
+    assert!(!below.is_empty(), "{ctx}: the panel never scrolled");
+    d.exec("project.select", json!({"items": []}));
+    // Icon view puts the bins first and does not scroll during a drag, so only List view can
+    // show the bin beside an item that had to be scrolled to.
+    if view == "list" {
+        d.ok("ui.scroll", json!({"id": "panel.Project", "dy": -100_000}));
+        d.frames(10);
+        items = below;
+    }
+    let shown = fully_shown(&mut d);
+    let bin = format!("project.bin.{target}");
+    assert!(shown.contains(&bin), "{ctx}: the bin is in the panel's viewport: {shown:?}");
+    let item = items.iter().find(|i| shown.contains(i)).unwrap_or_else(|| panic!("{ctx}: an item in the viewport: {items:?} {shown:?}")).clone();
+    let id: u64 = item.trim_start_matches("project.item.").parse().unwrap();
+    let parent = |d: &mut Driver| d.app().session.project.root.parent_of(ItemId(id)).map(|b| b.0);
+    assert_ne!(parent(&mut d), Some(target), "{ctx}: starts outside the bin");
+    d.ok("ui.drag", json!({"from": {"id": item}, "to": {"id": bin}, "steps": 12}));
+    d.frames(3);
+    assert_eq!(parent(&mut d), Some(target), "{ctx}: the item moved into the bin");
+}
+
+#[test]
+fn a_dragged_item_moves_into_a_bin_in_list_view() {
+    drag_into_bin("list", false);
+}
+
+#[test]
+fn a_dragged_item_moves_into_a_bin_in_icon_view() {
+    drag_into_bin("icon", false);
+}
+
+#[test]
+fn a_dragged_item_moves_into_a_bin_in_maximized_list_view() {
+    drag_into_bin("list", true);
+}
+
+#[test]
+fn a_dragged_item_moves_into_a_bin_in_maximized_icon_view() {
+    drag_into_bin("icon", true);
 }
