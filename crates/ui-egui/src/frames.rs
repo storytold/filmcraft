@@ -17,7 +17,7 @@ use web_time::Instant;
 
 use filmcraft_engine::previews::PreviewStore;
 use filmcraft_engine::{MediaPool, Services};
-use filmcraft_project::{ItemId, Project};
+use filmcraft_project::{EffectInstance, ItemId, ParamValue, Project};
 use filmcraft_time::Tick;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -453,7 +453,8 @@ impl Cache {
 /// hash covers everything that shapes those pixels, nested sequences included), or in a gap of
 /// both under the same sequence settings. `None` when something the segments leave out changed,
 /// so no frame is: the sequence's own caption tracks (the monitor draws them into its frames) or
-/// the project's LUTs; or when the sequence is gone.
+/// the project's LUTs, or the sequence reads something they don't hash ([`reads_unhashed`]); or
+/// when the sequence is gone.
 pub fn unchanged_frames<'s>(
     was: &Project,
     now: &Project,
@@ -462,7 +463,7 @@ pub fn unchanged_frames<'s>(
     new: &'s [filmcraft_render::preview::Segment],
 ) -> Option<impl Fn(i64) -> bool + 's> {
     let (a, b) = (was.sequence(seq)?, now.sequence(seq)?);
-    if a.caption_tracks != b.caption_tracks || was.luts != now.luts || draws_names(was, seq, 0) || draws_names(now, seq, 0) {
+    if a.caption_tracks != b.caption_tracks || was.luts != now.luts || reads_unhashed(was, seq, 0) || reads_unhashed(now, seq, 0) {
         return None;
     }
     let same_settings = a.settings == b.settings;
@@ -473,15 +474,21 @@ pub fn unchanged_frames<'s>(
     })
 }
 
-/// Whether the sequence, or a sequence nested in it, has a Metadata & Timecode Burn-in: it can draw
-/// the sequence's, a clip's or a file's name, which the segments' hashes leave out, so a rename
-/// would carry frames that still show the old name.
-fn draws_names(project: &Project, seq: ItemId, depth: u32) -> bool {
+/// Whether the sequence, or a sequence nested in it, draws something the segments' hashes leave
+/// out: a Metadata & Timecode Burn-in (it can draw the sequence's, a clip's or a file's name, so a
+/// rename would carry frames that still show the old name), or a Track Matte Key whose matte track
+/// is off (the matte draws it anyway, but the hashes cover only the tracks that are on).
+fn reads_unhashed(project: &Project, seq: ItemId, depth: u32) -> bool {
     let Some(s) = project.sequence(seq) else { return false };
-    s.video_tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .any(|it| it.effects.iter().any(|e| e.enabled && e.effect == "metadata_burnin") || (depth < 8 && draws_names(project, it.item, depth + 1)))
+    // The matte choice counts tracks from 1 (0 is None).
+    let off_matte = |e: &EffectInstance| {
+        let Some(&ParamValue::Choice(c)) = e.param("matte").map(|p| &p.value) else { return false };
+        let track = c.checked_sub(1).and_then(|i| usize::try_from(i).ok()).and_then(|i| s.video_tracks.get(i));
+        e.effect == "track_matte" && track.is_some_and(|t| !t.enabled)
+    };
+    s.video_tracks.iter().flat_map(|t| &t.items).any(|it| {
+        it.effects.iter().any(|e| e.enabled && (e.effect == "metadata_burnin" || off_matte(e))) || (depth < 8 && reads_unhashed(project, it.item, depth + 1))
+    })
 }
 
 pub struct FrameServer {
@@ -1399,7 +1406,7 @@ mod carry_tests {
 
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{DemoScene, Generator, MediaSource};
-    use filmcraft_project::{ClipId, ItemKind, Label, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackKind, find_effect};
+    use filmcraft_project::{ClipId, ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind, find_effect};
     use filmcraft_render::preview::video_segments;
     use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -1513,6 +1520,33 @@ mod carry_tests {
         renamed.items.get_mut(&seq).unwrap().name = "again".into();
         let (old, new) = (video_segments(&now, outer), video_segments(&renamed, outer));
         assert!(unchanged_frames(&now, &renamed, outer, &old, &new).is_none(), "a nested sequence");
+    }
+
+    /// A Track Matte draws its track even when that track is off, but the segments hash only the
+    /// tracks that are on: an edit to an off matte track carries nothing. With the track on, the
+    /// segments cover it and the frames it doesn't touch still carry.
+    #[test]
+    fn an_edit_to_an_off_matte_track_carries_nothing() {
+        let kept = |enabled: bool| {
+            let (mut was, seq, a, _) = two_clips();
+            let ocean = was.sequence(seq).unwrap().find_item(a).unwrap().1.item;
+            let r = FrameRate::FPS_24;
+            let ti = was.make_track_item(ocean, TrackKind::Video, r.tick_of(0), TimeRange::new(Tick::ZERO, r.tick_of(48)), r).unwrap();
+            let v2 = ti.id;
+            let s = was.sequence_mut(seq).unwrap();
+            s.video_tracks[1].items.push(ti);
+            s.video_tracks[1].enabled = enabled;
+            let mut matte = find_effect("track_matte").unwrap().instance();
+            matte.params.get_mut("matte").unwrap().value = ParamValue::Choice(2);
+            s.find_item_mut(a).unwrap().1.effects.push(matte);
+            let mut now = was.clone();
+            let blur = find_effect("gaussian_blur").unwrap().instance();
+            now.sequence_mut(seq).unwrap().find_item_mut(v2).unwrap().1.effects.push(blur);
+            let (old, new) = (video_segments(&was, seq), video_segments(&now, seq));
+            unchanged_frames(&was, &now, seq, &old, &new).map(|k| [k(10), k(60), k(120)])
+        };
+        assert_eq!(kept(false), None, "the matte track is off");
+        assert_eq!(kept(true), Some([false, true, true]), "the matte track is on");
     }
 
     fn plan(px: usize) -> GpuPlan {
