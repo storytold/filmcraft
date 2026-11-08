@@ -1140,6 +1140,26 @@ fn add_edit_cuts_only_the_selected_clips() {
     assert!(r["cuts"].as_u64().unwrap() > 1, "{r}");
 }
 
+/// The Razor tool cuts on the nearest frame. `timeline.razor` asked for a time between frames cuts
+/// there too: at 23.976 fps 3.5 s is frame 83.916, so the cut lands on frame 84 instead of leaving a
+/// clip that ends partway through frame 83.
+#[test]
+fn razor_between_frames_cuts_on_the_nearest_frame() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Razor", "width": 640, "height": 360, "fps": 23.976})).unwrap();
+    let media = json!({"name": "Ten seconds", "video": true, "audio": false, "width": 640, "height": 360, "fps": 23.976, "seconds": 10});
+    let item = s.execute("file.newOfflineFile", media).unwrap()["item"].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item": item, "track": "V1", "frame": 0})).unwrap();
+    let frame_84 = s.sequence_rate().tick_of(84);
+    for params in [json!({"seconds": 3.5}), json!({"time": Tick::from_seconds_f64(3.5).0, "track": "V1"})] {
+        let r = s.execute("timeline.razor", params.clone()).unwrap();
+        assert_eq!(r["cuts"], json!(1), "{params}");
+        let parts = v1(&s);
+        assert_eq!((parts[0].end(), parts[1].start, parts[1].source_in), (frame_84, frame_84, frame_84), "{params}: the cut is on a frame");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+}
+
 #[test]
 fn linked_slip_keeps_picture_and_sound_aligned_at_unequal_media_limits() {
     let mut s = Session::default();

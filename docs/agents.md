@@ -206,6 +206,8 @@ Notes:
   an audio track given as `track` places the sound alone, on that track.
   The clip lands on the frame grid: its start and its end (`time + duration`) each snap to the
   nearest frame.
+- `timeline.razor` and `captions.split` cut on the nearest frame, as the Razor tool does:
+  `seconds=3.5` in a 23.976 fps sequence cuts at frame 84.
 - `sequence.inspect` reports `durationFrames` as the number of frames export renders: a sequence
   that ends partway through a frame counts that frame.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,

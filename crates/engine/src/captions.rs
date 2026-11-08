@@ -459,7 +459,8 @@ pub fn commands() -> Vec<CommandSpec> {
             },
         ),
         spec("captions.split", "Split Caption", &[], None, r#"{"caption":id?,"time":ticks?}"#, has_captions, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            // a time between frames splits on the nearest frame, as the Razor tool does on a caption
+            let t = s.sequence_rate().snap_nearest(time_p(s, p, "").unwrap_or(s.playhead()));
             let explicit = u64_p(p, "caption").map(ClipId);
             let ids = s.edit_sequence("Split Caption", |q, ctx, st| {
                 let ids = match explicit {

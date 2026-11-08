@@ -342,6 +342,26 @@ fn captions_duplicate_copies_and_overwrites() {
     s.active_sequence().unwrap().check().unwrap();
 }
 
+/// The Razor tool splits a caption on the nearest frame. `captions.split` asked for a time between
+/// frames splits there too: at 23.976 fps 3.5 s is frame 83.916, so the halves meet on frame 84
+/// instead of partway through frame 83.
+#[test]
+fn a_caption_split_between_frames_meets_on_the_nearest_frame() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Split", "width": 640, "height": 360, "fps": 23.976})).unwrap();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.add", json!({"text": "one two", "time": 0, "durationSeconds": 6.0})).unwrap();
+    let rate = s.sequence_rate();
+    let frame_84 = rate.tick_of(84);
+    for params in [json!({"seconds": 3.5}), json!({"time": Tick::from_seconds_f64(3.5).0})] {
+        s.execute("captions.split", params.clone()).unwrap();
+        let caps = s.active_sequence().unwrap().caption_tracks[0].captions.clone();
+        assert_eq!(caps.len(), 2, "{params}");
+        assert_eq!((caps[0].end(), caps[1].start), (frame_84, frame_84), "{params}: the halves meet on a frame");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+}
+
 #[test]
 fn captions_copy_cut_and_paste() {
     let mut s = demo();

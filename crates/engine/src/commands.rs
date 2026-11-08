@@ -3536,7 +3536,8 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"speed": sp}))
         }),
         cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            // a time between frames cuts on the nearest frame, as the Razor tool does
+            let t = s.sequence_rate().snap_nearest(time_p(s, p, "").unwrap_or(s.playhead()));
             let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
             let n = if let Some(c) = clip {
