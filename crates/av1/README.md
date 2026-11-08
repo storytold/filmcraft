@@ -81,7 +81,7 @@ superblock row by superblock row, each row waiting only for the reference rows i
 reach (row wavefront), and the in-loop filters (deblocking, CDEF, loop restoration) follow a few
 64-row bands behind and publish each final band for the frames predicting from it
 (`decoder.rs` and `postfilter.rs` give the dependency rules). Frames with several tiles decode
-their tiles in parallel into private buffers that are merged afterwards, once their references
+their tiles in parallel into private buffers that are merged afterward, once their references
 are finished, and filter in parallel bands of 64 rows. Independent frames (hierarchical GOP
 layers) decode concurrently. Results never depend on scheduling (the oracle tests compare 1 thread, many threads
 and libdav1d). With frame threads, pictures may be returned by a
@@ -135,6 +135,30 @@ frames whose `refresh_frame_flags` is 0 — no reference slot keeps them, so nei
 motion vectors nor CDFs reach another frame — skip deblocking, CDEF and loop restoration
 (super-resolution still runs, it sets the output size) and are flagged `Picture::draft`. In
 SVT-AV1's hierarchical GOPs that is the top layer, half of the frames.
+
+Frame threading on a Ryzen 7800X3D (8 cores / 16 threads, release `examples/av1dec`, median of 7
+alternating runs against upstream `6909e461`, 2026-11-08), wall time for the whole file:
+
+| Fixture | Threads | Before | After | Speed-up |
+|---|---|---|---|---|
+| `perf_1080p_gop` (60 frames) | 1 | 69.2 fps | 69.1 fps | 1.00x |
+| `perf_1080p_gop` | 16 | 159.6 fps | 227.3 fps | 1.42x |
+| `perf_2160p_gop` (30 frames) | 1 | 17.9 fps | 17.8 fps | 1.00x |
+| `perf_2160p_gop` | 16 | 40.2 fps | 57.7 fps | 1.43x |
+
+Peak RSS at 16 threads goes from 278 to 365 MB (1080p) and from 1031 to 1217 MB (2160p, +18%):
+every frame in flight holds its parse record and its final samples are kept in 64-row bands.
+
+Known limitations of the frame threading (the output is the same in every case, only the
+overlap is smaller):
+
+- A frame whose parse record would pass 32 bytes per luma sample of a tile (pathological streams:
+  tiny blocks, large palettes, every coefficient coded), or that cannot reserve its record from
+  the decoder-wide budget of 1 GiB shared by the frames in flight, is decoded again in one pass.
+- A superblock row using local warped motion, global motion beyond translation or a scaled
+  reference waits for the whole reference instead of the rows its motion vectors reach.
+- Super-resolution frames and frames with several tiles do not use the row wavefront: they wait
+  for their whole references and filter the whole frame.
 
 ## Limits
 

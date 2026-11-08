@@ -290,9 +290,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G16. Performance reports on 0.5.0
 
 - **Missing:** steady UI under load. Constant lag after 0.4 → 0.5 (#525), ~100% CPU (#523). AV1
-  software decode of a single-tile stream is bound by its serial tile decode (65–80 % of a
-  frame; no row-level frame threading, references are waited for as whole frames); 8K is not
-  real time.
+  software decode of a single-tile stream is bound by its serial symbol decoding: each frame
+  reads its symbols after the frame it takes its CDFs from (#3106); 8K is not real time. The
+  row wavefront across frames skips super-resolution frames and frames with several tiles,
+  rows with local warp, non-translational global motion or scaled references wait for the
+  whole reference, and frames with an oversized parse record (over 32 bytes per luma sample,
+  or past the decoder's 1 GiB record budget) are decoded in one pass. Frame threading raises
+  peak memory by about 18% (2160p, 16 threads).
 - **Done:** Render (Effects) In to Out renders only the frames between In and Out, as partial
   previews named by segment hash and relative frames, instead of every segment In/Out touches
   (#424); Render Audio still renders whole audio segments. AV1 software decode runs deblocking,
