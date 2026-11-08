@@ -2,7 +2,7 @@
 //!
 //! Opus (`Opus` sample entry + `dOps`): always 48 kHz output. Pre-skip is removed by the edit list
 //! (`media_time` = pre-skip), or applied from `dOps` when a file has no edit list; random access
-//! decodes [`crate::audio::OPUS_PRE_ROLL`] of preceding packets first (≥ the 80 ms `roll` distance).
+//! decodes [`crate::audio::OPUS_PRE_ROLL`] of preceding packets first (â‰¥ the 80 ms `roll` distance).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use crate::gop::{GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
-/// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
+/// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels Ã— 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
 
 struct DecodedAudioPacket {
@@ -101,7 +101,7 @@ pub fn sniff(b: &[u8]) -> bool {
 /// E-AC-3) run on from one another, resynchronising to the total only across gaps of more than half
 /// a packet.
 /// A remux from Matroska (OBS's) carries the millisecond rounding of its timestamps into the
-/// durations: 1008, 1008, 1056… for 1024-sample AAC frames at 48 kHz (see
+/// durations: 1008, 1008, 1056â€¦ for 1024-sample AAC frames at 48 kHz (see
 /// [`crate::audio::contiguous_starts`]).
 fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec<i64> {
     use crate::audio::{FixedFrames, PacketTime, contiguous_starts, fixed_packet_samples};
@@ -160,7 +160,7 @@ fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u
     })
 }
 
-/// The clean aperture (`clap`, ISO/IEC 14496-12 / QuickTime) of a `w`×`h` decoded picture as a
+/// The clean aperture (`clap`, ISO/IEC 14496-12 / QuickTime) of a `w`Ã—`h` decoded picture as a
 /// pixel rectangle: its size, centred on the picture and moved by its offsets, rounded to whole
 /// samples. `None` (the whole picture is shown) when it is the whole picture or makes no sense: a
 /// zero denominator, an empty or larger-than-the-picture size, a rectangle outside the picture.
@@ -227,7 +227,7 @@ const RTMD_HEADER_LEN: usize = 0x12;
 /// sample's fixed header. The layout is proprietary and undocumented, so it is reproduced here from
 /// real footage; it is the same block ffmpeg reports as the `timecode` tag of an `rtmd` stream.
 ///
-/// Fields outside SMPTE bounds — including the labels drop-frame counting skips — are rejected
+/// Fields outside SMPTE bounds â€” including the labels drop-frame counting skips â€” are rejected
 /// (no fabricated start time from damaged metadata).
 fn rtmd_fields(sample: &[u8], rate: FrameRate) -> Option<(i64, i64, i64, i64, bool)> {
     let f = sample.get(0x0d..0x12)?;
@@ -270,6 +270,9 @@ impl Mp4Source {
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
         let mut file = filmcraft_isobmff::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        // fork local-player-rs: corte por stream copy (`ffmpeg -ss Ã”Ã‡Âª -c copy`)
+        // deixa um *empty edit* do trecho descartado; ver a funâ”œÂºâ”œÃºo.
+        ignore_leading_empty_edits(&mut file);
         // A track needs samples, a sample description and a timescale to be playable (damaged
         // files can lack them: indexing `entries[0]` or dividing by the timescale used to panic).
         let playable = |t: &&filmcraft_isobmff::Track, kind| t.kind == kind && !t.samples.is_empty() && !t.entries.is_empty() && t.timescale > 0;
@@ -778,7 +781,7 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
 }
 
 /// `chroma_format_idc` and luma bit depth of an H.264 track: from its first SPS, which is what the
-/// decoder decodes, else from the `avcC` High-profile extension (ISO/IEC 14496-15 §5.3.3). The
+/// decoder decodes, else from the `avcC` High-profile extension (ISO/IEC 14496-15 Â§5.3.3). The
 /// extension is not trusted over the SPS: muxers have been seen writing `chroma_format` 0 (4:0:0)
 /// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
 /// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
@@ -923,7 +926,7 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 }
 
 /// How long a track plays. With an edit list that is the sum of its edits (ISO/IEC 14496-12
-/// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
+/// Â§8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
 /// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
 /// extra frame on every ffmpeg / x264 MP4 with B-frames) and shorter by a leading empty edit (the last
 /// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
@@ -941,16 +944,20 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
         return media;
     }
+    // fork local-player-rs: the long (> 1 s) leading empty edit left by a
+    // stream-copy cut is dropped by `ignore_leading_empty_edits` and must not
+    // count towards the duration either; a short one (reordering lead) still does.
+    let drop_empty = leading_cut_lead_in(t, file.timescale).is_some();
     let tps = filmcraft_time::TICKS_PER_SECOND as u128;
     let movie = file.timescale as u128;
-    let edits = t.edits.iter().fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
+    let edits = t.edits.iter().filter(|e| !(drop_empty && e.media_time == -1)).fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
     let mut ticks = edits.saturating_mul(tps) / movie;
     if let Some(last) = t.edits.last().filter(|e| e.media_rate == 0x1_0000 && e.media_time >= 0 && t.timescale > 0)
         && let Some((end, picture)) = t.samples.iter().map(|s| (i128::from(s.pts) + i128::from(s.duration), u128::from(s.duration))).max()
         && let Ok(rest) = u128::try_from(end - i128::from(last.media_time))
     {
         let track = t.timescale as u128;
-        // the media's rest and the edit, both in 1 / (movie × track) units
+        // the media's rest and the edit, both in 1 / (movie Ã— track) units
         let off = rest.saturating_mul(movie).abs_diff((last.segment_duration as u128).saturating_mul(track));
         if off < track && off < picture.saturating_mul(movie) {
             let exact = rest.saturating_mul(tps) / track;
@@ -961,6 +968,51 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     match i64::try_from(ticks) {
         Ok(t) if t > 0 => Tick(t),
         _ => media,
+    }
+}
+
+/// fork local-player-rs: descarta o *empty edit* inicial que um corte por stream
+/// copy deixa no `elst` (`media_time = -1`).
+///
+/// `ffmpeg -ss Ã”Ã‡Âª -t Ã”Ã‡Âª -c copy` grava no `elst` o intervalo descartado como um
+/// edit vazio e mantâ”œÂ®m `mvhd`/a soma dos edits com a duraâ”œÂºâ”œÃºo ORIGINAL, enquanto
+/// os samples de mâ”œÂ¡dia continuam comeâ”œÂºando em zero. O demux aplica esse vazio no
+/// `edit_offset`: a posiâ”œÂºâ”œÃºo 0 cai no primeiro sample, entâ”œÃºo o vâ”œÂ¡deo fica
+/// **congelado no primeiro frame** durante todo o vazio (o â”œÃ­udio segue em
+/// paralelo) e a barra de seek mostra a duraâ”œÂºâ”œÃºo antiga. Tocar o conteâ”œâ•‘do que o
+/// arquivo tem (como o mpv faz ao tratar o corte) significa comeâ”œÂºar no primeiro
+/// sample apresentado: o vazio â”œÂ® subtraâ”œÂ¡do do offset e de
+/// [`presentation_duration`].
+///
+/// Sâ”œâ”‚ o vazio **longo** (> [`CUT_LEAD_IN_SECS`]) â”œÂ® tratado como artefato de
+/// corte: o empty edit de um frame que alguns encoders escrevem para o atraso de
+/// reordenaâ”œÂºâ”œÃºo continua valendo (â”œÂ® o que o upstream testa). Edit lists normais
+/// (`media_time`, priming) ficam intocadas.
+const CUT_LEAD_IN_SECS: f64 = 1.0;
+
+/// Vazio inicial em ticks da faixa quando ele â”œÂ® longo o bastante para ser um
+/// corte por stream copy (`None`: vazio curto ou inexistente).
+fn leading_cut_lead_in(t: &filmcraft_isobmff::Track, movie_ts: u32) -> Option<i64> {
+    if movie_ts == 0 || t.timescale == 0 {
+        return None;
+    }
+    let empty: u128 = t.edits.iter().filter(|e| e.media_time == -1).map(|e| e.segment_duration as u128).sum();
+    if empty == 0 {
+        return None;
+    }
+    let ticks = empty * u128::from(t.timescale) / u128::from(movie_ts);
+    let secs = ticks as f64 / f64::from(t.timescale);
+    (secs > CUT_LEAD_IN_SECS).then(|| ticks.min(i64::MAX as u128) as i64)
+}
+
+fn ignore_leading_empty_edits(file: &mut Mp4File) {
+    if file.timescale == 0 {
+        return;
+    }
+    for t in &mut file.tracks {
+        if let Some(ticks) = leading_cut_lead_in(t, file.timescale) {
+            t.edit_offset = t.edit_offset.saturating_sub(ticks);
+        }
     }
 }
 
@@ -1062,6 +1114,38 @@ mod he_aac_tests {
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
         }
+    }
+
+    /// fork local-player-rs: `ffmpeg -ss Ã”Ã‡Âª -c copy` deixa um empty edit do
+    /// trecho descartado no `elst`. O player tem de tocar o conteâ”œâ•‘do desde o
+    /// primeiro sample (sem duraâ”œÂºâ”œÃºo herdada) em vez de ficar no silâ”œÂ¬ncio/frame
+    /// congelado do vazio.
+    #[test]
+    fn leading_empty_edit_does_not_freeze_the_clip() {
+        use filmcraft_isobmff::Edit;
+        let rate = 44_100u32;
+        let tone: Vec<f32> = (0..rate as usize).map(|i| 0.25 * (i as f32 * 0.05).sin()).collect();
+        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut aus = enc.encode(&[&tone]);
+        aus.extend(enc.flush());
+        let asc = vec![0x12, 0x08];
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let mut cfg = TrackConfig::new(SampleEntry::aac(asc, 1, rate), rate);
+        // Corte por stream copy: 2 s de vazio (movie timescale 1000) + a mâ”œÂ¡dia.
+        cfg.edits = vec![
+            Edit { segment_duration: 2_000, media_time: -1, media_rate: 0x10000 },
+            Edit { segment_duration: 1_000, media_time: 0, media_rate: 0x10000 },
+        ];
+        let t = mux.add_track(cfg).unwrap();
+        for au in &aus {
+            mux.write_sample(t, WriteSample { data: au, duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let src = super::Mp4Source::open("cut.mp4", mux.finish().unwrap().into_inner().into()).unwrap();
+        let secs = src.info().duration.seconds();
+        assert!((0.9..1.2).contains(&secs), "duraâ”œÂºâ”œÃºo herdada do corte: {secs}");
+        let buf = src.audio(0, 4410, 44_100).unwrap();
+        let peak = buf.channels[0].iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.05, "o vazio inicial nâ”œÃºo pode virar silâ”œÂ¬ncio no comeâ”œÂºo (peak {peak})");
     }
 }
 
