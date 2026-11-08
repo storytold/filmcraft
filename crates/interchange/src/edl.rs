@@ -8,7 +8,8 @@
 //!
 //! EDLs carry no frame rate and no media identity beyond reels/comments; see [`ImportOptions`].
 //! Source timecodes are imported as media time (a file starting at 01:00:00:00 would need
-//! [`crate::rebase_source_timecode`] after probing).
+//! [`crate::rebase_source_timecode`] after probing), so media items start at timecode 0 until
+//! a file is linked.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -84,7 +85,9 @@ fn parse_channels(s: &str) -> Option<Vec<Ch>> {
             "V" => out.push(Ch::V),
             "A" | "A1" => out.push(Ch::A(1)),
             "AA" => out.extend([Ch::A(1), Ch::A(2)]),
-            p if p.starts_with('A') && p[1..].parse::<usize>().is_ok_and(|n| (1..=99).contains(&n)) => out.push(Ch::A(p[1..].parse().ok()?)),
+            p if p.starts_with('A') && p[1..].bytes().all(|b| b.is_ascii_digit()) && p[1..].parse::<usize>().is_ok_and(|n| (1..=99).contains(&n)) => {
+                out.push(Ch::A(p[1..].parse().ok()?))
+            }
             _ => return None,
         }
     }
@@ -331,6 +334,9 @@ impl Ctx<'_> {
             duration: None,
             video: chans.contains(&Ch::V).then_some((w, h, self.rate)).or(self.has_video.then_some((w, h, self.rate))),
             audio: chans.iter().any(|c| matches!(c, Ch::A(_))).then_some((48_000, 2)).or(self.has_audio.then_some((48_000, 2))),
+            // Source times are the list's timecodes, so they count from 00:00:00:00. Saying so
+            // lets Link Media's Align Timecode move them onto the file's own start (#3990).
+            start_tc: Some(0),
             ..Default::default()
         };
         if let Some(f) = file {
@@ -344,13 +350,12 @@ impl Ctx<'_> {
             return id;
         }
         // Without a file, the clip name (or reel) is the best path guess; relinking resolves it.
+        // Until then it is missing, as a `* SOURCE FILE:` that isn't found is, not made offline:
+        // Link Media's folder search and Relink Others skip made-offline media (#3997).
         let path = resolve_path(&name, self.opts.base_dir.as_deref());
         let id = self.b.file_media(&key, &name, &path, &spec, None);
         if let Some(m) = self.b.p.item_mut(id) {
             m.metadata.insert("Tape Name".into(), reel.to_string());
-            if let Some(mc) = m.as_media_mut() {
-                mc.offline = true;
-            }
         }
         id
     }
@@ -498,7 +503,10 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
         [l1, l2] if matches!(l2.trans, Trans::Dissolve | Trans::Wipe(_)) => {
             let t0 = ctx.rec(l2.tcs[2], df);
             let t1 = ctx.rec(l2.tcs[3], df);
-            let d = ctx.rate.tick_of(l2.dur);
+            if l2.dur < 0 {
+                report.warn(format!("EDL event {} has a negative transition duration ({}); it was set to 0", l2.num, l2.dur));
+            }
+            let d = ctx.rate.tick_of(l2.dur.max(0));
             // Resolve separately for each track kind: named audio dissolves have
             // different definitions from their video counterparts.
             let mut video_effect = None;
@@ -725,11 +733,12 @@ impl Exp<'_> {
             .and_then(|i| i.as_media())
             .and_then(|m| m.info.start_timecode.map(|tc| self.rate.frame_at(m.frame_rate().tick_of(tc))))
             .unwrap_or(0);
-        start + frames_round(self.rate, t)
+        // Start timecodes come from the project file: saturate rather than overflow.
+        start.saturating_add(frames_round(self.rate, t))
     }
 
     fn rec_frames(&self, t: Tick) -> i64 {
-        self.seq.start_timecode + frames_round(self.rate, t)
+        self.seq.start_timecode.saturating_add(frames_round(self.rate, t))
     }
 
     fn file_comment(&self, item: ItemId) -> Option<String> {
@@ -1011,11 +1020,17 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
             tracks.push((TrackKind::Audio, a, Ch::A(a + 1)));
         }
     }
-    if seq.video_tracks.len() > 1
-        && opts.edl.video_track.is_some()
-        && seq.video_tracks.iter().enumerate().any(|(i, t)| Some(i) != opts.edl.video_track && !t.items.is_empty())
-    {
-        report.info("EDLs hold one video track; other video tracks were not exported (use export_edl_per_track)");
+    if let Some(v) = opts.edl.video_track {
+        let left_out: Vec<String> =
+            seq.video_tracks.iter().enumerate().filter(|(i, t)| *i != v && !t.items.is_empty()).map(|(i, _)| format!("V{}", i + 1)).collect();
+        if !left_out.is_empty() {
+            let exported = if seq.video_tracks.get(v).is_some_and(|t| !t.items.is_empty()) {
+                format!("only V{} was exported", v + 1)
+            } else {
+                "no video track was exported".into()
+            };
+            report.info(format!("EDLs hold one video track; {exported} (not {})", left_out.join(", ")));
+        }
     }
 
     for (kind, idx, ch) in tracks {
@@ -1142,6 +1157,7 @@ mod tests {
         assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
         assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
         assert_eq!(parse_channels("X"), None);
+        assert_eq!(parse_channels("A+4"), None);
     }
 
     #[test]
