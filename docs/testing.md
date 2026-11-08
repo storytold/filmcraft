@@ -138,6 +138,14 @@ asserts name (H.264, HEVC and the HEVC picture parameters with their SEI payload
 Compare the numbers with the asserts (a difference is drift, which must be understood before
 anything is "fixed" to match) and add asserts for anything new.
 
+HE-AAC can't be generated: ffmpeg's own AAC encoders make AAC-LC only. The HE-AAC oracle tests
+(`crates/codecs/tests/it/he_aac_corpus.rs`) read every `.m4a`, `.mp4`, `.mov`, `.mkv` and `.aac` file in
+the directory **`FILMCRAFT_AAC_CORPUS`** names, and pass with a note when it is unset (CI). They compare
+rate, channels, length and sync with ffmpeg's decode, and, once SBR is decoded (#4507), each 1.5 kHz
+band's level within 3 dB. The `soundcraft/he_aac_*.m4a` files of
+[KNUFFIXX/artcraft-fixtures](https://github.com/KNUFFIXX/artcraft-fixtures) (MIT OR Apache-2.0) are
+sine tones: they test length, rate and channels, not the high band, which needs a broadband file.
+
 ### Pass criteria per codec
 
 | Crate | Oracle check | Criterion |
