@@ -34,6 +34,8 @@ enum Phase {
 #[derive(Clone, Debug)]
 struct Draft {
     summary: String,
+    /// The captions the words came from: sent back so the order matches what the window shows.
+    captions: Vec<u64>,
     words: Vec<String>,
     heroes: Vec<bool>,
     templates: Vec<Template>,
@@ -80,9 +82,12 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
         span["height"].as_u64().unwrap_or(0),
         span["fps"].as_f64().unwrap_or(0.0)
     );
+    let captions: Vec<u64> = span["captions"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
     let template = templates.first().map(|t| t.id.clone());
     let n = words.len();
-    ctx.data_mut(|m| m.insert_temp(draft_id(), Some(Draft { summary, words, heroes: vec![false; n], templates, template, problem, phase: Phase::Editing })));
+    ctx.data_mut(|m| {
+        m.insert_temp(draft_id(), Some(Draft { summary, captions, words, heroes: vec![false; n], templates, template, problem, phase: Phase::Editing }))
+    });
     Ok(json!({"dialog": "letteringFx"}))
 }
 
@@ -201,7 +206,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if send && let Some(template) = d.template.clone() {
         let heroes: Vec<usize> = d.heroes.iter().enumerate().filter(|(_, h)| **h).map(|(i, _)| i).collect();
-        match app.session.execute("lettering.fx.send", json!({"template": template, "heroes": heroes})) {
+        match app.session.execute("lettering.fx.send", json!({"template": template, "heroes": heroes, "captions": d.captions})) {
             Ok(v) => {
                 d.problem = None;
                 match v["job"].as_u64() {
