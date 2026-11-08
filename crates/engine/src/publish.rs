@@ -99,19 +99,14 @@ fn load_client(s: &Session) -> std::result::Result<ClientConfig, String> {
 
 /// A regular file of at most `max` bytes. The bound is on what is read, not on what the file system
 /// reports, so a device or a pipe (which report no length) or a file growing meanwhile can't make it
-/// read without end. The type is checked before opening too: opening a FIFO that has no writer
-/// waits for one (Unix), so it must not be opened at all.
+/// read without end. Opening a FIFO that has no writer would wait for one (Unix): see
+/// [`open_regular`].
 fn read_small(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let not_regular = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file");
     if !std::fs::metadata(path)?.is_file() {
         return Err(not_regular());
     }
-    let file = std::fs::File::open(path)?;
-    // and again on what was opened, in case the path changed in between
-    if !file.metadata()?.is_file() {
-        return Err(not_regular());
-    }
+    let file = open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max {
@@ -121,6 +116,28 @@ fn read_small(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
 }
 
 /// The account signed in with `client`, if any.
+fn not_regular() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file")
+}
+
+/// Open `path` for reading if it is a regular file. On Unix the open doesn't block (`O_NONBLOCK`),
+/// so a FIFO put at the path, even after a check of the path, is refused instead of waiting for a
+/// writer; the type is checked on the opened file.
+fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
+    Ok(file)
+}
+
 fn load_account(dir: &Path, client: &ClientConfig) -> Option<Account> {
     let bytes = read_small(&dir.join(ACCOUNT_FILE), MAX_CLIENT_FILE).ok()?;
     serde_json::from_slice::<Account>(&bytes).ok().filter(|a| a.client_id == client.client_id && !a.refresh_token.is_empty())

@@ -2145,6 +2145,7 @@ dependencies = [
  "filmcraft-time",
  "filmcraft-tts",
  "image",
+ "libc",
  "log",
  "roxmltree",
  "serde",

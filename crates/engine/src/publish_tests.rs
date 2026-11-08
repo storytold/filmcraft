@@ -231,10 +231,19 @@ fn a_fifo_client_file_is_refused_without_waiting() {
         eprintln!("mkfifo unavailable; skipped");
         return;
     }
-    let t0 = std::time::Instant::now();
     let e = s.execute("publish.youtube.setClient", json!({"path": fifo})).unwrap_err().to_string();
     assert!(e.contains("not a regular file"), "{e}");
-    assert!(t0.elapsed() < Duration::from_secs(5));
+    // the open itself, as when a FIFO replaces the file after the path was checked: it must not
+    // wait for a writer (run on a thread, so a blocked open fails the test instead of hanging it)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(open_regular(&path).map(drop).map_err(|e| e.to_string()));
+    });
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(r) => assert_eq!(r, Err("not a regular file".to_string())),
+        Err(_) => panic!("opening the FIFO waited for a writer"),
+    }
 }
 
 fn desktop_client_file() -> String {
