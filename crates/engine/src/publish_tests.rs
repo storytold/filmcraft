@@ -226,11 +226,10 @@ fn finished(s: &Session, id: u64) -> Value {
 fn a_fifo_client_file_is_refused_without_waiting() {
     let (mut s, dir) = session("fifo");
     let fifo = dir.join("client.fifo");
+    // mkfifo is in coreutils on every Unix this runs on: failing here, not skipping, keeps the test
+    // from passing without testing anything
     let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-    if !made.is_ok_and(|st| st.success()) {
-        eprintln!("mkfifo unavailable; skipped");
-        return;
-    }
+    assert!(made.as_ref().is_ok_and(|st| st.success()), "mkfifo: {made:?}");
     let e = s.execute("publish.youtube.setClient", json!({"path": fifo})).unwrap_err().to_string();
     assert!(e.contains("not a regular file"), "{e}");
     // the open itself, as when a FIFO replaces the file after the path was checked: it must not
