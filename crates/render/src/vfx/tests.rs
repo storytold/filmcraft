@@ -1379,6 +1379,15 @@ mod pipeline {
             let left = img.get(10, 18);
             assert!(left.iter().all(|v| *v > 0.9), "{path}: the matte shows when the key is off, got {left:?}");
         }
+        // with effects off (the key enabled again) nothing is keyed either, so the matte draws again
+        p.sequence_mut(seq).unwrap().video_tracks[1].items[0].effects.iter_mut().find(|e| e.effect == "track_matte").unwrap().enabled = true;
+        let off = RenderOptions { effects: false, ..RenderOptions::default() };
+        let cpu = render_sequence(&p, seq, r.tick_of(0), off, &map);
+        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), off, crate::plan::DeviceCaps::ALL, &map));
+        for (path, img) in [("cpu", &cpu), ("plan", &planned)] {
+            let left = img.get(10, 18);
+            assert!(left.iter().all(|v| *v > 0.9), "{path}: the matte shows when effects are off, got {left:?}");
+        }
     }
 }
 
