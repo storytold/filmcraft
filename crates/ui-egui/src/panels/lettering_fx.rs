@@ -45,6 +45,7 @@ struct Draft {
     phase: Phase,
 }
 
+/// Where the open window keeps its draft.
 fn draft_id() -> egui::Id {
     egui::Id::unique("lettering-fx-draft")
 }
@@ -91,6 +92,7 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
     Ok(json!({"dialog": "letteringFx"}))
 }
 
+/// Draw the Lettering window while it is open.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
     let mut close = false;

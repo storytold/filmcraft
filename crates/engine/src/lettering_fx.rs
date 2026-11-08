@@ -96,6 +96,7 @@ pub enum FxStatus {
 }
 
 impl FxStatus {
+    /// The status as the word the commands report.
     fn name(&self) -> &'static str {
         match self {
             FxStatus::Running => "running",
@@ -117,6 +118,7 @@ pub struct FxJob {
 }
 
 impl FxJob {
+    /// The order as the commands report it.
     pub fn to_json(&self) -> Value {
         let st = self.status.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let error = if let FxStatus::Failed(e) = &st { json!(e) } else { Value::Null };
@@ -160,10 +162,12 @@ fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && !id.starts_with(['-', '.', '_']) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Joins a folder and a name into one path string.
 fn join(dir: &str, name: &str) -> String {
     std::path::Path::new(dir).join(name).to_string_lossy().into_owned()
 }
 
+/// The template bank folder: the `bank` parameter, else the configured one.
 fn bank_of(s: &Session, p: &Value, cmd: &str) -> Result<String> {
     let b = p.get("bank").and_then(Value::as_str).filter(|b| !b.is_empty()).map(str::to_string).or_else(|| s.lettering_fx.bank.clone());
     let b = b.ok_or_else(|| bad(cmd, "no template bank folder (set `bank`, or FILMCRAFT_LETTERING_BANK)"))?;
@@ -233,6 +237,7 @@ pub struct Span {
     pub words: Vec<FxWord>,
 }
 
+/// Rounds seconds to the millisecond.
 fn ms(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
@@ -363,6 +368,7 @@ pub fn words_json(sp: &Span) -> Value {
     json!({"fps": sp.fps, "width": sp.width, "height": sp.height, "duration": sp.duration, "phrases": phrases_json})
 }
 
+/// The span as the `lettering.fx.prepare` answer.
 fn span_json(sp: &Span) -> Value {
     json!({
         "captions": sp.captions,
@@ -380,6 +386,7 @@ fn span_json(sp: &Span) -> Value {
 // Commands
 // ---------------------------------------------------------------------------------------------
 
+/// `lettering.fx.prepare` / `lettering.fx.open`: describes the span of the selected captions.
 fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "lettering.fx.prepare";
     let mut sp = span(s, ID, captions_p(p, ID)?)?;
@@ -389,6 +396,7 @@ fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(v)
 }
 
+/// `lettering.fx.templates`: the menu of the template bank.
 fn list_templates(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "lettering.fx.templates";
     let bank = bank_of(s, p, ID)?;
@@ -405,6 +413,7 @@ fn work_dir(s: &Session, sp: &Span) -> String {
     join(&base, &format!("trecho-{}ms", ms(sp.start.seconds() * 1000.0) as i64))
 }
 
+/// `lettering.fx.send`: writes the order files and starts the attendant in the background.
 fn send(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "lettering.fx.send";
     let runner = s.lettering_fx.runner.clone().ok_or_else(|| bad(ID, "this host cannot start the animation app"))?;
@@ -480,6 +489,7 @@ pub fn run_order(runner: &dyn ProcessRunner, spec: &ProcessSpec, cancel: &Atomic
     }
 }
 
+/// `lettering.fx.status`: how the orders stand.
 fn status(s: &mut Session, p: &Value) -> Result<Value> {
     let want = p.get("job").and_then(Value::as_u64);
     let jobs: Vec<Value> = s.lettering_fx.jobs.iter().filter(|j| want.is_none_or(|w| w == j.id)).map(FxJob::to_json).collect();
@@ -489,6 +499,7 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"jobs": jobs}))
 }
 
+/// `lettering.fx.cancel`: asks a running order to stop.
 fn cancel(s: &mut Session, p: &Value) -> Result<Value> {
     let id = p.get("job").and_then(Value::as_u64).ok_or_else(|| bad("lettering.fx.cancel", "`job` is required"))?;
     let j = s.lettering_fx.jobs.iter().find(|j| j.id == id).ok_or_else(|| bad("lettering.fx.cancel", "unknown job"))?;
@@ -496,12 +507,14 @@ fn cancel(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id}))
 }
 
+/// The Lettering commands need a sequence with at least one caption.
 fn enabled_captions(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     let q = s.active_sequence().ok_or("no active sequence")?;
     if q.caption_tracks.iter().any(|t| !t.captions.is_empty()) { Ok(()) } else { Err("the sequence has no captions".into()) }
 }
 
+/// The `lettering.fx.*` commands.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
