@@ -1036,6 +1036,28 @@ fn parse_wordish(rest: &str, _lang: Lang) -> Option<(Vec<Token>, usize)> {
             return Some((vec![Token::Word(expansion.into())], used + 3));
         }
     }
+    // Dotted initialisms (U.S.A.): letters joined by dots. The inner dots are consumed; the
+    // last one is consumed only when the sentence visibly continues in lowercase.
+    if word.len() == 1 && word.starts_with(|c: char| c.is_ascii_alphabetic()) && peek(rest, used) == Some('.') {
+        let mut letters = vec![word.to_string()];
+        let mut at = used;
+        while peek(rest, at) == Some('.')
+            && let Some(letter) = peek(rest, at + 1).filter(char::is_ascii_alphabetic)
+            && peek(rest, at + 2).is_none_or(|c| !c.is_alphanumeric())
+        {
+            letters.push(letter.to_string());
+            at += 2;
+        }
+        if letters.len() >= 2 {
+            if peek(rest, at) == Some('.') {
+                let next = rest.get(at + 1..).unwrap_or("").trim_start_matches(char::is_whitespace);
+                if next.len() < rest.get(at + 1..).unwrap_or("").len() && next.starts_with(char::is_lowercase) {
+                    at += 1;
+                }
+            }
+            return Some((letters.into_iter().map(Token::Word).collect(), at));
+        }
+    }
     // Dotted abbreviations: Mr. Dr. St. Mt. vs. etc., and months (Oct. 7th).
     if let Some((tokens, consumed)) = dotted_abbreviation(&lower, rest, used) {
         return Some((tokens, consumed));
