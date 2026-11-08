@@ -79,6 +79,10 @@ pub fn file_url_to_path(url: &str) -> String {
     if decoded.len() >= 3 && decoded.starts_with('/') && is_windows_abs(&decoded[1..]) {
         return decoded[1..].to_string();
     }
+    // file://C:/x -> C:/x (not a network share)
+    if is_windows_abs(&decoded) {
+        return decoded;
+    }
     if !decoded.starts_with('/') {
         // file://server/share -> UNC
         return format!("//{decoded}");
@@ -766,6 +770,13 @@ pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use filmcraft_time::TimeRange;
+
+    #[test]
+    fn file_url_drive_letter_directly_after_scheme() {
+        assert_eq!(file_url_to_path("file://C:/x/a.mov"), "C:/x/a.mov");
+        assert_eq!(file_url_to_path("file://C:/My%20Clips/a.mov"), "C:/My Clips/a.mov");
+        assert_eq!(file_url_to_path("file://server/share/a.mov"), "//server/share/a.mov");
+    }
 
     #[test]
     fn percent_decode_requires_hex_digits() {
