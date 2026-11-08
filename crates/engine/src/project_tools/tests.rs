@@ -179,11 +179,14 @@ fn close_commands_and_templates() {
     assert!(s.execute("file.closeAllProjects", json!({})).is_err(), "dirty: needs force");
     s.execute("file.closeAllProjects", json!({"force": true})).unwrap();
     assert!(s.project.items.is_empty());
+    s.view_epoch = 9;
+    s.saved_view_epoch = 4;
     s.execute("file.newProjectFromTemplate", json!({"template": path, "name": "Ep 2"})).unwrap();
     assert!(s.project.items.values().any(|i| i.name == "Main Edit"));
     assert_eq!(s.project.items.len(), n);
     assert_eq!(s.project.name, "Ep 2");
     assert!(s.path.is_none() && !s.is_dirty());
+    assert_eq!((s.view_epoch, s.saved_view_epoch), (0, 0));
 }
 
 #[test]
