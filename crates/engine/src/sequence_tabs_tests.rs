@@ -23,6 +23,19 @@ fn view(pps: f64, scroll: f64) -> SequenceView {
     SequenceView { pps, scroll, v_scroll: 12.0, a_scroll: 7.0, video_track_h: 90.0, audio_track_h: 40.0 }
 }
 
+#[test]
+fn project_view_changes_do_not_dirty_project_content() {
+    let mut s = Session::default();
+    let revision = s.revision;
+    let epoch = s.view_epoch;
+
+    s.project_view_changed();
+
+    assert_eq!(s.revision, revision);
+    assert_eq!(s.view_epoch, epoch.wrapping_add(1));
+    assert!(!s.is_dirty());
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("filmcraft-tabs-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
