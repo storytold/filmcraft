@@ -781,6 +781,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
+        "timelineSettings": app.session.state.timeline_ui,
         "elements": app.auto.all().len(),
         "dialog": app.dialog.map(|d| format!("{d:?}")),
     })

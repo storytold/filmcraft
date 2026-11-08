@@ -240,8 +240,6 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
 /// sideways and Cmd + wheel moves the tracks.
 #[test]
-
-#[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let mut d = Driver::tall();
     let seconds = d.seconds();
@@ -458,6 +456,21 @@ fn continuous_video_thumbnails_ask_for_frames_across_each_clip() {
     let v = d.call("ui.set", json!({"timeline": {"thumbnails": "filmstrip"}}));
     assert_eq!(v["ok"], json!(false), "{v}");
     assert!(!d.app().ui.timeline.show_thumbnails);
+}
+
+#[test]
+fn timeline_settings_set_read_back_and_ignore_invalid_values() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": true, "maxZoomLevel": 1.2, "zoomBarHidden": true}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["smooth_animations"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(1.2));
+    assert_eq!(settings["zoom_bar_hidden"], json!(true));
+
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": "invalid", "maxZoomLevel": 99.0}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["smooth_animations"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(1.2));
 }
 
 #[test]
