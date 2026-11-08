@@ -452,7 +452,7 @@
 	Replace	替换
 	Yes	是
 	No	否
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件拖到窗口任意位置，或在下方选择来源。
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件或文件夹拖到窗口任意位置，或在下方选择来源。
 	Browse files…	浏览文件…
 	Movies, audio and stills from disk	来自磁盘的电影、音频与静帧
 	Demo footage	演示素材
@@ -3458,6 +3458,7 @@
 	Clip Speed / Duration	剪辑速度 / 时长
 	Speed:	速度：
 	Reverse Speed	反转速度
+	Maintain Audio Pitch	保持音频音调
 	Ripple Edit, Shifting Trailing Clips	波纹编辑，移动后续剪辑
 	About	关于
 	Contributors	贡献者
@@ -3741,3 +3742,25 @@
 	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	启用后，GIF 透明度为开/关模式：alpha 低于 128 为透明；128 及以上为不透明。
 	{frames} frames ({seconds} s)	{frames} 帧（{seconds} 秒）
 	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} 已存在，因此未导出任何内容。要替换它，请在保存对话框中选择它。
+	Open Presets Folder	打开预设文件夹
+	Scan Presets Folder	扫描预设文件夹
+	From preset file:	来自预设文件：
+	No presets folder: the app has no data directory	无预设文件夹：应用没有数据目录
+	Imported {n} preset(s)	已导入 {n} 个预设
+	Imported {n} preset(s); {skipped} skipped	已导入 {n} 个预设；已跳过 {skipped} 个
+	Imported {n} preset(s); {warnings} with unsupported parameters	已导入 {n} 个预设；{warnings} 个含不支持的参数
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	已导入 {n} 个预设；已跳过 {skipped} 个，{warnings} 个含不支持的参数
+	Imported {n} preset(s); not imported: {error}	已导入 {n} 个预设；未导入：{error}
+	Preset library updated: {imported} loaded, {removed} removed	预设库已更新：已加载 {imported} 个，已移除 {removed} 个
+	Preset library updated	预设库已更新
+	Preset library is up to date	预设库已是最新
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10 位色彩
+	All Intra	全帧内
+	Every frame a keyframe (edit-friendly, larger files)	每一帧都是关键帧（便于剪辑，文件更大）
+	H.264 High 10 Master	H.264 High 10 母版
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件
