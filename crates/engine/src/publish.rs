@@ -92,13 +92,31 @@ fn load_client(s: &Session) -> std::result::Result<ClientConfig, String> {
         return Ok(client.clone());
     }
     let path = dir(s).ok_or("no data directory")?.join(CLIENT_FILE);
-    let bytes = std::fs::read(&path).map_err(|_| "no YouTube client yet: choose the client file from Google Cloud (publish.youtube.setClient)".to_string())?;
+    let bytes = read_small(&path, MAX_CLIENT_FILE)
+        .map_err(|_| "no YouTube client yet: choose the client file from Google Cloud (publish.youtube.setClient)".to_string())?;
     ClientConfig::from_google_json(&bytes).map_err(|e| e.to_string())
+}
+
+/// A regular file of at most `max` bytes. The bound is on what is read, not on what the file system
+/// reports, so a device or a pipe (which report no length) or a file growing meanwhile can't make it
+/// read without end.
+fn read_small(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "too large"));
+    }
+    Ok(bytes)
 }
 
 /// The account signed in with `client`, if any.
 fn load_account(dir: &Path, client: &ClientConfig) -> Option<Account> {
-    let bytes = std::fs::read(dir.join(ACCOUNT_FILE)).ok()?;
+    let bytes = read_small(&dir.join(ACCOUNT_FILE), MAX_CLIENT_FILE).ok()?;
     serde_json::from_slice::<Account>(&bytes).ok().filter(|a| a.client_id == client.client_id && !a.refresh_token.is_empty())
 }
 
@@ -146,11 +164,10 @@ fn status(s: &mut Session, _: &Value) -> Result<Value> {
 fn set_client(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "publish.youtube.setClient";
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "need `path`: the client file downloaded from Google Cloud"))?;
-    let size = std::fs::metadata(path).map_err(|e| bad(cmd, format!("can't read {path}: {e}")))?.len();
-    if size > MAX_CLIENT_FILE {
-        return Err(bad(cmd, "that file is too large to be an OAuth client file"));
-    }
-    let bytes = std::fs::read(path).map_err(|e| bad(cmd, format!("can't read {path}: {e}")))?;
+    let bytes = read_small(Path::new(path), MAX_CLIENT_FILE).map_err(|e| match e.kind() {
+        std::io::ErrorKind::InvalidData => bad(cmd, "that file is too large to be an OAuth client file"),
+        _ => bad(cmd, format!("can't read {path}: {e}")),
+    })?;
     let client = ClientConfig::from_google_json(&bytes).map_err(|e| bad(cmd, e.to_string()))?;
     let dir = dir(s).ok_or_else(|| bad(cmd, "no data directory"))?;
     write_private(&dir.join(CLIENT_FILE), &bytes).map_err(|e| bad(cmd, format!("can't keep the client file: {e}")))?;

@@ -242,6 +242,15 @@ fn the_client_file_is_checked_and_kept() {
     let e = s.execute("publish.youtube.setClient", json!({"path": web})).unwrap_err().to_string();
     assert!(e.contains("Desktop app"), "{e}");
     assert!(s.execute("publish.youtube.setClient", json!({"path": dir.join("missing.json")})).is_err());
+    // not a regular file (a folder here; devices and pipes report no length either), and a file
+    // over the bound: refused without reading it all
+    let e = s.execute("publish.youtube.setClient", json!({"path": dir})).unwrap_err().to_string();
+    assert!(e.contains("can't read"), "{e}");
+    let big = dir.join("big.json");
+    std::fs::write(&big, vec![b' '; MAX_CLIENT_FILE as usize + 1]).unwrap();
+    let e = s.execute("publish.youtube.setClient", json!({"path": big})).unwrap_err().to_string();
+    assert!(e.contains("too large"), "{e}");
+    assert_eq!(read_small(&big, MAX_CLIENT_FILE + 1).map(|b| b.len()).ok(), Some(MAX_CLIENT_FILE as usize + 1), "the bound itself is allowed");
 
     let good = dir.join("client_secret.json");
     std::fs::write(&good, desktop_client_file()).unwrap();
