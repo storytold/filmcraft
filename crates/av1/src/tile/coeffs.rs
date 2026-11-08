@@ -454,6 +454,47 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
     }
 
+    /// Moves the coefficients `coeffs` left in `quant` into the record (leaving `quant` zero, as
+    /// reconstruction does).
+    pub(super) fn record_coeffs(&mut self, eob: usize, tx_sz: usize) {
+        let scan = self.get_scan(tx_sz);
+        let rec = &mut self.record.coeffs;
+        rec.push(eob as i32);
+        if eob == 0 {
+            return;
+        }
+        rec.push(self.plane_tx_type as i32);
+        let count_at = rec.len();
+        rec.push(0);
+        let mut count = 0;
+        for &pos in scan.get(..eob).unwrap_or(scan) {
+            let v = std::mem::take(&mut self.quant[pos as usize]);
+            if v != 0 {
+                rec.push(pos as i32);
+                rec.push(v);
+                count += 1;
+            }
+        }
+        rec[count_at] = count;
+    }
+
+    /// The next transform block's coefficients from the record into `quant` (and its type);
+    /// returns its eob.
+    pub(super) fn replay_coeffs(&mut self) -> crate::Result<usize> {
+        let eob = self.record.next_coeff()?;
+        if eob <= 0 {
+            return Ok(0);
+        }
+        self.plane_tx_type = usize::try_from(self.record.next_coeff()?).map_err(|_| crate::Error::Invalid("coefficient record"))?;
+        let count = self.record.next_coeff()?;
+        for _ in 0..count {
+            let pos = self.record.next_coeff()? as usize;
+            let v = self.record.next_coeff()?;
+            *self.quant.get_mut(pos).ok_or(crate::Error::Invalid("coefficient record"))? = v;
+        }
+        Ok(eob as usize)
+    }
+
     /// Reconstruct process (7.12.3).
     pub(super) fn reconstruct(&mut self, plane: usize, x: usize, y: usize, tx_sz: usize, dc_only: bool) {
         // dqDenom (7.12.3) is 1, 2 or 4 and the dividend is non-negative.

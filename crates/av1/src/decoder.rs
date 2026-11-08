@@ -2,10 +2,13 @@
 //! (7.20), show-existing-frame and output (7.18).
 //!
 //! Threading: headers are parsed in order on the calling thread; each frame then becomes a job
-//! that waits for the reference frames it uses and decodes on a frame worker thread, so frames
-//! that do not depend on each other decode concurrently. Within a frame, tiles and the
-//! post-filter row bands run on a shared worker pool. Every result depends only on finished
-//! reference frames, so the output is identical whatever the scheduling. Shown pictures are
+//! on a frame worker thread. A job first reads the symbols of its tiles (parse), which needs
+//! only the parse results of its references (CDFs, segment ids, saved motion vectors), and
+//! publishes its own; it then waits for the reference samples it predicts from and
+//! reconstructs. So a frame can parse while its references are still being reconstructed and
+//! filtered, and frames that do not depend on each other decode concurrently. Within a frame,
+//! tiles and the post-filter row bands run on a shared worker pool. Every result depends only
+//! on finished reference data, so the output is identical whatever the scheduling. Shown pictures are
 //! returned in order; with frame threads they can come out of a later `decode` call (or
 //! `flush`), each carrying the `pts` of the temporal unit that showed it.
 
@@ -23,7 +26,7 @@ use crate::spec_tables::{
 };
 use crate::state::{FrameShared, FrameState, TileState};
 use crate::stats::{DecodeStats, Stage, Timer};
-use crate::tile::TileDecoder;
+use crate::tile::{Pass, TileDecoder, TileRecord};
 use crate::{Error, Picture, Result};
 
 /// Largest accepted frame: the AV1 level 6.x limits (Annex A: MaxHSize 16384, MaxVSize 8704, MaxPicSize
@@ -846,19 +849,30 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
             parsed[i] = Some(slot.wait_parsed()?);
         }
     }
-    let mut refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES] = Default::default();
-    if !fh.frame_is_intra {
-        for i in 0..NUM_REF_FRAMES {
-            if used[i] {
-                let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
-                slot.progress.wait(job.ref_info[i].frame_height as usize)?;
-                refs[i] = Some(slot.wait()?);
+    // The samples of the references predicted from (inter frames only).
+    let wait_samples = || -> Result<[Option<Arc<RefFrame>>; NUM_REF_FRAMES]> {
+        let mut refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES] = Default::default();
+        if !fh.frame_is_intra {
+            for i in 0..NUM_REF_FRAMES {
+                if used[i] {
+                    let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
+                    slot.progress.wait(job.ref_info[i].frame_height as usize)?;
+                    refs[i] = Some(slot.wait()?);
+                }
             }
         }
-    }
+        Ok(refs)
+    };
+    // With worker threads, the symbols of every tile are read first, so the parse results
+    // (which the next frames need before they can read their own symbols) are published
+    // before reconstruction, and parsing does not wait for the reference samples; on one
+    // thread each block is reconstructed as it is read.
+    let split = pool.is_parallel();
     let t = Timer::start();
     let mut fs = FrameState::new(seq, fh);
-    fs.refs = refs;
+    if !split {
+        fs.refs = wait_samples()?;
+    }
     fs.parsed = parsed;
     fs.ref_info = job.ref_info.clone();
     if fh.primary_ref_frame != PRIMARY_REF_NONE {
@@ -886,15 +900,38 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     };
     stats.add(Stage::Setup, t.secs());
     let t = Timer::start();
-    let saved = decode_tiles(pool, &mut fs, &cdfs, &job.tiles)?;
+    // Time spent waiting for reference samples is not decoding time.
+    let mut waited = 0.0;
+    let mut tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, if split { Pass::Parse } else { Pass::Full })?;
     stats.tiles += job.tiles.len() as u64;
-    stats.add(Stage::Tiles, t.secs());
     if !fh.disable_frame_end_update_cdf
-        && let Some(s) = saved
+        && let Some(s) = tiles.saved.take()
     {
         cdfs = s;
     }
-    job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
+    if split {
+        if tiles.whole {
+            if let Some(state) = tiles.states.pop() {
+                fs.put_tile_state(state);
+                job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
+                tiles.states.push(fs.take_tile_state());
+            }
+        } else {
+            for state in &tiles.states {
+                fs.merge_tile_state(state);
+            }
+            job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
+        }
+        let wait = Timer::start();
+        fs.refs = wait_samples()?;
+        waited = wait.secs();
+        reconstruct_tiles(pool, &fs.sh, &mut tiles)?;
+        tiles.finish(&mut fs);
+    } else {
+        tiles.finish(&mut fs);
+        job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
+    }
+    stats.add(Stage::Tiles, t.secs() - waited);
     crate::postfilter::apply(&mut fs, stats, pool, job.draft);
     stats.draft_frames += job.draft as u64;
     let t = Timer::start();
@@ -915,16 +952,46 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     Ok((rf, pic))
 }
 
-/// Decode the tiles of a frame (tile number, data), in parallel when several; returns the final
-/// CDFs of tile context_update_tile_id.
-fn decode_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)]) -> Result<Option<Box<Cdfs>>> {
+/// The tiles of a frame between parsing and reconstruction.
+struct FrameTiles {
+    /// One state per tile (decoded in parallel into private buffers), or one for the whole
+    /// frame (tiles one after another).
+    states: Vec<TileState>,
+    /// Per tile: (tile number, record of [`Pass::Parse`]).
+    records: Vec<(usize, TileRecord)>,
+    /// The final CDFs of tile context_update_tile_id.
+    saved: Option<Box<Cdfs>>,
+    /// `states` holds the frame's own buffers (taken with [`FrameState::take_tile_state`]).
+    whole: bool,
+}
+
+impl FrameTiles {
+    /// Move the tile buffers (mode info, filter parameters and, after reconstruction, the
+    /// samples) into the frame.
+    fn finish(self, fs: &mut FrameState) {
+        if self.whole {
+            if let Some(t) = self.states.into_iter().next() {
+                fs.put_tile_state(t);
+            }
+        } else {
+            for t in &self.states {
+                fs.merge_tile_state(t);
+            }
+        }
+    }
+}
+
+/// Run `pass` (Full or Parse) over the tiles of a frame.
+fn parse_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)], pass: Pass) -> Result<FrameTiles> {
     let ti = fs.fh.tile_info.clone();
     let ctx_tile = ti.context_update_tile_id as usize;
-    let run = |sh: &FrameShared, t: &mut TileState, num: usize, data: &[u8]| -> Result<Option<Box<Cdfs>>> {
+    let run = |sh: &FrameShared, t: &mut TileState, num: usize, data: &[u8]| -> Result<(Option<Box<Cdfs>>, TileRecord)> {
         t.intra_frame_y_mode_cdf = DEFAULT_INTRA_FRAME_Y_MODE_CDF;
         let mut td = TileDecoder::new(sh, t, data, Box::new(cdfs.clone()), num / ti.cols, num % ti.cols);
+        td.pass = pass;
         td.decode_tile()?;
-        Ok((num == ctx_tile).then_some(td.cdf))
+        let rec = std::mem::take(&mut td.record);
+        Ok(((num == ctx_tile).then_some(td.cdf), rec))
     };
     // Intra block copy reads the current frame through the tile's own buffer: keep whole-frame
     // buffers (tiles one after another) for it.
@@ -940,32 +1007,65 @@ fn decode_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, 
             .collect();
         let sh = &fs.sh;
         let results = pool.map_mut(&mut states, |i, t| run(sh, t, tiles[i].0, &tiles[i].1));
-        for t in &states {
-            fs.merge_tile_state(t);
-        }
         let mut saved = None;
-        for r in results {
-            if let Some(c) = r? {
-                saved = Some(c);
+        let mut records = Vec::with_capacity(tiles.len());
+        for (r, (num, _)) in results.into_iter().zip(tiles) {
+            let (c, rec) = r?;
+            if c.is_some() {
+                saved = c;
             }
+            records.push((*num, rec));
         }
-        return Ok(saved);
+        return Ok(FrameTiles { states, records, saved, whole: false });
     }
     let mut t = fs.take_tile_state();
     let mut saved = None;
+    let mut records = Vec::with_capacity(tiles.len());
     let mut res = Ok(());
     for (num, data) in tiles {
         match run(&fs.sh, &mut t, *num, data) {
-            Ok(Some(c)) => saved = Some(c),
-            Ok(None) => {}
+            Ok((c, rec)) => {
+                if c.is_some() {
+                    saved = c;
+                }
+                records.push((*num, rec));
+            }
             Err(e) => {
                 res = Err(e);
                 break;
             }
         }
     }
-    fs.put_tile_state(t);
-    res.map(|_| saved)
+    if let Err(e) = res {
+        fs.put_tile_state(t);
+        return Err(e);
+    }
+    Ok(FrameTiles { states: vec![t], records, saved, whole: true })
+}
+
+/// Reconstruct parsed tiles (in parallel when each has its own state).
+fn reconstruct_tiles(pool: &Pool, fs: &FrameShared, tiles: &mut FrameTiles) -> Result<()> {
+    let ti = fs.fh.tile_info.clone();
+    let run = |t: &mut TileState, num: usize, rec: TileRecord| -> Result<()> {
+        let mut td = TileDecoder::new(fs, t, &[], Cdfs::new(fs.fh.quant.base_q_idx), num / ti.cols, num % ti.cols);
+        td.pass = Pass::Reconstruct;
+        td.record = rec;
+        td.decode_tile()
+    };
+    let records = std::mem::take(&mut tiles.records);
+    if !tiles.whole {
+        let mut items: Vec<(&mut TileState, Option<(usize, TileRecord)>)> = tiles.states.iter_mut().zip(records.into_iter().map(Some)).collect();
+        let results = pool.map_mut(&mut items, |_, (t, rec)| match rec.take() {
+            Some((num, rec)) => run(t, num, rec),
+            None => Ok(()),
+        });
+        return results.into_iter().collect();
+    }
+    let Some(t) = tiles.states.first_mut() else { return Ok(()) };
+    for (num, rec) in records {
+        run(t, num, rec)?;
+    }
+    Ok(())
 }
 
 fn output_picture(seq: &SequenceHeader, rf: &RefFrame, w: usize, h: usize, grain: &FilmGrainParams, apply_film_grain: bool, pts: i64) -> Picture {

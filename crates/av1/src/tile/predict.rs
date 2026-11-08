@@ -205,7 +205,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         if start_x >= max_x || start_y >= max_y {
             return Ok(());
         }
-        if !self.b.is_inter {
+        let parse_only = self.pass == super::Pass::Parse;
+        if !self.b.is_inter && !parse_only {
             let palette = if plane == 0 { self.b.palette_size_y } else { self.b.palette_size_uv };
             if palette > 0 {
                 self.predict_palette(plane, start_x, start_y, x, y, tx_sz);
@@ -258,9 +259,23 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             }
         }
         if !self.b.skip {
-            let eob = self.coeffs(plane, start_x, start_y, tx_sz);
-            if eob > 0 {
-                self.reconstruct(plane, start_x, start_y, tx_sz, eob == 1);
+            match self.pass {
+                super::Pass::Full => {
+                    let eob = self.coeffs(plane, start_x, start_y, tx_sz);
+                    if eob > 0 {
+                        self.reconstruct(plane, start_x, start_y, tx_sz, eob == 1);
+                    }
+                }
+                super::Pass::Parse => {
+                    let eob = self.coeffs(plane, start_x, start_y, tx_sz);
+                    self.record_coeffs(eob, tx_sz);
+                }
+                super::Pass::Reconstruct => {
+                    let eob = self.replay_coeffs()?;
+                    if eob > 0 {
+                        self.reconstruct(plane, start_x, start_y, tx_sz, eob == 1);
+                    }
+                }
             }
         }
         for i in 0..step_y {
