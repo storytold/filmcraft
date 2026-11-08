@@ -560,7 +560,7 @@ mod tests {
         let l = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
         let v = l.view.expect("the view survives one bad slider setting");
         assert_eq!(v.open_sequences, view.open_sequences);
-        assert_eq!(v.timeline_ui.max_zoom_seconds, 0.4, "the damaged block falls back to the defaults");
+        assert_eq!(v.timeline_ui, TimelineUiSettings::default(), "the damaged block falls back as a whole");
         // unknown ids are not this crate's business (the editor checks them against the project)
         doc["view"] = serde_json::json!({"open_sequences": [424242]});
         assert_eq!(decode(&serde_json::to_vec(&doc).unwrap()).unwrap().view.unwrap().open_sequences, [ItemId(424242)]);

@@ -51,55 +51,73 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
-    /// Project-scoped Timeline interaction settings, stored beside the project view.
+    /// Project-scoped Timeline interaction settings, stored beside the project view. A malformed
+    /// settings block falls back to [`TimelineUiSettings::default`] without discarding the rest of
+    /// the view, and values are bounded by [`TimelineUiSettings::checked`].
     #[serde(default, deserialize_with = "lenient_timeline_ui")]
     pub timeline_ui: TimelineUiSettings,
 }
 
+/// Project-scoped Timeline appearance and interaction settings stored beside the project data.
+/// Deserialization is lenient: a missing or malformed block uses defaults, while valid numeric
+/// values are clamped and invalid colours fall back to their defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimelineUiSettings {
+    /// Whether Timeline zoom animations are enabled (default: `false`).
     pub smooth_animations: bool,
     /// Inverted controls: the wheel over the tracks scrolls the Timeline the other way in time,
     /// and the wheel while grabbing the zoom slider's middle zooms the other way.
     pub inverted_controls: bool,
+    /// Seconds kept visible on one side of the playhead (default: 10; clamped to 0.1–3600).
     pub playhead_side_seconds: f64,
+    /// Whether the playhead-side value is Custom (default: `false`).
     pub playhead_side_custom: bool,
     /// Shift-drag speed as a multiplier of the Auto sensitivity for the current view (0.25 = four
     /// times slower, 2 = twice as fast).
     pub shift_drag_speed: f64,
+    /// Whether the zoom-bar Shift-drag speed is Custom (default: `false`).
     pub shift_drag_custom: bool,
     /// Zooming via the zoom bar's edges keeps the playhead exactly in the middle of the view
     /// once a zoom out has brought it into view (gravity), and never lets it slip off while the
     /// user keeps nudging the edges. Escaped only by dragging the slider's middle manually.
+    /// Keep the playhead centred when zooming past it (default: `true`).
     pub playhead_centering: bool,
     /// Hide Slider: the zoom scroll bar is gone and the tracks fill its space. Brought back by
     /// right-clicking the Timeline (Unhide Timeline Slider).
     pub zoom_bar_hidden: bool,
     /// Alternate Slider Position: the zoom bar sits at the top edge, just above the ruler,
     /// instead of at the bottom edge.
+    /// Place the zoom bar above the ruler (default: `false`).
     pub alternate_slider_position: bool,
     /// Slider Minimap: clip outlines drawn on the zoom scroll bar's track (draft).
+    /// Show clips in the zoom bar's minimap (default: `true`).
     pub slider_minimap: bool,
     /// Show Whole Timeline (the minimap's own menu): the minimap is locked to the full Timeline
     /// extent (the sequence plus its ten minute tail) so the viewport marker can travel past the
     /// last clip. Off: the map stops at the end of the sequence.
     pub show_whole_timeline: bool,
     /// Fill Clips (the minimap's own menu): minimap clips are filled in. Off: outlines only.
+    /// Fill minimap clip shapes instead of drawing outlines (default: `false`).
     pub fill_clips: bool,
     /// Position Indicator Color (the minimap's own menu): the "#rrggbb" colour of the "you are
     /// here" line on the zoom scroll bar.
     pub position_indicator_color: String,
     /// Prioritise Audio (the minimap's own menu): where an audio clip and a video clip sit at the
     /// same place, the audio shows on top of the video. Off: the video covers the audio.
+    /// Draw audio above video when their minimap regions overlap (default: `false`).
     pub prioritise_audio: bool,
     /// Video / Audio / Media Offline indicator colours ("#rrggbb") of the minimap's clips.
+    /// Video minimap colour in `#rrggbb` form (default: `#64b5f6`).
     pub video_indicator_color: String,
+    /// Audio minimap colour in `#rrggbb` form (default: `#2e7d32`).
     pub audio_indicator_color: String,
+    /// Offline-media minimap colour in `#rrggbb` form (default: `#d32f2f`).
     pub offline_indicator_color: String,
     /// Maximum Zoom Level: the smallest number of seconds the view may show (0.1 = Closest,
     /// 0.2 = Close, 0.4 = Default, 0.8 = Far; Custom 0.05-3).
     pub max_zoom_seconds: f64,
+    /// Whether Maximum Zoom Level is Custom (default: `false`).
     pub max_zoom_custom: bool,
     /// The last Custom values of each dialog slider, restored when Custom is chosen again.
     /// Files written before they existed start at the one-time Custom defaults.
@@ -112,9 +130,9 @@ pub struct TimelineUiSettings {
     /// Hide Slider (track sliders): the side track sliders are gone and the tracks fill their
     /// column. Brought back by right-clicking the Timeline (Unhide Track Slider).
     pub track_slider_hidden: bool,
-    /// Draft rows of the Track Slider Settings menu: stored and shown, but they do not drive the
-    /// sliders yet.
+    /// Whether track-slider zoom animations are enabled (default: `false`).
     pub track_slider_smooth: bool,
+    /// Place track sliders on the opposite side of the track headers (default: `false`).
     pub track_slider_alternate_position: bool,
     /// Decouple Edges: dragging one end circle of a track slider moves only that end -- the
     /// other end stays exactly where it is instead of mirroring about the thumb's middle.
@@ -127,6 +145,7 @@ pub struct TimelineUiSettings {
     pub track_slider_shift_drag_speed: f64,
     /// The user has typed a Custom Alternate Drag Speed: the tick slider stays on Custom even
     /// when the number matches a preset (the main slider's `shift_drag_custom` on its end).
+    /// Whether the track-slider Shift-drag speed is Custom (default: `false`).
     pub track_slider_shift_drag_custom: bool,
     /// The last Custom Alternate Drag Speed the user typed, restored when Custom is picked
     /// again (`shift_drag_last_custom` the same way).
@@ -183,7 +202,14 @@ impl Default for TimelineUiSettings {
 }
 
 impl TimelineUiSettings {
-    /// Validate settings read from a project file before they reach UI geometry or controls.
+    /// Clamp project-provided values before they reach UI geometry or controls.
+    ///
+    /// `playhead_side_seconds` and its saved Custom value use 0.1–3600 seconds (defaults 10 and
+    /// 15); zoom-bar Shift-drag speed and its saved Custom value use 0.1–50 (default 1); Maximum
+    /// Zoom Level and its saved Custom value use 0.05–3 seconds (default 0.4, also used for
+    /// non-finite or non-positive inputs); track-slider Shift-drag speed and its saved Custom
+    /// value use 0.1–10 (default 1). Invalid colours use their per-field defaults, and `#rgb`
+    /// colours expand to `#rrggbb`.
     pub fn checked(mut self) -> Self {
         self.playhead_side_seconds = if self.playhead_side_seconds.is_finite() { self.playhead_side_seconds.clamp(0.1, 3600.0) } else { 10.0 };
         self.shift_drag_speed = if self.shift_drag_speed.is_finite() { self.shift_drag_speed.clamp(0.1, 50.0) } else { 1.0 };
@@ -191,8 +217,7 @@ impl TimelineUiSettings {
         self.shift_drag_last_custom = if self.shift_drag_last_custom.is_finite() { self.shift_drag_last_custom.clamp(0.1, 50.0) } else { 1.0 };
         // a non-positive Maximum Zoom Level is "unset": the documented 0.4 s default, never the
         // clamp floor (0.05), or the fallback could no longer apply
-        self.max_zoom_seconds =
-            if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
+        self.max_zoom_seconds = if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
         self.max_zoom_last_custom =
             if self.max_zoom_last_custom.is_finite() && self.max_zoom_last_custom > 0.0 { self.max_zoom_last_custom.clamp(0.05, 3.0) } else { 0.4 };
         self.track_slider_shift_drag_speed =
@@ -225,7 +250,11 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    let value = serde_json::Value::deserialize(d)?;
+    if !value.is_object() {
+        return Ok(TimelineUiSettings::default());
+    }
+    Ok(serde_json::from_value::<TimelineUiSettings>(value).map(|s| s.checked()).unwrap_or_default())
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
@@ -264,6 +293,74 @@ pub struct ProjectLut {
 mod tests {
     use super::*;
 
+    #[test]
+    fn timeline_ui_deserialization_is_lenient_and_defaults_missing_custom_values() {
+        for malformed in [serde_json::json!("settings"), serde_json::json!(7), serde_json::json!([true])] {
+            let view: ProjectView = serde_json::from_value(serde_json::json!({"timeline_ui": malformed})).unwrap();
+            assert_eq!(view.timeline_ui, TimelineUiSettings::default());
+        }
+
+        let settings: TimelineUiSettings = serde_json::from_value(serde_json::json!({"smooth_animations": true})).unwrap();
+        assert!(settings.smooth_animations);
+        assert_eq!(settings.playhead_side_last_custom, 15.0);
+        assert_eq!(settings.shift_drag_last_custom, 1.0);
+        assert_eq!(settings.max_zoom_last_custom, 0.4);
+    }
+
+    #[test]
+    fn hex_color_normalization_accepts_case_and_rejects_invalid_forms() {
+        assert_eq!(normalize_hex_color("#AABBCC"), Some("#aabbcc".to_string()));
+        assert_eq!(normalize_hex_color("#ABC"), Some("#aabbcc".to_string()));
+        for invalid in ["", "#", "aabbcc", "#1234", "#12345", "#1234567", "#ggg"] {
+            assert_eq!(normalize_hex_color(invalid), None, "accepted invalid colour {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn checked_clamps_each_numeric_range_at_and_around_its_boundaries() {
+        let exact = TimelineUiSettings {
+            playhead_side_seconds: 0.1,
+            playhead_side_last_custom: 3600.0,
+            shift_drag_speed: 50.0,
+            shift_drag_last_custom: 0.1,
+            max_zoom_seconds: 0.05,
+            max_zoom_last_custom: 3.0,
+            track_slider_shift_drag_speed: 10.0,
+            track_slider_shift_drag_last_custom: 0.1,
+            ..TimelineUiSettings::default()
+        }
+        .checked();
+        assert_eq!(exact.playhead_side_seconds, 0.1);
+        assert_eq!(exact.playhead_side_last_custom, 3600.0);
+        assert_eq!(exact.shift_drag_speed, 50.0);
+        assert_eq!(exact.shift_drag_last_custom, 0.1);
+        assert_eq!(exact.max_zoom_seconds, 0.05);
+        assert_eq!(exact.max_zoom_last_custom, 3.0);
+        assert_eq!(exact.track_slider_shift_drag_speed, 10.0);
+        assert_eq!(exact.track_slider_shift_drag_last_custom, 0.1);
+
+        let outside = TimelineUiSettings {
+            playhead_side_seconds: 3601.0,
+            playhead_side_last_custom: 0.0,
+            shift_drag_speed: 0.09,
+            shift_drag_last_custom: 50.1,
+            max_zoom_seconds: 3.1,
+            max_zoom_last_custom: 0.01,
+            track_slider_shift_drag_speed: 0.09,
+            track_slider_shift_drag_last_custom: 10.1,
+            ..TimelineUiSettings::default()
+        }
+        .checked();
+        assert_eq!(outside.playhead_side_seconds, 3600.0);
+        assert_eq!(outside.playhead_side_last_custom, 0.1);
+        assert_eq!(outside.shift_drag_speed, 0.1);
+        assert_eq!(outside.shift_drag_last_custom, 50.0);
+        assert_eq!(outside.max_zoom_seconds, 3.0);
+        assert_eq!(outside.max_zoom_last_custom, 0.05);
+        assert_eq!(outside.track_slider_shift_drag_speed, 0.1);
+        assert_eq!(outside.track_slider_shift_drag_last_custom, 10.0);
+    }
+
     /// Values a project file may carry (hostile or stale) come back clamped and finite, so no
     /// setting read from disk can drive UI geometry outside its range.
     #[test]
@@ -297,6 +394,14 @@ mod tests {
         assert_eq!(s.audio_indicator_color, "#2e7d32");
         assert_eq!(s.offline_indicator_color, "#d32f2f");
         assert_eq!(s.max_zoom_secs(), 3.0);
+    }
+
+    #[test]
+    fn malformed_timeline_ui_does_not_break_its_parent_project_view() {
+        let view: ProjectView = serde_json::from_str(r#"{"timeline_ui":{"smooth_animations":"invalid"},"open_sequences":[],"sequences":{}}"#)
+            .expect("the malformed optional settings block should fall back as a whole");
+        assert!(view.open_sequences.is_empty());
+        assert!(!view.timeline_ui.smooth_animations);
     }
 
     /// In-range values (and short colour strings) pass through untouched, and the read-time
