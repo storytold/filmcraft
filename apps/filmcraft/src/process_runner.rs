@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use filmcraft_engine::lettering_fx::{ProcessError, ProcessOutput, ProcessRunner, ProcessSpec};
 
+/// Runs programs through the operating system.
 pub struct OsRunner;
 
 /// Keeps up to `cap` bytes of `r` and drains the rest, so the program never blocks on a full pipe.
@@ -39,10 +40,12 @@ fn drain(mut r: impl Read, cap: usize) -> (Vec<u8>, bool) {
     (kept, cut)
 }
 
+/// Starts a thread that drains one output stream of the program.
 fn reader(r: Option<impl Read + Send + 'static>, cap: usize) -> Option<JoinHandle<(Vec<u8>, bool)>> {
     r.and_then(|r| std::thread::Builder::new().name("filmcraft-process-io".into()).spawn(move || drain(r, cap)).ok())
 }
 
+/// Waits for a drain thread and returns the text it kept and whether it was cut.
 fn collect(h: Option<JoinHandle<(Vec<u8>, bool)>>) -> (String, bool) {
     let (bytes, cut) = h.and_then(|h| h.join().ok()).unwrap_or_default();
     (String::from_utf8_lossy(&bytes).into_owned(), cut)
