@@ -1,4 +1,5 @@
 use super::*;
+use filmcraft_frame::Chroma;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
@@ -6,7 +7,55 @@ use filmcraft_render::plan::execute_cpu;
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()
+}
+
+/// A 10-bit frame draws the same whether its planes go up as 16-bit codes (`R16Unorm`, on a
+/// device with normalised 16-bit textures) or as half floats, uploaded by a worker's
+/// [`Uploader`] beforehand, converted beforehand, or neither; and the uploader's textures come
+/// back from the pool for the next frame of that size.
+#[test]
+fn yuv16_frames_draw_the_same_however_they_reach_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    eprintln!("normalised 16-bit textures: {}", up.norm16());
+    let (w, h) = (64u32, 8u32);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..w * h).map(|i| (200 + (i / w) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..w * h).map(|i| (800 - (i % w) * 10) as u16).collect();
+    // (a fresh frame each time: the compositor keeps the textures of a frame it has uploaded)
+    let plan = || {
+        let data = PixelData::Yuv16 { planes: [Arc::new(y.clone()), Arc::new(cb.clone()), Arc::new(cr.clone())], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let reference = execute_cpu(&plan()).over_black_rgba8();
+    for (name, uploader, prepared) in [("unprepared", None, false), ("uploaded by a worker", Some(&up), true), ("converted beforehand", None, true)] {
+        let plan = plan();
+        let prep = prepared.then(|| prepare(&plan, uploader));
+        if let Some(p) = &prep {
+            let layer = p.layers[0].as_ref().expect("a 16-bit frame is prepared");
+            assert_eq!(layer.uploaded(), uploader.is_some(), "{name}");
+            assert_eq!(layer.raw16, uploader.is_some_and(Uploader::norm16), "{name}");
+        }
+        c.composite_prepared(&plan, prep.as_ref());
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
+    }
+    // the pool: a frame's three planes return when nothing holds them any more, and the next
+    // frame of that size takes them
+    let pooled0 = up.pooled();
+    drop(prepare(&plan(), Some(&up)));
+    assert_eq!(up.pooled(), pooled0 + 3);
+    let kept = prepare(&plan(), Some(&up));
+    assert_eq!(up.pooled(), pooled0);
+    drop(kept);
+    assert_eq!(up.pooled(), pooled0 + 3);
 }
 
 #[test]
@@ -78,7 +127,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                 if u == 128 && v == 128 {
                     assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
                 }
-                let prepared = prepare(&plan);
+                let prepared = prepare(&plan, None);
                 prepared_compositor.composite_prepared(&plan, Some(&prepared));
                 assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
                 eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, max error={error}, prepared=inline");
@@ -204,7 +253,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
                     ],
                 };
                 let cpu = execute_cpu(&plan).over_black_rgba8();
-                c.composite_prepared(&plan, Some(&prepare(&plan)));
+                c.composite_prepared(&plan, Some(&prepare(&plan, None)));
                 let (_, _, gpu) = c.read_output().expect("readback");
                 let mut diffs: Vec<u32> =
                     cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
@@ -251,7 +300,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
         height: h,
         steps: vec![PlanStep::Layers(vec![layer(1)]), transition(0.25), PlanStep::Layers(vec![middle]), transition(0.75)],
     };
-    c.composite_prepared(&stacked, Some(&prepare(&stacked)));
+    c.composite_prepared(&stacked, Some(&prepare(&stacked, None)));
     let (_, _, gpu) = c.read_output().expect("stacked readback");
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
@@ -300,7 +349,7 @@ fn prepared_upload_matches_inline_conversion() {
         a.composite(&plan);
         let inline = a.read_output().expect("readback");
         let mut b = GpuCompositor::new(&dev, &q);
-        let prep = prepare(&plan);
+        let prep = prepare(&plan, None);
         assert!(prep.bytes() > 0);
         b.composite_prepared(&plan, Some(&prep));
         let prepared = b.read_output().expect("readback");
@@ -624,11 +673,11 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
             c.fx = None;
         }
         // the Program monitor's path (sRGB over black)
-        c.composite_prepared(&plan, Some(&prepare(&plan)));
+        c.composite_prepared(&plan, Some(&prepare(&plan, None)));
         if stage {
             // the next frame reuses the step's working textures instead of making them again
             let created = c.fx.as_ref().map(fx::FxStage::created);
-            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            c.composite_prepared(&plan, Some(&prepare(&plan, None)));
             assert_eq!(c.fx.as_ref().map(fx::FxStage::created), created, "the second frame made new working textures");
         }
         let (_, _, gpu) = c.read_output().expect("readback");
@@ -646,7 +695,7 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         eprintln!("adjustment step, stage {stage}: p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "adjustment step, stage {stage}: p99 {p99}, mean {mean}");
         // the export's path (linear premultiplied f32, no resolve)
-        let (ew, eh, px) = c.render_export_prepared(&plan, Some(&prepare(&plan))).expect("export render");
+        let (ew, eh, px) = c.render_export_prepared(&plan, Some(&prepare(&plan, None))).expect("export render");
         assert_eq!((ew as usize, eh as usize), (w, h));
         let worst = px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         eprintln!("adjustment step, stage {stage}, export: max |GPU - CPU| {worst}");

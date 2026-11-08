@@ -180,6 +180,9 @@ struct Shared {
     dropped: Mutex<HashSet<FrameKey>>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
+    /// Uploads GPU plans' frames from the workers (the GPU compositor's, when there is one), so
+    /// the UI thread draws them without uploading.
+    uploader: Mutex<Option<filmcraft_gpu::Uploader>>,
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -613,6 +616,7 @@ impl FrameServer {
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
             dropped: Mutex::new(HashSet::new()),
+            uploader: Mutex::new(None),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -632,6 +636,12 @@ impl FrameServer {
     /// The default number of frame workers for this machine.
     pub fn default_workers() -> usize {
         std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3)
+    }
+
+    /// The uploader the workers put GPU plans' frames on the device with (None: the UI thread
+    /// uploads when it draws). Plans already finished keep their converted texels.
+    pub fn set_uploader(&self, up: Option<filmcraft_gpu::Uploader>) {
+        *self.shared.uploader.lock().unwrap_or_else(PoisonError::into_inner) = up;
     }
 
     pub fn set_context(&self, ctx: &egui::Context) {
@@ -1203,8 +1213,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                             let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
                             loading = filmcraft_media::pending::take();
                             if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
-                                // Convert texels for upload here, not on the UI thread when the frame is shown.
-                                let prepared = filmcraft_gpu::prepare(&plan);
+                                // Upload (or convert) texels here, not on the UI thread when the frame is shown.
+                                let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                                let prepared = filmcraft_gpu::prepare(&plan, up.as_ref());
                                 sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                             }
                             pv

@@ -187,6 +187,7 @@ impl FilmcraftApp {
                 self.session.previews.clone(),
                 FrameServer::default_workers(),
             ));
+            self.frames.set_uploader(self.gpu.as_ref().map(|g| g.compositor.uploader()));
             self.textures.clear();
             self.thumb_used.clear();
             self.tl.reset_media_caches();

@@ -4,6 +4,10 @@
 //! owns only presentation state ([`state::UiState`]), GPU textures, the playback clock and the
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
+// The frame server's shared state carries a `filmcraft_gpu::Uploader` (wgpu device and queue)
+// to its worker threads; proving it `Send + Sync` walks wgpu's types deeper than the default
+// recursion limit of 128 allows.
+#![recursion_limit = "256"]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 /// FilmCraft as craft-update knows it, with its 128 px icon and accent colour: the update

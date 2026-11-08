@@ -395,8 +395,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   pictures (`VideoDecoder::set_draft`), the GOP cache serves those draft frames to draft
   requests only (a paused frame, render or export decodes them again exactly), and draft plans
   hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
-  GPU plans carry their texels already converted for upload (`filmcraft_gpu::prepare`), so the UI
-  thread only copies them.
+  GPU plans reach the UI thread with their frames already on the device: the frame workers upload
+  them through the compositor's `filmcraft_gpu::Uploader` (`filmcraft_gpu::prepare`), 10-bit planes
+  as 16-bit codes (`R16Unorm`) where the device has the format, and the textures are pooled by size
+  so a frame's planes are reused instead of created and freed per frame. Uploading and freeing cost
+  about 10 ms per 4K frame on the UI thread, half its budget at 50 fps.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline

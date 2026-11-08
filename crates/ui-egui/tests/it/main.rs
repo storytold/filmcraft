@@ -1,3 +1,8 @@
+// `FrameServer` carries a `filmcraft_gpu::Uploader` (wgpu device and queue) to its workers;
+// proving an `Arc<FrameServer>` `Send + Sync` walks wgpu's types deeper than the default
+// recursion limit of 128 allows (as in the crate root).
+#![recursion_limit = "256"]
+
 mod audio51_ui;
 mod audio_fx_editor_ui;
 mod caption_copy_paste_ui;

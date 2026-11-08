@@ -7,13 +7,14 @@
 //! flip a pixel whose blend lands on its 0.5 threshold.
 
 use super::*;
+use filmcraft_frame::Chroma;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
