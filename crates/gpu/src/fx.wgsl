@@ -55,6 +55,9 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_ROUNDED_CROP: u32 = 37u;
+const OP_SHADOW: u32 = 38u;
+const OP_SHADOW_OVER: u32 = 39u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -645,6 +648,33 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return dec(v);
 }
 
+// `Image::transformed` (no mip path) at pixel `p`: the inverse map p0 = (a b c d), p1 = (e f · valid),
+// the destination rectangle i1 = x0 x1 y0 y1; transparent outside it and off the source.
+fn resampled(p: vec2<i32>) -> vec4<f32> {
+    let s = size();
+    if u.p1.w == 0.0 || u32(p.x) < u.i1.x || u32(p.x) >= u.i1.y || u32(p.y) < u.i1.z || u32(p.y) >= u.i1.w {
+        return vec4(0.0);
+    }
+    let pc = vec2<f32>(p) + 0.5;
+    let m0 = u.p0; let m1 = u.p1;
+    let uu = m0.x * pc.x + m0.z * pc.y + m1.x;
+    let vv = m0.y * pc.x + m0.w * pc.y + m1.y;
+    if uu < -1.0 || vv < -1.0 || uu > f32(s.x) + 1.0 || vv > f32(s.y) + 1.0 {
+        return vec4(0.0);
+    }
+    return sample_bilinear(uu, vv);
+}
+
+// `vfx::distort::round_rect_sdf`: signed distance from `q` to the rounded rectangle
+// `rect` = (x0 y0 x1 y1) with corner radius `r` (negative inside).
+fn round_rect_sdf(q: vec2<f32>, rect: vec4<f32>, r: f32) -> f32 {
+    let c = vec2((rect.x + rect.z) / 2.0, (rect.y + rect.w) / 2.0);
+    let hs = vec2((rect.z - rect.x) / 2.0 - r, (rect.w - rect.y) / 2.0 - r);
+    let d = abs(q - c) - hs;
+    let outside = length(max(d, vec2(0.0)));
+    return outside + min(max(d.x, d.y), 0.0) - r;
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -731,16 +761,39 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
         }
         case OP_RESAMPLE: {
             // inverse map p0 = (a b c d), p1 = (e f opacity valid); rect i1 = x0 x1 y0 y1
-            if u.p1.w == 0.0 || u32(p.x) < u.i1.x || u32(p.x) >= u.i1.y || u32(p.y) < u.i1.z || u32(p.y) >= u.i1.w {
-                return vec4(0.0);
+            return resampled(p) * u.p1.z;
+        }
+        case OP_SHADOW: {
+            // Drop Shadow: the picture moved (as OP_RESAMPLE; p1.z = opacity), its alpha × opacity
+            // painted the shadow colour p2.xyz
+            let a = resampled(p).a * u.p1.z;
+            return vec4(u.p2.xyz * a, a);
+        }
+        case OP_SHADOW_OVER: {
+            // src: the blurred shadow, aux: the picture, composited Normal over it (`blend::composite`
+            // at opacity 1: a transparent picture pixel leaves the shadow as it is)
+            let o = textureLoad(aux, p, 0);
+            let sh = ld(p);
+            return select(sh, o + sh * (1.0 - o.a), o.a > 0.0);
+        }
+        case OP_ROUNDED_CROP: {
+            // rect p0 = (x0 y0 x1 y1), p1 = (radius feather border ·), p2.xyz = border colour
+            let d = round_rect_sdf(pc, u.p0, u.p1.x);
+            var o = ld(p);
+            let border = u.p1.z;
+            if border > 0.0 {
+                // coverage of the band −border < d < 0 just inside the edge, painted over the picture
+                let k = clamp(0.5 - d, 0.0, 1.0) - clamp(0.5 - d - border, 0.0, 1.0);
+                if k > 0.0 {
+                    o = vec4(u.p2.xyz * k, k) + o * (1.0 - k);
+                }
             }
-            let m0 = u.p0; let m1 = u.p1;
-            let uu = m0.x * pc.x + m0.z * pc.y + m1.x;
-            let vv = m0.y * pc.x + m0.w * pc.y + m1.y;
-            if uu < -1.0 || vv < -1.0 || uu > f32(s.x) + 1.0 || vv > f32(s.y) + 1.0 {
-                return vec4(0.0);
+            let fe = u.p1.y;
+            var a = clamp(0.5 - d, 0.0, 1.0);
+            if fe > 0.0 {
+                a = clamp(-d / fe, 0.0, 1.0);
             }
-            return sample_bilinear(uu, vv) * m1.z;
+            return select(o, o * a, a < 1.0);
         }
         case OP_HFLIP: {
             return ld(vec2(s.x - 1 - p.x, p.y));
