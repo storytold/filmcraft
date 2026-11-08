@@ -762,7 +762,11 @@ impl FilmcraftMcp {
             if !s.is_finite() || !e.is_finite() || s < 0.0 || e <= s {
                 return Ok(fail("invalid range: start must be non-negative and end must be greater than start"));
             }
-            (s, e.min(duration.as_seconds_f64()))
+            let e = e.min(duration.as_seconds_f64());
+            if s >= e {
+                return Ok(fail("invalid range: start must be before the end of the sequence"));
+            }
+            (s, e)
         } else {
             (0.0, duration.as_seconds_f64())
         };
