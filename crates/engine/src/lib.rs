@@ -799,9 +799,9 @@ impl Session {
         self.revision != self.saved_revision
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed without dirtying project content.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_changed();
         self.sync_persistence();
     }
 
