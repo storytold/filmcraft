@@ -440,6 +440,19 @@ fn pcr_before_the_pmt_is_kept_when_the_pmt_confirms_its_pid() {
 }
 
 #[test]
+fn pcr_before_the_pmt_is_kept_when_another_pid_carried_the_first_pcr() {
+    // PID 0x102 carries the first PCR, but the PMT names 0x101: its earlier PCRs still count
+    let mut mux = TsMux::new(false);
+    mux.pcr(0x102, 500);
+    mux.pcr(0x101, 1000);
+    mux.pcr(0x101, 2000);
+    mux.psi_pcr(&[(0x03, 0x1100)], 0x101);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, 2000 * 300)));
+}
+
+#[test]
 fn streams_sharing_a_clock_stay_in_step_across_the_33_bit_wrap() {
     // video's first PTS is just before the wrap, audio's just after: one clock, so audio is
     // 2^33 + 500, not 500 (26.5 hours apart)
