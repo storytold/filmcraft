@@ -206,9 +206,17 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
 }
 
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
+/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the tracks.
 #[test]
+fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
+    let mut d = Driver::tall();
+    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical");
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    d.wheel(0.2, 0.0, 40.0, none());
+    assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the plain wheel moves the tracks");
+    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0), "Command + wheel moves time");
+}
 
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
