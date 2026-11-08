@@ -48,7 +48,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         "projectRevision": app.session.revision,
         "playheadFrame": app.session.active_sequence().map(|q| q.settings.frame_rate.frame_at(app.session.playhead())),
     });
-    v["ui"] = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }});
+    v["ui"] = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }, "passes": app.pass_log});
     v["process"] = json!({"cpuS": crate::frames::process_cpu_time().map(|d| d.as_secs_f64())});
     v
 }
