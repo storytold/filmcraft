@@ -131,6 +131,31 @@ pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// `effects.deleteKeyframes` given a `keyframes` list: every listed key is removed in one undo
+/// step, so the keyframe menu's Clear and the Delete key act on the whole selection, across
+/// parameters and lanes, not just the one keyframe clicked.
+pub(crate) fn delete_many(s: &mut Session, p: &Value) -> Result<Value> {
+    const DEL: &str = "effects.deleteKeyframes";
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(DEL, "need keyframes"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(DEL, "keyframe count must be between 1 and 4096"));
+    }
+    let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(DEL, "invalid keyframe reference"))?;
+    let removed = s.edit_sequence("Delete Keyframes", |sequence, _, _| {
+        let mut removed = 0usize;
+        for key in &keys {
+            let lane = (key.clip, key.effect, key.mask, key.param.clone());
+            let param = param_mut(sequence, &lane, DEL)?;
+            if !param.remove_keyframe_at(key.time) {
+                return Err(bad(DEL, "keyframe does not exist"));
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    })?;
+    Ok(json!({ "removed": removed }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +272,40 @@ mod tests {
         ] {
             assert!(s.execute(SET, request).is_err());
             assert!(Arc::ptr_eq(&before, &s.project));
+        }
+    }
+
+    #[test]
+    fn delete_of_listed_keys_across_lanes_is_one_undo_step() {
+        const DEL: &str = "effects.deleteKeyframes";
+        let (mut s, keys) = fixture();
+        let project = s.project.clone();
+        let undo = s.history.undo.len();
+        // Delete Scale's first key and Rotation's only key; Scale's second key stays.
+        let r = s.execute(DEL, json!({"keyframes":[keys[0],keys[2]]})).unwrap();
+        assert_eq!(r["removed"], json!(2));
+        let scale = values(&s, &keys[0]);
+        assert_eq!(scale.len(), 1, "the unlisted Scale key stays");
+        assert_eq!(scale[0].time.0, keys[1]["time"].as_i64().unwrap());
+        assert!(values(&s, &keys[2]).is_empty(), "Rotation has no keyframes left");
+        assert_eq!(s.history.undo.len(), undo + 1, "the whole selection is one undo step");
+        s.undo();
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), serde_json::to_value(&project).unwrap());
+
+        // Invalid or hostile requests leave the project and its history untouched.
+        let before = s.project.clone();
+        let mut missing = keys[1].clone();
+        missing["time"] = json!(missing["time"].as_i64().unwrap() + 1);
+        for request in [
+            json!({"keyframes":[keys[0],missing]}),
+            json!({"keyframes":[]}),
+            json!({"keyframes":vec![keys[0].clone();MAX_KEYS+1]}),
+            json!({"keyframes":[{"clip":keys[0]["clip"],"effect":u64::MAX,"param":"scale","time":0}]}),
+            json!({"keyframes":"all"}),
+        ] {
+            assert!(s.execute(DEL, request).is_err());
+            assert!(Arc::ptr_eq(&before, &s.project));
+            assert_eq!(s.history.undo.len(), undo);
         }
     }
 

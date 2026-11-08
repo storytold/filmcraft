@@ -146,6 +146,19 @@ impl FilmcraftApp {
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for id in fire {
+            // Delete / Backspace in Effect Controls removes every selected keyframe (across
+            // parameters), not the clip the application-wide Clear would delete: the panel owns the
+            // selection. With nothing selected the key does nothing, so it never falls through to
+            // deleting the clip from this panel.
+            if self.ui.focused == PanelKind::EffectControls && id == "effects.deleteKeyframes" {
+                if !self.ui.keyframe_selection.is_empty() {
+                    let params = json!({ "keyframes": self.ui.keyframe_selection });
+                    if let Err(e) = menus::invoke(self, ctx, &id, params) {
+                        self.ui.status = e;
+                    }
+                }
+                continue;
+            }
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;

@@ -881,3 +881,38 @@ fn keyframe_menu_clear_deletes_only_the_clicked_keyframe_of_a_selection() {
     assert_eq!((scale.len(), position), (1, 1), "2 of 3 keyframes remain: {scale:?}");
     assert!(!scale.contains(&time), "the right-clicked Scale keyframe is the one deleted");
 }
+
+/// Delete with several keyframes selected in Effect Controls removes every selected keyframe,
+/// across parameters, in one undo step — the reported bug deleted only one. This is Premiere's
+/// Delete key; with nothing selected it does nothing, so it never deletes the clip from this panel.
+#[test]
+fn effect_controls_delete_key_removes_every_selected_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    // Scale keyframes at 1 s and 2 s, and a Position keyframe at 1 s.
+    three_keyframes_first_easing_in(&mut d, &clip);
+    let scale_times = d.scale(&clip).0;
+    assert_eq!(scale_times.len(), 2);
+    let position_time = d.parameter(&clip, "motion", "position").keyframes[0].time.0;
+    let effect = {
+        let s = &d.harness.state().session;
+        let it = s.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+        it.effects.iter().position(|e| e.effect == "motion").unwrap()
+    };
+    // Select the first Scale keyframe and the Position keyframe, leaving the second Scale key.
+    let sel = json!([
+        {"clip": clip.id, "effect": effect, "param": "scale", "time": scale_times[0]},
+        {"clip": clip.id, "effect": effect, "param": "position", "time": position_time},
+    ]);
+    d.ok("ui.set", json!({"keyframeSelection": sel, "focused": "EffectControls"}));
+    d.frames(2);
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    let scale_after = d.scale(&clip).0;
+    let position_after = d.parameter(&clip, "motion", "position").keyframes.len();
+    assert_eq!(scale_after, vec![scale_times[1]], "only the unselected Scale keyframe survives: {scale_after:?}");
+    assert_eq!(position_after, 0, "the selected Position keyframe is gone too");
+    assert_eq!(d.undo_len(), undo + 1, "the whole selection is one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!((d.scale(&clip).0.len(), d.parameter(&clip, "motion", "position").keyframes.len()), (2, 1), "undo restores every deleted keyframe");
+}
