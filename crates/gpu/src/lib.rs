@@ -29,6 +29,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rayon::prelude::*;
@@ -67,11 +68,44 @@ type PlaneKey = (u32, u32, wgpu::TextureFormat);
 /// Plane textures the pool keeps for reuse (a few frames' worth: a frame has three or four).
 const POOL_MAX: usize = 48;
 
-/// Texels uploaded at most by [`GpuCompositor::warm_up`] (four 4K 10-bit 4:2:2 frames).
-const WARM_UP_BYTES: usize = 136 << 20;
+/// Texels uploaded at most by [`GpuCompositor::warm_up`] (eight 4K 10-bit 4:2:2 frames: the
+/// staging buffers a play start needs, kept for reuse, and their plane textures in the pool).
+const WARM_UP_BYTES: usize = 272 << 20;
 
 /// Texture rows in a staging buffer start at a multiple of this many bytes.
 const ROW_ALIGN: u64 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+
+/// Staging buffers kept mapped for reuse ([`Uploader::recycle`]): eight frames of three planes
+/// (about 270 MB of host memory at 4K 10-bit 4:2:2; a play start uploads ten frames at once).
+const STAGING_FREE_MAX: usize = 24;
+
+/// Staging buffers waiting for their map at most: the GPU runs a few passes behind the submits,
+/// so the copies of three or four passes (three planes each, at 50p) are still ahead of a
+/// buffer's map. A bound as tight as the free list dropped most buffers before they came back,
+/// and the uploads created new ones (a quarter of the planes reused a buffer).
+const RECYCLING_MAX: usize = 2 * STAGING_FREE_MAX;
+
+/// A recycled staging buffer's map has not completed / completed / failed (`UploaderInner::recycling`).
+const MAP_PENDING: u8 = 0;
+const MAP_DONE: u8 = 1;
+const MAP_FAILED: u8 = 2;
+
+/// Recorded uploads the compositor has not submitted yet beyond which a worker's staging buffers
+/// are dropped instead of kept for reuse (a UI thread that stalled for seconds; bounds memory).
+const PENDING_MAX: usize = 256;
+
+/// Bytes of recorded uploads one UI pass submits, the ones its composite needs excepted
+/// ([`GpuCompositor::flush_uploads`], [`Uploader::take_copies`]): 1.2 frames of 4K 10-bit
+/// 4:2:2 (33 MB). Sixty passes a second then carry the 50 frames a second playback needs with a
+/// fifth to spare for a backlog: the frames a preroll decodes at once (six to ten, up to 330 MB)
+/// reach the GPU over a quarter of a second instead of as a burst. A frame's copies take about
+/// half a millisecond of GPU time with the clocks up, but a discrete GPU that idled between
+/// plays runs them, and the composite, five to ten times slower until its driver raises the
+/// clocks (timestamp queries: the first composites of a play took 10-30 ms, against 0.5 ms in
+/// the steady state), so a burst of several frames in front of the first composite took the GPU
+/// past the display frame through the first dozen frames of a play. The preroll now wakes the
+/// GPU first ([`WAKE_TARGET_MS`]) and flushes without a budget while it does.
+const FLUSH_BUDGET: u64 = 40 << 20;
 
 struct UploaderInner {
     device: wgpu::Device,
@@ -82,8 +116,51 @@ struct UploaderInner {
     /// as they are, as `R16Unorm`, instead of as half floats converted sample by sample.
     norm16: bool,
     pool: Mutex<Vec<(wgpu::Texture, PlaneKey)>>,
-    /// Copies recorded by the uploading threads and not yet submitted ([`Uploader::queue_copies`]).
-    pending: Mutex<Vec<wgpu::CommandBuffer>>,
+    /// Copies recorded by the uploading threads and not yet submitted ([`Uploader::queue_copies`]),
+    /// each with the staging buffers it copies from, to map again once it has run.
+    pending: Mutex<Pending>,
+    /// Staging bytes submitted in the current UI pass, against [`FLUSH_BUDGET`]; the pass's first
+    /// flush resets it ([`GpuCompositor::flush_uploads`]).
+    pass_bytes: AtomicU64,
+    /// Of `pass_bytes`, the bytes the pass's flush took, and the bytes its composites took
+    /// because they draw the textures (`seq <= through` in [`Uploader::take_copies`]); for the
+    /// pass log.
+    pass_flushed: AtomicU64,
+    pass_needed: AtomicU64,
+    /// Staging buffers being mapped again after their copies ran ([`Uploader::recycle`]), each
+    /// with the outcome its map callback reports (`MAP_PENDING`, `MAP_DONE` or `MAP_FAILED`),
+    /// and the ones mapped, ready for the next plane of their size. The callback only sets the
+    /// flag: it runs inside the device (during a submit, or while the device is destroyed) and
+    /// must not drop a GPU resource there.
+    recycling: Mutex<Vec<(wgpu::Buffer, Arc<AtomicU8>)>>,
+    free: Mutex<Vec<wgpu::Buffer>>,
+    /// Plane textures and staging buffers created (not reused), for `perf.stats`.
+    created: (AtomicUsize, AtomicUsize),
+}
+
+/// The copies of one upload being recorded: the encoder and the staging buffers they read.
+struct Upload {
+    enc: wgpu::CommandEncoder,
+    staging: Vec<wgpu::Buffer>,
+}
+
+/// One upload recorded and not yet submitted ([`Uploader::queue_copies`]).
+struct PendingUpload {
+    /// Its number in recording order; the planes it fills carry it ([`GpuPlanes::upload_seq`]).
+    seq: u64,
+    /// How soon the frame is wanted (0: now; a prefetch: its frames ahead of the playhead): the
+    /// per-pass budget goes to the lowest first ([`Uploader::take_copies`]).
+    prio: u32,
+    cb: wgpu::CommandBuffer,
+    staging: Vec<wgpu::Buffer>,
+    /// Staging bytes copied, for the per-pass budget.
+    bytes: u64,
+}
+
+/// The recorded uploads in order, and the number the next one gets.
+struct Pending {
+    next_seq: u64,
+    entries: Vec<PendingUpload>,
 }
 
 /// Uploads frames' planes to textures, from any thread: the frame workers call it from
@@ -99,6 +176,16 @@ struct UploaderInner {
 /// when another thread submits during its wait for the GPU, and the GPU compositor was switched
 /// off for the whole session by one such resize while the workers submitted their uploads
 /// themselves.
+///
+/// The compositor submits the recorded uploads a composite reads before it ([`GpuPlanes::upload_seq`])
+/// and the others at a budget per pass ([`FLUSH_BUDGET`]), so a burst of decoded frames does
+/// not delay the picture due now.
+///
+/// Staging buffers are reused: after a submit, the compositor's thread asks the device to map
+/// each submitted buffer again ([`Uploader::recycle`]), and the next plane of that size takes it
+/// instead of creating one. A buffer per plane per frame (33 MB a frame at 4K 10-bit 4:2:2) had
+/// the device's allocator create and destroy its memory blocks through every play start, under
+/// a lock the UI thread took while submitting: 55 ms waits there, and the swapchain behind.
 #[derive(Clone)]
 pub struct Uploader(Arc<UploaderInner>);
 
@@ -113,9 +200,12 @@ impl Drop for PooledTexture {
     fn drop(&mut self) {
         if let Some(t) = self.tex.take() {
             let mut pool = self.pool.pool.lock().unwrap_or_else(PoisonError::into_inner);
-            if pool.len() < POOL_MAX {
-                pool.push((t, self.key));
+            // (full: the oldest goes, so textures of a size no longer in use age out of it
+            // instead of keeping the textures in use out of it for good)
+            if pool.len() >= POOL_MAX {
+                pool.remove(0);
             }
+            pool.push((t, self.key));
         }
     }
 }
@@ -131,6 +221,24 @@ pub struct GpuPlanes {
     alpha_scale: f32,
     chroma: (u32, u32),
     bytes: usize,
+    /// The recorded upload that fills the textures (0: none pending, or copied by the
+    /// compositor itself): the compositor submits the uploads up to it before drawing them.
+    upload_seq: u64,
+}
+
+impl Drop for GpuPlanes {
+    /// A frame dropped before its upload was submitted (decoded, then evicted: a seek, a fast
+    /// scrub) takes the upload with it: nothing can draw these textures any more, and once they
+    /// are back in the pool a later upload may fill them, which a copy still pending for them
+    /// would then overwrite whenever it was submitted. (This is what lets the compositor submit
+    /// the pending uploads in any order.)
+    fn drop(&mut self) {
+        if self.upload_seq != 0
+            && let Some(t) = self._textures.first()
+        {
+            Uploader(Arc::clone(&t.pool)).cancel(self.upload_seq);
+        }
+    }
 }
 
 impl std::fmt::Debug for GpuPlanes {
@@ -157,7 +265,13 @@ impl Uploader {
             dummy: dummy_tex.create_view(&Default::default()),
             norm16: device.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
             pool: Mutex::new(Vec::new()),
-            pending: Mutex::new(Vec::new()),
+            pending: Mutex::new(Pending { next_seq: 1, entries: Vec::new() }),
+            pass_bytes: AtomicU64::new(0),
+            pass_flushed: AtomicU64::new(0),
+            pass_needed: AtomicU64::new(0),
+            recycling: Mutex::new(Vec::new()),
+            free: Mutex::new(Vec::new()),
+            created: (AtomicUsize::new(0), AtomicUsize::new(0)),
         }))
     }
 
@@ -171,6 +285,40 @@ impl Uploader {
         self.0.pool.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
+    /// Staging buffers mapped and waiting for reuse.
+    pub fn free_staging(&self) -> usize {
+        self.collect_mapped();
+        self.0.free.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    /// Move the recycled buffers whose map completed to the free list (dropping the ones whose
+    /// map failed, and the oldest free ones over [`STAGING_FREE_MAX`]).
+    fn collect_mapped(&self) {
+        let mut recycling = self.0.recycling.lock().unwrap_or_else(PoisonError::into_inner);
+        if recycling.iter().all(|(_, flag)| flag.load(Ordering::Acquire) == MAP_PENDING) {
+            return;
+        }
+        let mut free = self.0.free.lock().unwrap_or_else(PoisonError::into_inner);
+        recycling.retain(|(buf, flag)| match flag.load(Ordering::Acquire) {
+            MAP_DONE => {
+                // (full: the oldest goes, like the texture pool; the warm-up's buffers are of
+                // the sequence's size, and a clip of another size must still get its reuse)
+                if free.len() >= STAGING_FREE_MAX {
+                    free.remove(0);
+                }
+                free.push(buf.clone());
+                false
+            }
+            MAP_FAILED => false,
+            _ => true,
+        });
+    }
+
+    /// Plane textures and staging buffers created so far (reuses not counted).
+    pub fn created(&self) -> (usize, usize) {
+        (self.0.created.0.load(Ordering::Relaxed), self.0.created.1.load(Ordering::Relaxed))
+    }
+
     /// A `w` x `h` texture of `format` holding `bytes` (`bpp` bytes per texel, rows packed): from
     /// the pool when one of that size is free, else new. The bytes go into a staging buffer
     /// mapped on this thread (host-visible, `MAP_WRITE`: neither the map nor the unmap goes
@@ -178,13 +326,14 @@ impl Uploader {
     /// while they are copied: `Queue::write_texture` copies under the queue's lock, and at 4K50p
     /// the UI thread stalled behind the frame workers' 33 MB frames for milliseconds per pass.
     /// Rows short of `w * bpp` bytes stay zero.
-    fn plane(&self, enc: &mut wgpu::CommandEncoder, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8], bpp: u32) -> (PooledTexture, wgpu::TextureView) {
+    fn plane(&self, up: &mut Upload, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8], bpp: u32) -> (PooledTexture, wgpu::TextureView) {
         let key = (w, h, format);
         let pooled = {
             let mut pool = self.0.pool.lock().unwrap_or_else(PoisonError::into_inner);
             pool.iter().rposition(|(_, k)| *k == key).map(|i| pool.swap_remove(i).0)
         };
         let t = pooled.unwrap_or_else(|| {
+            self.0.created.0.fetch_add(1, Ordering::Relaxed);
             self.0.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("filmcraft-plane"),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -201,11 +350,20 @@ impl Uploader {
         let padded = row.div_ceil(ROW_ALIGN) * ROW_ALIGN;
         let size = padded * u64::from(h);
         if let (true, Ok(padded32), Ok(padded_len), Ok(row_len)) = (size > 0, u32::try_from(padded), usize::try_from(padded), usize::try_from(row)) {
-            let staging = self.0.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("filmcraft-plane-staging"),
-                size,
-                usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: true,
+            // a buffer of this size mapped again after its last copy, else a new one, mapped
+            let reused = {
+                self.collect_mapped();
+                let mut free = self.0.free.lock().unwrap_or_else(PoisonError::into_inner);
+                free.iter().rposition(|b| b.size() == size).map(|i| free.swap_remove(i))
+            };
+            let staging = reused.unwrap_or_else(|| {
+                self.0.created.1.fetch_add(1, Ordering::Relaxed);
+                self.0.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("filmcraft-plane-staging"),
+                    size,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                })
             });
             let mapped = match staging.slice(..).get_mapped_range_mut() {
                 Ok(mut map) => {
@@ -242,7 +400,7 @@ impl Uploader {
                     wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 );
             } else {
-                enc.copy_buffer_to_texture(
+                up.enc.copy_buffer_to_texture(
                     wgpu::TexelCopyBufferInfo {
                         buffer: &staging,
                         layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded32), rows_per_image: Some(h) },
@@ -250,60 +408,179 @@ impl Uploader {
                     wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                     wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 );
+                // (kept with the copy: mapped again once it has run, see `Uploader::recycle`)
+                up.staging.push(staging);
             }
         }
         let view = t.create_view(&Default::default());
         (PooledTexture { tex: Some(t), key, pool: self.0.clone() }, view)
     }
 
-    fn encoder(&self) -> wgpu::CommandEncoder {
-        self.0.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-upload") })
+    fn encoder(&self) -> Upload {
+        Upload { enc: self.0.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-upload") }), staging: Vec::new() }
     }
 
-    /// Keep the copies recorded in `enc` for the compositor's next submit ([`Uploader::take_copies`]);
-    /// this thread submits nothing (see [`Uploader`]).
-    fn queue_copies(&self, enc: wgpu::CommandEncoder) {
-        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).push(enc.finish());
+    /// Keep the copies recorded in `up` for the compositor's next submit ([`Uploader::take_copies`]);
+    /// this thread submits nothing (see [`Uploader`]). The staging buffers stay with their copy:
+    /// a buffer mapped again before its copy was submitted would fail that submit.
+    fn queue_copies(&self, up: Upload, prio: u32) -> u64 {
+        let bytes = up.staging.iter().map(wgpu::Buffer::size).fold(0u64, u64::saturating_add);
+        let mut pending = self.0.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let staging = if pending.entries.len() < PENDING_MAX { up.staging } else { Vec::new() };
+        let seq = pending.next_seq;
+        pending.next_seq = seq.saturating_add(1);
+        pending.entries.push(PendingUpload { seq, prio, cb: up.enc.finish(), staging, bytes });
+        seq
     }
 
-    /// The recorded copies not yet submitted, in the order they were recorded: the caller
-    /// submits them before any command buffer that reads the textures they fill.
-    fn take_copies(&self) -> Vec<wgpu::CommandBuffer> {
-        std::mem::take(&mut *self.0.pending.lock().unwrap_or_else(PoisonError::into_inner))
+    /// Forget the recorded upload `seq` when it is still pending ([`GpuPlanes::drop`]); its
+    /// staging buffers, written but never read, are mapped again for the next frame.
+    fn cancel(&self, seq: u64) {
+        let staging = {
+            let mut pending = self.0.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.entries.iter().position(|e| e.seq == seq).map(|i| pending.entries.remove(i).staging)
+        };
+        if let Some(staging) = staging {
+            self.recycle(staging);
+        }
+    }
+
+    /// The recorded copies to submit now, in the order they were recorded, and the staging
+    /// buffers they read: the uploads numbered in `needed` (the caller is about to draw their
+    /// textures; `None`: every upload), then further ones, the soonest wanted first (`prio`,
+    /// then recording order), while the pass's total stays within `budget` bytes (`pass_bytes`,
+    /// which the pass's first flush resets). Uploads never fill the same texture while both are
+    /// pending ([`GpuPlanes::drop`]), so any order is right. The caller submits the copies
+    /// before any command buffer that reads the textures they fill, then hands the buffers to
+    /// [`Uploader::recycle`].
+    fn take_copies(&self, needed: Option<&[u64]>, budget: u64) -> (Vec<wgpu::CommandBuffer>, Vec<wgpu::Buffer>) {
+        let mut pending = self.0.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = self.0.pass_bytes.load(Ordering::Relaxed);
+        let mut taken = before;
+        let mut needed_bytes = 0u64;
+        let mut pick = vec![false; pending.entries.len()];
+        for (i, e) in pending.entries.iter().enumerate() {
+            if needed.is_none_or(|n| n.contains(&e.seq)) {
+                if let Some(p) = pick.get_mut(i) {
+                    *p = true;
+                }
+                needed_bytes = needed_bytes.saturating_add(e.bytes);
+                taken = taken.saturating_add(e.bytes);
+            }
+        }
+        let mut rest: Vec<usize> = (0..pending.entries.len()).filter(|i| pick.get(*i) == Some(&false)).collect();
+        rest.sort_by_key(|i| pending.entries.get(*i).map(|e| (e.prio, e.seq)));
+        for i in rest {
+            let Some(e) = pending.entries.get(i) else { break };
+            if taken.saturating_add(e.bytes) > budget {
+                break;
+            }
+            taken = taken.saturating_add(e.bytes);
+            if let Some(p) = pick.get_mut(i) {
+                *p = true;
+            }
+        }
+        self.0.pass_bytes.store(taken, Ordering::Relaxed);
+        if needed.is_some_and(<[u64]>::is_empty) {
+            self.0.pass_flushed.fetch_add(taken.saturating_sub(before), Ordering::Relaxed);
+        } else {
+            self.0.pass_needed.fetch_add(needed_bytes, Ordering::Relaxed);
+        }
+        let mut cbs = Vec::new();
+        let mut staging = Vec::new();
+        let mut kept = Vec::with_capacity(pending.entries.len());
+        for (e, take) in pending.entries.drain(..).zip(pick) {
+            if take {
+                cbs.push(e.cb);
+                staging.extend(e.staging);
+            } else {
+                kept.push(e);
+            }
+        }
+        pending.entries = kept;
+        (cbs, staging)
+    }
+
+    /// Ask the device to map `staging` again, once the copies just submitted from them have run
+    /// (the device completes the maps during a later submit, on the submitting thread); each
+    /// buffer then waits for the next plane of its size, up to [`STAGING_FREE_MAX`] of them.
+    fn recycle(&self, staging: Vec<wgpu::Buffer>) {
+        if staging.is_empty() {
+            return;
+        }
+        self.collect_mapped();
+        let mut recycling = self.0.recycling.lock().unwrap_or_else(PoisonError::into_inner);
+        for buf in staging {
+            if recycling.len() >= RECYCLING_MAX {
+                break; // (the rest is dropped: enough are on their way back)
+            }
+            let flag = Arc::new(AtomicU8::new(MAP_PENDING));
+            let report = Arc::clone(&flag);
+            buf.map_async(wgpu::MapMode::Write, .., move |mapped| {
+                report.store(if mapped.is_ok() { MAP_DONE } else { MAP_FAILED }, Ordering::Release);
+            });
+            recycling.push((buf, flag));
+        }
     }
 
     /// Recorded copies waiting for the compositor's submit.
     pub fn pending_copies(&self) -> usize {
-        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).entries.len()
+    }
+
+    /// Staging bytes of the recorded copies not yet submitted.
+    pub fn pending_bytes(&self) -> u64 {
+        self.0.pending.lock().unwrap_or_else(PoisonError::into_inner).entries.iter().map(|e| e.bytes).fold(0u64, u64::saturating_add)
+    }
+
+    /// The current pass's upload bytes: taken by its flush, taken by its composites because
+    /// they draw them, taken in all, and still pending.
+    pub fn pass_stats(&self) -> [u64; 4] {
+        [
+            self.0.pass_flushed.load(Ordering::Relaxed),
+            self.0.pass_needed.load(Ordering::Relaxed),
+            self.0.pass_bytes.load(Ordering::Relaxed),
+            self.pending_bytes(),
+        ]
     }
 
     /// One RGBA texture of `format` as a frame's planes.
-    fn rgba(&self, enc: &mut wgpu::CommandEncoder, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8]) -> GpuPlanes {
+    fn rgba(&self, enc: &mut Upload, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8]) -> GpuPlanes {
         // (the two RGBA formats uploaded: sRGB bytes, or linear premultiplied half floats)
         let (bpp, kind) = if format == wgpu::TextureFormat::Rgba16Float { (8, 1) } else { (4, 0) };
         let (t, v) = self.plane(enc, w, h, format, bytes, bpp);
         let dummy = || self.0.dummy.clone();
-        GpuPlanes { _textures: vec![t], views: [v, dummy(), dummy(), dummy()], kind, code_scale: 1.0, alpha_scale: 0.0, chroma: (w, h), bytes: bytes.len() }
+        GpuPlanes {
+            _textures: vec![t],
+            views: [v, dummy(), dummy(), dummy()],
+            kind,
+            code_scale: 1.0,
+            alpha_scale: 0.0,
+            chroma: (w, h),
+            bytes: bytes.len(),
+            upload_seq: 0,
+        }
     }
 
     /// Linear premultiplied RGBA given as half floats (`w * h * 8` bytes).
-    fn rgba_f16(&self, w: u32, h: u32, half: &[u8]) -> GpuPlanes {
+    fn rgba_f16(&self, w: u32, h: u32, half: &[u8], prio: u32) -> GpuPlanes {
         let mut enc = self.encoder();
-        let planes = self.rgba(&mut enc, w, h, wgpu::TextureFormat::Rgba16Float, half);
-        self.queue_copies(enc);
+        let mut planes = self.rgba(&mut enc, w, h, wgpu::TextureFormat::Rgba16Float, half);
+        planes.upload_seq = self.queue_copies(enc, prio);
         planes
     }
 
-    /// Upload the planes of `f`, using `prep` when it holds its texels converted beforehand.
-    fn frame(&self, f: &VideoFrame, prep: Option<&Prepared>) -> GpuPlanes {
+    /// Upload the planes of `f`, using `prep` when it holds its texels converted beforehand;
+    /// `prio` says how soon the frame is wanted ([`PendingUpload::prio`]).
+    fn frame(&self, f: &VideoFrame, prep: Option<&Prepared>, prio: u32) -> GpuPlanes {
         let mut enc = self.encoder();
-        let planes = self.frame_in(&mut enc, f, prep);
-        self.queue_copies(enc);
+        let mut planes = self.frame_in(&mut enc, f, prep);
+        planes.upload_seq = self.queue_copies(enc, prio);
         planes
     }
 
     /// The copies of [`Uploader::frame`], recorded in `enc`.
-    fn frame_in(&self, enc: &mut wgpu::CommandEncoder, f: &VideoFrame, prep: Option<&Prepared>) -> GpuPlanes {
+    fn frame_in(&self, enc: &mut Upload, f: &VideoFrame, prep: Option<&Prepared>) -> GpuPlanes {
         let (w, h) = (f.width, f.height);
         let dummy = || self.0.dummy.clone();
         match &f.data {
@@ -334,7 +611,16 @@ impl Uploader {
                     textures.push(t);
                     v
                 });
-                GpuPlanes { _textures: textures, views: [y, u, v, a.unwrap_or_else(dummy)], kind: 2, code_scale: 255.0, alpha_scale, chroma: (cw, ch), bytes }
+                GpuPlanes {
+                    _textures: textures,
+                    views: [y, u, v, a.unwrap_or_else(dummy)],
+                    kind: 2,
+                    code_scale: 255.0,
+                    alpha_scale,
+                    chroma: (cw, ch),
+                    bytes,
+                    upload_seq: 0,
+                }
             }
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
                 let (sx, sy) = chroma.shifts();
@@ -367,6 +653,7 @@ impl Uploader {
                         alpha_scale: 0.0,
                         chroma: (cw, ch),
                         bytes: 0,
+                        upload_seq: 0,
                     };
                 };
                 // (full-resolution alpha plane: its codes span 0..2^bits - 1, hence the scale)
@@ -377,7 +664,16 @@ impl Uploader {
                     textures.push(t);
                     v
                 });
-                GpuPlanes { _textures: textures, views: [y, u, v, a.unwrap_or_else(dummy)], kind: 2, code_scale, alpha_scale, chroma: (cw, ch), bytes }
+                GpuPlanes {
+                    _textures: textures,
+                    views: [y, u, v, a.unwrap_or_else(dummy)],
+                    kind: 2,
+                    code_scale,
+                    alpha_scale,
+                    chroma: (cw, ch),
+                    bytes,
+                    upload_seq: 0,
+                }
             }
         }
     }
@@ -400,6 +696,26 @@ pub struct GpuCompositor {
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
+    /// GPU time of the composites, when the device has timestamp queries.
+    timer: Option<GpuTimer>,
+    /// [`Self::wake`]: its pipeline, the uniform with the loop length and its bind group, its
+    /// target, and the loop length the next one gets.
+    wake_pipeline: wgpu::RenderPipeline,
+    wake_buf: wgpu::Buffer,
+    wake_bind: wgpu::BindGroup,
+    wake_target: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    wake_iterations: u32,
+    /// The loop length that took [`WAKE_TARGET_MS`] with the clocks up: the longest a preroll
+    /// ended with ([`Self::wake_done`]). None before the first preroll of the process.
+    wake_ref: Option<u32>,
+    /// This preroll's loads have run at the reference length in their time: the clocks are up.
+    wake_warm: bool,
+    /// Staging bytes a UI pass submits beyond its composites' needs ([`FLUSH_BUDGET`]).
+    upload_budget: u64,
+    /// The [`GpuPlanes::upload_seq`] of the frames the composite being recorded draws: its
+    /// submit carries those uploads first ([`Uploader::take_copies`]); the rest follow at the
+    /// per-pass budget, the soonest wanted first.
+    needed: Vec<u64>,
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
@@ -421,7 +737,146 @@ pub struct GpuCompositor {
 /// The optional device features the compositor uses when `adapter` has them: pass them in the
 /// device descriptor's `required_features` (the app, the export renderer and the benches do).
 pub fn optional_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+    adapter.features() & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | GpuTimer::FEATURES)
+}
+
+/// The GPU time of the compositor's submits, from timestamp queries: a pass that waited for the
+/// swapchain can be told apart as a GPU behind (long GPU times) or a late picture. Two queries
+/// around each submit, resolved into one of a few small readback buffers; the value arrives a
+/// pass or two later ([`GpuTimer::collect`]).
+struct GpuTimer {
+    qs: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// Readback buffers and their state: `TIMER_FREE`, or the map outcome once copied into
+    /// (`MAP_PENDING` while the GPU works, then `MAP_DONE` / `MAP_FAILED`); the kind of submit
+    /// in flight and what the caller noted about it ([`Self::wrap`]).
+    slots: Vec<(wgpu::Buffer, Arc<AtomicU8>, AtomicU8, AtomicU32)>,
+    /// Nanoseconds per timestamp tick.
+    period: f64,
+    /// The latest measurement (ms) of each kind of submit ([`TIMER_COMPOSITE`], [`TIMER_WAKE`]),
+    /// with the caller's note on that submit.
+    last: Mutex<[(f64, u32); 2]>,
+}
+
+/// A timer slot not in use.
+const TIMER_FREE: u8 = 3;
+/// Readback buffers in flight at most (the GPU runs a few passes behind).
+const TIMER_SLOTS: usize = 4;
+/// What a timed submit was, for [`GpuTimer::last_ms`]: a composite, or [`GpuCompositor::wake`].
+const TIMER_COMPOSITE: u8 = 0;
+const TIMER_WAKE: u8 = 1;
+
+/// GPU time one [`GpuCompositor::wake`] aims for, per UI pass: at 60 passes a second half the
+/// GPU's time, enough for a driver to count it busy and raise the clocks, and over within a
+/// display frame once they are up. (The driver of a discrete GPU lowers its clocks to a
+/// fraction, and its bus link to a lower speed, within a second of the GPU going quiet, and
+/// raises them a few hundred milliseconds after it gets busy again: pressed while the Program
+/// monitor stood still, Play found a GPU on which a frame's copies and composite took 10-30 ms
+/// instead of 1-3, and the first eight frames or so were late. The preroll, which waits for the
+/// first frames anyway, now puts this load on it meanwhile.)
+const WAKE_TARGET_MS: f64 = 8.0;
+/// Side of the square target [`GpuCompositor::wake`] draws into (a million fragments: enough to
+/// occupy a large GPU; the loop length does the rest).
+const WAKE_SIZE: u32 = 1024;
+/// Bounds of the per-fragment loop; the compositor sizes it from the time the last one took.
+const WAKE_ITERATIONS_MIN: u32 = 64;
+const WAKE_ITERATIONS_MAX: u32 = 1 << 18;
+/// The first load, before any measurement: a few milliseconds on a mid-range discrete GPU.
+const WAKE_ITERATIONS_START: u32 = 4096;
+
+impl GpuTimer {
+    const FEATURES: wgpu::Features = wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+        if !device.features().contains(Self::FEATURES) {
+            return None;
+        }
+        let qs = device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("filmcraft-gpu-timer"), ty: wgpu::QueryType::Timestamp, count: 2 });
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("filmcraft-gpu-timer-resolve"),
+            size: 16,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let slots = (0..TIMER_SLOTS)
+            .map(|_| {
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("filmcraft-gpu-timer-read"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                (buf, Arc::new(AtomicU8::new(TIMER_FREE)), AtomicU8::new(TIMER_COMPOSITE), AtomicU32::new(0))
+            })
+            .collect();
+        Some(Self { qs, resolve, slots, period: f64::from(queue.get_timestamp_period()), last: Mutex::new([(0.0, 0); 2]) })
+    }
+
+    /// Read the measurements that arrived and free their slots.
+    fn collect(&self) {
+        for (buf, flag, tag, note) in &self.slots {
+            match flag.load(Ordering::Acquire) {
+                MAP_DONE => {
+                    if let Ok(view) = buf.slice(..).get_mapped_range() {
+                        let stamp = |i: usize| view.get(i * 8..i * 8 + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map(u64::from_le_bytes);
+                        if let (Some(t0), Some(t1)) = (stamp(0), stamp(1))
+                            && t1 >= t0
+                            && let Some(slot) = self.last.lock().unwrap_or_else(PoisonError::into_inner).get_mut(usize::from(tag.load(Ordering::Relaxed)))
+                        {
+                            *slot = ((t1 - t0) as f64 * self.period / 1e6, note.load(Ordering::Relaxed));
+                        }
+                    }
+                    buf.unmap();
+                    flag.store(TIMER_FREE, Ordering::Release);
+                }
+                MAP_FAILED => flag.store(TIMER_FREE, Ordering::Release),
+                _ => {}
+            }
+        }
+    }
+
+    /// Put a timestamp before and after `cbs` (to be submitted together), a submit of kind `tag`
+    /// that the caller notes `note` about (the wake load's loop length; the measurement comes
+    /// back with it, a pass or two later); returns the slot that receives the result, to hand to
+    /// [`Self::after_submit`]. None when every slot is in flight.
+    fn wrap(&self, device: &wgpu::Device, cbs: &mut Vec<wgpu::CommandBuffer>, tag: u8, note: u32) -> Option<usize> {
+        self.collect();
+        let i = self.slots.iter().position(|(_, flag, _, _)| flag.load(Ordering::Acquire) == TIMER_FREE)?;
+        let (buf, flag, slot_tag, slot_note) = self.slots.get(i)?;
+        slot_tag.store(tag, Ordering::Relaxed);
+        slot_note.store(note, Ordering::Relaxed);
+        let mut begin = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-gpu-timer-begin") });
+        begin.write_timestamp(&self.qs, 0);
+        let mut end = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-gpu-timer-end") });
+        end.write_timestamp(&self.qs, 1);
+        end.resolve_query_set(&self.qs, 0..2, &self.resolve, 0);
+        end.copy_buffer_to_buffer(&self.resolve, 0, buf, 0, Some(16));
+        cbs.insert(0, begin.finish());
+        cbs.push(end.finish());
+        flag.store(MAP_PENDING, Ordering::Release);
+        Some(i)
+    }
+
+    /// Ask for slot `i`'s result once the GPU has written it.
+    fn after_submit(&self, i: usize) {
+        let Some((buf, flag, _, _)) = self.slots.get(i) else { return };
+        let report = Arc::clone(flag);
+        buf.slice(..).map_async(wgpu::MapMode::Read, move |mapped| {
+            report.store(if mapped.is_ok() { MAP_DONE } else { MAP_FAILED }, Ordering::Release);
+        });
+    }
+
+    /// The latest GPU time measured (ms) of the submits of kind `tag`.
+    fn last_ms(&self, tag: u8) -> f64 {
+        self.last(tag).0
+    }
+
+    /// The latest measurement (ms) of submits of kind `tag`, with the caller's note on it; 0
+    /// before the first.
+    fn last(&self, tag: u8) -> (f64, u32) {
+        self.collect();
+        self.last.lock().unwrap_or_else(PoisonError::into_inner).get(usize::from(tag)).copied().unwrap_or((0.0, 0))
+    }
 }
 
 /// A device descriptor with the defaults plus [`optional_features`].
@@ -606,8 +1061,14 @@ fn codes_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
 /// Make a frame ready for the compositor: uploaded, with an [`Uploader`] (the compositor's,
 /// [`GpuCompositor::uploader`]), else its texels converted (None when it uploads as it is).
 pub fn prepare_frame(f: &VideoFrame, up: Option<&Uploader>) -> Option<Prepared> {
+    prepare_frame_ahead(f, up, 0)
+}
+
+/// [`prepare_frame`] for a frame wanted `prio` frames from now (0: now): the uploader submits
+/// the soonest wanted first ([`PendingUpload::prio`]).
+pub fn prepare_frame_ahead(f: &VideoFrame, up: Option<&Uploader>, prio: u32) -> Option<Prepared> {
     if let Some(u) = up {
-        return Some(Prepared { planes: Vec::new(), raw16: u.0.norm16, gpu: Some(Arc::new(u.frame(f, None))) });
+        return Some(Prepared { planes: Vec::new(), raw16: u.0.norm16, gpu: Some(Arc::new(u.frame(f, None, prio))) });
     }
     match &f.data {
         PixelData::RgbaF32(d) => Some(Prepared { planes: vec![f32_to_f16_bytes(d)], raw16: false, gpu: None }),
@@ -619,12 +1080,17 @@ pub fn prepare_frame(f: &VideoFrame, up: Option<&Uploader>) -> Option<Prepared> 
 /// Make every layer of a plan ready for the compositor ([`prepare_frame`]). Thread-safe: run it
 /// on a worker (an uploader queues the uploads; nothing waits for the GPU).
 pub fn prepare(plan: &FramePlan, up: Option<&Uploader>) -> PreparedPlan {
+    prepare_ahead(plan, up, 0)
+}
+
+/// [`prepare`] for a frame wanted `prio` frames from now (0: now; see [`prepare_frame_ahead`]).
+pub fn prepare_ahead(plan: &FramePlan, up: Option<&Uploader>, prio: u32) -> PreparedPlan {
     match plan {
-        FramePlan::Layers { layers, .. } => prepare_layers(layers, up),
+        FramePlan::Layers { layers, .. } => prepare_layers(layers, up, prio),
         FramePlan::Image(img) => {
             let half = f32_to_f16_bytes(&img.px);
             let image = match up {
-                Some(u) => Prepared { planes: Vec::new(), raw16: false, gpu: Some(Arc::new(u.rgba_f16(img.w as u32, img.h as u32, &half))) },
+                Some(u) => Prepared { planes: Vec::new(), raw16: false, gpu: Some(Arc::new(u.rgba_f16(img.w as u32, img.h as u32, &half, prio))) },
                 None => Prepared { planes: vec![half], raw16: false, gpu: None },
             };
             PreparedPlan { image: Some(image), ..Default::default() }
@@ -633,8 +1099,8 @@ pub fn prepare(plan: &FramePlan, up: Option<&Uploader>) -> PreparedPlan {
             children: steps
                 .iter()
                 .flat_map(|s| match s {
-                    PlanStep::Layers(layers) => vec![prepare_layers(layers, up)],
-                    PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| prepare_layers(ls, up)).collect(),
+                    PlanStep::Layers(layers) => vec![prepare_layers(layers, up, prio)],
+                    PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| prepare_layers(ls, up, prio)).collect(),
                     PlanStep::Adjust { .. } => Vec::new(),
                 })
                 .collect(),
@@ -643,8 +1109,8 @@ pub fn prepare(plan: &FramePlan, up: Option<&Uploader>) -> PreparedPlan {
     }
 }
 
-fn prepare_layers(layers: &[PlanLayer], up: Option<&Uploader>) -> PreparedPlan {
-    PreparedPlan { layers: layers.iter().map(|l| prepare_frame(&l.frame, up)).collect(), ..Default::default() }
+fn prepare_layers(layers: &[PlanLayer], up: Option<&Uploader>, prio: u32) -> PreparedPlan {
+    PreparedPlan { layers: layers.iter().map(|l| prepare_frame_ahead(&l.frame, up, prio)).collect(), ..Default::default() }
 }
 
 impl GpuCompositor {
@@ -749,6 +1215,44 @@ impl GpuCompositor {
             multiview_mask: None,
             cache: None,
         });
+        let wake_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wake"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let wpl =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("wake"), bind_group_layouts: &[Some(&wake_bgl)], immediate_size: 0 });
+        let wake_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wake"),
+            layout: Some(&wpl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_wake"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: OUTPUT_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let wake_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("filmcraft-wake"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let wake_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wake"),
+            layout: &wake_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wake_buf.as_entire_binding() }],
+        });
         let uploader = Uploader::new(device, queue);
         let dummy = uploader.0.dummy.clone();
         // The effect stage's pipelines can still be invalid on a device that passes the limits
@@ -783,6 +1287,16 @@ impl GpuCompositor {
             accum_readback_buf: None,
             uploads: HashMap::new(),
             clock: 0,
+            timer: GpuTimer::new(device, queue),
+            wake_pipeline,
+            wake_buf,
+            wake_bind,
+            wake_target: None,
+            wake_iterations: WAKE_ITERATIONS_START,
+            wake_ref: None,
+            wake_warm: false,
+            upload_budget: FLUSH_BUDGET,
+            needed: Vec::new(),
             dummy,
             fx,
             transition: transition::PushStage::new(device),
@@ -806,23 +1320,144 @@ impl GpuCompositor {
     /// compositor goes through here, so a frame's textures are filled before anything reads
     /// them, and this thread stays the device's only submitter.
     fn submit(&self, cb: wgpu::CommandBuffer) {
-        Self::submit_on(&self.uploader, &self.queue, cb);
+        Self::submit_on(&self.uploader, &self.queue, cb, None, self.upload_budget, None);
     }
 
-    /// [`Self::submit`] for a site that holds a mutable borrow of another field.
-    fn submit_on(uploader: &Uploader, queue: &wgpu::Queue, cb: wgpu::CommandBuffer) {
-        let mut cbs = uploader.take_copies();
+    /// Set the per-pass upload budget ([`FLUSH_BUDGET`] by default; tests and tuning).
+    pub fn set_upload_budget(&mut self, bytes: u64) {
+        self.upload_budget = bytes;
+    }
+
+    /// [`Self::submit`] for a site that holds a mutable borrow of another field, submitting the
+    /// recorded uploads `needed` (`None`: all of them; and more within the per-pass budget)
+    /// first, timed by `timer` when given.
+    fn submit_on(
+        uploader: &Uploader,
+        queue: &wgpu::Queue,
+        cb: wgpu::CommandBuffer,
+        needed: Option<&[u64]>,
+        budget: u64,
+        timer: Option<(&wgpu::Device, &GpuTimer, u8, u32)>,
+    ) {
+        let (mut cbs, staging) = uploader.take_copies(needed, budget);
         cbs.push(cb);
+        let slot = timer.and_then(|(device, t, tag, note)| t.wrap(device, &mut cbs, tag, note));
         queue.submit(cbs);
+        if let (Some((_, t, _, _)), Some(i)) = (timer, slot) {
+            t.after_submit(i);
+        }
+        uploader.recycle(staging);
     }
 
-    /// Submit the uploads the frame workers recorded so far, so that the GPU copies them while
-    /// the frames are still ahead of the playhead instead of all at once before the composite
-    /// that first needs one. Called once per UI pass; nothing happens when there are none.
+    /// GPU time (ms) of the latest timed composite submit (its uploads included), or 0 when the
+    /// device has no timestamp queries. It lags the pass log by a pass or two.
+    pub fn gpu_ms(&self) -> f64 {
+        self.timer.as_ref().map_or(0.0, |t| t.last_ms(TIMER_COMPOSITE))
+    }
+
+    /// GPU time (ms) of the latest [`Self::wake`] (0 without timestamp queries), and the loop
+    /// length the next one gets.
+    pub fn wake_stats(&self) -> (f64, u32) {
+        (self.timer.as_ref().map_or(0.0, |t| t.last_ms(TIMER_WAKE)), self.wake_iterations)
+    }
+
+    /// Whether the GPU's clocks are up, as far as this preroll's [`Self::wake`] loads can tell:
+    /// a load of the length that took [`WAKE_TARGET_MS`] at the end of an earlier preroll takes
+    /// that again. False until the first measurement of a preroll, and through the first
+    /// preroll of the process (no reference yet): the caller holds a play for it only so long.
+    pub fn wake_warm(&self) -> bool {
+        self.wake_warm
+    }
+
+    /// The preroll ended: its last loop length is the reference for the next one, when it is
+    /// the longest so far (a preroll that ended with the clocks still low leaves it alone).
+    pub fn wake_done(&mut self) {
+        self.wake_ref = Some(self.wake_ref.map_or(self.wake_iterations, |r| r.max(self.wake_iterations)));
+        self.wake_warm = false;
+    }
+
+    /// Give the GPU about [`WAKE_TARGET_MS`] of work, whatever its clocks, so that its driver
+    /// raises them: called once per UI pass while a play waits for its first frames (the
+    /// preroll), when nothing is due on screen. Each load is sized from the time the last one
+    /// took (measured by the timestamp queries; without them the first size stays). Nothing waits
+    /// for the GPU; the uploads recorded so far go first, as with every submit.
+    pub fn wake(&mut self) {
+        match &self.timer {
+            Some(t) => {
+                // (the measurement is of a load a pass or two ago: `measured` is its length)
+                let (ms, measured) = t.last(TIMER_WAKE);
+                if ms > 0.0 {
+                    // a load near the reference length that ran in its time: the clocks are up
+                    if ms <= WAKE_TARGET_MS * 1.3 && self.wake_ref.is_some_and(|r| measured >= r / 4 * 3) {
+                        self.wake_warm = true;
+                    }
+                    // towards the target, at most halving or doubling per step
+                    let now = f64::from(self.wake_iterations);
+                    let next = (now * WAKE_TARGET_MS / ms).clamp(now / 2.0, now * 2.0);
+                    self.wake_iterations = (next as u32).clamp(WAKE_ITERATIONS_MIN, WAKE_ITERATIONS_MAX);
+                }
+            }
+            // (no way to tell: never hold a play for it)
+            None => self.wake_warm = true,
+        }
+        let mut data = [0u8; 16];
+        if let Some(d) = data.get_mut(..4) {
+            d.copy_from_slice(&self.wake_iterations.to_le_bytes());
+        }
+        self.queue.write_buffer(&self.wake_buf, 0, &data);
+        let view = Self::target(&self.device, &mut self.wake_target, WAKE_SIZE, WAKE_SIZE, OUTPUT_FORMAT, wgpu::TextureUsages::empty());
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-wake") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wake"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.wake_pipeline);
+            pass.set_bind_group(0, &self.wake_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        Self::submit_on(
+            &self.uploader,
+            &self.queue,
+            enc.finish(),
+            Some(&[]),
+            self.upload_budget,
+            self.timer.as_ref().map(|t| (&self.device, t, TIMER_WAKE, self.wake_iterations)),
+        );
+    }
+
+    /// [`Uploader::pass_stats`] of this compositor's uploader.
+    pub fn pass_stats(&self) -> [u64; 4] {
+        self.uploader.pass_stats()
+    }
+
+    /// Submit the uploads the frame workers recorded so far, up to [`FLUSH_BUDGET`] bytes for
+    /// this pass (the composites that follow in the pass share the budget), so that the GPU
+    /// copies them while the frames are still ahead of the playhead instead of all at once
+    /// before the composite that first needs one. Called once per UI pass, first; nothing
+    /// happens when there are none.
     pub fn flush_uploads(&self) {
-        let cbs = self.uploader.take_copies();
+        self.flush_uploads_within(self.upload_budget);
+    }
+
+    /// [`Self::flush_uploads`] with a budget of `budget` bytes for the pass this call starts.
+    pub fn flush_uploads_within(&self, budget: u64) {
+        self.uploader.0.pass_bytes.store(0, Ordering::Relaxed);
+        self.uploader.0.pass_flushed.store(0, Ordering::Relaxed);
+        self.uploader.0.pass_needed.store(0, Ordering::Relaxed);
+        let (cbs, staging) = self.uploader.take_copies(Some(&[]), budget);
         if !cbs.is_empty() {
             self.queue.submit(cbs);
+            self.uploader.recycle(staging);
         }
     }
 
@@ -865,12 +1500,18 @@ impl GpuCompositor {
         self.clock += 1;
         if let Some(u) = self.uploads.get_mut(&key) {
             u.last_used = self.clock;
+            if u.gpu.upload_seq != 0 && !self.needed.contains(&u.gpu.upload_seq) {
+                self.needed.push(u.gpu.upload_seq);
+            }
             return key;
         }
         let gpu = match prep.and_then(|p| p.gpu.clone()) {
             Some(g) => g,
-            None => Arc::new(self.uploader.frame(f, prep)),
+            None => Arc::new(self.uploader.frame(f, prep, 0)),
         };
+        if gpu.upload_seq != 0 {
+            self.needed.push(gpu.upload_seq);
+        }
         self.uploaded_bytes += gpu.bytes as u64;
         self.uploads.insert(key, Uploaded { gpu, last_used: self.clock, _pixels: f.data.clone() });
         // keep the most recent uploads (enough for several stacked layers + playback lookahead)
@@ -1041,13 +1682,14 @@ impl GpuCompositor {
             self.composite(&plan);
         }
         // Full-size 10-bit 4:2:2 frames (the camera formats) through the uploader, on a thread
-        // of their own (130 MB of texels), held together and then let go: the plane textures of
-        // a few frames are in the pool and the device has grown its staging memory before the
-        // first frames are due, instead of during them (the first play of a 4K sequence had
-        // 30 ms composites while that happened).
+        // of their own (270 MB of texels), held together and then let go: the plane textures of
+        // eight frames are in the pool and their staging buffers come back for reuse before the
+        // first frames are due, instead of being created during them (the first play of a 4K
+        // sequence had 30 ms composites while that happened). Letting them go cancels their
+        // copies (nothing would draw them; [`GpuPlanes::drop`]), so the GPU copies nothing here.
         let (cw, ch) = (w.div_ceil(2), h);
         let (luma, chroma) = (w as usize * h as usize, cw as usize * ch as usize);
-        let frames = (WARM_UP_BYTES / ((luma + 2 * chroma) * 2).max(1)).clamp(1, 4);
+        let frames = (WARM_UP_BYTES / ((luma + 2 * chroma) * 2).max(1)).clamp(1, 8);
         let up = self.uploader.clone();
         let warm = move || {
             let held: Vec<GpuPlanes> = (0..frames)
@@ -1056,7 +1698,7 @@ impl GpuCompositor {
                     let data =
                         PixelData::Yuv16 { planes: [plane(luma), plane(chroma), plane(chroma)], chroma: filmcraft_frame::Chroma::C422, bits: 10, alpha: None };
                     let frame = VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() };
-                    up.frame(&frame, None)
+                    up.frame(&frame, None, u32::MAX)
                 })
                 .collect();
             drop(held);
@@ -1299,7 +1941,16 @@ impl GpuCompositor {
             pass.set_bind_group(0, &final_bg, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.submit(enc.finish());
+        // (the uploads this frame reads, then the rest within the budget: see `needed`)
+        let needed = std::mem::take(&mut self.needed);
+        Self::submit_on(
+            &self.uploader,
+            &self.queue,
+            enc.finish(),
+            Some(&needed),
+            self.upload_budget,
+            self.timer.as_ref().map(|t| (&self.device, t, TIMER_COMPOSITE, 0)),
+        );
         (if resolve { out_view } else { accum_view }, (w, h))
     }
 
@@ -1495,7 +2146,7 @@ impl GpuCompositor {
             wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        Self::submit_on(&self.uploader, &self.queue, enc.finish());
+        Self::submit_on(&self.uploader, &self.queue, enc.finish(), None, self.upload_budget, None);
         stage.end_frame();
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
