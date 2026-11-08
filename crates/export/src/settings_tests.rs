@@ -1330,7 +1330,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 23);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1710,4 +1710,44 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
             }
         }
     }
+}
+
+#[test]
+fn ac3_family_settings_preserve_codec_container_and_channel_intent() {
+    for (format, codec) in [(Format::Ac3, AudioCodec::Ac3), (Format::Eac3, AudioCodec::Eac3)] {
+        assert!(format.is_audio_only());
+        assert!(Format::ALL.contains(&format));
+        assert_eq!(Format::from_name(format.id()), Some(format));
+        let mut settings = ExportSettings { format, ..Default::default() };
+        assert_eq!(settings.audio_codec(), codec);
+        assert!(settings.validate().is_ok());
+        settings.audio.sample_rate = Some(96_000);
+        assert!(settings.validate().is_err());
+        settings.audio.sample_rate = Some(48_000);
+        settings.audio.channels = 3;
+        assert!(settings.validate().is_err(), "unsupported layout must not silently fold to stereo");
+        settings.audio.channels = 8;
+        settings.audio.bitrate_kbps = 640;
+        assert_eq!(settings.validate().is_ok(), codec == AudioCodec::Eac3);
+        assert_eq!(settings.resolve(320, 180, FrameRate::FPS_24, 48_000).channels, 8);
+    }
+    for container in [Format::H264, Format::ProRes] {
+        for codec in [AudioCodec::Ac3, AudioCodec::Eac3] {
+            let settings = ExportSettings { format: container, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+            assert_eq!(settings.audio_codec(), codec, "container must retain the requested codec");
+            assert!(!settings.supports_sample_format(SampleFormat::Int16));
+        }
+    }
+    let settings = ExportSettings { audio: AudioSettings { channels: 8, ..Default::default() }, ..Default::default() };
+    assert!(settings.validate().is_err(), "AAC output must not falsely promise 7.1");
+}
+
+#[test]
+fn inactive_ac3_audio_does_not_block_video_only_export() {
+    let settings = ExportSettings {
+        include_audio: false,
+        audio: AudioSettings { codec: AudioCodec::Ac3, sample_rate: Some(0), channels: 8, bitrate_kbps: 1, float: true, bits: 16, ..Default::default() },
+        ..Default::default()
+    };
+    assert!(settings.validate().is_ok());
 }

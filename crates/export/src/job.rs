@@ -282,6 +282,7 @@ impl Exporter {
                     audio_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|f| f(settings.format, a.sr, a.channels as u32, &settings));
                 Some(found.ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??)
             }
+            (Some(a), AudioCodec::Ac3 | AudioCodec::Eac3) => Some(Box::new(crate::ac3_out::Ac3Audio::new(a.sr, a.channels as u32, &settings)?)),
             (Some(a), AudioCodec::Flac) => Some(Box::new(crate::FlacAudio::new(a.sr, a.channels as u32, &settings)?)),
             _ => None,
         };
@@ -431,6 +432,10 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        let exact_audio_duration = matches!(self.settings.audio_codec(), AudioCodec::Ac3 | AudioCodec::Eac3);
+        if exact_audio_duration && let Some(audio) = &self.audio {
+            opts.movie_timescale = audio.sr;
+        }
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
@@ -440,6 +445,9 @@ impl Exporter {
             (Some(a), Some(enc)) => {
                 let mut c = TrackConfig::new(enc.sample_entry(), a.sr);
                 c.media_start = Some(enc.priming() as i64);
+                if exact_audio_duration {
+                    c.edits.push(filmcraft_isobmff::Edit { segment_duration: a.total(), media_time: i64::from(enc.priming()), media_rate: 0x10000 });
+                }
                 Some(mux.add_track(c).map_err(|e| ExportError::Io(e.to_string()))?)
             }
             (Some(a), None) => {
@@ -466,6 +474,9 @@ impl Exporter {
             return Err(ExportError::Cancelled);
         }
         let _ = filmcraft_media::pending::take();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.validate_source_layouts(sources)?;
+        }
         if !self.measured {
             if !self.settings.part_of_batch {
                 progress.set_status("Measuring loudness");

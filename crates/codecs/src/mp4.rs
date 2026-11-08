@@ -496,6 +496,16 @@ impl VideoSamples for Mp4Video<'_> {
 }
 
 impl MediaSource for Mp4Source {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        let audio = self.audios.get(stream)?;
+        let entry = self.file.tracks.get(audio.track)?.entries.first()?;
+        match &entry.codec {
+            CodecConfig::Eac3 { dec3 } if crate::audio::eac3_71_descriptor(dec3) => Some(0x63f),
+            CodecConfig::Aac(config) if config.channel_config == 12 => Some(0x63f),
+            _ => None,
+        }
+    }
+
     fn info(&self) -> &MediaInfo {
         &self.info
     }
@@ -577,6 +587,7 @@ impl MediaSource for Mp4Source {
                 out.channels[c]
                     .copy_from_slice(&src[c][..frames.min(src[c].len())].iter().copied().chain(std::iter::repeat(0.0)).take(frames).collect::<Vec<_>>());
             }
+            trim_ac3_presentation(&mut out, start, track, self.file.timescale);
             return Ok(out);
         }
         // Resample the local window. Its first sample is presentation sample `p0`; the edit list
@@ -593,7 +604,32 @@ impl MediaSource for Mp4Source {
                 out.channels[c][k] = a + (b - a) * f;
             }
         }
+        trim_ac3_presentation(&mut out, start, track, self.file.timescale);
         Ok(out)
+    }
+}
+
+/// AC-3/E-AC-3 whole frames include trailing padding. A single normal-speed edit defines
+/// the audible presentation end, even when the containing video track runs longer. Apply it
+/// after resampling too, so an interpolation neighbour cannot leak padding past that boundary.
+fn trim_ac3_presentation(buffer: &mut AudioBuffer, start: i64, track: &filmcraft_isobmff::Track, movie_rate: u32) {
+    if !matches!(track.codec(), Some(CodecConfig::Ac3 { .. } | CodecConfig::Eac3 { .. })) {
+        return;
+    }
+    let [edit] = track.edits.as_slice() else { return };
+    if edit.media_time < 0 || edit.media_rate != 0x10000 || movie_rate == 0 {
+        return;
+    }
+    // Compare sample timestamps directly: rounding the end down would mute the last
+    // in-range sample when resampling produces a fractional endpoint.
+    let end = i128::from(edit.segment_duration) * i128::from(buffer.sample_rate);
+    for channel in &mut buffer.channels {
+        for (index, sample) in channel.iter_mut().enumerate() {
+            let position = i128::from(start) + index as i128;
+            if position < 0 || position * i128::from(movie_rate) >= end {
+                *sample = 0.0;
+            }
+        }
     }
 }
 
@@ -623,7 +659,7 @@ fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(
 }
 
 /// E-AC-3 `ec-3` entry: the program-layout fields are the 24 bits starting at byte 2 of the
-/// descriptor, then `bsmod(5) | acmod(3) | lfeon(1)`. Matches FFmpeg's `dec3` demuxer.
+/// descriptor, including `acmod(3) | lfeon(1)` and the dependent-channel map.
 fn dec3_layout(payload: &[u8]) -> Option<(u32, u32)> {
     if payload.len() < 5 {
         return None;
@@ -631,7 +667,7 @@ fn dec3_layout(payload: &[u8]) -> Option<(u32, u32)> {
     let bits = u32::from(payload[2]) << 16 | u32::from(payload[3]) << 8 | u32::from(payload[4]);
     let acmod = ((bits >> 9) & 0x7) as u8;
     let lfeon = bits & 0x100 != 0;
-    let channels = dac3_channels(acmod, lfeon)?;
+    let channels = if crate::audio::eac3_71_descriptor(payload) { 8 } else { dac3_channels(acmod, lfeon)? };
     Some((0, channels))
 }
 

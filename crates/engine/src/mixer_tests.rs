@@ -609,7 +609,14 @@ fn surround_sequence_settings_and_panner_lanes() {
     let q = s.active_sequence().unwrap();
     assert_eq!(q.settings.audio_master, filmcraft_project::AudioChannels::Surround51);
     assert!(q.audio_tracks.iter().all(|t| t.channels == filmcraft_project::AudioChannels::Surround51));
-    assert!(s.execute("file.newSequence", json!({"mix": "7.1"})).is_err());
+    s.execute("file.newSequence", json!({"name": "discrete surround", "mix": "7.1", "trackType": "7.1", "audio": 2})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.settings.audio_master, filmcraft_project::AudioChannels::Surround71);
+    assert_eq!(q.audio_tracks.len(), 2);
+    assert!(q.audio_tracks.iter().all(|t| t.channels == filmcraft_project::AudioChannels::Surround71));
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    assert_eq!(filmcraft_render::mixer::mix_graph(&s.project, q, 0, 480, &provider, None).channels.len(), 8);
+    assert!(s.execute("file.newSequence", json!({"mix": "9.1"})).is_err());
     s.execute("file.newSequence", json!({"trackType": "Standard"})).unwrap();
 }
 

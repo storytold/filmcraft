@@ -49,6 +49,11 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+    /// Known WAVE speaker assignments, including project-level media interpretation when
+    /// available. Analysis must use the same speaker meaning as timeline playback.
+    fn audio_channel_mask(&self, item: ItemId, stream: usize) -> Option<u32> {
+        self.source(item)?.audio_channel_mask(stream)
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {

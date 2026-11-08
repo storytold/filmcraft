@@ -50,7 +50,11 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         let seq_sr = seq.settings.sample_rate;
         // a 5.1 Mix plays as six channels (L, R, C, LFE, Ls, Rs) on a device with at least six
         use filmcraft_audio_dsp::channels::Layout;
-        let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
+        let layout = match (ch, seq.settings.audio_master) {
+            (8.., filmcraft_project::AudioChannels::Surround71) => Layout::Surround71,
+            (6.., filmcraft_project::AudioChannels::Surround51 | filmcraft_project::AudioChannels::Surround71) => Layout::Surround51,
+            _ => Layout::Stereo,
+        };
         let mix = if seq_sr == sr {
             previews.mix_layout(&project, seq_id, cursor, n, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown })
         } else {
@@ -69,10 +73,10 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
             });
             filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };
-        if layout == Layout::Surround51 {
+        if matches!(layout, Layout::Surround51 | Layout::Surround71) {
             buf.fill(0.0);
             for (i, frame) in buf.chunks_mut(ch).enumerate() {
-                for (c, x) in frame.iter_mut().take(6).enumerate() {
+                for (c, x) in frame.iter_mut().take(layout.channels()).enumerate() {
                     *x = mix.channels[c][i];
                 }
             }

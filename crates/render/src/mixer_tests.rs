@@ -960,3 +960,64 @@ fn a_stretched_clip_aligns_on_the_channels_it_plays() {
     both.source_channels = vec![0, 1];
     assert!(stretched(&both, &ltc, 60_000, 4_800, 1024)[1].iter().any(|s| s.abs() > 0.5));
 }
+
+fn interpret_71(rig: &mut Rig) {
+    let media_id = rig.track(0).items[0].item;
+    let ItemKind::Media(media) = &mut rig.p.item_mut(media_id).unwrap().kind else { panic!("expected source media") };
+    media.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap::for_format(AudioChannels::Surround71, 8));
+}
+
+#[test]
+fn discrete_71_track_preserves_all_speakers_through_mix_and_downmix() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    rig.track(0).channels = AudioChannels::Surround71;
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround71;
+    let mixed = mix_all(&rig, 0, 256);
+    assert_eq!(mixed.len(), 8);
+    for (channel, samples) in mixed.iter().enumerate() {
+        assert!(close(samples[31], (channel + 1) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround51;
+    let mixed = mix_all(&rig, 0, 256);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    assert_eq!(mixed.len(), 6);
+    assert!(close(mixed[4][31], k * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[5][31], k * (0.6 + 0.8), 1e-6));
+    assert!(close(mixed[3][31], 0.4, 1e-6), "LFE stays separate");
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Stereo;
+    let mixed = mix_all(&rig, 0, 256);
+    assert!(close(mixed[0][31], 0.1 + k * 0.3 + 0.5 * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[1][31], 0.2 + k * 0.3 + 0.5 * (0.6 + 0.8), 1e-6));
+}
+
+#[test]
+fn explicit_71_mapping_and_balance_preserve_rear_and_side_identity() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    rig.track(0).channels = AudioChannels::Surround71;
+    rig.track(0).items[0].source_channels = vec![7, 6, 5, 4, 3, 2, 1, 0];
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround71;
+    let mixed = mix_all(&rig, 0, 128);
+    for (channel, samples) in mixed.iter().enumerate() {
+        assert!(close(samples[31], (8 - channel) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+    rig.track(0).set_lane_static(LANE_PAN, 100.0);
+    let mixed = mix_all(&rig, 0, 128);
+    for channel in [0, 4, 6] {
+        assert!(close(mixed[channel][31], 0.0, 1e-6));
+    }
+    for channel in [1, 2, 3, 5, 7] {
+        assert!(close(mixed[channel][31], (8 - channel) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+}
+
+#[test]
+fn stereo_tracks_fold_all_71_surrounds_instead_of_dropping_them() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    let mixed = mix_all(&rig, 0, 128);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(close(mixed[0][31], 0.1 + k * 0.3 + 0.5 * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[1][31], 0.2 + k * 0.3 + 0.5 * (0.6 + 0.8), 1e-6));
+}

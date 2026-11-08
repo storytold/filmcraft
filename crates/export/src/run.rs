@@ -94,6 +94,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
+        Format::Ac3 | Format::Eac3 => crate::ac3_out::export(project, seq, settings, range, sources, progress)?,
         Format::Aac => aac_out::export(project, seq, settings, range, sources, progress)?,
         Format::Wav | Format::Aiff | Format::Flac => {
             let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;

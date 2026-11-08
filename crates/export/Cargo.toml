@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-audio = { git = "https://github.com/whatever-industries/craft-libs.git", rev = "8315c64a5a41f948e7afadcfc62a4354b70a1a1f", default-features = false, features = ["ac3-encode", "eac3-encode"] }
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-color = { workspace = true }

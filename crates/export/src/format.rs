@@ -66,6 +66,12 @@ pub enum Format {
     /// the path ends in `.aac`.
     #[serde(rename = "aac", alias = "Aac")]
     Aac,
+    /// Raw AC-3 syncframes (ETSI TS 102 366).
+    #[serde(rename = "ac3", alias = "Ac3")]
+    Ac3,
+    /// Raw Enhanced AC-3 access units, including dependent substreams.
+    #[serde(rename = "eac3", alias = "Eac3")]
+    Eac3,
     /// FLAC (RFC 9639): lossless compressed audio.
     #[serde(rename = "flac", alias = "Flac")]
     Flac,
@@ -102,6 +108,8 @@ impl Format {
             "wav" | "waveform" | "waveformaudio" => Format::Wav,
             "aif" | "aiff" | "aifc" => Format::Aiff,
             "aac" | "aacaudio" | "m4a" | "adts" => Format::Aac,
+            "ac3" | "dolbydigital" => Format::Ac3,
+            "eac3" | "ec3" | "dolbydigitalplus" => Format::Eac3,
             "flac" | "fla" => Format::Flac,
             _ => return None,
         })
@@ -127,6 +135,8 @@ impl Format {
             Format::Wav => "wav",
             Format::Aiff => "aiff",
             Format::Aac => "aac",
+            Format::Ac3 => "ac3",
+            Format::Eac3 => "eac3",
             Format::Flac => "flac",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
@@ -147,6 +157,8 @@ impl Format {
             Format::Wav => "wav",
             Format::Aiff => "aif",
             Format::Aac => "m4a",
+            Format::Ac3 => "ac3",
+            Format::Eac3 => "eac3",
             Format::Flac => "flac",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
@@ -171,6 +183,8 @@ impl Format {
             Format::Wav => "Waveform Audio",
             Format::Aiff => "AIFF",
             Format::Aac => "AAC Audio",
+            Format::Ac3 => "AC-3 Audio",
+            Format::Eac3 => "E-AC-3 Audio",
             Format::Flac => "FLAC",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
@@ -200,7 +214,7 @@ impl Format {
     }
     /// Sound without picture: Waveform Audio, AIFF, AAC Audio and FLAC.
     pub fn is_audio_only(self) -> bool {
-        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Flac)
+        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Ac3 | Format::Eac3 | Format::Flac)
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
@@ -214,7 +228,7 @@ impl Format {
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
-    pub const ALL: [Format; 21] = [
+    pub const ALL: [Format; 23] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -233,6 +247,8 @@ impl Format {
         Format::Wav,
         Format::Aiff,
         Format::Aac,
+        Format::Ac3,
+        Format::Eac3,
         Format::Flac,
         Format::MxfOp1a,
         Format::MxfOpAtom,
@@ -478,15 +494,55 @@ fn default_crf() -> f32 {
 }
 
 impl ExportSettings {
+    /// Whether this bitrate is valid for the current codec, layout and resolved sample rate.
+    pub fn supports_audio_bitrate(&self, bitrate_kbps: u32, source_rate: u32) -> bool {
+        let mut candidate = self.clone();
+        candidate.audio.bitrate_kbps = bitrate_kbps;
+        candidate.audio.sample_rate = Some(self.audio.sample_rate.unwrap_or(source_rate));
+        candidate.validate_audio_settings().is_ok()
+    }
+
     fn validate_audio_settings(&self) -> Result<()> {
+        let active_audio = self.has_audio() || self.format.is_audio_only();
+        if !active_audio {
+            return Ok(());
+        }
         if self.audio.sample_rate.is_some_and(|rate| rate == 0 || rate > 384_000) {
             return Err(ExportError::Unsupported("output sample rate must be between 1 and 384000 Hz".into()));
         }
         if self.audio.float && self.audio.bits != 32 {
             return Err(ExportError::Unsupported("floating-point audio is 32-bit: set the sample size to 32".into()));
         }
+        let codec = self.audio_codec();
+        if active_audio && matches!(codec, AudioCodec::Ac3 | AudioCodec::Eac3) {
+            if self.audio.sample_rate.is_some_and(|rate| !matches!(rate, 32_000 | 44_100 | 48_000)) {
+                return Err(ExportError::Unsupported("AC-3/E-AC-3 requires 32000, 44100 or 48000 Hz".into()));
+            }
+            let channels = self.audio.channels;
+            if !(matches!(channels, 1 | 2 | 6) || codec == AudioCodec::Eac3 && channels == 8) {
+                return Err(ExportError::Unsupported("AC-3 supports mono, stereo and 5.1; E-AC-3 also supports discrete 7.1".into()));
+            }
+            use craft_audio::ac3::encoder::{Codec, CodingMode, Config};
+            let mode = match channels {
+                1 => CodingMode::Mono,
+                2 => CodingMode::Stereo,
+                8 => CodingMode::Surround71,
+                _ => CodingMode::ThreeFrontTwoSurround,
+            };
+            Config {
+                codec: if codec == AudioCodec::Ac3 { Codec::Ac3 } else { Codec::Eac3 },
+                sample_rate: self.audio.sample_rate.unwrap_or(48_000),
+                bitrate_kbps: self.audio.bitrate_kbps,
+                mode,
+                lfe: channels >= 6,
+            }
+            .validate()
+            .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+        } else if active_audio && self.audio.channels == 8 {
+            return Err(ExportError::Unsupported("7.1 export currently requires E-AC-3".into()));
+        }
         let sample_format = self.audio.sample_format();
-        if (self.has_audio() || self.format.is_audio_only()) && self.audio_codec() != AudioCodec::Aac && !self.supports_sample_format(sample_format) {
+        if (self.has_audio() || self.format.is_audio_only()) && !self.audio_codec().is_lossy() && !self.supports_sample_format(sample_format) {
             let codec = if self.audio_codec() == AudioCodec::Flac { "FLAC" } else { self.format.label() };
             return Err(ExportError::Unsupported(format!("{codec} audio has no {} samples: choose 16, 24 or 32 bit", sample_format.label())));
         }

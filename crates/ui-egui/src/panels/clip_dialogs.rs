@@ -78,8 +78,8 @@ fn intrinsic_video() -> [(&'static str, &'static str); 3] {
 fn intrinsic_audio() -> [(&'static str, &'static str); 3] {
     [("volume", tl!("Volume")), ("channelVolume", tl!("Channel Volume")), ("panner", tl!("Panner"))]
 }
-fn formats() -> [(&'static str, &'static str); 4] {
-    [("mono", tl!("Mono")), ("stereo", tl!("Stereo")), ("5.1", "5.1"), ("adaptive", tl!("Adaptive"))]
+fn formats() -> [(&'static str, &'static str); 5] {
+    [("mono", tl!("Mono")), ("stereo", tl!("Stereo")), ("5.1", "5.1"), ("7.1", "7.1"), ("adaptive", tl!("Adaptive"))]
 }
 fn hold_on() -> [(&'static str, &'static str); 5] {
     [
@@ -305,6 +305,7 @@ fn format_name(f: AudioChannels) -> &'static str {
         AudioChannels::Mono => "mono",
         AudioChannels::Stereo => "stereo",
         AudioChannels::Surround51 => "5.1",
+        AudioChannels::Surround71 => "7.1",
         AudioChannels::Adaptive => "adaptive",
     }
 }
@@ -313,6 +314,7 @@ fn format_of(name: &str) -> AudioChannels {
     match name {
         "mono" => AudioChannels::Mono,
         "5.1" => AudioChannels::Surround51,
+        "7.1" => AudioChannels::Surround71,
         "adaptive" => AudioChannels::Adaptive,
         _ => AudioChannels::Stereo,
     }

@@ -688,44 +688,55 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let fixed = audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Ac3 => "AC-3",
+            AudioCodec::Eac3 => "E-AC-3",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
-        // MP4 takes AAC or FLAC; QuickTime any of the three
+        // MP4 takes the compressed codecs; QuickTime also accepts PCM.
         let labels = vec![
             ("AAC".to_string(), !audio_only),
             (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),
             (tl!("FLAC (lossless)").to_string(), true),
+            ("AC-3".to_string(), true),
+            ("E-AC-3".to_string(), true),
         ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
+            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Ac3, AudioCodec::Eac3][i.min(4)];
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
-        let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
+        let ac3_family = matches!(s.audio_codec(), AudioCodec::Ac3 | AudioCodec::Eac3);
+        let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), !ac3_family || matches!(r.unwrap_or(seq_sr), 32_000 | 44_100 | 48_000))).collect();
         if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
             s.audio.sample_rate = rates[i];
         }
     });
     row(ui, t, tl!("Channels"), |ui| {
-        let names = [tl!("Mono"), tl!("Stereo"), "5.1"];
+        let names = [tl!("Mono"), tl!("Stereo"), "5.1", "7.1"];
         let cur = match s.audio.channels {
             1 => names[0],
             6 => names[2],
+            8 => names[3],
             _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
-            s.audio.channels = [1, 2, 6][i.min(2)];
+        let choices = names.iter().enumerate().map(|(i, name)| (name.to_string(), i != 3 || s.audio_codec() == AudioCodec::Eac3)).collect::<Vec<_>>();
+        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &choices, 120.0) {
+            s.audio.channels = [1, 2, 6, 8][i.min(3)];
         }
     });
-    if s.audio_codec() == AudioCodec::Aac {
+    if s.audio_codec().is_lossy() {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
-            let rates = [128u32, 160, 192, 256, 320];
-            let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
+            let rates: &[u32] = match s.audio_codec() {
+                AudioCodec::Ac3 => &[96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
+                AudioCodec::Eac3 => &[96, 128, 160, 192, 256, 320, 384, 448, 512, 640, 768, 1024],
+                _ => &[128, 160, 192, 256, 320],
+            };
+            let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), s.supports_audio_bitrate(*r, seq_sr))).collect();
             if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
                 s.audio.bitrate_kbps = rates[i];
             }

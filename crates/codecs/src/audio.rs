@@ -94,6 +94,8 @@ enum Inner {
     Symphonia(SymphoniaDecoder),
     /// Our AC-3 and E-AC-3 decoder (ATSC A/52, Annex E).
     Ac3(Box<filmcraft_ac3::Decoder>),
+    /// Complete six-block E-AC-3 7.1 programmes, with dependent surround replacement.
+    Eac3Programme(Box<craft_audio::ac3::ProgrammeDecoder>),
     /// Our MPEG-1/2 audio Layer I and II decoder (ISO/IEC 11172-3, 13818-3).
     Mpa(Box<filmcraft_mpa::Decoder>),
 }
@@ -240,6 +242,10 @@ impl PacketDecoder {
         match c {
             C::Aac(a) => Self::aac(&a.asc, if rate > 0 { rate } else { a.sample_rate }),
             C::Mp3 => Ok(Self::lazy_mpeg_audio(rate)),
+            C::Eac3 { dec3 } if eac3_71_descriptor(dec3) => Ok(Self {
+                inner: Inner::Eac3Programme(Box::new(craft_audio::ac3::ProgrammeDecoder::new(craft_audio::ChannelLayout::SURROUND_7_1))),
+                channels: 8,
+            }),
             C::Ac3 { .. } | C::Eac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             // the decoder needs the STREAMINFO body: `dfLa` holds it after the 4-byte block header
@@ -277,6 +283,11 @@ impl PacketDecoder {
             Inner::Symphonia(d) => d,
             Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
             Inner::MpegPending(_) => return Err(CodecError::Decode("MPEG audio: no frame header".into())),
+            Inner::Eac3Programme(decoder) => {
+                let frame = decoder.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                self.channels = frame.channels.len();
+                return Ok(frame.channels);
+            }
             Inner::Ac3(d) => {
                 // a packet may hold several syncframes (MP4 / Matroska); E-AC-3 dependent
                 // substreams and further programs decode to no channels and are skipped
@@ -352,9 +363,25 @@ impl PacketDecoder {
                 }
             }
             Inner::Ac3(d) => d.reset(),
+            Inner::Eac3Programme(d) => d.reset(),
             Inner::AacPending | Inner::MpegPending(_) => {}
         }
     }
+}
+
+/// Annex F `dec3`: one independent 3/2+LFE programme and one dependent rear pair.
+/// The descriptor's channel count is authoritative; the audio sample-entry field is always 2.
+pub(crate) fn eac3_71_descriptor(payload: &[u8]) -> bool {
+    let Some(bytes) = payload.get(..6) else { return false };
+    if bytes[1] & 7 != 0 {
+        return false;
+    }
+    let bits = u32::from_be_bytes([0, bytes[2], bytes[3], bytes[4]]);
+    let channel_mode = (bits >> 9) & 7;
+    let lfe = bits & 0x100 != 0;
+    let dependents = (bits >> 1) & 15;
+    let channel_locations = ((bits & 1) << 8) | u32::from(bytes[5]);
+    channel_mode == 7 && lfe && dependents == 1 && channel_locations == 2
 }
 
 /// The layer (1, 2 or 3) named by the MPEG-1/2 audio frame header that starts `frame`: the 12-bit
@@ -857,6 +884,7 @@ pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize
 /// A standalone audio file decoded fully into memory (audio files are small next to video).
 pub struct AudioFileSource {
     info: MediaInfo,
+    channel_mask: Option<u32>,
     rate: u32,
     samples: Vec<Vec<f32>>,
 }
@@ -888,7 +916,27 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok(Self { info, rate, samples, channel_mask: None });
+        }
+        if matches!(ext.as_str(), "ac3" | "eac3" | "ec3") {
+            let (rate, samples) = crate::raw_ac3::decode(&bytes)?;
+            let frames = samples.first().map_or(0, Vec::len);
+            let info = MediaInfo {
+                name: name.to_string(),
+                kind: MediaKind::AudioOnly,
+                duration: Tick::from_units(frames as i64, i64::from(rate)),
+                video: None,
+                audio_streams: vec![AudioStreamInfo {
+                    sample_rate: rate,
+                    channels: samples.len() as u32,
+                    codec: if ext == "ac3" { "AC-3" } else { "E-AC-3" }.into(),
+                    bits_per_sample: None,
+                }],
+                container: ext.to_uppercase(),
+                start_timecode: None,
+                file_size: Some(bytes.len() as u64),
+            };
+            return Ok(Self { info, rate, channel_mask: (samples.len() == 8).then_some(0x63f), samples });
         }
         if ext == "aac" {
             let (rate, samples) = decode_adts(&bytes)?.ok_or_else(|| CodecError::Decode(format!("{name}: no ADTS AAC frames")))?;
@@ -903,7 +951,7 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok(Self { info, rate, samples, channel_mask: None });
         }
         let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.clone())), Default::default());
         let mut hint = Hint::new();
@@ -953,7 +1001,7 @@ impl AudioFileSource {
             start_timecode: None,
             file_size: Some(bytes.len() as u64),
         };
-        Ok(Self { info, rate, samples })
+        Ok(Self { info, rate, samples, channel_mask: None })
     }
 }
 
@@ -1119,6 +1167,9 @@ fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
 }
 
 impl MediaSource for AudioFileSource {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        if stream == 0 { self.channel_mask } else { None }
+    }
     fn info(&self) -> &MediaInfo {
         &self.info
     }
@@ -1132,7 +1183,7 @@ impl MediaSource for AudioFileSource {
 
 pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<SharedSource, MediaError>> {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if !matches!(ext.as_str(), "mp3" | "mp2" | "aac" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
+    if !matches!(ext.as_str(), "mp3" | "mp2" | "aac" | "ac3" | "eac3" | "ec3" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
         return None;
     }
     Some(AudioFileSource::decode(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))

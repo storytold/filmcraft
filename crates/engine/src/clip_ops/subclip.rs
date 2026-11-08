@@ -137,6 +137,7 @@ fn parse_format(f: &str) -> Option<AudioChannels> {
         "mono" => Some(AudioChannels::Mono),
         "stereo" => Some(AudioChannels::Stereo),
         "5.1" | "surround51" | "surround" => Some(AudioChannels::Surround51),
+        "7.1" | "surround71" => Some(AudioChannels::Surround71),
         "adaptive" => Some(AudioChannels::Adaptive),
         _ => None,
     }

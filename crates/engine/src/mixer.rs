@@ -607,6 +607,7 @@ pub(crate) fn channels_name(c: AudioChannels) -> &'static str {
         AudioChannels::Mono => "Mono",
         AudioChannels::Stereo => "Stereo",
         AudioChannels::Surround51 => "5.1",
+        AudioChannels::Surround71 => "7.1",
         AudioChannels::Adaptive => "Adaptive",
     }
 }
@@ -617,6 +618,7 @@ pub(crate) fn channels_from(s: &str) -> Option<AudioChannels> {
         "mono" => Some(AudioChannels::Mono),
         "stereo" | "standard" => Some(AudioChannels::Stereo),
         "5.1" | "surround51" => Some(AudioChannels::Surround51),
+        "7.1" | "surround71" => Some(AudioChannels::Surround71),
         "adaptive" => Some(AudioChannels::Adaptive),
         _ => None,
     }
@@ -1251,7 +1253,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Track Mixer Settings",
             menu: &[],
             shortcut: None,
-            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"name":str?,"volumeDb":f64?,"pan":f64?,"muted":bool?,"solo":bool?,"recordArm":bool?,"soloSafe":bool?,"mode":"Off|Read|Latch|Touch|Write"?,"output":"Mix"|"S1"?,"inputMap":"Stereo|Left|Right|Swap|Mono"?,"channels":"Mono|Stereo|5.1"?}"#,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"name":str?,"volumeDb":f64?,"pan":f64?,"muted":bool?,"solo":bool?,"recordArm":bool?,"soloSafe":bool?,"mode":"Off|Read|Latch|Touch|Write"?,"output":"Mix"|"S1"?,"inputMap":"Stereo|Left|Right|Swap|Mono"?,"channels":"Mono|Stereo|5.1|7.1"?}"#,
             enabled: has_seq,
             run: set_strip,
             journal: true,
@@ -1405,7 +1407,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Add Audio Submix Track",
             menu: &["Sequence"],
             shortcut: None,
-            params: r#"{"name":str?,"channels":"Mono|Stereo|5.1"?}"#,
+            params: r#"{"name":str?,"channels":"Mono|Stereo|5.1|7.1"?}"#,
             enabled: has_seq,
             run: add_submix,
             journal: true,

@@ -1059,6 +1059,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-audio"
+version = "0.1.0"
+source = "git+https://github.com/whatever-industries/craft-libs.git?rev=8315c64a5a41f948e7afadcfc62a4354b70a1a1f#8315c64a5a41f948e7afadcfc62a4354b70a1a1f"
+dependencies = [
+ "craft-media 0.1.0 (git+https://github.com/whatever-industries/craft-libs.git?rev=8315c64a5a41f948e7afadcfc62a4354b70a1a1f)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
@@ -1090,6 +1099,11 @@ dependencies = [
  "windows-registry",
  "writeable",
 ]
+
+[[package]]
+name = "craft-media"
+version = "0.1.0"
+source = "git+https://github.com/whatever-industries/craft-libs.git?rev=8315c64a5a41f948e7afadcfc62a4354b70a1a1f#8315c64a5a41f948e7afadcfc62a4354b70a1a1f"
 
 [[package]]
 name = "craft-media"
@@ -1992,7 +2006,7 @@ dependencies = [
 name = "filmcraft-bitstream"
 version = "0.17.0"
 dependencies = [
- "craft-media",
+ "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7)",
 ]
 
 [[package]]
@@ -2038,6 +2052,7 @@ dependencies = [
 name = "filmcraft-codecs"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "filmcraft-aac",
  "filmcraft-ac3",
  "filmcraft-apv",
@@ -2153,6 +2168,7 @@ dependencies = [
 name = "filmcraft-export"
 version = "0.17.0"
 dependencies = [
+ "craft-audio",
  "filmcraft-aac",
  "filmcraft-apv",
  "filmcraft-audio-dsp",
@@ -2309,7 +2325,7 @@ dependencies = [
 name = "filmcraft-isobmff"
 version = "0.17.0"
 dependencies = [
- "craft-media",
+ "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7)",
  "filmcraft-testkit",
  "proptest",
  "serde_json",
@@ -2319,7 +2335,7 @@ dependencies = [
 name = "filmcraft-matroska"
 version = "0.17.0"
 dependencies = [
- "craft-media",
+ "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7)",
  "filmcraft-testkit",
  "serde_json",
 ]

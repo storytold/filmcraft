@@ -281,6 +281,7 @@ impl Exporter<'_> {
             let ch = match t.channels {
                 AudioChannels::Mono => 1,
                 AudioChannels::Surround51 => 6,
+                AudioChannels::Surround71 => 8,
                 AudioChannels::Stereo | AudioChannels::Adaptive => 2,
             };
             if media.breakout_to_mono {
@@ -828,6 +829,8 @@ fn build_sequence(
             track.channels = match t.channels {
                 1 => AudioChannels::Mono,
                 6 => AudioChannels::Surround51,
+                // Channel count alone does not identify rear+side versus wide 7.1.
+                8 => AudioChannels::Adaptive,
                 _ => AudioChannels::Stereo,
             };
         }

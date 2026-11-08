@@ -61,7 +61,11 @@ pub fn to_layout(b: AudioBuffer, layout: Layout, mixdown: Mixdown) -> AudioBuffe
 /// The layout of a sequence's Mix (`SequenceSettings::audio_master`; mono and adaptive Mixes play
 /// as stereo).
 pub fn master_layout(seq: &Sequence) -> Layout {
-    if seq.settings.audio_master == AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo }
+    match seq.settings.audio_master {
+        AudioChannels::Surround51 => Layout::Surround51,
+        AudioChannels::Surround71 => Layout::Surround71,
+        _ => Layout::Stereo,
+    }
 }
 
 /// The summed clip audio of one track (clip gain, clip effects, Volume / Channel Volume / Panner,
@@ -220,13 +224,19 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
         let read = |m0: i64, len: usize| Some(nested_mix(project, &q, Window { start: m0, frames: len, sr }, sources, w, live.depth));
-        effected(item, &read, a0, n, sr, w)
+        let mapped = speaker_mapped_item(item, w == 8);
+        effected(&mapped, &read, a0, n, sr, w)
     } else {
         let Some(src) = sources.source(item.item) else { return };
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
+        let explicit_71 = project
+            .resolve_media(item.item)
+            .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
+            .is_some_and(|mapping| mapping.format == AudioChannels::Surround71);
+        let mapped = speaker_mapped_item(item, explicit_71 || src.audio_channel_mask(item.audio_stream) == Some(0x63f));
+        effected(&mapped, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -346,7 +356,8 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
+        let mapped = speaker_mapped_item(item, sources.audio_channel_mask(item.item, item.audio_stream) == Some(0x63f));
+        let buf = effected(&mapped, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
                 *d = x * g;
@@ -368,8 +379,28 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
     Some(left == right)
 }
 
+/// Source span a nested clip may read for a timeline interval. Ordinary varispeed uses the
+/// same mapping as playback, with interpolation neighbours. Remix, pitch preservation, holds
+/// and audio effects may read non-affine/history spans, so validate the full nested sequence.
+pub fn nested_audio_source_range(item: &TrackItem, range: TimeRange, nested: &Sequence) -> TimeRange {
+    if item.frame_hold.is_some()
+        || crate::audio_fx::has_effects(item)
+        || crate::remix::Remix::of(item).is_some()
+        || crate::stretch::applies(item, item.speed.abs().max(1e-6))
+    {
+        return TimeRange::new(Tick::ZERO, nested.duration().max(Tick(1)));
+    }
+    let a = item.source_time_at(range.start);
+    let b = item.source_time_at(range.end() - Tick(1));
+    let neighbour = Tick::from_units(2, i64::from(nested.settings.sample_rate.max(1))).0;
+    TimeRange::from_bounds(
+        Tick(a.min(b).0.saturating_sub(neighbour).max(0)),
+        Tick(a.max(b).0.saturating_add(neighbour).saturating_add(1).clamp(0, Tick::MAX.0)),
+    )
+}
+
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
-/// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
+/// (2: stereo with known surround sources folded down; 6: 5.1; 8: rear+side 7.1), with silence outside
 /// the clip.
 fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
@@ -420,7 +451,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         // Source Monitor do: picking its first two channels would drop C (dialogue) and surrounds
         if let Some(six) = source_51_fold(item, buf.channel_count()) {
             let picked: Vec<&[f32]> = six.iter().filter_map(|&c| buf.channels.get(c).map(Vec::as_slice)).collect();
-            let conv = chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear);
+            let conv = chans::convert(&picked, Layout::from_channels(picked.len()), Layout::Stereo, Mixdown::FrontRear);
             for (dst, ch) in out.iter_mut().zip(&conv) {
                 let m = n.min(ch.len());
                 dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -436,10 +467,9 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         return out;
     }
     // 5.1 track: pick or upmix the source channels
-    let picked: Vec<&[f32]> = source_51(item, buf.channel_count()).iter().map(|&c| buf.channels[c].as_slice()).collect();
+    let picked: Vec<&[f32]> = source_surround(item, buf.channel_count()).iter().map(|&c| buf.channels[c].as_slice()).collect();
     let layout = Layout::from_channels(picked.len());
-    let conv =
-        if picked.len() == 6 { picked.iter().map(|c| c.to_vec()).collect() } else { chans::convert(&picked, layout, Layout::Surround51, Mixdown::FrontRear) };
+    let conv = chans::convert(&picked, layout, Layout::from_channels(w), Mixdown::FrontRear);
     for (dst, ch) in out.iter_mut().zip(&conv) {
         let m = n.min(ch.len());
         dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -457,7 +487,7 @@ pub(crate) fn played_channels(item: &TrackItem, available: usize, w: usize) -> V
             vec![l, r]
         })
     } else {
-        source_51(item, available)
+        source_surround(item, available)
     };
     v.retain(|&c| c < available);
     v.sort_unstable();
@@ -473,7 +503,7 @@ pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
     match item.source_channels.len() {
         0 => match available {
             0 | 1 => vec![0],
-            2..=5 => vec![0, 1],
+            2..=5 | 8 => vec![0, 1],
             _ => (0..6).collect(),
         },
         1 => vec![ok(item.source_channels[0])],
@@ -482,13 +512,39 @@ pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
     }
 }
 
+/// Only known rear+side 7.1 or the user's explicit 7.1 interpretation establishes eight
+/// speaker assignments. Unknown eight-channel audio keeps its first selected pair for playback;
+/// 7.1 export separately refuses it with an actionable mapping error.
+fn speaker_mapped_item(item: &TrackItem, known_71: bool) -> std::borrow::Cow<'_, TrackItem> {
+    if known_71 && item.source_channels.is_empty() {
+        let mut mapped = item.clone();
+        mapped.source_channels = (0..8).collect();
+        std::borrow::Cow::Owned(mapped)
+    } else if !known_71 && item.source_channels.len() == 8 {
+        let mut mapped = item.clone();
+        mapped.source_channels.truncate(2);
+        std::borrow::Cow::Owned(mapped)
+    } else {
+        std::borrow::Cow::Borrowed(item)
+    }
+}
+
+/// Preserve a discrete 7.1 source or explicit eight-channel mapping before bus conversion.
+fn source_surround(item: &TrackItem, available: usize) -> Vec<usize> {
+    if item.source_channels.len() == 8 {
+        item.source_channels.iter().map(|&c| if usize::from(c) < available { usize::from(c) } else { 0 }).collect()
+    } else {
+        source_51(item, available)
+    }
+}
+
 /// The six source channels (L, R, C, LFE, Ls, Rs) a clip on a stereo track folds down: a six-channel
 /// pick (Modify ▸ Audio Channels), else all of a six-channel source. `None` plays [`source_pair`]
 /// (sources with another channel count have no known 5.1 layout).
 fn source_51_fold(item: &TrackItem, available: usize) -> Option<Vec<usize>> {
     match item.source_channels.len() {
-        0 if available == 6 => Some((0..6).collect()),
-        6.. => Some(source_51(item, available)),
+        0 if available == 6 => Some((0..available).collect()),
+        6.. => Some(source_surround(item, available)),
         _ => None,
     }
 }

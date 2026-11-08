@@ -193,6 +193,7 @@ fn render_clip(s: &Session, seq: ItemId, need: &AudioNeed, sample_rate: u32, bit
     let channels = match track.channels {
         filmcraft_project::AudioChannels::Mono => 1,
         filmcraft_project::AudioChannels::Surround51 => 6,
+        filmcraft_project::AudioChannels::Surround71 => 8,
         _ => 2,
     };
     if let Some(t) = p.sequence_mut(rs).and_then(|r| r.audio_tracks.first_mut()) {
