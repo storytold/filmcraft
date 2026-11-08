@@ -547,11 +547,11 @@ fn date_words(month: u64, day: u64, lang: Lang) -> Vec<Token> {
     match lang {
         Lang::EnUs => {
             out.push(Token::Word(month_name.into()));
-            out.push(Token::Word(english_ordinal(day)));
+            out.extend(ordinal_tokens(day));
         }
         Lang::EnGb => {
             out.push(Token::Word("the".into()));
-            out.push(Token::Word(english_ordinal(day)));
+            out.extend(ordinal_tokens(day));
             out.push(Token::Word("of".into()));
             out.push(Token::Word(month_name.into()));
         }
@@ -708,7 +708,7 @@ fn parse_continuation(rest: &str, used: usize, value: u64, digits: &str) -> Opti
         Some('s' | 'S' | 't' | 'T' | 'n' | 'N' | 'd' | 'D' | 'r' | 'R') => {
             let suffix = after.get(..2)?;
             if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(char::is_alphabetic) {
-                return Some((vec![Token::Word(english_ordinal(value))], used + 2));
+                return Some((ordinal_tokens(value), used + 2));
             }
             None
         }
@@ -965,6 +965,11 @@ fn english_ordinal(value: u64) -> String {
         t => return attach(stem, &format!("{prefix}{t}th")),
     };
     attach(stem, &format!("{prefix}{tail}"))
+}
+
+/// One `Token::Word` per spoken word of the ordinal, as the cardinal path emits.
+fn ordinal_tokens(value: u64) -> Vec<Token> {
+    english_ordinal(value).split_whitespace().map(|w| Token::Word(w.into())).collect()
 }
 
 fn attach(stem: String, s: &str) -> String {
