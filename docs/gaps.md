@@ -318,6 +318,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   (and occlusion edges are soft), Lumetri HDR-aware maths,
   redesigned 26.0 mask tools (a stored, re-editable
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
+  Interlaced footage: decoders weave both fields into one frame and nothing splits, reorders or
+  deinterlaces fields, so Interpret Footage ▸ Field Order ▸ Conform to is shown but disabled (needs
+  field-aware decoding, a field-order override per item and deinterlacing for progressive
+  sequences).
 - **Have:** multicam sources with more than 16 angles are paged 4 × 4 in the Multi-Camera view;
   Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
   coarse-to-fine Lucas–Kanade, CPU; #780); Morph Cut morphs the subject along that optical flow

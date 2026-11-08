@@ -3636,6 +3636,23 @@
 	Web Link	Collegamento web
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
+
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	Assumi questa frequenza fotogrammi:
+	Modify Clip	Modifica clip
+	Use Frame Rate from File:	Usa la frequenza fotogrammi del file:
+	fps	fps
+	Conform to:	Conforma a:
+	Use Field Order from File:	Usa l'ordine dei campi del file:
+	Upper Field First	Prima il campo superiore
+	Lower Field First	Prima il campo inferiore
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft riproduce ogni fotogramma come un'immagine intera; conformare l'ordine dei campi non è ancora supportato.
+	Ignore Alpha Channel	Ignora canale alfa
+	Invert Alpha Channel	Inverti canale alfa
+	(differs between the selected items)	(diverso tra gli elementi selezionati)
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	Le modifiche si applicano a tutti i {n} elementi selezionati; le impostazioni non modificate restano come sono per ciascun elemento.
+	Various	Vari
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
 	Temporal Interpolation	Interpolazione temporale
 	Select items to clear	Seleziona gli elementi da cancellare

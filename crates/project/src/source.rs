@@ -1,6 +1,7 @@
-use super::item::{ItemKind, MediaClip, ProjectItem};
+use super::item::{ItemKind, MediaClip, ProjectItem, retime};
 use super::sequence::{conformed_size, sane_par};
-use super::{BTreeMap, ClipId, EffectInstance, ItemId, ParamValue, Project, TimeRange, Vec2, effect};
+use super::track::Marker;
+use super::{BTreeMap, ClipId, EffectInstance, FrameRate, ItemId, ParamValue, Project, Tick, TimeRange, Vec2, effect};
 
 /// Resolve NaN "auto" point defaults (frame centre / source centre) in an effect instance.
 pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u32, u32)) {
@@ -85,6 +86,85 @@ impl Project {
             }
         }
         None
+    }
+
+    /// Interpret Footage changed the rate `media` plays at from `from` to `to` (each the assumed
+    /// rate, or the file's): every media time pointing into it is scaled by `from / to` so it keeps
+    /// its frame. That is its marks and markers, its subclips' ranges, and in every sequence the
+    /// clips that play it (source In, frame hold, clip markers, effect and mask keyframes). Clips
+    /// keep their place and length on the timeline; one that would now run past the media's end
+    /// is shortened to end with it.
+    pub fn retime_media(&mut self, media: ItemId, from: FrameRate, to: FrameRate) {
+        if !from.is_usable() || !to.is_usable() || FrameRate::new(from.num, from.den) == FrameRate::new(to.num, to.den) {
+            return;
+        }
+        let scale = |t: &mut Tick| *t = retime(*t, from, to);
+        let scale_markers = |markers: &mut Vec<Marker>| {
+            for mk in markers {
+                scale(&mut mk.start);
+                scale(&mut mk.duration);
+            }
+        };
+        // the media and every item that plays it (subclips, subclips of subclips)
+        let playing: std::collections::BTreeSet<ItemId> =
+            self.items.keys().copied().filter(|id| self.resolve_media(*id).is_some_and(|(m, _, _)| m == media)).collect();
+        let limit = match self.item_mut(media).and_then(|i| i.as_media_mut()) {
+            Some(m) => {
+                m.mark_in.as_mut().map(scale);
+                m.mark_out.as_mut().map(scale);
+                scale_markers(&mut m.markers);
+                m.duration()
+            }
+            None => return,
+        };
+        if let Some(item) = self.item_mut(media) {
+            let s = &mut item.split;
+            for t in [&mut s.video_in, &mut s.video_out, &mut s.audio_in, &mut s.audio_out].into_iter().flatten() {
+                scale(t);
+            }
+        }
+        if let Some(t) = self.transcripts.get_mut(&media) {
+            for w in &mut std::sync::Arc::make_mut(t).words {
+                scale(&mut w.start);
+                scale(&mut w.end);
+            }
+        }
+        for id in &playing {
+            if let Some(ItemKind::Subclip { range, .. }) = self.item_mut(*id).map(|i| &mut i.kind) {
+                scale(&mut range.start);
+                scale(&mut range.duration);
+            }
+        }
+        let sequences: Vec<ItemId> = self.items.iter().filter(|(_, i)| matches!(i.kind, ItemKind::Sequence(_))).map(|(id, _)| *id).collect();
+        for sid in sequences {
+            let touches =
+                self.sequence(sid).is_some_and(|q| q.video_tracks.iter().chain(&q.audio_tracks).flat_map(|t| &t.items).any(|ti| playing.contains(&ti.item)));
+            if !touches {
+                continue;
+            }
+            let Some(seq) = self.sequence_mut(sid) else { continue };
+            for ti in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()).flat_map(|t| t.items.iter_mut()) {
+                if !playing.contains(&ti.item) {
+                    continue;
+                }
+                scale(&mut ti.source_in);
+                ti.frame_hold.as_mut().map(scale);
+                scale_markers(&mut ti.markers);
+                for fx in &mut ti.effects {
+                    let params =
+                        fx.params.values_mut().chain(fx.masks.iter_mut().flat_map(|m| [&mut m.path, &mut m.feather, &mut m.opacity, &mut m.expansion]));
+                    for p in params {
+                        for k in &mut p.keyframes {
+                            scale(&mut k.time);
+                        }
+                    }
+                }
+                let speed = ti.speed.abs();
+                if ti.frame_hold.is_none() && speed > 0.0 && ti.source_out() > limit && limit > ti.source_in {
+                    ti.duration = Tick((((limit - ti.source_in).0 as f64) / speed).floor() as i64);
+                }
+            }
+        }
     }
 
     /// Size in pixels of what an item shows: a media clip's picture, a sequence's frame, an

@@ -79,7 +79,7 @@ pub(crate) fn item_range(p: &Project, id: ItemId, still: Tick) -> Option<TimeRan
     Some(match &it.kind {
         ItemKind::Media(m) => {
             let is_still = matches!(m.info.kind, filmcraft_media::MediaKind::Still);
-            let full = if m.info.duration.0 > 0 && !is_still { m.info.duration } else { still };
+            let full = if m.info.duration.0 > 0 && !is_still { m.duration() } else { still };
             let a = m.mark_in.unwrap_or(Tick::ZERO);
             let b = m.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(full);
             TimeRange::from_bounds(a, b.max(a + rate.frame_duration()))
