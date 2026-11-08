@@ -787,11 +787,9 @@ fn timeline_slider_settings_is_the_menus_row_while_the_bar_is_hidden() {
     assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide Slider brings the bar back");
 }
 
-/// The rows this session added to both slider menus: the Controls row and Invert Scrolling on the
-/// Timeline slider, the Controls row and Snap to Tracks on the track sliders -- and Snap to
-/// Tracks toggles and persists even though it drives nothing yet.
+/// Timeline Controls remain in their menu, and Track Slider settings keep their own options.
 #[test]
-fn both_slider_menus_carry_the_controls_rows_and_snap_to_tracks() {
+fn timeline_controls_and_track_slider_settings_stay_separate() {
     let mut d = Driver::demo();
     let bar = d.rect("timeline.zoomBar.track");
     d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
@@ -806,7 +804,7 @@ fn both_slider_menus_carry_the_controls_rows_and_snap_to_tracks() {
     let slider = d.rect("timeline.trackSlider.video");
     d.click_at(slider[0] + slider[2] / 2.0, slider[1] + slider[3] / 2.0, "right");
     d.frames(2);
-    assert!(d.has("timeline.trackSlider.settings.controls"), "the Controls row on the track sliders' menu");
+    assert!(!d.has("timeline.trackSlider.settings.controls"), "Track Slider settings do not duplicate Timeline Controls");
     assert!(d.has("timeline.trackSlider.settings.snapToTracks"), "Snap to Tracks");
     assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
     d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));

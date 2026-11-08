@@ -2712,31 +2712,6 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.tl.track_slider_settings_pos = None;
         ui.ctx().request_repaint();
     }
-    // "Controls": not a switch -- the slider's gestures in a flyout beside the menu (the Minimap
-    // Settings flyout's exact recipe, in this menu too).
-    let (arow, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::hover());
-    let alabel = tl!("Controls");
-    let agalley = ui.painter().layout_no_wrap(alabel.to_string(), Tokens::ui(11.5), t.text);
-    ui.painter().galley(pos2(arow.center().x - agalley.size().x / 2.0, arow.center().y - agalley.size().y / 2.0), agalley, t.text);
-    controls_arrow(ui, arow, CONTENT_W, r.max.x, flyout_to_the_right(ui, arow, r.max.x, CONTROLS_FLYOUT_W), t.text_dim);
-    app.auto.add("timeline.trackSlider.settings.controls", arow, "Controls");
-    hover_flyout(
-        app,
-        ui,
-        egui::Id::unique("timeline-track-slider-advanced-flyout"),
-        arow,
-        r.max.x,
-        CONTROLS_FLYOUT_W,
-        true,
-        "timeline.trackSlider.settings.controlsFlyout",
-        "Controls",
-        &[
-            (tl!("Center on Playhead:"), "Double Click", 0),
-            (tl!("Explode Slider:"), "Triple Click", 1),
-            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
-            (tl!("Settings:"), "Right Click", 3),
-        ],
-    );
     // Smooth Animations eases the double-click moves (which land on the OTHER slider);
     // Alternate Slider Position moves the sliders to the left edge of the Timeline.
     let smooth = app.session.state.timeline_ui.track_slider_smooth;
