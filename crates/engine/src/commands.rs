@@ -5244,6 +5244,13 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(view) = loaded.view {
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        } else {
+            s.state.timeline_ui = view.timeline_ui.checked();
+        }
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
