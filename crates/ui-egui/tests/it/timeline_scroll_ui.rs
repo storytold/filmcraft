@@ -12,6 +12,37 @@ use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
 use serde_json::{Value, json};
+#[test]
+fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
+    let mut d = Driver::demo();
+    let revision = d.app().session.revision;
+    let view_epoch = d.app().session.view_epoch;
+    d.ok(
+        "ui.set",
+        json!({"timeline": {
+            "trackSliderSmoothAnimations": true,
+            "trackSliderDecoupleEdges": false,
+            "trackSliderAlternatePosition": true,
+            "trackSliderShiftDragSpeed": 2.5
+        }}),
+    );
+    let settings = &d.app().session.state.timeline_ui;
+    assert!(settings.track_slider_smooth);
+    assert!(!settings.track_slider_decouple);
+    assert!(settings.track_slider_alternate_position);
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5);
+    assert!(settings.track_slider_shift_drag_custom);
+    assert_eq!(settings.track_slider_shift_drag_last_custom, 2.5);
+    assert_eq!(d.app().session.revision, revision, "view settings do not dirty project content");
+    assert_eq!(d.app().session.view_epoch, view_epoch.wrapping_add(1), "changed view settings are persisted");
+
+    let view_epoch = d.app().session.view_epoch;
+    d.ok("ui.set", json!({"timeline": {"trackSliderShiftDragSpeed": 10.1, "trackSliderSmoothAnimations": "yes"}}));
+    let settings = &d.app().session.state.timeline_ui;
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5, "out-of-range speed is ignored");
+    assert!(settings.track_slider_smooth, "wrongly typed settings are ignored");
+    assert_eq!(d.app().session.view_epoch, view_epoch, "ignored settings do not change the project view");
+}
 
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
@@ -203,7 +234,7 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
