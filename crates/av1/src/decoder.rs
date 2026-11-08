@@ -46,20 +46,127 @@ const OBU_FRAME_T: u32 = 6;
 const OBU_REDUNDANT_FRAME_HEADER_T: u32 = 7;
 const OBU_TILE_LIST_T: u32 = 8;
 
-/// A stored reference frame (FrameStore plus the saved per-frame state).
+/// The samples of a stored reference frame (FrameStore), after every in-loop filter.
 pub(crate) struct RefFrame {
     pub buf: FrameBuf,
-    pub cdfs: Box<Cdfs>,
     pub bit_depth: u8,
     pub subsampling_x: u8,
     pub subsampling_y: u8,
+    pub color: (u8, u8, u8, bool),
+}
+
+/// The saved per-frame state that later frames read while parsing (CDFs, segment ids and the
+/// motion vectors for motion field estimation). It depends only on the frame's symbols, so it
+/// is published as soon as the tiles are decoded, before the in-loop filters run.
+pub(crate) struct Parsed {
+    pub cdfs: Box<Cdfs>,
     pub segment_ids: Vec<u8>,
     pub mi_cols: usize,
     pub mi_rows: usize,
-    pub color: (u8, u8, u8, bool),
     /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19), mi units.
     pub saved_ref_frames: Vec<i8>,
     pub saved_mvs: Vec<[i32; 2]>,
+}
+
+/// How many luma rows of a frame are final (every in-loop filter applied), or that the frame
+/// failed. Rows only ever grow; a failure wakes every waiter with an error.
+pub(crate) struct Progress {
+    state: Mutex<ProgressState>,
+    cv: Condvar,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ProgressState {
+    rows: usize,
+    failed: bool,
+}
+
+impl Progress {
+    fn new() -> Progress {
+        Progress { state: Mutex::new(ProgressState::default()), cv: Condvar::new() }
+    }
+
+    /// Rows [0, rows) are final. A smaller value than already published is ignored.
+    pub fn publish(&self, rows: usize) {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if rows > g.rows {
+            g.rows = rows;
+            self.cv.notify_all();
+        }
+    }
+
+    /// The frame will publish no more rows.
+    pub fn fail(&self) {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        g.failed = true;
+        self.cv.notify_all();
+    }
+
+    /// Blocks until rows [0, rows) are final; an error when the frame failed first.
+    pub fn wait(&self, rows: usize) -> Result<()> {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if g.rows >= rows {
+                return Ok(());
+            }
+            if g.failed {
+                return Err(Error::Invalid("reference frame failed to decode"));
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+/// Everything a decoding frame publishes for the frames that reference it and for the output:
+/// its parse results, the progress of its final rows and the finished frame. Each is set exactly
+/// once, also when decoding fails, so no waiter blocks forever.
+pub(crate) struct FrameSlot {
+    parsed: Slot<Arc<Parsed>>,
+    pub progress: Progress,
+    frame: Slot<Arc<RefFrame>>,
+}
+
+impl FrameSlot {
+    fn new() -> Arc<FrameSlot> {
+        Arc::new(FrameSlot { parsed: Slot::new_plain(), progress: Progress::new(), frame: Slot::new_plain() })
+    }
+
+    /// The finished frame.
+    fn wait(&self) -> Result<Arc<RefFrame>> {
+        self.frame.wait()
+    }
+
+    fn is_set(&self) -> bool {
+        self.frame.is_set()
+    }
+
+    /// The frame's parse results (available before its samples are final).
+    fn wait_parsed(&self) -> Result<Arc<Parsed>> {
+        self.parsed.wait()
+    }
+
+    /// Publish the parse results (ignored when already set).
+    fn set_parsed(&self, v: Result<Arc<Parsed>>) {
+        self.parsed.set_once(v);
+    }
+
+    /// Publish the finished frame: every row is final. On an error, the parse results (when
+    /// not yet published) and the progress fail too.
+    fn finish(&self, v: Result<Arc<RefFrame>>, rows: usize) {
+        match &v {
+            Ok(_) => {}
+            Err(e) => {
+                self.parsed.set_once(Err(e.clone()));
+            }
+        }
+        let ok = v.is_ok();
+        self.frame.set(v);
+        if ok {
+            self.progress.publish(rows);
+        } else {
+            self.progress.fail();
+        }
+    }
 }
 
 /// A value produced by a decoding job, waited for by later jobs and by the output.
@@ -70,13 +177,26 @@ pub(crate) struct Slot<T> {
 
 impl<T: Clone> Slot<T> {
     fn new() -> Arc<Slot<T>> {
-        Arc::new(Slot { value: Mutex::new(None), cv: Condvar::new() })
+        Arc::new(Slot::new_plain())
+    }
+
+    fn new_plain() -> Slot<T> {
+        Slot { value: Mutex::new(None), cv: Condvar::new() }
     }
 
     fn set(&self, v: Result<T>) {
         let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
         *g = Some(v);
         self.cv.notify_all();
+    }
+
+    /// [`Slot::set`] unless a value is already there.
+    fn set_once(&self, v: Result<T>) {
+        let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() {
+            *g = Some(v);
+            self.cv.notify_all();
+        }
     }
 
     fn is_set(&self) -> bool {
@@ -104,8 +224,6 @@ impl<T: Clone> Slot<T> {
         }
     }
 }
-
-type FrameSlot = Slot<Arc<RefFrame>>;
 
 /// Everything needed to decode one frame, captured when its header is parsed.
 struct FrameJob {
@@ -562,7 +680,7 @@ impl Decoder {
             ref_info: self.refs.clone(),
             tiles: Vec::new(),
             tile_covered: vec![false; tile_count],
-            slot: Slot::new(),
+            slot: FrameSlot::new(),
             picture,
             pts: self.pts,
             apply_film_grain: self.apply_film_grain,
@@ -683,18 +801,19 @@ impl Decoder {
 fn run_job(job: FrameJob, pool: &Pool, stats: &Mutex<DecodeStats>) {
     let mut st = DecodeStats::default();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_frame(&job, pool, &mut st)));
+    let rows = job.fh.frame_height as usize;
     match res.unwrap_or(Err(Error::Invalid("decoder panicked"))) {
         Ok((rf, pic)) => {
             if let Some(ps) = &job.picture {
                 ps.set(pic.ok_or(Error::Invalid("shown frame without picture")));
             }
-            job.slot.set(Ok(rf));
+            job.slot.finish(Ok(rf), rows);
         }
         Err(e) => {
             if let Some(ps) = &job.picture {
                 ps.set(Err(e.clone()));
             }
-            job.slot.set(Err(e));
+            job.slot.finish(Err(e), rows);
         }
     }
     if let Ok(mut s) = stats.lock() {
@@ -719,22 +838,34 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     if fh.primary_ref_frame != PRIMARY_REF_NONE {
         used[fh.ref_frame_idx[fh.primary_ref_frame]] = true;
     }
-    let mut refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES] = Default::default();
+    // Parse dependencies first (CDFs, segment ids, saved motion vectors), then the samples.
+    let mut parsed: [Option<Arc<Parsed>>; NUM_REF_FRAMES] = Default::default();
     for i in 0..NUM_REF_FRAMES {
         if used[i] {
             let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
-            refs[i] = Some(slot.wait()?);
+            parsed[i] = Some(slot.wait_parsed()?);
+        }
+    }
+    let mut refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES] = Default::default();
+    if !fh.frame_is_intra {
+        for i in 0..NUM_REF_FRAMES {
+            if used[i] {
+                let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
+                slot.progress.wait(job.ref_info[i].frame_height as usize)?;
+                refs[i] = Some(slot.wait()?);
+            }
         }
     }
     let t = Timer::start();
     let mut fs = FrameState::new(seq, fh);
     fs.refs = refs;
+    fs.parsed = parsed;
     fs.ref_info = job.ref_info.clone();
     if fh.primary_ref_frame != PRIMARY_REF_NONE {
         // load_previous_segment_ids( )
         let (mi_cols, mi_rows) = (fs.mi.cols, fs.mi.rows);
         let sh = &mut fs.sh;
-        if let Some(rf) = &sh.refs[fh.ref_frame_idx[fh.primary_ref_frame]]
+        if let Some(rf) = &sh.parsed[fh.ref_frame_idx[fh.primary_ref_frame]]
             && fh.seg.enabled
             && rf.mi_cols == mi_cols
             && rf.mi_rows == mi_rows
@@ -748,7 +879,7 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     let mut cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {
         Cdfs::new(fh.quant.base_q_idx)
     } else {
-        let rf = fs.refs[fh.ref_frame_idx[fh.primary_ref_frame]].as_ref().ok_or(Error::Invalid("primary reference frame missing"))?;
+        let rf = fs.parsed[fh.ref_frame_idx[fh.primary_ref_frame]].as_ref().ok_or(Error::Invalid("primary reference frame missing"))?;
         let mut c = rf.cdfs.clone();
         c.clear_counts();
         c
@@ -763,27 +894,17 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     {
         cdfs = s;
     }
+    job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
     crate::postfilter::apply(&mut fs, stats, pool, job.draft);
     stats.draft_frames += job.draft as u64;
     let t = Timer::start();
     stats.frames += 1;
-    if fh.seg.enabled && !fh.seg.update_map {
-        let prev = std::mem::take(&mut fs.prev_segment_ids);
-        fs.mi.segment_id.copy_from_slice(&prev);
-    }
-    let (mf_refs, mf_mvs) = motion_vector_storage(&fs);
     let rf = Arc::new(RefFrame {
         buf: std::mem::take(&mut fs.cur),
-        cdfs,
         bit_depth: seq.color.bit_depth,
         subsampling_x: seq.color.subsampling_x,
         subsampling_y: seq.color.subsampling_y,
-        segment_ids: std::mem::take(&mut fs.mi.segment_id),
-        mi_cols: fs.mi.cols,
-        mi_rows: fs.mi.rows,
         color: (seq.color.color_primaries, seq.color.transfer_characteristics, seq.color.matrix_coefficients, seq.color.color_range),
-        saved_ref_frames: mf_refs,
-        saved_mvs: mf_mvs,
     });
     let pic = fh.show_frame.then(|| {
         let mut p = output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts);
@@ -882,6 +1003,16 @@ fn output_picture(seq: &SequenceHeader, rf: &RefFrame, w: usize, h: usize, grain
     pic
 }
 
+/// What later frames read from this one while parsing: the final CDFs, the segment ids (the
+/// previous frame's when the map is not updated) and the stored motion vectors (7.19). The
+/// in-loop filters read the decoded segment ids, so the frame's own map is left alone.
+fn parse_results(fs: &FrameState, cdfs: Box<Cdfs>) -> Parsed {
+    let fh = &fs.fh;
+    let segment_ids = if fh.seg.enabled && !fh.seg.update_map { fs.prev_segment_ids.clone() } else { fs.mi.segment_id.clone() };
+    let (saved_ref_frames, saved_mvs) = motion_vector_storage(fs);
+    Parsed { cdfs, segment_ids, mi_cols: fs.mi.cols, mi_rows: fs.mi.rows, saved_ref_frames, saved_mvs }
+}
+
 /// Motion field motion vector storage process (7.19): (MfRefFrames, MfMvs).
 fn motion_vector_storage(fs: &FrameState) -> (Vec<i8>, Vec<[i32; 2]>) {
     let mi = &fs.mi;
@@ -958,7 +1089,7 @@ fn project_pos(v8: i32, delta: i32, dst_sign: i32, max8: i32, max_off8: i32) -> 
 
 /// Projection process (7.9.2).
 fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
-    let FrameShared { seq, fh, refs, ref_info, motion_field, .. } = &mut fs.sh;
+    let FrameShared { seq, fh, parsed, ref_info, motion_field, .. } = &mut fs.sh;
     let src_idx = fh.ref_frame_idx[src - LAST_FRAME];
     let w8 = fh.mi_cols as i32 >> 1;
     let h8 = fh.mi_rows as i32 >> 1;
@@ -966,7 +1097,7 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
     if ri.mi_rows != fh.mi_rows || ri.mi_cols != fh.mi_cols || ri.frame_type == INTRA_ONLY_FRAME as u8 || ri.frame_type == KEY_FRAME as u8 {
         return false;
     }
-    let Some(rf) = &refs[src_idx] else { return false };
+    let Some(rf) = &parsed[src_idx] else { return false };
     let rd = |a: u32, b: u32| crate::header::relative_dist(seq, a, b);
     let mi_cols = fh.mi_cols as usize;
     for y8 in 0..h8 {
@@ -1011,7 +1142,7 @@ mod tests {
             ref_info: Default::default(),
             tiles: Vec::new(),
             tile_covered: vec![false; 3],
-            slot: Slot::new(),
+            slot: FrameSlot::new(),
             picture: None,
             pts: 0,
             apply_film_grain: false,

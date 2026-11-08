@@ -6,7 +6,7 @@
 //! with several, each tile decodes into private buffers covering its area (tiles never read
 //! outside themselves), which are then copied into the frame.
 
-use crate::decoder::RefFrame;
+use crate::decoder::{Parsed, RefFrame};
 use crate::frame::{FrameBuf, MiInfo};
 use crate::header::{FrameHeader, RefInfo, SequenceHeader};
 use crate::spec_tables::{DEFAULT_INTRA_FRAME_Y_MODE_CDF, NUM_REF_FRAMES, RESTORE_NONE, SUBSAMPLED_SIZE};
@@ -26,6 +26,8 @@ pub(crate) struct FrameShared {
     pub cdef_cols: usize,
     /// Reference slots (FrameStore and saved state) used by this frame.
     pub refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES],
+    /// Parse results (CDFs, segment ids, saved motion vectors) of the same slots.
+    pub parsed: [Option<Arc<Parsed>>; NUM_REF_FRAMES],
     pub ref_info: [RefInfo; NUM_REF_FRAMES],
     /// MotionFieldMvs[ ref ][ y8 * w8 + x8 ] (7.9); empty when unused.
     pub motion_field: [Vec<[i32; 2]>; 8],
@@ -210,6 +212,7 @@ impl FrameState {
                 lr_unit_cols,
                 cdef_cols,
                 refs: Default::default(),
+                parsed: Default::default(),
                 ref_info: Default::default(),
                 motion_field: Default::default(),
                 prev_segment_ids: vec![0; mi_cols * mi_rows],
