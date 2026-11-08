@@ -213,6 +213,8 @@ fn param_id(k: &str) -> &str {
         "fauxItalic" => "faux_italic",
         "boxWidth" => "box_width",
         "boxHeight" => "box_height",
+        "sizeW" | "width" => "size_w",
+        "sizeH" | "height" => "size_h",
         "anchorPoint" => "anchor",
         "cornerRadius" => "corner_radius",
         other => other,
@@ -528,9 +530,14 @@ pub(crate) fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2
             // by how much further it moved than its target (when both move, by
             // the same delta (a drag) nothing changes; by different ones (Align, Distribute),
             // the difference)
-            if let Some(pin) = e.layer.as_mut().and_then(|x| x.pin.as_mut()) {
-                let (tx, ty) = match pin.to {
-                    filmcraft_project::graphic_design::PinTarget::Layer(u) => deltas.iter().find(|d| d.0 == u).map_or((0.0, 0.0), |d| (d.1, d.2)),
+            if let Some(pin) = e.layer.as_mut().and_then(|x| x.pin.as_mut())
+                && !pin.size_only
+            {
+                let (tx, ty) = match &pin.to {
+                    filmcraft_project::graphic_design::PinTarget::Layer(u) => deltas.iter().find(|d| d.0 == *u).map_or((0.0, 0.0), |d| (d.1, d.2)),
+                    filmcraft_project::graphic_design::PinTarget::Layers(uids) => {
+                        uids.iter().find_map(|u| deltas.iter().find(|d| d.0 == *u).map(|d| (d.1, d.2))).unwrap_or((0.0, 0.0))
+                    }
                     filmcraft_project::graphic_design::PinTarget::Frame => (0.0, 0.0),
                 };
                 let (dx, dy) = (pos.x - old.x - tx, pos.y - old.y - ty);

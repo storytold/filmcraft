@@ -219,6 +219,62 @@ fn pinned_box_follows_text_growth() {
 }
 
 #[test]
+fn subtitle_plate_and_accent_auto_size_and_manual_override() {
+    use filmcraft_project::graphic_design::{LayerExtra, Pin, PinTarget};
+    let mut plate = new_shape_layer(0, Vec2::new(560.0, 920.0), Vec2::new(920.0, 160.0), vec![]);
+    set(&mut plate, "size_w", ParamValue::Float(920.0));
+    set(&mut plate, "size_h", ParamValue::Float(160.0));
+    plate.layer = Some(Box::new(LayerExtra {
+        uid: 1,
+        pin: Some(Pin {
+            to: PinTarget::Layers(vec![3, 4]),
+            left: true,
+            top: true,
+            right: true,
+            bottom: true,
+            offsets: [-32.0, -14.0, 32.0, 24.0],
+            size_only: true,
+        }),
+        ..Default::default()
+    }));
+    let mut accent = new_shape_layer(0, Vec2::new(104.0, 920.0), Vec2::new(8.0, 160.0), vec![]);
+    accent.layer = Some(Box::new(LayerExtra {
+        uid: 2,
+        pin: Some(Pin {
+            to: PinTarget::Layer(1),
+            left: true,
+            top: true,
+            right: false,
+            bottom: true,
+            offsets: [0.0; 4],
+            size_only: false,
+        }),
+        ..Default::default()
+    }));
+    let mut title = new_text_layer("Kannala-Brandt Fisheye Model", Vec2::new(132.0, 885.0), 44.0);
+    title.layer = Some(Box::new(LayerExtra { uid: 3, ..Default::default() }));
+    let mut desc = new_text_layer("Line 1\nLine 2\nLine 3\nLine 4\nLine 5", Vec2::new(132.0, 930.0), 24.0);
+    desc.layer = Some(Box::new(LayerExtra { uid: 4, ..Default::default() }));
+
+    let specs = graphic_specs(&[plate.clone(), accent.clone(), title.clone(), desc.clone()], Tick::ZERO, (1920, 1080));
+    let pb = layer_bounds(&specs[0]);
+    let ab = layer_bounds(&specs[1]);
+    let db = layer_bounds(&specs[3]);
+    assert!((pb[0] - 100.0).abs() < 1e-3 && (pb[1] - 840.0).abs() < 1e-3, "top-left stays anchored: {pb:?}");
+    assert!(pb[3] > 1000.0 && pb[3] >= db[3] + 20.0, "plate grows downward to fit 5-line description: {pb:?} vs {db:?}");
+    assert!((ab[1] - pb[1]).abs() < 1e-3 && (ab[3] - pb[3]).abs() < 1e-3, "accent bar matches plate height: {ab:?} vs {pb:?}");
+
+    set(&mut plate, "size_w", ParamValue::Float(1400.0));
+    set(&mut plate, "size_h", ParamValue::Float(320.0));
+    let specs_manual = graphic_specs(&[plate, accent, title, desc], Tick::ZERO, (1920, 1080));
+    let pb_m = layer_bounds(&specs_manual[0]);
+    let ab_m = layer_bounds(&specs_manual[1]);
+    assert!((pb_m[0] - 100.0).abs() < 1e-3 && (pb_m[1] - 840.0).abs() < 1e-3, "top-left anchored under manual slider: {pb_m:?}");
+    assert!((pb_m[2] - 1500.0).abs() < 1e-3 && (pb_m[3] - 1160.0).abs() < 1e-3, "manual width/height applied: {pb_m:?}");
+    assert!((ab_m[3] - 1160.0).abs() < 1e-3, "accent bar follows manual height: {ab_m:?}");
+}
+
+#[test]
 fn roll_moves_the_whole_graphic() {
     use filmcraft_project::graphic_design::{GraphicMeta, Roll, RollMode};
     let e = new_shape_layer(0, Vec2::new(200.0, 150.0), Vec2::new(100.0, 100.0), vec![]);

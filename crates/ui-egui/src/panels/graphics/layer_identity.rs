@@ -67,7 +67,7 @@ pub(super) fn layer_fingerprint(effect: &EffectInstance) -> u64 {
     }) {
         hash(name.as_bytes());
     }
-    for id in ["position", "size", "box_width", "box_height", "shape", "sides", "corner_radius", "vertical"] {
+    for id in ["position", "size", "size_w", "size_h", "box_width", "box_height", "shape", "sides", "corner_radius", "vertical"] {
         let Some(value) = effect.params.get(id).map(|p| &p.value) else { continue };
         match value {
             ParamValue::Float(v) => hash(&v.to_bits().to_le_bytes()),
@@ -122,6 +122,8 @@ const LAYOUT_PARAMS: &[&str] = &[
     "vertical",
     // Shape geometry.
     "shape",
+    "size_w",
+    "size_h",
     "sides",
     "corner_radius",
     "points",
@@ -255,14 +257,21 @@ fn layout_fingerprint(effect: &EffectInstance, t: Tick) -> u64 {
         match &extra.pin {
             Some(pin) => {
                 hash_bytes(&mut h, &[1]);
-                match pin.to {
+                match &pin.to {
                     filmcraft_project::graphic_design::PinTarget::Frame => hash_bytes(&mut h, b"frame"),
                     filmcraft_project::graphic_design::PinTarget::Layer(uid) => {
                         hash_bytes(&mut h, b"layer");
                         hash_bytes(&mut h, &uid.to_le_bytes());
                     }
+                    filmcraft_project::graphic_design::PinTarget::Layers(uids) => {
+                        hash_bytes(&mut h, b"layers");
+                        hash_bytes(&mut h, &(uids.len() as u64).to_le_bytes());
+                        for uid in uids {
+                            hash_bytes(&mut h, &uid.to_le_bytes());
+                        }
+                    }
                 }
-                hash_bytes(&mut h, &[u8::from(pin.left), u8::from(pin.top), u8::from(pin.right), u8::from(pin.bottom)]);
+                hash_bytes(&mut h, &[u8::from(pin.left), u8::from(pin.top), u8::from(pin.right), u8::from(pin.bottom), u8::from(pin.size_only)]);
                 for offset in pin.offsets {
                     hash_f64(&mut h, offset);
                 }

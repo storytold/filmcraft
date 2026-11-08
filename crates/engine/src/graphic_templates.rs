@@ -765,23 +765,34 @@ fn pin_layer(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let idx = layer_indices(&it.effects);
     let to = p.get("to").cloned().unwrap_or(json!("frame"));
-    let target: Option<Option<usize>> = match &to {
+    let resolve_one = |v: &Value| -> Result<usize> {
+        match v {
+            Value::Number(n) => Ok(n.as_u64().unwrap_or(0) as usize),
+            Value::String(name) => (0..idx.len())
+                .find(|&i| layer_display_name(&it.effects[idx[i]], i).eq_ignore_ascii_case(name))
+                .ok_or_else(|| bad("graphics.pin", format!("no layer named `{name}`"))),
+            _ => Err(bad("graphics.pin", "`to`: \"frame\", \"none\", a layer index or name")),
+        }
+    };
+    let target: Option<Option<Vec<usize>>> = match &to {
         Value::String(x) if x == "none" || x.is_empty() => None,
         Value::String(x) if x == "frame" || x.eq_ignore_ascii_case("video frame") => Some(None),
-        Value::Number(n) => Some(Some(n.as_u64().unwrap_or(0) as usize)),
-        Value::String(name) => Some(Some(
-            (0..idx.len())
-                .find(|&i| layer_display_name(&it.effects[idx[i]], i).eq_ignore_ascii_case(name))
-                .ok_or_else(|| bad("graphics.pin", format!("no layer named `{name}`")))?,
-        )),
-        _ => return Err(bad("graphics.pin", "`to`: \"frame\", \"none\", a layer index or name")),
+        Value::Array(arr) => {
+            let mut ts = Vec::with_capacity(arr.len());
+            for v in arr {
+                ts.push(resolve_one(v)?);
+            }
+            if ts.is_empty() { None } else { Some(Some(ts)) }
+        }
+        v => Some(Some(vec![resolve_one(v)?])),
     };
-    if let Some(Some(t)) = target
-        && (t >= idx.len() || t == l)
+    if let Some(Some(ts)) = &target
+        && ts.iter().any(|&t| t >= idx.len() || t == l)
     {
         return Err(bad("graphics.pin", "pin to another layer of the same graphic"));
     }
     let edges = edges_p(p);
+    let size_only = bool_p(p, "sizeOnly").unwrap_or_else(|| it.effects[ei].layer.as_ref().and_then(|x| x.pin.as_ref()).is_some_and(|p| p.size_only));
     let mt = mt_at_playhead(s, &it);
     // pins are measured at rest (without the roll / crawl offset)
     let mut rest = it.clone();
@@ -793,8 +804,20 @@ fn pin_layer(s: &mut Session, p: &Value) -> Result<Value> {
     let own = bounds_of(ei).ok_or_else(|| bad("graphics.pin", "bad layer"))?;
     let pin = match target {
         None => None,
-        Some(None) => Some((PinTarget::Frame, [0.0, 0.0, size.0 as f64, size.1 as f64], None)),
-        Some(Some(t)) => Some((PinTarget::Layer(0), bounds_of(idx[t]).ok_or_else(|| bad("graphics.pin", "bad target"))?, Some(idx[t]))),
+        Some(None) => Some(([0.0, 0.0, size.0 as f64, size.1 as f64], Vec::new())),
+        Some(Some(ts)) => {
+            let mut u: Option<[f64; 4]> = None;
+            let mut effs = Vec::with_capacity(ts.len());
+            for t in ts {
+                let b = bounds_of(idx[t]).ok_or_else(|| bad("graphics.pin", "bad target"))?;
+                u = Some(match u {
+                    Some(a) => [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+                    None => b,
+                });
+                effs.push(idx[t]);
+            }
+            Some((u.ok_or_else(|| bad("graphics.pin", "bad target"))?, effs))
+        }
     };
     let r = s.edit_sequence("Responsive Design - Position", move |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
@@ -804,12 +827,15 @@ fn pin_layer(s: &mut Session, p: &Value) -> Result<Value> {
         for (k, &i) in li.iter().enumerate() {
             it.effects[i].layer = layers[k].layer.clone();
         }
-        let new_pin = pin.map(|(to, tb, teff)| {
-            let to = match (to, teff) {
-                (PinTarget::Layer(_), Some(te)) => PinTarget::Layer(layer_uid(&it.effects[te])),
-                _ => PinTarget::Frame,
+        let new_pin = pin.map(|(tb, teffs)| {
+            let to = match teffs.as_slice() {
+                [] => PinTarget::Frame,
+                [te] => PinTarget::Layer(layer_uid(&it.effects[*te])),
+                many => PinTarget::Layers(many.iter().map(|&te| layer_uid(&it.effects[te])).collect()),
             };
-            Pin::new(to, edges, own, tb)
+            let mut p = Pin::new(to, edges, own, tb);
+            p.size_only = size_only;
+            p
         });
         it.effects[ei].layer.get_or_insert_with(Default::default).pin = new_pin;
         let uid = it.effects[ei].layer.as_ref().map_or(0, |x| x.uid);
