@@ -555,12 +555,16 @@ impl FilmcraftApp {
             }
             _ => 0.0,
         };
+        let gpu_ms = self.gpu.as_ref().map_or(0.0, |g| g.compositor.gpu_ms());
+        let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+        let [flushed, needed, total, left] = self.gpu.as_ref().map_or([0; 4], |g| g.compositor.pass_stats());
+        let wake_ms = self.gpu.as_ref().map_or(0.0, |g| g.compositor.wake_stats().0);
         let due = self.session.active_sequence().map_or(-1.0, |q| q.settings.frame_rate.frame_at(self.session.playhead()) as f64);
         let shown = self.program_shown.map_or(-1.0, |k| k.frame as f64);
         if self.pass_log.len() >= PASS_LOG {
             self.pass_log.pop_front();
         }
-        self.pass_log.push_back([self.now(), self.pass_logic_ms + ui_ms, submit, due, shown]);
+        self.pass_log.push_back([self.now(), self.pass_logic_ms + ui_ms, submit, due, shown, gpu_ms, mb(flushed), mb(needed), mb(total), mb(left), wake_ms]);
         self.pass_logic_ms = 0.0;
     }
 }

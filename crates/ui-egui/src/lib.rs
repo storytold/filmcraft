@@ -278,11 +278,14 @@ pub struct FilmcraftApp {
     ui_requests: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     /// The last [`PASS_LOG`] UI passes, newest last: `[host time (s), logic + ui ms, GPU submit ms
-    /// (0 without a composite), frame due at the playhead, frame on the Program monitor]`
-    /// (`-1` for no sequence / no picture). `perf.stats` reports it as `passes`, so a dropped
+    /// (0 without a composite), frame due at the playhead, frame on the Program monitor, GPU ms
+    /// of the latest timed composite (lags a pass or two; 0 without timestamp queries), upload MB
+    /// this pass's flush submitted, upload MB its composites had to submit to draw, upload MB
+    /// it submitted in all, upload MB still pending, GPU ms of the latest wake-up load (preroll
+    /// only)]` (`-1` for no sequence / no picture). `perf.stats` reports it as `passes`, so a dropped
     /// frame can be traced to a late pass, a GPU stall or a picture that was not ready, which the
     /// playback meter's totals cannot tell apart.
-    pub(crate) pass_log: std::collections::VecDeque<[f64; 5]>,
+    pub(crate) pass_log: std::collections::VecDeque<[f64; 11]>,
     /// Duration of this pass's logic callback (ms), added to the UI callback's in `pass_log`.
     pass_logic_ms: f64,
     pub(crate) synthetic: Vec<egui::Event>,

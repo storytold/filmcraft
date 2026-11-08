@@ -57,8 +57,20 @@ impl FilmcraftApp {
     /// Submit the frame workers' uploads recorded since the last pass
     /// ([`filmcraft_gpu::GpuCompositor::flush_uploads`]): the UI thread is the device's only submitter.
     pub fn gpu_flush_uploads(&mut self) {
-        let Some(g) = self.gpu.as_ref() else { return };
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.flush_uploads())).is_err() {
+        let preroll = self.playback.playing && self.playback.preroll.is_some();
+        let Some(g) = self.gpu.as_mut() else { return };
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if preroll {
+                // Nothing is due on screen yet: every frame the preroll decoded goes up now, and
+                // the GPU gets work so that its driver has raised the clocks by the first frame
+                // ([`filmcraft_gpu::GpuCompositor::wake`]).
+                g.compositor.flush_uploads_within(u64::MAX);
+                g.compositor.wake();
+            } else {
+                g.compositor.flush_uploads();
+            }
+        }));
+        if ran.is_err() {
             self.disable_gpu("compositor panicked");
         }
     }

@@ -572,6 +572,11 @@ pub const PREROLL_TIMEOUT_S: f64 = 0.5;
 /// flight of a frame-threaded decoder) and starting the clock before they come leaves playback
 /// behind from the first frame. The preroll then ends at this many seconds at the latest.
 pub const PREROLL_MAX_S: f64 = 2.5;
+/// A preroll whose frames are ready still waits for the GPU's clocks to come up
+/// ([`filmcraft_gpu::GpuCompositor::wake_warm`]), at most this long after Play: a discrete GPU
+/// that idled between plays took the first eight frames or so to get there, and ran a frame's
+/// copies and composite in 10-30 ms until then.
+pub const WAKE_MAX_S: f64 = 0.5;
 
 /// How many frames behind the playhead a playing monitor looks for a ready picture when the
 /// frame due is not: a sequential (long-GOP) decoder that falls behind delivers its frames a
@@ -912,8 +917,11 @@ impl FrameServer {
             });
         }
         // During preroll the clock has not started: only the frames that gate start, not a
-        // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
-        let ahead = if preroll { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
+        // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures. Once
+        // those are ready the run starts (the preroll may go on for the GPU's sake,
+        // [`WAKE_MAX_S`]): the frame after them is due [`PREROLL_FRAMES`] frames into the play,
+        // and asked for only then it was the one frame a play showed late.
+        let ahead = if preroll && !self.preroll_ready(key, speed, i64::MAX) { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
         let now = Instant::now();
         for i in 0..ahead {
             let f = key.frame + (lead + i * stride) * dir * step;
@@ -1188,7 +1196,7 @@ fn run_upload(sh: &Shared, job: &Job) {
     let plan = sh.plans.lock().unwrap_or_else(PoisonError::into_inner).map.get(&job.key).filter(|e| e.plan.deferred).map(|e| e.plan.clone());
     if let Some(p) = plan.filter(|_| !job.cancel.load(Ordering::Relaxed)) {
         let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let prepared = filmcraft_gpu::prepare(&p.plan, up.as_ref());
+        let prepared = filmcraft_gpu::prepare_ahead(&p.plan, up.as_ref(), job.prio);
         sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan: p.plan.clone(), prepared, deferred: false });
     }
     sh.stats.lock().unwrap_or_else(PoisonError::into_inner).jobs += 1;
@@ -1327,7 +1335,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                                 // a prefetch far ahead of the playhead waits for its upload ([`UPLOAD_AHEAD`]).
                                 let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
                                 let now = upload_now(up.is_some(), job.prefetch, job.prio);
-                                let prepared = if now { filmcraft_gpu::prepare(&plan, up.as_ref()) } else { Default::default() };
+                                let prepared = if now { filmcraft_gpu::prepare_ahead(&plan, up.as_ref(), job.prio) } else { Default::default() };
                                 sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared, deferred: !now });
                             }
                             pv

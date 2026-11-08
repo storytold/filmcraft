@@ -39,6 +39,11 @@ pub fn stats(app: &FilmcraftApp) -> Value {
             "adjustments": g.compositor.gpu_adjustments,
             "cpuAdjustments": g.compositor.cpu_adjustments,
             "submitMs": g.last_ms,
+            "wakeIterations": g.compositor.wake_stats().1,
+            "planeTexturesCreated": g.compositor.uploader().created().0,
+            "stagingCreated": g.compositor.uploader().created().1,
+            "stagingFree": g.compositor.uploader().free_staging(),
+            "pooledTextures": g.compositor.uploader().pooled(),
         })
     });
     // the Program monitor's picture against what is due: how far a drag or a scrub is ahead of it

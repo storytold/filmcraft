@@ -418,6 +418,7 @@ impl Watchdog {
 /// panicking mixer plays silence and fails the stream, and a mixer held by another stream (never
 /// expected: a restart drops the old stream first) plays silence without advancing the clock.
 fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU64, health: &Health) {
+    raise_callback_priority();
     let mut guard = match fill.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -434,6 +435,30 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
         return;
     }
     played.fetch_add((buf.len() / channels.max(1)) as u64, Ordering::SeqCst);
+}
+
+thread_local! {
+    /// Whether this device callback thread has been raised ([`raise_callback_priority`]).
+    static RAISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Raise the device callback thread's priority, once per thread (cpal runs a restarted stream on
+/// a new one). cpal leaves it at normal priority, and during 4K playback the decoders and the
+/// frame workers keep every core busy: the callback then waited for a core, the played-frame
+/// clock (which only advances in the callback) stood still for up to 50 ms and jumped, and the
+/// monitor held a frame and skipped one. Audio outranks everything else: a late callback is a
+/// dropout. A system that refuses (no privilege on Linux) leaves the thread as it is; nothing is
+/// reported from here, since the callback must not block or allocate.
+fn raise_callback_priority() {
+    RAISED.with(|raised| {
+        if !raised.replace(true) {
+            #[cfg(windows)]
+            let prio = thread_priority::ThreadPriority::Os(thread_priority::WinAPIThreadPriority::TimeCritical.into());
+            #[cfg(not(windows))]
+            let prio = thread_priority::ThreadPriority::Max;
+            let _ = thread_priority::set_current_thread_priority(prio);
+        }
+    });
 }
 
 fn stream_error(health: &Health, e: cpal::StreamError) {

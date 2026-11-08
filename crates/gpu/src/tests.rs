@@ -134,6 +134,222 @@ fn uploads_from_a_worker_wait_for_the_compositors_submit() {
     assert_eq!(up.pending_copies(), 0);
 }
 
+/// A pass submits the recorded uploads within its budget, and a composite submits the ones it
+/// draws whatever the budget, in recording order; later uploads wait for a pass with room.
+#[test]
+fn uploads_are_submitted_as_needed_or_within_the_budget() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let (a, b, d) = (plan_for(300), plan_for(600), plan_for(900));
+    let (pa, pb, pd) = (prepare(&a, Some(&up)), prepare(&b, Some(&up)), prepare(&d, Some(&up)));
+    assert_eq!(up.pending_copies(), 3);
+    // no budget: nothing goes
+    c.flush_uploads_within(0);
+    assert_eq!(up.pending_copies(), 3);
+    // a budget for one frame's planes (three 64 x 8 planes of two bytes, rows padded to 256)
+    c.flush_uploads_within(3 * 256 * 8);
+    assert_eq!(up.pending_copies(), 2, "one upload fit the budget");
+    // the budget is the pass's: after a flush that spent it, a composite submits only its needs;
+    // drawing the third frame submits the third, whatever the budget, and the second waits
+    c.set_upload_budget(3 * 256 * 8);
+    c.composite_prepared(&d, Some(&pd));
+    assert_eq!(up.pending_copies(), 1, "the composite submitted the upload it needed and no other");
+    let (e, f) = (plan_for(200), plan_for(400));
+    let (_pe, pf) = (prepare(&e, Some(&up)), prepare(&f, Some(&up)));
+    c.flush_uploads_within(3 * 256 * 8);
+    assert_eq!(up.pending_copies(), 2, "the pass's budget took the oldest of the three");
+    let g = plan_for(100);
+    let pg = prepare(&g, Some(&up));
+    c.composite_prepared(&f, Some(&pf));
+    assert_eq!(up.pending_copies(), 2, "the composite took what it drew and left the others for the next pass");
+    c.flush_uploads();
+    assert_eq!(up.pending_copies(), 1, "the next pass flushed one more, its budget's worth");
+    c.composite_prepared(&g, Some(&pg));
+    assert_eq!(up.pending_copies(), 0, "the composite took the one it drew");
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&g).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame drawn right after its upload differs from the CPU by up to {error} codes");
+    // the earlier frames draw right as well
+    for (plan, prep) in [(&a, &pa), (&b, &pb)] {
+        c.composite_prepared(plan, Some(prep));
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let reference = execute_cpu(plan).over_black_rgba8();
+        let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+        assert!(error <= 2, "an earlier frame differs from the CPU by up to {error} codes");
+    }
+}
+
+/// Measures how fast the GPU copies a 4K 16-bit plane from a mapped staging buffer into a
+/// texture (run by hand: `cargo test -p filmcraft-gpu copy_throughput_probe -- --ignored --no-capture`).
+#[test]
+#[ignore = "a measurement, not a check"]
+fn copy_throughput_probe() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (3840u32, 2160u32);
+    let size = u64::from(w) * 2 * u64::from(h);
+    let tex = dev.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (label, n_bufs) in [("one buffer, 8 copies", 1usize), ("8 buffers, 8 copies", 8usize)] {
+        let bufs: Vec<wgpu::Buffer> = (0..n_bufs)
+            .map(|_| {
+                let b = dev.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                });
+                b.slice(..).get_mapped_range_mut().expect("map").slice(..).copy_from_slice(&vec![0x40u8; size as usize]);
+                b.unmap();
+                b
+            })
+            .collect();
+        for round in 0..3 {
+            let mut enc = dev.create_command_encoder(&Default::default());
+            for i in 0..8 {
+                enc.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &bufs[i % n_bufs],
+                        layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 2), rows_per_image: Some(h) },
+                    },
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+            }
+            dev.poll(wgpu::PollType::wait_indefinitely()).expect("idle");
+            let t0 = std::time::Instant::now();
+            q.submit([enc.finish()]);
+            dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+            let dt = t0.elapsed().as_secs_f64();
+            let mb = 8.0 * size as f64 / 1e6;
+            eprintln!("{label}, round {round}: {mb:.0} MB in {:.1} ms = {:.1} GB/s", dt * 1e3, mb / 1e3 / dt);
+        }
+    }
+}
+
+/// A pass's budget goes to the frames wanted soonest, whatever their order of recording, and a
+/// frame dropped before its upload was submitted takes the upload with it (its textures go back
+/// to the pool for the next frame, which then draws right).
+#[test]
+fn uploads_go_soonest_first_and_a_dropped_frame_cancels_its_upload() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let one_frame = 3 * 256 * 8;
+    // recorded as the frames two, one and zero ahead of the playhead
+    let (far, near, now) = (plan_for(300), plan_for(600), plan_for(900));
+    let p_far = prepare_ahead(&far, Some(&up), 2);
+    let p_near = prepare_ahead(&near, Some(&up), 1);
+    let p_now = prepare_ahead(&now, Some(&up), 0);
+    assert_eq!(up.pending_copies(), 3);
+    c.flush_uploads_within(one_frame);
+    assert_eq!(up.pending_copies(), 2, "the budget took one upload");
+    c.set_upload_budget(one_frame);
+    c.composite_prepared(&now, Some(&p_now));
+    assert_eq!(up.pending_copies(), 2, "the flush took the frame wanted now, so its composite needed no upload");
+    // the far frame is dropped before its upload went: the upload goes with it
+    let before = up.created();
+    drop(p_far);
+    assert_eq!(up.pending_copies(), 1, "the dropped frame's upload was cancelled");
+    // (the readback submits whatever is still pending)
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&now).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame wanted now differs from the CPU by up to {error} codes");
+    // ... and its textures serve the next frame of that size, which draws right
+    let next = plan_for(150);
+    let p_next = prepare_ahead(&next, Some(&up), 0);
+    assert_eq!(up.created(), before, "the next frame reused the dropped frame's textures and staging");
+    c.composite_prepared(&next, Some(&p_next));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&next).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame in the reused textures differs from the CPU by up to {error} codes");
+    c.composite_prepared(&near, Some(&p_near));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&near).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the near frame differs from the CPU by up to {error} codes");
+}
+
+/// Staging buffers come back after their copies ran: the next frame of the same size reuses
+/// them, and none is created for it. (A buffer per plane per frame had the device's allocator
+/// create and destroy memory blocks through every play start, with the UI thread waiting.)
+#[test]
+fn staging_buffers_are_reused_after_the_submit() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let settle = |dev: &wgpu::Device| {
+        // the maps complete once the device has run the copies
+        dev.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).expect("poll");
+    };
+    let first = plan_for(512);
+    let prep = prepare(&first, Some(&up));
+    assert_eq!(up.created().1, 3, "one staging buffer per plane");
+    assert_eq!(up.free_staging(), 0);
+    c.composite_prepared(&first, Some(&prep));
+    settle(&dev);
+    assert_eq!(up.free_staging(), 3, "the submitted buffers are mapped again");
+
+    let second = plan_for(800);
+    let prep = prepare(&second, Some(&up));
+    assert_eq!(up.created().1, 3, "the second frame created no staging buffer");
+    assert_eq!(up.free_staging(), 0, "it took the three mapped ones");
+    c.composite_prepared(&second, Some(&prep));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&second).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "a frame through reused staging differs from the CPU by up to {error} codes");
+    settle(&dev);
+    assert_eq!(up.free_staging(), 3, "and they came back again");
+}
+
 /// Warming up makes the render targets of the sequence's size and draws each kind of frame
 /// through the pipelines; a degenerate size is ignored, and frames still draw right afterwards.
 #[test]
