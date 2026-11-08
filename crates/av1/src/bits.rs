@@ -14,11 +14,6 @@ impl<'a> BitReader<'a> {
         BitReader { data, pos: 0 }
     }
 
-    /// `get_position()`: bits consumed.
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
     pub fn byte_pos(&self) -> usize {
         self.pos.div_ceil(8)
     }
@@ -58,28 +53,6 @@ impl<'a> BitReader<'a> {
         }
         let v = self.f(leading)?;
         Ok(v + ((1u64 << leading) - 1) as u32)
-    }
-
-    /// `le(n)`
-    pub fn le(&mut self, n: u32) -> Result<u32> {
-        let mut t = 0u32;
-        for i in 0..n {
-            t |= self.f(8)? << (8 * i);
-        }
-        Ok(t)
-    }
-
-    /// `leb128()`
-    pub fn leb128(&mut self) -> Result<u64> {
-        let mut v = 0u64;
-        for i in 0..8 {
-            let b = self.f(8)? as u64;
-            v |= (b & 0x7f) << (7 * i);
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        Ok(v)
     }
 
     /// `su(n)`
