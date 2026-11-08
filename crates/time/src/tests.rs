@@ -238,6 +238,94 @@ fn signed_field_rejected() {
 }
 
 #[test]
+fn feet_frames_roll_over_at_the_foot() {
+    let r = FrameRate::FPS_24;
+    let f = |frame: i64, d| format_time(r.tick_of(frame), r, false, d, 48000);
+    for (frame, ft35, ft16) in
+        [(0, "0+00", "0+00"), (15, "0+15", "0+15"), (16, "1+00", "0+16"), (39, "2+07", "0+39"), (40, "2+08", "1+00"), (41, "2+09", "1+01")]
+    {
+        assert_eq!(f(frame, TimeDisplay::Feet35), ft35, "35mm frame {frame}");
+        assert_eq!(f(frame, TimeDisplay::Feet16), ft16, "16mm frame {frame}");
+        assert_eq!(f(frame, TimeDisplay::Frames), frame.to_string());
+    }
+    // negative: sign in front, magnitude as usual
+    assert_eq!(f(-1, TimeDisplay::Feet35), "-0+01");
+    assert_eq!(f(-16, TimeDisplay::Feet35), "-1+00");
+    assert_eq!(f(-41, TimeDisplay::Feet16), "-1+01");
+    assert_eq!(f(-5, TimeDisplay::Frames), "-5");
+    // large: a 10 hour show at 24 fps
+    assert_eq!(f(864_000, TimeDisplay::Feet35), "54000+00");
+    assert_eq!(f(864_039, TimeDisplay::Feet16), "21600+39");
+    assert_eq!(f(864_000, TimeDisplay::Frames), "864000");
+    assert_eq!(format_feet_frames(i64::MIN, 16), "-576460752303423488+00");
+    assert_eq!(format_feet_frames(5, 0), "5+00", "a zero foot never divides by zero");
+}
+
+#[test]
+fn feet_frames_follow_the_frame_not_the_rate() {
+    // 1 s of film is the rate's frame count whatever the rate
+    for (r, frames) in [(FrameRate::FPS_23_976, 24), (FrameRate::FPS_24, 24), (FrameRate::FPS_25, 25), (FrameRate::FPS_30, 30)] {
+        let one_second = Tick(TICKS_PER_SECOND);
+        // 23.976 fps is 24 frames in 1.001 s: one second is frame 23 (floor)
+        let want = r.frame_at(one_second);
+        assert!((frames - 1..=frames).contains(&want), "{r:?}");
+        assert_eq!(format_time(one_second, r, false, TimeDisplay::Frames, 48000), want.to_string());
+        assert_eq!(format_time(one_second, r, false, TimeDisplay::Feet35, 48000), format!("{}+{:02}", want / 16, want % 16));
+        assert_eq!(format_time(one_second, r, false, TimeDisplay::Feet16, 48000), format!("{}+{:02}", want / 40, want % 40));
+    }
+    // drop-frame only changes timecode
+    let r = FrameRate::FPS_29_97;
+    let t = r.tick_of(1800);
+    assert_eq!(format_time(t, r, true, TimeDisplay::Frames, 48000), format_time(t, r, false, TimeDisplay::Frames, 48000));
+    assert_eq!(format_time(t, r, true, TimeDisplay::Feet35, 48000), "112+08");
+    assert_ne!(format_time(t, r, true, TimeDisplay::Timecode, 48000), format_time(t, r, false, TimeDisplay::Timecode, 48000));
+}
+
+#[test]
+fn display_ids_round_trip() {
+    for d in TimeDisplay::ALL {
+        assert_eq!(TimeDisplay::from_id(d.id()), Some(d));
+    }
+    assert_eq!(TimeDisplay::from_id("FEET35"), Some(TimeDisplay::Feet35));
+    assert_eq!(TimeDisplay::from_id("nope"), None);
+    assert_eq!(TimeDisplay::Feet35.frames_per_foot(), Some(16));
+    assert_eq!(TimeDisplay::Feet16.frames_per_foot(), Some(40));
+    assert_eq!(TimeDisplay::Frames.frames_per_foot(), None);
+}
+
+#[test]
+fn feet_frames_and_frames_parse_back() {
+    let r = FrameRate::FPS_24;
+    let p = |s: &str, d, cur| parse_time_display(s, r, false, d, cur);
+    assert_eq!(p("2+08", TimeDisplay::Feet35, 0), Ok(40));
+    assert_eq!(p("1+00", TimeDisplay::Feet16, 0), Ok(40));
+    assert_eq!(p("0+15", TimeDisplay::Feet35, 0), Ok(15));
+    assert_eq!(p("1+20", TimeDisplay::Feet35, 0), Ok(36), "the frames field rolls over");
+    assert_eq!(p("2.08", TimeDisplay::Feet35, 0), Ok(40));
+    assert_eq!(p("40", TimeDisplay::Feet35, 0), Ok(40), "a bare number is frames");
+    assert_eq!(p("40", TimeDisplay::Frames, 0), Ok(40));
+    assert_eq!(p(" 7 ", TimeDisplay::Frames, 0), Ok(7));
+    assert_eq!(p("+5", TimeDisplay::Frames, 100), Ok(105));
+    assert_eq!(p("-5", TimeDisplay::Feet16, 100), Ok(95));
+    assert_eq!(p("+1+02", TimeDisplay::Feet35, 10), Ok(28));
+    assert!(p("", TimeDisplay::Frames, 0).is_err());
+    assert!(p("1+2", TimeDisplay::Frames, 0).is_err(), "Frames has no feet");
+    assert!(p("1+2+3", TimeDisplay::Feet35, 0).is_err());
+    assert!(p("a+1", TimeDisplay::Feet35, 0).is_err());
+    assert!(p("99999999999999999999", TimeDisplay::Frames, 0).is_err());
+    assert_eq!(p("999999999999999999+15", TimeDisplay::Feet35, 0), Ok(i64::MAX), "saturates");
+    // timecode displays still parse as timecode
+    assert_eq!(p("00:00:10:00", TimeDisplay::Timecode, 0), Ok(240));
+    // formatting and parsing agree for every format, around the foot boundaries
+    for d in [TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames] {
+        for frame in [0, 1, 15, 16, 17, 39, 40, 41, 1000, 864_000] {
+            let text = format_time(r.tick_of(frame), r, false, d, 48000);
+            assert_eq!(p(&text, d, 0), Ok(frame), "{d:?} {text}");
+        }
+    }
+}
+
+#[test]
 fn display_modes() {
     let r = FrameRate::FPS_24;
     let t = r.tick_of(40);

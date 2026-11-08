@@ -86,6 +86,8 @@ pub struct Encoder {
     min_frame: u32,
     max_frame: u32,
     md5: md5::Md5,
+    /// The LPC analysis window for the current block length.
+    window: Vec<f64>,
 }
 
 impl Encoder {
@@ -114,6 +116,7 @@ impl Encoder {
             // RFC 9639 requires an MD5 signature of the unencoded audio in STREAMINFO; this is an
             // integrity checksum, not a password hash or a security boundary.
             md5: md5::Md5::default(), // NOSONAR
+            window: Vec::new(),
         })
     }
 
@@ -226,7 +229,11 @@ impl Encoder {
         self.md5.update(&raw);
 
         let effort = self.effort;
-        let code = |x: &[i32], b: u8| predict::choose(x, b, effort);
+        if self.window.len() != n {
+            self.window = predict::window(n);
+        }
+        let win = &self.window;
+        let code = |x: &[i32], b: u8| predict::choose(x, b, effort, win);
         let data = match block {
             // the side channel takes one bit more than the samples: at most 32 (i32)
             [l, r] if effort.stereo && bps < 32 => {
