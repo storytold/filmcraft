@@ -101,7 +101,7 @@ fn normalize_hot_number_input(input: &str, allow_negative: bool, suffix: &str) -
     const MAX_INPUT_CHARS: usize = 128;
     let input = input.trim_end();
     let suffix = suffix.trim();
-    let input = input.strip_suffix(suffix).unwrap_or(input);
+    let input = input.strip_suffix(suffix).unwrap_or(input).trim();
     if input.chars().take(MAX_INPUT_CHARS + 1).count() > MAX_INPUT_CHARS {
         return None;
     }
@@ -643,6 +643,7 @@ mod tests {
     fn numeric_input_rejects_merged_digits_and_bounds_length() {
         assert_eq!(normalize_hot_number_input("1,5", false, "x").as_deref(), Some("1.5"));
         assert_eq!(normalize_hot_number_input("1x5", false, "x"), None);
+        assert_eq!(normalize_hot_number_input("5 s", false, "s").as_deref(), Some("5"));
         assert_eq!(normalize_hot_number_input(&"1".repeat(129), false, ""), None);
     }
 
