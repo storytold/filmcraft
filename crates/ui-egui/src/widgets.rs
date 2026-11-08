@@ -175,7 +175,8 @@ fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, ra
     let narrow = (range.1 - range.0).abs() <= 10.0;
     let base = if narrow { 10f64.powi(-(shown as i32)) } else { 1.0 };
     let step = base * mult;
-    let step_digits = (-step.log10()).ceil().clamp(0.0, 6.0) as usize;
+    // the step is a power of ten; up to seven digits, so Command keeps a tenth of a sixth digit
+    let step_digits = (-step.log10()).round().clamp(0.0, 7.0) as usize;
     let decimals = shown.max(step_digits);
     let text = format!("{:.decimals$}", (current + direction * step).clamp(range.0, range.1));
     let new = text.parse::<f64>().ok()?;

@@ -303,6 +303,19 @@ mod arrow_step {
     }
 
     #[test]
+    fn command_steps_a_six_decimal_value_by_a_tenth_of_its_last_digit() {
+        // the base step of 0.123456 is 0.000001, so the fine step is 0.0000001: the result keeps
+        // the seventh digit instead of rounding back to the typed value
+        let mut h = editing(0.123456, "0.123456", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::MAC_CMD | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.1234561, "Command+Up on macOS");
+        // Ctrl is the fine modifier elsewhere: egui reports it as `ctrl` and `command`
+        let mut h = editing(0.123456, "0.123456", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowDown, Modifiers::CTRL | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.1234559, "Ctrl+Down on Linux and Windows");
+    }
+
+    #[test]
     fn shift_command_steps_by_ten_like_the_drag() {
         let mut h = editing(0.5, "0.50", (-5.0, 5.0), 2);
         press(&mut h, Key::ArrowUp, Modifiers::SHIFT | Modifiers::COMMAND);
