@@ -233,7 +233,8 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
                 p[3] = rescale(v, 8) as u8;
             }
         }
-        PixelData::RgbaF32(_) => {}
+        // (never a VP9 decoder's output)
+        PixelData::RgbaF32(_) | PixelData::Coded(_) => {}
     }
 }
 

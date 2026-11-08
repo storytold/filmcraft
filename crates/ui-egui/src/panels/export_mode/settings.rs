@@ -437,6 +437,24 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
+/// ProRes and DNxHR (on their own or in MXF): the same Hardware encoding setting as H.264's,
+/// worded for what it does here, the encoder's per-block work in compute shaders on the GPU
+/// (`filmcraft-gpu`, ADR 0003), with the CPU encoder for any frame the GPU does not take. Same
+/// automation id as H.264's checkbox: one setting.
+fn gpu_encoding_row(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens) {
+    row(ui, t, tl!("GPU Encoding"), |ui| {
+        let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+        let label = tl!("Encode on the GPU when available");
+        let r = ui
+            .checkbox(&mut on, label)
+            .on_hover_text(tl!("Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU."));
+        reg.add("export.video.hardwareEncoding", r.rect, label);
+        if r.changed() {
+            s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
+        }
+    });
+}
+
 fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
@@ -601,9 +619,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // every machine without one keeps the built-in encoder.
             // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
             if !hevc {
-                row(ui, t, "Hardware Encoding", |ui| {
+                row(ui, t, tl!("Hardware Encoding"), |ui| {
                     let mut on = s.hardware_encoding == HardwareEncoding::Auto;
-                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, tl!("Use the hardware encoder when available")) {
                         s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
                     }
                 });
@@ -619,6 +637,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     s.prores_profile = keys[i].into();
                 }
             });
+            gpu_encoding_row(ui, reg, s, t);
         }
         Format::DnxHr => {
             row(ui, t, tl!("Profile"), |ui| {
@@ -629,6 +648,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     s.dnx_profile = keys[i].into();
                 }
             });
+            gpu_encoding_row(ui, reg, s, t);
         }
         Format::Apv => {
             row(ui, t, tl!("Profile"), |ui| {

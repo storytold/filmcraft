@@ -551,3 +551,41 @@ fn a_yuv8_picture_with_short_planes_converts_without_panicking() {
     assert!(row(3)[16..].iter().all(|v| *v == 0.0), "the rest of that row is transparent: {:?}", row(3));
     assert!((4..8).all(|y| row(y).iter().all(|v| *v == 0.0)), "rows without luma are transparent");
 }
+
+#[test]
+fn short_planes_show_transparent_instead_of_crashing() {
+    // a failed decode of a picture larger than the placeholder cap gives empty planes at the
+    // full size: every conversion has to cope (this panicked in convert_region)
+    let empty = |alpha: bool| VideoFrame {
+        width: 64,
+        height: 32,
+        data: PixelData::Yuv16 {
+            planes: [Arc::new(Vec::new()), Arc::new(Vec::new()), Arc::new(Vec::new())],
+            chroma: Chroma::C422,
+            bits: 10,
+            alpha: alpha.then(|| Arc::new(Vec::new())),
+        },
+        color: ColorInfo::REC709,
+        par: (1, 1),
+        pts: Tick::ZERO,
+    };
+    for f in [empty(false), empty(true)] {
+        assert!(!f.data_fits());
+        assert!(f.to_linear_f32().iter().all(|&v| v == 0.0));
+        assert!(f.to_rgba8().iter().all(|&v| v == 0));
+        assert_eq!(f.to_linear_f32_decimated(4).2.len(), 16 * 8 * 4);
+        let (_, region) = f.to_linear_f32_region(1, None, Region { x: 8, y: 8, w: 4, h: 4 });
+        assert!(region.iter().all(|&v| v == 0.0));
+        let _ = (f.cropped(Region { x: 2, y: 2, w: 8, h: 8 }), f.rotated(1), f.box_decimated(2), f.luma8());
+    }
+    let short8 = VideoFrame {
+        data: PixelData::Yuv8 { planes: [Arc::new(vec![16; 10]), Arc::new(vec![128; 3]), Arc::new(vec![128; 3])], chroma: Chroma::C420, alpha: None },
+        ..empty(false)
+    };
+    assert!(!short8.data_fits());
+    // the samples the planes hold show (as in a_yuv8_picture_with_short_planes_…), the rest is transparent
+    assert!(short8.to_rgba8().get(10 * 4..).is_some_and(|rest| rest.iter().all(|&v| v == 0)));
+    let short_rgba = VideoFrame { data: PixelData::RgbaF32(Arc::new(vec![1.0; 12])), ..empty(false) };
+    // three pixels of data: the first two output pixels of row 0 hold them, the rest is transparent
+    assert!(short_rgba.to_linear_f32_decimated(2).2.get(2 * 4..).is_some_and(|rest| rest.iter().all(|&v| v == 0.0)));
+}

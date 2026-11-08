@@ -3559,6 +3559,11 @@
 	Auto (system)	自动（系统）
 	GPU Rendering	GPU 渲染
 	Composite on the GPU when available	可用时在 GPU 上合成
+	Hardware Encoding	硬件编码
+	Use the hardware encoder when available	可用时使用硬件编码器
+	GPU Encoding	GPU 编码
+	Encode on the GPU when available	可用时在 GPU 上编码
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	由显卡上的计算着色器完成编码工作；GPU 无法编码的帧在 CPU 上编码。
 	Text to Speech	文字转语音
 	Edit Narration	编辑旁白
 	Clear Transition	清除过渡

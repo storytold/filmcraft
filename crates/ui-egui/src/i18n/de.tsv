@@ -3580,6 +3580,11 @@
 	Solid	Vollton
 	GPU Rendering	GPU-Rendering
 	Composite on the GPU when available	Auf der GPU zusammensetzen, wenn verfügbar
+	Hardware Encoding	Hardware-Kodierung
+	Use the hardware encoder when available	Hardware-Encoder verwenden, wenn verfügbar
+	GPU Encoding	GPU-Kodierung
+	Encode on the GPU when available	Auf der GPU kodieren, wenn verfügbar
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Compute-Shader auf der Grafikkarte übernehmen die Kodierung; ein Frame, den die GPU nicht kodieren kann, wird auf der CPU kodiert.
 	Text to Speech	Text zu Sprache
 	Edit Narration	Erzählung bearbeiten
 	Dock Panel	Bedienfeld andocken

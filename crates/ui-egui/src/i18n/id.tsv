@@ -3573,6 +3573,11 @@
 	Solid	Solid
 	GPU Rendering	Rendering GPU
 	Composite on the GPU when available	Komposit di GPU bila tersedia
+	Hardware Encoding	Enkode Perangkat Keras
+	Use the hardware encoder when available	Gunakan enkoder perangkat keras bila tersedia
+	GPU Encoding	Enkode GPU
+	Encode on the GPU when available	Enkode di GPU bila tersedia
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Compute shader pada kartu grafis mengerjakan enkode; frame yang tidak dapat dienkode GPU dienkode di CPU.
 	Text to Speech	Teks ke Ucapan
 	Edit Narration	Edit Narasi
 	Project Notes	Catatan Proyek

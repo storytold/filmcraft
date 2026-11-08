@@ -760,37 +760,73 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
+/// The colour a ProRes frame header describes (Rec. 709 where it says nothing we know).
+fn prores_color(c: &filmcraft_prores::ColorInfo) -> filmcraft_color::ColorInfo {
+    let mut color = filmcraft_color::ColorInfo::REC709;
+    if let Some(m) = filmcraft_color::Matrix::from_code(c.matrix) {
+        color.matrix = m;
+    }
+    if let Some(t) = filmcraft_color::Transfer::from_code(c.transfer) {
+        color.transfer = t;
+    }
+    color
+}
+
+/// A decoded ProRes frame's planes.
+fn prores_planes(f: filmcraft_prores::Frame) -> filmcraft_frame::PixelData {
+    use std::sync::Arc;
+    let chroma = match f.chroma {
+        filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+    };
+    filmcraft_frame::PixelData::Yuv16 {
+        planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)],
+        chroma,
+        bits: f.bit_depth as u32,
+        alpha: f.alpha.map(Arc::new),
+    }
+}
+
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
 pub struct ProResDecoder;
 
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        use std::sync::Arc;
-        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let chroma = match f.chroma {
-            filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
-            filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
-        };
-        let mut color = filmcraft_color::ColorInfo::REC709;
-        if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {
-            color.matrix = m;
-        }
-        if let Some(t) = filmcraft_color::Transfer::from_code(f.color.transfer) {
-            color.transfer = t;
-        }
-        let frame = VideoFrame {
-            width: f.width,
-            height: f.height,
-            data: filmcraft_frame::PixelData::Yuv16 {
-                planes: [Arc::new(f.y), Arc::new(f.cb), Arc::new(f.cr)],
+        // A GPU compositor decodes ProRes itself: it gets the bitstream (megabytes) instead of the
+        // planes (tens of megabytes), and every CPU consumer decodes it here through the fallback.
+        if filmcraft_media::cancel::gpu_frames() {
+            // the structure checked as the CPU decoder checks it (headers, slice tables, slice
+            // headers): a frame that does not parse fails here, and the picture's size is bound to
+            // the data it really has
+            let h = filmcraft_prores::frame_layout(sample).map_err(|e| CodecError::Decode(e.to_string()))?.header;
+            let (chroma, bits) = match h.chroma {
+                filmcraft_prores::ChromaFormat::Yuv422 => (filmcraft_frame::Chroma::C422, 10),
+                filmcraft_prores::ChromaFormat::Yuv444 => (filmcraft_frame::Chroma::C444, 12),
+            };
+            let alpha = h.alpha != filmcraft_prores::AlphaType::None;
+            let img = filmcraft_frame::CodedImage::new(
+                filmcraft_frame::CodedFormat::ProRes,
+                std::sync::Arc::from(sample),
                 chroma,
-                bits: f.bit_depth as u32,
-                alpha: f.alpha.map(Arc::new),
-            },
-            color,
-            par: (1, 1),
-            pts: filmcraft_time::Tick::ZERO,
-        };
+                bits,
+                alpha,
+                Box::new(|data: &[u8]| filmcraft_prores::decode_frame(data).ok().map(prores_planes)),
+            );
+            let frame = VideoFrame {
+                width: u32::from(h.width),
+                height: u32::from(h.height),
+                data: filmcraft_frame::PixelData::Coded(std::sync::Arc::new(img)),
+                color: prores_color(&h.color),
+                par: (1, 1),
+                pts: filmcraft_time::Tick::ZERO,
+            };
+            return Ok(vec![DecodedFrame { pts, frame, draft: false }]);
+        }
+        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let color = prores_color(&f.color);
+        let (width, height) = (f.width, f.height);
+        let data = prores_planes(f);
+        let frame = VideoFrame { width, height, data, color, par: (1, 1), pts: filmcraft_time::Tick::ZERO };
         Ok(vec![DecodedFrame { pts, frame, draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
@@ -887,11 +923,7 @@ pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
         filmcraft_dnx::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
         filmcraft_dnx::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
     };
-    let mut color = filmcraft_color::ColorInfo::REC709;
-    if matches!(f.color_volume, filmcraft_dnx::ColorVolume::Bt2020Ncl | filmcraft_dnx::ColorVolume::Bt2020Cl) {
-        color.matrix = filmcraft_color::Matrix::Bt2020Ncl;
-        color.primaries = filmcraft_color::Primaries::Bt2020;
-    }
+    let color = dnx_color(f.color_volume);
     let (mut y, mut cb, mut cr) = (f.y, f.cb, f.cr);
     if f.rgb {
         // planes hold G, B, R (video range); derive Y'CbCr with the stream's matrix
@@ -910,13 +942,7 @@ pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
             cr[i] = (v + 0.5).clamp(0.0, max) as u16;
         }
     }
-    let par = match f.par {
-        (n, d) if n > 0 && d > 0 => (n as u32, d as u32),
-        // thin rasters (1440 / 960 wide) are anamorphic 16:9
-        _ if matches!(f.cid, 1244 | 1259 | 1260) => (4, 3),
-        _ if f.cid == 1258 => (4, 3),
-        _ => (1, 1),
-    };
+    let par = dnx_par(f.par, f.cid);
     let data = if f.bit_depth == 8 {
         let to8 = |p: Vec<u16>| Arc::new(p.into_iter().map(|v| v as u8).collect::<Vec<u8>>());
         filmcraft_frame::PixelData::Yuv8 { planes: [to8(y), to8(cb), to8(cr)], chroma, alpha: f.alpha.map(to8) }
@@ -926,8 +952,61 @@ pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
     VideoFrame { width: f.width, height: f.height, data, color, par, pts: filmcraft_time::Tick::ZERO }
 }
 
+/// The colour a VC-3 colour volume describes (Rec. 709 unless it says BT.2020).
+fn dnx_color(cv: filmcraft_dnx::ColorVolume) -> filmcraft_color::ColorInfo {
+    let mut color = filmcraft_color::ColorInfo::REC709;
+    if matches!(cv, filmcraft_dnx::ColorVolume::Bt2020Ncl | filmcraft_dnx::ColorVolume::Bt2020Cl) {
+        color.matrix = filmcraft_color::Matrix::Bt2020Ncl;
+        color.primaries = filmcraft_color::Primaries::Bt2020;
+    }
+    color
+}
+
+/// A VC-3 frame's pixel aspect ratio: the signalled one, else 4:3 for the anamorphic thin rasters.
+fn dnx_par(par: (u16, u16), cid: u32) -> (u32, u32) {
+    match par {
+        (n, d) if n > 0 && d > 0 => (n as u32, d as u32),
+        // thin rasters (1440 / 960 wide) are anamorphic 16:9
+        _ if matches!(cid, 1244 | 1258 | 1259 | 1260) => (4, 3),
+        _ => (1, 1),
+    }
+}
+
 impl VideoDecoder for DnxDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        // As for ProRes: a GPU compositor decodes VC-3 itself (`filmcraft-gpu`'s `dnx.wgsl`:
+        // Y'CbCr 4:2:2 and 4:4:4 / RGB, with or without alpha); everything else, and every CPU
+        // consumer, decodes here.
+        if filmcraft_media::cancel::gpu_frames() {
+            // the structure checked as the CPU decoder checks it (headers, coding units, scan
+            // indices): a frame that does not parse fails here
+            let l = filmcraft_dnx::frame_layout(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+            let h = &l.header;
+            let chroma = match h.chroma {
+                filmcraft_dnx::ChromaFormat::Yuv422 if !h.rgb_planes() => Some(filmcraft_frame::Chroma::C422),
+                filmcraft_dnx::ChromaFormat::Yuv444 => Some(filmcraft_frame::Chroma::C444),
+                _ => None,
+            };
+            if let Some(chroma) = chroma.filter(|_| l.scan_line_decodable()) {
+                let img = filmcraft_frame::CodedImage::new(
+                    filmcraft_frame::CodedFormat::Dnx,
+                    std::sync::Arc::from(sample),
+                    chroma,
+                    u32::from(h.bit_depth),
+                    h.alpha,
+                    Box::new(|data: &[u8]| filmcraft_dnx::decode_frame(data).ok().map(|f| dnx_to_video_frame(f).data)),
+                );
+                let frame = VideoFrame {
+                    width: l.width,
+                    height: l.height,
+                    data: filmcraft_frame::PixelData::Coded(std::sync::Arc::new(img)),
+                    color: dnx_color(h.color_volume),
+                    par: dnx_par(h.par, h.cid),
+                    pts: filmcraft_time::Tick::ZERO,
+                };
+                return Ok(vec![DecodedFrame { pts, frame, draft: false }]);
+            }
+        }
         let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f), draft: false }])
     }
@@ -1375,5 +1454,86 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod dnx_gpu_frame_tests {
+    use super::*;
+
+    fn sample(profile: filmcraft_dnx::Profile, bits: u8, rgb: bool) -> Vec<u8> {
+        let chroma = if profile == filmcraft_dnx::Profile::R444 { filmcraft_dnx::ChromaFormat::Yuv444 } else { filmcraft_dnx::ChromaFormat::Yuv422 };
+        let mut f = filmcraft_dnx::Frame::new(64, 32, chroma, bits, false);
+        f.rgb = rgb;
+        for (i, v) in f.y.iter_mut().enumerate() {
+            *v = ((16 + i % 200) as u16) << (bits - 8);
+        }
+        let cfg = filmcraft_dnx::EncoderConfig { bit_depth: bits, ..filmcraft_dnx::EncoderConfig::new(profile, 64, 32) };
+        filmcraft_dnx::Encoder::with_config(cfg).unwrap().encode(&f).unwrap()
+    }
+
+    #[test]
+    fn gpu_monitors_get_the_bitstream_and_cpu_code_the_planes() {
+        use filmcraft_dnx::Profile;
+        use filmcraft_frame::Chroma;
+        for (profile, bits, rgb, chroma) in [
+            (Profile::Hq, 8, false, Chroma::C422),
+            (Profile::Hqx, 10, false, Chroma::C422),
+            (Profile::R444, 10, false, Chroma::C444),
+            (Profile::R444, 12, true, Chroma::C444),
+        ] {
+            let s = sample(profile, bits, rgb);
+            let coded = filmcraft_media::cancel::with_gpu_frames(true, || DnxDecoder.decode(&s, 0)).unwrap();
+            let filmcraft_frame::PixelData::Coded(img) = &coded[0].frame.data else { panic!("{profile:?} {bits}-bit: coded") };
+            assert_eq!((img.format(), img.bits(), img.chroma()), (filmcraft_frame::CodedFormat::Dnx, u32::from(bits), chroma));
+            let planes = DnxDecoder.decode(&s, 0).unwrap();
+            let (a, b) = (&coded[0].frame, &planes[0].frame);
+            assert_eq!((a.width, a.height, a.par, a.color), (b.width, b.height, b.par, b.color));
+            assert_eq!(a.cpu_frame().to_rgba8(), b.to_rgba8(), "{profile:?} {bits}-bit");
+        }
+    }
+
+    #[test]
+    fn what_the_gpu_cannot_decode_gets_planes() {
+        // macroblock-adaptive field coding signalled (CID 1260's coding; the flag alone changes
+        // nothing else here)
+        let mut s = sample(filmcraft_dnx::Profile::Hqx, 10, false);
+        s[6] |= 0x20;
+        let d = filmcraft_media::cancel::with_gpu_frames(true, || DnxDecoder.decode(&s, 0)).unwrap();
+        assert!(matches!(d[0].frame.data, filmcraft_frame::PixelData::Yuv16 { .. }));
+        // and a frame that does not parse is an error, as on the CPU
+        assert!(filmcraft_media::cancel::with_gpu_frames(true, || DnxDecoder.decode(&s[..0x200], 0)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod prores_gpu_frame_tests {
+    use super::*;
+
+    fn sample() -> Vec<u8> {
+        let f = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&f).unwrap()
+    }
+
+    #[test]
+    fn gpu_monitors_get_the_bitstream_and_cpu_code_the_planes() {
+        let s = sample();
+        let coded = filmcraft_media::cancel::with_gpu_frames(true, || ProResDecoder.decode(&s, 0)).unwrap();
+        let filmcraft_frame::PixelData::Coded(img) = &coded[0].frame.data else { panic!("coded frame") };
+        assert_eq!(img.data(), &s[..]);
+        let planes = ProResDecoder.decode(&s, 0).unwrap();
+        assert!(matches!(planes[0].frame.data, filmcraft_frame::PixelData::Yuv16 { .. }));
+        assert_eq!(coded[0].frame.cpu_frame().to_rgba8(), planes[0].frame.to_rgba8());
+    }
+
+    /// Regression: the coded path used to check only the frame header, so a header claiming
+    /// 65535×65535 over a few bytes became a coded frame whose failed CPU decode allocated a
+    /// full-size placeholder (8.6 GB).
+    #[test]
+    fn a_header_bigger_than_its_data_is_a_decode_error() {
+        let mut s = sample();
+        s[16..20].copy_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        assert!(filmcraft_media::cancel::with_gpu_frames(true, || ProResDecoder.decode(&s, 0)).is_err());
+        assert!(ProResDecoder.decode(&s, 0).is_err());
     }
 }

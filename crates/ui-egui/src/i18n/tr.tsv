@@ -3567,6 +3567,11 @@
 	Solid	Düz Renk
 	GPU Rendering	GPU İşleme
 	Composite on the GPU when available	Kullanılabildiğinde GPU üzerinde kompozitle
+	Hardware Encoding	Donanım Kodlama
+	Use the hardware encoder when available	Kullanılabildiğinde donanım kodlayıcıyı kullan
+	GPU Encoding	GPU Kodlama
+	Encode on the GPU when available	Kullanılabildiğinde GPU üzerinde kodla
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Kodlama işini ekran kartındaki hesaplama gölgelendiricileri yapar; GPU'nun kodlayamadığı bir kare CPU üzerinde kodlanır.
 	Text to Speech	Metinden Sese
 	Edit Narration	Anlatımı Düzenle
 	Dock Panel	Paneli Kenetle

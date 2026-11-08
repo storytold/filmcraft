@@ -120,7 +120,7 @@ pub(crate) struct Lut {
     pub bits: u32,
 }
 
-pub(crate) const LINK: u32 = 1 << 31;
+pub const LINK: u32 = 1 << 31;
 
 impl Lut {
     /// `codes`: (codeword, length, value ≤ 0xFFFF).
@@ -170,9 +170,9 @@ impl Lut {
 }
 
 /// Decoded amplitude-table symbol value: `amp | frun << 8 | findex << 9 | eob << 10`.
-pub(crate) const AMP_FRUN: u32 = 1 << 8;
-pub(crate) const AMP_FINDEX: u32 = 1 << 9;
-pub(crate) const AMP_EOB: u32 = 1 << 10;
+pub const AMP_FRUN: u32 = 1 << 8;
+pub const AMP_FINDEX: u32 = 1 << 9;
+pub const AMP_EOB: u32 = 1 << 10;
 
 /// One VLC table set (amplitude, run and DC tables) with decode LUTs and encode maps.
 pub(crate) struct VlcSet {

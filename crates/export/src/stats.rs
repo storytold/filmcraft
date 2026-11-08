@@ -115,6 +115,10 @@ pub(crate) static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::
 
 pub(crate) static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+pub(crate) static GPU_ENCODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) static GPU_ENCODE_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A frame was composited by the registered GPU renderer.
@@ -142,13 +146,32 @@ pub fn reset_export_lock_wait() {
     LOCK_WAIT_NS.store(0, Ordering::Relaxed);
 }
 
-/// GPU-vs-CPU frame counters of the export renderer (per-process, like the hardware ones).
+/// A registered encoder backend (the GPU) coded a picture.
+pub(crate) fn note_gpu_encoded() {
+    GPU_ENCODED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A picture given to a registered encoder backend came back from the CPU encoder.
+pub(crate) fn note_gpu_encode_fallback() {
+    GPU_ENCODE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// GPU-vs-CPU counters of the export (per-process, like the hardware ones): `frames` and
+/// `fallbacks` of the renderer, `encoded` pictures an encoder backend (ProRes, DNxHR) coded, and
+/// `encode_fallbacks` pictures given to one that the CPU encoder coded instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuRenderStats {
     pub frames: u64,
     pub fallbacks: u64,
+    pub encoded: u64,
+    pub encode_fallbacks: u64,
 }
 
 pub fn gpu_render_stats() -> GpuRenderStats {
-    GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
+    GpuRenderStats {
+        frames: GPU_FRAMES.load(Ordering::Relaxed),
+        fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed),
+        encoded: GPU_ENCODED.load(Ordering::Relaxed),
+        encode_fallbacks: GPU_ENCODE_FALLBACKS.load(Ordering::Relaxed),
+    }
 }

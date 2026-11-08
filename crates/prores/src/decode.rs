@@ -84,11 +84,11 @@ struct Band<'a> {
     rows: usize,
 }
 
-struct Picture {
+pub(crate) struct Picture {
     /// Line parity within the frame (0 = even lines) for field pictures.
-    parity: usize,
+    pub(crate) parity: usize,
     /// Byte ranges of each slice, row-major.
-    slices: Vec<(usize, usize)>,
+    pub(crate) slices: Vec<(usize, usize)>,
 }
 
 struct Scratch {
@@ -112,7 +112,7 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
 /// Decode one ProRes frame into `out`, reusing its plane allocations (the fastest way to decode
 /// a sequence). On error the contents of `out` are unspecified.
 pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> Result<()> {
-    let (hdr, mut off, frame_size) = FrameHeader::parse(data)?;
+    let (hdr, off, frame_size) = FrameHeader::parse(data)?;
     let data = &data[..frame_size];
     let depth = opts.bit_depth.unwrap_or(match hdr.chroma {
         ChromaFormat::Yuv422 => 10,
@@ -137,41 +137,7 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
     let mb_width = width.div_ceil(16);
     let mb_height = if interlaced { height.div_ceil(32) } else { height.div_ceil(16) };
 
-    let npics = if interlaced { 2 } else { 1 };
-    let mut pics = Vec::with_capacity(npics);
-    for p in 0..npics {
-        let ph = PictureHeader::parse(data.get(off..).ok_or(Error::Truncated)?)?;
-        let pic_end = off.checked_add(ph.picture_size).ok_or(Error::Truncated)?;
-        if pic_end > data.len() || ph.picture_size < ph.header_size {
-            return Err(Error::Truncated);
-        }
-        let widths = row_slice_widths(mb_width, ph.log2_slice_mbs);
-        let nslices = widths.len() * mb_height;
-        if ph.num_slices != 0 && ph.num_slices != nslices {
-            return Err(Error::Invalid("slice count does not match frame geometry"));
-        }
-        let table = off + ph.header_size;
-        let mut pos = table + 2 * nslices;
-        if pos > pic_end {
-            return Err(Error::Truncated);
-        }
-        let mut slices = Vec::with_capacity(nslices);
-        for i in 0..nslices {
-            let sz = u16::from_be_bytes([data[table + 2 * i], data[table + 2 * i + 1]]) as usize;
-            // Every slice carries at least its 6-byte header.
-            if sz < 6 || pos + sz > pic_end {
-                return Err(Error::Truncated);
-            }
-            slices.push((pos, sz));
-            pos += sz;
-        }
-        let parity = match (hdr.interlace, p) {
-            (Interlace::BottomFieldFirst, 0) | (Interlace::TopFieldFirst, 1) => 1,
-            _ => 0,
-        };
-        pics.push((Picture { parity, slices }, widths));
-        off = pic_end;
-    }
+    let pics = pictures(data, &hdr, off, mb_width, mb_height)?;
 
     let ctx = Ctx {
         width,
@@ -259,9 +225,79 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
     Ok(())
 }
 
+/// The coded pictures of a frame (one, or two fields) and the slice-width pattern of their
+/// macroblock rows, every slice's byte range checked against its picture.
+pub(crate) fn pictures(data: &[u8], hdr: &FrameHeader, mut off: usize, mb_width: usize, mb_height: usize) -> Result<Vec<(Picture, Vec<usize>)>> {
+    let npics = if hdr.interlace != Interlace::Progressive { 2 } else { 1 };
+    let mut pics = Vec::with_capacity(npics);
+    for p in 0..npics {
+        let ph = PictureHeader::parse(data.get(off..).ok_or(Error::Truncated)?)?;
+        let pic_end = off.checked_add(ph.picture_size).ok_or(Error::Truncated)?;
+        if pic_end > data.len() || ph.picture_size < ph.header_size {
+            return Err(Error::Truncated);
+        }
+        let widths = row_slice_widths(mb_width, ph.log2_slice_mbs);
+        let nslices = widths.len() * mb_height;
+        if ph.num_slices != 0 && ph.num_slices != nslices {
+            return Err(Error::Invalid("slice count does not match frame geometry"));
+        }
+        let table = off + ph.header_size;
+        let mut pos = table + 2 * nslices;
+        if pos > pic_end {
+            return Err(Error::Truncated);
+        }
+        let mut slices = Vec::with_capacity(nslices);
+        for i in 0..nslices {
+            let sz = u16::from_be_bytes([data[table + 2 * i], data[table + 2 * i + 1]]) as usize;
+            // Every slice carries at least its 6-byte header.
+            if sz < 6 || pos + sz > pic_end {
+                return Err(Error::Truncated);
+            }
+            slices.push((pos, sz));
+            pos += sz;
+        }
+        let parity = match (hdr.interlace, p) {
+            (Interlace::BottomFieldFirst, 0) | (Interlace::TopFieldFirst, 1) => 1,
+            _ => 0,
+        };
+        pics.push((Picture { parity, slices }, widths));
+        off = pic_end;
+    }
+
+    Ok(pics)
+}
+
 #[inline]
 fn be16(d: &[u8], i: usize) -> usize {
     u16::from_be_bytes([d[i], d[i + 1]]) as usize
+}
+
+/// A slice's quantiser index and the byte ranges (offset, length within the slice) of its Y, Cb,
+/// Cr and alpha data (alpha: the rest of the slice, empty without alpha).
+pub(crate) struct SliceParts {
+    pub(crate) qidx: u8,
+    pub(crate) comps: [(usize, usize); 4],
+}
+
+/// Parse a slice header, checking every component size against the slice.
+pub(crate) fn slice_parts(d: &[u8], has_alpha: bool) -> std::result::Result<SliceParts, ()> {
+    if d.len() < 6 {
+        return Err(());
+    }
+    let hsize = (d[0] >> 3) as usize;
+    if hsize < if has_alpha { 8 } else { 6 } || hsize > d.len() {
+        return Err(());
+    }
+    let ysize = be16(d, 2);
+    let cbsize = be16(d, 4);
+    let body = d.len() - hsize;
+    let crsize = if has_alpha { be16(d, 6) } else { body.checked_sub(ysize + cbsize).ok_or(())? };
+    if ysize + cbsize + crsize > body {
+        return Err(());
+    }
+    let (y, cb, cr) = (hsize, hsize + ysize, hsize + ysize + cbsize);
+    let a = cr + crsize;
+    Ok(SliceParts { qidx: d[1], comps: [(y, ysize), (cb, cbsize), (cr, crsize), (a, d.len() - a)] })
 }
 
 /// Dequantisation factors (matrix × scale) for a slice.
@@ -282,30 +318,9 @@ struct Lines {
 
 fn decode_slice(ctx: &Ctx, d: &[u8], mb_x: usize, mbs: usize, band: &mut Band, il: Lines, s: &mut Scratch) -> std::result::Result<(), ()> {
     let Lines { step, parity } = il;
-    if d.len() < 6 {
-        return Err(());
-    }
-    let hsize = (d[0] >> 3) as usize;
-    let has_alpha = ctx.alpha != AlphaType::None;
-    if hsize < if has_alpha { 8 } else { 6 } || hsize > d.len() {
-        return Err(());
-    }
-    let qs = qscale(d[1]);
-    let ysize = be16(d, 2);
-    let cbsize = be16(d, 4);
-    let body = d.len() - hsize;
-    let crsize = if has_alpha { be16(d, 6) } else { body.checked_sub(ysize + cbsize).ok_or(())? };
-    if ysize + cbsize + crsize > body {
-        return Err(());
-    }
-    let mut p = hsize;
-    let ydata = &d[p..p + ysize];
-    p += ysize;
-    let cbdata = &d[p..p + cbsize];
-    p += cbsize;
-    let crdata = &d[p..p + crsize];
-    p += crsize;
-    let adata = &d[p..];
+    let sp = slice_parts(d, ctx.alpha != AlphaType::None)?;
+    let qs = qscale(sp.qidx);
+    let [ydata, cbdata, crdata, adata] = sp.comps.map(|(o, n)| &d[o..o + n]);
 
     let log2_mbs = mbs.trailing_zeros();
     let x0 = mb_x * 16;

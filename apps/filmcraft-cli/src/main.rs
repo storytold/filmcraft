@@ -282,6 +282,9 @@ fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });
+    // Hardware encoding: Auto codes ProRes and DNxHR on the same device (the CPU encodes what it declines)
+    filmcraft_export::register_prores_backend(|| filmcraft_gpu::ProResGpuEncoder::new().map(|e| Box::new(e) as _));
+    filmcraft_export::register_dnx_backend(|| filmcraft_gpu::DnxGpuEncoder::new().map(|e| Box::new(e) as _));
 }
 
 fn register_hardware_decoders() -> filmcraft_platform::Availability {

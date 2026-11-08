@@ -15,6 +15,9 @@ use std::sync::Arc;
 /// `filmcraft_export`'s trait.
 struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
 
+/// Pictures the renderers decoded in compute shaders (ProRes, DNx), over every export.
+static INTRA_DECODES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl FrameRenderer for GpuFrameRenderer {
     fn render(
         &mut self,
@@ -24,7 +27,10 @@ impl FrameRenderer for GpuFrameRenderer {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
-        self.0.render(project, seq, t, opts, sources)
+        let before = self.0.intra_decodes().0;
+        let img = self.0.render(project, seq, t, opts, sources);
+        INTRA_DECODES.fetch_add(self.0.intra_decodes().0 - before, std::sync::atomic::Ordering::Relaxed);
+        img
     }
 
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
@@ -168,4 +174,341 @@ fn gpu_export_matches_cpu_and_counts() {
     let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
     assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
     assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
+
+    // (the frame renderer registry is process-wide: the coded-media exports run here, after it)
+    coded_media_exports_decode_on_the_gpu();
+    gpu_rendered_ten_bit_ramp_keeps_its_luma_codes();
+}
+
+const RAMP_W: u32 = 1024;
+const RAMP_H: u32 = 128;
+
+/// A 10-bit 4:2:2 picture: luma 64..=940 from left to right, every row alike, neutral chroma.
+struct Ramp(filmcraft_media::MediaInfo);
+
+impl MediaSource for Ramp {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let row = (0..RAMP_W).map(|x| (64 + 876 * x / (RAMP_W - 1)) as u16);
+        let y: Vec<u16> = (0..RAMP_H).flat_map(|_| row.clone()).collect();
+        let c = Arc::new(vec![512u16; (RAMP_W / 2 * RAMP_H) as usize]);
+        let data = filmcraft_frame::PixelData::Yuv16 { planes: [Arc::new(y), c.clone(), c], chroma: filmcraft_frame::Chroma::C422, bits: 10, alpha: None };
+        Ok(Arc::new(filmcraft_frame::VideoFrame {
+            width: RAMP_W,
+            height: RAMP_H,
+            data,
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        }))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        Err(filmcraft_media::MediaError::NoStream("audio"))
+    }
+}
+
+/// Distinct 10-bit luma codes on the middle row of the first frame of the file at `path`.
+fn luma_codes(path: &str) -> usize {
+    let bytes: Arc<[u8]> = std::fs::read(path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes(path, bytes).unwrap();
+    let f = src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+    let (w, row) = (f.width as usize, f.height as usize / 2);
+    let filmcraft_frame::PixelData::Yuv16 { planes, bits, .. } = &f.data else { panic!("{path}: unexpected frame {:?}", f.data) };
+    let mut codes: Vec<u32> = planes[0][row * w..(row + 1) * w].iter().map(|&v| u32::from(v) << 10 >> bits).collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes.len()
+}
+
+/// A 10-bit ramp rendered by the GPU and exported to ProRes HQ keeps its luma codes: the GPU
+/// renderer hands the encoder 16-bit floats, not an RGBA8 picture (about 256 of the 877 codes).
+/// Needs the GPU frame renderer registered (the registry is process-wide).
+fn gpu_rendered_ten_bit_ramp_keeps_its_luma_codes() {
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let g = GeneratorSource::new(Generator::ColorMatte { color: [0.0; 4] }, RAMP_W, RAMP_H, r, filmcraft_time::Tick(TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let mut p = filmcraft_project::Project::new("ramp");
+    let item = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let seq = p.new_sequence("s", SequenceSettings { width: RAMP_W, height: RAMP_H, frame_rate: r, ..Default::default() }, 1, 0, None);
+    let ti = p.make_track_item(item, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(2)), r).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+    let mut m = SourceMap::default();
+    m.0.insert(item, Arc::new(Ramp(info)));
+
+    let dir = std::env::temp_dir().join(format!("fc-gpu-ramp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ramp-hq.mov").to_string_lossy().into_owned();
+    let s = ExportSettings {
+        format: Format::ProRes,
+        prores_profile: "hq".into(),
+        path: path.clone(),
+        include_audio: false,
+        gpu_rendering: GpuRendering::Auto,
+        ..Default::default()
+    };
+    let frames = filmcraft_gpu::export_renderer::timing::get().frames;
+    export(&Arc::new(p), seq, &s, &m, &Progress::default()).unwrap();
+    assert!(filmcraft_gpu::export_renderer::timing::get().frames > frames, "the ramp was rendered on the GPU");
+    let levels = luma_codes(&path);
+    assert!(levels > 850, "GPU-rendered ramp in ProRes HQ: {levels} of 877 luma codes");
+}
+
+/// A MOV of `frames` (VC-3 or ProRes, one per frame at 24 fps).
+fn mov(entry: filmcraft_isobmff::SampleEntry, frames: &[Vec<u8>]) -> Arc<[u8]> {
+    let mut w =
+        filmcraft_isobmff::Mp4Writer::new(std::io::Cursor::new(Vec::new()), filmcraft_isobmff::WriterOptions::new(filmcraft_isobmff::Brand::Mov)).unwrap();
+    let t = w.add_track(filmcraft_isobmff::TrackConfig::new(entry, 24)).unwrap();
+    for f in frames {
+        w.write_sample(t, filmcraft_isobmff::WriteSample { data: f, duration: 1, composition_offset: 0, is_sync: true }).unwrap();
+    }
+    Arc::from(w.finish().unwrap().into_inner())
+}
+
+/// Luma with gradients, a checkerboard and noise, smooth chroma (`cw` wide), at `bits`. (CPU
+/// and GPU rendering reconstruct subsampled chroma differently at hard chroma edges; that is not
+/// what these exports compare.)
+fn busy(w: usize, h: usize, cw: usize, bits: u32, seed: u32) -> [Vec<u16>; 3] {
+    let s = bits - 8;
+    let mut x = seed.wrapping_mul(2654435761) | 1;
+    let mut rnd = || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x >> 28
+    };
+    let mut y = vec![0u16; w * h];
+    for (i, v) in y.iter_mut().enumerate() {
+        let (px, py) = (i % w, i / w);
+        let chk = if (px / 8 + py / 8) % 2 == 0 { 40 } else { 0 };
+        *v = (((20 + (px * 3 + py) % 150 + chk + rnd() as usize) as u32).min(235) << s) as u16;
+    }
+    let c =
+        |k: i32| (0..cw * h).map(|i| (((128 + (i % cw) as i32 * k * 40 / cw as i32 - (i / cw) as i32 * 30 / h as i32) as u32) << s) as u16).collect::<Vec<_>>();
+    [y, c(5), c(-4)]
+}
+
+/// The sequence `media` (a MOV) makes, opened afresh: every export decodes it itself.
+fn clip_project(media: &Arc<[u8]>, w: u32, h: u32, frames: i64) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
+    let src = filmcraft_codecs::open_bytes("clip.mov", media.clone()).unwrap();
+    let info = src.info().clone();
+    let mut p = filmcraft_project::Project::new("x");
+    let item = p.add_item(
+        "clip",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::File { path: "clip.mov".into() },
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let rate = filmcraft_time::FrameRate::FPS_24;
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
+    let v =
+        p.make_track_item(item, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, rate.tick_of(frames)), rate).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    let mut m = SourceMap::default();
+    m.0.insert(item, src);
+    (Arc::new(p), seq, m)
+}
+
+fn export_clip_png(dir: &str, gpu: GpuRendering, media: &Arc<[u8]>, (w, h): (u32, u32)) {
+    let (p, seq, m) = clip_project(media, w, h, 3);
+    let mut s = ExportSettings {
+        format: Format::PngSequence,
+        path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(3)));
+    s.gpu_rendering = gpu;
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+}
+
+/// ProRes and DNx media export through the GPU renderer decoded in its compute shaders, as the
+/// monitors decode them, and match the CPU export; a frame the GPU finds corrupt is rendered on
+/// the CPU instead of being exported broken.
+fn coded_media_exports_decode_on_the_gpu() {
+    use filmcraft_dnx::{AlphaCoding, Profile};
+    use std::sync::atomic::Ordering;
+    let (w, h) = (320u32, 180u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let dnx = |profile: Profile, bits: u8, rgb: bool, alpha: Option<AlphaCoding>| -> Vec<Vec<u8>> {
+        let cfg = filmcraft_dnx::EncoderConfig { bit_depth: bits, alpha, ..filmcraft_dnx::EncoderConfig::new(profile, w, h) };
+        let chroma = cfg.chroma();
+        let mut enc = filmcraft_dnx::Encoder::with_config(cfg).unwrap();
+        (0..3)
+            .map(|k| {
+                let mut f = filmcraft_dnx::Frame::new(w, h, chroma, bits, alpha.is_some());
+                let cw = f.chroma_width() as usize;
+                [f.y, f.cb, f.cr] = busy(wu, hu, cw, u32::from(bits), k + 1);
+                f.rgb = rgb;
+                if let Some(a) = f.alpha.as_mut() {
+                    let max = (1u32 << bits) - 1;
+                    for (i, v) in a.iter_mut().enumerate() {
+                        *v = if (i % wu) < wu / 2 { max as u16 } else { ((i % wu) as u32 * max / wu as u32) as u16 };
+                    }
+                }
+                enc.encode(&f).unwrap()
+            })
+            .collect()
+    };
+    let prores: Vec<Vec<u8>> = {
+        let mut enc = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, w, h);
+        (0..3)
+            .map(|k| {
+                let mut f = filmcraft_prores::Frame::new(w, h, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+                [f.y, f.cb, f.cr] = busy(wu, hu, wu / 2, 10, k + 1);
+                enc.encode(&f).unwrap()
+            })
+            .collect()
+    };
+    let dnx_entry = || filmcraft_isobmff::SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), w as u16, h as u16);
+    let mut corrupt = dnx(Profile::Hqx, 10, false, None);
+    // garbage over the middle of a scan line of the second frame: the layout parses, the GPU
+    // finds the entropy-coded data broken (and the CPU decoder rejects it)
+    let l = filmcraft_dnx::frame_layout(&corrupt[1]).unwrap();
+    let r = l.rows[4].data;
+    for b in &mut corrupt[1][r.0 as usize + 16..(r.0 + r.1 / 2) as usize] {
+        *b = 0xff;
+    }
+    assert!(filmcraft_dnx::decode_frame(&corrupt[1]).is_err());
+    let cases = [
+        ("prores-hq", mov(filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), w as u16, h as u16), &prores), 3),
+        ("dnxhr-hqx", mov(dnx_entry(), &dnx(Profile::Hqx, 10, false, None)), 3),
+        ("dnxhr-444-rgb", mov(dnx_entry(), &dnx(Profile::R444, 12, true, None)), 3),
+        ("dnxhr-hq-alpha", mov(dnx_entry(), &dnx(Profile::Hq, 8, false, Some(AlphaCoding::Lossless))), 3),
+        // the corrupt frame is decoded on the GPU too, found broken and rendered again on the CPU
+        ("dnxhr-corrupt", mov(dnx_entry(), &corrupt), 3),
+    ];
+    for (name, media, decodes) in cases {
+        let before = INTRA_DECODES.load(Ordering::Relaxed);
+        export_clip_png(&format!("{name}-cpu"), GpuRendering::Off, &media, (w, h));
+        export_clip_png(&format!("{name}-gpu"), GpuRendering::Auto, &media, (w, h));
+        for f in ["000", "001", "002"] {
+            assert_parity(
+                &png(&format!("{name}-cpu"), &format!("img{f}.png")),
+                &png(&format!("{name}-gpu"), &format!("img{f}.png")),
+                &format!("{name} frame {f}"),
+            );
+        }
+        let decoded = INTRA_DECODES.load(Ordering::Relaxed) - before;
+        assert!(decoded >= decodes, "{name}: {decoded} pictures decoded on the GPU");
+    }
+}
+
+/// PSNR in dB of two RGBA8 pictures over all four channels (infinite when equal).
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let se: f64 = a.iter().zip(b).map(|(&x, &y)| f64::from(x.abs_diff(y)).powi(2)).sum();
+    if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / (se / a.len() as f64)).log10() }
+}
+
+/// Export `media` (3 frames) to `format` as `name` with `hardware`, and decode what was written
+/// (every frame must decode).
+fn export_codec(media: &Arc<[u8]>, name: &str, format: Format, profile: &str, alpha: bool, hardware: filmcraft_export::HardwareEncoding) -> Vec<Vec<u8>> {
+    let (w, h) = (320u32, 180u32);
+    let (p, seq, m) = clip_project(media, w, h, 3);
+    let path = std::env::temp_dir().join(format!("fc-gpu-enc-{}-{name}.mov", std::process::id())).to_string_lossy().into_owned();
+    let mut s = ExportSettings { format, path: path.clone(), include_audio: false, alpha, hardware_encoding: hardware, ..Default::default() };
+    match format {
+        Format::ProRes => s.prores_profile = profile.into(),
+        _ => s.dnx_profile = profile.into(),
+    }
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(3)));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 3, "{name}: frame count");
+    let src = filmcraft_codecs::open_bytes(&path, std::fs::read(&path).unwrap().into()).unwrap();
+    (0..3).map(|i| src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8().to_vec()).collect()
+}
+
+/// The GPU encoders under Hardware encoding: Auto write files that parse, decode and look like
+/// the CPU encoder's (within 0.1 dB against the picture that went in), and do the encoding.
+#[test]
+fn gpu_encoders_export_like_the_cpu() {
+    use filmcraft_export::HardwareEncoding::{Auto, Off};
+    let (Some(_), Some(_)) = (filmcraft_gpu::ProResGpuEncoder::new(), filmcraft_gpu::DnxGpuEncoder::new()) else {
+        eprintln!("SKIPPED (gpu encoders): no adapter");
+        return;
+    };
+    filmcraft_export::register_prores_backend(|| filmcraft_gpu::ProResGpuEncoder::new().map(|e| Box::new(e) as _));
+    filmcraft_export::register_dnx_backend(|| filmcraft_gpu::DnxGpuEncoder::new().map(|e| Box::new(e) as _));
+    let (w, h) = (320u32, 180u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let prores = |profile: filmcraft_prores::Profile, alpha: bool| -> Arc<[u8]> {
+        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
+        cfg.encode_alpha = alpha;
+        let chroma = profile.chroma();
+        let mut enc = filmcraft_prores::Encoder::with_config(cfg);
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|k| {
+                let mut f = filmcraft_prores::Frame::new(w, h, chroma, 10, alpha);
+                let cw = f.chroma_width() as usize;
+                [f.y, f.cb, f.cr] = busy(wu, hu, cw, 10, k + 1);
+                if let Some(a) = f.alpha.as_mut() {
+                    for (i, v) in a.iter_mut().enumerate() {
+                        *v = ((i % wu) as u32 * 1023 / wu as u32) as u16;
+                    }
+                }
+                enc.encode(&f).unwrap()
+            })
+            .collect();
+        let fourcc = filmcraft_isobmff::FourCc(profile.fourcc());
+        mov(filmcraft_isobmff::SampleEntry::prores(fourcc, w as u16, h as u16), &frames)
+    };
+    let dnx_src = {
+        let cfg = filmcraft_dnx::EncoderConfig { bit_depth: 10, ..filmcraft_dnx::EncoderConfig::new(filmcraft_dnx::Profile::Hqx, w, h) };
+        let mut enc = filmcraft_dnx::Encoder::with_config(cfg).unwrap();
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|k| {
+                let mut f = filmcraft_dnx::Frame::new(w, h, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+                let cw = f.chroma_width() as usize;
+                [f.y, f.cb, f.cr] = busy(wu, hu, cw, 10, k + 1);
+                enc.encode(&f).unwrap()
+            })
+            .collect();
+        mov(filmcraft_isobmff::SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), w as u16, h as u16), &frames)
+    };
+    let cases = [
+        ("prores-hq", prores(filmcraft_prores::Profile::Hq, false), Format::ProRes, "hq", false),
+        ("prores-4444-alpha", prores(filmcraft_prores::Profile::P4444, true), Format::ProRes, "4444", true),
+        ("dnxhr-hqx", dnx_src, Format::DnxHr, "hqx", false),
+    ];
+    for (name, media, format, profile, alpha) in cases {
+        let before = filmcraft_export::gpu_render_stats();
+        let cpu = export_codec(&media, &format!("{name}-cpu"), format, profile, alpha, Off);
+        assert_eq!(filmcraft_export::gpu_render_stats().encoded, before.encoded, "{name}: Off encodes on the CPU");
+        let gpu = export_codec(&media, &format!("{name}-gpu"), format, profile, alpha, Auto);
+        let st = filmcraft_export::gpu_render_stats();
+        assert!(st.encoded >= before.encoded + 3, "{name}: {} pictures encoded on the GPU", st.encoded - before.encoded);
+        let src = filmcraft_codecs::open_bytes("clip.mov", media.clone()).unwrap();
+        for i in 0..3 {
+            let want = src.video_frame(filmcraft_media::FrameRequest::full(filmcraft_time::FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8();
+            let (c, g) = (psnr(&want, &cpu[i as usize]), psnr(&want, &gpu[i as usize]));
+            eprintln!("{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB against the source");
+            assert!((c - g).abs() <= 0.1, "{name} frame {i}: CPU {c:.2} dB, GPU {g:.2} dB");
+        }
+    }
 }

@@ -3560,6 +3560,11 @@
 	Solid	Сплошной
 	GPU Rendering	Визуализация на GPU
 	Composite on the GPU when available	Компоновать на GPU, когда это возможно
+	Hardware Encoding	Аппаратное кодирование
+	Use the hardware encoder when available	Использовать аппаратный кодировщик, когда это возможно
+	GPU Encoding	Кодирование на GPU
+	Encode on the GPU when available	Кодировать на GPU, когда это возможно
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Вычислительные шейдеры видеокарты выполняют кодирование; кадр, который GPU не может закодировать, кодируется на CPU.
 	Text to Speech	Синтез речи
 	Edit Narration	Редактировать озвучивание
 	Dock Panel	Пристыковать панель
