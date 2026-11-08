@@ -49,6 +49,14 @@ $stagedInstructions = @($staged | Where-Object { $_ -match '(^|/)AGENTS\.md$' })
 if ($stagedInstructions.Count -gt 0) {
     throw 'AGENTS.md is staged. Unstage it before publishing; this script will not commit it.'
 }
+$headBeforeConfirmation = (& git -C $repo rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($headBeforeConfirmation)) {
+    throw 'Could not record the current commit before confirmation.'
+}
+$stagedTreeBeforeConfirmation = (& git -C $repo write-tree).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($stagedTreeBeforeConfirmation)) {
+    throw 'Could not record the staged tree before confirmation.'
+}
 
 Write-Host 'Staged files to be committed:'
 $staged | ForEach-Object { Write-Host "  $_" }
@@ -65,6 +73,12 @@ if ($confirmation -cne 'YES') {
     exit 0
 }
 
+$currentBranch = (& git -C $repo branch --show-current).Trim()
+$currentHead = (& git -C $repo rev-parse HEAD).Trim()
+$currentStagedTree = (& git -C $repo write-tree).Trim()
+if ($LASTEXITCODE -ne 0 -or $currentBranch -cne $branch -or $currentHead -cne $headBeforeConfirmation -or $currentStagedTree -cne $stagedTreeBeforeConfirmation) {
+    throw 'The branch, HEAD, or staged changes changed after confirmation. Nothing was committed or pushed; review and confirm again.'
+}
 if ([string]::IsNullOrWhiteSpace($CommitBody)) {
     & git -C $repo commit -m $CommitTitle
 } else {
@@ -72,7 +86,7 @@ if ([string]::IsNullOrWhiteSpace($CommitBody)) {
 }
 if ($LASTEXITCODE -ne 0) { throw 'Commit failed; nothing was pushed.' }
 
-& git -C $repo push origin $branch
+& git -C $repo push --no-follow-tags origin $branch
 if ($LASTEXITCODE -ne 0) { throw 'Commit succeeded, but pushing failed. The commit is still local.' }
 
 Write-Host ''

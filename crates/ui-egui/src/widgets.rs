@@ -77,20 +77,19 @@ impl<'a> HotNumberOptions<'a> {
 /// value fields apart.
 /// Returns (response, Some(new value) when changed).
 pub fn hot_number(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
-    let editing_id = id.with("editing");
-    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
-    if let Some(buf) = editing.as_mut() {
-        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, false);
-    }
-    hot_number_display(ui, id, value, options)
+    hot_number_mode(ui, label, id, value, options, false)
 }
 
 /// As [`hot_number`], but the text editor accepts only digits and one decimal point while typing.
 pub fn hot_number_numeric(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    hot_number_mode(ui, label, id, value, options, true)
+}
+
+fn hot_number_mode(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>, numeric_only: bool) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
-        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, true);
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, numeric_only);
     }
     hot_number_display(ui, id, value, options)
 }

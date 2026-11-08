@@ -50,7 +50,7 @@ fn close_others_keeps_one_tab_and_shows_it() {
 #[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
-    let (revision, steps) = (s.revision, s.history.undo.len());
+    let (view_epoch, steps) = (s.view_epoch, s.history.undo.len());
     let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
@@ -62,7 +62,7 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     assert_eq!(s.state.open_sequences, [main, b, c]);
     // not an undo step and not an edit: the revision may move (it is a view change, and that is
     // what carries the new tab order into the autosave journal) but a clean project stays clean
-    let _ = revision;
+    assert_ne!(s.view_epoch, view_epoch, "moving a tab is a persisted view change");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();

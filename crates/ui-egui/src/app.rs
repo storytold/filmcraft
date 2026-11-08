@@ -106,6 +106,7 @@ impl FilmcraftApp {
             file_drag_hover: None,
             window_files: Vec::new(),
             timeline_view_last: None,
+            timeline_view_pending: false,
             fps: 60.0,
             last_time: 0.0,
             bindings: Vec::new(),
@@ -373,7 +374,7 @@ impl FilmcraftApp {
             // has no new events and must not re-run a click, shortcut or drop.
             self.auto.begin_frame();
             self.apply_prefs(&ctx);
-            self.sync_timeline_view();
+            self.sync_timeline_view(&ctx);
             panels::metadata::follow_selection(self);
             self.handle_drops(&ctx);
             self.begin_press(&ctx);

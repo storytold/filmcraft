@@ -17,7 +17,7 @@
 //! I/O happen on the worker thread, so neither ever stalls the UI.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -539,6 +539,9 @@ pub struct JournalMeta {
     pub project_path: Option<String>,
     pub generator: String,
     pub bytes: usize,
+    /// Stable fingerprint of the paired snapshot. Older journals omit this and remain readable.
+    #[serde(default)]
+    pub snapshot_fingerprint: Option<u64>,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
     /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
@@ -573,14 +576,16 @@ pub fn recovery_root(data_dir: &Path) -> PathBuf {
 }
 
 /// Is the session directory's lock free (owner gone)?
-fn lock_is_stale(dir: &Path) -> bool {
-    let Ok(f) = File::options().read(true).write(true).open(dir.join(LOCK)) else { return true };
+fn stale_session_lock(dir: &Path) -> (Option<File>, bool) {
+    let Ok(f) = File::options().read(true).write(true).open(dir.join(LOCK)) else { return (None, false) };
     match f.try_lock() {
-        Ok(()) => true,
-        Err(fs::TryLockError::WouldBlock) => false,
-        // Locking unsupported on this file system: fall back to the meta's pid being gone is not
-        // knowable portably, so treat as stale (the snapshot is offered, never deleted silently).
-        Err(fs::TryLockError::Error(_)) => true,
+        // Keep the acquired handle alive while inspecting and possibly removing a clean journal,
+        // so a new session cannot start between the stale check and deletion.
+        Ok(()) => (Some(f), false),
+        Err(fs::TryLockError::WouldBlock) => (None, true),
+        // Unknown locking failures must not authorize deletion. A dirty snapshot can still be
+        // offered for recovery, but clean journals are retained without a confirmed stale lock.
+        Err(fs::TryLockError::Error(_)) => (None, false),
     }
 }
 
@@ -591,7 +596,11 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
     let mut out = Vec::new();
     for e in rd.filter_map(|e| e.ok()) {
         let dir = e.path();
-        if !dir.is_dir() || Some(dir.as_path()) == skip || !lock_is_stale(&dir) {
+        if !dir.is_dir() || Some(dir.as_path()) == skip {
+            continue;
+        }
+        let (stale_lock, active) = stale_session_lock(&dir);
+        if active {
             continue;
         }
         let snap = dir.join(SNAPSHOT);
@@ -607,10 +616,19 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             dirty: true,
             ..JournalMeta::default()
         });
+        if let Some(expected) = meta.snapshot_fingerprint
+            && read_snapshot_fingerprint(&snap).ok() != Some(expected)
+        {
+            // A crash may have left one half of a new journal pair beside the other half of the
+            // previous revision. Keep it for diagnosis, but never offer a mismatched pair.
+            continue;
+        }
         if !meta.dirty {
             // a clean project's view-only journal is not unsaved work: never offered as
             // recovery, and not left behind either
-            let _ = fs::remove_dir_all(&dir);
+            if stale_lock.is_some() {
+                let _ = fs::remove_dir_all(&dir);
+            }
             continue;
         }
         out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
@@ -709,6 +727,7 @@ pub enum WorkerEvent {
     SavedProject {
         path: String,
         revision: u64,
+        view_epoch: u64,
     },
     Error(String),
 }
@@ -795,7 +814,6 @@ impl Persistence {
             journaled: 0,
             journaled_view: 0,
             autosaved: 0,
-            autosaved_view: 0,
             first_pending: None,
             last_change: Instant::now(),
             next_autosave: Instant::now(),
@@ -984,7 +1002,6 @@ struct Worker {
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
-    autosaved_view: u64,
     first_pending: Option<Instant>,
     last_change: Instant,
     next_autosave: Instant,
@@ -1043,7 +1060,7 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|snapshot| snapshot.content_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
@@ -1066,11 +1083,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && s.revision != self.autosaved) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1150,14 +1163,13 @@ impl Worker {
         match r {
             Ok(path) => {
                 self.autosaved = s.revision;
-                self.autosaved_view = s.view_epoch;
                 let _ = self.events.send(WorkerEvent::AutoSaved { path: path.clone(), revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
                     match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                         Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision, view_epoch: s.view_epoch });
                         }
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }
@@ -1176,7 +1188,9 @@ impl Worker {
 /// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
 /// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
-    let metadata = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    let mut meta = meta.clone();
+    meta.snapshot_fingerprint = Some(snapshot_fingerprint(snapshot));
+    let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
     let meta_path = dir.join(META);
     let snapshot_path = dir.join(SNAPSHOT);
     if meta.dirty {
@@ -1185,6 +1199,25 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
     } else {
         write(&snapshot_path, snapshot)?;
         write(&meta_path, &metadata)
+    }
+}
+
+fn snapshot_fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3))
+}
+
+fn read_snapshot_fingerprint(path: &Path) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0_u8; 8192];
+    let mut hash = 0xcbf29ce484222325;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(hash);
+        }
+        for byte in &buffer[..count] {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
     }
 }
 #[cfg(test)]
@@ -1208,18 +1241,42 @@ mod durability_tests {
     }
 
     #[test]
+    fn failed_clean_to_dirty_pair_does_not_offer_a_stale_snapshot() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-stale-pair-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = recovery_root(&dir).join("1-2");
+        fs::create_dir_all(&session).unwrap();
+        let old_snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &old_snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let new_snapshot = filmcraft_format::encode(&Project::new("Unsaved"), false);
+        let result = write_recovery_pair(&session, &new_snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            if path.ends_with(SNAPSHOT) {
+                return Err(io::Error::other("interrupted before replacing snapshot"));
+            }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), old_snapshot, "the previous snapshot remains untouched");
+        assert!(scan_candidates(&dir, None).is_empty(), "metadata for a different snapshot must not advertise stale content as recovery");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn recovery_keeps_original_when_worker_has_stopped() {
         let d = std::env::temp_dir().join(format!("fc-recover-worker-stopped-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let old_dir = recovery_root(&d).join("1-1");
         fs::create_dir_all(&old_dir).unwrap();
-        let bytes = filmcraft_format::encode(&Project::default(), false);
+        let mut view = filmcraft_project::ProjectView::default();
+        view.timeline_ui.inverted_controls = true;
+        let bytes = filmcraft_format::encode_with_view(&Project::default(), Some(&view), false);
         let original = old_dir.join(SNAPSHOT);
         fs::write(&original, &bytes).unwrap();
         let mut session = crate::Session::default();
         session.start_autosave(AutosaveConfig::new(&d)).unwrap();
         session.persistence.as_mut().unwrap().stop_worker();
         let result = session.execute("file.recover", json!({"id": "1-1"}));
+        assert!(session.state.timeline_ui.inverted_controls, "recovery restores the journaled Timeline settings before reporting the stopped worker");
         assert!(original.is_file(), "a stopped worker must not consume the original snapshot");
         assert_eq!(fs::read(&original).unwrap(), bytes);
         assert_eq!(session.recovery_candidates().len(), 1);

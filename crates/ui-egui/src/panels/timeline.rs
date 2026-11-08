@@ -591,6 +591,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             &t,
             "vs",
         );
+        app.auto.add(
+            "timeline.trackSlider.video.bar",
+            Rect::from_min_max(pos2(sx0, video_area.min.y), pos2(sx1, split_y - 3.0)),
+            "Video track height and scroll slider",
+        );
+        app.auto.add("timeline.trackSlider.video.thumb", vthumb, "Video track height and scroll thumb");
         let (on_as, athumb, aclicks) = vertical_scrollbar(
             ui,
             &mut app.tl,
@@ -608,6 +614,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             &t,
             "as",
         );
+        app.auto.add(
+            "timeline.trackSlider.audio.bar",
+            Rect::from_min_max(pos2(sx0, split_y + DIVIDER_H + 3.0), pos2(sx1, content.max.y)),
+            "Audio track height and scroll slider",
+        );
+        app.auto.add("timeline.trackSlider.audio.thumb", athumb, "Audio track height and scroll thumb");
         on_side |= on_vs || on_as;
         // double-click copies this thumb's length and position to the other slider; Shift+
         // double-click fits every track of this slider only. Either way the OTHER slider is the

@@ -278,6 +278,7 @@ mod tests {
         assert_eq!(read_range(&r, 8, 100).unwrap(), b"89");
         assert!(FileReader::open(&dir).is_err(), "a directory is not a media file");
         assert_eq!(FileReader::open(&dir.join("missing")).unwrap_err().kind(), io::ErrorKind::NotFound);
+        drop(r);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

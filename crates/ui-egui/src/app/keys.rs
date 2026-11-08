@@ -19,7 +19,7 @@ impl FilmcraftApp {
             || self.dialog == Some(Dialog::Shortcuts)
             || self.ui.clip_dialog.is_some()
             // a Controls box is naming a new shortcut: nothing else may hear the key
-            || panels::timeline::controls_listening(ctx)
+            || panels::timeline::controls_listening(self, ctx)
         {
             return;
         }
@@ -45,7 +45,7 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
+        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(self, ctx) {
             return;
         }
         let mut input = egui::InputState::default();

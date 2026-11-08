@@ -384,6 +384,7 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     let root = autosave::recovery_root(&d);
     let sess = root.join("123-1");
     std::fs::create_dir_all(&sess).unwrap();
+    std::fs::write(sess.join("lock"), b"").unwrap();
     let snap = filmcraft_format::encode(&filmcraft_project::Project::default(), false);
     std::fs::write(sess.join("snapshot.fcproj"), snap).unwrap();
     std::fs::write(sess.join("session.json"), b"not json {").unwrap();
@@ -395,6 +396,23 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     let found = autosave::scan_candidates(&d, None);
     assert_eq!(found.len(), 1, "missing metadata still lists the snapshot");
     assert!(sess.join("snapshot.fcproj").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn scan_leaves_clean_journal_when_its_lock_is_held() {
+    let d = temp_dir("recover-clean-live-lock");
+    let root = autosave::recovery_root(&d);
+    let sess = root.join("123-2");
+    std::fs::create_dir_all(&sess).unwrap();
+    let lock_path = sess.join("lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    lock.try_lock().unwrap();
+    std::fs::write(sess.join("snapshot.fcproj"), b"clean journal").unwrap();
+    std::fs::write(sess.join("session.json"), br#"{"dirty":false}"#).unwrap();
+    assert!(autosave::scan_candidates(&d, None).is_empty(), "clean journal is not a recovery candidate");
+    assert!(sess.exists(), "a journal must not be removed while another session owns its lock");
+    drop(lock);
     let _ = std::fs::remove_dir_all(&d);
 }
 

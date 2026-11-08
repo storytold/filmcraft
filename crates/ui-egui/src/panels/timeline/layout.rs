@@ -138,12 +138,16 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
 /// at 60 fps by default) fill the whole view width.
 pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
     let min_view = if min_view_secs.is_finite() && min_view_secs > 0.0 { min_view_secs.clamp(0.05, 3.0) } else { 0.4 };
-    width.max(1.0) as f64 / min_view
+    let width = if width.is_finite() { width.clamp(1.0, 1_000_000.0) } else { 1.0 };
+    f64::from(width) / min_view
 }
 
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;
+    if !(old.is_finite() && old > 0.0 && factor.is_finite() && factor > 0.0 && anchor_secs.is_finite() && width.is_finite()) {
+        return;
+    }
     // the sharp end is the Maximum Zoom Level setting; the wide end is enforced by animate_view
     // (its sequence-dependent `min_pps` floor), so no fixed 0.05 floor here: that stopped a long
     // sequence from ever zooming out to its full extent
@@ -152,4 +156,24 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+}
+
+#[cfg(test)]
+mod finite_zoom_tests {
+    use super::*;
+
+    #[test]
+    fn maximum_zoom_stays_finite_for_invalid_widths() {
+        assert!(max_pps(f32::INFINITY, 0.4).is_finite());
+        assert!(max_pps(f32::NAN, f64::INFINITY).is_finite());
+    }
+
+    #[test]
+    fn invalid_zoom_inputs_leave_the_view_unchanged() {
+        let mut view = TimelineView::default();
+        let before = (view.target_pps, view.target_scroll);
+        zoom_about(&mut view, f64::INFINITY, 1.0, 800.0, 0.4);
+        zoom_about(&mut view, 2.0, f64::NAN, 800.0, 0.4);
+        assert_eq!((view.target_pps, view.target_scroll), before);
+    }
 }

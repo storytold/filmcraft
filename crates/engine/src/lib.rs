@@ -731,10 +731,15 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
-                autosave::WorkerEvent::SavedProject { path, revision }
-                    if self.path.as_deref() == Some(path.as_str()) && revision > self.saved_revision && revision <= self.revision =>
+                autosave::WorkerEvent::SavedProject { path, revision, view_epoch }
+                    if self.path.as_deref() == Some(path.as_str())
+                        && revision >= self.saved_revision
+                        && revision <= self.revision
+                        && view_epoch >= self.saved_view_epoch
+                        && view_epoch <= self.view_epoch =>
                 {
-                    self.saved_revision = revision;
+                    self.saved_revision = self.saved_revision.max(revision);
+                    self.saved_view_epoch = view_epoch;
                 }
                 autosave::WorkerEvent::Error(m) => {
                     self.log.push(panels::Level::Error, "autosave", m.clone());
@@ -799,9 +804,9 @@ impl Session {
         self.revision != self.saved_revision
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed without dirtying project content.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_changed();
         self.sync_persistence();
     }
 

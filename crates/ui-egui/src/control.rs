@@ -320,6 +320,27 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
     if let Some(v) = tl.get("trackSliderHidden").and_then(Value::as_bool) {
         crate::panels::timeline::set_track_slider_hidden(app, ctx, v);
     }
+    if let Some(v) = tl.get("trackSliderSmoothAnimations").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.track_slider_smooth != v;
+        app.session.state.timeline_ui.track_slider_smooth = v;
+    }
+    if let Some(v) = tl.get("trackSliderDecoupleEdges").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.track_slider_decouple != v;
+        app.session.state.timeline_ui.track_slider_decouple = v;
+    }
+    if let Some(v) = tl.get("trackSliderAlternatePosition").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.track_slider_alternate_position != v;
+        app.session.state.timeline_ui.track_slider_alternate_position = v;
+    }
+    if let Some(v) = tl.get("trackSliderShiftDragSpeed").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.1..=10.0).contains(v)) {
+        view_settings_changed |= app.session.state.timeline_ui.track_slider_shift_drag_speed != v;
+        app.session.state.timeline_ui.track_slider_shift_drag_speed = v;
+        let custom = ![0.5, 1.0].contains(&v);
+        if custom {
+            app.session.state.timeline_ui.track_slider_shift_drag_last_custom = v;
+        }
+        app.session.state.timeline_ui.track_slider_shift_drag_custom = custom;
+    }
     if let Some(v) = tl.get("alternateSliderPosition").and_then(Value::as_bool) {
         view_settings_changed |= app.session.state.timeline_ui.alternate_slider_position != v;
         app.session.state.timeline_ui.alternate_slider_position = v;
