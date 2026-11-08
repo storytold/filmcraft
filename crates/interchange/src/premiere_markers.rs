@@ -1,7 +1,7 @@
 //! Marker mapping from contributor-authored project XML. `MarkerOwner/Markers@ObjectRef` points
 //! to a markers object whose `Markers` list entries point (`Second@ObjectRef`) to `Marker`
 //! objects holding one `DVAMarker` JSON record. Original work, MIT OR Apache-2.0.
-use super::{error, referred, spend, warning};
+use super::{referred, spend, warning};
 use crate::xml::{child, child_text};
 use crate::{Report, Result};
 use filmcraft_project::{Label, Marker, MarkerId, MarkerKind};
@@ -29,7 +29,8 @@ pub(super) fn read<'a, 'i>(
         let Some(marker) = referred(child(entry, "Second"), ids, "ObjectRef") else { continue };
         spend(work, marker)?;
         if out.len() >= MAX_MARKERS {
-            return Err(error(format!("{context}: too many markers")));
+            warning(report, format!("{context}: more than {MAX_MARKERS} markers; the rest were skipped"));
+            break;
         }
         let Some((marker, url)) = child_text(marker, "DVAMarker").filter(|r| r.len() <= MAX_RECORD_BYTES).and_then(record) else {
             warning(report, format!("{context}: a marker could not be read; marker skipped"));

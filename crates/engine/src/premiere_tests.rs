@@ -434,6 +434,34 @@ fn premiere_missing_absolute_media_falls_back_to_the_relative_path_through_polic
 }
 
 #[test]
+fn premiere_media_whose_name_differs_only_in_case_is_found() {
+    // A project saved on Windows or macOS stores `source.png` for a file that a case-sensitive
+    // disk holds as `source.PNG`.
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    std::fs::rename(fixture.0.join("source.png"), fixture.0.join("source.PNG")).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("case")})).unwrap();
+    let report: Vec<_> = result["report"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    assert_eq!(result["offlineMedia"], json!([]), "{report:?}");
+    if cfg!(target_os = "linux") {
+        assert!(report.iter().any(|w| w.contains("differs only in letter case")), "{report:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn premiere_case_fallback_refuses_an_ambiguous_name() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    std::fs::rename(fixture.0.join("source.png"), fixture.0.join("source.PNG")).unwrap();
+    std::fs::copy(fixture.0.join("source.PNG"), fixture.0.join("Source.png")).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("ambiguous")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!(["source.png"]));
+}
+
+#[test]
 fn premiere_generated_media_is_not_probed_as_a_file() {
     // Hand-written: black video stores its four-character code (`BLAK`) as its file path.
     let fixture = Fixture::new();

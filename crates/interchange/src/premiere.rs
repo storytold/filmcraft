@@ -172,7 +172,7 @@ pub struct Item {
     /// The `MasterClip` ObjectUID of an adjustment layer (`IsAdjustmentLayer`).
     #[serde(default)]
     pub adjustment_layer: Option<String>,
-    /// Markers of the source media's master clip.
+    /// Markers of the source media's master clip, on the first timeline item that uses it.
     #[serde(default)]
     pub media_markers: Vec<filmcraft_project::Marker>,
     pub nested_sequence: Option<String>,
@@ -250,6 +250,14 @@ fn ticks(s: Option<&str>, fallback: Tick) -> Result<Tick> {
     Ok(tick)
 }
 
+/// Width and height of a `FrameRect` (`left,top,right,bottom`).
+fn frame_rect_size(rect: &str) -> Result<(u32, u32)> {
+    let v: Vec<i64> = rect.split(',').map(|f| f.trim().parse::<i64>()).collect::<std::result::Result<_, _>>().map_err(|_| error("invalid frame rectangle"))?;
+    let [left, top, right, bottom] = v[..] else { return Err(error("invalid frame rectangle")) };
+    let w = u32::try_from(right.checked_sub(left).ok_or_else(|| error("invalid frame rectangle"))?).map_err(|_| error("invalid frame rectangle"))?;
+    let h = u32::try_from(bottom.checked_sub(top).ok_or_else(|| error("invalid frame rectangle"))?).map_err(|_| error("invalid frame rectangle"))?;
+    Ok((w, h))
+}
 fn dimension(s: Option<&str>, default: u32) -> Result<u32> {
     match s {
         None | Some("0") => Ok(default),
@@ -326,7 +334,10 @@ fn generator(code: &str) -> Option<filmcraft_media::Generator> {
 
 fn relative_media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
     let base = base_dir.filter(|b| !b.is_empty())?;
-    child_text(n, "RelativePath").filter(|r| !r.is_empty()).map(|r| crate::resolve_path(r, Some(base)))
+    // Premiere sometimes writes a path on another drive as `..\..\C:\...`: joining that to the
+    // project folder names a place that never existed, so such a value is not used.
+    let drive = |seg: &str| matches!(seg.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic());
+    child_text(n, "RelativePath").filter(|r| !r.is_empty() && !r.split(['/', '\\']).any(drive)).map(|r| crate::resolve_path(r, Some(base)))
 }
 
 /// Whether `path` is an absolute path of the other system family than `base` (POSIX against a
@@ -512,15 +523,18 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         }
     }
     let mut sequences = Vec::new();
+    let mut marker_owners = std::collections::HashSet::new();
     let mut item_count = 0usize;
     let mut skipped_items = BTreeSet::new();
     let mut unsupported_effects = BTreeMap::new();
     for n in root.children().filter(|n| n.has_tag_name("Sequence")) {
         spend(&mut work_left, n)?;
         let name = child_text(n, "Name").unwrap_or("Sequence").to_string();
-        let width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
-        let height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
-        filmcraft_project::validate_frame_size(width, height).map_err(error)?;
+        // The sequence frame is the video track group's `FrameRect`; the preview size is only the
+        // fallback (it can differ: a 2560x1440 sequence previewing at 1920x1080).
+        let mut width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
+        let mut height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
+        let mut frame_rect: Option<(u32, u32)> = None;
         let mut frame_rate = None;
         let mut sample_rate = None;
         let mut tracks = Vec::new();
@@ -551,6 +565,15 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                 }
                 frame_rate = Some(rate);
             }
+            if group.has_tag_name("VideoTrackGroup")
+                && let Some(rect) = child_text(group, "FrameRect")
+            {
+                let size = frame_rect_size(rect)?;
+                if frame_rect.is_some_and(|previous| previous != size) {
+                    return Err(error(format!("{name}: conflicting video track group frame sizes")));
+                }
+                frame_rect = Some(size);
+            }
             if group.has_tag_name("AudioTrackGroup")
                 && let Some(rate) = child(group, "TrackGroup").and_then(|g| child(g, "FrameRate"))
             {
@@ -577,7 +600,8 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                 if tracks.iter().any(|t: &Track| t.kind == kind && t.index == index) {
                     return Err(error("duplicate track index"));
                 }
-                let muted = value(track, "IsMuted").is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
+                let muted = value(track, "IsMuted").is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1")
+                    || (kind == "audio" && audio::fader_muted(track, &ids, &mut work_left, report, &name)?);
                 let base = child(track, "ClipTrack").and_then(|c| child(c, "Track"));
                 let locked = base.and_then(|b| child_text(b, "IsLocked")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
                 let track_name = base
@@ -703,7 +727,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                                 }
                             } else if kind == "video" && matches!(match_name, Some("AE.ADBE Lumetri" | "ADBE Lumetri")) {
                                 video_effects.push(color::read(c, &ids, &mut work_left, report)?);
-                            } else if kind == "audio" && matches!(match_name, Some("Internal Volume Stereo" | "Internal Channel Volume Stereo")) {
+                            } else if kind == "audio"
+                                && match_name.is_some_and(|m| m.starts_with("Internal Volume") || m.starts_with("Internal Channel Volume"))
+                            {
                                 audio::read(c, &ids, &mut work_left, &mut audio, report)?;
                             } else if !is_text && !is_shape {
                                 let count = unsupported_effects.entry((effect.clone(), match_name.unwrap_or("unknown").to_string())).or_insert(0usize);
@@ -807,7 +833,11 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     let mut media_markers = Vec::new();
                     if media_path.is_some() {
                         let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
-                        if let Some(master_clip) = referred(first, &ids, "ObjectRef").and_then(|c| child(c, "Clip")) {
+                        // Read once per master clip, onto the first timeline item that uses it:
+                        // re-reading for every cut would repeat the work, the warnings and the copy.
+                        if let Some(master_clip) = referred(first, &ids, "ObjectRef").and_then(|c| child(c, "Clip"))
+                            && marker_owners.insert(master_clip.id())
+                        {
                             spend(&mut work_left, master_clip)?;
                             media_markers = markers::read(master_clip, &ids, &mut work_left, report, &label)?;
                         }
@@ -841,6 +871,10 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                 tracks.push(Track { kind: kind.into(), index, muted, name: track_name, locked, items });
             }
         }
+        if let Some((w, h)) = frame_rect {
+            (width, height) = (w, h);
+        }
+        filmcraft_project::validate_frame_size(width, height).map_err(error)?;
         let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
         let markers = markers::read(n, &ids, &mut work_left, report, &name)?;
         sequences.push(Sequence {
@@ -1746,6 +1780,43 @@ mod tests {
         );
     }
     #[test]
+    fn master_clip_markers_are_read_once_however_often_the_media_is_cut() {
+        // A second cut of the same media; its master clip holds a web-link marker, whose URL
+        // warning would repeat for every cut if the markers were read per timeline item.
+        let xml = marker_fixture()
+            .replace(r#"<TrackItem ObjectRef="20"/>"#, r#"<TrackItem ObjectRef="20"/><TrackItem ObjectRef="20b"/>"#)
+            .replace(
+                r#"<Second ObjectRef="m-media"/></Marker>"#,
+                r#"<Second ObjectRef="m-media"/></Marker><Marker Index="1"><Second ObjectRef="m-web"/></Marker>"#,
+            )
+            .replace(
+                "</PremiereData>",
+                &format!(
+                    r#"<VideoClipTrackItem ObjectID="20b"><ClipTrackItem><TrackItem><Start>{}</Start><End>{}</End></TrackItem><SubClip ObjectRef="21"/></ClipTrackItem></VideoClipTrackItem></PremiereData>"#,
+                    3 * TPS,
+                    6 * TPS
+                ),
+            );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let items = &tree.sequences[0].tracks[0].items;
+        assert_eq!(items.iter().map(|i| i.media_markers.len()).collect::<Vec<_>>(), [2, 0]);
+        assert_eq!(report.entries.iter().filter(|e| e.message.contains("camera.mov: marker web")).count(), 1, "{report:?}");
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        let ItemKind::Media(media) = &fragment.project.item(seq.video_tracks[0].items[1].item).unwrap().kind else { panic!() };
+        assert_eq!(media.markers.len(), 2, "every cut shows the media's markers");
+    }
+    #[test]
+    fn more_markers_than_the_limit_are_truncated_with_a_warning() {
+        let entries: String = (0..10_001).map(|i| format!(r#"<Marker Index="{i}"><Second ObjectRef="m-chapter"/></Marker>"#)).collect();
+        let xml = marker_fixture().replace(
+            r#"<Marker Index="0"><Second ObjectRef="m-comment"/></Marker><Marker Index="1"><Second ObjectRef="m-web"/></Marker><Marker Index="2"><Second ObjectRef="m-chapter"/></Marker><Marker Index="3"><Second ObjectRef="m-bad"/></Marker>"#,
+            &entries,
+        );
+        let (fragment, _, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().markers.len(), 10_000);
+        assert!(report.mentions("more than 10000 markers"), "{report:?}");
+    }
+    #[test]
     fn hostile_marker_records_never_panic_or_escape_bounds() {
         let base = marker_fixture();
         for bad in ["{\"ticks\":-5}", "{\"ticks\":9223372036854775807}", "{\"ticks\":1.5}", "{\"ticks\":\"x\"}", "[]", "null"] {
@@ -1787,6 +1858,10 @@ mod tests {
         assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/Users/editor/Shoot/camera.mov"));
         let doc = read_with(&fixture(), r"D:\Edit\Project");
         assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("/missing/camera.mov"));
+        // A "relative" path that climbs onto another drive is never joined to the project folder.
+        let doc = read_with(&media(r"C:\Users\editor\Shoot\camera.mov", r"..\..\C:\Users\editor\Shoot\camera.mov"), "/home/editor/Project");
+        assert_eq!(doc.sequences[0].tracks[0].items[0].media_path.as_deref(), Some(r"C:\Users\editor\Shoot\camera.mov"));
+        assert!(doc.relative_media.is_empty());
         let long = media("/Users/editor/camera.mov", &"r".repeat(16385));
         assert!(read(long.as_bytes(), Some("/x"), &mut Report::default()).unwrap_err().to_string().contains("too long"));
     }

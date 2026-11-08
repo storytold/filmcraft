@@ -2,7 +2,7 @@
 //! Raw normalized 0.17782794 reads as 0 dB in Premiere; zero represents silence.
 //! Original work, MIT OR Apache-2.0. Temporal handles are explicitly approximate.
 use super::{error, referred, spend, value, warning};
-use crate::xml::child_text;
+use crate::xml::{child, child_text};
 use crate::{Report, Result};
 use filmcraft_project::{Keyframe, Param, ParamValue};
 use filmcraft_time::Tick;
@@ -24,15 +24,18 @@ pub(super) fn read<'a, 'i>(
     out: &mut BTreeMap<String, Param>,
     report: &mut Report,
 ) -> Result<()> {
-    let volume = child_text(component, "FilterMatchName") == Some("Internal Volume Stereo");
+    // Parameters are matched by their `Param@Index`: `Name` is localised (a Spanish Premiere
+    // writes Nivel / Izquierda / Derecha) while the index layout is not. Volume is Mute (0),
+    // Level (1); Channel Volume is Bypass (0), Left (1), Right (2).
+    let volume = child_text(component, "FilterMatchName").is_some_and(|m| m.starts_with("Internal Volume"));
     for ptr in component.descendants().filter(|n| n.has_tag_name("Param")) {
         let Some(p) = referred(Some(ptr), ids, "ObjectRef") else { continue };
         spend(work, p)?;
-        let key = match (volume, child_text(p, "Name")) {
-            (true, Some("Level")) => "volume.level",
-            (false, Some("Left")) => "channel_volume.left",
-            (false, Some("Right")) => "channel_volume.right",
-            (_, Some("Mute" | "Bypass")) => {
+        let key = match (volume, ptr.attribute("Index")) {
+            (true, Some("1")) => "volume.level",
+            (false, Some("1")) => "channel_volume.left",
+            (false, Some("2")) => "channel_volume.right",
+            (_, Some("0")) => {
                 if value(p, "CurrentValue").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) || value(p, "Keyframes").is_some() {
                     warning(report, "intrinsic audio mute/bypass automation retained in provenance, not imported");
                 }
@@ -69,4 +72,42 @@ pub(super) fn read<'a, 'i>(
         out.insert(key.to_string(), param);
     }
     Ok(())
+}
+
+fn is_true(v: &str) -> bool {
+    v == "1" || v.eq_ignore_ascii_case("true")
+}
+
+/// Whether an audio track is muted on its mixer fader: `AudioTrack/ComponentOwner` points to the
+/// track's component chain, whose `AudioFader` holds Volume (`Param@Index` 0) and Mute (1). Read
+/// by index because the parameter `Name` is localised. Mute automation is not imported: the
+/// value at the start of the sequence is used and a warning says so.
+pub(super) fn fader_muted<'a, 'i>(
+    track: Node<'a, 'i>,
+    ids: &BTreeMap<&str, Node<'a, 'i>>,
+    work: &mut usize,
+    report: &mut Report,
+    context: &str,
+) -> Result<bool> {
+    let owner = child(track, "AudioTrack").and_then(|t| child(t, "ComponentOwner")).and_then(|o| child(o, "Components"));
+    let Some(chain) = referred(owner, ids, "ObjectRef") else { return Ok(false) };
+    spend(work, chain)?;
+    let components = child(chain, "ComponentChain").and_then(|c| child(c, "Components")).or_else(|| child(chain, "Components"));
+    let fader = components
+        .into_iter()
+        .flat_map(|c| c.children())
+        .filter(|c| c.has_tag_name("Component"))
+        .filter_map(|c| referred(Some(c), ids, "ObjectRef"))
+        .find(|c| c.has_tag_name("AudioFader"));
+    let Some(fader) = fader else { return Ok(false) };
+    spend(work, fader)?;
+    let pointer = fader.descendants().find(|n| n.has_tag_name("Param") && n.attribute("Index") == Some("1"));
+    let Some(mute) = referred(pointer, ids, "ObjectRef") else { return Ok(false) };
+    spend(work, mute)?;
+    let start = value(mute, "StartKeyframe").and_then(|k| k.split(',').nth(1)).map(str::trim);
+    let muted = value(mute, "CurrentValue").or(start).is_some_and(is_true);
+    if value(mute, "Keyframes").is_some_and(|k| !k.trim().is_empty()) {
+        warning(report, format!("{context}: track mute automation retained in provenance, not imported; the starting value is used"));
+    }
+    Ok(muted)
 }
