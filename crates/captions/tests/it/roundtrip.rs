@@ -260,3 +260,49 @@ fn srt_to_vtt_to_scc_keeps_text_and_frames() {
     assert_eq!(scc::frame_of(doc3.cues[0].start), 60);
     assert_eq!(scc::frame_of(doc3.cues[1].end), 210);
 }
+
+#[test]
+fn tight_pop_on_load_can_cross_the_previous_caption_end() {
+    let text = "A second caption that needs more time to load";
+    let doc = Document {
+        cues: vec![
+            Cue { start: scc::RATE.tick_of(30), end: scc::RATE.tick_of(60), text: "First".into(), ..Default::default() },
+            Cue { start: scc::RATE.tick_of(67), end: scc::RATE.tick_of(150), text: text.into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+    for format in [Format::Scc, Format::Mcc] {
+        let back = parse(&write(&doc, format, WriteOptions::default()), format).unwrap();
+        assert_eq!(back.cues.len(), 2);
+        assert_eq!(scc::frame_of(back.cues[0].end), 60);
+        assert_eq!(scc::frame_of(back.cues[1].start), 67, "{format:?}");
+        assert_eq!(scc::frame_of(back.cues[1].end), 150);
+    }
+}
+
+#[test]
+fn interrupted_load_keeps_extended_characters_and_repeated_basic_pairs() {
+    for text in ["A second caption that needs more time to load", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "ÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀ\nÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀÀ"]
+    {
+        let doc = Document {
+            cues: vec![
+                Cue { start: scc::RATE.tick_of(30), end: scc::RATE.tick_of(60), text: "First".into(), ..Default::default() },
+                Cue { start: scc::RATE.tick_of(67), end: scc::RATE.tick_of(180), text: text.into(), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        for format in [Format::Scc, Format::Mcc] {
+            let back = parse(&write(&doc, format, WriteOptions::default()), format).unwrap();
+            assert_eq!(back.cues.len(), 2);
+            assert_eq!(back.cues[1].text.replace(['\n', ' '], ""), text.replace(['\n', ' '], ""), "{format:?}");
+            assert_eq!(scc::frame_of(back.cues[0].end), 60);
+            assert_eq!(scc::frame_of(back.cues[1].end), 180);
+        }
+        let pairs = scc::schedule(&doc);
+        for (&frame, &pair) in &pairs {
+            if (0x10..=0x1f).contains(&pair.0) {
+                assert!(pairs.get(&(frame - 1)) == Some(&pair) || pairs.get(&(frame + 1)) == Some(&pair), "split doubled code at {frame}");
+            }
+        }
+    }
+}
