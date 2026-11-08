@@ -1070,7 +1070,9 @@ pub fn commands() -> Vec<CommandSpec> {
                 let points: Vec<[f32; 2]> = p
                     .get("points")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(|q| Some([q.get(0)?.as_f64()? as f32, q.get(1)?.as_f64()? as f32])).collect())
+                    .map(|a| {
+                        a.iter().filter_map(|q| Some([q.get(0)?.as_f64()?.clamp(-1e7, 1e7) as f32, q.get(1)?.as_f64()?.clamp(-1e7, 1e7) as f32])).collect()
+                    })
                     .unwrap_or_default();
                 if k == 3 && points.len() < 3 {
                     return Err(bad("graphics.newShape", "a path needs at least 3 points"));

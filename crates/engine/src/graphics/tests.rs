@@ -946,3 +946,13 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     }
     check(s, clip, "video clip");
 }
+
+/// A huge path coordinate must not become f32 infinity (saved as `null`), which made the saved
+/// project unopenable.
+#[test]
+fn new_shape_huge_path_point_keeps_project_reopenable() {
+    let mut s = demo();
+    s.execute("graphics.newShape", json!({"shape": "path", "points": [[0, 0], [1e300, 0], [0, 10]]})).unwrap();
+    let bytes = filmcraft_format::encode(&s.project, false);
+    assert!(filmcraft_format::decode(&bytes).is_ok(), "saved project reopens");
+}
