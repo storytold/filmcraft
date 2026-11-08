@@ -1067,7 +1067,9 @@ segment is the same in both projects (content hash, start and length; a gap of b
 sequence settings) are filed under the new revision (`FrameServer::carry`,
 `frames::unchanged_frames`). The segments are the render bars' own, memoized per project
 snapshot (`PreviewStore::segments`). Nothing is kept when the sequence's caption tracks (drawn
-into the monitor's frames) or the project's LUTs changed.
+into the monitor's frames) or the project's LUTs changed, or when the sequence, or one nested in
+it, has a Metadata & Timecode Burn-in (it draws names the segments don't hash) or a Track Matte
+Key whose matte track is off (the matte draws it, but the segments hash only tracks that are on).
 
 Demo project, Gaussian Blur 40 on Desert_Dunes, 25 of its frames stepped through once to cache
 them, an edit elsewhere, then the same 25 frames stepped through again (release, M3 Pro, load
