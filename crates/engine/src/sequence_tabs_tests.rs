@@ -50,7 +50,7 @@ fn close_others_keeps_one_tab_and_shows_it() {
 #[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
-    let (revision, steps) = (s.revision, s.history.undo.len());
+    let (revision, view_epoch, steps) = (s.revision, s.view_epoch, s.history.undo.len());
     let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
@@ -60,9 +60,9 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step and not an edit: the revision may move (it is a view change, and that is
-    // what carries the new tab order into the autosave journal) but a clean project stays clean
-    let _ = revision;
+    // A tab move changes saved view state without changing the project revision or undo history.
+    assert_eq!(s.revision, revision);
+    assert!(s.view_epoch > view_epoch, "the new tab order must reach the autosave journal");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
