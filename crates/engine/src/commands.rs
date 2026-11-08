@@ -5202,8 +5202,10 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     }
     s.path = path;
     s.revision += 1;
+    s.view_epoch = 0;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
+    s.saved_view_epoch = 0;
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);

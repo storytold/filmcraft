@@ -33,7 +33,10 @@ fn saved_file_is_versioned_and_save_copy_keeps_state() {
     assert!(s.is_dirty(), "Save a Copy leaves the project unsaved");
     assert_eq!(s.path.as_deref(), Some(path.as_str()));
     let mut t = Session::default();
+    t.view_epoch = 9;
+    t.saved_view_epoch = 3;
     t.execute("file.open", json!({"path": copy})).unwrap();
+    assert_eq!((t.view_epoch, t.saved_view_epoch), (0, 0));
     assert_eq!(*t.project, *s.project);
     // Revert discards the edit.
     s.execute("file.revert", json!({})).unwrap();
