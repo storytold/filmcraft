@@ -535,6 +535,7 @@ impl eframe::App for FilmcraftApp {
             self.suspended_ime_controls(&ctx);
         }
         let t0 = std::time::Instant::now();
+        self.gpu_flush_uploads();
         self.ui_inner(ui, frame);
         self.finish_ime_reset_ui(&ctx);
         self.log_pass(t0.elapsed().as_secs_f64() * 1e3);

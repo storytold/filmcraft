@@ -54,6 +54,15 @@ impl FilmcraftApp {
         }
     }
 
+    /// Submit the frame workers' uploads recorded since the last pass
+    /// ([`filmcraft_gpu::GpuCompositor::flush_uploads`]): the UI thread is the device's only submitter.
+    pub fn gpu_flush_uploads(&mut self) {
+        let Some(g) = self.gpu.as_ref() else { return };
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.flush_uploads())).is_err() {
+            self.disable_gpu("compositor panicked");
+        }
+    }
+
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
         log::error!("GPU compositor disabled: {why}");
