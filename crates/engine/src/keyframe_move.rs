@@ -275,6 +275,8 @@ mod tests {
         }
     }
 
+    /// `effects.deleteKeyframes` removes exactly the listed keys across lanes in one undo step, and
+    /// refuses invalid or oversized requests without touching the project or its history.
     #[test]
     fn delete_of_listed_keys_across_lanes_is_one_undo_step() {
         const DEL: &str = "effects.deleteKeyframes";
