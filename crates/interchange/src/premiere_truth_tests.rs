@@ -101,8 +101,8 @@ fn premiere_corpus_matches_scripting_api_truth() {
         let bytes = std::fs::read(path).unwrap();
         let actual = match std::panic::catch_unwind(|| import(&bytes, &options, None)) {
             Ok(Ok((fragment, _, _))) => imported(&fragment.project),
-            // A project without sequences is expected to fail with `Error::Empty`.
-            Ok(Err(_)) if expected.is_empty() => continue,
+            // A project without sequences is expected to fail with `Error::Empty`, and only that.
+            Ok(Err(crate::Error::Empty)) if expected.is_empty() => continue,
             Ok(Err(error)) => {
                 failed += 1;
                 total += expected.len();
