@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus reliable Premiere `.prproj` interchange ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (bounded Premiere import; remaining fidelity gaps explicit) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -97,7 +97,7 @@ Also shipped: Ukrainian (menus only, 10%). Detail: [docs/localization-parity.md]
 Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/gaps.md](docs/gaps.md).
 
 1. **No launch crashes, and CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; no workflow runs the tests today). 40–80 h.
-2. **Expand Premiere `.prproj` import fidelity**, still a beta requirement. Bounded import now works; bins, markers and full effects remain ([limits](docs/premiere-import.md)); remaining effort not re-estimated.
+2. **Expand Premiere `.prproj` import fidelity**, still a beta requirement. Bounded import now works, including bins and markers; full effect/font/transition fidelity, reverse/time-remapped clips and smart bins remain ([limits](docs/premiere-import.md)); remaining effort not re-estimated.
 3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2, HEVC 4:2:2; #626). 30–50 h.
 4. **Measure fidelity against Premiere** and add `cargo xtask parity`. 50–90 h.
 5. **Real-world media corpus and workflow acceptance tests.** 40–70 h.
@@ -166,6 +166,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Upcoming #2: Premiere import now covers bins and markers; remaining gaps restated. |
+| 2026-10-17 | minor | Bounded Premiere import available; keep alpha stage and historical readiness estimates, with fidelity/bin/marker gaps explicit. |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
@@ -175,4 +177,3 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 | 2026-10-10 | major | Restructured to the craftrules progress-docs shape: stage banner, headline numbers, dimension / feature / language tables, upcoming; re-measured against Premiere 26.5.2 (breadth ~87 → ~86%, ready ~50–60% → ~55%); honest assessment and scorecard moved to docs/target-app-parity.md, "Where we are lacking" to docs/gaps.md, milestones to docs/roadmap.md, interface localization to docs/localization-parity.md |
 | 2026-10-08 | minor | Log entries for HEVC export, Source playback and range dragging |
 | 2026-10-05 | major | Honest assessment added: checklist ~87% vs ready for real work ~50–60% |
-| 2026-10-17 | minor | Bounded Premiere import available; keep alpha stage and historical readiness estimates, with fidelity/bin/marker gaps explicit. |

@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (bounded Premiere import; remaining fidelity gaps explicit) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -298,8 +298,8 @@ niche requests among the bug reports about two to one, and nobody reports having
 **Alpha.** It passes the core-workflow gate ([roadmap.md](roadmap.md#alpha-gate): all six of Premiere's core daily workflows work end to end on macOS and the project saves and reopens). Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
 round-trip through XML / AAF), but ready-for-real-work is ~56%, below the ~75% beta bar, and the
 standard's beta condition "opens and saves the target's main format reliably" is not yet met:
-FilmCraft opens a bounded subset of `.prproj` projects; bins and full effect fidelity
-remain unsupported ([limits](premiere-import.md)). The readiness scores and effort estimates
+FilmCraft opens a bounded subset of `.prproj` projects (sequences, bins, markers); smart bins,
+reverse/time-remapped clips and full effect fidelity remain unsupported ([limits](premiere-import.md)). The readiness scores and effort estimates
 below have not been re-measured for this importer.
 Distance to beta: ~19 points of ready-for-real-work plus broader `.prproj` coverage, ~400–700 agent-hours:
 
@@ -356,10 +356,11 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Stage text: Premiere import now covers bins and markers; smart bins, reverse/time-remapped clips and full effect fidelity remain. No score, stage or estimate change. |
+| 2026-10-17 | minor | Record bounded Premiere project import and its limits; no readiness-score, stage or effort-total change. |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
 | 2026-10-10 | major | Created from ROADMAP.md's scorecard and estimate; full re-measure against Premiere Pro 26.5.2 (menu label diff, installed-bundle listings, 188 open issues); breadth ~87 → ~86% (file formats counted), ready ~50–60% → ~55%, hours re-estimated to include plugins, AI, localization and `.prproj`; stage alpha |
 | 2026-10-05 | major | Honest assessment added in ROADMAP.md (checklist ~87% vs ready ~50–60%) |
 | 2026-10-02 | minor | Scorecard ~62% → ~72% → ~87% as the menu long tail, effects and codecs landed |
-| 2026-10-17 | minor | Record bounded Premiere project import and its limits; no readiness-score, stage or effort-total change. |

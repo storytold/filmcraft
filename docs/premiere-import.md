@@ -54,11 +54,16 @@ its provenance record; save/reopen retains records that remain in the project.
 Copying just the `.fcproj` does not include its linked media or source snapshot. They must remain
 available at their recorded locations; automatic portable-project conversion is outside this importer.
 
-Supported: video/audio tracks (track `IsMuted` only; the track-fader mute checkbox is not read),
+Supported: video/audio tracks (muted through `IsMuted` or the track fader's Mute, read by its
+parameter index because its name is localised; mute automation is reported and its starting value used),
 track names (`MZ.TrackName`; unnamed tracks keep generated names) and locks (`IsLocked`),
+the sequence frame size from the video track group's `FrameRect` (the preview frame size is only
+the fallback; Motion positions are converted against that frame),
 sequence markers and master-clip markers on their media (type, colour, duration, name and comment
 from each `DVAMarker` record; FilmCraft markers have no URL field, so a web link's URL is reported
-and left in the original snapshot; unreadable records are skipped with a warning),
+and left in the original snapshot; unreadable records are skipped with a warning; past 10,000 on one
+sequence or master clip the rest are skipped with a warning; a master clip's markers are read once,
+however many timeline clips cut its media),
 disabled clips (`ClipTrackItem/IsMuted`), generated media (black video, colour matte, bars and tone,
 transparent video, counting leader) by the four-character code Premiere stores as its file path,
 as FilmCraft generators that never pass the document-path policy or probe (a colour matte's colour
@@ -69,13 +74,15 @@ sequences, still media, caption text, plain text graphics, editable Motion scale
 intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
 records without absolute timing retain clip-edge fades. Unknown effects remain
 in the original snapshot and are reported once per distinct effect name with an occurrence count,
-rather than silently recreated with guessed parameters. Fader-muted audio imports audible unless
-the track is also muted through `IsMuted`.
+rather than silently recreated with guessed parameters.
 Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
 or unreadable media remains visible as offline placeholders. A media path saved on the other
 system family (POSIX against a Windows drive or share, or the reverse) is replaced by the stored
 `RelativePath` resolved against the project's folder; a stored path that cannot be opened falls
-back to that relative path with a warning. Document references, including that fallback, pass the
+back to that relative path with a warning. A `RelativePath` that names a drive (`..\..\C:\...`)
+is not used. When neither path exists, a file in the same folder whose name differs only in letter
+case (`clip.mov` stored, `clip.MOV` on a case-sensitive disk) is used, with a warning, if it is the
+only such file. Document references, including that fallback, pass the
 existing document-path policy before canonicalization. Both the reference and resolved file must have a
 recognized media extension, and the registered media opener must accept the file before it is
 hashed or copied. Non-media, refused paths and failed probes stay offline with only their original
@@ -118,8 +125,7 @@ Motion uses `MatchName` (`AE.ADBE Motion` / `ADBE Motion`) and ParameterID 1 (Po
 come from `CurrentValue` or the static `StartKeyframe` record. Bounded source-time keyframes
 for these controls are imported with linear/hold interpolation; original easing remains approximate.
 Other Motion parameter IDs are not mapped. These fixes address the name/reference defects discussed in
-[issue #978](https://github.com/storytold/filmcraft/issues/978#issuecomment-6254913542);
-track-fader mute remains unsupported. See the fidelity sections below for audio and animation limits.
+[issue #978](https://github.com/storytold/filmcraft/issues/978#issuecomment-6254913542). See the fidelity sections below for audio and animation limits.
 
 Text graphics match the text component's `MatchName` and Source Text ParameterID 1, then decode
 the static base64 `StartKeyframeValue` using the bounded length-prefixed UTF-8 envelope heuristic
@@ -195,15 +201,15 @@ never linked merely because their timing or filenames match. Each sequence also 
 AudioTrackGroup ticks-per-sample rate separately from the video rate. Absent audio rate metadata
 keeps the 48 kHz default; invalid rates are rejected before changing the project.
 
-Internal Volume Stereo Level and Internal Channel Volume Stereo Left/Right control points are
+Volume Level (`Internal Volume Stereo` / `Mono`) and Channel Volume Left/Right control points are
 mapped to FilmCraft's intrinsic audio effects, retaining source-media ticks and normalized
 level values (0.17782794 is unity/0 dB in the observed native control; zero is silence).
 Keyframes are bounded, validated, sorted and retained in provenance. Native audio interpolation
 handles cannot be represented exactly by this mapping: interpolation uses linear dB segments
 and the import report explicitly warns about the approximation. Mute/bypass automation is still
 unsupported and reported. This is control-point preservation, not a claim of rendered-audio
-parity. Audio parameter selection currently recognizes the English names `Level`, `Left`, `Right`,
-`Mute` and `Bypass`; localized audio parameter names are not yet mapped. Original source snapshots
+parity. Audio parameters are selected by `Param@Index` (Volume: Mute 0, Level 1; Channel Volume:
+Bypass 0, Left 1, Right 2), not by `Name`, which Premiere localises (`Nivel`, `Izquierda`, `Derecha`). Original source snapshots
 and existing user-edited imports are never rewritten.
 
 

@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (bounded Premiere import; remaining fidelity gaps explicit) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available; remaining gaps restated) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -55,9 +55,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** bounded native gzip/plain XML import with linked or copied media, nested sequences,
   exact ticks, per-sequence frame rates and immutable source snapshots. Unreadable media stays
-  offline with diagnostics. Parser and engine regressions use hand-written fixtures; four
-  real Premiere projects (not committed) were also imported without changing their source hashes.
-- **Missing:** unused bin media/organization, markers, full effect/font/transition fidelity,
+  offline with diagnostics. Bins and their media, sequence and master-clip markers import.
+  Parser and engine regressions use hand-written fixtures; a 66-project truth corpus and real
+  Premiere projects (not committed) were also imported without changing their source hashes.
+- **Missing:** smart/search bins, web-link marker URLs, full effect/font/transition fidelity,
   reverse/time-remapped clips, settings-only projects and `.prproj` export. These imports do not
   establish rendering parity with Premiere or the beta gate's broad reliability requirement.
 - **Next:** extend the sanitized corpus and supported object graph; keep unsupported details in
@@ -322,3 +323,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-17 | minor | G2: bounded native Premiere import with source provenance; document remaining fidelity/bin/export gaps. Readiness scores and effort totals not re-measured. |
+| 2026-11-08 | minor | G2: bins and markers now import; remaining gaps are smart bins, marker URLs, effect fidelity, reverse/time-remapped clips and export. Readiness scores and effort totals not re-measured. |
