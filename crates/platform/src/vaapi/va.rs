@@ -135,38 +135,74 @@ unsafe impl Send for Display {}
 // session (`&mut` or `&` of one owner); the display itself is only read (`api`, `dpy`, `vendor`).
 unsafe impl Sync for Display {}
 
-/// The display every [`Session`] decodes on. Opening a display takes a few milliseconds with
-/// Intel's and Mesa's drivers but 0.2-0.3 s with NVIDIA's (a CUDA context each, about 100 MB of
-/// video memory), and terminating one 60-70 ms, on the thread that creates or drops the decoder: a
-/// frame worker at every clip on the timeline, the UI thread when media is removed. So one display
-/// is opened (by [`probe`] at startup) and kept for the life of the process, like the libraries,
-/// and sessions only make and destroy their own configuration, context and surfaces.
-static SHARED: Mutex<Option<Arc<Display>>> = Mutex::new(None);
+/// The displays [`Session`]s decode on. Opening a display takes a few milliseconds with Intel's and
+/// Mesa's drivers but 0.2-0.3 s with NVIDIA's (a CUDA context each, about 100 MB of video memory),
+/// and terminating one 60-70 ms, on the thread that creates or drops the decoder: a frame worker at
+/// every clip on the timeline, the UI thread when media is removed. So displays are kept for the
+/// life of the process, like the libraries (the first is opened by [`probe`] at startup), and
+/// sessions only make and destroy their own configuration, context and surfaces.
+///
+/// Sessions on one Mesa display get less out of the GPU than sessions on their own: three 4K 50 fps
+/// layers on an RX 9070 XT (two video engines) showed 9-21 % of their frames on one display and
+/// 85-100 % on several (docs/performance.md). So on Mesa a session that would have to share gets
+/// another display, up to [`display_limit`].
+static POOL: Mutex<Vec<Arc<Display>>> = Mutex::new(Vec::new());
 /// Displays opened so far (diagnostics and tests).
 static OPENED: AtomicUsize = AtomicUsize::new(0);
 
-/// The number of VA displays this process has opened (one, unless the shared one stopped working).
+/// The number of VA displays this process has opened: one, unless the shared one stopped working or
+/// decoders overlap on a driver with [`display_limit`] above one.
 pub fn displays_opened() -> usize {
     OPENED.load(Ordering::Relaxed)
 }
 
-/// The shared display, opened on first use.
-fn shared() -> Result<Arc<Display>, String> {
-    let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(d) = shared.as_ref() {
-        return Ok(d.clone());
-    }
-    let d = Arc::new(Display::open()?);
-    *shared = Some(d.clone());
-    Ok(d)
+/// How many displays are kept for a driver. Only Mesa's is known to gain from more and to open them
+/// cheaply; NVIDIA's pays for each one (see [`POOL`]), and Intel's has not been measured.
+pub fn display_limit(vendor: &str) -> usize {
+    if vendor.contains("Mesa") { 4 } else { 1 }
 }
 
-/// Share `new` from now on instead of `old` (if `old` is still the shared one). Sessions on `old`
-/// keep it until they end.
+/// Which display a new session goes on, given how many sessions each kept display has: the first
+/// idle one, else `None` (open another) below `limit`, else the least busy.
+pub(crate) fn pick_display(sessions: &[usize], limit: usize) -> Option<usize> {
+    if let Some(idle) = sessions.iter().position(|&n| n == 0) {
+        return Some(idle);
+    }
+    if sessions.len() < limit {
+        return None;
+    }
+    sessions.iter().enumerate().min_by_key(|&(_, n)| n).map(|(i, _)| i)
+}
+
+/// A display for a new session, opened if the pool has none to spare.
+fn shared() -> Result<Arc<Display>, String> {
+    let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
+    // Clones are only made under this lock, so each count is the pool's own reference plus one per
+    // session; a session ending meanwhile only makes the choice slightly stale.
+    let sessions: Vec<usize> = pool.iter().map(|d| Arc::strong_count(d).saturating_sub(1)).collect();
+    let limit = pool.first().map_or(1, |d| display_limit(d.vendor()));
+    if let Some(d) = pick_display(&sessions, limit).and_then(|i| pool.get(i)) {
+        return Ok(d.clone());
+    }
+    match Display::open() {
+        Ok(d) => {
+            let d = Arc::new(d);
+            pool.push(d.clone());
+            Ok(d)
+        }
+        // Sharing is slower but works: an extra display is never worth a lost hardware decoder.
+        Err(e) => pool.first().cloned().ok_or(e),
+    }
+}
+
+/// Keep `new` from now on instead of `old` (if `old` is still kept). Sessions on `old` keep it until
+/// they end.
 fn replace_shared(old: &Arc<Display>, new: Arc<Display>) {
-    let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-    if shared.as_ref().is_none_or(|d| Arc::ptr_eq(d, old)) {
-        *shared = Some(new);
+    let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(slot) = pool.iter_mut().find(|d| Arc::ptr_eq(d, old)) {
+        *slot = new;
+    } else if pool.is_empty() {
+        pool.push(new);
     }
 }
 
@@ -248,7 +284,7 @@ impl Drop for Display {
 /// One stream's decoder: a VLD configuration of a profile, its surfaces and context, and the image
 /// pictures are read back through.
 pub struct Session {
-    /// The shared display (see [`SHARED`]), or the one that replaced it.
+    /// A display of the pool (see [`POOL`]), or the one that replaced it.
     display: Arc<Display>,
     config: ffi::VAConfigID,
     context: ffi::VAContextID,
@@ -278,8 +314,8 @@ impl Session {
         match Self::on(display.clone(), profiles, size, count, geometry) {
             Ok(s) => Ok(s),
             Err(first) => {
-                // The shared display may have stopped working (a GPU reset): try a new one, and
-                // share that one from now on if it works. (A stream the driver does not take
+                // This display may have stopped working (a GPU reset): try a new one, and keep
+                // that one from now on if it works. (A stream the driver does not take
                 // fails on both and costs the one extra display opening.)
                 let fresh = Arc::new(Display::open().map_err(|e| format!("{first}; a new display: {e}"))?);
                 let s = Self::on(fresh.clone(), profiles, size, count, geometry).map_err(|_| first)?;
@@ -530,6 +566,15 @@ impl Accel for Session {
         self.decode_picture(target, pic, iq, slices)
     }
 
+    fn decode_av1(
+        &mut self,
+        target: usize,
+        pic: &ffi::VADecPictureParameterBufferAV1,
+        tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> Result<(), String> {
+        self.decode_picture(target, pic, None::<&()>, tiles)
+    }
+
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
         let image = self.get_image(index)?;
         self.read_image(&image)
@@ -557,7 +602,7 @@ impl Drop for Session {
         let (api, dpy) = (self.display.api, self.display.dpy);
         // SAFETY: each object below was made on this display and is destroyed once, by this
         // session only; the display itself is terminated when its last user lets it go (the
-        // shared one never is).
+        // kept ones never are).
         unsafe {
             if let Some(image) = self.image.take() {
                 (api.destroy_image)(dpy, image.image_id);
@@ -582,4 +627,29 @@ pub fn probe() -> &'static Result<String, String> {
     static PROBE: OnceLock<Result<String, String>> = OnceLock::new();
     // the display opened to answer is the one sessions share
     PROBE.get_or_init(|| shared().map(|d| d.vendor().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_limit, pick_display};
+
+    #[test]
+    fn a_session_shares_a_display_only_when_the_pool_is_full() {
+        assert_eq!(pick_display(&[], 4), None, "the first session opens a display");
+        assert_eq!(pick_display(&[0], 4), Some(0), "one decoder after another stays on one display");
+        assert_eq!(pick_display(&[1], 4), None, "an overlapping decoder gets its own");
+        assert_eq!(pick_display(&[1, 0, 0], 4), Some(1), "an idle display goes first");
+        assert_eq!(pick_display(&[1, 1, 1, 1], 4), Some(0), "a full pool shares");
+        assert_eq!(pick_display(&[2, 2, 1, 2], 4), Some(2), "with the least busy display");
+        assert_eq!(pick_display(&[5], 1), Some(0), "a limit of one always shares");
+        assert_eq!(pick_display(&[usize::MAX], 1), Some(0));
+    }
+
+    #[test]
+    fn only_mesa_gets_more_than_one_display() {
+        assert_eq!(display_limit("Mesa Gallium driver 26.2.6-arch1.1 for AMD Radeon RX 9070 XT (radeonsi)"), 4);
+        for other in ["Intel iHD driver for Intel(R) Gen Graphics", "VA-API NVDEC driver [direct backend]", ""] {
+            assert_eq!(display_limit(other), 1, "{other}");
+        }
+    }
 }

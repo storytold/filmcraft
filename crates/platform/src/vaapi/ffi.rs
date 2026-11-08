@@ -70,6 +70,7 @@ pub const VAProfileH264High: VAProfile = 7;
 pub const VAProfileH264ConstrainedBaseline: VAProfile = 13;
 pub const VAProfileHEVCMain: VAProfile = 17;
 pub const VAProfileHEVCMain10: VAProfile = 18;
+pub const VAProfileAV1Profile0: VAProfile = 32;
 pub const VAEntrypointVLD: VAEntrypoint = 1;
 
 pub const VAConfigAttribRTFormat: VAConfigAttribType = 0;
@@ -458,6 +459,125 @@ pub type vaCreateConfig = unsafe extern "C" fn(
     config_id: *mut VAConfigID,
 ) -> VAStatus;
 pub type vaDestroyConfig = unsafe extern "C" fn(dpy: VADisplay, config_id: VAConfigID) -> VAStatus;
+/// `VASegmentationStructAV1`: segmentation of the current frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VASegmentationStructAV1 {
+    pub segment_info_fields: u32,
+    pub feature_data: [[i16; 8]; 8],
+    pub feature_mask: [u8; 8],
+    pub va_reserved: [u32; 4],
+}
+
+/// `VAFilmGrainStructAV1`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAFilmGrainStructAV1 {
+    pub film_grain_info_fields: u32,
+    pub grain_seed: u16,
+    pub num_y_points: u8,
+    pub point_y_value: [u8; 14],
+    pub point_y_scaling: [u8; 14],
+    pub num_cb_points: u8,
+    pub point_cb_value: [u8; 10],
+    pub point_cb_scaling: [u8; 10],
+    pub num_cr_points: u8,
+    pub point_cr_value: [u8; 10],
+    pub point_cr_scaling: [u8; 10],
+    pub ar_coeffs_y: [i8; 24],
+    pub ar_coeffs_cb: [i8; 25],
+    pub ar_coeffs_cr: [i8; 25],
+    pub cb_mult: u8,
+    pub cb_luma_mult: u8,
+    pub cb_offset: u16,
+    pub cr_mult: u8,
+    pub cr_luma_mult: u8,
+    pub cr_offset: u16,
+    pub va_reserved: [u32; 4],
+}
+
+/// `VAWarpedMotionParamsAV1`: the global motion of one reference.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAWarpedMotionParamsAV1 {
+    pub wmtype: c_int,
+    pub wmmat: [i32; 8],
+    pub invalid: u8,
+    pub va_reserved: [u32; 4],
+}
+
+/// `VADecPictureParameterBufferAV1`. The `*_fields` words are C bit-fields, packed by
+/// `av1::picture_parameters`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VADecPictureParameterBufferAV1 {
+    pub profile: u8,
+    pub order_hint_bits_minus_1: u8,
+    pub bit_depth_idx: u8,
+    pub matrix_coefficients: u8,
+    pub seq_info_fields: u32,
+    pub current_frame: VASurfaceID,
+    pub current_display_picture: VASurfaceID,
+    pub anchor_frames_num: u8,
+    pub anchor_frames_list: *mut VASurfaceID,
+    pub frame_width_minus1: u16,
+    pub frame_height_minus1: u16,
+    pub output_frame_width_in_tiles_minus_1: u16,
+    pub output_frame_height_in_tiles_minus_1: u16,
+    pub ref_frame_map: [VASurfaceID; 8],
+    pub ref_frame_idx: [u8; 7],
+    pub primary_ref_frame: u8,
+    pub order_hint: u8,
+    pub seg_info: VASegmentationStructAV1,
+    pub film_grain_info: VAFilmGrainStructAV1,
+    pub tile_cols: u8,
+    pub tile_rows: u8,
+    pub width_in_sbs_minus_1: [u16; 63],
+    pub height_in_sbs_minus_1: [u16; 63],
+    pub tile_count_minus_1: u16,
+    pub context_update_tile_id: u16,
+    pub pic_info_fields: u32,
+    pub superres_scale_denominator: u8,
+    pub interp_filter: u8,
+    pub filter_level: [u8; 2],
+    pub filter_level_u: u8,
+    pub filter_level_v: u8,
+    pub loop_filter_info_fields: u8,
+    pub ref_deltas: [i8; 8],
+    pub mode_deltas: [i8; 2],
+    pub base_qindex: u8,
+    pub y_dc_delta_q: i8,
+    pub u_dc_delta_q: i8,
+    pub u_ac_delta_q: i8,
+    pub v_dc_delta_q: i8,
+    pub v_ac_delta_q: i8,
+    pub qmatrix_fields: u16,
+    pub mode_control_fields: u32,
+    pub cdef_damping_minus_3: u8,
+    pub cdef_bits: u8,
+    pub cdef_y_strengths: [u8; 8],
+    pub cdef_uv_strengths: [u8; 8],
+    pub loop_restoration_fields: u16,
+    pub wm: [VAWarpedMotionParamsAV1; 7],
+    pub va_reserved: [u32; 8],
+}
+
+/// `VASliceParameterBufferAV1`: one tile.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VASliceParameterBufferAV1 {
+    pub slice_data_size: u32,
+    pub slice_data_offset: u32,
+    pub slice_data_flag: u32,
+    pub tile_row: u16,
+    pub tile_column: u16,
+    pub tg_start: u16,
+    pub tg_end: u16,
+    pub anchor_frame_idx: u8,
+    pub tile_idx_in_tile_list: u16,
+    pub va_reserved: [u32; 4],
+}
+
 /// The last two arguments are `VASurfaceAttrib *attrib_list, unsigned int num_attribs`; this
 /// backend passes none, so the attribute structure is not declared.
 pub type vaCreateSurfaces = unsafe extern "C" fn(

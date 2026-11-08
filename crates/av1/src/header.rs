@@ -454,6 +454,28 @@ pub(crate) fn relative_dist(seq: &SequenceHeader, a: u32, b: u32) -> i32 {
     (diff & (m - 1)) - (diff & m)
 }
 
+impl RefInfo {
+    /// The reference frame update process (7.20) for what the headers need of a slot.
+    pub(crate) fn store(&mut self, fh: &FrameHeader) {
+        self.valid = true;
+        self.frame_id = fh.current_frame_id;
+        self.upscaled_width = fh.upscaled_width;
+        self.frame_width = fh.frame_width;
+        self.frame_height = fh.frame_height;
+        self.render_width = fh.render_width;
+        self.render_height = fh.render_height;
+        self.mi_cols = fh.mi_cols;
+        self.mi_rows = fh.mi_rows;
+        self.frame_type = fh.frame_type;
+        self.order_hint = fh.order_hint;
+        self.saved_order_hints = fh.order_hints;
+        self.gm_params = fh.gm_params;
+        self.lf_deltas = fh.lf.deltas;
+        self.seg_features = fh.seg.features;
+        self.grain = fh.film_grain.clone();
+    }
+}
+
 /// Decoder state the frame header reads and updates across frames.
 pub struct HeaderState<'a> {
     pub seq: &'a SequenceHeader,

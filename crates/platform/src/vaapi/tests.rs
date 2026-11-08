@@ -40,6 +40,15 @@ fn valid(p: &VAPictureH264) -> bool {
 }
 
 impl Accel for Recorder {
+    fn decode_av1(
+        &mut self,
+        _target: usize,
+        _pic: &ffi::VADecPictureParameterBufferAV1,
+        _tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> Result<(), String> {
+        Err("this recorder is for H.264 and HEVC".into())
+    }
+
     fn surfaces(&self) -> &[ffi::VASurfaceID] {
         &self.ids
     }

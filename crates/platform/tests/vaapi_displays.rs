@@ -1,9 +1,10 @@
-//! VA-API decoders share one display (Linux). Opening a display takes 0.2-0.3 s with NVIDIA's
-//! driver (about 100 MB of video memory each) and terminating one 60-70 ms, on the thread that
-//! creates or drops the decoder (a frame worker at every clip, the UI thread when media is
-//! removed), so the process opens one and every decoder makes only its own context and surfaces on
-//! it, also several decoders at once on different threads. Its own test binary: the count of
-//! opened displays is process-wide, and other tests running at the same time would change it.
+//! VA-API decoders reuse displays (Linux). Opening a display takes 0.2-0.3 s with NVIDIA's driver
+//! (about 100 MB of video memory each) and terminating one 60-70 ms, on the thread that creates or
+//! drops the decoder (a frame worker at every clip, the UI thread when media is removed), so the
+//! process keeps what it opens and every decoder makes only its own context and surfaces: one
+//! display for decoders one after another, a few at most (Mesa only) for decoders at once. Its own
+//! test binary: the count of opened displays is process-wide, and other tests running at the same
+//! time would change it.
 //! Skips without ffmpeg (fixture generator) or without a VA-API driver.
 #![cfg(target_os = "linux")]
 
@@ -12,7 +13,7 @@ mod common;
 
 use common::*;
 use filmcraft_codecs::VideoDecoder;
-use filmcraft_platform::vaapi::va::displays_opened;
+use filmcraft_platform::vaapi::va::{display_limit, displays_opened, probe};
 
 fn hardware(s: &Stream) -> Option<Box<dyn VideoDecoder>> {
     match filmcraft_platform::vaapi_factory(&s.entry) {
@@ -25,7 +26,7 @@ fn hardware(s: &Stream) -> Option<Box<dyn VideoDecoder>> {
 }
 
 #[test]
-fn decoders_share_one_display() {
+fn decoders_reuse_displays() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let paths: Vec<_> = FIXTURES.iter().filter_map(|(name, _)| named(&ff, name)).collect();
     let streams: Vec<_> = paths.iter().map(|p| read_stream(p)).collect();
@@ -65,5 +66,8 @@ fn decoders_share_one_display() {
             j.join().unwrap();
         }
     }
-    assert_eq!(displays_opened(), opened, "decoders at once on several threads open no display");
+    // six decoders at once: at most the limit of this driver (one, or Mesa's four), and rounds after
+    // the first reuse them
+    let limit = display_limit(probe().as_ref().unwrap());
+    assert!((opened..=limit).contains(&displays_opened()), "decoders at once opened {} displays, limit {limit}", displays_opened());
 }
