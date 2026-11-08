@@ -165,54 +165,90 @@ pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
     d.name().ok()
 }
 
-/// The device a saved preference names, or `None` when it is gone.
+/// The card text a 0.16 preference may hold (`"Card, Device"`), or `None` where the name is it.
 ///
-/// A preference saved before cpal 0.17 can hold the name 0.16 reported, which a 0.17 device no
-/// longer answers to (see `saved_name_matches`); an exact name always wins. A legacy match is only
-/// taken when `usable` says the device can open a stream, since a hint that merely describes the
-/// card may not play or record, and [`legacy_rank`] picks between the endpoints it does match.
-pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str, usable: impl Fn(&cpal::Device) -> bool) -> Option<cpal::Device> {
-    let mut legacy: Option<cpal::Device> = None;
-    for d in devs {
-        if device_name(&d).is_some_and(|n| n == name) {
-            return Some(d);
-        }
-        if saved_name_matches(&d, name) && usable(&d) && legacy.as_ref().is_none_or(|best| legacy_rank(&d) > legacy_rank(best)) {
-            legacy = Some(d);
+/// Only ALSA keeps a description apart from the PCM id; every other backend describes a device
+/// with the same text `device_name` reports, so nothing is read there.
+#[cfg(target_os = "linux")]
+fn device_description(d: &cpal::Device) -> Option<String> {
+    d.description().ok().map(|desc| desc.name().to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn device_description(_: &cpal::Device) -> Option<String> {
+    None
+}
+
+/// What saved-name selection reads from a device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Named {
+    /// The name cpal reports (ALSA: the PCM id); what the settings store.
+    name: Option<String>,
+    /// The description's first line (ALSA: the card text); `None` where the name already is it.
+    described: Option<String>,
+}
+
+impl Named {
+    /// Whether this device answers to `saved` exactly.
+    fn answers_to(&self, saved: &str) -> bool {
+        self.name.as_deref() == Some(saved)
+    }
+}
+
+/// The position of the device a saved preference names, or `None` when it is gone.
+///
+/// An exact name always wins, even when `usable` is false: the caller reports the open error the
+/// same way it did before 0.17. A name saved by 0.16 is the card text that version reported, which
+/// a 0.17 device only carries in its description; such a match is taken only when `usable` says
+/// the device opens a stream in the requested direction, and [`legacy_rank`] picks between the
+/// endpoints that do match.
+fn named_index(devs: &[Named], saved: &str, usable: impl Fn(usize) -> bool) -> Option<usize> {
+    if saved.is_empty() {
+        return None;
+    }
+    if let Some(i) = devs.iter().position(|d| d.answers_to(saved)) {
+        return Some(i);
+    }
+    let mut legacy: Option<usize> = None;
+    for (i, d) in devs.iter().enumerate() {
+        if d.described.as_deref().is_some_and(|described| description_names(described, saved))
+            && usable(i)
+            && legacy.is_none_or(|best| legacy_rank(&devs[best]) < legacy_rank(d))
+        {
+            legacy = Some(i);
         }
     }
     legacy
+}
+
+/// The device a saved preference names, or `None` when it is gone.
+///
+/// A preference saved before cpal 0.17 can hold the name 0.16 reported, which a 0.17 device no
+/// longer answers to (see [`named_index`]).
+pub(crate) fn pick_named(devs: impl Iterator<Item = cpal::Device>, name: &str, usable: impl Fn(&cpal::Device) -> bool) -> Option<cpal::Device> {
+    let devs: Vec<cpal::Device> = devs.collect();
+    let named: Vec<Named> = devs.iter().map(|d| Named { name: device_name(d), described: device_description(d) }).collect();
+    let i = named_index(&named, name, |i| usable(&devs[i]))?;
+    devs.into_iter().nth(i)
 }
 
 /// How well a rewritten name fits a saved 0.16 card name: 1 for the `plughw` PCM, 0 otherwise.
 ///
 /// cpal 0.16 opened a card through `plughw` (software conversion, so any format the app asks for),
 /// while 0.17 also lists the raw `hw` endpoint for it. Prefer the one 0.16 would have used.
-fn legacy_rank(d: &cpal::Device) -> u8 {
-    u8::from(device_name(d).is_some_and(|n| n.starts_with("plughw:")))
-}
-
-/// Whether `d` still answers to a name saved before cpal 0.17.
-///
-/// 0.16 named ALSA hardware devices by card name; 0.17 names them by PCM id
-/// (`plughw:CARD=PCH,DEV=0`) and keeps the 0.16 name in the description instead.
-#[cfg(target_os = "linux")]
-fn saved_name_matches(d: &cpal::Device, saved: &str) -> bool {
-    d.description().is_ok_and(|desc| description_names(desc.name(), saved))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn saved_name_matches(_: &cpal::Device, _: &str) -> bool {
-    false
+fn legacy_rank(d: &Named) -> u8 {
+    u8::from(d.name.as_deref().is_some_and(|n| n.starts_with("plughw:")))
 }
 
 /// Whether a 0.17 device description names the card a 0.16 preference holds.
 ///
-/// A hardware description is `"Card, Device"` (or just one of the two), possibly prefixed with
-/// `hw:`/`plughw:`; the saved name is the card name.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// A hardware description is `"Card, Device"` (or just one of the two), so the card is the text
+/// before the first comma. A description that still carries an ALSA PCM prefix (`hw:`/`plughw:`)
+/// is accepted too, and surrounding whitespace is ignored.
 fn description_names(described: &str, saved: &str) -> bool {
-    described == saved || described.split(',').next().is_some_and(|card| card.trim() == saved)
+    let first = described.split(',').next().unwrap_or_default().trim();
+    let card = ["plughw:", "hw:"].iter().find_map(|prefix| first.strip_prefix(*prefix)).unwrap_or(first).trim();
+    !saved.is_empty() && card == saved
 }
 
 impl CpalOut {
@@ -349,8 +385,8 @@ impl CpalOut {
 struct Health {
     /// The device went away (unplugged): restart the stream at once.
     lost: AtomicBool,
-    /// A backend error since the last check (cpal keeps the stream alive after these): restart
-    /// only if the stream also stopped consuming samples.
+    /// A recoverable backend error since the last check: restart only if the stream also stopped
+    /// consuming samples.
     errored: AtomicBool,
     /// Unrecoverable: the mixer panicked, a buffer could not be allocated, or restarts ran out.
     /// [`AudioOut::played_frames`] reports `None` and playback goes on without sound.
@@ -442,7 +478,12 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
     played.fetch_add((buf.len() / channels.max(1)) as u64, Ordering::SeqCst);
 }
 
-/// Flag what a stream error means for the watchdog: cpal keeps the stream alive after these.
+/// Flag what a stream error means for the watchdog.
+///
+/// Only `BufferUnderrun` leaves the stream healthy: cpal recovers the ALSA xrun itself, so the
+/// underrun is reported and nothing else. `DeviceNotAvailable` is a lost device, restarted at once;
+/// `StreamInvalidated` and a backend error ask for a rebuild only if the stream also stops
+/// consuming samples. None of them fail playback.
 fn stream_error(health: &Health, e: cpal::StreamError) {
     match e {
         cpal::StreamError::DeviceNotAvailable => health.lost.store(true, Ordering::SeqCst),
@@ -565,8 +606,59 @@ mod tests {
     fn a_saved_card_name_still_names_its_017_device() {
         assert!(description_names("HDA Intel PCH, ALC897 Analog", "HDA Intel PCH"));
         assert!(description_names("HDA Intel PCH", "HDA Intel PCH"));
+        assert!(description_names("plughw:HDA Intel PCH, ALC897 Analog", "HDA Intel PCH"), "a description may keep its PCM prefix");
+        assert!(description_names(" HDA Intel PCH , ALC897 Analog", "HDA Intel PCH"), "surrounding whitespace is ignored");
         assert!(!description_names("HDA Intel PCH, ALC897 Analog", "HDA Intel"), "a card name is matched whole");
         assert!(!description_names("plughw:CARD=PCH,DEV=0", "HDA Intel PCH"));
+        assert!(!description_names("HDA Intel PCH, ALC897 Analog", ""), "an empty saved name names nothing");
+    }
+
+    /// A device list entry as saved-name selection sees it.
+    fn named(name: &str, described: Option<&str>) -> Named {
+        Named { name: Some(name.to_string()), described: described.map(str::to_string) }
+    }
+
+    /// The 0.16 card name and the two endpoints 0.17 lists for it.
+    fn pch() -> [Named; 2] {
+        [named("hw:CARD=PCH,DEV=0", Some("HDA Intel PCH, ALC897 Analog")), named("plughw:CARD=PCH,DEV=0", Some("HDA Intel PCH, ALC897 Analog"))]
+    }
+
+    /// An exact name is taken as is, even when the device cannot open a stream: the caller reports
+    /// that open error exactly as it did before 0.17.
+    #[test]
+    fn an_exact_saved_name_wins_without_being_probed() {
+        let mut devs = pch().to_vec();
+        devs.push(named("hw:CARD=PCH,DEV=1", None));
+        let asked = std::cell::Cell::new(false);
+        assert_eq!(
+            named_index(&devs, "hw:CARD=PCH,DEV=1", |_| {
+                asked.set(true);
+                false
+            }),
+            Some(2)
+        );
+        assert!(!asked.get(), "an exact name is not probed for a usable configuration");
+        assert_eq!(named_index(&devs, "hw:CARD=PCH,DEV=1", |_| false), Some(2));
+        assert_eq!(named_index(&devs, "hw:CARD=PCH,DEV=1", |i| i != 2), Some(2), "an exact name wins over a usable legacy match");
+    }
+
+    /// A saved 0.16 card name resolves to a device `devices()` lists, and only when that device can
+    /// open a stream; otherwise the caller falls back to the default device.
+    #[test]
+    fn a_legacy_card_name_needs_a_usable_device() {
+        let devs = pch();
+        assert_eq!(named_index(&devs, "HDA Intel PCH", |_| false), None, "a hint that opens nothing is left to the fallback");
+        assert_eq!(named_index(&devs, "HDA Intel PCH", |i| i == 0), Some(0));
+        assert_eq!(named_index(&devs, "HDA Intel PCH", |_| true), Some(1));
+        assert_eq!(named_index(&devs, "HDA Intel Audio", |_| true), None, "another card is not a match");
+    }
+
+    /// 0.16 opened a card through `plughw`; 0.17 also lists the raw `hw` endpoint, in either order.
+    #[test]
+    fn a_legacy_card_name_resolves_to_the_plughw_endpoint() {
+        let [hw, plughw] = pch();
+        assert_eq!(named_index(&[hw.clone(), plughw.clone()], "HDA Intel PCH", |_| true), Some(1));
+        assert_eq!(named_index(&[plughw, hw], "HDA Intel PCH", |_| true), Some(0));
     }
 
     /// #2633: the rate search costs ~190 ms on WASAPI, so the device default is taken as is.
@@ -595,11 +687,13 @@ mod tests {
         assert_eq!(samples.map(|s| s.inner()), [-8_388_608, 0, 8_388_607]);
     }
 
+    /// A stream error marks the stream for the watchdog and never silences playback.
     #[test]
     fn stream_errors_ask_for_a_restart_instead_of_failing_playback() {
         let health = Health::default();
         stream_error(&health, cpal::StreamError::BackendSpecific { err: cpal::BackendSpecificError { description: "`alsa::poll()` returned POLLERR".into() } });
         assert!(health.errored.load(Ordering::SeqCst) && !health.lost.load(Ordering::SeqCst));
+        assert!(health.reported.load(Ordering::SeqCst), "the first error of a stream is reported");
         stream_error(&health, cpal::StreamError::DeviceNotAvailable);
         assert!(health.lost.load(Ordering::SeqCst));
         assert!(!health.failed.load(Ordering::SeqCst), "a stream error alone must not silence playback");
@@ -613,11 +707,17 @@ mod tests {
         let health = Health::default();
         stream_error(&health, cpal::StreamError::StreamInvalidated);
         assert!(health.errored.load(Ordering::SeqCst), "a stream to rebuild is worth a restart");
+        assert!(health.reported.load(Ordering::SeqCst), "the first error of a stream is reported");
         assert!(!health.lost.load(Ordering::SeqCst) && !health.failed.load(Ordering::SeqCst));
+
         let health = Health::default();
         stream_error(&health, cpal::StreamError::BufferUnderrun);
         assert!(!health.errored.load(Ordering::SeqCst), "cpal keeps the stream after a single underrun");
+        assert!(health.reported.load(Ordering::SeqCst), "an underrun is still reported once");
         assert!(!health.lost.load(Ordering::SeqCst) && !health.failed.load(Ordering::SeqCst));
+        // A fatal error after the underrun still marks the stream, though only the underrun was printed.
+        stream_error(&health, cpal::StreamError::DeviceNotAvailable);
+        assert!(health.lost.load(Ordering::SeqCst) && !health.failed.load(Ordering::SeqCst));
     }
 
     fn ms(n: u64) -> Duration {
