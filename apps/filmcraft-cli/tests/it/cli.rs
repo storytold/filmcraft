@@ -53,6 +53,27 @@ fn long_help_matches_help_command() {
     assert_eq!(sub_help.stdout, reference.stdout);
 }
 
+/// A `.braw` file goes to Blackmagic's runtime (or is refused, unread, without it), never to the
+/// QuickTime reader its container would otherwise match. This one is a QuickTime header and no
+/// clip, so the probe must fail, naming the file.
+#[test]
+fn probe_sends_blackmagic_raw_to_its_runtime_not_the_quicktime_reader() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-tests").join(format!("braw-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("not-a-clip.braw");
+    let mut bytes = vec![0, 0, 0, 20];
+    bytes.extend_from_slice(b"ftypqt  \0\0\0\0qt  ");
+    bytes.extend_from_slice(&[0u8; 64]);
+    std::fs::write(&path, bytes).unwrap();
+    let o = cli(&["probe", path.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "probe took it: {stdout}");
+    assert!(!stdout.contains("QuickTime"), "{stdout}");
+    assert!(stderr.contains("not-a-clip.braw"), "{stderr}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn probe_reports_mpeg_transport_and_program_streams() {
     let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
