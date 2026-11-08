@@ -82,7 +82,8 @@ pub(crate) struct Parsed {
     pub segment_ids: Vec<u8>,
     pub mi_cols: usize,
     pub mi_rows: usize,
-    /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19), mi units.
+    /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19) at the odd row and column of
+    /// every 8x8 block, the only positions the projection reads.
     pub saved_ref_frames: Vec<i8>,
     pub saved_mvs: Vec<[i32; 2]>,
 }
@@ -1469,25 +1470,30 @@ fn parse_results(fs: &FrameState, cdfs: Box<Cdfs>) -> Parsed {
     Parsed { cdfs, segment_ids, mi_cols: fs.mi.cols, mi_rows: fs.mi.rows, saved_ref_frames, saved_mvs }
 }
 
-/// Motion field motion vector storage process (7.19): (MfRefFrames, MfMvs).
+/// Motion field motion vector storage process (7.19): (MfRefFrames, MfMvs), kept only where
+/// the projection process (7.9.2) reads them, the odd row and column of every 8x8 block
+/// (index `y8 * (MiCols >> 1) + x8`).
 fn motion_vector_storage(fs: &FrameState) -> (Vec<i8>, Vec<[i32; 2]>) {
     let mi = &fs.mi;
-    let n = mi.rows * mi.cols;
-    let mut refs = vec![-1i8; n];
-    let mut mvs = vec![[0i32; 2]; n];
     let fh = &fs.fh;
-    for i in 0..n {
-        for list in 0..2 {
-            let r = mi.ref_frame[i][list];
-            if r > INTRA_FRAME as i8 {
-                let ref_idx = fh.ref_frame_idx[r as usize - LAST_FRAME];
-                let dist = crate::header::relative_dist(&fs.seq, fs.ref_info[ref_idx].order_hint, fh.order_hint);
-                if dist < 0 {
-                    let m = mi.mv[i][list];
-                    let (row, col) = (m.row as i32, m.col as i32);
-                    if row.abs() <= REFMVS_LIMIT as i32 && col.abs() <= REFMVS_LIMIT as i32 {
-                        refs[i] = r;
-                        mvs[i] = [row, col];
+    let (mi_cols, w8, h8) = (fh.mi_cols as usize, fh.mi_cols as usize >> 1, fh.mi_rows as usize >> 1);
+    let mut refs = vec![-1i8; w8 * h8];
+    let mut mvs = vec![[0i32; 2]; w8 * h8];
+    for y8 in 0..h8 {
+        for x8 in 0..w8 {
+            let (i, o) = ((2 * y8 + 1) * mi_cols + 2 * x8 + 1, y8 * w8 + x8);
+            for list in 0..2 {
+                let r = mi.ref_frame[i][list];
+                if r > INTRA_FRAME as i8 {
+                    let ref_idx = fh.ref_frame_idx[r as usize - LAST_FRAME];
+                    let dist = crate::header::relative_dist(&fs.seq, fs.ref_info[ref_idx].order_hint, fh.order_hint);
+                    if dist < 0 {
+                        let m = mi.mv[i][list];
+                        let (row, col) = (m.row as i32, m.col as i32);
+                        if row.abs() <= REFMVS_LIMIT as i32 && col.abs() <= REFMVS_LIMIT as i32 {
+                            refs[o] = r;
+                            mvs[o] = [row, col];
+                        }
                     }
                 }
             }
@@ -1555,18 +1561,16 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
     }
     let Some(rf) = &parsed[src_idx] else { return false };
     let rd = |a: u32, b: u32| crate::header::relative_dist(seq, a, b);
-    let mi_cols = fh.mi_cols as usize;
     for y8 in 0..h8 {
         for x8 in 0..w8 {
-            let row = (2 * y8 + 1) as usize;
-            let col = (2 * x8 + 1) as usize;
-            let src_ref = rf.saved_ref_frames[row * mi_cols + col];
+            let at = (y8 * w8 + x8) as usize;
+            let src_ref = rf.saved_ref_frames[at];
             if src_ref > INTRA_FRAME as i8 {
                 let ref_to_cur = rd(fh.order_hints[src], fh.order_hint);
                 let ref_offset = rd(fh.order_hints[src], ri.saved_order_hints[src_ref as usize]);
                 let pos_valid = ref_to_cur.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset > 0;
                 if pos_valid {
-                    let mv = rf.saved_mvs[row * mi_cols + col];
+                    let mv = rf.saved_mvs[at];
                     let proj = get_mv_projection(mv, ref_to_cur * dst_sign, ref_offset);
                     let py = project_pos(y8, proj[0], dst_sign, h8, MAX_OFFSET_HEIGHT as i32);
                     let px = project_pos(x8, proj[1], dst_sign, w8, MAX_OFFSET_WIDTH as i32);
