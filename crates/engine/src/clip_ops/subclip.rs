@@ -176,7 +176,7 @@ pub(super) fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>(), "channels": chans}));
     }
     let format = match str_p(p, "format") {
-        Some(f) => Some(parse_format(f).ok_or_else(|| bad("clip.audioChannels", "format is mono, stereo, 5.1 or adaptive"))?),
+        Some(f) => Some(parse_format(f).ok_or_else(|| bad("clip.audioChannels", "format is mono, stereo, 5.1, 7.1 or adaptive"))?),
         None => None,
     };
     let custom: Option<Vec<Vec<u16>>> = p

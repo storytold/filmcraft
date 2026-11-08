@@ -236,7 +236,7 @@ pub(crate) fn extension(path: &str) -> String {
 /// Media kind guess from a file extension.
 pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
     match extension(path).as_str() {
-        "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" => MediaKind::AudioOnly,
+        "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" | "ac3" | "eac3" | "ec3" => MediaKind::AudioOnly,
         "png" | "jpg" | "jpeg" | "tif" | "tiff" | "psd" | "bmp" | "gif" | "webp" | "exr" | "dpx" | "tga" => MediaKind::Still,
         _ => MediaKind::Movie,
     }

@@ -502,6 +502,46 @@ impl ExportSettings {
         candidate.validate_audio_settings().is_ok()
     }
 
+    /// Standard bitrate choices presented by the export UI. Custom valid rates remain legal.
+    pub fn audio_bitrate_choices(&self) -> &'static [u32] {
+        match self.audio_codec() {
+            AudioCodec::Ac3 => &[96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
+            AudioCodec::Eac3 => &[96, 128, 160, 192, 256, 320, 384, 448, 512, 640, 768, 1024],
+            _ => &[128, 160, 192, 256, 320],
+        }
+    }
+
+    /// Reconcile dependent controls after an explicit UI choice, preserving every compatible
+    /// value. This is not called by validation/loading: a preset or API request still gets an
+    /// honest error instead of having unsupported intent silently rewritten.
+    pub fn reconcile_audio_choices(&mut self, source_rate: u32) {
+        let codec = self.audio_codec();
+        if self.audio.channels == 8 && codec != AudioCodec::Eac3 {
+            self.audio.channels = 6;
+        }
+        if matches!(codec, AudioCodec::Ac3 | AudioCodec::Eac3) {
+            if !matches!(self.audio.sample_rate.unwrap_or(source_rate), 32_000 | 44_100 | 48_000) {
+                self.audio.sample_rate = Some(48_000);
+            }
+            if !self.supports_audio_bitrate(self.audio.bitrate_kbps, source_rate)
+                && let Some(rate) = self
+                    .audio_bitrate_choices()
+                    .iter()
+                    .copied()
+                    .filter(|rate| self.supports_audio_bitrate(*rate, source_rate))
+                    .min_by_key(|rate| rate.abs_diff(self.audio.bitrate_kbps))
+            {
+                self.audio.bitrate_kbps = rate;
+            }
+        } else if codec == AudioCodec::Aac && !(32..=512).contains(&self.audio.bitrate_kbps) {
+            // AAC's factory caps this range. A codec switch should show a usable selected
+            // rate rather than retaining an E-AC-3 value that will be silently capped.
+            if let Some(rate) = self.audio_bitrate_choices().iter().copied().min_by_key(|rate| rate.abs_diff(self.audio.bitrate_kbps)) {
+                self.audio.bitrate_kbps = rate;
+            }
+        }
+    }
+
     fn validate_audio_settings(&self) -> Result<()> {
         let active_audio = self.has_audio() || self.format.is_audio_only();
         if !active_audio {
@@ -515,29 +555,24 @@ impl ExportSettings {
         }
         let codec = self.audio_codec();
         if active_audio && matches!(codec, AudioCodec::Ac3 | AudioCodec::Eac3) {
-            if self.audio.sample_rate.is_some_and(|rate| !matches!(rate, 32_000 | 44_100 | 48_000)) {
-                return Err(ExportError::Unsupported("AC-3/E-AC-3 requires 32000, 44100 or 48000 Hz".into()));
+            let check = |rate| crate::ac3_out::encoder_config(codec, rate, self.audio.channels, self.audio.bitrate_kbps);
+            if let Some(rate) = self.audio.sample_rate {
+                check(rate)?;
+            } else {
+                // Match Source is unresolved here. Accept only configurations viable at some
+                // supported rate; encoder construction validates the actual sequence rate.
+                let mut last_error = None;
+                let valid = [32_000, 44_100, 48_000].into_iter().any(|rate| match check(rate) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        last_error = Some(error);
+                        false
+                    }
+                });
+                if !valid && let Some(error) = last_error {
+                    return Err(error);
+                }
             }
-            let channels = self.audio.channels;
-            if !(matches!(channels, 1 | 2 | 6) || codec == AudioCodec::Eac3 && channels == 8) {
-                return Err(ExportError::Unsupported("AC-3 supports mono, stereo and 5.1; E-AC-3 also supports discrete 7.1".into()));
-            }
-            use craft_audio::ac3::encoder::{Codec, CodingMode, Config};
-            let mode = match channels {
-                1 => CodingMode::Mono,
-                2 => CodingMode::Stereo,
-                8 => CodingMode::Surround71,
-                _ => CodingMode::ThreeFrontTwoSurround,
-            };
-            Config {
-                codec: if codec == AudioCodec::Ac3 { Codec::Ac3 } else { Codec::Eac3 },
-                sample_rate: self.audio.sample_rate.unwrap_or(48_000),
-                bitrate_kbps: self.audio.bitrate_kbps,
-                mode,
-                lfe: channels >= 6,
-            }
-            .validate()
-            .map_err(|e| ExportError::Unsupported(e.to_string()))?;
         } else if active_audio && self.audio.channels == 8 {
             return Err(ExportError::Unsupported("7.1 export currently requires E-AC-3".into()));
         }

@@ -235,7 +235,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
             .resolve_media(item.item)
             .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
             .is_some_and(|mapping| mapping.format == AudioChannels::Surround71);
-        let mapped = speaker_mapped_item(item, explicit_71 || src.audio_channel_mask(item.audio_stream) == Some(0x63f));
+        let mapped = speaker_mapped_item(item, media_has_71_mapping(item, src.audio_channel_mask(item.audio_stream), explicit_71));
         effected(&mapped, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
@@ -356,7 +356,8 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let mapped = speaker_mapped_item(item, sources.audio_channel_mask(item.item, item.audio_stream) == Some(0x63f));
+        let known_71 = media_has_71_mapping(item, sources.audio_channel_mask(item.item, item.audio_stream), sources.audio_channels_are_explicit_71(item.item));
+        let mapped = speaker_mapped_item(item, known_71);
         let buf = effected(&mapped, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
@@ -510,6 +511,13 @@ pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
         2..=5 => vec![ok(item.source_channels[0]), ok(item.source_channels[1])],
         _ => item.source_channels.iter().take(6).map(|&c| ok(c)).collect(),
     }
+}
+
+/// Decoder speaker labels describe the original order, not arbitrary Adaptive permutations.
+/// An explicit 7.1 interpretation assigns labels after selection instead.
+fn media_has_71_mapping(item: &TrackItem, mask: Option<u32>, explicit: bool) -> bool {
+    let identity = item.source_channels.is_empty() || item.source_channels.iter().copied().eq(0..8);
+    explicit || identity && mask == Some(filmcraft_media::SPEAKER_MASK_7_1)
 }
 
 /// Only known rear+side 7.1 or the user's explicit 7.1 interpretation establishes eight

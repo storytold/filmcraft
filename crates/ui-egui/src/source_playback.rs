@@ -19,6 +19,28 @@ pub struct SourcePlayback {
     failure: Arc<Mutex<Option<String>>>,
 }
 
+/// Apply Source media's selected channels before auditioning on a stereo device. Unlike an
+/// assigned mixer bus, eight media channels alone do not establish their speaker positions.
+fn audition_stereo(
+    mut sound: filmcraft_frame::AudioBuffer,
+    channels: &[u16],
+    speaker_mask: Option<u32>,
+    explicit_71: bool,
+    mixdown: filmcraft_audio_dsp::channels::Mixdown,
+) -> filmcraft_frame::AudioBuffer {
+    if !channels.is_empty() {
+        sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
+    }
+    // A decoder mask describes its original ordering; arbitrary Adaptive channel picks do
+    // not inherit that ordering. Only an explicit 7.1 interpretation reassigns the speakers.
+    let identity = channels.is_empty() || channels.iter().copied().eq(0..8);
+    let known_71 = explicit_71 || identity && speaker_mask == Some(filmcraft_media::SPEAKER_MASK_7_1);
+    if sound.channels.len() == 8 && !known_71 {
+        sound.channels.truncate(2);
+    }
+    filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown)
+}
+
 impl FilmcraftApp {
     pub fn toggle_source_play(&mut self) -> Result<(), String> {
         if self.source_playback.clock.playing {
@@ -151,6 +173,8 @@ impl FilmcraftApp {
                     self.ui.status = "Source audio is unavailable: check Link Media".into();
                     return;
                 };
+                let speaker_mask = provider.audio_channel_mask(view.media, 0);
+                let explicit_71 = media.interpret.audio_channels.as_ref().is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71);
                 let channels = media.interpret.audio_channels.as_ref().and_then(|m| m.clips.first()).cloned().unwrap_or_default();
                 let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
                 let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
@@ -170,11 +194,8 @@ impl FilmcraftApp {
                     }
                     let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
                     match source.audio(cursor, frames, sr) {
-                        Ok(mut sound) => {
-                            if !channels.is_empty() {
-                                sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
-                            }
-                            let sound = filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown);
+                        Ok(sound) => {
+                            let sound = audition_stereo(sound, &channels, speaker_mask, explicit_71, mixdown);
                             let Some(left) = sound.channels.first() else { return };
                             let right = sound.channels.get(1).unwrap_or(left);
                             filmcraft_engine::settings::map_output(left, right, buf, ch, map);
@@ -357,5 +378,51 @@ impl FilmcraftApp {
             self.stop_source();
         }
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_audio_dsp::channels::Mixdown;
+    use filmcraft_frame::AudioBuffer;
+    use filmcraft_media::SPEAKER_MASK_7_1;
+
+    fn discrete_source() -> AudioBuffer {
+        AudioBuffer { sample_rate: 48_000, channels: (1..=8).map(|n| vec![n as f32 * 0.05; 2]).collect() }
+    }
+
+    #[test]
+    fn source_audition_does_not_infer_unknown_or_wide_eight_channel_speakers() {
+        for mask in [None, Some(0xff)] {
+            let sound = audition_stereo(discrete_source(), &[], mask, false, Mixdown::FrontRear);
+            assert_eq!(sound.channels, vec![vec![0.05; 2], vec![0.1; 2]], "mask {mask:?}");
+            let selected = audition_stereo(discrete_source(), &[4, 5], mask, false, Mixdown::FrontRear);
+            assert_eq!(selected.channels, vec![vec![0.25; 2], vec![0.3; 2]], "selected pair, mask {mask:?}");
+        }
+    }
+
+    #[test]
+    fn source_audition_folds_proven_or_manually_assigned_seven_one() {
+        // PoolProvider supplies this same mask for a decoder's proven layout and the user's
+        // explicit 7.1 interpretation. Generic assigned-bus conversion remains unchanged.
+        for channels in [vec![], (0..8).collect()] {
+            let sound = audition_stereo(discrete_source(), &channels, Some(SPEAKER_MASK_7_1), false, Mixdown::FrontRear);
+            let expected = filmcraft_render::audio::to_layout(discrete_source(), filmcraft_audio_dsp::channels::Layout::Stereo, Mixdown::FrontRear);
+            assert_eq!(sound.channels, expected.channels);
+            assert!(sound.channels[0][0] > 0.05 && sound.channels[1][0] > 0.1);
+        }
+    }
+
+    #[test]
+    fn arbitrary_eight_channel_selection_does_not_inherit_a_decoder_speaker_mask() {
+        let channels = [1, 0, 2, 3, 4, 5, 6, 7];
+        let adaptive = audition_stereo(discrete_source(), &channels, Some(SPEAKER_MASK_7_1), false, Mixdown::FrontRear);
+        assert_eq!(adaptive.channels, vec![vec![0.1; 2], vec![0.05; 2]]);
+        let assigned = audition_stereo(discrete_source(), &channels, None, true, Mixdown::FrontRear);
+        let mut selected = discrete_source();
+        selected.channels.swap(0, 1);
+        let expected = filmcraft_render::audio::to_layout(selected, filmcraft_audio_dsp::channels::Layout::Stereo, Mixdown::FrontRear);
+        assert_eq!(assigned.channels, expected.channels, "explicit 7.1 assigns speaker meaning after selection");
     }
 }

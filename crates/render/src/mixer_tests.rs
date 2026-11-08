@@ -968,6 +968,60 @@ fn interpret_71(rig: &mut Rig) {
 }
 
 #[test]
+fn reordered_adaptive_channels_do_not_inherit_decoder_speaker_positions() {
+    struct Known71(filmcraft_media::SharedSource);
+    impl MediaSource for Known71 {
+        fn info(&self) -> &MediaInfo {
+            self.0.info()
+        }
+        fn audio_channel_mask(&self, _: usize) -> Option<u32> {
+            Some(filmcraft_media::SPEAKER_MASK_7_1)
+        }
+        fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            self.0.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+            self.0.audio(start, frames, sr)
+        }
+    }
+    struct Interpreted<'a> {
+        map: &'a SourceMap,
+        explicit: bool,
+    }
+    impl crate::SourceProvider for Interpreted<'_> {
+        fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
+            self.map.0.get(&item).cloned()
+        }
+        fn audio_channels_are_explicit_71(&self, _: ItemId) -> bool {
+            self.explicit
+        }
+    }
+    for explicit in [false, true] {
+        let mut rig = Rig::with_channels(&[chan_dc], 8);
+        let item = rig.track(0).items[0].item;
+        let source = rig.map.0.get(&item).unwrap().clone();
+        rig.map.0.insert(item, Arc::new(Known71(source)));
+        let selected = vec![1, 0, 2, 3, 4, 5, 6, 7];
+        let ItemKind::Media(media) = &mut rig.p.item_mut(item).unwrap().kind else { panic!("media") };
+        media.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap {
+            format: if explicit { AudioChannels::Surround71 } else { AudioChannels::Adaptive },
+            clips: vec![selected.clone()],
+        });
+        rig.track(0).items[0].source_channels = selected;
+        let mixed = mix_all(&rig, 0, 128);
+        let provider = Interpreted { map: &rig.map, explicit };
+        let clip = &rig.p.sequence(rig.seq).unwrap().audio_tracks[0].items[0];
+        let analysed = crate::audio::clip_signal(clip, 0, 128, SR as u32, &provider).unwrap();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = if explicit { [0.2 + k * 0.3 + 0.5 * (0.5 + 0.7), 0.1 + k * 0.3 + 0.5 * (0.6 + 0.8)] } else { [0.2, 0.1] };
+        for (channel, expected) in expected.into_iter().enumerate() {
+            assert!(close(mixed[channel][31], expected, 1e-6), "explicit={explicit}, channel={channel}: {} vs {expected}", mixed[channel][31]);
+            assert!(close(analysed[channel][31], expected, 1e-6), "analysis must agree: explicit={explicit}, channel={channel}");
+        }
+    }
+}
+
+#[test]
 fn discrete_71_track_preserves_all_speakers_through_mix_and_downmix() {
     let mut rig = Rig::with_channels(&[chan_dc], 8);
     interpret_71(&mut rig);

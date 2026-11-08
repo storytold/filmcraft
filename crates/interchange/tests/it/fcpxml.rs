@@ -9,6 +9,27 @@ use filmcraft_time::FrameRate;
 use proptest::prelude::*;
 use support::*;
 
+#[test]
+fn dolby_files_without_media_characteristics_import_as_audio() {
+    for ext in ["ac3", "eac3", "ec3", "AC3", "EC3", "wav"] {
+        let xml = format!(
+            r#"<fcpxml version="1.10"><resources>
+          <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+          <asset id="r2" name="Audio" src="file:///Media/test.{ext}" duration="1s"/>
+        </resources><library><event><project name="P"><sequence format="r1"><spine>
+          <asset-clip ref="r2" offset="0s" start="0s" duration="1s"/>
+        </spine></sequence></project></event></library></fcpxml>"#
+        );
+        let (imported, _) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+        let media: Vec<_> = imported.project.items.values().filter_map(|item| item.as_media()).collect();
+        assert_eq!(media.len(), 1, "{ext}: imported media");
+        assert!(media[0].info.video.is_none() && media[0].info.has_audio(), "{ext}: audio-only fallback");
+        let sequence = imported.project.sequence(only_seq(&imported)).unwrap();
+        assert!(sequence.video_tracks.iter().all(|track| track.items.is_empty()), "{ext}: no fabricated video clip");
+        assert_eq!(sequence.audio_tracks.iter().map(|track| track.items.len()).sum::<usize>(), 1, "{ext}: audio clip remains on timeline");
+    }
+}
+
 /// Frame `n` at 23.976 as an FCPXML time, offset by `base` frames.
 fn ft(n: i64) -> String {
     format!("{}/24000s", n * 1001)

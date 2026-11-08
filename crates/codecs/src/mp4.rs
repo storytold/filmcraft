@@ -500,8 +500,8 @@ impl MediaSource for Mp4Source {
         let audio = self.audios.get(stream)?;
         let entry = self.file.tracks.get(audio.track)?.entries.first()?;
         match &entry.codec {
-            CodecConfig::Eac3 { dec3 } if crate::audio::eac3_71_descriptor(dec3) => Some(0x63f),
-            CodecConfig::Aac(config) if config.channel_config == 12 => Some(0x63f),
+            CodecConfig::Eac3 { dec3 } if crate::audio::eac3_71_descriptor(dec3) => Some(filmcraft_media::SPEAKER_MASK_7_1),
+            CodecConfig::Aac(config) if config.channel_config == 12 => Some(filmcraft_media::SPEAKER_MASK_7_1),
             _ => None,
         }
     }
@@ -612,6 +612,8 @@ impl MediaSource for Mp4Source {
 /// AC-3/E-AC-3 whole frames include trailing padding. A single normal-speed edit defines
 /// the audible presentation end, even when the containing video track runs longer. Apply it
 /// after resampling too, so an interpolation neighbour cannot leak padding past that boundary.
+/// A zero-duration edit carries only the offset, not a finite endpoint; presentation times
+/// before zero must still stay silent.
 fn trim_ac3_presentation(buffer: &mut AudioBuffer, start: i64, track: &filmcraft_isobmff::Track, movie_rate: u32) {
     if !matches!(track.codec(), Some(CodecConfig::Ac3 { .. } | CodecConfig::Eac3 { .. })) {
         return;
@@ -626,7 +628,7 @@ fn trim_ac3_presentation(buffer: &mut AudioBuffer, start: i64, track: &filmcraft
     for channel in &mut buffer.channels {
         for (index, sample) in channel.iter_mut().enumerate() {
             let position = i128::from(start) + index as i128;
-            if position < 0 || position * i128::from(movie_rate) >= end {
+            if position < 0 || (edit.segment_duration != 0 && position * i128::from(movie_rate) >= end) {
                 *sample = 0.0;
             }
         }

@@ -12,6 +12,23 @@ use support::*;
 
 const RATE: &str = "<rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>";
 
+#[test]
+fn dolby_files_without_media_characteristics_import_as_audio() {
+    for ext in ["ac3", "eac3", "ec3", "AC3", "EC3"] {
+        let xml = format!(
+            r#"<xmeml version="4"><project><name>P</name><children>
+          <clip><name>Audio</name><file id="f"><name>Audio</name>
+            <pathurl>file:///Media/test.{ext}</pathurl><duration>24</duration>
+          </file></clip>
+        </children></project></xmeml>"#
+        );
+        let (imported, _) = import(xml.as_bytes(), Format::Fcp7Xml, None).unwrap();
+        let media: Vec<_> = imported.project.items.values().filter_map(|item| item.as_media()).collect();
+        assert_eq!(media.len(), 1, "{ext}: imported media");
+        assert!(media[0].info.video.is_none() && media[0].info.has_audio(), "{ext}: audio-only fallback");
+    }
+}
+
 fn premiere_style_doc() -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

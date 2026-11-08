@@ -936,7 +936,7 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, channel_mask: (samples.len() == 8).then_some(0x63f), samples });
+            return Ok(Self { info, rate, channel_mask: (samples.len() == 8).then_some(filmcraft_media::SPEAKER_MASK_7_1), samples });
         }
         if ext == "aac" {
             let (rate, samples) = decode_adts(&bytes)?.ok_or_else(|| CodecError::Decode(format!("{name}: no ADTS AAC frames")))?;

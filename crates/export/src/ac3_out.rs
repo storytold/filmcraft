@@ -15,6 +15,26 @@ use filmcraft_time::TimeRange;
 use crate::audio_out::AudioOut;
 use crate::{AudioCodec, AudioEncoder, ExportError, ExportSettings, Out, Progress, Result};
 
+/// Resolve FilmCraft's supported speaker layouts and validate the concrete rate against the
+/// shared encoder. Settings validation and actual encoder construction use this same contract.
+pub(crate) fn encoder_config(codec: AudioCodec, rate: u32, channels: u32, bitrate_kbps: u32) -> Result<Config> {
+    let codec = match codec {
+        AudioCodec::Ac3 => Codec::Ac3,
+        AudioCodec::Eac3 => Codec::Eac3,
+        _ => return Err(ExportError::Unsupported("expected AC-3 or E-AC-3 audio".into())),
+    };
+    let (mode, lfe) = match channels {
+        1 => (CodingMode::Mono, false),
+        2 => (CodingMode::Stereo, false),
+        6 => (CodingMode::ThreeFrontTwoSurround, true),
+        8 if codec == Codec::Eac3 => (CodingMode::Surround71, true),
+        _ => return Err(ExportError::Unsupported("AC-3 supports mono, stereo and 5.1; E-AC-3 also supports discrete 7.1".into())),
+    };
+    let config = Config { codec, sample_rate: rate, bitrate_kbps, mode, lfe };
+    config.validate().map_err(|e| ExportError::Unsupported(e.to_string()))?;
+    Ok(config)
+}
+
 pub(crate) struct Ac3Audio {
     encoder: Encoder,
     codec: Codec,
@@ -23,19 +43,8 @@ pub(crate) struct Ac3Audio {
 
 impl Ac3Audio {
     pub(crate) fn new(rate: u32, channels: u32, settings: &ExportSettings) -> Result<Self> {
-        let codec = match settings.audio_codec() {
-            AudioCodec::Ac3 => Codec::Ac3,
-            AudioCodec::Eac3 => Codec::Eac3,
-            _ => return Err(ExportError::Unsupported("expected AC-3 or E-AC-3 audio".into())),
-        };
-        let (mode, lfe) = match channels {
-            1 => (CodingMode::Mono, false),
-            2 => (CodingMode::Stereo, false),
-            6 => (CodingMode::ThreeFrontTwoSurround, true),
-            8 if codec == Codec::Eac3 => (CodingMode::Surround71, true),
-            _ => return Err(ExportError::Unsupported("unsupported AC-3/E-AC-3 channel layout".into())),
-        };
-        let config = Config { codec, sample_rate: rate, bitrate_kbps: settings.audio.bitrate_kbps, mode, lfe };
+        let config = encoder_config(settings.audio_codec(), rate, channels, settings.audio.bitrate_kbps)?;
+        let codec = config.codec;
         let encoder = Encoder::new(config).map_err(|e| ExportError::Unsupported(e.to_string()))?;
         Ok(Self { encoder, codec, rate })
     }
@@ -85,6 +94,7 @@ pub(crate) fn export(
     sources: &dyn SourceProvider,
     progress: &Progress,
 ) -> Result<(u64, u64)> {
+    let _ = filmcraft_media::pending::take();
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     if cancelled() {
         return Err(ExportError::Cancelled);
@@ -100,13 +110,20 @@ pub(crate) fn export(
         progress.set_status(format!("Exporting audio ({})", settings.format.label()));
     }
     audio.measure(settings, sources, &cancelled)?;
+    // Raw export is synchronous: deferred source metadata must be retried, not cached as
+    // silence or allowed to replace an existing destination with an incomplete programme.
+    refuse_pending_media()?;
     *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = audio.loudness;
-    // Cancellation during validation or loudness measurement must not truncate user output.
+    // Smaller layouts do not need the speaker preflight. Read one bounded chunk before
+    // opening output so deferred PCM cannot truncate a destination either.
+    let mut next = audio.pull(audio.out.saturating_add(chunk), sources);
+    refuse_pending_media()?;
+    // Cancellation during validation, measurement or the first read must not truncate output.
     if cancelled() {
         return Err(ExportError::Cancelled);
     }
     let mut output = Out::create(settings)?;
-    while let Some(planar) = audio.pull(audio.out.saturating_add(chunk), sources) {
+    while let Some(planar) = next {
         if cancelled() {
             return Err(ExportError::Cancelled);
         }
@@ -116,6 +133,9 @@ pub(crate) fn export(
         if !settings.part_of_batch {
             progress.done.fetch_add(1, Ordering::Relaxed);
         }
+        drop(planar);
+        next = audio.pull(audio.out.saturating_add(chunk), sources);
+        refuse_pending_media()?;
     }
     if cancelled() {
         return Err(ExportError::Cancelled);
@@ -124,6 +144,11 @@ pub(crate) fn export(
         output.write_all(&unit).map_err(|e| ExportError::Io(e.to_string()))?;
     }
     Ok((output.finish(settings)?, samples))
+}
+
+/// A synchronous raw export cannot suspend its call stack like a stepped container job.
+fn refuse_pending_media() -> Result<()> {
+    if filmcraft_media::pending::take() { Err(ExportError::Io("audio media is still loading; retry the export once it is ready".into())) } else { Ok(()) }
 }
 
 #[cfg(test)]
@@ -150,7 +175,7 @@ mod tests {
             &self.info
         }
         fn audio_channel_mask(&self, _: usize) -> Option<u32> {
-            (self.known_layout && self.info.audio_streams[0].channels == 8).then_some(0x63f)
+            (self.known_layout && self.info.audio_streams[0].channels == 8).then_some(filmcraft_media::SPEAKER_MASK_7_1)
         }
         fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
             Err(MediaError::NoStream("video"))
@@ -220,6 +245,67 @@ mod tests {
     }
 
     #[test]
+    fn pending_layout_is_rechecked_before_any_output_is_opened() {
+        struct Loading {
+            sources: SourceMap,
+            ready: std::sync::atomic::AtomicBool,
+        }
+        impl filmcraft_render::SourceProvider for Loading {
+            fn source(&self, item: ItemId) -> Option<Arc<dyn MediaSource>> {
+                if !self.ready.load(Ordering::Relaxed) {
+                    filmcraft_media::pending::mark();
+                    None
+                } else {
+                    self.sources.source(item)
+                }
+            }
+        }
+        for known_layout in [false, true] {
+            let (project, sequence, sources) = fixture(8, known_layout);
+            let loading = Loading { sources, ready: std::sync::atomic::AtomicBool::new(false) };
+            let settings = settings(Format::H264, AudioCodec::Eac3, 8, &format!("pending-{known_layout}.mp4"));
+            let sentinel = b"existing user output";
+            std::fs::write(&settings.path, sentinel).unwrap();
+            let progress = Progress::default();
+            let mut job = crate::Exporter::new(project, sequence, &settings, &progress).unwrap();
+            assert!(matches!(job.step(&loading, &progress).unwrap(), crate::Step::Pending));
+            assert_eq!(std::fs::read(&settings.path).unwrap(), sentinel);
+            loading.ready.store(true, Ordering::Relaxed);
+            let result = job.step(&loading, &progress);
+            if known_layout {
+                assert!(result.is_ok(), "verified layout should resume: {result:?}");
+            } else {
+                assert!(matches!(result, Err(ExportError::Unsupported(_))), "unknown layout must be checked after loading: {result:?}");
+                assert_eq!(std::fs::read(&settings.path).unwrap(), sentinel);
+            }
+            let _ = filmcraft_media::pending::take();
+        }
+    }
+
+    #[test]
+    fn raw_pending_source_preserves_destination_and_stale_flags_do_not_block_export() {
+        struct Loading;
+        impl filmcraft_render::SourceProvider for Loading {
+            fn source(&self, _: ItemId) -> Option<Arc<dyn MediaSource>> {
+                filmcraft_media::pending::mark();
+                None
+            }
+        }
+        for channels in [1, 2, 6, 8] {
+            let (project, sequence, sources) = fixture(channels, true);
+            let settings = settings(Format::Eac3, AudioCodec::Eac3, channels, &format!("raw-pending-{channels}.eac3"));
+            let sentinel = b"existing user output";
+            std::fs::write(&settings.path, sentinel).unwrap();
+            assert!(crate::export(&project, sequence, &settings, &Loading, &Progress::default()).is_err());
+            assert_eq!(std::fs::read(&settings.path).unwrap(), sentinel, "preserve destination for {channels} channels");
+            filmcraft_media::pending::mark();
+            crate::export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+            assert_ne!(std::fs::read(&settings.path).unwrap(), sentinel, "a previous unrelated pending flag is cleared");
+            assert!(!filmcraft_media::pending::is_set());
+        }
+    }
+
+    #[test]
     fn raw_ac3_family_export_reimports_every_discrete_channel() {
         for (format, codec, count) in [
             (Format::Ac3, AudioCodec::Ac3, 1),
@@ -236,7 +322,7 @@ mod tests {
             let source = filmcraft_codecs::open_bytes(&settings.path, bytes).unwrap();
             assert_eq!(source.info().audio_streams[0].channels, count);
             if count == 8 {
-                assert_eq!(source.audio_channel_mask(0), Some(0x63f));
+                assert_eq!(source.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
             }
             let decoded = source.audio(256, 2500, RATE).unwrap();
             for (channel, samples) in decoded.channels.iter().enumerate() {
@@ -301,6 +387,28 @@ mod tests {
         let error = crate::export(&project, sequence, &settings, &sources, &Progress::default()).unwrap_err();
         assert!(error.to_string().contains("unknown speaker layout"), "{error}");
         assert!(!std::path::Path::new(&settings.path).exists());
+    }
+
+    #[test]
+    fn reordered_adaptive_channels_need_explicit_71_assignment_for_export() {
+        for explicit in [false, true] {
+            let (mut project, sequence, sources) = fixture(8, true);
+            let selected = vec![1, 0, 2, 3, 4, 5, 6, 7];
+            let p = Arc::make_mut(&mut project);
+            let clip = &mut p.sequence_mut(sequence).unwrap().audio_tracks[0].items[0];
+            clip.source_channels = selected.clone();
+            let item = clip.item;
+            let ItemKind::Media(media) = &mut p.item_mut(item).unwrap().kind else { panic!("media") };
+            media.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap {
+                format: if explicit { AudioChannels::Surround71 } else { AudioChannels::Adaptive },
+                clips: vec![selected],
+            });
+            let settings = settings(Format::Eac3, AudioCodec::Eac3, 8, "reordered.eac3");
+            let range = TimeRange::new(Tick::ZERO, Tick::from_units(3001, RATE as i64));
+            let mut out = AudioOut::new(project, sequence, &settings, range).unwrap();
+            let result = out.validate_source_layouts(&sources);
+            assert_eq!(result.is_ok(), explicit, "explicit={explicit}: {result:?}");
+        }
     }
 
     #[test]

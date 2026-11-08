@@ -115,7 +115,10 @@ impl AudioOut {
                     .resolve_media(item.item)
                     .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
                     .is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71);
-                if !explicit && source.audio_channel_mask(item.audio_stream) != Some(0x63f) {
+                // A decoder mask labels the original order. Only an explicit 7.1 assignment
+                // gives speaker meaning to a reordered Adaptive selection.
+                let reordered_eight = item.source_channels.len() == 8 && !item.source_channels.iter().copied().eq(0..8);
+                if !explicit && (reordered_eight || source.audio_channel_mask(item.audio_stream) != Some(filmcraft_media::SPEAKER_MASK_7_1)) {
                     return Err(ExportError::Unsupported(format!(
                         "{} has eight channels with an unknown speaker layout; choose a 7.1 mapping in Modify Audio Channels before exporting 7.1",
                         source.info().name
@@ -129,7 +132,9 @@ impl AudioOut {
             filmcraft_time::Tick::from_units(self.end, i64::from(self.sr)),
         );
         check(&self.project, &self.seq, sources, 0, range)?;
-        self.layout_checked = true;
+        // A deferred source has not supplied its topology yet. Cache only a complete pass;
+        // the stepped job observes the pending flag and retries before rendering or writing.
+        self.layout_checked = !filmcraft_media::pending::is_set();
         Ok(())
     }
 
@@ -137,6 +142,9 @@ impl AudioOut {
     /// that brings it to the target. `cancel` is polled between chunks.
     pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<()> {
         self.validate_source_layouts(sources)?;
+        if filmcraft_media::pending::is_set() {
+            return Ok(());
+        }
         let ln = &settings.effects.loudness;
         if !ln.enabled {
             return Ok(());

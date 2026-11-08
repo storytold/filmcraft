@@ -74,6 +74,7 @@ rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7" }
+craft-audio = { git = "https://github.com/whatever-industries/craft-libs.git", rev = "c6c6e32a9bea41c11a39bd7d6991425f62a1b247", default-features = false }
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7", default-features = false }
 
 # ui

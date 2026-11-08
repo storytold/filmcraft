@@ -476,6 +476,9 @@ impl Exporter {
         let _ = filmcraft_media::pending::take();
         if let Some(audio) = self.audio.as_mut() {
             audio.validate_source_layouts(sources)?;
+            if filmcraft_media::pending::take() {
+                return Ok(Step::Pending);
+            }
         }
         if !self.measured {
             if !self.settings.part_of_batch {

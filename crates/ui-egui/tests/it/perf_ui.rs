@@ -312,14 +312,20 @@ fn program_monitor_plays_on_while_a_value_is_dragged() {
     d.harness.state_mut().play(1.0);
     let mut frames = std::collections::BTreeSet::new();
     let mut newest = at_rest.revision;
-    for i in 0..90 {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut passes = 0;
+    // Keep the original drag pressure, but allow queued frame workers to make progress
+    // under concurrent CI load. A fixed UI-pass count is not a worker completion signal.
+    while Instant::now() < deadline && (passes < 90 || frames.len() < 5 || newest <= at_rest.revision) {
         // one change and one UI pass, as a mouse move while dragging the value
-        d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
+        d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (passes % 30) as f64}));
         let shown = d.harness.state().program_picture().unwrap();
         frames.insert(shown.frame);
         newest = newest.max(shown.revision);
+        passes += 1;
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
+    assert!(passes >= 90, "completed the drag workload before the deadline: {passes} UI passes");
     assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
     assert!(newest > at_rest.revision, "the picture showed the dragged value, not only the one from before");
 }

@@ -402,10 +402,11 @@ impl MediaPool {
                 let proxy_streams = &s.info().audio_streams;
                 let shape_matches =
                     original_streams.len() == proxy_streams.len() && original_streams.iter().zip(proxy_streams).all(|(a, b)| a.channels == b.channels);
-                let compare_speakers = original_streams.iter().any(|a| a.channels > 2);
+                let compare_speakers = original_streams.iter().any(|a| a.channels == 8);
                 let audio_from = if !shape_matches || compare_speakers {
-                    // MediaInfo stores channel counts, not masks. Only multichannel proxies
-                    // need the original decoder's mask; ordinary matching stereo stays cheap.
+                    // MediaInfo stores counts, not masks. Eight-channel audio may be rear+side,
+                    // wide or unordered; other matching layouts retain existing proxy behavior
+                    // without requiring an available original merely to open the proxy.
                     let original_key = media_key(m);
                     let cached = self
                         .sources
@@ -511,15 +512,17 @@ impl PoolProvider {
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
+    fn audio_channels_are_explicit_71(&self, item: ItemId) -> bool {
+        self.project
+            .resolve_media(item)
+            .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
+            .is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71)
+    }
+
     fn audio_channel_mask(&self, item: ItemId, stream: usize) -> Option<u32> {
         let source = self.source(item)?;
         source.info().audio_streams.get(stream)?;
-        let explicit_71 = self
-            .project
-            .resolve_media(item)
-            .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
-            .is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71);
-        if explicit_71 { Some(0x63f) } else { source.audio_channel_mask(stream) }
+        if self.audio_channels_are_explicit_71(item) { Some(filmcraft_media::SPEAKER_MASK_7_1) } else { source.audio_channel_mask(stream) }
     }
 
     fn source(&self, item: ItemId) -> Option<SharedSource> {
@@ -943,19 +946,61 @@ mod tests {
             .info()
             .clone();
         info.audio_streams = vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 8, codec: "test".into(), bits_per_sample: None }];
-        let source: SharedSource = Arc::new(LayoutSource { info: info.clone(), mask: 0x63f });
+        let source: SharedSource = Arc::new(LayoutSource { info: info.clone(), mask: filmcraft_media::SPEAKER_MASK_7_1 });
         let pool = MediaPool::default();
         let item = ItemId(41);
         pool.insert_file(item, "test.eac3", source.clone());
         let cached = pool.cached(item).unwrap();
-        assert_eq!(cached.audio_channel_mask(0), Some(0x63f));
+        assert_eq!(cached.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
         assert_eq!(cached.audio_channel_mask(1), None);
-        assert_eq!(pool.monitor_source(item, cached).audio_channel_mask(0), Some(0x63f));
+        assert_eq!(pool.monitor_source(item, cached).audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
         let proxy: SharedSource = Arc::new(LayoutSource { info: info.clone(), mask: 0x3f });
         let with_original = ProxySource { proxy: proxy.clone(), info: info.clone(), audio_from: Some(source) };
-        assert_eq!(with_original.audio_channel_mask(0), Some(0x63f));
+        assert_eq!(with_original.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
         let proxy_only = ProxySource { proxy, info, audio_from: None };
         assert_eq!(proxy_only.audio_channel_mask(0), Some(0x3f));
+    }
+
+    #[test]
+    fn speaker_provenance_distinguishes_decoder_labels_from_explicit_assignment() {
+        use filmcraft_render::SourceProvider;
+
+        for explicit in [false, true] {
+            let mut project = Project::new("speaker provenance");
+            let mut info =
+                GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+                    .info()
+                    .clone();
+            info.audio_streams = vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 8, codec: "test".into(), bits_per_sample: None }];
+            let interpret = filmcraft_project::Interpretation {
+                audio_channels: Some(filmcraft_project::AudioChannelMap {
+                    format: if explicit { filmcraft_project::AudioChannels::Surround71 } else { filmcraft_project::AudioChannels::Adaptive },
+                    clips: vec![vec![1, 0, 2, 3, 4, 5, 6, 7]],
+                }),
+                ..Default::default()
+            };
+            let item = project.add_item(
+                "source",
+                filmcraft_project::Label::Iris,
+                ItemKind::Media(Box::new(MediaClip {
+                    media: MediaRef::File { path: "source.eac3".into() },
+                    info: info.clone(),
+                    interpret,
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let pool = MediaPool::default();
+            pool.insert_file(item, "source.eac3", Arc::new(LayoutSource { info, mask: filmcraft_media::SPEAKER_MASK_7_1 }));
+            let provider = Arc::new(pool).provider(Arc::new(project), Arc::new(crate::FsServices));
+            assert_eq!(provider.audio_channel_mask(item, 0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+            assert_eq!(provider.audio_channels_are_explicit_71(item), explicit, "a decoder mask alone does not assign reordered channels");
+        }
     }
 
     struct ProxyAudioFixture {
@@ -987,7 +1032,7 @@ mod tests {
         info.audio_streams =
             vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: u32::from(bytes[0]), codec: "test".into(), bits_per_sample: None }];
         let mask = match bytes[1] {
-            1 => Some(0x63f),
+            1 => Some(filmcraft_media::SPEAKER_MASK_7_1),
             2 => Some(0xff),
             _ => None,
         };
@@ -1031,14 +1076,16 @@ mod tests {
             let audio = source.audio(0, 1, 48_000).unwrap();
             assert_eq!(audio.channels.len(), expected_channels, "proxy {proxy:?}");
             assert_eq!(audio.channels[0][0], expected_value, "proxy {proxy:?}");
-            assert_eq!(source.audio_channel_mask(0), Some(0x63f));
+            assert_eq!(source.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
             assert_eq!(source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap().to_rgba8()[0], 2, "picture stays on proxy");
         }
     }
 
     #[test]
-    fn proxy_layout_check_reuses_cached_original_and_keeps_stereo_lazy() {
-        for (cached, original_bytes, proxy) in [(false, vec![2, 0, 1], [2, 0, 2]), (true, vec![8, 1, 1], [2, 0, 2]), (true, vec![8, 0, 1], [8, 0, 2])] {
+    fn proxy_layout_check_reuses_cached_original_and_keeps_matching_non_eight_channel_audio_lazy() {
+        for (cached, original_bytes, proxy) in
+            [(false, vec![2, 0, 1], [2, 0, 2]), (false, vec![6, 0, 1], [6, 0, 2]), (true, vec![8, 1, 1], [2, 0, 2]), (true, vec![8, 0, 1], [8, 0, 2])]
+        {
             let pool = MediaPool::default();
             pool.register_opener(proxy_audio_fixture);
             let original = proxy_audio_fixture("original.test", original_bytes.into()).unwrap().unwrap();
@@ -1056,11 +1103,11 @@ mod tests {
             if cached {
                 pool.insert_file(ItemId(44), "original.test", original);
             }
-            // Original reads fail: an existing source must be reused, while matching stereo
-            // does not need to open the original at all to compare multichannel assignments.
+            // Original reads fail: reuse an existing source for eight-channel assignments,
+            // but matching stereo and 5.1 proxies still play with their original unavailable.
             let source = pool.proxy_source(ItemId(44), "proxy.test", &media, &ProxyAudioFiles { proxy, original_missing: true }).unwrap();
             let audio = source.audio(0, 1, 48_000).unwrap();
-            assert_eq!(audio.channels.len(), if cached { 8 } else { 2 });
+            assert_eq!(audio.channels.len(), if cached { 8 } else { usize::from(proxy[0]) });
             assert_eq!(audio.channels[0][0], if cached { 1.0 } else { 2.0 });
         }
     }

@@ -332,6 +332,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                             metadata: keep.metadata,
                             ..Default::default()
                         };
+                        ex.settings.reconcile_audio_choices(seq_sr);
                     }
                 }
             });
@@ -705,6 +706,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
             s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Ac3, AudioCodec::Eac3][i.min(4)];
+            s.reconcile_audio_choices(seq_sr);
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
@@ -714,6 +716,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), !ac3_family || matches!(r.unwrap_or(seq_sr), 32_000 | 44_100 | 48_000))).collect();
         if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
             s.audio.sample_rate = rates[i];
+            s.reconcile_audio_choices(seq_sr);
         }
     });
     row(ui, t, tl!("Channels"), |ui| {
@@ -727,15 +730,12 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let choices = names.iter().enumerate().map(|(i, name)| (name.to_string(), i != 3 || s.audio_codec() == AudioCodec::Eac3)).collect::<Vec<_>>();
         if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &choices, 120.0) {
             s.audio.channels = [1, 2, 6, 8][i.min(3)];
+            s.reconcile_audio_choices(seq_sr);
         }
     });
     if s.audio_codec().is_lossy() {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
-            let rates: &[u32] = match s.audio_codec() {
-                AudioCodec::Ac3 => &[96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
-                AudioCodec::Eac3 => &[96, 128, 160, 192, 256, 320, 384, 448, 512, 640, 768, 1024],
-                _ => &[128, 160, 192, 256, 320],
-            };
+            let rates = s.audio_bitrate_choices();
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), s.supports_audio_bitrate(*r, seq_sr))).collect();
             if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
                 s.audio.bitrate_kbps = rates[i];

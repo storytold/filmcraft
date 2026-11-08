@@ -213,6 +213,9 @@ impl FrameRequest {
     }
 }
 
+/// WAVE speaker mask for discrete 7.1: FL, FR, FC, LFE, BL, BR, SL, SR.
+pub const SPEAKER_MASK_7_1: u32 = 0x63f;
+
 pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// WAVE speaker mask for decoded audio stream `stream`, when the source can prove it.
