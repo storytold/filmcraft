@@ -384,6 +384,45 @@ struct PmtState {
     pmt_changed: bool,
 }
 
+/// One program clock across every PCR_PID that is active in packet order. Until the first PMT
+/// names the clock, each PID carrying a PCR keeps its own candidate (a fixed-size min/max, so at
+/// most one per 13-bit PID); the named PID's candidate becomes the clock. Without a PMT, the first
+/// PID carrying a PCR stands in.
+#[derive(Default)]
+struct ProgramClock {
+    clock: ClockRange,
+    candidates: HashMap<u16, ClockRange>,
+    first_pid: Option<u16>,
+}
+
+impl ProgramClock {
+    /// A PCR on `pid`, with the PMT's PCR_PID so far.
+    fn push(&mut self, pcr_pid: Option<u16>, pid: u16, pcr: i64) {
+        match pcr_pid {
+            Some(p) if p == pid => self.clock.push(pcr),
+            Some(_) => {}
+            None => {
+                self.first_pid.get_or_insert(pid);
+                self.candidates.entry(pid).or_default().push(pcr);
+            }
+        }
+    }
+
+    /// The first PMT names `pid`: the PCRs it carried before count, the other candidates go
+    /// (0x1fff, "no PCR PID", has none).
+    fn named(&mut self, pid: u16) {
+        self.clock = self.candidates.remove(&pid).unwrap_or_default();
+        self.candidates = HashMap::new();
+    }
+
+    fn range(&self, pcr_pid: Option<u16>) -> Option<(i64, i64)> {
+        match (pcr_pid, self.first_pid) {
+            (None, Some(pid)) => self.candidates.get(&pid).and_then(ClockRange::range),
+            _ => self.clock.range(),
+        }
+    }
+}
+
 /// Feed one PAT section stream: the first program's PMT PID is chosen; later PAT repeats
 /// cannot change it.
 fn feed_pat(pk: &Packet<'_>, pat: &mut Psi, pmt: &mut PmtState, crc_errors: &mut u64) {
@@ -457,13 +496,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     // one timestamp unwrapper for the program: its streams share one clock, so a stream whose
     // first timestamp lies just after the 33-bit wrap stays in step with one just before it
     let mut unwrap = Unwrap::default();
-    // One program clock across every PCR_PID that is active in packet order. Until the first PMT
-    // names the clock, each PID carrying a PCR keeps its own candidate (a fixed-size min/max, so
-    // at most one per 13-bit PID); the named PID's candidate becomes the clock. Without a PMT,
-    // the first PID carrying a PCR stands in.
-    let mut pcr_clock = ClockRange::default();
-    let mut candidates: HashMap<u16, ClockRange> = HashMap::new();
-    let mut first_pcr_pid: Option<u16> = None;
+    let mut pcr_clock = ProgramClock::default();
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     let (mut tei_dropped, mut scrambled, mut duplicates) = (0u64, 0u64, 0u64);
     const BLOCK: usize = 4096;
@@ -509,14 +542,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
             };
             p += packet_size;
             if let Some(pcr) = pk.pcr {
-                match pmt.pcr_pid {
-                    Some(pid) if pid == pk.pid => pcr_clock.push(pcr),
-                    Some(_) => {}
-                    None => {
-                        first_pcr_pid.get_or_insert(pk.pid);
-                        candidates.entry(pk.pid).or_default().push(pcr);
-                    }
-                }
+                pcr_clock.push(pmt.pcr_pid, pk.pid, pcr);
             }
             if is_scrambled {
                 // encrypted payload is noise to the splitter; keep the counter in step
@@ -536,10 +562,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                 let had_pcr_pid = pmt.pcr_pid.is_some();
                 feed_pmt(&pk, &mut pmt, packet_size, &mut es, &mut order, &mut crc_errors);
                 if !had_pcr_pid && let Some(pid) = pmt.pcr_pid {
-                    // the PCRs the named PID carried before the PMT count; the other candidates
-                    // go (0x1fff, "no PCR PID", has none)
-                    pcr_clock = candidates.remove(&pid).unwrap_or_default();
-                    candidates = HashMap::new();
+                    pcr_clock.named(pid);
                 }
                 continue;
             }
@@ -608,10 +631,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         streams.push(e.stream);
     }
-    let pcr_range = match (pmt.pcr_pid, first_pcr_pid) {
-        (None, Some(pid)) => candidates.get(&pid).and_then(ClockRange::range),
-        _ => pcr_clock.range(),
-    };
+    let pcr_range = pcr_clock.range(pmt.pcr_pid);
     Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program: pmt.program, pcr_range, warnings })
 }
 
