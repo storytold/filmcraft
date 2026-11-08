@@ -182,7 +182,8 @@ impl RecordBudget {
         self.used.fetch_sub(n, std::sync::atomic::Ordering::AcqRel);
     }
 
-    /// Bytes reserved now.
+    /// Bytes reserved now (tests).
+    #[cfg(test)]
     pub fn used(&self) -> usize {
         self.used.load(std::sync::atomic::Ordering::Acquire)
     }
