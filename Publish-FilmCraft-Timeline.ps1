@@ -40,7 +40,7 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($branch) -or $branch -i
     throw "Expected a feature branch; current branch is '$branch'. Nothing was committed or pushed."
 }
 
-$staged = @(& git -C $repo diff --cached --name-only --no-renames)
+$staged = @(& git -C $repo -c core.quotePath=false diff --cached --name-only --no-renames)
 if ($LASTEXITCODE -ne 0) { throw 'Could not inspect staged files.' }
 if ($staged.Count -eq 0) {
     throw 'There are no staged changes. Stage the Timeline files first; this script will not stage files automatically.'
