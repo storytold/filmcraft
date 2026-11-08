@@ -42,6 +42,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -777,6 +778,11 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        // headless sessions (CLI, MCP, control channel) have no UI frame loop calling
+        // `poll_persistence`: apply background mask tracking before each command (#3302)
+        if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
+            masks::poll(self);
+        }
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
@@ -1394,6 +1400,8 @@ mod media_watch_tests;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod named_targets_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]

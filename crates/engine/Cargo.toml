@@ -45,12 +45,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 # The publishing tests talk HTTP to a local fake Google, which checks PKCE.
 filmcraft-publish = { workspace = true, features = ["net"] }
 base64 = "0.23"
