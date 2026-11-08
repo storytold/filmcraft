@@ -1020,7 +1020,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
             resp = resp.on_hover_text(&it.name);
         }
     }
-    app.auto.add(&format!("{pre}.item.{}", id.0), th, &it.name);
+    app.auto.add(&format!("{pre}.item.{}", id.0), th.intersect(ui.clip_rect()), &it.name);
     Some(resp)
 }
 
@@ -1066,7 +1066,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
             resp = resp.on_hover_text(&b.name);
         }
     }
-    app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
+    app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th.intersect(ui.clip_rect()), &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
     if resp.drag_started_by(egui::PointerButton::Primary) {
         crate::panels::start_drag_bin(ui, b.id.0);
