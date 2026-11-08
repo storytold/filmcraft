@@ -569,6 +569,7 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video("posterize", "Posterize", STYLIZE, vec![fs("levels", "Level", 7.0, (2.0, 255.0), (2.0, 32.0), "", 0)]),
+        video("threshold", "Threshold", STYLIZE, vec![fs("level", "Level", 128.0, (0.0, 255.0), (0.0, 255.0), "", 0)]),
         video(
             "mosaic",
             "Mosaic",

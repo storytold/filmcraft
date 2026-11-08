@@ -237,6 +237,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "extract",
     "invert",
     "posterize",
+    "threshold",
     "gaussian_blur",
     "gaussian_blur_legacy",
     "camera_blur",
@@ -388,6 +389,10 @@ impl FxOp {
             }
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
+            // an inverted hard Extract with no lower edge: white where the luma, rounded to an 8-bit
+            // code (the linear round trip leaves a code just under itself), is at least Level (`max`
+            // first: a NaN level becomes 0)
+            "threshold" => FxOp::Extract { lo: -1.0, hi: (f(e, "level", cx).max(0.0).clamp(0.0, 255.0) - 0.5) / 255.0, soft: 0.0, invert: true },
             "gaussian_blur" | "gaussian_blur_legacy" => {
                 let r = f(e, "blurriness", cx) * cx.px_scale * 0.5;
                 let dims = choice(e, "dimensions");
@@ -1267,6 +1272,65 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Runs Threshold at `level` on one pixel per 8-bit grey `code` (premultiplied by `alpha`) and
+    /// returns the resulting pixels, checking the op stays GPU-capable.
+    fn threshold(level: f64, codes: &[u8], alpha: f32) -> Vec<[f32; 4]> {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let mut e = find_effect("threshold").unwrap().instance();
+        e.params.get_mut("level").unwrap().value = ParamValue::Float(level);
+        let px = codes
+            .iter()
+            .flat_map(|k| {
+                let c = filmcraft_color::srgb_to_linear(f32::from(*k) / 255.0) * alpha;
+                [c, c, c, alpha]
+            })
+            .collect();
+        let mut img = Image { w: codes.len(), h: 1, px };
+        let op = FxOp::eval(&e, &cx, img.w, 1).unwrap();
+        assert!(op.gpu_ok(), "level {level}: {op:?}");
+        op.apply(&mut img);
+        img.px.as_chunks::<4>().0.to_vec()
+    }
+
+    #[test]
+    fn threshold_is_white_from_the_level_up_and_keeps_alpha() {
+        assert_eq!(find_effect("threshold").unwrap().instance().f64_at("level", Tick::ZERO), 128.0);
+        let codes: Vec<u8> = (0..=255).collect();
+        for level in [0u8, 1, 127, 128, 200, 254, 255] {
+            for alpha in [1.0, 0.5] {
+                for (k, p) in codes.iter().zip(threshold(f64::from(level), &codes, alpha)) {
+                    let v = if *k >= level { alpha } else { 0.0 };
+                    assert_eq!(p, [v, v, v, alpha], "level {level}, code {k}, alpha {alpha}");
+                }
+            }
+        }
+        // transparent pixels stay transparent
+        assert_eq!(threshold(0.0, &[255], 0.0), [[0.0; 4]]);
+    }
+
+    #[test]
+    fn threshold_clamps_hostile_levels() {
+        let codes = [0u8, 128, 255];
+        let white = [1.0; 4];
+        let black = [0.0, 0.0, 0.0, 1.0];
+        for level in [-50.0, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(threshold(level, &codes, 1.0), [white; 3], "level {level}");
+        }
+        for level in [300.0, 1e30, f64::INFINITY] {
+            assert_eq!(threshold(level, &codes, 1.0), [black, black, white], "level {level}");
         }
     }
 
