@@ -154,6 +154,20 @@ impl Driver {
         self.frames(3);
     }
 
+    /// Click Link Media's Search and run frames only until the search has started (`click` waits
+    /// for the control reply, by which time a small folder's walk is over and read).
+    fn start_search(&mut self) {
+        let (req, _reply) = ControlRequest::new("ui.click", json!({"id": "linkMedia.search"}));
+        self.tx.send(req).unwrap();
+        for _ in 0..600 {
+            self.frames(1);
+            if self.app().ui.link_media_search.is_some() {
+                return;
+            }
+        }
+        panic!("the search didn't start");
+    }
+
     fn ids(&mut self, prefix: &str) -> Vec<String> {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
@@ -426,6 +440,50 @@ fn link_media_dialog_relinks_moved_media() {
     assert!(d.app().ui.link_media.is_none(), "both clips relinked (the second by folder remap), dialog closed");
     let st = d.exec("media.status", json!({}));
     assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "{st}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A walk started for one row is checked for the row selected when it ends: the folder's files
+/// don't depend on the row (#3937). Closing the dialog stops a walk still running.
+#[test]
+fn link_media_search_follows_the_selected_row_and_stops_when_the_dialog_closes() {
+    let root = tmp_dir("link-row");
+    let path = moved_project(&root);
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": path})).unwrap();
+    let mut d = Driver::new(s);
+    d.frames(6);
+    let folder = root.join("Moved").to_string_lossy().into_owned();
+    d.app().ui.link_media.as_mut().unwrap().folder = folder.clone();
+
+    // Started for the first row; the second row is selected before the walk's result is read.
+    // (A walk's result is read at the earliest in the frame after the one that starts it, so the
+    // row is changed right after that one.)
+    d.start_search();
+    assert!(d.app().ui.link_media_search.is_some(), "the search started");
+    d.app().ui.link_media.as_mut().unwrap().row = 1;
+    let mut candidates = Vec::new();
+    for _ in 0..400 {
+        d.frames(1);
+        candidates = d.app().ui.link_media.as_ref().unwrap().candidates.clone();
+        if !candidates.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(d.app().ui.link_media_search.is_none(), "the finished search is dropped");
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(candidates[0].0.ends_with("Night.mov"), "the second row's file, found in the same walk: {candidates:?}");
+
+    // Closing the dialog stops the walk.
+    d.start_search();
+    let running = d.app().ui.link_media_search.clone().expect("a second search started");
+    // As Cancel leaves it, in this very frame (a click would run frames, and the walk could end).
+    d.app().session.offline.prompt = false;
+    d.app().ui.link_media = None;
+    d.frames(1);
+    assert!(running.cancelled(), "closing the dialog stopped the walk");
+    assert!(d.app().ui.link_media_search.is_none());
     let _ = std::fs::remove_dir_all(&root);
 }
 

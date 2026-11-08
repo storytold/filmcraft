@@ -197,6 +197,15 @@ fn missing_list(app: &FilmcraftApp) -> Vec<(u64, String, String, String, &'stati
         .collect()
 }
 
+/// The `media.search` parameters for `item` with the draft's folder and options.
+fn search_params(d: &LinkMediaDraft, item: &Value) -> Value {
+    let mut p = match_params(d);
+    p["folder"] = json!(d.folder);
+    p["item"] = item.clone();
+    p["exactName"] = json!(d.exact_name);
+    p
+}
+
 fn match_params(d: &LinkMediaDraft) -> Value {
     json!({
         "match": {"fileName": d.file_name, "extension": d.extension, "clipId": d.clip_id, "duration": d.duration, "mediaStart": d.media_start, "metadata": d.metadata},
@@ -380,14 +389,16 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     let (item, ..) = rows[d.row].clone();
-    // A search whose walk is over: check its files for the row it was started for. Another row
-    // selected since has its own candidates to find, so the result is dropped.
+    // A search whose walk is over: check its files for the row selected now. The walk lists the
+    // folder whatever row it was started for, so another row selected meanwhile gets its own
+    // candidates from it; a different folder chosen meanwhile needs a new search.
     if let Some(found) = app.ui.link_media_search.as_ref().and_then(LinkMediaSearch::take)
         && let Some(search) = app.ui.link_media_search.take()
     {
         match found {
-            Some(index) if search.params["item"] == json!(item) => {
-                show_search_result(&mut d, filmcraft_engine::relink::search_index(&app.session, &search.params, &index));
+            Some(index) if search.params["folder"] == json!(d.folder) => {
+                let params = search_params(&d, &json!(item));
+                show_search_result(&mut d, filmcraft_engine::relink::search_index(&app.session, &params, &index));
             }
             _ => d.message.clear(),
         }
@@ -400,10 +411,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }),
         Some("search") => {
-            let mut p = match_params(&d);
-            p["folder"] = json!(d.folder);
-            p["item"] = json!(item);
-            p["exactName"] = json!(d.exact_name);
+            let p = search_params(&d, &json!(item));
             // The folder is walked on another thread (#3937); the candidates show when it's done.
             if let Some(old) = app.ui.link_media_search.take() {
                 old.cancel();
