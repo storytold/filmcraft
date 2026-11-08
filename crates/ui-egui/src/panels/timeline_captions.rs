@@ -70,7 +70,7 @@ pub fn marquee_captions(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId>
     seq.caption_tracks
         .iter()
         .zip(rows(area, seq.caption_tracks.len()))
-        .filter(|(_, row)| row.min.y < r.max.y && row.max.y > r.min.y)
+        .filter(|(tr, row)| !tr.locked && row.min.y < r.max.y && row.max.y > r.min.y)
         .flat_map(|(tr, _)| tr.captions.iter().filter(|c| c.start < b && c.end() > a).map(|c| c.id))
         .collect()
 }
