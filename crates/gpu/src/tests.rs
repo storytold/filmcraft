@@ -95,6 +95,35 @@ fn padded_and_short_planes_upload() {
     assert!(c.read_output().is_some());
 }
 
+/// Warming up makes the render targets of the sequence's size and draws each kind of frame
+/// through the pipelines; a degenerate size is ignored, and frames still draw right afterwards.
+#[test]
+fn warm_up_makes_the_targets_and_draws_nothing_wrong() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.warm_up(0, 7);
+    assert!(c.read_output().is_none(), "no targets without a size");
+    c.warm_up(64, 8);
+    let (w, h, _) = c.read_output().expect("targets of the warmed-up size");
+    assert_eq!((w, h), (64, 8));
+    // (4:4:4, where the CPU and the GPU agree to the code; 4:2:0 chroma is interpolated differently)
+    let (w, h) = (64u32, 8u32);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..w * h).map(|i| (200 + (i / w) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..w * h).map(|i| (800 - (i % w) * 10) as u16).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes after warming up");
+}
+
 #[test]
 fn yuv_code_range_uniforms() {
     let mut mismatches = Vec::new();

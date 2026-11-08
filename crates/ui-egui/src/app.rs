@@ -299,6 +299,7 @@ impl FilmcraftApp {
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                    self.gpu_warm_up();
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it
