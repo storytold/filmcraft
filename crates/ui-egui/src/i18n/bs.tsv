@@ -3607,7 +3607,7 @@
 	Start: {tc}	Početak: {tc}
 	End: {tc}	Kraj: {tc}
 	Duration: {tc}	Trajanje: {tc}
-	Animate zoom, scrolling and menus	Animiraj zumiranje, pomicanje i menije
+	Animate zoom, scrolling and menus	Animiraj zumiranje, pomjeranje i menije
 	Reset Interface Zoom	Vrati zumiranje interfejsa
 	Track Color	Boja trake
 	Open a sequence to search its graphics	Otvorite sekvencu da pretražite njene grafike
@@ -3616,6 +3616,47 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) zahtijeva hardverski enkoder (NVENC na NVIDIA GPU-ovima, VideoToolbox na macOS-u); na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski H.265 enkoder. Umjesto toga odaberite H.264 ili ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 zahtijeva hardverski enkoder; na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski AV1 enkoder.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.
+	1/2	1/2
+	Audio Names	Nazivi zvuka
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Audio izlaz nije uspio: reprodukcija bez zvuka (provjerite Postavke ▸ Audio hardver)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Audio izlaz ne odgovara: reprodukcija bez zvuka (provjerite Postavke ▸ Audio hardver)
+	Center at Cut	Centriraj na rezu
+	Change Sequence Settings	Promijeni postavke sekvence
+	Change the sequence to match the clip's settings?	Promijeniti sekvencu da odgovara postavkama klipa?
+	Chapter Marker	Marker poglavlja
+	Check for Updates…	Provjeri ažuriranja…
+	Checking for updates…	Provjera ažuriranja…
+	Clip Mismatch Warning	Upozorenje o neusklađenom klipu
+	Clip: {settings}	Klip: {settings}
+	Comment Marker	Marker komentara
+	Could not check for updates:\n{error}	Nije moguće provjeriti ažuriranja:\n{error}
+	Custom Start	Prilagođeni početak
+	Edit Marker…	Uredi marker…
+	End at Cut	Završi na rezu
+	Enter a positive duration within the supported speed range.	Unesite pozitivno trajanje unutar podržanog raspona brzine.
+	FilmCraft Updates	FilmCraft ažuriranja
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je trenutno najnovija dostupna verzija.
+	Flash Cue Point	Flash tačka znaka
+	In:	Ulaz:
+	Invalid duration: {error}	Nevažeće trajanje: {error}
+	Keep Existing Settings	Zadrži postojeće postavke
+	Looks for a newer FilmCraft release and offers to update.	Traži noviju verziju FilmCrafta i nudi ažuriranje.
+	Marker Color:	Boja markera:
+	Options:	Opcije:
+	Replace	Zamijeni
+	Replace File	Zamijeni datoteku
+	Segmentation Marker	Marker segmentacije
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Odaberite jedan klip (ili povezani klip) na vremenskoj liniji ili jednu stavku u panelu Projekat da biste je preimenovali
+	Sequence: {settings}	Sekvenca: {settings}
+	Set Work Area Bar In Point	Postavi ulaznu tačku trake radnog područja
+	Set Work Area Bar Out Point	Postavi izlaznu tačku trake radnog područja
+	Show Audio Names	Prikaži nazive zvuka
+	Show Video Names	Prikaži nazive videa
+	Start at Cut	Počni na rezu
+	This clip does not match the sequence settings.	Ovaj klip ne odgovara postavkama sekvence.
+	Video Names	Nazivi videa
+	Web Link	Web veza
+	“{file}” already exists in “{folder}”. Do you want to replace it?	„{file}” već postoji u „{folder}”. Želite li ga zamijeniti?
 
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
@@ -3626,3 +3667,85 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; 10-bitni master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
+
+# Strings added on main since (markers, custom colors, preset import, export messages).
+	1 frame ({seconds} s)	1 sličica ({seconds} s)
+	A range marker needs a positive duration	Marker raspona zahtijeva pozitivno trajanje
+	Add Custom Color	Dodaj prilagođenu boju
+	Add Track	Dodaj traku
+	Add and apply	Dodaj i primijeni
+	Add color	Dodaj boju
+	Add custom color	Dodaj prilagođenu boju
+	Add custom color…	Dodaj prilagođenu boju…
+	Author	Autor
+	Caption Export Settings	Postavke izvoza titlova
+	Chapter	Poglavlje
+	Choose Color…	Odaberi boju…
+	Choose color with system picker	Odaberi boju sistemskim biračem
+	Color picker	Birač boja
+	Color selected markers	Oboji odabrane markere
+	Custom Color…	Prilagođena boja…
+	Delete Marker	Izbriši marker
+	Delete Markers	Izbriši markere
+	Delete Track	Izbriši traku
+	Delete selected markers	Izbriši odabrane markere
+	Duration (frames):	Trajanje (sličice):
+	Edit Custom Color	Uredi prilagođenu boju
+	Edit Marker	Uredi marker
+	Edit Markers	Uredi markere
+	Edit color	Uredi boju
+	Editing or removing a swatch leaves assigned colors unchanged.	Uređivanje ili uklanjanje uzorka boje ne mijenja već dodijeljene boje.
+	Enter a valid HH:MM:SS:FF timecode	Unesite važeći vremenski kod HH:MM:SS:FF
+	Enter a valid HTTP or HTTPS URL without credentials	Unesite važeći HTTP ili HTTPS URL bez pristupnih podataka
+	Enter six hex digits, for example FF80C0.	Unesite šest heksadecimalnih cifara, na primjer FF80C0.
+	Exported {path} as {format}, from its file extension	Izvezeno {path} kao {format}, prema ekstenziji datoteke
+	From preset file:	Iz datoteke predloška:
+	Hex	Hex
+	Hex color	Hex boja
+	Imported {n} preset(s)	Uvezeno predložaka: {n}
+	Imported {n} preset(s); not imported: {error}	Uvezeno predložaka: {n}; nije uvezeno: {error}
+	Imported {n} preset(s); {skipped} skipped	Uvezeno predložaka: {n}; preskočeno: {skipped}
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Uvezeno predložaka: {n}; preskočeno: {skipped}, s nepodržanim parametrima: {warnings}
+	Imported {n} preset(s); {warnings} with unsupported parameters	Uvezeno predložaka: {n}; s nepodržanim parametrima: {warnings}
+	Manage Colors	Upravljaj bojama
+	Manage Colors…	Upravljaj bojama…
+	Marker changed or was removed. Reopen it to continue.	Marker je promijenjen ili uklonjen. Ponovo ga otvorite da nastavite.
+	Marker owner is unavailable	Vlasnik markera nije dostupan
+	Next	Sljedeće
+	No markers	Nema markera
+	No matching markers	Nema odgovarajućih markera
+	No presets folder: the app has no data directory	Nema foldera predložaka: aplikacija nema direktorij podataka
+	No saved colors	Nema sačuvanih boja
+	No sequence open	Nijedna sekvenca nije otvorena
+	No source clip open	Nijedan izvorni klip nije otvoren
+	Notes	Bilješke
+	Open Link	Otvori vezu
+	Open Presets Folder	Otvori folder predložaka
+	Opens this address in your web browser	Otvara ovu adresu u vašem web pregledniku
+	Preset library is up to date	Biblioteka predložaka je ažurna
+	Preset library updated	Biblioteka predložaka je ažurirana
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteka predložaka je ažurirana: učitano {imported}, uklonjeno {removed}
+	Previous	Prethodno
+	Project Colors	Boje projekta
+	Range marker	Marker raspona
+	Remove Custom Color	Ukloni prilagođenu boju
+	Remove saved color	Ukloni sačuvanu boju
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Responzivni dizajn – Vrijeme preslikava ključne sličice sloja grafike; efekti klipa poput Neprozirnosti i Kretanja zadržavaju vrijeme medija
+	Save color	Sačuvaj boju
+	Scan Presets Folder	Skeniraj folder predložaka
+	Search markers	Pretraži markere
+	Search name, notes, author	Pretraži naziv, bilješke, autora
+	Select all	Odaberi sve
+	Select all visible markers	Odaberi sve vidljive markere
+	Sequence: {name}	Sekvenca: {name}
+	Set as Default Transition	Postavi kao zadani prijelaz
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Izvorni ulaz/izlaz traje samo 1 sličicu. Odaberite Cijeli izvor da izvezete cijelu sekvencu.
+	Source: {name}	Izvor: {name}
+	Source: {name} (shared source markers)	Izvor: {name} (dijeljeni markeri izvora)
+	System color picker unavailable: {error}	Sistemski birač boja nije dostupan: {error}
+	Time is outside the supported range	Vrijeme je izvan podržanog raspona
+	URL	URL
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Kada je omogućeno, GIF prozirnost je uključena/isključena: alfa ispod 128 je prozirna; 128 i više je neprozirna.
+	{count} selected	Odabrano: {count}
+	{frames} frames ({seconds} s)	{frames} sličica ({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} već postoji, pa ništa nije izvezeno. Da ga zamijenite, odaberite ga u dijalogu za čuvanje.
