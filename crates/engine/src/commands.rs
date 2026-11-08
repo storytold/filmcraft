@@ -5160,6 +5160,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.previews_follow_path();
         s.note_recent_project();
         s.saved_revision = s.revision;
+        s.saved_view_epoch = s.view_epoch;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
