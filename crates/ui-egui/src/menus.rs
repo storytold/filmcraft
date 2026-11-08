@@ -535,6 +535,12 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
+        // Graphics and Titles ▸ Lettering with Animation Templates… (and a caption's right-click
+        // menu) opens the Lettering window for the selected captions.
+        "lettering.fx.open" => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::lettering_fx::open(app, ctx);
+        }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;

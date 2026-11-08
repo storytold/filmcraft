@@ -19,6 +19,7 @@ pub mod graphics_templates;
 pub mod import_mode;
 pub mod interchange_export;
 pub mod keyboard;
+pub mod lettering_fx;
 pub mod lumetri;
 pub mod masks;
 pub mod media_browser;

@@ -300,6 +300,20 @@ fn interact_block(
         let add = ctx.input(|i| i.modifiers.command || i.modifiers.shift);
         actions.push(("captions.select".into(), json!({"captions": [c.id.0], "add": add})));
     }
+    // right-click: Lettering for this caption (and the others selected with it)
+    let selected_here = app.session.state.caption_selection.contains(&c.id);
+    resp.context_menu(|ui| {
+        let label = tl!("Lettering with Animation Templates…");
+        let r = ui.button(label);
+        app.auto.add(&format!("timeline.caption.{}.menu.lettering", c.id.0), r.rect, label);
+        if r.clicked() {
+            if !selected_here {
+                actions.push(("captions.select".into(), json!({"captions": [c.id.0]})));
+            }
+            actions.push(("lettering.fx.open".into(), json!({})));
+            ui.close();
+        }
+    });
     if tr.locked {
         return;
     }

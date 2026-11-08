@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+pub mod lettering_fx;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
@@ -160,11 +161,19 @@ pub trait Services: Send + Sync {
     fn home_dir(&self) -> Option<String> {
         None
     }
+    /// Create a directory and its parents (Lettering work folders). Hosts without a filesystem
+    /// fail closed.
+    fn create_dir_all(&self, _dir: &str) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "creating folders is unavailable on this host"))
+    }
 }
 
 /// Native filesystem services.
 pub struct FsServices;
 impl Services for FsServices {
+    fn create_dir_all(&self, dir: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)
+    }
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         std::fs::read(path)
     }
@@ -507,6 +516,8 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Lettering made by the external animation app (bank folder, process runner, jobs).
+    pub lettering_fx: lettering_fx::FxState,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
@@ -610,6 +621,7 @@ impl Session {
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            lettering_fx: Default::default(),
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
