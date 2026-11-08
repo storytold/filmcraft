@@ -141,6 +141,16 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
         Ok(())
     }
 }
+/// The selected captions a Clear / Ripple Delete can still take after the clip edit: the ripple of
+/// a clip removes the captions of sync-locked caption tracks that lay inside its range, and
+/// captions on a locked track stay.
+fn deletable_captions(q: &filmcraft_project::Sequence, caps: &[ClipId]) -> Vec<ClipId> {
+    caps.iter().copied().filter(|c| q.find_caption(*c).is_some_and(|(t, _)| q.caption_track(t).is_some_and(|t| !t.locked))).collect()
+}
+/// Delete/Ripple Delete with no explicit clips and both clips and captions selected (Select All).
+fn clips_and_captions_selected(s: &Session, p: &Value) -> bool {
+    p.get("clips").is_none() && p.get("clip").is_none() && !s.state.selection.is_empty() && !s.state.caption_selection.is_empty()
+}
 /// Clips, captions or a gap selected (Ripple Delete: a transition has no length of its own to close).
 fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -2144,9 +2154,15 @@ fn build() -> Vec<CommandSpec> {
                     Some(clips) => with_links(s, &clips),
                     None => s.state.selection.clone(),
                 };
+                let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
                 s.edit_sequence("Clear", |q, _, st| {
                     edit::delete_items(q, &sel);
                     st.selection.clear();
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, false)?;
+                    }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2174,6 +2190,7 @@ fn build() -> Vec<CommandSpec> {
                     Some(clips) => with_links(s, &clips),
                     None => s.state.selection.clone(),
                 };
+                let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
                 s.edit_sequence("Ripple Delete", |q, _, st| {
                     let spans = edit::ripple_delete_items(q, &sel)?;
                     if st.ripple_sequence_markers {
@@ -2182,6 +2199,11 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     st.selection.clear();
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, true)?;
+                    }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2241,7 +2263,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_seq, |s, _| {
             let all: Vec<ClipId> = s.active_sequence().map(|q| q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect()).unwrap_or_default();
+            // captions too, so they can all be converted to graphics at once (#1912)
+            let caps: Vec<ClipId> =
+                s.active_sequence().map(|q| q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.id)).collect()).unwrap_or_default();
             s.state.selection = all;
+            s.state.caption_selection = caps;
             s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),
