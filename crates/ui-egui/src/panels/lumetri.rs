@@ -292,17 +292,17 @@ fn open_section(
     open
 }
 
-/// The Lumetri Color panel's ≡ menu items: Export .cube… saves the selected clip's grade (also an
-/// Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id `panel.menu.LumetriColor.exportCube`).
+/// The Lumetri Color panel's ≡ menu items: Export .cube… saves the grade of the clip the panel
+/// shows (also an Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id
+/// `panel.menu.LumetriColor.exportCube`). It is enabled only when that clip has an enabled
+/// Lumetri Color, and exports that clip even when another selected clip has one.
 /// True when the menu should close.
 pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
-    let has = app.session.state.selection.iter().any(|c| {
-        app.session.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri"))
-    });
-    let r = ui.add_enabled(has, egui::Button::new(tl!("Export .cube…")));
+    let shown = selected(app).filter(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri")).map(|(c, _)| c);
+    let r = ui.add_enabled(shown.is_some(), egui::Button::new(tl!("Export .cube…")));
     app.auto.add_response("panel.menu.LumetriColor.exportCube", &r, "Export .cube…");
-    if r.clicked() {
-        if let Err(e) = crate::menus::invoke(app, ui.ctx(), "lumetri.exportCube", json!({})) {
+    if let (true, Some(clip)) = (r.clicked(), shown) {
+        if let Err(e) = crate::menus::invoke(app, ui.ctx(), "lumetri.exportCube", json!({"clip": clip.0})) {
             app.ui.status = e;
         }
         return true;
