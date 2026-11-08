@@ -160,6 +160,11 @@ struct Job {
 struct Shared {
     queue: Mutex<VecDeque<Job>>,
     cv: Condvar,
+    /// Upload-only jobs (the frames of deferred plans, [`GpuPlan::deferred`]), for the upload thread: a worker pool busy decoding
+    /// the prefetch run would hold an upload behind decodes until the UI thread, needing the
+    /// frame, uploaded it itself (with a 30 ms stall when the device grew its staging memory).
+    uploads: Mutex<VecDeque<Job>>,
+    upload_cv: Condvar,
     done: Mutex<Cache>,
     plans: Mutex<PlanCache>,
     /// Running jobs: key, cancel flag, prefetch.
@@ -350,6 +355,9 @@ impl filmcraft_render::SourceProvider for JobProvider {
 pub struct GpuPlan {
     pub plan: filmcraft_render::plan::FramePlan,
     pub prepared: filmcraft_gpu::PreparedPlan,
+    /// Nothing uploaded yet: the frame was a prefetch more than [`UPLOAD_AHEAD`] frames ahead
+    /// when it was decoded. A request for it within that distance queues the upload.
+    pub deferred: bool,
 }
 
 impl GpuPlan {
@@ -533,6 +541,23 @@ pub fn prefetch_depth(speed: f64) -> i64 {
     if speed.abs() > 1.5 { 24 } else { 14 }
 }
 
+/// Prefetched frames are uploaded to the GPU only once they are within this many frames of
+/// the playhead; further ahead they wait, decoded, in the plan cache. Uploads share the GPU's
+/// queue with the monitors' drawing and presenting: when the workers uploaded every frame as
+/// soon as it was decoded, the start of playback queued the whole prefetch run at once (at
+/// 4K 10-bit, 14 or more frames of 33 MB) and the UI thread waited 100-150 ms for its next
+/// swapchain image behind those copies, dropping the first frames of every play. Four frames
+/// (130 MB) copy in well under a frame's time, and after the start one frame enters the
+/// window per frame shown.
+pub const UPLOAD_AHEAD: u32 = 4;
+
+/// Whether a finished playback job uploads its frame now: not a prefetch more than
+/// [`UPLOAD_AHEAD`] frames ahead when there is an uploader (without one there is nothing to
+/// wait for: the UI thread uploads when it draws).
+pub fn upload_now(has_uploader: bool, prefetch: bool, frames_ahead: u32) -> bool {
+    !has_uploader || !prefetch || frames_ahead <= UPLOAD_AHEAD
+}
+
 /// Playback starts its clock once this many frames from the playhead are ready, or after
 /// [`PREROLL_TIMEOUT_S`]: otherwise the first frames after Play are due before any decoder had a
 /// chance to produce them (a seek decodes from the previous keyframe).
@@ -606,6 +631,8 @@ impl FrameServer {
         let shared = Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
+            uploads: Mutex::new(VecDeque::new()),
+            upload_cv: Condvar::new(),
             done: Mutex::new(Cache { map: HashMap::new(), bytes: 0, budget: 768 << 20, clock: 0 }),
             plans: Mutex::new(PlanCache::new(workers)),
             in_flight: Mutex::new(Vec::new()),
@@ -627,6 +654,12 @@ impl FrameServer {
             let rp = repaint.clone();
             let pv = previews.clone();
             std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, pv, rp)).ok();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let sh = shared.clone();
+            let rp = repaint.clone();
+            std::thread::Builder::new().name("filmcraft-upload".into()).spawn(move || upload_worker(sh, rp)).ok();
         }
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
@@ -748,10 +781,41 @@ impl FrameServer {
     fn request_job(&self, request: FrameRequest<'_>) {
         let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up, due, playing } = request;
         let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
-        if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
-            || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
-        {
+        let deferred = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.get(&key).map(|e| e.plan.deferred);
+        if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key) || deferred == Some(false) {
             hit();
+            return;
+        }
+        // a decoded frame whose upload waits: queue it once the playhead is close enough
+        if deferred == Some(true) {
+            if !upload_now(true, prefetch, prio) {
+                hit();
+                return;
+            }
+            if self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
+                hit();
+                return;
+            }
+            let mut q = self.shared.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(j) = q.iter_mut().find(|j| j.key == key) {
+                j.prio = j.prio.min(prio);
+            } else {
+                q.push_back(Job {
+                    key,
+                    queued: Instant::now(),
+                    cancel: Default::default(),
+                    prefetch,
+                    catch_up,
+                    due,
+                    playing,
+                    time,
+                    scale,
+                    project: project.clone(),
+                    prio,
+                });
+            }
+            drop(q);
+            self.shared.upload_cv.notify_one();
             return;
         }
         if self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
@@ -921,6 +985,7 @@ impl FrameServer {
     /// [`Self::retain_queue`] with one test for queued jobs and another for running ones.
     fn retain_jobs(&self, keep_queued: impl Fn(&FrameKey) -> bool, keep_running: impl Fn(&FrameKey) -> bool) {
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| keep_queued(&j.key));
+        self.shared.uploads.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| keep_queued(&j.key));
         for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if !keep_running(k) {
                 c.store(true, Ordering::Relaxed);
@@ -934,6 +999,7 @@ impl FrameServer {
         self.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).window = None;
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
+        self.shared.uploads.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
         for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if *prefetch {
                 c.store(true, Ordering::Relaxed);
@@ -1006,10 +1072,12 @@ impl Drop for FrameServer {
         self.shared.stop.store(true, Ordering::Relaxed);
         q.clear();
         drop(q);
+        self.shared.uploads.lock().unwrap_or_else(PoisonError::into_inner).clear();
         for (_, c, _) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             c.store(true, Ordering::Relaxed);
         }
         self.shared.cv.notify_all();
+        self.shared.upload_cv.notify_all();
     }
 }
 
@@ -1084,6 +1152,48 @@ impl PlaybackMeter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// The upload thread: puts the frames of plans decoded earlier on the GPU ([`GpuPlan::deferred`],
+/// [`UPLOAD_AHEAD`]), highest priority first, and wakes the UI for each.
+#[cfg(not(target_arch = "wasm32"))]
+fn upload_worker(sh: Arc<Shared>, repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>) {
+    loop {
+        let job = {
+            let mut q = sh.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if sh.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i);
+                if let Some(job) = best.and_then(|i| q.remove(i)) {
+                    break job;
+                }
+                q = sh.upload_cv.wait(q).unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).push((job.key, job.cancel.clone(), job.prefetch));
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_upload(&sh, &job)));
+        sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+        if ran.is_err() {
+            sh.stats.lock().unwrap_or_else(PoisonError::into_inner).failed += 1;
+            log::error!("upload job {:?} panicked; the upload thread continues", job.key);
+        }
+        if let Some(f) = repaint.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            f();
+        }
+    }
+}
+
+/// Upload the frames of the cached plan of `job.key` (nothing when it is gone or already up).
+fn run_upload(sh: &Shared, job: &Job) {
+    let plan = sh.plans.lock().unwrap_or_else(PoisonError::into_inner).map.get(&job.key).filter(|e| e.plan.deferred).map(|e| e.plan.clone());
+    if let Some(p) = plan.filter(|_| !job.cancel.load(Ordering::Relaxed)) {
+        let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let prepared = filmcraft_gpu::prepare(&p.plan, up.as_ref());
+        sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan: p.plan.clone(), prepared, deferred: false });
+    }
+    sh.stats.lock().unwrap_or_else(PoisonError::into_inner).jobs += 1;
+}
+
 fn worker(
     sh: Arc<Shared>,
     pool: Arc<MediaPool>,
@@ -1213,10 +1323,12 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                             let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
                             loading = filmcraft_media::pending::take();
                             if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
-                                // Upload (or convert) texels here, not on the UI thread when the frame is shown.
+                                // Upload (or convert) texels here, not on the UI thread when the frame is shown;
+                                // a prefetch far ahead of the playhead waits for its upload ([`UPLOAD_AHEAD`]).
                                 let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                                let prepared = filmcraft_gpu::prepare(&plan, up.as_ref());
-                                sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+                                let now = upload_now(up.is_some(), job.prefetch, job.prio);
+                                let prepared = if now { filmcraft_gpu::prepare(&plan, up.as_ref()) } else { Default::default() };
+                                sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared, deferred: !now });
                             }
                             pv
                         } else {
@@ -1399,7 +1511,7 @@ mod tests {
     }
 
     fn small_plan() -> super::GpuPlan {
-        super::GpuPlan { plan: filmcraft_render::plan::FramePlan::Image(filmcraft_render::Image::new(2, 2)), prepared: Default::default() }
+        super::GpuPlan { plan: filmcraft_render::plan::FramePlan::Image(filmcraft_render::Image::new(2, 2)), prepared: Default::default(), deferred: false }
     }
 
     /// A plan cache over its budget from the first plan, so that only `min` and the play window
@@ -1515,7 +1627,7 @@ mod tests {
         assert!(c.min <= super::PlanCache::MAX);
     }
 
-    use super::{FrameKey, PlaybackMeter, Target, background_work, playback_plan, recent_keys};
+    use super::{FrameKey, PlaybackMeter, Target, UPLOAD_AHEAD, background_work, playback_plan, recent_keys, upload_now};
     use filmcraft_project::ItemId;
 
     #[test]
@@ -1612,6 +1724,20 @@ mod tests {
         assert!(starts_too_late(Some(now + ms(150)), now, ms(170)));
         assert!(starts_too_late(Some(now - ms(10)), now, ms(1)), "already due");
         assert!(!starts_too_late(Some(now - ms(10)), now, ms(0)), "an unknown cost never leaves a frame out");
+    }
+
+    /// With an uploader, a prefetch more than [`UPLOAD_AHEAD`] frames ahead waits; the frame
+    /// due now, a paused request and the near prefetches upload at once; without an uploader
+    /// nothing is deferred (the UI thread uploads as it draws).
+    #[test]
+    fn far_prefetches_wait_for_their_upload() {
+        assert!(upload_now(true, false, 0));
+        assert!(upload_now(true, false, 40));
+        assert!(upload_now(true, true, 1));
+        assert!(upload_now(true, true, UPLOAD_AHEAD));
+        assert!(!upload_now(true, true, UPLOAD_AHEAD + 1));
+        assert!(!upload_now(true, true, u32::MAX));
+        assert!(upload_now(false, true, u32::MAX));
     }
 
     #[test]
