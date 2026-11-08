@@ -795,7 +795,7 @@ impl Persistence {
             journaled: 0,
             journaled_view: 0,
             autosaved: 0,
-            autosaved_view: 0,
+
             first_pending: None,
             last_change: Instant::now(),
             next_autosave: Instant::now(),
@@ -984,7 +984,7 @@ struct Worker {
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
-    autosaved_view: u64,
+
     first_pending: Option<Instant>,
     last_change: Instant,
     next_autosave: Instant,
@@ -1043,7 +1043,7 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|s| s.content_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
@@ -1066,11 +1066,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && s.revision != self.autosaved) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1150,7 +1146,6 @@ impl Worker {
         match r {
             Ok(path) => {
                 self.autosaved = s.revision;
-                self.autosaved_view = s.view_epoch;
                 let _ = self.events.send(WorkerEvent::AutoSaved { path: path.clone(), revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
@@ -1242,11 +1237,37 @@ mod worker_failure_tests {
         prefs.save(&dir.join("preferences.json")).unwrap();
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
+        s.saved_revision = s.revision;
+        s.saved_view_epoch = s.view_epoch;
         let mut cfg = AutosaveConfig::new(&dir);
         cfg.local_offset = offset;
         s.start_autosave(cfg).unwrap();
         s.execute("sequence.addEdit", json!({"seconds": 0.5})).unwrap();
         (s, dir)
+    }
+
+    #[test]
+    fn auto_save_now_does_not_save_a_view_only_change() {
+        let dir = std::env::temp_dir().join(format!("fc-auto-save-view-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.saved_revision = s.revision;
+        s.saved_view_epoch = s.view_epoch;
+        let mut cfg = AutosaveConfig::new(&dir);
+        cfg.local_offset = |_| 0;
+        s.start_autosave(cfg).unwrap();
+        s.project_view_changed();
+        s.saved_revision = s.revision;
+        s.saved_view_epoch = s.view_epoch;
+        s.sync_persistence();
+        assert!(!s.is_dirty(), "the setup changes only the saved view");
+        let result = s.execute("file.autoSaveNow", json!({})).unwrap();
+        assert!(result["path"].is_null(), "view-only changes do not produce an Auto-Save copy");
+        assert!(!dir.join(names::AUTO_SAVE_DIR).exists());
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn failure_toasts(s: &mut Session) -> usize {

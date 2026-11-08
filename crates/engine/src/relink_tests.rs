@@ -431,6 +431,7 @@ fn make_offline_delete_only_removes_the_media_the_item_was_linked_to() {
     set_media_path(&mut s, items[0], &a.to_string_lossy());
     let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
     assert_eq!(r["deleted"].as_array().map(Vec::len), Some(1), "{r}");
+    drop(s);
     assert!(!a.exists());
     let _ = std::fs::remove_dir_all(&root);
 }
