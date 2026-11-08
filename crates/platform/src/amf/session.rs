@@ -445,8 +445,11 @@ impl Drop for Session {
 }
 
 fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
-    let nals = crate::nvenc::annex_b_nals(data);
-    for n in nals {
+    // AV1 output is a sequence of OBUs, with no Annex B start codes to split on
+    if codec == Codec::Av1 {
+        return av1_is_keyframe(data);
+    }
+    for n in crate::nvenc::annex_b_nals(data) {
         match codec {
             Codec::H264 => {
                 if let Some(&b) = n.first() {
@@ -464,64 +467,67 @@ fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
                     }
                 }
             }
-            Codec::Av1 => {
-                // Parse OBUs: check for sequence header (1) or key frame in frame header (3, 6)
-                let mut pos = 0usize;
-                while pos < data.len() {
-                    let b0 = data[pos];
-                    if (b0 >> 7) & 1 != 0 {
-                        break;
-                    }
-                    let obu_type = (b0 >> 3) & 0x0F;
-                    let extension_flag = (b0 >> 2) & 1;
-                    let has_size = (b0 >> 1) & 1;
-                    pos += 1;
-                    if extension_flag != 0 {
-                        if pos >= data.len() {
-                            break;
-                        }
-                        pos += 1;
-                    }
-                    let payload_start = if has_size != 0 {
-                        let mut payload_len = 0usize;
-                        let mut shift = 0;
-                        let mut valid = false;
-                        while pos < data.len() {
-                            let b = data[pos];
-                            pos += 1;
-                            payload_len |= ((b & 0x7F) as usize) << shift;
-                            shift += 7;
-                            if (b & 0x80) == 0 {
-                                valid = true;
-                                break;
-                            }
-                        }
-                        if !valid {
-                            break;
-                        }
-                        let start = pos;
-                        pos = pos.saturating_add(payload_len);
-                        start
-                    } else {
-                        let start = pos;
-                        pos = data.len();
-                        start
-                    };
+            Codec::Av1 => {}
+        }
+    }
+    false
+}
 
-                    if obu_type == 1 {
-                        return true;
-                    }
-                    if (obu_type == 3 || obu_type == 6)
-                        && let Some(&p0) = data.get(payload_start)
-                    {
-                        let show_existing_frame = (p0 >> 7) & 1;
-                        let frame_type = (p0 >> 5) & 3;
-                        if show_existing_frame == 0 && frame_type == 0 {
-                            return true;
-                        }
-                    }
+/// Whether a temporal unit's OBUs hold a sequence header or the frame header of a shown key frame.
+fn av1_is_keyframe(data: &[u8]) -> bool {
+    // Parse OBUs: check for sequence header (1) or key frame in frame header (3, 6)
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let b0 = data[pos];
+        if (b0 >> 7) & 1 != 0 {
+            break;
+        }
+        let obu_type = (b0 >> 3) & 0x0F;
+        let extension_flag = (b0 >> 2) & 1;
+        let has_size = (b0 >> 1) & 1;
+        pos += 1;
+        if extension_flag != 0 {
+            if pos >= data.len() {
+                break;
+            }
+            pos += 1;
+        }
+        let payload_start = if has_size != 0 {
+            let mut payload_len = 0usize;
+            let mut shift = 0;
+            let mut valid = false;
+            while pos < data.len() {
+                let b = data[pos];
+                pos += 1;
+                payload_len |= ((b & 0x7F) as usize) << shift;
+                shift += 7;
+                if (b & 0x80) == 0 {
+                    valid = true;
+                    break;
                 }
-                return false;
+            }
+            if !valid {
+                break;
+            }
+            let start = pos;
+            pos = pos.saturating_add(payload_len);
+            start
+        } else {
+            let start = pos;
+            pos = data.len();
+            start
+        };
+
+        if obu_type == 1 {
+            return true;
+        }
+        if (obu_type == 3 || obu_type == 6)
+            && let Some(&p0) = data.get(payload_start)
+        {
+            let show_existing_frame = (p0 >> 7) & 1;
+            let frame_type = (p0 >> 5) & 3;
+            if show_existing_frame == 0 && frame_type == 0 {
+                return true;
             }
         }
     }
@@ -550,5 +556,15 @@ mod tests {
         let packets = res.unwrap();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn av1_keyframes_are_found_without_start_codes() {
+        // a temporal delimiter, then a sequence header OBU
+        assert!(is_keyframe(Codec::Av1, &[0x12, 0x00, 0x0a, 0x01, 0x00]));
+        // a temporal delimiter, then a frame OBU for a shown key frame
+        assert!(is_keyframe(Codec::Av1, &[0x12, 0x00, 0x32, 0x01, 0x00]));
+        // a temporal delimiter, then a frame OBU for an inter frame
+        assert!(!is_keyframe(Codec::Av1, &[0x12, 0x00, 0x32, 0x01, 0x20]));
     }
 }

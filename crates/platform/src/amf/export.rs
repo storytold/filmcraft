@@ -121,23 +121,14 @@ impl AmfEncoder {
 
             if !is_av1 {
                 // Parse parameter sets from keyframe Annex B if not parsed yet
-                if p.key && (self.sps.is_empty() || (codec == Codec::Hevc && self.hvcc.is_none())) {
-                    if codec == Codec::H264 {
-                        if let Ok((s, pp)) = crate::nvenc::split_parameter_sets(&p.data) {
-                            self.sps = s;
-                            self.pps = pp;
-                        }
-                    } else if codec == Codec::Hevc
-                        && let Ok((v, s, pp)) = crate::nvenc::split_hevc_parameter_sets(&p.data)
-                    {
-                        let ten_bit = self.session.is_ten_bit();
-                        if let Ok(rec) = crate::nvenc::hevc::hevc_config(&v, &s, &pp, (self.w, self.h), if ten_bit { 10 } else { 8 }) {
-                            self.vps = v;
-                            self.sps = s;
-                            self.pps = pp;
-                            self.hvcc = Some(rec);
-                        }
-                    }
+                if self.sps.is_empty() {
+                    // the sample entry is built from the first keyframe's parameter sets, and they are
+                    // stripped from the samples: without them the file would not decode
+                    let sets = parameter_sets(codec, p.key, &p.data, (self.w, self.h), self.session.is_ten_bit()).map_err(ExportError::Encode)?;
+                    self.vps = sets.vps;
+                    self.sps = sets.sps;
+                    self.pps = sets.pps;
+                    self.hvcc = sets.hvcc;
                 }
             } else if self.av1c.is_none() {
                 self.av1c = Some(filmcraft_isobmff::Av1Config {
@@ -236,5 +227,59 @@ impl VideoEncoder for AmfEncoder {
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         let packets = self.session.drain().map_err(|e| ExportError::Encode(format!("AMD AMF drain failed: {e}")))?;
         self.process_raw_packets(packets)
+    }
+}
+
+/// The parameter sets of the first packet, from which the sample entry is written.
+struct ParameterSets {
+    vps: Vec<u8>,
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+    hvcc: Option<HevcConfig>,
+}
+
+fn parameter_sets(codec: Codec, key: bool, data: &[u8], size: (u32, u32), ten_bit: bool) -> std::result::Result<ParameterSets, String> {
+    if !key {
+        return Err("AMD AMF: the first packet is not a keyframe, so it carries no parameter sets".into());
+    }
+    match codec {
+        Codec::H264 => {
+            let (sps, pps) = crate::nvenc::split_parameter_sets(data).map_err(|e| format!("AMD AMF: the first keyframe has no usable SPS/PPS: {e}"))?;
+            Ok(ParameterSets { vps: Vec::new(), sps, pps, hvcc: None })
+        }
+        Codec::Hevc => {
+            let (vps, sps, pps) =
+                crate::nvenc::split_hevc_parameter_sets(data).map_err(|e| format!("AMD AMF: the first keyframe has no usable VPS/SPS/PPS: {e}"))?;
+            let hvcc = crate::nvenc::hevc::hevc_config(&vps, &sps, &pps, size, if ten_bit { 10 } else { 8 })
+                .map_err(|e| format!("AMD AMF: the first keyframe's HEVC parameter sets are unusable: {e}"))?;
+            Ok(ParameterSets { vps, sps, pps, hvcc: Some(hvcc) })
+        }
+        Codec::Av1 => Err("AMD AMF: AV1 has no Annex B parameter sets".into()),
+    }
+}
+
+#[cfg(test)]
+mod parameter_set_tests {
+    use super::*;
+
+    #[test]
+    fn a_first_keyframe_without_parameter_sets_fails_the_export() {
+        // an IDR slice alone: no SPS or PPS to build the sample entry from
+        let idr_only = [0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00];
+        assert!(parameter_sets(Codec::H264, true, &idr_only, (64, 64), false).is_err());
+        assert!(parameter_sets(Codec::Hevc, true, &[0, 0, 0, 1, 0x26, 0x01, 0xaf], (64, 64), false).is_err());
+    }
+
+    #[test]
+    fn a_first_packet_that_is_not_a_keyframe_fails_the_export() {
+        assert!(parameter_sets(Codec::H264, false, &[0, 0, 0, 1, 0x41, 0x9a], (64, 64), false).is_err());
+    }
+
+    #[test]
+    fn the_first_keyframe_gives_its_sps_and_pps() {
+        let data = [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80, 0, 0, 0, 1, 0x65, 0x88];
+        let sets = parameter_sets(Codec::H264, true, &data, (64, 64), false).unwrap();
+        assert_eq!(sets.sps, [0x67, 0x64, 0x00, 0x1f]);
+        assert_eq!(sets.pps, [0x68, 0xee, 0x3c, 0x80]);
     }
 }
