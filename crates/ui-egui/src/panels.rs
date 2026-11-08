@@ -474,6 +474,10 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
         ui.separator();
         close |= monitor::source_panel_menu(app, ui);
     }
+    if p == PanelKind::LumetriColor {
+        ui.separator();
+        close |= lumetri::panel_menu(app, ui);
+    }
     if p == PanelKind::History {
         ui.separator();
         close |= misc::history_panel_menu(app, ui);

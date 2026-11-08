@@ -79,6 +79,11 @@ pub enum Compression {
         restart_lines: usize,
         pt: u8,
     },
+    /// Baseline (lossy) JPEG at `quality` 1–100 (8-bit samples; one sample per pixel as a
+    /// greyscale JPEG, three as a colour one, which the encoder stores as YCbCr).
+    LossyJpeg {
+        quality: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +323,29 @@ fn write_entropy(out: Vec<u8>, coded: &[Coded], tables: &[HuffTable], restart_li
     out
 }
 
+/// Encode `w` × `h` × `spp` 8-bit samples (1 or 3 per pixel) as a baseline JPEG. An error says
+/// why the encoder refuses them (an unsupported sample count, a size past the JPEG limit).
+pub fn lossy_jpeg(samples: &[u16], w: usize, h: usize, spp: usize, quality: u8) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+    let color = match spp {
+        1 => image::ExtendedColorType::L8,
+        3 => image::ExtendedColorType::Rgb8,
+        n => return Err(format!("lossy JPEG needs 1 or 3 samples per pixel, not {n}")),
+    };
+    let dim = |v: usize| u32::try_from(v).ok().filter(|&v| v <= u32::from(u16::MAX));
+    let (Some(wd), Some(ht)) = (dim(w), dim(h)) else {
+        return Err(format!("a {w} × {h} chunk is past the JPEG size limit of {}", u16::MAX));
+    };
+    if samples.len() != w * h * spp {
+        return Err(format!("{} samples for a {w} × {h} × {spp} chunk", samples.len()));
+    }
+    let bytes: Vec<u8> = samples.iter().map(|&v| v.min(255) as u8).collect();
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+    enc.write_image(&bytes, wd, ht, color).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 /// Encode `samples` (`width` × `height` × `comps`, interleaved) as lossless JPEG.
 pub fn lj92(samples: &[u16], params: &Lj92Params) -> Vec<u8> {
     let p = Lj92Params { comps: params.comps.clamp(1, 4), ..*params };
@@ -372,7 +400,7 @@ fn put_ifd(buf: &mut Vec<u8>, mut entries: Vec<(u16, Value)>, be: bool) -> u32 {
 }
 
 /// Encode the strips or tiles of `samples`, appending them to `buf`; returns (offsets, counts).
-fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec<u32>) {
+fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> Result<(Vec<u32>, Vec<u32>), String> {
     let spp = o.samples_per_pixel;
     let (cw, ch) = match o.layout {
         Layout::Strips { rows } => (o.width, rows.max(1)),
@@ -401,6 +429,7 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
                     let params = Lj92Params { width: cw * spp / comps, height: rows, comps, precision: o.bits as u8, predictor, restart_lines, pt };
                     lj92(&chunk, &params)
                 }
+                Compression::LossyJpeg { quality } => lossy_jpeg(&chunk, cw, rows, spp, quality)?,
             };
             if buf.len() % 2 == 1 {
                 buf.push(0);
@@ -410,20 +439,41 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
             buf.extend(data);
         }
     }
-    (offs, counts)
+    Ok((offs, counts))
 }
 
 /// Write a DNG holding `samples` (`width` × `height` × `samples_per_pixel`, interleaved).
+///
+/// # Panics
+/// On options [`try_write`] refuses. This is a test-file helper; use `try_write` to get the error.
+#[allow(clippy::panic)]
 pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
+    try_write(samples, o).unwrap_or_else(|e| panic!("cannot write the DNG: {e}"))
+}
+
+/// [`write`], returning an error for options the format cannot hold: a lossy JPEG DNG needs
+/// 8-bit LinearRaw (`bits` 8, `cfa` `None`) with 1 or 3 samples per pixel, and a chunk the JPEG
+/// encoder refuses is an error too.
+pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
+    if matches!(o.compression, Compression::LossyJpeg { .. }) && (o.bits != 8 || o.cfa.is_some()) {
+        return Err("a lossy JPEG DNG needs bits 8 and cfa None (LinearRaw)".into());
+    }
     let be = o.big_endian;
     let mut buf = if be { b"MM\0*\0\0\0\0".to_vec() } else { b"II*\0\0\0\0\0".to_vec() };
-    let (offs, counts) = put_chunks(&mut buf, samples, o);
+    let (offs, counts) = put_chunks(&mut buf, samples, o)?;
     let mut raw = vec![
         (tags::NEW_SUBFILE_TYPE, Value::Long(vec![0])),
         (tags::IMAGE_WIDTH, Value::Long(vec![o.width as u32])),
         (tags::IMAGE_LENGTH, Value::Long(vec![o.height as u32])),
         (tags::BITS_PER_SAMPLE, Value::Short(vec![o.bits as u16; o.samples_per_pixel])),
-        (tags::COMPRESSION, Value::Short(vec![if o.compression == Compression::None { 1 } else { 7 }])),
+        (
+            tags::COMPRESSION,
+            Value::Short(vec![match o.compression {
+                Compression::None => 1,
+                Compression::LosslessJpeg { .. } => 7,
+                Compression::LossyJpeg { .. } => 34892,
+            }]),
+        ),
         (tags::SAMPLES_PER_PIXEL, Value::Short(vec![o.samples_per_pixel as u16])),
         (tags::PLANAR_CONFIGURATION, Value::Short(vec![1])),
     ];
@@ -488,5 +538,5 @@ pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
     };
     let off = if be { ifd0.to_be_bytes() } else { ifd0.to_le_bytes() };
     buf[4..8].copy_from_slice(&off);
-    buf
+    Ok(buf)
 }
