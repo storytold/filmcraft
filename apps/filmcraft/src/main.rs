@@ -589,13 +589,6 @@ fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
 }
 
-/// `controlPort` of `<data dir>/decupador.json`, when the Decupador Inteligente is set up.
-fn decupador_control_port() -> Option<String> {
-    let path = filmcraft_engine::autosave::default_data_dir()?.join("decupador.json");
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    v.get("controlPort").and_then(serde_json::Value::as_u64).map(|p| p.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is

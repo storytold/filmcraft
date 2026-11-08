@@ -571,6 +571,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: enabled_captions,
             run: prepare,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "lettering.fx.prepare",
@@ -581,6 +582,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: enabled_captions,
             run: prepare,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "lettering.fx.templates",
@@ -591,6 +593,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: crate::commands::always,
             run: list_templates,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "lettering.fx.send",
@@ -601,6 +604,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: enabled_captions,
             run: send,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "lettering.fx.status",
@@ -611,6 +615,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: crate::commands::always,
             run: status,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "lettering.fx.cancel",
@@ -621,6 +626,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: crate::commands::always,
             run: cancel,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }
