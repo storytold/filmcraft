@@ -144,9 +144,12 @@ fn name_string(b: &[u8], id: u16) -> Option<String> {
             1 => raw.iter().map(|&c| if c < 128 { c as char } else { '?' }).collect(),
             _ => return None,
         };
-        best = Some((rank, s));
+        // A blank record must not displace a lower-ranked valid one.
+        if !s.trim().is_empty() {
+            best = Some((rank, s));
+        }
     }
-    best.map(|(_, s)| s).filter(|s| !s.trim().is_empty())
+    best.map(|(_, s)| s)
 }
 
 #[cfg(test)]
@@ -228,5 +231,33 @@ mod tests {
         table[second + 8..second + 10].copy_from_slice(&u16::MAX.to_be_bytes());
         table.extend_from_slice(&[0, b'A', 0, b'B']);
         assert_eq!(name_string(&table, 1).as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn blank_best_record_falls_back_to_next_valid_one() {
+        // Name table with records (platform, encoding, language, bytes).
+        let table = |recs: &[(u16, u16, u16, &[u8])]| {
+            let mut b = Vec::new();
+            let storage = 6 + 12 * recs.len();
+            for v in [0u16, recs.len() as u16, storage as u16] {
+                b.extend_from_slice(&v.to_be_bytes());
+            }
+            let mut off = 0;
+            for &(p, e, l, s) in recs {
+                for v in [p, e, l, 1, s.len() as u16, off as u16] {
+                    b.extend_from_slice(&v.to_be_bytes());
+                }
+                off += s.len();
+            }
+            for &(_, _, _, s) in recs {
+                b.extend_from_slice(s);
+            }
+            b
+        };
+        let ab = [0u8, b'A', 0, b'B'];
+        let blank = [0u8, b' '];
+        assert_eq!(name_string(&table(&[(3, 1, 0x409, &[]), (3, 1, 0x407, &ab)]), 1).as_deref(), Some("AB"));
+        assert_eq!(name_string(&table(&[(3, 1, 0x409, &blank), (3, 1, 0x407, &ab)]), 1).as_deref(), Some("AB"));
+        assert_eq!(name_string(&table(&[(3, 1, 0x409, &[]), (1, 0, 0, b"AB")]), 1).as_deref(), Some("AB"));
     }
 }
