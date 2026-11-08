@@ -6,7 +6,7 @@
 //! files the bitstream is the only place their colour is described. [`resolve`] merges it with
 //! what the container signals, which wins.
 
-use filmcraft_color::{ColorInfo, Matrix, Range, Transfer};
+use filmcraft_color::{ColorAssumed, ColorInfo, Matrix, Range, Transfer};
 use filmcraft_isobmff::{AvcConfig, CodecConfig, HevcConfig};
 
 use crate::video::primaries_from_code;
@@ -91,4 +91,14 @@ pub fn resolve(width: u32, height: u32, sources: &[ColorCodes]) -> ColorInfo {
         c.range = Range::Full;
     }
     c
+}
+
+/// Which values [`resolve`] takes from its defaults for `sources`: those no source signals with a
+/// code point FilmCraft knows.
+pub fn assumed(sources: &[ColorCodes]) -> ColorAssumed {
+    ColorAssumed {
+        matrix: !sources.iter().any(|s| Matrix::from_code(s.matrix).is_some()),
+        transfer: !sources.iter().any(|s| Transfer::from_code(s.transfer).is_some()),
+        primaries: !sources.iter().any(|s| primaries_from_code(s.primaries).is_some()),
+    }
 }

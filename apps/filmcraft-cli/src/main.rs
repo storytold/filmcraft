@@ -32,6 +32,7 @@ macro_rules! out {
 
 mod args;
 mod probe;
+mod project_lock;
 
 use args::{Args, parse_value};
 use filmcraft_automation::BridgeClient;
@@ -104,7 +105,8 @@ SUBCOMMANDS
 OPTIONS
   --project <p.fcproj>          open this project first (headless)
   --demo                        open the built-in demo project (headless)
-  --save                        save the project back to --project when done
+  --save                        save the project back to --project when done; runs saving one
+                                project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
@@ -195,7 +197,8 @@ impl Backend {
             // this process exits after the command, so a background export would never be written:
             // long commands wait unless the caller says otherwise (#2342)
             Backend::Local(s) => {
-                if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
+                // mask tracking is applied when its job finishes, which this process never sees (#3302)
+                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits
@@ -268,6 +271,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 
@@ -386,6 +393,7 @@ async fn cli_commands(a: &Args, cmd: &str) {
 async fn cli_exec(a: &Args) {
     let id = a.pos(1).unwrap_or_else(|| usage("exec <id> [key=value ...]"));
     let params = a.params_from(2).unwrap_or_else(|e| usage(e));
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec(id, params).await {
         Ok(v) => print(a, &v),
@@ -401,6 +409,7 @@ async fn cli_run(a: &Args) {
     } else {
         read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
     };
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     let mut failed = 0;
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
@@ -441,6 +450,7 @@ async fn cli_import(a: &Args) {
     if paths.is_empty() {
         usage("import <file>...");
     }
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec("file.import", json!({"paths": paths})).await {
         Ok(v) => print(a, &v),
@@ -557,7 +567,11 @@ async fn cli_mcp(a: &Args) {
 /// `requested` when the result names none.
 fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
-        Some(p) => vec![p.to_string()],
+        // an image sequence: its first and last stills
+        Some(p) => vec![match result.get("lastPath").and_then(Value::as_str) {
+            Some(last) => format!("{p} to {last}"),
+            None => p.to_string(),
+        }],
         None => result
             .get("items")
             .and_then(Value::as_array)
