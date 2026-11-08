@@ -296,6 +296,10 @@ pub fn span(s: &Session, cmd: &str, pinned: Option<Vec<filmcraft_project::ClipId
     if ids.is_empty() {
         return Err(bad(cmd, "select a caption (or put the playhead on one)"));
     }
+    // a pinned caption that no longer exists must not silently shorten the order
+    if let Some(missing) = ids.iter().find(|id| q.find_caption(**id).is_none()) {
+        return Err(bad(cmd, format!("caption {} no longer exists; reopen the Lettering window", missing.0)));
+    }
     let (words, a, b) = words_of_captions(s, &ids)?;
     if words.is_empty() {
         return Err(bad(cmd, "the selected captions have no words"));
@@ -479,14 +483,11 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
         s.services.write_file(&out, &[]).map_err(|e| EngineError::Other(format!("cannot clear {out}: {e}")))?;
     }
     // a relative bank that starts with `-` must not be read by the interpreter as an option
-    let script = join(&bank, "atender.py");
-    let script = if script.starts_with('-') { join(".", &script) } else { script };
-    let spec = ProcessSpec {
-        program: s.lettering_fx.interpreter.clone(),
-        args: vec![script, order_path.clone()],
-        timeout: s.lettering_fx.timeout,
-        max_output: 64 * 1024,
-    };
+    let not_an_option = |p: String| if p.starts_with('-') { join(".", &p) } else { p };
+    let script = not_an_option(join(&bank, "atender.py"));
+    let order_arg = not_an_option(order_path.clone());
+    let spec =
+        ProcessSpec { program: s.lettering_fx.interpreter.clone(), args: vec![script, order_arg], timeout: s.lettering_fx.timeout, max_output: 64 * 1024 };
     let id = s.lettering_fx.next_job;
     s.lettering_fx.next_job = id.saturating_add(1);
     let job =
