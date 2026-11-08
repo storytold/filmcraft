@@ -549,3 +549,22 @@ fn next_and_previous_screen_page_by_the_visible_width() {
     let (scroll, ..) = d.view();
     assert!((scroll - width / pps).abs() < 1e-6, "Page Up goes back one screen: scroll {scroll}");
 }
+
+/// Paged while a zoom is still easing in, Show Next Screen moves by a screen at the zoom the view
+/// is heading to, not at the zoom of the frame it was pressed in, so it lands where a page from the
+/// settled view would.
+#[test]
+fn next_screen_during_a_zoom_pages_at_the_target_zoom() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    assert_eq!(d.view().1, 100.0);
+    let width = f64::from(d.app().last_timeline_width);
+    d.app().ui.timeline.target_pps = 400.0;
+    d.exec("timeline.nextScreen", json!({}));
+    let v = &d.app().ui.timeline;
+    assert!(v.pps < 400.0, "the zoom is still easing in: {}", v.pps);
+    let (scroll, pps, ..) = d.view();
+    assert_eq!(pps, 400.0);
+    assert!((scroll - width / 400.0).abs() < 1e-6, "one screen at the target zoom: scroll {scroll}, screen {}", width / 400.0);
+}
