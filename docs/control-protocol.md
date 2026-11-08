@@ -75,16 +75,26 @@ the complete saved settings object using its snake_case field names.
 
 | `timeline` field | Accepted value |
 |---|---|
+| `pps` | Finite number greater than 0; clamped to the Timeline's sequence and maximum-zoom limits |
+| `scroll` | Finite number greater than or equal to 0; clamped to the Timeline extent |
+| `fit` | Boolean; `true` requests a whole-sequence fit |
 | `smoothAnimations`, `invertedControls`, `playheadCentering`, `zoomBarHidden`, `trackSliderHidden`, `trackSliderSmoothAnimations`, `trackSliderDecoupleEdges`, `trackSliderAlternatePosition`, `alternateSliderPosition`, `sliderMinimap`, `positionIndicator`, `showWholeTimeline`, `fillClips`, `prioritiseAudio` | Boolean |
 | `playheadSideSeconds` | Finite number from 0.1 to 3600 seconds |
 | `shiftDragSpeed` | Finite number from 0.1 to 50× |
 | `maxZoomLevel` | Finite number from 0.05 to 3 seconds |
 | `trackSliderShiftDragSpeed` | Finite number from 0.1 to 10× |
+| `videoTrackHeight`, `audioTrackHeight` | Finite number from 8 to 600 points |
+| `showVideoNames`, `showAudioNames` | Boolean |
+| `thumbnails` | `off`, `head`, `headAndTail` or `continuous` |
 | `positionIndicatorColor`, `videoIndicatorColor`, `audioIndicatorColor`, `offlineIndicatorColor` | Hex colour `#rgb` or `#rrggbb` |
 
 Fields with the wrong type, non-finite numbers, or numbers outside their listed range are ignored,
 leaving the current value unchanged. Invalid colour strings are ignored the same way. Colour values
 that are accepted are normalized to lowercase six-digit hex before they appear in readback.
+
+`timelineSettings` also reads back the four Controls bindings (`control_center_on_playhead`,
+`control_explode_slider`, `control_alternate_drag_speed`, `control_settings`). Configure them in the
+Timeline Slider Controls flyout; `ui.set` does not write those bindings.
 
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
