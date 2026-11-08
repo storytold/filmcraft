@@ -43,6 +43,9 @@ open = "5"
 # graphics/probe.rs: the graphics test start waits for wgpu's adapter and device; graphics.rs's
 # tests enumerate the real adapters with it too (MIT OR Apache-2.0).
 pollster = "1"
+# Process allocator (MIT): per-thread heaps instead of the Windows process heap's one lock, which
+# stalled the UI thread during 4K playback (see `GLOBAL` in src/main.rs).
+mimalloc = "0.1.52"
 
 [dev-dependencies]
 glob = "0.3"
