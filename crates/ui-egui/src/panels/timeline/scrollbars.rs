@@ -584,12 +584,13 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         ui.data_mut(|d| d.insert_temp(grace_key(), -1e9f64));
     }
     if changed {
-        // the colour wheel and the number fields report every frame of a drag: remember the
-        // change, but bump the (cache-invalidating) revision only once the gesture ends
-        ui.data_mut(|d| d.insert_temp(egui::Id::new("tl-zoombar-view-pending"), true));
+        // the colour wheel and the number fields report every frame of a drag: journal the
+        // changed view once the gesture ends
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-zoombar-view-pending"), true));
     }
-    if ui.data(|d| d.get_temp::<bool>(egui::Id::new("tl-zoombar-view-pending"))).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
-        ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("tl-zoombar-view-pending")));
+    let pending_id = egui::Id::unique("tl-zoombar-view-pending");
+    if ui.data(|d| d.get_temp::<bool>(pending_id)).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
+        ui.data_mut(|d| d.remove_temp::<bool>(pending_id));
         app.session.project_view_changed();
     }
 }
@@ -1100,6 +1101,21 @@ fn minimap_indicator_hugs_edges(index: usize, run_count: usize, left_gap: f32, r
     (index == 0 && left_gap < cap_zone, index + 1 == run_count && right_gap < cap_zone)
 }
 
+/// Mark boundaries where adjacent clips meet, but no clip on any track crosses the boundary.
+fn minimap_visible_cuts(class: &[u8], starts: &[usize], ends: &[usize], crosses: &[bool]) -> Vec<bool> {
+    let mut cuts = vec![false; class.len().saturating_add(1)];
+    if starts.len() != cuts.len() || ends.len() != cuts.len() || crosses.len() != cuts.len() {
+        return cuts;
+    }
+    for edge in 1..class.len() {
+        cuts[edge] = class.get(edge - 1).is_some_and(|left| *left != 0 && Some(left) == class.get(edge))
+            && starts.get(edge).is_some_and(|count| *count != 0)
+            && ends.get(edge).is_some_and(|count| *count != 0)
+            && !crosses.get(edge).copied().unwrap_or(true);
+    }
+    cuts
+}
+
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
 fn minimap_indicator_filled(
     fill_clips: bool,
@@ -1113,7 +1129,7 @@ fn minimap_indicator_filled(
 
 #[cfg(test)]
 mod minimap_indicator_tests {
-    use super::{minimap_indicator_bounds, minimap_indicator_filled, minimap_indicator_hugs_edges};
+    use super::{minimap_indicator_bounds, minimap_indicator_filled, minimap_indicator_hugs_edges, minimap_visible_cuts};
 
     #[test]
     fn edge_caps_keep_a_full_semicircle_for_short_runs() {
@@ -1128,6 +1144,21 @@ mod minimap_indicator_tests {
         assert_eq!(minimap_indicator_hugs_edges(1, 2, 5.0, 1.0, 10.0), (false, true));
         assert_eq!(minimap_indicator_hugs_edges(1, 3, 5.0, 50.0, 10.0), (false, false));
         assert_eq!(minimap_indicator_hugs_edges(0, 1, 1.0, 1.0, 10.0), (true, true));
+    }
+
+    #[test]
+    fn minimap_keeps_adjacent_cuts_but_hides_them_under_overlapping_clips() {
+        let class = [2; 10];
+        let mut starts = [0; 11];
+        let mut ends = [0; 11];
+        let crosses = [false; 11];
+        starts[5] = 1;
+        ends[5] = 1;
+        assert!(minimap_visible_cuts(&class, &starts, &ends, &crosses)[5]);
+
+        let mut crossing_clip = crosses;
+        crossing_clip[5] = true;
+        assert!(!minimap_visible_cuts(&class, &starts, &ends, &crossing_clip)[5]);
     }
 
     #[test]
@@ -1274,6 +1305,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // clips never disappear behind the slider.
         let cols = bar.width().max(1.0).ceil() as usize;
         let mut class = vec![0u8; cols];
+        let mut starts = vec![0usize; cols.saturating_add(1)];
+        let mut ends = vec![0usize; cols.saturating_add(1)];
+        let mut crosses = vec![false; cols.saturating_add(1)];
         let pri_audio = app.session.state.timeline_ui.prioritise_audio;
         for (tracks, is_audio) in [(&seq.video_tracks, false), (&seq.audio_tracks, true)] {
             for tr in tracks.iter() {
@@ -1288,6 +1322,17 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     };
                     let a = minimap_x(it.start.seconds());
                     let b = minimap_x(it.end().seconds());
+                    let start_edge = ((a - bar.min.x).round()).clamp(0.0, cols as f32) as usize;
+                    let end_edge = ((b - bar.min.x).round()).clamp(0.0, cols as f32) as usize;
+                    if let Some(count) = starts.get_mut(start_edge) {
+                        *count = count.saturating_add(1);
+                    }
+                    if let Some(count) = ends.get_mut(end_edge) {
+                        *count = count.saturating_add(1);
+                    }
+                    for crossing in crosses.iter_mut().take(end_edge).skip(start_edge.saturating_add(1)) {
+                        *crossing = true;
+                    }
                     let c0 = ((a - bar.min.x).floor() as isize).max(0) as usize;
                     let c1 = ((b - bar.min.x).ceil() as isize).clamp(0, cols as isize) as usize;
                     for cell in class.iter_mut().take(c1).skip(c0) {
@@ -1320,6 +1365,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         };
         // 1 pt off each run's ends: the gap between two rectangles is the vertical cut line
         let mut runs: Vec<(f32, f32, u8)> = Vec::new();
+        let cuts = minimap_visible_cuts(&class, &starts, &ends, &crosses);
         let mut c = 0;
         while c < cols {
             if class[c] == 0 {
@@ -1328,7 +1374,8 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             }
             let k = class[c];
             let start = c;
-            while c < cols && class[c] == k {
+            c += 1;
+            while c < cols && class[c] == k && !cuts[c] {
                 c += 1;
             }
             let x0 = snap(bar.min.x + start as f32 + 0.5);
@@ -2380,9 +2427,18 @@ pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             app.session.state.timeline_ui.track_slider_shift_drag_speed = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_last_custom = value.clamp(0.1, 10.0);
             app.session.state.timeline_ui.track_slider_shift_drag_custom = true;
-            app.session.project_view_changed();
+            ui.data_mut(|data| data.insert_temp(egui::Id::unique("track-slider-settings-view-pending"), true));
         }
     });
+}
+
+fn flush_track_slider_view_change(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    let id = egui::Id::unique("track-slider-settings-view-pending");
+    let pending = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+    if pending && !ui.input(|input| input.pointer.any_down()) {
+        ui.data_mut(|data| data.remove_temp::<bool>(id));
+        app.session.project_view_changed();
+    }
 }
 
 /// The track sliders' settings popup opened from the Timeline's own menu ("Track Slider
@@ -2390,6 +2446,7 @@ pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 /// slider.
 pub(super) fn track_slider_settings_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let Some(pos) = app.tl.track_slider_settings_pos else {
+        flush_track_slider_view_change(app, ui);
         return;
     };
     let screen = ui.ctx().content_rect();
@@ -2403,6 +2460,7 @@ pub(super) fn track_slider_settings_popup(app: &mut FilmcraftApp, ui: &mut egui:
                 });
             },
         );
+    flush_track_slider_view_change(app, ui);
     if ui.input(|i| i.pointer.any_pressed())
         && let Some(p) = ui.input(|i| i.pointer.interact_pos())
         && !panel.response.rect.contains(p)

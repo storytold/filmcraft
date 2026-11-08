@@ -72,10 +72,32 @@ impl Driver {
         self.frames(3);
     }
 
+    fn drag_x(&mut self, id: &str, fx: f32, dx: f32) {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|n| n.as_f64().unwrap() as f32).collect();
+        let (x, y) = (r[0] + r[2] * fx, r[1] + r[3] / 2.0);
+        self.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + dx, "y": y}}));
+        self.frames(3);
+    }
+
     fn labels(&self) -> (String, String) {
         let seq = self.app().session.active_sequence().unwrap();
         (format!("V{}", seq.video_tracks.len()), format!("A{}", seq.audio_tracks.len()))
     }
+}
+
+#[test]
+fn dragging_custom_track_slider_speed_journals_the_setting_once_on_release() {
+    let mut d = Driver::demo();
+    d.harness.state_mut().tl.track_slider_settings_pos = Some(egui::pos2(500.0, 500.0));
+    d.frames(3);
+    let before_speed = d.app().session.state.timeline_ui.track_slider_shift_drag_speed;
+    let before_epoch = d.app().session.view_epoch;
+    d.drag_x("timeline.trackSlider.settings.shiftDragSpeedValue", 0.5, 20.0);
+    let after_speed = d.app().session.state.timeline_ui.track_slider_shift_drag_speed;
+    assert_ne!(after_speed, before_speed, "the hot-number drag changes the custom speed");
+    assert_eq!(d.app().session.view_epoch, before_epoch.wrapping_add(1), "the whole drag is journaled once");
 }
 
 #[test]
