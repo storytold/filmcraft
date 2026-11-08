@@ -326,7 +326,7 @@ fn lumetri_commands_target_the_indexed_instance() {
     let mut s = demo();
     let clip = pick_clip(&mut s);
     // at least two Lumetri instances on the clip
-    loop {
+    for _ in 0..3 {
         let n = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().filter(|e| e.effect == "lumetri").count();
         if n >= 2 {
             break;
@@ -337,7 +337,7 @@ fn lumetri_commands_target_the_indexed_instance() {
         let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
         it.effects.iter().enumerate().filter(|(_, e)| e.effect == "lumetri").map(|(i, _)| i).collect()
     };
-    assert_eq!(idxs.len(), 2);
+    assert!(idxs.len() >= 2, "need at least two Lumetri instances, got {idxs:?}");
     let (first, second) = (idxs[0], idxs[1]);
     let section = |s: &Session, i: usize| {
         s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[i].param("basic_on").map(|p| p.value.as_bool().unwrap_or(false)).unwrap_or(false)
@@ -349,6 +349,11 @@ fn lumetri_commands_target_the_indexed_instance() {
     assert_eq!(section(&s, first), first_before, "first instance untouched");
     // a bogus index is refused, never silently mapped to the first instance
     assert!(s.execute("lumetri.setSection", json!({"clip": clip.0, "effect": 999, "section": "basic"})).is_err());
+    // an in-bounds index pointing at a non-Lumetri effect is also refused
+    let non_lumetri = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect != "lumetri");
+    if let Some(n) = non_lumetri {
+        assert!(s.execute("lumetri.setSection", json!({"clip": clip.0, "effect": n, "section": "basic"})).is_err(), "non-Lumetri index must error");
+    }
     // `selected_effect` wins when no explicit index is given
     let effects = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
     s.state.selected_effect = crate::EffectSel::of(clip, &effects, second);

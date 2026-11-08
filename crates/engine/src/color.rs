@@ -5,12 +5,18 @@
 //! Lumetri commands address a clip by `clip` (default: the first selected video clip with
 //! Lumetri Color, else the first selected video clip — Lumetri is added if missing).
 //!
+//! The `lumetri.setInputLut` / `setLook` / `applyMatch` / `setSection` commands take an optional
+//! `"effect"` param (index into the clip's effect list, as `effects.setParam` does). Precedence
+//! when omitted: explicit `effect` > `selected_effect` (same clip, Lumetri instance) >
+//! `selected_mask` (same clip, Lumetri instance) > first Lumetri instance. An `effect` index that
+//! is out of range or points at a non-Lumetri effect is an error, never a silent fallback.
+//!
 //! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
 //! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
 //! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
-use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
+use filmcraft_project::{ClipId, EffectInstance, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, checked_u32_p, clip_p, has_seq, item_p, str_p, time_p};
@@ -165,12 +171,35 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "bytes": text.len()}))
 }
 
+/// Resolve the Lumetri instance for `clip` from `effects`, using the same precedence the
+/// Color panel uses: the `selected_effect` when it is a Lumetri instance of this clip,
+/// else the `selected_mask`'s effect when it is a Lumetri instance of this clip
+/// (selecting a mask clears `selected_effect`), else the first Lumetri instance.
+/// `None` when the clip has no Lumetri effect. Shared by the engine commands (via
+/// [`lumetri_clip`]) and the Color panel so display and edits cannot diverge.
+pub fn lumetri_index(
+    clip: ClipId,
+    effects: &[EffectInstance],
+    selected_effect: Option<&crate::EffectSel>,
+    selected_mask: Option<&crate::masks::MaskSel>,
+) -> Option<usize> {
+    selected_effect
+        .filter(|s| s.clip == clip && s.effect == "lumetri")
+        .and_then(|s| s.index(effects))
+        .or_else(|| selected_mask.filter(|m| m.clip == clip).and_then(|m| effects.get(m.effect).filter(|e| e.effect == "lumetri").map(|_| m.effect)))
+        .or_else(|| effects.iter().position(|e| e.effect == "lumetri"))
+}
+
 /// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
 ///
 /// An explicit `"effect"` index (as `effects.setParam` takes) wins, so a panel showing the
-/// second Lumetri instance edits that instance. Otherwise `selected_effect` from Effect
-/// Controls or the `selected_mask`'s effect wins when it is a Lumetri instance of this clip,
-/// (selecting a mask clears `selected_effect`); the first Lumetri instance is the fallback.
+/// second Lumetri instance edits that instance. It must be in range and point at a Lumetri
+/// effect, otherwise it is an error rather than a silent fallback to the first instance.
+/// When omitted, selection-based resolution applies: `selected_effect` (Effect Controls) or
+/// the `selected_mask`'s effect wins when it is a Lumetri instance of this clip (selecting
+/// a mask clears `selected_effect`, so the masked instance is checked second); a selection
+/// belonging to another clip or to a non-Lumetri effect falls through to the first Lumetri
+/// instance. See [`lumetri_index`] for the shared precedence.
 pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
@@ -188,29 +217,13 @@ pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(Cli
     }
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let (_, it) = seq.find_item(clip).ok_or_else(|| bad(cmd, "no Lumetri"))?;
-    let explicit = match checked_u32_p(p, "effect", cmd)? {
-        Some(n) => Some(n as usize),
-        None => match p.get("index") {
-            Some(Value::Null) | None => None,
-            Some(_) => checked_u32_p(p, "index", cmd)?.map(|n| n as usize),
-        },
-    };
+    let explicit = checked_u32_p(p, "effect", cmd)?.map(|n| n as usize);
     let idx = match explicit {
         Some(i) => match it.effects.get(i) {
             Some(e) if e.effect == "lumetri" => i,
             _ => return Err(bad(cmd, "no Lumetri at that `effect` index")),
         },
-        None => s
-            .state
-            .selected_effect
-            .as_ref()
-            .filter(|sel| sel.clip == clip && sel.effect == "lumetri")
-            .and_then(|sel| sel.index(&it.effects))
-            .or_else(|| {
-                s.state.selected_mask.filter(|m| m.clip == clip).and_then(|m| it.effects.get(m.effect).filter(|e| e.effect == "lumetri").map(|_| m.effect))
-            })
-            .or_else(|| it.effects.iter().position(|e| e.effect == "lumetri"))
-            .ok_or_else(|| bad(cmd, "no Lumetri"))?,
+        None => lumetri_index(clip, &it.effects, s.state.selected_effect.as_ref(), s.state.selected_mask.as_ref()).ok_or_else(|| bad(cmd, "no Lumetri"))?,
     };
     Ok((clip, idx))
 }

@@ -21,6 +21,7 @@ use crate::widgets::HotNumberOptions;
 
 type Actions = Vec<Value>;
 
+/// The selected video clip and its item, for the Color panel.
 fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)> {
     let seq = app.session.active_sequence()?;
     app.session.state.selection.iter().find_map(|c| {
@@ -29,22 +30,19 @@ fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)
     })
 }
 
-/// Resolve the Lumetri instance shown by the Color panel. When a Lumetri effect is selected
-/// in Effect Controls, or its mask is selected, follow that instance; otherwise keep the
-/// historical first-instance default. Selecting a mask clears `selected_effect`.
+/// Resolve the Lumetri instance shown by the Color panel (shared with the engine
+/// via [`filmcraft_engine::color::lumetri_index`], so display and edits agree).
 fn lumetri_index(
     clip: ClipId,
     effects: &[EffectInstance],
     selected: Option<&filmcraft_engine::EffectSel>,
     mask: Option<&filmcraft_engine::masks::MaskSel>,
 ) -> Option<usize> {
-    selected
-        .filter(|s| s.clip == clip && s.effect == "lumetri")
-        .and_then(|s| s.index(effects))
-        .or_else(|| mask.filter(|m| m.clip == clip).and_then(|m| effects.get(m.effect).filter(|e| e.effect == "lumetri").map(|_| m.effect)))
-        .or_else(|| effects.iter().position(|e| e.effect == "lumetri"))
+    filmcraft_engine::color::lumetri_index(clip, effects, selected, mask)
 }
 
+/// Show the Lumetri Color panel for the selected clip, editing the Lumetri instance
+/// resolved from the current effect/mask selection (see [`lumetri_index`]).
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected(app) else {
@@ -52,12 +50,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("lumetri2"));
-    let Some(idx) = lumetri_index(
-        clip,
-        &it.effects,
-        app.session.state.selected_effect.as_ref(),
-        app.session.state.selected_mask.as_ref(),
-    ) else {
+    let Some(idx) = lumetri_index(clip, &it.effects, app.session.state.selected_effect.as_ref(), app.session.state.selected_mask.as_ref()) else {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
@@ -835,5 +828,38 @@ mod tests {
         let mask_motion = filmcraft_engine::masks::MaskSel { clip, effect: 0, mask: 0 };
         assert_eq!(lumetri_index(clip, &mixed, None, Some(&mask_motion)), Some(1));
         assert_eq!(lumetri_index(clip, &mixed, None, Some(&filmcraft_engine::masks::MaskSel { clip, effect: 99, mask: 0 })), Some(1));
+    }
+
+    #[test]
+    fn color_panel_prefers_selected_effect_over_mask() {
+        let clip = ClipId(17);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let effects = vec![lumetri.instance(), lumetri.instance()];
+        // both present (should not normally happen, but precedence must be deterministic):
+        // selected_effect wins over the mask.
+        let selected_first = filmcraft_engine::EffectSel::of(clip, &effects, 0).unwrap();
+        let mask_second = filmcraft_engine::masks::MaskSel { clip, effect: 1, mask: 0 };
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected_first), Some(&mask_second)), Some(0));
+    }
+
+    #[test]
+    fn color_panel_ignores_a_mask_on_another_clip() {
+        let clip = ClipId(17);
+        let other_clip = ClipId(18);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let effects = vec![lumetri.instance(), lumetri.instance()];
+        let mask_other = filmcraft_engine::masks::MaskSel { clip: other_clip, effect: 1, mask: 0 };
+        assert_eq!(lumetri_index(clip, &effects, None, Some(&mask_other)), Some(0));
+    }
+
+    #[test]
+    fn color_panel_follows_a_lumetri_mask_when_a_non_lumetri_effect_is_selected() {
+        let clip = ClipId(17);
+        let lumetri = filmcraft_project::find_effect("lumetri").unwrap();
+        let motion = filmcraft_project::find_effect("motion").unwrap();
+        let effects = vec![motion.instance(), lumetri.instance(), lumetri.instance()];
+        let selected_motion = filmcraft_engine::EffectSel::of(clip, &effects, 0).unwrap();
+        let mask_second = filmcraft_engine::masks::MaskSel { clip, effect: 2, mask: 0 };
+        assert_eq!(lumetri_index(clip, &effects, Some(&selected_motion), Some(&mask_second)), Some(2));
     }
 }
