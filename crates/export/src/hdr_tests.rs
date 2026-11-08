@@ -7,7 +7,7 @@ const BT2020: (f32, f32) = (0.2627, 0.0593);
 
 fn convert(rgb: &[f32], w: usize, h: usize) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    rgbf_to_yuv420_10(rgb, w, h, BT2020.0, BT2020.1, &mut y, &mut u, &mut v).unwrap();
+    rgbf_to_yuv420_10(rgb, w, h, Matrix::new(BT2020.0, BT2020.1), &mut y, &mut u, &mut v).unwrap();
     (y, u, v)
 }
 
@@ -87,7 +87,7 @@ fn a_ramp_has_every_code_a_10_bit_picture_can_have() {
 #[test]
 fn hostile_input_is_an_error_not_a_panic() {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, 0.2627, 0.0593, &mut y, &mut u, &mut v);
+    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, Matrix::new(0.2627, 0.0593), &mut y, &mut u, &mut v);
     assert!(run(&[], 0, 0).is_err());
     assert!(run(&[0.0; 3], 0, 1).is_err());
     assert!(run(&[0.0; 3], 1, 0).is_err());
@@ -198,4 +198,73 @@ fn the_software_h264_sei_is_the_static_metadata_laid_out_as_messages() {
     want.extend(fall.to_be_bytes());
     want.push(0x80);
     assert_eq!(sei, want);
+}
+
+/// #2142: SDR gets its `colr` box as well (nclc in MOV, nclx in MP4), and no HDR metadata.
+#[test]
+fn sdr_gets_a_colr_box_and_no_hdr_metadata() {
+    let mut e = filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), 64, 64);
+    ColorSignal::default().apply_to(&mut e, true);
+    let v = e.video.as_ref().unwrap();
+    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 }));
+    assert!(v.mastering_display.is_none() && v.content_light.is_none());
+    let mut e = filmcraft_isobmff::SampleEntry::hevc(Default::default(), 64, 64);
+    ColorSignal::default().apply_to(&mut e, false);
+    let v = e.video.as_ref().unwrap();
+    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
+}
+
+/// RGBA8 to 10-bit 4:2:0 for High 10 keeps the matrix precision: the limited-range codes, the
+/// 8-bit converter's values times four (within the 8-bit rounding), and errors for hostile sizes.
+#[test]
+fn rgba8_to_10_bit_has_the_limited_range_codes() {
+    let px = |w: usize, h: usize, c: [u8; 4]| c.repeat(w * h);
+    let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+    for (c, yc) in [([0, 0, 0, 255], 64), ([255, 255, 255, 255], 940)] {
+        rgba_to_yuv420_10(&px(4, 2, c), 4, 2, &mut y, &mut u, &mut v).unwrap();
+        assert!(y.iter().all(|&s| s == yc) && u.iter().chain(&v).all(|&s| s == 512), "{c:?}: {y:?} {u:?} {v:?}");
+    }
+    // a colour ramp: within one 8-bit step (four 10-bit codes) of the 8-bit conversion scaled up
+    let (w, h) = (64, 4);
+    let rgba: Vec<u8> = (0..w * h).flat_map(|i| [(i * 4) as u8, (255 - i * 3 % 256) as u8, (i * 7 % 256) as u8, 255]).collect();
+    rgba_to_yuv420_10(&rgba, w, h, &mut y, &mut u, &mut v).unwrap();
+    let (mut y8, mut u8_, mut v8) = (Vec::new(), Vec::new(), Vec::new());
+    rgba_to_yuv420_8(&rgba, w, h, &mut y8, &mut u8_, &mut v8);
+    for (a, b) in y.iter().zip(&y8).chain(u.iter().zip(&u8_)).chain(v.iter().zip(&v8)) {
+        assert!((i32::from(*a) - 4 * i32::from(*b)).abs() <= 2, "{a} vs 4 x {b}");
+    }
+    // odd sizes round the chroma planes up
+    rgba_to_yuv420_10(&px(3, 3, [10, 20, 30, 255]), 3, 3, &mut y, &mut u, &mut v).unwrap();
+    assert_eq!((y.len(), u.len(), v.len()), (9, 4, 4));
+    // wrong lengths, zero and overflowing sizes are errors
+    assert!(rgba_to_yuv420_10(&[0; 15], 2, 2, &mut y, &mut u, &mut v).is_err());
+    assert!(rgba_to_yuv420_10(&[], 0, 0, &mut y, &mut u, &mut v).is_err());
+    assert!(rgba_to_yuv420_10(&[0; 16], usize::MAX, 2, &mut y, &mut u, &mut v).is_err());
+}
+
+/// High 10 encodes SDR and HDR frames at 10 bits: profile 110 and 10-bit depths in the avcC, every
+/// picture coded (#1221).
+#[test]
+fn high10_export_encodes_sdr_and_hdr_frames_at_10_bits() {
+    for signal in [ColorSignal::default(), ColorSignal::PQ, ColorSignal::HLG] {
+        for intra in [false, true] {
+            let s = ExportSettings { format: Format::H264, signal, h264_profile: H264Profile::High10, h264_intra_only: intra, ..Default::default() };
+            let mut enc = h264_factory(Format::H264, 64, 48, FrameRate::FPS_24, &s).unwrap().unwrap();
+            let rgb = vec![0.5f32; 64 * 48 * 3];
+            let rgba = vec![128u8; 64 * 48 * 4];
+            let mut packets = Vec::new();
+            for index in 0..4 {
+                let hdr = signal.is_hdr().then_some(&rgb[..]);
+                packets.extend(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &rgba, hdr, index }).unwrap());
+            }
+            packets.extend(enc.flush().unwrap());
+            assert_eq!(packets.len(), 4, "{signal:?}");
+            assert_eq!(packets.iter().all(|p| p.key), intra, "{signal:?} intra {intra}");
+            let e = enc.sample_entry();
+            let filmcraft_isobmff::CodecConfig::Avc(c) = &e.codec else { panic!("{:?}", e.codec) };
+            assert_eq!(c.profile, 110);
+            assert_eq!(c.compatibility & 0x10 != 0, intra, "constraint_set3 marks High 10 Intra");
+            assert_eq!(c.ext, [0xFD, 0xFA, 0xFA, 0x00]);
+        }
+    }
 }

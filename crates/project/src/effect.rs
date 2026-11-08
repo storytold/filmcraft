@@ -374,6 +374,27 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video(
+            "three_way_color",
+            "Three-Way Color Corrector",
+            vfx::OBSOLETE,
+            vec![
+                grp(fs("shadow_hue", "Shadow Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Shadows"),
+                grp(f("shadow_balance", "Shadow Balance", 0.0, 0.0, 100.0, ""), "Shadows"),
+                grp(f("shadow_level", "Shadow Level", 0.0, -100.0, 100.0, ""), "Shadows"),
+                grp(fs("mid_hue", "Midtone Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Midtones"),
+                grp(f("mid_balance", "Midtone Balance", 0.0, 0.0, 100.0, ""), "Midtones"),
+                grp(f("mid_level", "Midtone Level", 0.0, -100.0, 100.0, ""), "Midtones"),
+                grp(fs("hi_hue", "Highlight Hue", 0.0, (0.0, 360.0), (0.0, 360.0), "°", 0), "Highlights"),
+                grp(f("hi_balance", "Highlight Balance", 0.0, 0.0, 100.0, ""), "Highlights"),
+                grp(f("hi_level", "Highlight Level", 0.0, -100.0, 100.0, ""), "Highlights"),
+                grp(f("shadow_threshold", "Shadow Threshold", 33.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("shadow_softness", "Shadow Softness", 30.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("hi_threshold", "Highlight Threshold", 66.0, 0.0, 100.0, ""), "Tonal Range"),
+                grp(f("hi_softness", "Highlight Softness", 30.0, 0.0, 100.0, ""), "Tonal Range"),
+                fs("saturation", "Saturation", 100.0, (0.0, 200.0), (0.0, 200.0), "", 1),
+            ],
+        ),
+        video(
             "leave_color",
             "Leave Color",
             vfx::OBSOLETE,
@@ -397,7 +418,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "lumetri",
-            "Color Grade",
+            "Color Grading",
             COLOR_CORR,
             vec![
                 grp(b("basic_on", "Basic Correction", true), "Basic Correction"),
@@ -688,7 +709,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "ultra_key",
-            "Ultra Key",
+            "Chroma Key",
             KEYING,
             vec![
                 col("key_color", "Key Color", [0.0, 0.8, 0.2, 1.0]),
@@ -725,15 +746,25 @@ fn build_effects() -> Vec<EffectDef> {
                 fs("feather", "Edge Feather", 0.0, (0.0, 50.0), (0.0, 50.0), "", 1),
             ],
         ),
-        video("luma_key", "Luma Key", KEYING, vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%")]),
+        video(
+            "luma_key",
+            "Luma Key",
+            KEYING,
+            vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%"), b("invert", "Key Out Brights", false)],
+        ),
         video(
             "four_color_gradient",
             "4-Color Gradient",
             GENERATE,
             vec![
+                // NaN: the gradient's own position (a quarter in from each corner of the frame)
+                pt("p1", "Point 1", f64::NAN, f64::NAN),
                 col("c1", "Color 1", [1.0, 1.0, 0.0, 1.0]),
+                pt("p2", "Point 2", f64::NAN, f64::NAN),
                 col("c2", "Color 2", [0.0, 1.0, 0.0, 1.0]),
+                pt("p3", "Point 3", f64::NAN, f64::NAN),
                 col("c3", "Color 3", [1.0, 0.0, 1.0, 1.0]),
+                pt("p4", "Point 4", f64::NAN, f64::NAN),
                 col("c4", "Color 4", [0.0, 0.0, 1.0, 1.0]),
                 f("blend", "Blend", 100.0, 1.0, 1000.0, ""),
                 f("opacity", "Opacity", 100.0, 0.0, 100.0, "%"),
@@ -864,7 +895,15 @@ pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
 /// Case-insensitive lookup by id or display name.
 pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
     let n = name.to_ascii_lowercase();
-    effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n || (e.id == "lumetri" && n == "lumetri color"))
+    // Old human-readable names are import/automation aliases, never display labels.
+    let legacy_id = match n.as_str() {
+        "lumetri" | "lumetri color" | "color grade" => Some("lumetri"),
+        "ultra key" => Some("ultra_key"),
+        "warp stabilizer" => Some("warp_stabilizer"),
+        "morph cut" => Some("morph_cut"),
+        _ => None,
+    };
+    legacy_id.and_then(find_effect).or_else(|| effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
 }
 
 /// Intrinsic video effects every video track item carries (Motion, Opacity, Time Remapping).
@@ -891,5 +930,26 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn descriptive_names_preserve_legacy_lookup_and_project_ids() {
+        for (id, old, label) in [
+            ("lumetri", "Lumetri Color", "Color Grading"),
+            ("lumetri", "Color Grade", "Color Grading"),
+            ("ultra_key", "Ultra Key", "Chroma Key"),
+            ("warp_stabilizer", "Warp Stabilizer", "Motion Stabilizer"),
+            ("morph_cut", "Morph Cut", "Optical Flow Dissolve"),
+        ] {
+            let def = find_effect(id).unwrap();
+            assert_eq!(def.name, label);
+            assert_eq!(find_effect_by_name(old).unwrap().id, id);
+            assert_eq!(find_effect_by_name(&old.to_uppercase()).unwrap().id, id);
+            assert_eq!(find_effect_by_name(label).unwrap().id, id);
+            let saved = serde_json::to_value(def.instance()).unwrap();
+            assert_eq!(saved["effect"], id);
+            let loaded: EffectInstance = serde_json::from_value(saved).unwrap();
+            assert_eq!(loaded, def.instance());
+        }
     }
 }

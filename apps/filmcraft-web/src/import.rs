@@ -135,9 +135,34 @@ pub async fn import_files(files: Vec<web_sys::File>) -> Value {
 /// Open a `.fcproj` file picked or dropped by the user.
 pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
     let buf = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
-    let path = format!("/projects/{}", file.name());
-    fs::put(&path, js_sys::Uint8Array::new(&buf).to_vec());
-    on_ui(move |w, _| w.app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())).await
+    open_project_bytes(format!("/projects/{}", file.name()), js_sys::Uint8Array::new(&buf).to_vec()).await
+}
+
+/// Open a `.fcproj` handed over as bytes (a host's `filmcraft:open`) at a virtual `/projects/`
+/// path, like a picked or dropped project: into the file table, then `file.open`.
+pub async fn open_project_bytes(path: String, bytes: Vec<u8>) -> Result<Value, String> {
+    fs::put(&path, bytes);
+    on_ui(move |w, _| w.app.session.execute("file.open", json!({ "path": path })).map_err(|e| e.to_string())).await
+}
+
+/// Import a file handed over by a host (`filmcraft:open`): registered like a dropped file (a
+/// `Blob` under `/files`, never copied whole), the container index prefetched, then
+/// `file.import`. Media from the host is not kept for crash recovery: host sessions don't
+/// recover.
+pub async fn import_blob(name: String, blob: web_sys::Blob) {
+    let bin = on_ui(|w, _| w.app.import_bin().0).await;
+    let size = blob.size() as u64;
+    let path = fs::register_blob(&name, blob);
+    prewarm(&path, size).await;
+    match import_path(path, bin).await {
+        Ok(v) => {
+            if let Some(errors) = v.get("errors").and_then(Value::as_array).filter(|e| !e.is_empty()) {
+                let msg = errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                crate::post(move |w, _| w.app.status(msg));
+            }
+        }
+        Err(e) => crate::post(move |w, _| w.app.status(e)),
+    }
 }
 
 /// Handle files from a picker or a drop: projects open, everything else is imported.
@@ -264,7 +289,7 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
     app.hooks.pick_save = Some(Box::new(|name: &str| Some(format!("/projects/{name}"))));
     app.hooks.pick_save_as = Some(Box::new(|_filter: &str, _exts: &[&str], name: &str| {
-        let file = std::path::Path::new(name).file_name().map_or(name.into(), |n| n.to_string_lossy());
+        let file = std::path::Path::new(name).file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy);
         Some(format!("/exports/{file}"))
     }));
     // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: the picker is async, so the

@@ -37,13 +37,14 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 const G: &[&str] = &["Graphics and Titles"];
+const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
 
 fn has_graphic(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -149,8 +150,7 @@ fn entry_json(e: &LibraryEntry) -> Value {
 /// Render a template's thumbnail (static: rolls are shown at rest) as straight sRGB RGBA8,
 /// `w` pixels wide with the template's aspect ratio. Returns (width, height, pixels).
 pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
-    let w = w.clamp(16, 1920);
-    let h = ((w as f64 * t.canvas[1] as f64 / t.canvas[0].max(1) as f64).round() as u32).max(1);
+    let (w, h) = thumbnail_dimensions(t.canvas, w);
     register_fonts(t);
     let mut meta = t.graphic.clone();
     meta.roll.mode = RollMode::Off;
@@ -171,9 +171,23 @@ pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
     // a moment into the clip, so intro animations have settled a little
     let at = Tick((t.duration.0 / 2).min(filmcraft_time::TICKS_PER_SECOND));
     let mut img = filmcraft_render::image::Image::new(w as usize, h as usize);
-    let k = w as f64 / t.canvas[0].max(1) as f64;
+    // fit both sides: a capped height leaves `w / canvas width` too large for a tall canvas
+    let k = (w as f64 / t.canvas[0].max(1) as f64).min(h as f64 / t.canvas[1].max(1) as f64);
     filmcraft_render::graphic_clip::render_graphic(&it, at, (t.canvas[0], t.canvas[1]), &Affine::scale(k, k), &mut img);
     (w, h, img.to_rgba8())
+}
+
+/// Fit a requested thumbnail width within a bounded rectangle without trusting the template's
+/// aspect ratio to derive an unbounded second dimension.
+fn thumbnail_dimensions(canvas: [u32; 2], requested_width: u32) -> (u32, u32) {
+    let mut w = requested_width.clamp(16, MAX_THUMBNAIL_DIMENSION);
+    let aspect = canvas[0].max(1) as f64 / canvas[1].max(1) as f64;
+    let mut h = (w as f64 / aspect).round().clamp(1.0, u32::MAX as f64) as u32;
+    if h > MAX_THUMBNAIL_DIMENSION {
+        h = MAX_THUMBNAIL_DIMENSION;
+        w = (h as f64 * aspect).round().clamp(1.0, MAX_THUMBNAIL_DIMENSION as f64) as u32;
+    }
+    (w, h)
 }
 
 /// Cached thumbnails by template id + content + width (the UI asks every frame).
@@ -731,7 +745,23 @@ fn pin_layer(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// Character style from command JSON (friendly names accepted).
+/// Stroke widths use the same finite pixel range as the layer controls.
+fn char_stroke_width(k: &str, v: &Value) -> Result<f32> {
+    v.as_f64()
+        .filter(|n| n.is_finite() && (0.0..=1000.0).contains(n))
+        .map(|n| n as f32)
+        .ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be a number from 0 to 1000")))
+}
+
+fn char_stroke_kind(k: &str, v: &Value) -> Result<u32> {
+    let kind = match v {
+        Value::Number(n) => n.as_u64().filter(|n| *n <= 2).map(|n| n as u32),
+        Value::String(s) => graphic::STROKE_OPTS.iter().position(|o| o.eq_ignore_ascii_case(s)).map(|n| n as u32),
+        _ => None,
+    };
+    kind.ok_or_else(|| bad("graphics.setCharStyle", format!("`{k}` must be outer, center, inner, or 0..2")))
+}
+
 fn char_style_p(v: &Value) -> Result<CharStyle> {
     let o = v.as_object().ok_or_else(|| bad("graphics.setCharStyle", "`style` must be an object"))?;
     let mut c = CharStyle::default();
@@ -740,15 +770,27 @@ fn char_style_p(v: &Value) -> Result<CharStyle> {
             "font" | "family" => c.font = x.as_str().map(str::to_string),
             "fontStyle" | "font_style" | "style" => c.font_style = x.as_str().map(str::to_string),
             "size" | "fontSize" => c.size = x.as_f64().map(|v| v as f32),
-            "fill" | "color" | "fillColor" | "fill_color" => {
-                c.fill = Some(match crate::commands::json_to_param(&ParamValue::Color([0.0; 4]), x) {
+            "stroke" => c.stroke = Some(x.as_bool().ok_or_else(|| bad("graphics.setCharStyle", "`stroke` must be a boolean"))?),
+            "stroke2" => c.stroke2 = Some(x.as_bool().ok_or_else(|| bad("graphics.setCharStyle", "`stroke2` must be a boolean"))?),
+            "strokeWidth" | "stroke_width" => c.stroke_width = Some(char_stroke_width(k, x)?),
+            "stroke2Width" | "stroke2_width" => c.stroke2_width = Some(char_stroke_width(k, x)?),
+            "strokeType" | "stroke_type" => c.stroke_type = Some(char_stroke_kind(k, x)?),
+            "stroke2Type" | "stroke2_type" => c.stroke2_type = Some(char_stroke_kind(k, x)?),
+            "fill" | "color" | "fillColor" | "fill_color" | "strokeColor" | "stroke_color" | "stroke2Color" | "stroke2_color" => {
+                let color = Some(match crate::commands::json_to_param(&ParamValue::Color([0.0; 4]), x) {
                     Some(ParamValue::Color(col)) => col,
-                    _ => return Err(bad("graphics.setCharStyle", "`color`: \"#rrggbb\" or [r,g,b,a]")),
-                })
+                    _ => return Err(bad("graphics.setCharStyle", format!("`{k}`: \"#rrggbb\" or [r,g,b,a]"))),
+                });
+                match k.as_str() {
+                    "strokeColor" | "stroke_color" => c.stroke_color = color,
+                    "stroke2Color" | "stroke2_color" => c.stroke2_color = color,
+                    _ => c.fill = color,
+                }
             }
             "bold" | "fauxBold" | "faux_bold" => c.faux_bold = x.as_bool(),
             "italic" | "fauxItalic" | "faux_italic" => c.faux_italic = x.as_bool(),
             "underline" => c.underline = x.as_bool(),
+            "strikethrough" | "strike" => c.strikethrough = x.as_bool(),
             "tracking" => c.tracking = x.as_f64().map(|v| v as f32),
             "baselineShift" | "baseline_shift" => c.baseline_shift = x.as_f64().map(|v| v as f32),
             "caps" => {
@@ -775,7 +817,12 @@ fn set_char_style(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let tl = s.playhead();
     let (start, end) = (u64_p(p, "start").map(|v| v as usize), u64_p(p, "end").map(|v| v as usize));
-    let runs = s.edit_sequence("Character Style", move |q, _, _| {
+    // A pointer gesture shares one undo step only within the same clip, layer and range.
+    let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("graphics.setCharStyle:{}:{ei}:{start:?}:{end:?}", clip.0));
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let runs = s.edit_sequence_as("Character Style", merge.as_deref(), move |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = &mut it.effects[ei];
@@ -890,7 +937,8 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let col = |c: [u8; 4]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
         set(&mut layer, "font", ParamValue::Text(st.font.clone()));
-        set(&mut layer, "font_style", ParamValue::Text("SemiBold".into()));
+        let font_style = if st.font_style.trim().is_empty() { "SemiBold" } else { st.font_style.trim() };
+        set(&mut layer, "font_style", ParamValue::Text(font_style.into()));
         set(&mut layer, "align", ParamValue::Choice(st.align as u32));
         set(&mut layer, "fill_color", ParamValue::Color(col(st.color)));
         set(&mut layer, "leading", ParamValue::Float(line_h - size * 1.21));
@@ -1047,7 +1095,8 @@ pub fn fonts_used(s: &Session) -> Vec<(String, String, usize)> {
     for q in s.project.sequences() {
         if let ItemKind::Sequence(sq) = &q.kind {
             for t in &sq.caption_tracks {
-                add(t.style.font.clone(), "SemiBold".into());
+                let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                add(t.style.font.clone(), st.into());
             }
         }
     }
@@ -1103,8 +1152,12 @@ fn replace_fonts(s: &mut Session, p: &Value) -> Result<Value> {
         for id in ids {
             if let Some(sq) = pr.sequence_mut(id) {
                 for t in &mut sq.caption_tracks {
-                    if t.style.font.eq_ignore_ascii_case(&from) && from_style.is_none() {
+                    let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                    if matches(&t.style.font, st) {
                         t.style.font = to.clone();
+                        if let Some(ts) = &to_style {
+                            t.style.font_style = ts.clone();
+                        }
                         n += 1;
                     }
                 }
@@ -1217,7 +1270,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.setCharStyle",
             "Character Style",
             &[],
-            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range)}"##,
+            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","stroke":bool,"strokeColor":"#rrggbb","strokeWidth":px,"strokeType":"outer|center|inner","stroke2":bool,"stroke2Color":"#rrggbb","stroke2Width":px,"stroke2Type":"outer|center|inner","bold":bool,"italic":bool,"underline":bool,"strikethrough":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
             has_graphic,
             set_char_style,
         ),
@@ -1243,5 +1296,4 @@ pub fn commands() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "graphic_templates_tests.rs"]
 mod tests;
