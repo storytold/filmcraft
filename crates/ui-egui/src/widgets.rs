@@ -182,13 +182,14 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     }
     let mut out = None;
     if resp.dragged() {
-        let dx = resp.drag_delta().x as f64;
+        let dx = f64::from(locked_drag_dx(ui, &resp));
         let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
         }
     }
+    release_cursor_lock(ui.ctx());
     if resp.clicked() {
         ui.data_mut(|d| {
             d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
@@ -210,6 +211,77 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
             1.0
         }
     })
+}
+
+/// How far a drag on `resp` moved this frame, in points. As in Premiere, the cursor is hidden and
+/// held where the press began, and the drag follows the raw mouse motion, which the screen edge
+/// does not stop (#4177). Without raw motion (the web), for a touch or in a window without focus, it
+/// is the pointer's own delta.
+fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
+    let (motion, touching, focused, press_origin, pointer) =
+        ui.input(|i| (i.pointer.motion(), i.any_touches(), window_focused(i), i.pointer.press_origin(), i.pointer.latest_pos()));
+    // once any raw motion arrived, `motion` stays `Some` on every frame, also for a touch, which has none
+    let Some(motion) = motion.filter(|_| !touching && focused) else { return resp.drag_delta().x };
+    let lock = match ui.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).filter(|l| l.owner == resp.id) {
+        Some(lock) => lock,
+        None => {
+            let Some(origin) = press_origin else { return resp.drag_delta().x };
+            let lock = CursorLock { owner: resp.id, origin, viewport: ui.ctx().viewport_id() };
+            ui.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+            // Wayland moves only a locked cursor
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+            lock
+        }
+    };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    if pointer != Some(lock.origin) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(lock.origin));
+    }
+    motion.x / ui.ctx().pixels_per_point()
+}
+
+/// The cursor held by [`locked_drag_dx`]: the hot number dragging it, where the press began and
+/// the window it is in.
+#[derive(Clone, Copy)]
+struct CursorLock {
+    owner: egui::Id,
+    origin: egui::Pos2,
+    viewport: egui::ViewportId,
+}
+
+fn cursor_lock_id() -> egui::Id {
+    egui::Id::unique("hot-number-cursor-lock")
+}
+
+/// Whether the window has keyboard focus. A button let go in another window (after Alt+Tab) never
+/// reaches this one, so its pointer state can still show it held.
+fn window_focused(i: &egui::InputState) -> bool {
+    i.viewport().focused.unwrap_or(i.focused)
+}
+
+/// Ends [`locked_drag_dx`]'s lock once the button is up, the window loses focus or the drag ends
+/// (Escape): the cursor is let go and shows again where the press began. Losing focus also ends the
+/// drag. Also called on every pass of every window, for a drag whose field went away before the
+/// release; a window's pass knows only its own drag, so it leaves another window's lock alone
+/// unless that window is gone.
+pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
+    let Some(lock) = ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())) else { return };
+    let here = ctx.viewport_id() == lock.viewport;
+    if !here && ctx.input(|i| i.raw.viewports.contains_key(&lock.viewport)) {
+        return;
+    }
+    let (focused, down) = ctx.input_for(lock.viewport, |i| (window_focused(i), i.pointer.any_down()));
+    if here && focused && down && ctx.dragged_id() == Some(lock.owner) {
+        return;
+    }
+    ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
+    if here && ctx.dragged_id() == Some(lock.owner) {
+        // egui would keep dragging the field when focus comes back, or after a dialog took the
+        // pointer, and a new press could not start a drag on another one
+        ctx.stop_dragging();
+    }
+    ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorPosition(lock.origin));
+    ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
@@ -609,6 +681,43 @@ mod tests {
             // (an empty text has no extent)
             .filter(|c| c.is_finite())
             .collect()
+    }
+
+    /// A dragged value's cursor lock held in a floating panel's window is that window's: the main
+    /// window's pass, which knows only its own drag, leaves it, and lets it go once that window is gone.
+    #[test]
+    fn another_windows_cursor_lock_is_left_to_that_window() {
+        let ctx = egui::Context::default();
+        let panel = egui::ViewportId::from_hash_of("floating panel");
+        let lock = CursorLock { owner: egui::Id::unique("hot number"), origin: pos2(10.0, 20.0), viewport: panel };
+        ctx.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+        let held = || ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).is_some();
+        let mut open = egui::RawInput::default();
+        open.viewports.insert(panel, egui::ViewportInfo::default());
+        ctx.run_ui(open, |ui| release_cursor_lock(ui.ctx())).textures_delta.clear();
+        assert!(held(), "the main window leaves the panel's lock alone");
+        ctx.run_ui(egui::RawInput::default(), |ui| release_cursor_lock(ui.ctx())).textures_delta.clear();
+        assert!(!held(), "the panel's window is gone: its lock goes too");
+    }
+
+    /// A dialog that takes the pointer mid-drag leaves the button up without a release: letting the
+    /// cursor go then also ends egui's drag of the field, so a later press starts a drag of its own.
+    #[test]
+    fn letting_the_cursor_go_ends_a_drag_the_button_left_without_a_release() {
+        let ctx = egui::Context::default();
+        let owner = egui::Id::unique("hot number");
+        let lock = CursorLock { owner, origin: pos2(10.0, 20.0), viewport: egui::ViewportId::ROOT };
+        ctx.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+        let mut dragged = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.ctx().set_dragged_id(owner);
+            release_cursor_lock(ui.ctx());
+            dragged = ui.ctx().dragged_id();
+        })
+        .textures_delta
+        .clear();
+        assert!(ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).is_none(), "the cursor is let go");
+        assert_eq!(dragged, None, "and the field's drag ends with it");
     }
 
     /// Tabular text: every digit takes the same room, so `11:11` and `88:08` are as wide.
