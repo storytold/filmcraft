@@ -191,8 +191,7 @@ impl TimelineUiSettings {
         self.shift_drag_last_custom = if self.shift_drag_last_custom.is_finite() { self.shift_drag_last_custom.clamp(0.1, 50.0) } else { 1.0 };
         // a non-positive Maximum Zoom Level is "unset": the documented 0.4 s default, never the
         // clamp floor (0.05), or the fallback could no longer apply
-        self.max_zoom_seconds =
-            if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
+        self.max_zoom_seconds = if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
         self.max_zoom_last_custom =
             if self.max_zoom_last_custom.is_finite() && self.max_zoom_last_custom > 0.0 { self.max_zoom_last_custom.clamp(0.05, 3.0) } else { 0.4 };
         self.track_slider_shift_drag_speed =
