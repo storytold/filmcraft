@@ -223,6 +223,8 @@ pub struct FxWord {
 /// The captions' span: where it starts on the sequence, how long it is, the frame and its words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
+    /// The captions the span was made from (the window sends them back so the order matches what it showed).
+    pub captions: Vec<u64>,
     pub start: Tick,
     pub duration: f64,
     pub width: u32,
@@ -236,9 +238,11 @@ fn ms(x: f64) -> f64 {
 }
 
 /// The span of the selected captions (the one under the playhead when none is selected).
-pub fn span(s: &Session, cmd: &str) -> Result<Span> {
+pub fn span(s: &Session, cmd: &str, pinned: Option<Vec<filmcraft_project::ClipId>>) -> Result<Span> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let ids: Vec<filmcraft_project::ClipId> = if !s.state.caption_selection.is_empty() {
+    let ids: Vec<filmcraft_project::ClipId> = if let Some(p) = pinned {
+        p
+    } else if !s.state.caption_selection.is_empty() {
         s.state.caption_selection.clone()
     } else {
         let t = s.playhead();
@@ -270,6 +274,7 @@ pub fn span(s: &Session, cmd: &str) -> Result<Span> {
     }
     let fr = q.settings.frame_rate.sane();
     Ok(Span {
+        captions: ids.iter().map(|c| c.0).collect(),
         start: Tick::from_seconds_f64(a),
         duration: ms((b - a).max(last).max(0.001)),
         width: q.settings.width,
@@ -286,6 +291,19 @@ pub fn mark_heroes(words: &mut [FxWord], heroes: &[usize], cmd: &str) -> Result<
         words.get_mut(i).ok_or_else(|| bad(cmd, format!("hero index {i} is out of range (the span has {n} words)")))?.hero = true;
     }
     Ok(())
+}
+
+/// `captions`: the ids the span is pinned to; none means the selection (or the caption under the playhead).
+fn captions_p(p: &Value, cmd: &str) -> Result<Option<Vec<filmcraft_project::ClipId>>> {
+    match p.get("captions") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) if !a.is_empty() && a.len() <= MAX_WORDS => a
+            .iter()
+            .map(|v| v.as_u64().map(filmcraft_project::ClipId).ok_or_else(|| bad(cmd, "`captions` must be caption ids")))
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        Some(_) => Err(bad(cmd, "`captions` must be a non-empty array of caption ids")),
+    }
 }
 
 fn heroes_p(p: &Value, cmd: &str) -> Result<Vec<usize>> {
@@ -343,6 +361,7 @@ pub fn words_json(sp: &Span) -> Value {
 
 fn span_json(sp: &Span) -> Value {
     json!({
+        "captions": sp.captions,
         "start": sp.start.0,
         "startSeconds": sp.start.seconds(),
         "duration": sp.duration,
@@ -359,7 +378,7 @@ fn span_json(sp: &Span) -> Value {
 
 fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "lettering.fx.prepare";
-    let mut sp = span(s, ID)?;
+    let mut sp = span(s, ID, captions_p(p, ID)?)?;
     mark_heroes(&mut sp.words, &heroes_p(p, ID)?, ID)?;
     let mut v = span_json(&sp);
     v["phrases"] = words_json(&sp)["phrases"].clone();
@@ -390,7 +409,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     if !safe_id(template) || !templates(s, &bank)?.iter().any(|t| t.id == template) {
         return Err(bad(ID, format!("unknown template `{template}`")));
     }
-    let mut sp = span(s, ID)?;
+    let mut sp = span(s, ID, captions_p(p, ID)?)?;
     mark_heroes(&mut sp.words, &heroes_p(p, ID)?, ID)?;
     let dir = match p.get("out").and_then(Value::as_str) {
         Some(o) if o.contains('\0') || o.is_empty() => return Err(bad(ID, "invalid `out`")),
@@ -398,6 +417,10 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
         None => work_dir(s, &sp),
     };
     s.services.create_dir_all(&dir).map_err(|e| EngineError::Other(format!("cannot create {dir}: {e}")))?;
+    let out_busy = join(&dir, "lettering.mov");
+    if s.lettering_fx.jobs.iter().any(|j| j.out == out_busy && matches!(*j.status.lock().unwrap_or_else(PoisonError::into_inner), FxStatus::Running)) {
+        return Err(bad(ID, "an order for this folder is still running"));
+    }
     let words_path = join(&dir, "words.json");
     let order_path = join(&dir, "pedido.json");
     let out = join(&dir, "lettering.mov");
@@ -410,9 +433,12 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     if s.services.file_size(&out).is_ok() {
         s.services.write_file(&out, &[]).map_err(|e| EngineError::Other(format!("cannot clear {out}: {e}")))?;
     }
+    // a relative bank that starts with `-` must not be read by the interpreter as an option
+    let script = join(&bank, "atender.py");
+    let script = if script.starts_with('-') { join(".", &script) } else { script };
     let spec = ProcessSpec {
         program: s.lettering_fx.interpreter.clone(),
-        args: vec![join(&bank, "atender.py"), order_path.clone()],
+        args: vec![script, order_path.clone()],
         timeout: s.lettering_fx.timeout,
         max_output: 64 * 1024,
     };

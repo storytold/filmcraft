@@ -62,6 +62,17 @@ fn kill_tree(child: &mut Child) {
             .stderr(Stdio::null())
             .status();
     }
+    #[cfg(windows)]
+    {
+        // no process groups here: `taskkill /T` stops the program and what it started
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID"])
+            .arg(child.id().to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -184,6 +195,19 @@ mod tests {
         let r = OsRunner.run(&spec("sleep", &["30"], Duration::from_millis(150)), &AtomicBool::new(false));
         assert!(matches!(r, Err(ProcessError::Timeout(_))), "{r:?}");
         assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_timeout_kills_what_the_program_started() {
+        let dir = std::env::temp_dir().join(format!("fc timeout {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("grandchild-survived");
+        let script = format!("(sleep 1; touch '{}') & wait", marker.display());
+        let r = OsRunner.run(&spec("sh", &["-c", &script], Duration::from_millis(200)), &AtomicBool::new(false));
+        assert!(matches!(r, Err(ProcessError::Timeout(_))), "{r:?}");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "the grandchild must die with the program");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

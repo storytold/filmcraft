@@ -50,7 +50,7 @@ fn phrases_break_on_punctuation_pause_word_count_and_letters() {
 fn words_json_has_the_contract() {
     let mut ws = vec![w("Tem", 0.0, 0.2), w("uma.", 0.2, 0.5), w("Frase", 0.7, 1.0)];
     mark_heroes(&mut ws, &[2], "t").unwrap();
-    let sp = Span { start: Tick(0), duration: 1.0, width: 1920, height: 1080, fps: 24.0, words: ws };
+    let sp = Span { captions: vec![], start: Tick(0), duration: 1.0, width: 1920, height: 1080, fps: 24.0, words: ws };
     let v = words_json(&sp);
     assert_eq!((v["fps"].as_f64(), v["width"].as_u64(), v["height"].as_u64(), v["duration"].as_f64()), (Some(24.0), Some(1920), Some(1080), Some(1.0)));
     let p = v["phrases"].as_array().unwrap();
@@ -285,4 +285,67 @@ fn nothing_selected_and_no_captions_are_errors() {
     assert!(s.execute("lettering.fx.prepare", json!({})).is_err());
     s.execute("file.newSequence", json!({"width": 1080, "height": 1920, "fps": 30})).unwrap();
     assert!(s.execute("lettering.fx.prepare", json!({})).is_err());
+}
+
+#[test]
+fn a_pinned_span_ignores_a_selection_that_changed_and_a_busy_folder_is_refused() {
+    struct Waits;
+    impl ProcessRunner for Waits {
+        fn run(&self, _: &ProcessSpec, cancel: &AtomicBool) -> std::result::Result<ProcessOutput, ProcessError> {
+            while !cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(ProcessError::Cancelled)
+        }
+    }
+    let root = tmp("pin");
+    let b = bank(&root);
+    let mut s = session_with_caption(Some(Arc::new(Waits)), &b);
+    let v = s.execute("lettering.fx.prepare", json!({})).unwrap();
+    let pinned = v["captions"].clone();
+    assert_eq!(pinned.as_array().unwrap().len(), 1);
+    let other =
+        s.execute("captions.add", json!({"track": "C1", "text": "outra legenda bem diferente", "seconds": 20.0, "durationSeconds": 2.0})).unwrap()["caption"]
+            .as_u64()
+            .unwrap();
+    s.execute("captions.select", json!({"captions": [other]})).unwrap();
+    let again = s.execute("lettering.fx.prepare", json!({"captions": pinned})).unwrap();
+    assert_eq!(again["words"], v["words"], "the pinned captions, not the new selection");
+    assert!(s.execute("lettering.fx.prepare", json!({"captions": []})).is_err());
+    assert!(s.execute("lettering.fx.prepare", json!({"captions": ["x"]})).is_err());
+    let out = root.join("busy").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "captions": pinned, "out": out})).unwrap()["job"].as_u64().unwrap();
+    assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "captions": pinned, "out": out})).is_err(), "same folder while running");
+    s.execute("lettering.fx.cancel", json!({"job": job})).unwrap();
+    assert_eq!(wait(&s, job)["status"], "cancelled");
+    assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "captions": pinned, "out": out})).is_ok(), "free again once it ended");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_dash_bank_path_cannot_become_an_interpreter_option() {
+    struct Spy(Mutex<Vec<ProcessSpec>>);
+    impl ProcessRunner for Spy {
+        fn run(&self, spec: &ProcessSpec, _: &AtomicBool) -> std::result::Result<ProcessOutput, ProcessError> {
+            self.0.lock().unwrap().push(spec.clone());
+            Err(ProcessError::Cancelled)
+        }
+    }
+    let root = tmp("dash");
+    let real = bank(&root);
+    let spy = Arc::new(Spy(Mutex::new(Vec::new())));
+    let mut s = session_with_caption(Some(spy.clone()), &real);
+    // a relative bank whose first character is a dash: copy the bank into the working directory
+    let rel = format!("-banco-{}", std::process::id());
+    let here = std::env::current_dir().unwrap().join(&rel);
+    std::fs::create_dir_all(here.join("templates/pop-amarelo")).unwrap();
+    std::fs::write(here.join("templates/pop-amarelo/template.json"), r#"{"id":"pop-amarelo"}"#).unwrap();
+    s.lettering_fx.bank = Some(rel.clone());
+    let out = root.join("o").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out})).unwrap()["job"].as_u64().unwrap();
+    wait(&s, job);
+    let seen = spy.0.lock().unwrap();
+    assert_eq!(seen[0].args[0], format!("./{rel}/atender.py"));
+    let _ = std::fs::remove_dir_all(here);
+    let _ = std::fs::remove_dir_all(root);
 }
