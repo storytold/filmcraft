@@ -1142,8 +1142,8 @@ impl FilmcraftMcp {
                     frames.push(SampledFrame {
                         seconds: tick.as_seconds_f64(),
                         label,
-                        width,
-                        height,
+                        width: w,
+                        height: h,
                         rgba: rgba.into_raw(),
                     });
                 }
