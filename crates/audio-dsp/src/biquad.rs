@@ -440,4 +440,54 @@ mod tests {
             assert!(tail_rms(&l, &r) >= 0.5 * clean, "level {:e} after {bad}, {clean:e} without", tail_rms(&l, &r));
         }
     }
+
+    /// A NaN written to any parameter of any effect never reaches the output (`set_param` ignores NaN).
+    #[test]
+    fn nan_parameter_values_never_produce_non_finite_output() {
+        let mut bad = Vec::new();
+        for e in crate::effects() {
+            let ids: Vec<&str> = crate::create_effect(e.id, SR as f32, 2).unwrap().params().iter().map(|p| p.id).collect();
+            for id in ids {
+                let mut fx = crate::create_effect(e.id, SR as f32, 2).unwrap();
+                fx.set_param(id, f32::NAN);
+                let (l, r, _) = run_fx(fx, None);
+                if l.iter().chain(&r).any(|v| !v.is_finite()) {
+                    bad.push(format!("{}.{id}", e.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    /// Subnormal input samples (a decoder or a fade-out can deliver them) never make an effect
+    /// produce non-finite output, and once the input is silent again no effect keeps emitting
+    /// subnormals in its last 0.5 s.
+    #[test]
+    fn subnormal_input_stays_finite_and_decays() {
+        let mut bad = Vec::new();
+        for e in crate::effects() {
+            for setting in [Setting::Default, Setting::Min] {
+                let mut fx = crate::create_effect(e.id, SR as f32, 2).unwrap();
+                for p in fx.params() {
+                    if let Setting::Min = setting {
+                        fx.set_param(p.id, p.min);
+                    }
+                }
+                let mut rng = Rng::new(5);
+                let (mut l, mut r) = (vec![0.0f32; RUN_LEN], vec![0.0f32; RUN_LEN]);
+                for (a, b) in l.iter_mut().zip(r.iter_mut()).take(RUN_LEN / 2) {
+                    *a = 1e-40 * rng.uniform();
+                    *b = -1e-41 * rng.uniform();
+                }
+                for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+                    fx.process(&mut [a, b]);
+                }
+                let t = RUN_LEN - 24000;
+                if l.iter().chain(&r).any(|v| !v.is_finite()) || l[t..].iter().chain(&r[t..]).any(|v| v.is_subnormal()) {
+                    bad.push(format!("{} ({setting:?})", e.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
 }
