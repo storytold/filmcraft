@@ -1,7 +1,6 @@
 //! Hostile-input robustness: truncation, header-region sweeps and random mutation of small
 //! ffmpeg-generated AV1 streams (frame by frame) must never panic or run away. Skips without ffmpeg.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -78,16 +77,23 @@ fn run_all(frames: &[Vec<u8>], threads: &[usize], label: &str) {
     filmcraft_testkit::set_progress(label);
     count_panics();
     let before = PANICS.load(Ordering::SeqCst);
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        for &threads in threads {
-            let mut dec = Decoder::with_threads(threads);
-            for (i, f) in frames.iter().enumerate() {
-                let _ = dec.decode_pts(f, i as i64);
-            }
-            let _ = dec.flush_result();
-        }
-    }));
-    assert!(res.is_ok() && PANICS.load(Ordering::SeqCst) == before, "panic: {label}");
+    // Every thread count decodes the stream at the same time, each on a thread of its own.
+    let ok = std::thread::scope(|s| {
+        let runs: Vec<_> = threads
+            .iter()
+            .map(|&threads| {
+                s.spawn(move || {
+                    let mut dec = Decoder::with_threads(threads);
+                    for (i, f) in frames.iter().enumerate() {
+                        let _ = dec.decode_pts(f, i as i64);
+                    }
+                    let _ = dec.flush_result();
+                })
+            })
+            .collect();
+        runs.into_iter().fold(true, |ok, r| r.join().is_ok() && ok)
+    });
+    assert!(ok && PANICS.load(Ordering::SeqCst) == before, "panic: {label}");
 }
 
 /// Random-mutation rounds per seed (raise with FILMCRAFT_FUZZ_ITERS for a long hunt).
@@ -100,12 +106,18 @@ const DEADLINE_SECS: u64 = 600;
 
 #[test]
 fn hostile_streams_never_panic() {
-    filmcraft_testkit::with_deadline(DEADLINE_SECS, sweep);
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, || sweep(&SEEDS[..2]));
 }
 
-fn sweep() {
+/// The seed with several superblock rows, in a test of its own so it runs beside the others.
+#[test]
+fn hostile_streams_with_superblock_rows_never_panic() {
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, || sweep(&SEEDS[2..]));
+}
+
+fn sweep(seeds: &[(&str, &str, &str, &str, &[usize])]) {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("AV1 fuzz") else { return };
-    for &(name, args, pix, size, threads) in SEEDS {
+    for &(name, args, pix, size, threads) in seeds {
         if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libsvtav1") {
             filmcraft_testkit::skip("AV1 fuzz", &format!("this ffmpeg has no libsvtav1 encoder (seed {name})"));
             continue;
