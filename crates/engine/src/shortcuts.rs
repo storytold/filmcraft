@@ -426,6 +426,8 @@ fn category_of(id: &str, menu: &[&str]) -> String {
         "view" => "View".into(),
         "app" | "help" | "mode" => "Application".into(),
         "captions" => "Captions".into(),
+        // Keep legacy command ids stable without exposing their old feature name.
+        "lumetri" => "Color Grading".into(),
         "tts" => "Text to Speech".into(),
         _ => menu.first().map(|s| s.to_string()).unwrap_or_else(|| {
             let mut c = prefix.chars();
@@ -1273,7 +1275,17 @@ pub fn commands() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod naming_tests {
-    use super::{Binding, Platform, check_panel, convert};
+    use super::{Binding, CommandInfo, Platform, check_panel, convert};
+
+    #[test]
+    fn grading_shortcut_category_preserves_legacy_command_identity() {
+        let command = CommandInfo::new("lumetri.setLook", "Set Creative Look", &[], Some("Cmd+Alt+L"));
+        assert_eq!(command.category, "Color Grading");
+        assert_eq!(command.id, "lumetri.setLook");
+        assert_eq!(command.label, "Set Creative Look");
+        assert!(command.menu.is_empty());
+        assert_eq!(command.defaults, [("Cmd+Alt+L".to_string(), None)]);
+    }
 
     #[test]
     fn grading_shortcuts_import_old_and_current_panel_names() {
