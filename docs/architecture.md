@@ -374,7 +374,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   before). While playing (`filmcraft_media::cancel::with_playing`), the GOP cache decodes
   ahead on its own: the first playing request that misses positions the decoder and keeps
   decoding on the decode pool, with the lock released per sample, until it has run far enough
-  ahead of the playhead for the frame cache to hold (about ten 4K 4:2:2 pictures), the playhead
+  ahead of the playhead for the frame cache to hold (while playing, 40 pictures of the playing
+  source, up to 1.5 GB: the decoder's pictures in flight and the frames prefetched ahead), the playhead
   stops asking, or a request with time to spare (paused, scrubbing, an export) stops it to
   decode its frame exactly. Other playing requests are served from the cache, dropped when the
   decoder already passed their picture (restarting at the sync sample would deliver nothing

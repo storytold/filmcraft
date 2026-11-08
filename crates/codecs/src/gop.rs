@@ -570,6 +570,17 @@ const MIN_FRAMES: usize = 64;
 /// In particular, untrusted VP9 `show_existing_frame` samples must not turn the small-frame
 /// reserve above into an unbounded number of full-resolution copies.
 const FRAME_CACHE_CEILING: usize = 384 << 20;
+/// While playing, the playing source's cache holds this many frames whatever their size (within
+/// [`PLAY_CACHE_CEILING`]): the pictures a frame-threaded decoder has in flight (`threads + 2`,
+/// up to 18), the frames the frame server asks for ahead of the playhead (14) and a few behind
+/// it. [`FRAME_CACHE_CEILING`] alone holds 11 pictures of 4K 4:2:2 10-bit (33 MB each): the
+/// playback decoding run ([`GopCache::pump`]) stopped as "full" while its pipeline was still
+/// filling, the decoder drained between runs, and frames were evicted before the playhead
+/// reached them, so their requests were dropped (FX3 XAVC S 4K 50p: 194 of 400 frames shown,
+/// 373 decoded, 347 evicted, 70 dropped).
+const PLAY_FRAMES: usize = 40;
+/// ... and never more than this, so a source of huge frames (8K) keeps a bounded cache.
+const PLAY_CACHE_CEILING: usize = 1536 << 20;
 /// A wanted sample at most this many samples past what a running decoder has been fed is
 /// decoded even for a request that was cancelled meanwhile: playback that has fallen a little
 /// behind a sequential (long-GOP) decoder still gets these frames, late, instead of nothing,
@@ -800,10 +811,12 @@ impl GopCache {
         done
     }
 
-    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
-    fn cache_budget(&self, frame_bytes: usize) -> usize {
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it;
+    /// `playing` adds the playback window of [`PLAY_FRAMES`].
+    fn cache_budget(&self, frame_bytes: usize, playing: bool) -> usize {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+        let play = if playing { PLAY_FRAMES.saturating_mul(frame_bytes).min(PLAY_CACHE_CEILING) } else { 0 };
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve).max(play)
     }
 
     /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).
@@ -817,7 +830,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.cache_budget(f.byte_size());
+        let budget = self.cache_budget(f.byte_size(), st.play.is_some());
         let before = st.bytes;
         st.bytes += f.byte_size();
         st.raw.remove(&pts);
@@ -1110,7 +1123,7 @@ impl GopCache {
                 let frame_bytes = st.frames.values().next().map_or(0, |f| f.byte_size()).max(1);
                 let from = if play.late != i64::MIN { play.late } else { s.pts(play.i) };
                 let ahead = st.frames.range(from..).count();
-                ahead.saturating_add(1).saturating_mul(frame_bytes) >= self.cache_budget(frame_bytes)
+                ahead.saturating_add(1).saturating_mul(frame_bytes) >= self.cache_budget(frame_bytes, true)
             };
             let over = done && (play.at.elapsed() > PUMP_IDLE || st.next > play.i.saturating_add(PUMP_AHEAD) || full);
             if st.pump_stop || st.next >= n || !reach || over || (!done && st.next > i.saturating_add(64)) {
