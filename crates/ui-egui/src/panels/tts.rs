@@ -42,6 +42,8 @@ pub struct TtsDraft {
     pub confirm_download: bool,
     /// The running natural-voice download job.
     pub download_job: Option<u64>,
+    /// An error message from a failed download attempt.
+    pub download_error: Option<String>,
 }
 
 /// A command to run when the synthesis job `job` finishes.
@@ -57,10 +59,12 @@ pub struct Pending {
 
 impl Default for TtsDraft {
     fn default() -> Self {
+        let models = filmcraft_engine::transcript::models_dir();
+        let voices = filmcraft_tts::voices_in(models.as_deref());
         TtsDraft {
-            text: String::new(),
+            text: filmcraft_tts::sample_sentence_for_language("en-US").into(),
             language: "en-US".into(),
-            voice: if natural_installed() { "kokoro-heart".into() } else { filmcraft_tts::default_voice_id().into() },
+            voice: default_voice_for_lang("en-US", &voices),
             pitch: VocalPitch::Default,
             pace: 1.0,
             advanced_open: true,
@@ -68,19 +72,53 @@ impl Default for TtsDraft {
             pending: None,
             confirm_download: false,
             download_job: None,
+            download_error: None,
         }
     }
 }
 
 impl TtsDraft {
+    pub fn from_prefs(prefs: &filmcraft_engine::autosave::TtsPrefs) -> Self {
+        let lang = if prefs.last_language.is_empty() { "en-US".to_string() } else { prefs.last_language.clone() };
+        let models = filmcraft_engine::transcript::models_dir();
+        let voices = filmcraft_tts::voices_in(models.as_deref());
+        let (voice, pitch, pace) = if let Some(lp) = prefs.languages.get(&lang) {
+            let voice = if voices.iter().any(|v| v.id == lp.voice && v.language == lang && v.installed) {
+                lp.voice.clone()
+            } else {
+                default_voice_for_lang(&lang, &voices)
+            };
+            (voice, lp.pitch, lp.pace)
+        } else {
+            (default_voice_for_lang(&lang, &voices), VocalPitch::Default, 1.0)
+        };
+        TtsDraft {
+            text: filmcraft_tts::sample_sentence_for_language(&lang).into(),
+            language: lang,
+            voice,
+            pitch,
+            pace,
+            advanced_open: prefs.advanced_open,
+            ..Default::default()
+        }
+    }
+
     fn params(&self) -> serde_json::Value {
         json!({"text": self.text, "voice": self.voice, "pitch": self.pitch.id(), "pace": self.pace})
     }
 }
 
-/// The natural voice package is downloaded.
-fn natural_installed() -> bool {
-    filmcraft_engine::transcript::models_dir().as_deref().is_some_and(filmcraft_tts::catalog::installed)
+pub fn default_voice_for_lang(language: &str, voices: &[filmcraft_tts::VoiceInfo]) -> String {
+    if let Some(v) = voices.iter().find(|v| v.language == language && v.installed && v.id == "kokoro-heart") {
+        return v.id.to_string();
+    }
+    if let Some(v) = voices.iter().find(|v| v.language == language && v.installed) {
+        return v.id.to_string();
+    }
+    if let Some(v) = voices.iter().find(|v| v.language == language) {
+        return v.id.to_string();
+    }
+    filmcraft_tts::default_voice_id().into()
 }
 
 /// State of job `id`: `None` while running, else its result.
@@ -209,7 +247,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     painter.rect_filled(rect, 0.0, t.panel_bg);
     let models = filmcraft_engine::transcript::models_dir();
     let voices = filmcraft_tts::voices_in(models.as_deref());
-    let installed = models.as_deref().is_some_and(filmcraft_tts::catalog::installed);
+    let tts_prefs = app.session.prefs.tts.clone();
+    let is_voice_installed = voices.iter().find(|v| v.id == app.ui.tts.voice).is_some_and(|v| v.installed);
     let busy = app.ui.tts.pending.is_some();
     let download = app
         .ui
@@ -247,7 +286,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let cb = craft_ui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
             for (id, name) in filmcraft_tts::LANGUAGES {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
+                    let old_sample = filmcraft_tts::sample_sentence_for_language(&d.language);
+                    let should_replace = d.text.trim().is_empty() || d.text.trim() == old_sample;
                     d.language = id.to_string();
+                    if should_replace {
+                        d.text = filmcraft_tts::sample_sentence_for_language(&d.language).to_string();
+                    }
+                    if let Some(lp) = tts_prefs.languages.get(*id) {
+                        d.voice =
+                            if voices.iter().any(|v| v.id == lp.voice && v.language == *id) { lp.voice.clone() } else { default_voice_for_lang(id, &voices) };
+                        d.pitch = lp.pitch;
+                        d.pace = lp.pace;
+                    } else {
+                        d.voice = default_voice_for_lang(id, &voices);
+                        d.pitch = VocalPitch::Default;
+                        d.pace = 1.0;
+                    }
+                    d.download_error = None;
                 }
             }
         });
@@ -263,16 +318,38 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let r = ui.selectable_label(d.voice == v.id, label).on_hover_text(v.description);
                     if r.clicked() {
                         d.voice = v.id.to_string();
+                        d.download_error = None;
                     }
                 }
             }
         });
         auto.add("tts.voice", visible(ui, cb.response.rect), "Voice");
+        let can_download = app.session.is_enabled("tts.downloadVoices");
         let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
-        if natural && !installed {
+        if natural && !is_voice_installed {
+            let pkg_id = filmcraft_tts::catalog::package_for_voice(&d.voice);
+            let (pkg_name, pkg_size, pkg_source, pkg_license) = match pkg_id {
+                Some(filmcraft_tts::catalog::PIPER_RU_PACKAGE_ID) => (
+                    filmcraft_tts::catalog::PIPER_RU_PACKAGE_NAME,
+                    filmcraft_tts::catalog::piper_ru_size(),
+                    filmcraft_tts::catalog::PIPER_RU_SOURCE,
+                    filmcraft_tts::catalog::PIPER_RU_LICENSE,
+                ),
+                Some(filmcraft_tts::catalog::KOKORO_RU_PACKAGE_ID) => (
+                    filmcraft_tts::catalog::KOKORO_RU_PACKAGE_NAME,
+                    filmcraft_tts::catalog::kokoro_ru_size(),
+                    filmcraft_tts::catalog::KOKORO_RU_SOURCE,
+                    filmcraft_tts::catalog::KOKORO_RU_LICENSE,
+                ),
+                _ => (filmcraft_tts::catalog::PACKAGE_NAME, filmcraft_tts::catalog::size(), filmcraft_tts::catalog::SOURCE, filmcraft_tts::catalog::LICENSE),
+            };
             ui.add_space(6.0);
             egui::Frame::new().fill(t.field_bg).stroke(egui::Stroke::new(1.0, t.field_border)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(w - 18.0);
+                if let Some(err) = &d.download_error {
+                    ui.label(egui::RichText::new(err).color(t.danger).size(11.0));
+                    ui.add_space(4.0);
+                }
                 match &download {
                     Some((frac, status)) => {
                         ui.label(egui::RichText::new(status).color(t.text).size(11.5));
@@ -284,19 +361,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                     None if d.confirm_download => {
-                        let mb = filmcraft_tts::catalog::size() as f64 / 1e6;
-                        ui.label(egui::RichText::new(format!("Download the natural voices? {mb:.0} MB, once.")).color(t.text).size(12.0).strong());
+                        let mb = pkg_size as f64 / 1e6;
+                        ui.label(egui::RichText::new(format!("Download {pkg_name}? {mb:.0} MB, once.")).color(t.text).size(12.0).strong());
                         ui.label(
-                            egui::RichText::new(format!(
-                                "From {} and github.com/cmusphinx/cmudict (pronunciations). Licence: {}. Every file is checked against a pinned SHA-256.",
-                                filmcraft_tts::catalog::SOURCE,
-                                filmcraft_tts::catalog::LICENSE
-                            ))
-                            .color(t.text_dim)
-                            .size(11.0),
+                            egui::RichText::new(format!("From {pkg_source}. Licence: {pkg_license}. Every file is checked against a pinned SHA-256."))
+                                .color(t.text_dim)
+                                .size(11.0),
                         );
                         ui.horizontal(|ui| {
-                            let ok = ui.button("Download");
+                            let ok = ui.add_enabled(can_download, egui::Button::new("Download"));
                             auto.add("tts.download.confirm", visible(ui, ok.rect), "Download");
                             let no = ui.button("Cancel");
                             if ok.clicked() {
@@ -308,8 +381,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         });
                     }
                     None => {
-                        ui.label(egui::RichText::new("Natural voices need a one-time download.").color(t.text).size(11.5));
-                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", filmcraft_tts::catalog::size() as f64 / 1e6));
+                        if !can_download {
+                            ui.label(egui::RichText::new("Natural voices require building with --features neural-voices.").color(t.text_dim).size(11.5));
+                        } else {
+                            ui.label(egui::RichText::new("Natural voices need a one-time download.").color(t.text).size(11.5));
+                        }
+                        let b = ui.add_enabled(can_download, egui::Button::new(format!("Download {pkg_name} ({:.0} MB)…", pkg_size as f64 / 1e6)));
                         auto.add("tts.download", visible(ui, b.rect), "Download natural voices");
                         if b.clicked() {
                             d.confirm_download = true;
@@ -318,7 +395,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
         }
-        let voice_ready = !natural || installed;
+        let voice_ready = !natural || is_voice_installed;
         ui.add_space(4.0);
         let (r, resp) = ui.allocate_exact_size(vec2(130.0, 22.0), Sense::click());
         let col = if resp.hovered() { t.accent_hover } else { t.accent };
@@ -386,7 +463,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let fy = rect.max.y - FOOTER_H + 10.0;
     let half = (rect.width() - PAD * 2.0 - 10.0) / 2.0;
     let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
-    let can_say = filmcraft_tts::check_text(&d.text).is_ok() && (!natural || installed) && !busy;
+    let can_say = filmcraft_tts::check_text(&d.text).is_ok() && (!natural || is_voice_installed) && !busy;
     let pr = Rect::from_min_size(pos2(rect.min.x + PAD, fy), vec2(half, 28.0));
     if button(ui, &t, pr, Icon::Play, if busy { "Synthesizing…" } else { "Preview" }, false, can_say, "tts-preview").clicked() && can_say {
         actions.push(Action::Run("tts.preview", d.params(), true));
@@ -406,20 +483,30 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     auto.add("tts.save", sr, "Save");
 
+    let sync_prefs = d.loaded_from.is_none();
+    let current_tts = (d.language.clone(), d.voice.clone(), d.pitch, d.pace, d.advanced_open);
+
     for a in actions {
         match a {
             Action::New => {
-                let keep = (app.ui.tts.language.clone(), app.ui.tts.voice.clone(), app.ui.tts.pitch, app.ui.tts.pace);
                 app.session.state.selection.clear();
                 let dl = app.ui.tts.download_job;
-                app.ui.tts = TtsDraft { language: keep.0, voice: keep.1, pitch: keep.2, pace: keep.3, download_job: dl, ..Default::default() };
+                app.ui.tts = TtsDraft::from_prefs(&app.session.prefs.tts);
+                app.ui.tts.download_job = dl;
             }
             Action::Run(cmd, p, play) => start(app, cmd, p, play),
             Action::Download => {
                 app.ui.tts.confirm_download = false;
-                match app.session.execute("tts.downloadVoices", json!({})) {
-                    Ok(r) => app.ui.tts.download_job = r["job"].as_u64(),
-                    Err(e) => app.ui.status = e.to_string(),
+                match app.session.execute("tts.downloadVoices", json!({"voice": app.ui.tts.voice})) {
+                    Ok(r) => {
+                        app.ui.tts.download_job = r["job"].as_u64();
+                        app.ui.tts.download_error = None;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        app.ui.status = msg.clone();
+                        app.ui.tts.download_error = Some(msg);
+                    }
                 }
             }
             Action::CancelDownload => {
@@ -429,6 +516,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        }
+    }
+
+    if sync_prefs {
+        let (lang, voice, pitch, pace, adv) = current_tts;
+        let p = &app.session.prefs.tts;
+        let needs_save = p.last_language != lang
+            || p.advanced_open != adv
+            || p.languages.get(&lang).is_none_or(|lp| lp.voice != voice || lp.pitch != pitch || (lp.pace - pace).abs() > 1e-4);
+        if needs_save {
+            let mut prefs = app.session.prefs.clone();
+            prefs.tts.last_language = lang.clone();
+            prefs.tts.advanced_open = adv;
+            prefs.tts.languages.insert(lang, filmcraft_engine::autosave::TtsLanguagePrefs { voice, pitch, pace });
+            let _ = app.session.set_prefs(prefs);
         }
     }
 }

@@ -41,8 +41,13 @@ impl VoicePack {
 impl Kokoro {
     /// Load `config.json` and `kokoro-v1_0.pth` from `dir`.
     pub fn load(dir: &Path) -> Result<Kokoro, TtsError> {
+        Self::load_file(dir, "kokoro-v1_0.pth")
+    }
+
+    /// Load `config.json` and specified checkpoint file from `dir`.
+    pub fn load_file(dir: &Path, checkpoint_name: &str) -> Result<Kokoro, TtsError> {
         let cfg = weights::read_config(&dir.join("config.json"))?;
-        let w = weights::Weights::load(&dir.join("kokoro-v1_0.pth"))?;
+        let w = weights::Weights::load(&dir.join(checkpoint_name))?;
         Ok(Kokoro { model: model::Model::load(&w)?, vocab: cfg.vocab })
     }
 
