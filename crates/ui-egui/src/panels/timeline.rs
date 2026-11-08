@@ -160,6 +160,8 @@ pub struct TlState {
     /// The zoom-bar settings popup opened from the Timeline's menu ("Timeline Slider Settings",
     /// shown only while the bar is hidden): where it sits, or None while closed.
     pub zoombar_settings_pos: Option<Pos2>,
+    /// Whether the visible zoom bar's context popup is open and can own shortcut capture.
+    pub zoombar_popup_open: bool,
     /// Animated ring width of the zoom bar's two end circles (1.5 at rest).
     pub zoombar_ring_w: f32,
     /// Show Duplicate Frame Markers: the markers of a sequence, with the session revision, the

@@ -813,4 +813,12 @@ fn clicking_a_controls_box_takes_the_next_key_and_that_key_does_the_action() {
     d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.reset0"}));
     d.frames(2);
     assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "Reset restores the default gesture");
+    // The visible bar popup owns shortcut capture only while it is open.
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.box0"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "L"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "a closed popup no longer captures keys");
 }

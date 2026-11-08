@@ -780,7 +780,7 @@ fn controls_listen_key() -> egui::Id {
 /// events (which is also why the capture used to miss them), and a bound key would fire its
 /// action in the background while the user is naming a new binding.
 pub fn controls_listening(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
-    let settings_open = app.tl.zoombar_settings_pos.is_some() || app.tl.track_slider_settings_pos.is_some();
+    let settings_open = app.tl.zoombar_settings_pos.is_some() || app.tl.track_slider_settings_pos.is_some() || app.tl.zoombar_popup_open;
     if !settings_open {
         // A closed Controls session must not keep swallowing application shortcuts. The menu's
         // transient flyout may flicker closed while its settings window remains open, so use the
@@ -1939,6 +1939,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     {
         egui::Popup::close_id(&ctx, popup_id);
     }
+    app.tl.zoombar_popup_open = egui::Popup::is_id_open(&ctx, popup_id);
     let range = (total - vis).max(0.0);
     let triple = resp.triple_clicked() || explode_bound;
     let double = resp.double_clicked() || center_bound;
