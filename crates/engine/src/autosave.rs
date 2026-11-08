@@ -17,7 +17,7 @@
 //! I/O happen on the worker thread, so neither ever stalls the UI.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -546,6 +546,9 @@ pub struct JournalMeta {
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
+    /// Fingerprint of the paired snapshot; absent in older journals.
+    #[serde(default)]
+    pub snapshot_fingerprint: Option<u64>,
 }
 
 fn journal_dirty_by_default() -> bool {
@@ -607,6 +610,12 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             dirty: true,
             ..JournalMeta::default()
         });
+        if let Some(expected) = meta.snapshot_fingerprint
+            && read_snapshot_fingerprint(&snap).ok() != Some(expected)
+        {
+            // A crash can leave metadata from one write beside the previous snapshot.
+            continue;
+        }
         if !meta.dirty {
             // a clean project's view-only journal is not unsaved work: never offered as
             // recovery, and not left behind either
@@ -1176,7 +1185,9 @@ impl Worker {
 /// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
 /// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
-    let metadata = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    let mut meta = meta.clone();
+    meta.snapshot_fingerprint = Some(snapshot_fingerprint(snapshot));
+    let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
     let meta_path = dir.join(META);
     let snapshot_path = dir.join(SNAPSHOT);
     if meta.dirty {
@@ -1187,9 +1198,42 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
         write(&meta_path, &metadata)
     }
 }
+fn snapshot_fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3))
+}
+fn read_snapshot_fingerprint(path: &Path) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0_u8; 8192];
+    let mut hash = 0xcbf29ce484222325;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { return Ok(hash); }
+        for byte in &buffer[..count] {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+}
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+    #[test]
+    fn failed_clean_to_dirty_pair_does_not_offer_a_stale_snapshot() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-stale-pair-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = recovery_root(&dir).join("1-2");
+        fs::create_dir_all(&session).unwrap();
+        let old_snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &old_snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let new_snapshot = filmcraft_format::encode(&Project::new("Unsaved"), false);
+        let result = write_recovery_pair(&session, &new_snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            if path.ends_with(SNAPSHOT) { return Err(io::Error::other("interrupted before replacing snapshot")); }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), old_snapshot);
+        assert!(scan_candidates(&dir, None).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
     #[test]
     fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
         let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
