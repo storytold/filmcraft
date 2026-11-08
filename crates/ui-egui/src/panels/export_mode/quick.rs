@@ -1,5 +1,6 @@
 use super::settings::{draft_text, location_link};
 use super::{Align2, Color32, DEFAULT_PRESET, FilmcraftApp, Reg, Sense, Tokens, builtin_presets, is_export_busy, json, pos2, preset_key, vec2};
+use crate::FileDialog;
 
 // ---------------------------------------------------------------------------------------------
 // Quick Export (header)
@@ -131,11 +132,14 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         // a file name goes in the shown folder; a typed or pasted path replaces both
         app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
     }
-    if browse
-        && !busy
-        && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path))
-    {
-        app.ui.export.quick_path = p;
+    // Browse… through the async dialog: a synchronous picker here ran the panel modally inside
+    // the UI pass, and a Finder drag onto it re-entered the event handler and aborted (#2018).
+    if browse && !busy {
+        app.pick_ui(FileDialog::save_as(format, &[ext], &app.ui.export.quick_path), |app, paths| {
+            if let Some(p) = paths.first() {
+                app.ui.export.quick_path = p.clone();
+            }
+        });
     }
     if go && !busy {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});

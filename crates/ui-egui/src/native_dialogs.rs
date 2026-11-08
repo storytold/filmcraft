@@ -19,7 +19,12 @@
 //!   stored state (`app.ui.…`, an egui temporary); when the user has closed that dialog meanwhile
 //!   there is nothing to write into and the path is dropped.
 //!
-//! One dialog is open at a time; asking for another one meanwhile is refused.
+//! One dialog is open at a time; asking for another one meanwhile is refused. While a dialog is
+//! open the app is modal (#2018): the window system's input is dropped (as in
+//! `--control-input-only`), dock-panel drops and native-menu commands are refused, so nothing
+//! outside the sheet starts or changes work. Quit still quits, as on macOS: a close request goes
+//! through the normal flow. Agents keep working: the control channel and synthetic input are
+//! untouched.
 //!
 //! A save dialog's answer always ends in one of the dialog's extensions: the first is added when
 //! the chosen name has none of them ([`with_save_extension`]). GTK's file chooser, which the XDG
