@@ -401,6 +401,85 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
     resp
 }
 
+/// A checkbox press that may become a sweep: the state the first checkbox takes, which every
+/// checkbox the pointer goes over takes until the button comes up.
+#[derive(Clone, Copy)]
+struct CheckboxSweep {
+    state: bool,
+    origin: egui::Id,
+    /// When the press began, so a sweep left over from an earlier press is never picked up.
+    press: Option<f64>,
+    /// The pointer has left the checkbox it began on, so the press is a drag, not a click.
+    left: bool,
+    /// Escape ended the sweep: no checkbox takes its state until the button comes up.
+    cancelled: bool,
+}
+
+/// Checkboxes whose state a drag over them sets: press on one and drag over its neighbours, and each
+/// takes the new state of the first until the button is released. A click toggles one, as before.
+/// Preferences, dialogs and panels use these in place of `Ui::checkbox`, so they all work alike.
+pub trait DragCheckbox {
+    fn checkbox_drag(&mut self, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response;
+    fn checkbox_drag_enabled(&mut self, enabled: bool, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response;
+}
+
+impl DragCheckbox for Ui {
+    fn checkbox_drag(&mut self, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
+        self.checkbox_drag_enabled(true, checked, text)
+    }
+
+    fn checkbox_drag_enabled(&mut self, enabled: bool, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
+        let was = *checked;
+        let mut resp = self.add_enabled(enabled, egui::Checkbox::new(checked, text));
+        if !resp.enabled() {
+            return resp;
+        }
+        let key = egui::Id::unique("checkbox-sweep");
+        let (down, pressed, released, press, escape) = self.input(|i| {
+            (
+                i.pointer.primary_down(),
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.pointer.press_start_time(),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        // over this checkbox and not under a menu, popup or window drawn above it
+        let inside = resp.contains_pointer();
+        let mut sweep = self.ctx().data(|d| d.get_temp::<CheckboxSweep>(key));
+        // the release frame has no press time any more, and still belongs to the sweep it ends
+        let ends_sweep = released && !pressed;
+        if (!down && !released) || sweep.is_some_and(|sw| sw.press != press && !ends_sweep) {
+            self.ctx().data_mut(|d| d.remove::<CheckboxSweep>(key));
+            sweep = None;
+        }
+        // a press on this checkbox begins one: the state a click would give it
+        if pressed && inside && sweep.is_none() {
+            sweep = Some(CheckboxSweep { state: !was, origin: resp.id, press, left: false, cancelled: false });
+        }
+        if let Some(mut sw) = sweep {
+            sw.cancelled |= escape && (down || released);
+            let set = if sw.cancelled {
+                false
+            } else if resp.id == sw.origin {
+                // dragged off the checkbox it began on: it takes the state now, and the release
+                // is not a click on it
+                sw.left |= !inside && (down || released);
+                sw.left
+            } else {
+                (down || released) && inside
+            };
+            if set && *checked != sw.state {
+                *checked = sw.state;
+                resp.mark_changed();
+                self.ctx().request_repaint();
+            }
+            self.ctx().data_mut(|d| d.insert_temp(key, sw));
+        }
+        resp
+    }
+}
+
 /// Search field with a magnifier icon.
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &Tokens) -> Response {
     let h = 22.0;
@@ -638,6 +717,226 @@ mod tests {
                 assert!((c - 11.0).abs() <= 1.0, "{text:?}: text centred at {c}, the field's centre is 11");
             }
         }
+    }
+
+    /// One frame of four checkboxes stacked in a Ui, and their rects.
+    fn four_checkboxes(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            for (i, v) in state.iter_mut().enumerate() {
+                rects.push(ui.checkbox_drag(v, format!("option {i}")).rect);
+            }
+        });
+        out.textures_delta.clear();
+        rects
+    }
+
+    fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// Press on checkbox `from`, move over the ones up to `to`, release there; a frame per step.
+    fn drag_over(state: &mut [bool; 4], from: usize, to: usize) {
+        let ctx = egui::Context::default();
+        four_checkboxes(&ctx, state, vec![]);
+        let rects = four_checkboxes(&ctx, state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, state, vec![egui::Event::PointerMoved(at(from))]);
+        four_checkboxes(&ctx, state, vec![primary(at(from), true)]);
+        let path: Vec<usize> = if from <= to { (from..=to).collect() } else { (to..=from).rev().collect() };
+        for i in path {
+            four_checkboxes(&ctx, state, vec![egui::Event::PointerMoved(at(i))]);
+        }
+        four_checkboxes(&ctx, state, vec![primary(at(to), false)]);
+        four_checkboxes(&ctx, state, vec![]);
+    }
+
+    #[test]
+    fn dragging_across_checkboxes_sets_them_like_the_first() {
+        let mut state = [false; 4];
+        drag_over(&mut state, 0, 2);
+        assert_eq!(state, [true, true, true, false], "the first unchecked one went on, and so did the ones the pointer crossed");
+        // from a checked one: they go off
+        let mut state = [true; 4];
+        drag_over(&mut state, 1, 3);
+        assert_eq!(state, [true, false, false, false]);
+        // and upward
+        let mut state = [false, false, true, true];
+        drag_over(&mut state, 3, 0);
+        assert_eq!(state, [false; 4], "a drag up from a checked one unchecks the ones above");
+    }
+
+    /// The checkboxes with a popup drawn over `covered`, as a menu or a dialog over a panel is.
+    fn checkboxes_under_popup(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>, covered: Rect) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            for (i, v) in state.iter_mut().enumerate() {
+                ui.checkbox_drag(v, format!("option {i}"));
+            }
+            egui::Area::new(egui::Id::unique("popup")).order(egui::Order::Foreground).fixed_pos(covered.min).show(ui.ctx(), |ui| {
+                ui.add_sized(covered.size(), egui::Button::new("menu item"));
+            });
+        });
+        out.textures_delta.clear();
+    }
+
+    /// A press on a popup over a checkbox, dragged off the checkbox under it, changes no checkbox.
+    #[test]
+    fn a_press_on_a_popup_above_a_checkbox_leaves_it_alone() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let covered = rects[1];
+        // an area is laid out unseen on its first frame; let it show before pressing on it
+        for _ in 0..2 {
+            checkboxes_under_popup(&ctx, &mut state, vec![], covered);
+        }
+        checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(covered.center())], covered);
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(covered.center(), true)], covered);
+        for at in [covered.center() + vec2(0.0, 6.0), rects[2].center(), rects[3].center()] {
+            checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(at)], covered);
+        }
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(rects[3].center(), false)], covered);
+        checkboxes_under_popup(&ctx, &mut state, vec![], covered);
+        assert_eq!(state, [false; 4], "the press went to the popup, not to the checkbox under it");
+    }
+
+    /// A sweep whose checkboxes went away before the release (the dialog closed) is not picked up
+    /// by the next press.
+    #[test]
+    fn a_sweep_left_by_a_closed_dialog_does_not_carry_into_the_next_press() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1))]);
+        assert_eq!(state, [true, true, false, false]);
+        // the dialog closes with the button still down, then the button comes up with no checkbox drawn
+        let blank = |events| ctx.run_ui(egui::RawInput { events, ..Default::default() }, |_| {}).textures_delta.clear();
+        blank(vec![]);
+        blank(vec![primary(at(1), false)]);
+        blank(vec![]);
+        // reopened, and the first frame that draws the checkboxes again carries the next press
+        state[2] = true;
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(2)), primary(at(2), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, true, false], "the old sweep's state did not reach option 3");
+    }
+
+    /// A move onto the next checkbox and the release arrive in one frame, as at a low frame rate: the
+    /// checkbox the pointer came to takes the state as well.
+    #[test]
+    fn a_move_and_the_release_in_one_frame_still_set_the_checkbox_under_the_pointer() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1)), primary(at(1), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, false, false]);
+        // and the sweep ended with that release: the next press on another checkbox is its own
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3)), primary(at(3), true), primary(at(3), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, false, true], "a click after a sweep toggles just its own checkbox");
+    }
+
+    /// The four checkboxes with the second one inside a Ui that is disabled by its parent.
+    fn checkboxes_with_one_disabled_by_its_parent(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            for (i, v) in state.iter_mut().enumerate() {
+                ui.add_enabled_ui(i != 1, |ui| ui.checkbox_drag(v, format!("option {i}")));
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// A checkbox disabled by the Ui it sits in neither starts a sweep nor takes one.
+    #[test]
+    fn a_checkbox_disabled_by_its_parent_is_not_swept() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut [false; 4], vec![]);
+        let at = |i: usize| rects[i].center();
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(0), true)]);
+        for i in 1..=2 {
+            checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(i))]);
+        }
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(2), false)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, false, true, false], "the sweep passed over the disabled one");
+        // a press that begins on the disabled one sweeps nothing either
+        let mut state = [false; 4];
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(1), true)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(2))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(2), false)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        assert_eq!(state, [false; 4]);
+    }
+
+    /// The four checkboxes as a dialog draws them: its draft is put back on Escape while a button is held.
+    fn dialog_checkboxes(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            revert_drag_on_escape(ui.ctx(), egui::Id::unique("draft"), state);
+            for (i, v) in state.iter_mut().enumerate() {
+                ui.checkbox_drag(v, format!("option {i}"));
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// Escape during a sweep puts the draft back and ends the sweep: the checkbox under the pointer,
+    /// the ones it goes over next and the release do not set it again.
+    #[test]
+    fn escape_ends_a_sweep_until_the_button_is_released() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        dialog_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut [false; 4], vec![]);
+        let at = |i: usize| rects[i].center();
+        dialog_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        dialog_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        dialog_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1))]);
+        assert_eq!(state, [true, true, false, false]);
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        dialog_checkboxes(&ctx, &mut state, vec![escape]);
+        assert_eq!(state, [false; 4], "the draft went back");
+        for i in [1, 2, 3] {
+            dialog_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(i))]);
+        }
+        dialog_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
+        dialog_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [false; 4], "nothing set again, on the way or on the release");
+        // the next press is a sweep of its own
+        dialog_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(2))]);
+        dialog_checkboxes(&ctx, &mut state, vec![primary(at(2), true)]);
+        dialog_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3))]);
+        dialog_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
+        dialog_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [false, false, true, true]);
+    }
+
+    #[test]
+    fn a_click_still_toggles_just_one_checkbox() {
+        let mut state = [false; 4];
+        drag_over(&mut state, 1, 1);
+        assert_eq!(state, [false, true, false, false]);
+        drag_over(&mut state, 1, 1);
+        assert_eq!(state, [false; 4]);
     }
 
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>, id: egui::Id) {
