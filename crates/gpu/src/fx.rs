@@ -229,7 +229,7 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             s.combine = true;
             out.push(s);
         }
-        FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
+        FxOp::Crop { x0, x1, y0, y1, feather, soft } => out.push(step(OP_CROP, soft.map(u32::from), &[*x0, *x1, *y0, *y1, *feather])),
         FxOp::Resample(r) => {
             let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
             match &r.inv {

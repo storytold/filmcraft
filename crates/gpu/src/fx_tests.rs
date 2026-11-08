@@ -211,6 +211,9 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("crop", vec![("left", fl(10.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("bottom", fl(15.0)), ("feather", fl(12.0))], false),
         ("crop", vec![("left", fl(12.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("zoom", ParamValue::Bool(true))], false),
         ("crop", vec![("left", fl(70.0)), ("right", fl(70.0)), ("feather", fl(5000.0))], false),
+        // #4543: only the cropped edges are feathered
+        ("crop", vec![("left", fl(25.0)), ("right", fl(25.0)), ("feather", fl(20.0))], false),
+        ("crop", vec![("top", fl(10.0)), ("feather", fl(8.0))], false),
         ("edge_feather", vec![("amount", fl(30.0))], false),
         ("transform", vec![("scale_height", fl(150.0)), ("rotation", fl(30.0)), ("position", pt(30.0, 20.0)), ("opacity", fl(60.0))], false),
         (
@@ -349,6 +352,16 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             false,
         ),
     ]
+}
+
+/// `fx.wgsl` parses and validates with naga, so a shader error fails even without a GPU adapter.
+#[test]
+fn fx_shader_validates() {
+    use wgpu::naga;
+    let module = naga::front::wgsl::parse_str(include_str!("fx.wgsl")).unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("fx.wgsl"))));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("fx.wgsl"))));
 }
 
 /// Every effect case on the GPU against its CPU reference, on the working image read back as f32.

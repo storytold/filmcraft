@@ -135,13 +135,15 @@ pub enum FxOp {
         amount: f32,
         threshold: f32,
     },
-    /// Crop / Edge Feather: alpha falloff `feather` px inside the rectangle (0: half-pixel AA).
+    /// Crop / Edge Feather: alpha falloff `feather` px inside the rectangle on the edges flagged in
+    /// `soft` (left, right, top, bottom); half-pixel AA on the others (all of them at 0).
     Crop {
         x0: f32,
         x1: f32,
         y0: f32,
         y1: f32,
         feather: f32,
+        soft: [bool; 4],
     },
     Resample(Resample),
     HFlip,
@@ -459,12 +461,12 @@ impl FxOp {
                     }
                     FxOp::Resample(resample(w, h, &m, 1.0))
                 } else {
-                    FxOp::crop_rect(w, h, l, t, r, bt, f(e, "feather", cx) * cx.px_scale)
+                    FxOp::crop_rect(w, h, l, t, r, bt, f(e, "feather", cx) * cx.px_scale, [l > 0.0, r > 0.0, t > 0.0, bt > 0.0])
                 }
             }
             "edge_feather" => {
                 let amt = f(e, "amount", cx) / 100.0 * (w.min(h) as f32) * 0.5;
-                FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
+                FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt, [true; 4])
             }
             "transform" => {
                 // With its own shutter angle the CPU blurs the motion over seven samples
@@ -663,9 +665,10 @@ impl FxOp {
         })
     }
 
-    fn crop_rect(w: usize, h: usize, l: f32, t: f32, r: f32, b: f32, feather: f32) -> FxOp {
+    #[allow(clippy::too_many_arguments)]
+    fn crop_rect(w: usize, h: usize, l: f32, t: f32, r: f32, b: f32, feather: f32, soft: [bool; 4]) -> FxOp {
         let (w, h) = (w as f32, h as f32);
-        FxOp::Crop { x0: l * w, x1: w * (1.0 - r), y0: t * h, y1: h * (1.0 - b), feather: feather.max(0.0) }
+        FxOp::Crop { x0: l * w, x1: w * (1.0 - r), y0: t * h, y1: h * (1.0 - b), feather: feather.max(0.0), soft }
     }
 
     /// Whether the GPU shader reproduces [`apply`](Self::apply) for this op: every number finite
@@ -692,7 +695,7 @@ impl FxOp {
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
-            FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
+            FxOp::Crop { x0, x1, y0, y1, feather, .. } => fin(&[*x0, *x1, *y0, *y1, *feather]),
             FxOp::Resample(r) => {
                 r.rect[0] != u32::MAX
                     && r.opacity.is_finite()
@@ -899,7 +902,7 @@ impl FxOp {
                 }
             }
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
-            FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
+            FxOp::Crop { x0, x1, y0, y1, feather, soft } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather, *soft),
             FxOp::Resample(r) => {
                 let out = match (&r.inv, r.rect[0]) {
                     (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)

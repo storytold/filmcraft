@@ -541,19 +541,27 @@ pub(crate) fn warp_opt(img: &mut Image, f: impl Fn(f64, f64) -> Option<(f64, f64
 
 pub(crate) fn crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, feather: f32) {
     let (w, h) = (img.w as f32, img.h as f32);
-    crop_px(img, l * w, w * (1.0 - r), t * h, h * (1.0 - b), feather.max(0.0));
+    crop_px(img, l * w, w * (1.0 - r), t * h, h * (1.0 - b), feather.max(0.0), [l > 0.0, r > 0.0, t > 0.0, b > 0.0]);
 }
 
 /// Fade alpha towards the edges of the rectangle x0..x1 × y0..y1 (working pixels): over `fe`
-/// pixels inside it, or a half-pixel antialiased edge when `fe` is 0.
-pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f32) {
+/// pixels inside it on the edges flagged in `soft` (left, right, top, bottom), and a half-pixel
+/// antialiased edge on the others (all of them when `fe` is 0).
+pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f32, soft: [bool; 4]) {
     let wi = img.w;
     img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
         let py = y as f32 + 0.5;
         for x in 0..wi {
             let px = x as f32 + 0.5;
-            let d = (px - x0).min(x1 - px).min(py - y0).min(y1 - py);
-            let a = if fe > 0.0 { (d / fe).clamp(0.0, 1.0) } else { (d + 0.5).clamp(0.0, 1.0) };
+            let (mut ds, mut dh) = (f32::INFINITY, f32::INFINITY);
+            for (d, s) in [(px - x0, soft[0]), (x1 - px, soft[1]), (py - y0, soft[2]), (y1 - py, soft[3])] {
+                if s && fe > 0.0 {
+                    ds = ds.min(d);
+                } else {
+                    dh = dh.min(d);
+                }
+            }
+            let a = if fe > 0.0 { (ds / fe).clamp(0.0, 1.0) } else { 1.0 }.min((dh + 0.5).clamp(0.0, 1.0));
             if a < 1.0 {
                 for v in &mut row[x * 4..x * 4 + 4] {
                     *v *= a;
@@ -1123,6 +1131,25 @@ mod tests {
         e.params.get_mut("right").unwrap().value = ParamValue::Float(50.0);
         apply(&mut img, &e, &cx());
         assert_eq!(img.get(3, 0)[3], 0.0);
+    }
+
+    /// #4543: Edge Feather only softens the edges that are actually cropped; a 0% edge stays hard.
+    #[test]
+    fn crop_feather_only_on_cropped_edges() {
+        let mut img = Image::filled(200, 36, [0.5, 0.5, 0.5, 1.0]);
+        let mut e = find_effect("crop").unwrap().instance();
+        for (p, v) in [("left", 25.0), ("right", 25.0), ("top", 0.0), ("bottom", 0.0), ("feather", 20.0)] {
+            e.params.get_mut(p).unwrap().value = ParamValue::Float(v);
+        }
+        apply(&mut img, &e, &cx());
+        for x in 70..130 {
+            assert_eq!(img.get(x, 0), [0.5, 0.5, 0.5, 1.0], "top row x={x}");
+            assert_eq!(img.get(x, 35), [0.5, 0.5, 0.5, 1.0], "bottom row x={x}");
+        }
+        assert_eq!(img.get(49, 18)[3], 0.0);
+        let ramp: Vec<f32> = (50..70).map(|x| img.get(x, 18)[3]).collect();
+        assert!(ramp[0] < 0.1 && ramp.windows(2).all(|p| p[0] < p[1]), "left ramp {ramp:?}");
+        assert!(img.get(149, 18)[3] < 0.1 && img.get(149, 18)[3] > 0.0);
     }
 
     #[test]

@@ -718,13 +718,17 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             return vec4(select(o.rgb, sharpened, abs(d) >= vec3(th * o.a)), o.a);
         }
         case OP_CROP: {
+            // `effects::crop_px`: i1 flags the feathered edges (left right top bottom); the
+            // others (all of them when fe is 0) get the half-pixel antialiased edge
             let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;
-            let d = min(min(pc.x - x0, x1 - pc.x), min(pc.y - y0, y1 - pc.y));
-            var a: f32;
+            let dv = vec4(pc.x - x0, x1 - pc.x, pc.y - y0, y1 - pc.y);
+            let soft = select(vec4(false), u.i1 != vec4(0u), fe > 0.0);
+            let big = vec4(3.0e38);
+            let ds = select(big, dv, soft);
+            let dh = select(dv, big, soft);
+            var a = clamp(min(min(dh.x, dh.y), min(dh.z, dh.w)) + 0.5, 0.0, 1.0);
             if fe > 0.0 {
-                a = clamp(d / fe, 0.0, 1.0);
-            } else {
-                a = clamp(d + 0.5, 0.0, 1.0);
+                a = min(a, clamp(min(min(ds.x, ds.y), min(ds.z, ds.w)) / fe, 0.0, 1.0));
             }
             let o = ld(p);
             return select(o, o * a, a < 1.0);
