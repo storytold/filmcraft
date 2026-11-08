@@ -21,12 +21,21 @@
 //! 2. **Silence at the edges is trimmed.** Each word's start and end are moved inward past
 //!    frames below the threshold. A word keeps at least 60 ms.
 //! 3. **Breath is not voice.** A level threshold cannot tell a breath, a lip smack or a click
-//!    from a word, so at a word that borders a pause the edge is checked for pitch: the
-//!    normalised autocorrelation of a 30 ms window over 60–400 Hz. After its last voiced frame a
-//!    word keeps at most 80 ms of unvoiced sound (a final consonant's release); an unvoiced lead
-//!    longer than 150 ms that sits 8 dB or more under the word's voiced peak is a breath, and the
-//!    word starts after the last silent frame before its voice instead (120 ms ahead of the voice
-//!    when the breath runs straight into it, which keeps an unvoiced first consonant).
+//!    from a word, so an edge that borders a pause is checked for pitch: the normalised
+//!    autocorrelation of a 30 ms window over 60–400 Hz. This pass looks only at words longer than
+//!    60 ms, and only at an edge with at least 100 ms to the neighbouring word (or no neighbour);
+//!    edges in running speech are left to passes 1 and 2. From such an edge it looks up to 5 s
+//!    into the word for a voiced frame, and an edge with none is left as it was. The two edges
+//!    follow different rules:
+//!    - **Tail.** After its last voiced frame a word keeps at most 80 ms of unvoiced sound (a
+//!      final consonant's release), whatever its level: the rest is cut.
+//!    - **Lead.** An unvoiced lead is cut only when it is both longer than 150 ms and quiet: its
+//!      loudest frame at least 8 dB under the word's voiced peak, the loudest voiced frame in the
+//!      300 ms from the word's first one. Such a lead is a breath, and the word starts after the
+//!      last silent frame in the 250 ms before its voice instead (120 ms ahead of the voice when
+//!      the breath runs straight into it, which keeps an unvoiced first consonant), never so
+//!      late that the word is left shorter than 60 ms. A shorter lead, or one as loud as the
+//!      word, is a consonant and stays.
 
 use filmcraft_project::Word;
 use filmcraft_time::Tick;
@@ -59,6 +68,13 @@ const BREATH_DB: f32 = 8.0;
 /// Unvoiced frames kept ahead of the first voiced one when a breath runs straight into the word
 /// (room for an unvoiced first consonant).
 const ONSET_KEEP_FRAMES: usize = 12;
+/// Frames before a word's first voiced one searched for the last silent frame, where a word with
+/// a breath in its lead starts (250 ms; a breath is seldom longer, and a dip further back than
+/// this is not the gap between the breath and the word).
+const SILENT_SEARCH_FRAMES: usize = 25;
+/// Frames from a word's first voiced one over which its voiced peak is measured for the lead
+/// rule (300 ms: the first syllable, before the word can tail off).
+const PEAK_WINDOW_FRAMES: usize = 30;
 /// Frames looked at from a word's edge for its last / first voiced frame (5 s). A word with more
 /// unvoiced sound than this at an edge is left alone: it bounds the pitch work per word, and the
 /// pause split would have cut a real word long before. Each frame's pitch is computed once.
@@ -206,8 +222,8 @@ fn trim_edges(voiced: &[bool], words: &mut [Word], frame_ticks: i64) {
 }
 
 /// Tighten word bounds against the audio (see the module docs): pauses inside a word's span end
-/// it, then silence at the edges is trimmed. `words` are in time order and non-overlapping
-/// (`Transcript::normalize`).
+/// it, then silence at the edges is trimmed, then breath at an edge that borders a pause. `words`
+/// are in time order and non-overlapping (`Transcript::normalize`).
 pub fn tighten_words(audio: &[f32], words: &mut [Word]) {
     let db = frame_db(audio);
     if db.is_empty() {
@@ -250,9 +266,20 @@ fn periodicity(audio: &[f32], frame: usize) -> f32 {
     best
 }
 
-/// Pass 3 of the module docs: at a word that borders a pause, an unvoiced tail longer than a
-/// consonant's release, or an unvoiced quiet lead longer than a consonant's onset, is a breath or
-/// a noise and leaves the word.
+/// Pass 3 of the module docs. Only words longer than [`MIN_WORD_FRAMES`] are looked at, and only
+/// at an edge with at least [`PAUSE_EDGE_FRAMES`] to the neighbouring word (or no neighbour). From
+/// such an edge the first (or last) voiced frame is searched for up to [`PITCH_SCAN`] frames into
+/// the word; an edge with none is left unchanged. The two edges follow different rules:
+///
+/// - **Tail:** the word keeps at most [`RELEASE_FRAMES`] after its last voiced frame, whatever the
+///   level of what follows (a consonant's release is short; anything longer is a breath or a
+///   noise). A word is never extended.
+/// - **Lead:** unvoiced sound before the first voiced frame is cut only when it is longer than
+///   [`ONSET_FRAMES`] and its peak is at least [`BREATH_DB`] under the word's voiced peak over the
+///   [`PEAK_WINDOW_FRAMES`] from that frame. The word then starts after the last silent frame in
+///   the [`SILENT_SEARCH_FRAMES`] before its voice, or [`ONSET_KEEP_FRAMES`] ahead of it when there
+///   is none, but never later than [`MIN_WORD_FRAMES`] before its (possibly trimmed) end. A
+///   shorter or louder lead is a consonant and stays.
 fn trim_unvoiced_edges(audio: &[f32], db: &[f32], loud: &[bool], words: &mut [Word], frame_ticks: i64) {
     let tick = |frame: usize| Tick((frame as i64).saturating_mul(frame_ticks));
     // pitch per frame, computed on first use: words may overlap, and only edge frames are asked for
@@ -301,13 +328,13 @@ fn trim_unvoiced_edges(audio: &[f32], db: &[f32], loud: &[bool], words: &mut [Wo
             {
                 let level = |f: usize| db.get(f).copied().unwrap_or(f32::NEG_INFINITY);
                 let lead_peak = (a..v).map(level).fold(f32::NEG_INFINITY, f32::max);
-                // the word's voiced peak: its loudest voiced frame in the 300 ms from its first one
-                let word_peak = (v..(v + 30).min(new_end)).filter(|&f| voiced_at(f)).map(level).fold(f32::NEG_INFINITY, f32::max);
+                // the word's voiced peak: its loudest voiced frame in the window from its first one
+                let word_peak = (v..(v + PEAK_WINDOW_FRAMES).min(new_end)).filter(|&f| voiced_at(f)).map(level).fold(f32::NEG_INFINITY, f32::max);
                 if lead_peak <= word_peak - BREATH_DB {
                     // the word starts after the last silent frame before its voice; when the
                     // breath runs straight into the word, 120 ms ahead of the voice, which keeps
                     // an unvoiced first consonant (an "s", an "f")
-                    let from = v.saturating_sub(25).max(a);
+                    let from = v.saturating_sub(SILENT_SEARCH_FRAMES).max(a);
                     let start = match (from..v).rev().find(|&f| !loud.get(f).copied().unwrap_or(true)) {
                         Some(silent) => silent + 1,
                         None => v.saturating_sub(ONSET_KEEP_FRAMES),
@@ -423,6 +450,22 @@ mod tests {
         let mut w = vec![word("paper", 0.0, 0.8), word("cut", 0.8, 1.0)];
         tighten_words(&a, &mut w);
         assert_eq!(bounds(&w), [(0.0, 0.8), (0.8, 1.0)]);
+    }
+
+    #[test]
+    fn a_120_ms_dip_between_voiced_sounds_ends_the_word_and_a_110_ms_dip_does_not() {
+        // "yes" sounds 0.0–0.4 and "so" from the end of the dip to 0.9; the alignment ran "yes"
+        // to 0.7. A dip of exactly MIN_PAUSE_FRAMES (120 ms) is a pause: "yes" ends at it and "so"
+        // starts after it. One frame less is not, and the words stay as aligned.
+        let a = audio(1.0, &[(0.0, 0.4), (0.52, 0.9)]);
+        let mut w = vec![word("yes", 0.0, 0.7), word("so", 0.7, 0.9)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.4), (0.52, 0.9)]);
+
+        let a = audio(1.0, &[(0.0, 0.4), (0.51, 0.9)]);
+        let mut w = vec![word("yes", 0.0, 0.7), word("so", 0.7, 0.9)];
+        tighten_words(&a, &mut w);
+        assert_eq!(bounds(&w), [(0.0, 0.7), (0.7, 0.9)]);
     }
 
     #[test]
