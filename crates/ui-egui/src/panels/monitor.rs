@@ -42,6 +42,21 @@ struct PictureCtx {
     prefix: &'static str,
 }
 
+/// When the project changed since the Program monitor last asked for frames of its sequence:
+/// files the cached frames whose pictures the change left as they were under the new revision
+/// ([`crate::frames::FrameServer::carry`], [`crate::frames::unchanged_frames`]).
+fn carry_program_frames(app: &mut FilmcraftApp, which: Which, target: Target) {
+    let (Which::Program, Target::Sequence(seq)) = (which, target) else { return };
+    let (rev, now) = (app.session.revision, app.session.project.clone());
+    let before = app.program_carry.replace((seq, rev, now.clone()));
+    let Some((_, was_rev, was)) = before.filter(|(s, r, _)| *s == seq && *r < rev) else { return };
+    let previews = app.frames.previews.clone();
+    let (old, new) = (previews.segments(&was, seq), previews.segments(&now, seq));
+    if let Some(kept) = crate::frames::unchanged_frames(&was, &now, seq, &old, &new) {
+        app.frames.carry(seq, was_rev, rev, kept);
+    }
+}
+
 /// The picture block: schedules this frame's render request (GPU or CPU), shows the texture
 /// that is ready, and draws the safe margins, comparison reference and display-mode label.
 fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &crate::state::MonitorView, pc: PictureCtx) {
@@ -81,6 +96,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     };
     // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
     let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
+    carry_program_frames(app, which, cpu_target);
     let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
     let project = app.session.project.clone();
     let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };

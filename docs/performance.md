@@ -1079,6 +1079,30 @@ Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter predi
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
 
+## Results (Program monitor frames kept across edits)
+
+Program-monitor frames and GPU plans are cached under the project revision they were made at
+(`FrameKey::revision`), so every edit, whatever it touched (a label, a marker, another clip's
+parameter, each step of a value drag), left the whole cache behind and the next frames were
+rendered again. Now, when the revision changes, the frames of the sequence whose render-bar
+segment is the same in both projects (content hash, start and length; a gap of both under the same
+sequence settings) are filed under the new revision (`FrameServer::carry`,
+`frames::unchanged_frames`). The segments are the render bars' own, memoized per project
+snapshot (`PreviewStore::segments`). Nothing is kept when the sequence's caption tracks (drawn
+into the monitor's frames) or the project's LUTs changed, or when the sequence, or one nested in
+it, has a Metadata & Timecode Burn-in (it draws names the segments don't hash) or a Track Matte
+Key whose matte track is off (the matte draws it, but the segments hash only tracks that are on).
+
+Demo project, Gaussian Blur 40 on Desert_Dunes, 25 of its frames stepped through once to cache
+them, an edit elsewhere, then the same 25 frames stepped through again (release, M3 Pro, load
+13–36, one run each):
+
+| Edit | Frames rendered again: before → after | Step to the frame shown (median) |
+|---|---|---|
+| Label of another clip | 24 → 0 | 25.0 → 16.7 ms |
+| Opacity of another clip | 24 → 0 | 25.0 → 16.6 ms |
+| Blur of Desert_Dunes itself | 24 → 24 | 25.0 → 25.0 ms |
+
 ## Results (#2633: a playhead press re-opened the audio device, Windows)
 
 Reported on Windows: the Timeline playhead felt laggy and jumped on every click and drag, on an

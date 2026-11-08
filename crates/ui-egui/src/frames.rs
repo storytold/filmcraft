@@ -17,7 +17,7 @@ use web_time::Instant;
 
 use filmcraft_engine::previews::PreviewStore;
 use filmcraft_engine::{MediaPool, Services};
-use filmcraft_project::{ItemId, Project};
+use filmcraft_project::{EffectInstance, ItemId, ParamValue, Project};
 use filmcraft_time::Tick;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -364,6 +364,24 @@ impl PlanCache {
         })
     }
 
+    /// Files the plans whose key `carried` maps to another key under that key, keeping their last
+    /// use; a plan already filed there stays, and the carried one is dropped. How many moved.
+    fn rekey(&mut self, carried: impl Fn(&FrameKey) -> Option<FrameKey>) -> usize {
+        let moves: Vec<(FrameKey, FrameKey)> = self.map.keys().filter_map(|k| carried(k).map(|to| (*k, to))).collect();
+        let mut moved = 0;
+        for (from, to) in moves {
+            let Some(v) = self.map.remove(&from) else { continue };
+            match self.map.entry(to) {
+                std::collections::hash_map::Entry::Occupied(_) => self.bytes = self.bytes.saturating_sub(v.2),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(v);
+                    moved += 1;
+                }
+            }
+        }
+        moved
+    }
+
     fn insert(&mut self, k: FrameKey, p: GpuPlan) {
         self.clock += 1;
         let b = p.bytes();
@@ -393,6 +411,24 @@ struct Cache {
 }
 
 impl Cache {
+    /// Files the frames whose key `carried` maps to another key under that key, keeping their last
+    /// use; a frame already filed there stays, and the carried one is dropped. How many moved.
+    fn rekey(&mut self, carried: impl Fn(&FrameKey) -> Option<FrameKey>) -> usize {
+        let moves: Vec<(FrameKey, FrameKey)> = self.map.keys().filter_map(|k| carried(k).map(|to| (*k, to))).collect();
+        let mut moved = 0;
+        for (from, to) in moves {
+            let Some(v) = self.map.remove(&from) else { continue };
+            match self.map.entry(to) {
+                std::collections::hash_map::Entry::Occupied(_) => self.bytes = self.bytes.saturating_sub(v.0.px.len()),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(v);
+                    moved += 1;
+                }
+            }
+        }
+        moved
+    }
+
     fn insert(&mut self, k: FrameKey, v: Arc<Rgba>) {
         self.clock += 1;
         self.bytes += v.px.len();
@@ -411,6 +447,50 @@ impl Cache {
             }
         }
     }
+}
+
+/// Which frames of sequence `seq` show the same picture in project `was` as in `now` (`old` and
+/// `new` are its render-bar segments in each, [`filmcraft_render::preview::video_segments`]): a
+/// frame in a segment with the same content hash and the same start and length in both (the
+/// hash covers everything that shapes those pixels, nested sequences included), or in a gap of
+/// both under the same sequence settings. `None` when something the segments leave out changed,
+/// so no frame is: the sequence's own caption tracks (the monitor draws them into its frames) or
+/// the project's LUTs, or the sequence reads something they don't hash ([`reads_unhashed`]); or
+/// when the sequence is gone.
+pub fn unchanged_frames<'s>(
+    was: &Project,
+    now: &Project,
+    seq: ItemId,
+    old: &'s [filmcraft_render::preview::Segment],
+    new: &'s [filmcraft_render::preview::Segment],
+) -> Option<impl Fn(i64) -> bool + 's> {
+    let (a, b) = (was.sequence(seq)?, now.sequence(seq)?);
+    if a.caption_tracks != b.caption_tracks || was.luts != now.luts || reads_unhashed(was, seq, 0) || reads_unhashed(now, seq, 0) {
+        return None;
+    }
+    let same_settings = a.settings == b.settings;
+    Some(move |f: i64| match (filmcraft_render::preview::segment_at(old, f), filmcraft_render::preview::segment_at(new, f)) {
+        (Some(x), Some(y)) => x.hash == y.hash && x.first_frame == y.first_frame && x.frames == y.frames,
+        (None, None) => same_settings,
+        _ => false,
+    })
+}
+
+/// Whether the sequence, or a sequence nested in it, draws something the segments' hashes leave
+/// out: a Metadata & Timecode Burn-in (it can draw the sequence's, a clip's or a file's name, so a
+/// rename would carry frames that still show the old name), or a Track Matte Key whose matte track
+/// is off (the matte draws it anyway, but the hashes cover only the tracks that are on).
+fn reads_unhashed(project: &Project, seq: ItemId, depth: u32) -> bool {
+    let Some(s) = project.sequence(seq) else { return false };
+    // The matte choice counts tracks from 1 (0 is None).
+    let off_matte = |e: &EffectInstance| {
+        let Some(&ParamValue::Choice(c)) = e.param("matte").map(|p| &p.value) else { return false };
+        let track = c.checked_sub(1).and_then(|i| usize::try_from(i).ok()).and_then(|i| s.video_tracks.get(i));
+        e.effect == "track_matte" && track.is_some_and(|t| !t.enabled)
+    };
+    s.video_tracks.iter().flat_map(|t| &t.items).any(|it| {
+        it.effects.iter().any(|e| e.enabled && (e.effect == "metadata_burnin" || off_matte(e))) || (depth < 8 && reads_unhashed(project, it.item, depth + 1))
+    })
 }
 
 pub struct FrameServer {
@@ -477,6 +557,21 @@ pub fn playback_plan(render_cost: f64, fps: f64, workers: usize) -> (i64, i64) {
 }
 
 impl FrameServer {
+    /// After an edit from revision `from` to `to`: the cached frames and GPU plans of sequence
+    /// `seq` made at `from` whose pictures the edit left as they were (`kept(frame)`) are filed
+    /// under `to`, so the monitor and playback show them instead of rendering them again. Frame
+    /// keys carry the project revision, so without this any edit (a marker, a mute on another
+    /// track, each step of a value drag) threw away every cached frame. How many moved.
+    pub fn carry(&self, seq: ItemId, from: u64, to: u64, kept: impl Fn(i64) -> bool) -> usize {
+        let carried = |k: &FrameKey| {
+            let ours = matches!(k.target, Target::Sequence(s) | Target::SequencePlan(s) | Target::SequenceLive(s) if s == seq);
+            (ours && k.revision == from && kept(k.frame)).then_some(FrameKey { revision: to, ..*k })
+        };
+        let frames = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).rekey(carried);
+        let plans = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).rekey(carried);
+        frames + plans
+    }
+
     /// Settings ▸ Memory ▸ frame cache budget (bytes); evicts down to it right away.
     pub fn set_cache_budget(&self, bytes: usize) {
         let mut c = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1375,5 +1470,216 @@ mod tests {
             matches!(&all.plan, FramePlan::Composite { steps, .. } if steps.iter().any(|st| matches!(st, PlanStep::Adjust { .. }))),
             "an effect stage: the adjustment layer is a step of the plan"
         );
+    }
+}
+
+#[cfg(test)]
+mod carry_tests {
+    use std::sync::Arc;
+
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{DemoScene, Generator, MediaSource};
+    use filmcraft_project::{ClipId, ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind, find_effect};
+    use filmcraft_render::preview::video_segments;
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+
+    use super::*;
+
+    fn add_gen(p: &mut Project, g: GeneratorSource) -> ItemId {
+        let info = g.info().clone();
+        let clip = MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        p.add_item(&info.name, Label::Iris, ItemKind::Media(Box::new(clip)), None)
+    }
+
+    fn place(p: &mut Project, seq: ItemId, item: ItemId, start_f: i64, dur_f: i64) -> ClipId {
+        let r = FrameRate::FPS_24;
+        let ti = p.make_track_item(item, TrackKind::Video, r.tick_of(start_f), TimeRange::new(Tick::ZERO, r.tick_of(dur_f)), r).unwrap();
+        let id = ti.id;
+        let t = &mut p.sequence_mut(seq).unwrap().video_tracks[0];
+        t.items.push(ti);
+        t.sort();
+        id
+    }
+
+    /// A sequence with clip A (frames 0–47, blurred), clip B (48–95), then a gap.
+    fn two_clips() -> (Project, ItemId, ClipId, ClipId) {
+        let mut p = Project::new("carry");
+        let matte = add_gen(
+            &mut p,
+            GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 1920, 1080, FrameRate::FPS_24, Tick(60 * TICKS_PER_SECOND)),
+        );
+        let ocean = add_gen(&mut p, GeneratorSource::demo(DemoScene::OceanSunset));
+        let seq = p.new_sequence("s", SequenceSettings { width: 1920, height: 1080, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 1, None);
+        let a = place(&mut p, seq, ocean, 0, 48);
+        let b = place(&mut p, seq, matte, 48, 48);
+        let blur = find_effect("gaussian_blur").unwrap().instance();
+        p.sequence_mut(seq).unwrap().find_item_mut(a).unwrap().1.effects.push(blur);
+        (p, seq, a, b)
+    }
+
+    /// Which of frames 10 (clip A), 60 (clip B) and 120 (the gap) `edit` leaves unchanged, or
+    /// `None` when it leaves none.
+    fn kept_after(edit: impl FnOnce(&mut Project, ItemId, ClipId, ClipId)) -> Option<[bool; 3]> {
+        let (was, seq, a, b) = two_clips();
+        let mut now = was.clone();
+        edit(&mut now, seq, a, b);
+        let (old, new) = (video_segments(&was, seq), video_segments(&now, seq));
+        let kept = unchanged_frames(&was, &now, seq, &old, &new)?;
+        Some([kept(10), kept(60), kept(120)])
+    }
+
+    #[test]
+    fn an_edit_changes_only_the_frames_of_the_segments_it_touched() {
+        // A parameter of A's blur: A's frames only.
+        let blur = kept_after(|p, seq, a, _| {
+            let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(a).unwrap();
+            *it.effect_mut("gaussian_blur").unwrap().params.values_mut().next().map(|v| &mut v.value).unwrap() = ParamValue::Float(42.0);
+        });
+        assert_eq!(blur, Some([false, true, true]));
+        // A label or a name changes no pixels: every frame.
+        let label = kept_after(|p, seq, _, b| p.sequence_mut(seq).unwrap().find_item_mut(b).unwrap().1.label = Label::Mango);
+        assert_eq!(label, Some([true; 3]));
+        // Sequence settings shape every frame, the gap's too.
+        let settings = kept_after(|p, seq, _, _| p.sequence_mut(seq).unwrap().settings.max_render_quality = true);
+        assert_eq!(settings, Some([false; 3]));
+    }
+
+    /// What the segments leave out changes every frame: the sequence's captions (drawn into the
+    /// monitor's frames) and the project's LUTs.
+    #[test]
+    fn captions_and_luts_change_every_frame() {
+        let captions = kept_after(|p, seq, _, _| {
+            let t = filmcraft_project::CaptionTrack::new(filmcraft_project::TrackId(77), "Subtitles".into(), filmcraft_project::CaptionFormat::Subtitle);
+            p.sequence_mut(seq).unwrap().caption_tracks.push(t);
+        });
+        assert_eq!(captions, None);
+        let luts = kept_after(|p, _, _, _| {
+            p.luts.push(filmcraft_project::ProjectLut {
+                id: "l".into(),
+                name: "L".into(),
+                source_path: None,
+                format: "cube".into(),
+                text: "LUT_3D_SIZE 2".into(),
+            });
+        });
+        assert_eq!(luts, None);
+    }
+
+    /// A burn-in can draw names the segments leave out: with one in the sequence, or in a sequence
+    /// nested in it, a rename carries nothing.
+    #[test]
+    fn a_burn_in_keeps_renamed_frames_from_being_carried() {
+        let (mut was, seq, _, b) = two_clips();
+        let burnin = find_effect("metadata_burnin").unwrap().instance();
+        was.sequence_mut(seq).unwrap().find_item_mut(b).unwrap().1.effects.push(burnin);
+        let mut now = was.clone();
+        now.items.get_mut(&seq).unwrap().name = "renamed".into();
+        let (old, new) = (video_segments(&was, seq), video_segments(&now, seq));
+        assert!(unchanged_frames(&was, &now, seq, &old, &new).is_none(), "the sequence");
+
+        let outer = now.new_sequence("outer", SequenceSettings { width: 1920, height: 1080, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+        place(&mut now, outer, seq, 0, 96);
+        let mut renamed = now.clone();
+        renamed.items.get_mut(&seq).unwrap().name = "again".into();
+        let (old, new) = (video_segments(&now, outer), video_segments(&renamed, outer));
+        assert!(unchanged_frames(&now, &renamed, outer, &old, &new).is_none(), "a nested sequence");
+    }
+
+    /// A Track Matte draws its track even when that track is off, but the segments hash only the
+    /// tracks that are on: an edit to an off matte track carries nothing. With the track on, the
+    /// segments cover it and the frames it doesn't touch still carry.
+    #[test]
+    fn an_edit_to_an_off_matte_track_carries_nothing() {
+        let kept = |enabled: bool| {
+            let (mut was, seq, a, _) = two_clips();
+            let ocean = was.sequence(seq).unwrap().find_item(a).unwrap().1.item;
+            let r = FrameRate::FPS_24;
+            let ti = was.make_track_item(ocean, TrackKind::Video, r.tick_of(0), TimeRange::new(Tick::ZERO, r.tick_of(48)), r).unwrap();
+            let v2 = ti.id;
+            let s = was.sequence_mut(seq).unwrap();
+            s.video_tracks[1].items.push(ti);
+            s.video_tracks[1].enabled = enabled;
+            let mut matte = find_effect("track_matte").unwrap().instance();
+            matte.params.get_mut("matte").unwrap().value = ParamValue::Choice(2);
+            s.find_item_mut(a).unwrap().1.effects.push(matte);
+            let mut now = was.clone();
+            let blur = find_effect("gaussian_blur").unwrap().instance();
+            now.sequence_mut(seq).unwrap().find_item_mut(v2).unwrap().1.effects.push(blur);
+            let (old, new) = (video_segments(&was, seq), video_segments(&now, seq));
+            unchanged_frames(&was, &now, seq, &old, &new).map(|k| [k(10), k(60), k(120)])
+        };
+        assert_eq!(kept(false), None, "the matte track is off");
+        assert_eq!(kept(true), Some([false, true, true]), "the matte track is on");
+    }
+
+    fn plan(px: usize) -> GpuPlan {
+        GpuPlan { plan: filmcraft_render::plan::FramePlan::Image(filmcraft_render::Image::new(px, 1)), prepared: Default::default() }
+    }
+
+    /// `PlanCache::rekey` moves plans as `Cache::rekey` moves frames: a plan already at the new key
+    /// stays, the carried one is dropped and its bytes with it.
+    #[test]
+    fn plans_rekey_like_frames() {
+        let key = |frame, revision| FrameKey { target: Target::Sequence(ItemId(1)), frame, size: 1000, revision, draft: false };
+        let mut c = PlanCache::default();
+        c.insert(key(10, 5), plan(1));
+        c.insert(key(60, 5), plan(2));
+        c.insert(key(70, 5), plan(3));
+        c.insert(key(70, 6), plan(4));
+        let moved = c.rekey(|k| (k.revision == 5 && k.frame >= 60).then_some(FrameKey { revision: 6, ..*k }));
+        assert_eq!(moved, 1, "frame 60; frame 70 was already rendered at 6");
+        assert!(c.map.contains_key(&key(60, 6)) && !c.map.contains_key(&key(60, 5)));
+        assert!(c.map.contains_key(&key(10, 5)), "a plan not carried stays");
+        assert!(!c.map.contains_key(&key(70, 5)));
+        assert_eq!(c.map[&key(70, 6)].2, plan(4).bytes(), "the plan rendered at the new revision stays");
+        assert_eq!(c.bytes, c.map.values().map(|v| v.2).sum::<usize>(), "bytes counted once");
+    }
+
+    fn frame(v: u8) -> Arc<Rgba> {
+        Arc::new(Rgba { w: 2, h: 2, px: vec![v; 16] })
+    }
+
+    /// `carry` files the frames `kept` keeps of the sequence's revision under the new one, leaves
+    /// the rest (other sequences, other revisions, frames the edit changed) where they are, keeps a
+    /// frame already rendered at the new revision, and counts the bytes once.
+    #[test]
+    fn carry_files_unchanged_frames_under_the_new_revision() {
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let (seq, other) = (ItemId(1), ItemId(2));
+        let key = |target, frame, revision| FrameKey { target, frame, size: 1000, revision, draft: false };
+        let newer = frame(9);
+        {
+            let mut c = server.shared.done.lock().unwrap();
+            c.insert(key(Target::Sequence(seq), 10, 5), frame(1));
+            c.insert(key(Target::Sequence(seq), 60, 5), frame(2));
+            c.insert(key(Target::SequenceLive(seq), 61, 5), frame(3));
+            c.insert(key(Target::Sequence(seq), 70, 5), frame(4));
+            c.insert(key(Target::Sequence(seq), 70, 6), newer.clone());
+            c.insert(key(Target::Sequence(seq), 60, 4), frame(5));
+            c.insert(key(Target::Sequence(other), 60, 5), frame(6));
+        }
+        let moved = server.carry(seq, 5, 6, |f| f >= 60);
+        assert_eq!(moved, 2, "frames 60 and 61");
+        let c = server.shared.done.lock().unwrap();
+        let has = |k| c.map.contains_key(&k);
+        assert!(has(key(Target::Sequence(seq), 60, 6)) && !has(key(Target::Sequence(seq), 60, 5)));
+        assert!(has(key(Target::SequenceLive(seq), 61, 6)));
+        assert!(has(key(Target::Sequence(seq), 10, 5)) && !has(key(Target::Sequence(seq), 10, 6)), "a changed frame stays");
+        assert!(Arc::ptr_eq(&c.map[&key(Target::Sequence(seq), 70, 6)].0, &newer), "the frame rendered at the new revision stays");
+        assert!(!has(key(Target::Sequence(seq), 70, 5)));
+        assert!(has(key(Target::Sequence(seq), 60, 4)), "other revisions stay");
+        assert!(has(key(Target::Sequence(other), 60, 5)) && !has(key(Target::Sequence(other), 60, 6)), "other sequences stay");
+        assert_eq!(c.bytes, c.map.values().map(|(v, _)| v.px.len()).sum::<usize>(), "bytes counted once");
     }
 }

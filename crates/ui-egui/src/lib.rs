@@ -321,6 +321,9 @@ pub struct FilmcraftApp {
     pub(crate) monitor_asked: HashMap<String, std::collections::VecDeque<FrameKey>>,
     /// The frame whose picture the Program monitor drew last: the frame due, or its stand-in.
     pub(crate) program_shown: Option<FrameKey>,
+    /// The sequence, revision and project snapshot the Program monitor last asked for frames of,
+    /// to carry unchanged frames over to the next revision (`monitor::carry_program_frames`).
+    pub(crate) program_carry: Option<(filmcraft_project::ItemId, u64, std::sync::Arc<filmcraft_project::Project>)>,
     /// Consecutive frames the timeline zoom / scroll has been at rest. `ui.elements` answers from
     /// the frame before the last one, so its timeline rects are final from 2 on.
     pub(crate) timeline_still: u32,
