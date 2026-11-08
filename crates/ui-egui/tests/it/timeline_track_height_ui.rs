@@ -133,6 +133,66 @@ fn rect_of(d: &mut Driver, id: &str) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
 }
 
+#[test]
+fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
+    let mut d = Driver::demo();
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":24}}));
+    d.frames(3);
+    let seq = d.app().session.active_sequence().unwrap();
+    let v_count = seq.video_tracks[0].items.len();
+    let v_clip = seq.video_tracks[0].items[0].id.0;
+    let other_clip = seq.video_tracks[0].items[1].id.0;
+    let a_count = seq.audio_tracks[0].items.len();
+    let a_clip = seq.audio_tracks[0].items[0].id.0;
+    let rect = rect_of(&mut d, &format!("timeline.clip.{a_clip}"));
+    let ruler = rect_of(&mut d, "timeline.ruler");
+    let view = &d.app().ui.timeline;
+    let time = d.app().session.playhead();
+    let x = ruler.left() + ((time.seconds() - view.scroll) * view.pps) as f32;
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(x, rect.center().y)));
+    d.frames(3);
+    let visible = |d: &mut Driver| {
+        let elements = d.ok("ui.elements", json!({"prefix":"timeline.playheadScissors"}));
+        !elements.as_array().unwrap().is_empty()
+    };
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[]}}));
+    assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[a_clip,other_clip],"linked":false}}));
+    assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[a_clip],"linked":false}}));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":0}}));
+    assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"time":time.0}}));
+    assert!(visible(&mut d));
+    let button = rect_of(&mut d, "timeline.playheadScissors");
+    assert!((button.center().x - x).abs() < 1.0 && button.width() > button.height());
+    d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
+    d.frames(3);
+    let seq = d.app().session.active_sequence().unwrap();
+    assert_eq!(seq.video_tracks[0].items.len(), v_count);
+    assert_eq!(seq.audio_tracks[0].items.len(), a_count + 1);
+    assert!(seq.audio_tracks[0].items.iter().any(|clip| clip.start == time));
+    assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
+    assert_eq!(d.app().session.active_sequence().unwrap().audio_tracks[0].items.len(), a_count);
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[v_clip],"linked":false}}));
+    let video = rect_of(&mut d, &format!("timeline.clip.{v_clip}"));
+    let button = rect_of(&mut d, "timeline.playheadScissors");
+    assert!(video.contains(button.center()) && (button.center().x - x).abs() < 1.0);
+    d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
+    let seq = d.app().session.active_sequence().unwrap();
+    assert_eq!(seq.video_tracks[0].items.len(), v_count + 1);
+    assert_eq!(seq.audio_tracks[0].items.len(), a_count);
+    assert!(seq.video_tracks[0].items.iter().any(|clip| clip.start == time));
+    d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[v_clip]}}));
+    assert_eq!(d.app().session.state.selection.len(), 2);
+    d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
+    let seq = d.app().session.active_sequence().unwrap();
+    assert_eq!(seq.video_tracks[0].items.len(), v_count + 1);
+    assert_eq!(seq.audio_tracks[0].items.len(), a_count + 1);
+}
+
 // Regression test for #703: the lines between the timeline's tracks were drawn in the timeline's own
 // background colour, so they were invisible, and nothing marked the top of the highest video track.
 #[test]
