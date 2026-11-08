@@ -12,6 +12,16 @@ impl FilmcraftApp {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
         }
+        // Esc exits cinema mode unconditionally, even when a dialog or text field has focus.
+        if self.ui.fullscreen_program && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.ui.fullscreen_program = false;
+            let restore = self.ui.cinema_was_fullscreen;
+            if let Some(prev) = self.ui.cinema_prev_focus.take() {
+                self.ui.focused = prev;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
+            return;
+        }
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
@@ -143,6 +153,45 @@ impl FilmcraftApp {
             } else {
                 None
             };
+            // Clear and Ripple Delete in Effect Controls never reach the clip (#1354). They remove the
+            // selected effect, or the selected mask when no effect is selected; Motion and the other
+            // fixed effects cannot be removed. A selection made on a clip the panel no longer shows
+            // (clip A's effect selected, clip B selected in the Timeline) is stale and removes
+            // nothing (#1400 review). With nothing removable selected the key is consumed and does
+            // nothing, so a repeated Backspace cannot fall through to `edit.clear` and delete the
+            // timeline clip. A transition shown in the panel is the exception: `edit.clear` removes
+            // it, as it does from the Timeline, and Ripple Delete is consumed.
+            if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete") {
+                // the clips the panel shows: the selected video clip and its linked audio clip, so a
+                // selection on any row the panel displays is removable
+                let shown = crate::panels::effect_controls::selected_clips(self);
+                let remove = match (&self.session.state.selected_effect, &self.session.state.selected_mask) {
+                    (Some(e), _) if shown.iter().any(|(c, _, _)| *c == e.clip) => self.session.active_sequence().and_then(|s| {
+                        let (_, it) = s.find_item(e.clip)?;
+                        let idx = e.index(&it.effects)?;
+                        if it.effects.get(idx)?.def().is_some_and(|d| d.intrinsic) {
+                            None
+                        } else {
+                            Some(("effects.remove", json!({"clip": e.clip.0, "index": idx})))
+                        }
+                    }),
+                    (None, Some(m)) if shown.iter().any(|(c, _, _)| *c == m.clip) => {
+                        Some(("masks.remove", json!({"clip": m.clip.0, "effect": m.effect, "mask": m.mask})))
+                    }
+                    _ => None,
+                };
+                // no clip shown: the panel displays a selected transition (#430), and `edit.clear`
+                // removes it exactly as from the Timeline; Ripple Delete stays consumed
+                let remove = remove.or_else(|| {
+                    (id == "edit.clear" && shown.is_empty() && crate::panels::transition_controls::selected(self).is_some()).then(|| ("edit.clear", json!({})))
+                });
+                if let Some((cmd, params)) = remove
+                    && let Err(e) = menus::invoke(self, ctx, cmd, params)
+                {
+                    self.ui.status = e;
+                }
+                continue;
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if let Some(p) = clear {
                 p
