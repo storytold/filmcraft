@@ -121,6 +121,11 @@ impl Shared {
         if let Some(e) = err {
             self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert(e);
         }
+        self.job_reported();
+    }
+
+    /// One dispatched job has reported (after its statistics and error are stored).
+    fn job_reported(&self) {
         let mut n = self.jobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *n = n.saturating_sub(1);
         if *n == 0 {
@@ -775,6 +780,33 @@ mod tests {
         } else {
             frame.row::<u16>(0).unwrap().y.as_ptr() as usize
         }
+    }
+
+    /// `flush` returns only after every dispatched picture job has reported its statistics and
+    /// error, not just once its rows are published (the report comes after the last row).
+    #[test]
+    fn flush_waits_for_every_dispatched_job_to_report() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut decoder = Decoder::with_threads(1);
+        let reported = Arc::new(AtomicUsize::new(0));
+        let jobs: Vec<_> = (0..3u64)
+            .map(|i| {
+                decoder.shared.job_started();
+                let (shared, reported) = (decoder.shared.clone(), reported.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(30 * (i + 1)));
+                    reported.fetch_add(1, Ordering::SeqCst);
+                    shared.job_reported();
+                })
+            })
+            .collect();
+        decoder.flush();
+        assert_eq!(reported.load(Ordering::SeqCst), 3, "flush returned before every dispatched job reported");
+        for j in jobs {
+            j.join().unwrap();
+        }
+        // with nothing in flight it does not wait
+        decoder.flush();
     }
 
     #[test]
