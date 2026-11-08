@@ -800,6 +800,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
             VIDEO,
             vec![
                 ch("source", "Source", &["Sequence Timecode", "Media Timecode", "Clip Name", "File Name", "Frame Count", "Sequence Name"], 0),
+                ch("time_format", "Time Format", &["Timecode", "Feet + Frames 35mm", "Feet + Frames 16mm", "Frames"], 0),
                 pt("position", "Position", f64::NAN, f64::NAN),
                 ch("alignment", "Alignment", &["Bottom Center", "Bottom Left", "Bottom Right", "Top Center", "Top Left", "Top Right", "Custom"], 0),
                 fs("size", "Size", 6.0, (1.0, 100.0), (1.0, 30.0), "%", 1),
