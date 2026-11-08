@@ -183,6 +183,7 @@ pub mod tag {
     pub const ESSENCE_CONTAINER: u16 = 0x3004;
     pub const CODEC: u16 = 0x3005;
     pub const FRAME_LAYOUT: u16 = 0x320C;
+    pub const FIELD_DOMINANCE: u16 = 0x3212;
     pub const STORED_WIDTH: u16 = 0x3203;
     pub const STORED_HEIGHT: u16 = 0x3202;
     pub const SAMPLED_WIDTH: u16 = 0x3205;

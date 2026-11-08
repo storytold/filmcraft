@@ -2209,6 +2209,7 @@ version = "0.17.0"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
+ "log",
  "rayon",
  "serde",
 ]
@@ -2242,13 +2243,18 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.17.0"
 dependencies = [
+ "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-dnx",
  "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
+ "filmcraft-prores",
  "filmcraft-render",
+ "filmcraft-testkit",
  "filmcraft-time",
  "image",
  "log",

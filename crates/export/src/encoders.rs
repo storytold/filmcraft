@@ -5,6 +5,8 @@ use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
 use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use super::{HardwareEncoding, build_dnx_backend, build_prores_backend, note_gpu_encode_fallback, note_gpu_encoded};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
@@ -127,7 +129,7 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
     )
 }
 
-/// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+/// ProRes 422 encoder (HQ unless the settings pick another flavour): encoded floats → 10-bit limited-range 4:2:2.
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
     profile: filmcraft_prores::Profile,
@@ -137,12 +139,24 @@ struct ProResEncoder {
     h: u32,
     rate: FrameRate,
     signal: ColorSignal,
+    /// The GPU (Hardware encoding: Auto); dropped for the rest of the export after a panic.
+    backend: Option<Box<dyn filmcraft_prores::SliceBackend>>,
 }
 
 impl VideoEncoder for ProResEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
+        // two fields, coded as two pictures, the temporally first one first: `fiel` 2/9 for top
+        // field first and 2/14 for bottom field first, as Apple and ffmpeg write ProRes 1080i
+        let detail = match self.enc.config().interlace {
+            filmcraft_prores::Interlace::Progressive => None,
+            filmcraft_prores::Interlace::TopFieldFirst => Some(9),
+            filmcraft_prores::Interlace::BottomFieldFirst => Some(14),
+        };
+        if let (Some(v), Some(detail)) = (e.video.as_mut(), detail) {
+            v.field_info = Some(filmcraft_isobmff::FieldInfo { fields: 2, detail });
+        }
         e
     }
     fn timescale(&self) -> u32 {
@@ -163,11 +177,36 @@ impl VideoEncoder for ProResEncoder {
             }
             (_, None) => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
         });
-        let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let data = self.code(&fr)?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+}
+
+impl ProResEncoder {
+    /// Code a picture, on the backend when there is one. A panic inside the backend drops it and
+    /// the CPU codes the picture; a picture the backend declined is the CPU's too (counted).
+    fn code(&mut self, fr: &filmcraft_prores::Frame) -> Result<Vec<u8>> {
+        if let Some(mut backend) = self.backend.take() {
+            match catch_unwind(AssertUnwindSafe(|| self.enc.encode_with(fr, Some(backend.as_mut())))) {
+                Ok(done) => {
+                    self.backend = Some(backend);
+                    let (data, used) = done.map_err(|e| ExportError::Encode(e.to_string()))?;
+                    if used {
+                        note_gpu_encoded();
+                    } else {
+                        note_gpu_encode_fallback();
+                    }
+                    return Ok(data);
+                }
+                Err(_) => {
+                    note_gpu_encode_fallback();
+                }
+            }
+        }
+        self.enc.encode(fr).map_err(|e| ExportError::Encode(e.to_string()))
     }
 }
 
@@ -193,8 +232,10 @@ pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s:
         }
         let alpha = s.keeps_alpha();
         cfg.encode_alpha = alpha;
+        cfg.interlace = s.prores_interlace();
         let enc = filmcraft_prores::Encoder::with_config(cfg);
-        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_prores_backend).flatten();
+        Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
     })
 }
 
@@ -209,27 +250,38 @@ pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
     }
 }
 
-/// DNxHR encoder (RGBA8 or HDR floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
+/// DNxHR encoder (RGBA8 or encoded floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
 /// LB/SQ/HQ, 10-bit for HQX).
 struct DnxEncoder {
     enc: filmcraft_dnx::Encoder,
+    /// Code the frames' alpha channel (Include Alpha Channel), losslessly.
+    alpha: bool,
     w: u32,
     h: u32,
     rate: FrameRate,
     signal: ColorSignal,
+    /// The GPU (Hardware encoding: Auto); dropped for the rest of the export after a panic.
+    backend: Option<Box<dyn filmcraft_dnx::MacroblockBackend>>,
 }
 
 impl VideoEncoder for DnxEncoder {
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::dnx(filmcraft_isobmff::FourCc(*b"AVdh"), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
+        if let (true, Some(v)) = (self.alpha, e.video.as_mut()) {
+            // 32 bits per pixel: colour with alpha, as QuickTime says for ProRes 4444
+            v.depth = 32;
+        }
         e
     }
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, self.alpha);
+        if let Some(a) = fr.alpha.as_deref_mut() {
+            crate::convert::alpha_10(f.rgba, a);
+        }
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
@@ -238,11 +290,44 @@ impl VideoEncoder for DnxEncoder {
             None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
         }
         // the encoder rescales 10-bit input to its coded depth
-        let data = self.enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let data = self.code(&fr)?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         Ok(Vec::new())
+    }
+}
+
+impl DnxEncoder {
+    /// [`ProResEncoder::code`] for DNxHR.
+    fn code(&mut self, fr: &filmcraft_dnx::Frame) -> Result<Vec<u8>> {
+        if let Some(mut backend) = self.backend.take() {
+            match catch_unwind(AssertUnwindSafe(|| self.enc.encode_with(fr, Some(backend.as_mut())))) {
+                Ok(done) => {
+                    self.backend = Some(backend);
+                    let (data, used) = done.map_err(|e| self.error(e))?;
+                    if used {
+                        note_gpu_encoded();
+                    } else {
+                        note_gpu_encode_fallback();
+                    }
+                    return Ok(data);
+                }
+                Err(_) => {
+                    note_gpu_encode_fallback();
+                }
+            }
+        }
+        self.enc.encode(fr).map_err(|e| self.error(e))
+    }
+
+    fn error(&self, e: filmcraft_dnx::Error) -> ExportError {
+        match (e, self.alpha) {
+            (filmcraft_dnx::Error::DoesNotFit, true) => {
+                ExportError::Encode("The alpha channel is too detailed for this DNxHR profile; choose HQ or HQX, or simplify the alpha.".into())
+            }
+            (e, _) => ExportError::Encode(e.to_string()),
+        }
     }
 }
 
@@ -252,8 +337,11 @@ pub(crate) fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
         if s.signal.primaries == 9 {
             cfg.color_volume = filmcraft_dnx::ColorVolume::Bt2020Ncl;
         }
+        let alpha = s.keeps_alpha();
+        cfg.alpha = alpha.then_some(filmcraft_dnx::AlphaCoding::Lossless);
         let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
-        Ok(Box::new(DnxEncoder { enc, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        let backend = (s.hardware_encoding == HardwareEncoding::Auto).then(build_dnx_backend).flatten();
+        Ok(Box::new(DnxEncoder { enc, alpha, w, h, rate, signal: s.signal, backend }) as Box<dyn VideoEncoder>)
     })
 }
 

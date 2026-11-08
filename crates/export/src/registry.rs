@@ -3,7 +3,7 @@ use super::Ordering;
 use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
-use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
+use super::stats::{GPU_ENCODE_FALLBACKS, GPU_ENCODED, GPU_FALLBACKS, GPU_FRAMES};
 use super::{FrameRate, ItemId, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
 
 /// A packet produced by a video encoder.
@@ -16,8 +16,10 @@ pub struct EncodedPacket {
     pub composition_offset: i32,
 }
 
-/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV), or for
-/// HDR exports the encoded R'G'B' (PQ/HLG, BT.2020; 3 floats per pixel, 0..1) in `hdr`.
+/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV), or the
+/// encoded R'G'B' (3 floats per pixel, 0..1) in `hdr`: PQ/HLG BT.2020 for HDR exports, the sRGB curve
+/// and BT.709 for SDR exports to an encoder that codes more than 8 bits. `rgba` is then empty, or
+/// with alpha the whole RGBA8 picture, for its alpha.
 pub struct EncoderFrame<'a> {
     pub width: u32,
     pub height: u32,
@@ -107,7 +109,9 @@ pub fn encoder_registered(f: EncoderFactory) -> bool {
 /// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
 /// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
 /// linear-light RGBA), or `None` to let the CPU render this frame (no adapter, a plan the GPU
-/// cannot draw, any internal error): the CPU renderer is the reference and the fallback.
+/// cannot draw, any internal error): the CPU renderer is the reference and the fallback. It runs
+/// under `filmcraft_media::cancel::with_gpu_frames`, so its sources may hand it pictures that are
+/// still coded ([`PixelData::Coded`](filmcraft_frame::PixelData::Coded)).
 pub trait FrameRenderer: Send {
     fn render(
         &mut self,
@@ -159,6 +163,70 @@ pub(crate) fn reset_frame_renderers_for_tests() {
 pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
     let g = frame_renderer_factories().read().unwrap_or_else(PoisonError::into_inner);
     g.iter().filter_map(|f| f()).next()
+}
+
+/// Builds the ProRes slice backend (the GPU) for one export, or `None` when this host cannot.
+pub type ProResBackendFactory = fn() -> Option<Box<dyn filmcraft_prores::SliceBackend>>;
+
+/// Builds the DNxHR macroblock backend (the GPU) for one export, or `None` when this host cannot.
+pub type DnxBackendFactory = fn() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>>;
+
+fn prores_backend_factories() -> &'static RwLock<Vec<ProResBackendFactory>> {
+    static F: OnceLock<RwLock<Vec<ProResBackendFactory>>> = OnceLock::new();
+    F.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+fn dnx_backend_factories() -> &'static RwLock<Vec<DnxBackendFactory>> {
+    static F: OnceLock<RwLock<Vec<DnxBackendFactory>>> = OnceLock::new();
+    F.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a ProRes backend factory: under *Hardware encoding: Auto* the ProRes encoder takes a
+/// backend from it (tried before those registered earlier) for the per-block work, and codes a
+/// picture itself whenever the backend declines or fails. Registering the same factory twice is harmless.
+pub fn register_prores_backend(f: ProResBackendFactory) {
+    let mut g = prores_backend_factories().write().unwrap_or_else(PoisonError::into_inner);
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// [`register_prores_backend`] for the DNxHR encoder.
+pub fn register_dnx_backend(f: DnxBackendFactory) {
+    let mut g = dnx_backend_factories().write().unwrap_or_else(PoisonError::into_inner);
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// The first of `factories` that makes a backend. Device creation is where a driver fault is
+/// likeliest, so the factories run outside the registry lock and a panicking one counts as one
+/// that cannot (the export then encodes on the CPU). That is not counted in
+/// `encode_fallbacks`, which counts pictures given to a backend.
+fn first_backend<B: ?Sized>(factories: Vec<fn() -> Option<Box<B>>>) -> Option<Box<B>> {
+    factories.into_iter().find_map(|f| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok().flatten())
+}
+
+/// The first registered ProRes backend this host can make.
+pub(crate) fn build_prores_backend() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    let list = prores_backend_factories().read().unwrap_or_else(PoisonError::into_inner).clone();
+    first_backend(list)
+}
+
+/// The first registered DNxHR backend this host can make.
+pub(crate) fn build_dnx_backend() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    let list = dnx_backend_factories().read().unwrap_or_else(PoisonError::into_inner).clone();
+    first_backend(list)
+}
+
+/// Clear the registered encoder backends and their counters. Test-only, like
+/// [`reset_frame_renderers_for_tests`].
+#[cfg(test)]
+pub(crate) fn reset_encoder_backends_for_tests() {
+    prores_backend_factories().write().unwrap_or_else(PoisonError::into_inner).clear();
+    dnx_backend_factories().write().unwrap_or_else(PoisonError::into_inner).clear();
+    GPU_ENCODED.store(0, Ordering::Relaxed);
+    GPU_ENCODE_FALLBACKS.store(0, Ordering::Relaxed);
 }
 
 pub fn register_audio_encoder(f: AudioEncoderFactory) {

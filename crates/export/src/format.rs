@@ -536,8 +536,11 @@ impl ExportSettings {
             return Err(ExportError::Unsupported("output frame rate must be positive and at most 1000 fps".into()));
         }
         self.validate_audio_settings()?;
-        if self.field_order != FieldOrder::Progressive && self.has_video() {
-            return Err(ExportError::Unsupported(format!("{} field order: FilmCraft's encoders write progressive frames", self.field_order.label())));
+        if self.has_video() && !self.supports_field_order(self.field_order) {
+            return Err(ExportError::Unsupported(format!(
+                "{} field order: FilmCraft writes interlaced video as ProRes (either field first); other formats are progressive",
+                self.field_order.label()
+            )));
         }
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));

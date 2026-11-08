@@ -1,7 +1,8 @@
 //! The per-frame picture pipeline shared by every export format: render the sequence at the
 //! output frame rate, fit it into the output frame (scale to fit / fill / stretch, pixel aspect),
 //! apply the Export effects (image, name and timecode overlays, video limiter) and convert to the
-//! encoder's input (straight sRGB RGBA8, or encoded R'G'B' floats for HDR).
+//! encoder's input (straight sRGB RGBA8, or encoded R'G'B' floats for HDR and for SDR encoders that
+//! code more than 8 bits).
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -142,6 +143,8 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Frames are encoded R'G'B' floats: HDR, and SDR for an encoder that codes more than 8 bits.
+    pub float_frames: bool,
     /// Keep straight alpha in the RGBA8 output instead of flattening over black.
     alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
@@ -179,6 +182,12 @@ impl Pipeline {
     /// With at most one active batch and no more tasks than the initial renderer capacity,
     /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
     /// Keep the immutable capacity even after a failed renderer retires the pool.
+    /// Whether [`Pipeline::frame`] returns the RGBA8 picture next to the floats: an SDR float frame
+    /// with alpha keeps it for the alpha channel; so does an HDR frame (its floats are straight colour).
+    pub(crate) fn keeps_rgba_with_floats(&self) -> bool {
+        self.float_frames && self.alpha
+    }
+
     pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
         let requested = requested.max(1);
         self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
@@ -239,6 +248,7 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            float_frames: hdr_out || settings.encodes_above_8_bit(),
             alpha: settings.keeps_alpha(),
             out_tf,
             effects,
@@ -246,8 +256,9 @@ impl Pipeline {
         })
     }
 
-    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
+    /// Output frame `f` as straight sRGB RGBA8 at the output size, or the encoded R'G'B' floats
+    /// (3 per pixel) for HDR exports and SDR exports to an encoder that codes more than 8 bits. With
+    /// alpha, an SDR float frame also carries the RGBA8 picture, for its alpha.
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
@@ -262,7 +273,9 @@ impl Pipeline {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                    // a GPU renderer: decoders may hand it pictures it decodes itself (ProRes / DNx
+                    // bitstreams, in compute shaders), as the monitors get them
+                    filmcraft_media::cancel::with_gpu_frames(true, || r.render(&self.project, self.seq, t, self.opts, sources))
                 })
                 .flatten()
             }
@@ -285,17 +298,35 @@ impl Pipeline {
         let lim = &self.effects.video_limiter;
         if let Some(tf) = self.out_tf.as_ref().filter(|_| self.hdr_out) {
             let mut out = vec![0f32; img.w * img.h * 3];
+            let straight = self.alpha;
             out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
                 for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                    o.copy_from_slice(&tf.encode([p[0], p[1], p[2]]));
+                    // with alpha the colour is straight, next to the alpha channel
+                    let k = match straight {
+                        false => 1.0,
+                        true if p[3] > 0.0 => 1.0 / p[3].min(1.0),
+                        true => 0.0,
+                    };
+                    o.copy_from_slice(&tf.encode([p[0] * k, p[1] * k, p[2] * k]));
                 }
             });
             if lim.enabled {
                 limit_f32(&mut out, lim.min_percent, lim.max_percent);
             }
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return (rgba, out);
+        }
+        if self.float_frames {
+            let mut out = srgb_floats(&img, self.alpha);
+            if lim.enabled {
+                limit_f32(&mut out, lim.min_percent, lim.max_percent);
+            }
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
+            // the float image is not needed any more: its buffer serves the next frame's layers
+            filmcraft_frame::pool::recycle_f32(img.px);
+            return (rgba, out);
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -503,6 +534,27 @@ fn resample_axis(src: &Image, n: usize, horizontal: bool) -> Image {
                 }
             }
             row[x * 4..x * 4 + 4].copy_from_slice(&acc);
+        }
+    });
+    out
+}
+
+/// The float counterpart of [`Image::over_black_rgba8`], or with `straight` of [`Image::to_rgba8`]:
+/// sRGB-encoded R'G'B' (3 per pixel, 0..1) of a premultiplied linear image. NaN counts as 0.
+pub(crate) fn srgb_floats(img: &Image, straight: bool) -> Vec<f32> {
+    if img.w == 0 || img.h == 0 {
+        return Vec::new();
+    }
+    let encode = |v: f32| if v > 0.0 { filmcraft_color::linear_to_srgb(v.min(1.0)) } else { 0.0 };
+    let mut out = vec![0f32; img.w * img.h * 3];
+    out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
+        for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
+            let k = match straight {
+                false => 1.0,
+                true if p[3] > 0.0 => 1.0 / p[3].min(1.0),
+                true => 0.0,
+            };
+            *o = [encode(p[0] * k), encode(p[1] * k), encode(p[2] * k)];
         }
     });
     out

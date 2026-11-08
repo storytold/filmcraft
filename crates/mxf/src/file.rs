@@ -539,6 +539,7 @@ fn picture_info(d: &Set) -> PictureInfo {
         display_width: u(tag::DISPLAY_WIDTH),
         display_height: u(tag::DISPLAY_HEIGHT),
         frame_layout: u(tag::FRAME_LAYOUT) as u8,
+        field_dominance: u(tag::FIELD_DOMINANCE) as u8,
         aspect_ratio: d.rational(tag::ASPECT_RATIO).unwrap_or_default(),
         component_depth: u(tag::COMPONENT_DEPTH),
         horizontal_subsampling: u(tag::HORIZONTAL_SUBSAMPLING),

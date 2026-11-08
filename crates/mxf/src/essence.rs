@@ -131,6 +131,9 @@ pub struct PictureInfo {
     pub display_height: u32,
     /// 0 full frame, 1 separate fields, 2 single field, 3 mixed fields, 4 segmented frame.
     pub frame_layout: u8,
+    /// The temporally first field of an interlaced layout: 1 (field 1, the default) or 2; 0 when
+    /// the descriptor does not say.
+    pub field_dominance: u8,
     /// Display aspect ratio of the whole image.
     pub aspect_ratio: Rational,
     pub component_depth: u32,

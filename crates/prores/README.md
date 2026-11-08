@@ -15,7 +15,7 @@ let f10 = decode_frame_with(&sample, &DecodeOptions { bit_depth: Some(10), threa
 decode_frame_into(&sample, &DecodeOptions::default(), &mut frame_buf)?; // reuses planes
 let hdr: FrameHeader = probe(&sample)?;                    // header only
 
-// Encode (progressive).
+// Encode (progressive; `EncoderConfig::interlace` codes two field pictures per frame).
 let mut enc = Encoder::new(Profile::Hq, 1920, 1080);       // or Encoder::with_config(EncoderConfig { .. })
 let sample: Vec<u8> = enc.encode(&frame)?;                 // the QuickTime sample for fourcc Profile::fourcc()
 ```
@@ -62,8 +62,13 @@ does), so the decoder doesn't need to know.
 
 ## Encoder
 
-- Progressive ProRes 422 (Proxy/LT/Standard/HQ) and 4444/4444 XQ. For 4444 the frame's alpha
+- ProRes 422 (Proxy/LT/Standard/HQ) and 4444/4444 XQ. For 4444 the frame's alpha
   plane is coded with 16-bit alpha coding by default (`EncoderConfig::encode_alpha`).
+- Progressive by default. `EncoderConfig::interlace` (`TopFieldFirst` / `BottomFieldFirst`) codes
+  each frame as two field pictures, the temporally first field first, with the interlaced scan
+  order: the frame header carries the interlace mode, every picture `ceil(height / 32)` macroblock
+  rows of its field (the even lines, `ceil(height / 2)` of them, or the odd lines), as the decoder
+  reads them. One rate control covers both pictures, so the frame keeps a uniform quantiser.
 - Input: planar `u16` at any depth from 8 to 16 (normally 10). The chroma format must match the
   profile. Edge macroblocks are padded by replicating the edge.
 - Flat quantisation matrices (all 4, not transmitted), 8 macroblocks per slice by default
@@ -91,7 +96,9 @@ exact IDCT and does not reproduce that approximation.
 
 `tests/it/oracle_encode.rs` encodes 1920×1080 frames with every profile (testsrc2, mandelbrot and
 noisy content; 4444 with an alpha disc) and writes them into a minimal test-only MOV. ffmpeg then
-decodes them with `-xerror`, with no errors, and agrees with this decoder within ±1. HQ PSNR is
+decodes them with `-xerror`, with no errors, and agrees with this decoder within ±1. Interlaced
+frames (top and bottom field first, 1920×1080, 720×487, 4444 with alpha at 333×201) do too, and
+ffmpeg reports the coded field order on every frame. HQ PSNR is
 69.9/69.2 dB (Y/C) on mandelbrot at 100% of the target rate. Busy content lands at 99.9–100.4%
 of the target.
 
@@ -134,8 +141,7 @@ HQ frame takes about 40 ms threaded.
 
 ## Gaps
 
-- The encoder is progressive-only (the decoder handles interlaced), uses flat quantisation
-  matrices (no perceptual matrices), and has no trellis/RDO.
+- The encoder uses flat quantisation matrices (no perceptual matrices) and has no trellis/RDO.
 - Output is not bit-exact with ffmpeg's integer IDCT; it stays within ±1 LSB of it (see above).
 - The 4:2:2 decoder output is fixed at the coded 10-bit precision unless another depth is
   requested; there is no direct output of packed formats (v210, etc.).

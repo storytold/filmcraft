@@ -88,9 +88,26 @@ fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The adapter off-screen GPU work runs on (export rendering, GPU encoding): the GPU the app's
+/// window asks for, the high-performance one (`WGPU_POWER_PREF` overrides it, as for the window).
+/// With no preference the first adapter listed can be an integrated GPU whose read-back memory is
+/// uncached.
+pub(crate) fn offscreen_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
+    let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+    // the adapter `request_adapter` would return, except where that one's driver is known to crash
+    // creating the device (`adapter::choose`); among the backends `WGPU_BACKEND` names, as for the
+    // window, when this instance has any of them
+    let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if let Some(named) = wgpu::Backends::from_env()
+        && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+    {
+        adapters.retain(|a| named.contains(a.get_info().backend.into()));
+    }
+    crate::adapter::pick(&adapters, None, power_preference).ok()
+}
+
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
@@ -112,20 +129,7 @@ impl ExportRenderer {
                     return None;
                 }
                 let instance = crate::adapter::native_instance();
-                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
-                // overrides it, as for the window). With no preference the first adapter listed
-                // can be an integrated GPU whose read-back memory is uncached.
-                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-                // the adapter `request_adapter` would return, except where that one's driver is
-                // known to crash creating the device (`adapter::choose`); among the backends
-                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
-                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-                if let Some(named) = wgpu::Backends::from_env()
-                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
-                {
-                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
-                }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = offscreen_adapter(&instance)?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
@@ -149,6 +153,11 @@ impl ExportRenderer {
         self.compositor.caps()
     }
 
+    /// Pictures decoded by the compositor's compute shaders, and those it handed to the CPU.
+    pub fn intra_decodes(&self) -> (u64, u64) {
+        self.compositor.intra_decodes()
+    }
+
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
@@ -162,14 +171,33 @@ impl ExportRenderer {
                 }
                 let prep = prepare(&plan);
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                // A picture the GPU decoded (ProRes, DNx) and found corrupt is marked once the
+                // GPU's report is read back: the monitors show its CPU decode from the next frame
+                // on, but an exported frame is final, so this one goes to the CPU renderer.
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
                 // an error reported while this frame was drawn leaves its pixels untrusted
-                if device_failed() {
+                if device_failed() || has_corrupt_coded_picture(&plan) {
                     return None;
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }
+    }
+}
+
+/// Whether a layer of `plan` is a coded picture the GPU decode found corrupt.
+fn has_corrupt_coded_picture(plan: &FramePlan) -> bool {
+    let corrupt =
+        |layers: &[filmcraft_render::plan::PlanLayer]| layers.iter().any(|l| matches!(&l.frame.data, filmcraft_frame::PixelData::Coded(c) if c.gpu_failed()));
+    match plan {
+        FramePlan::Layers { layers, .. } => corrupt(layers),
+        FramePlan::Composite { steps, .. } => steps.iter().any(|s| match s {
+            filmcraft_render::plan::PlanStep::Layers(layers) => corrupt(layers),
+            filmcraft_render::plan::PlanStep::Transition { inputs, .. } => inputs.iter().any(|ls| corrupt(ls)),
+            filmcraft_render::plan::PlanStep::Adjust { .. } => false,
+        }),
+        FramePlan::Image(_) => false,
     }
 }
 

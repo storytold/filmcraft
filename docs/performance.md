@@ -712,6 +712,37 @@ decode, and the UI-thread present (upload and draw, including the backdrop copie
 blended layers) stays at 9–10 ms p50, as for `stack3`. Before, every frame was composited on the
 CPU (≈ 2 cores more at 23.976 fps) and Full resolution could not keep up at this load.
 
+## Results (ADR 0002: ProRes and DNx decoded on the GPU, before → after)
+
+A ProRes frame through the GPU compositor, until the GPU is done (`cargo test --release -p
+filmcraft-gpu --lib prores_gpu_vs_cpu_bench -- --ignored --nocapture`): before, the CPU decodes
+(all cores), converts the planes to half floats and uploads them; after, the bitstream is
+uploaded and decoded in compute shaders. Frames are our encoder's at Apple's nominal rate over
+busy content (gradients, checkerboard, noise). Linux, AMD Ryzen 7 7800X3D (16 threads), RTX 4090,
+2026-10-19, 30 frames each:
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| ProRes 422 HQ 3840×2160 | 3.6 MB | 14.65 ms | **2.83 ms** | 5.2× |
+| ProRes 4444 3840×2160 | 5.5 MB | 19.37 ms | **3.76 ms** | 5.2× |
+| ProRes 422 HQ 1920×1080 | 0.9 MB | 3.55 ms | **1.28 ms** | 2.8× |
+
+DNxHD / DNxHR the same way (`dnx_gpu_vs_cpu_bench`), our encoder's frames over the same content,
+2026-10-20; a scan line is cut into 1024-bit segments decoded in parallel (ADR 0002). One
+invocation per scan line had taken 27 ms per 4K frame. The median of 60 frames (the mean of 30,
+first measured, put HQ 4K at 4.5 ms: GPU clocks change under a benchmark's bursts); the alpha
+rows code a matte with a soft-edged disc, a fine gradient over a quarter of the frame and a noisy
+corner, the worst case for lossless alpha (a matte without the gradient: 5.9 ms):
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| DNxHR HQ 8-bit 3840×2160 | 3.6 MB | 14.44 ms | **3.34 ms** | 4.3× |
+| DNxHR HQX 10-bit 3840×2160 | 3.6 MB | 16.73 ms | **3.19 ms** | 5.2× |
+| DNxHR HQX 10-bit 1920×1080 | 0.9 MB | 4.33 ms | **1.33 ms** | 3.3× |
+| DNxHR 444 10-bit RGB 3840×2160 | 7.3 MB | 57.81 ms | **6.01 ms** | 9.6× |
+| DNxHR HQX 10-bit 3840×2160 + DCT alpha | 5.5 MB | 23.55 ms | **6.37 ms** | 3.7× |
+| DNxHR HQX 10-bit 3840×2160 + lossless alpha | 5.5 MB | 21.18 ms | **17.49 ms** | 1.2× |
+
 ## Results (#847: AV1 in-loop filters in parallel row bands, before → after)
 
 The AV1 decoder ran deblocking, CDEF and loop restoration on one thread per frame. A single-tile

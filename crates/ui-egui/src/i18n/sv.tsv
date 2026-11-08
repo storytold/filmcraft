@@ -3510,6 +3510,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Dra: flytta · Alt-klicka: mjuk/hörn · Ctrl-klicka: radera
 	Drag inward to round the corners	Dra inåt för att runda hörnen
 	Include Alpha Channel	Inkludera alfakanal
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Alfa i DNxHR har ännu inte kontrollerats mot Avids avkodare.
 	Sequence Settings	Sekvensinställningar
 	Color Management	Färghantering
 	VR Properties	VR-egenskaper
@@ -3568,6 +3569,11 @@
 	Solid	Enfärgad
 	GPU Rendering	GPU-rendering
 	Composite on the GPU when available	Komponera på GPU:n när den finns tillgänglig
+	Hardware Encoding	Hårdvarukodning
+	Use the hardware encoder when available	Använd hårdvarukodaren när den finns tillgänglig
+	GPU Encoding	GPU-kodning
+	Encode on the GPU when available	Koda på GPU:n när den finns tillgänglig
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Beräkningsshaders på grafikkortet utför kodningen; en bildruta som GPU:n inte kan koda kodas på CPU:n.
 	Text to Speech	Text till tal
 	Edit Narration	Redigera berättarröst
 	Dock Panel	Docka panel

@@ -71,7 +71,7 @@ and `filmcraft-cli`.
 | `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
-| `gpu` | L3 | wgpu compositor (WGSL) |
+| `gpu` | L3 | wgpu compositor (WGSL); decodes ProRes and DNxHD / DNxHR in compute shaders for the monitors ([ADR 0002](adr/0002-gpu-intra-decode.md)) |
 | `golden` | L3 | test-only: golden-image tests of the CPU renderer and GPU-vs-CPU parity; empty library, dev-dependencies only |
 | `scopes` | L3 | video scope maths: waveform, parade, histogram, YUV / HLS vectorscopes, numeric summaries ([crates/scopes/README.md](../crates/scopes/README.md)) |
 | `export` | L3 | render → encode → mux pipeline, progress/cancel |
@@ -606,6 +606,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   frame header, `colr`, and for PQ `mdcv` (BT.2020 / D65, 1000 / 0.0001 cd/m²) and `clli`
   (MaxCLL/MaxFALL 0 = unknown, they are not measured) plus the matching H.264 SEI. `sdr: true`
   exports the tone-mapped SDR picture instead; render previews always do.
+- **SDR export depth.** Encoders that code more than 8 bits (ProRes, APV, DNxHR HQX, on their own or
+  in MXF) get the composited picture as sRGB-encoded floats, so a 10-bit source keeps its codes in
+  the file. All other encoders get RGBA8. ProRes 4444 with alpha keeps an 8-bit alpha.
 - **Monitors / display colour management.** The monitors are SDR (sRGB-encoded RGBA8 textures):
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR

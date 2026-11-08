@@ -214,6 +214,122 @@ fn dnxhr_export_roundtrip() {
     }
 }
 
+/// ProRes codes interlaced frames in either field order (QuickTime and MXF); other formats stay
+/// progressive.
+#[test]
+fn prores_exports_interlaced_frames() {
+    let (p, seq, m) = project();
+    for (order, il, detail) in
+        [(FieldOrder::UpperFirst, filmcraft_prores::Interlace::TopFieldFirst, 9u8), (FieldOrder::LowerFirst, filmcraft_prores::Interlace::BottomFieldFirst, 14)]
+    {
+        let path = tmp(&format!("prores_{order:?}.mov"));
+        let mut s = ExportSettings { format: Format::ProRes, path: path.clone(), field_order: order, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        assert!(s.supports_field_order(order));
+        assert_eq!(s.prores_interlace(), il);
+        assert!(s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video.contains(order.label()));
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        let fiel = data.windows(4).position(|w| w == b"fiel").expect("the movie says it is interlaced");
+        assert_eq!(data.get(fiel + 4..fiel + 6), Some(&[2u8, detail][..]), "{order:?}");
+        let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+        let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let v = file.tracks[vt].entries[0].video.as_ref().unwrap();
+        assert_eq!(v.field_info, Some(filmcraft_isobmff::FieldInfo { fields: 2, detail }), "{order:?}");
+        for i in 0..file.tracks[vt].samples.len() {
+            let sample = file.read_sample(data.as_slice(), vt, i).unwrap();
+            let h = filmcraft_prores::probe(&sample).unwrap();
+            assert_eq!(h.interlace, il, "the frames are field-coded");
+        }
+        let src = filmcraft_codecs::open_bytes("p.mov", data.into()).unwrap();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 24))).unwrap();
+        let px = f.to_rgba8();
+        let mid = ((90 * 320 + 160) * 4) as usize;
+        assert!(px[mid] > 240 && px[mid + 1] < 15 && px[mid + 2] < 15, "{order:?}: {:?}", &px[mid..mid + 4]);
+        // MXF OP1a ProRes too
+        let mxf = ExportSettings { format: Format::MxfOp1a, mxf_video_codec: MxfVideoCodec::ProRes, path: tmp(&format!("prores_{order:?}.mxf")), ..s.clone() };
+        assert!(mxf.supports_field_order(order));
+        export(&p, seq, &mxf, &m, &Progress::default()).unwrap();
+        let file = filmcraft_mxf::open(&std::fs::read(&mxf.path).unwrap()).unwrap();
+        let pic = file.tracks.iter().find_map(|t| t.picture.clone()).unwrap();
+        assert_eq!((pic.frame_layout, pic.field_dominance, pic.frame_height()), (1, if order == FieldOrder::LowerFirst { 2 } else { 1 }, 180), "{order:?}");
+    }
+    // progressive ProRes stays progressive; H.264 and DNxHR have no field coding
+    let prog = ExportSettings { format: Format::ProRes, ..Default::default() };
+    assert_eq!(prog.prores_interlace(), filmcraft_prores::Interlace::Progressive);
+    for (format, dnx) in [(Format::H264, ""), (Format::DnxHr, "hq")] {
+        let s = ExportSettings { format, dnx_profile: dnx.into(), field_order: FieldOrder::LowerFirst, path: tmp("interlaced.mov"), ..Default::default() };
+        assert!(!s.supports_field_order(FieldOrder::LowerFirst) && !s.supports_field_order(FieldOrder::UpperFirst), "{format:?}");
+        assert!(export(&p, seq, &s, &m, &Progress::default()).is_err(), "{format:?}");
+    }
+}
+
+/// Interlaced ProRes in QuickTime and MXF OP1a: ffprobe (an external test oracle only) reads the
+/// field order of the container and of every decoded frame, and ffmpeg decodes every frame without
+/// complaint. QuickTime's `fiel` 9 / 14 (Apple's codes for ProRes 1080i) read as `tb` / `bt`. (MXF
+/// says lower field first the way SMPTE ST 377-1 does, field dominance 2 with the SMPTE 274M line
+/// map; ffmpeg names that `tb`, "bottom displayed first", and would say `bb` only for a line map
+/// with other line numbers.)
+#[test]
+fn prores_interlaced_exports_ffprobe_oracle() {
+    let (Some(ffprobe), Some(ffmpeg)) =
+        (filmcraft_testkit::ffprobe_or_skip("interlaced ProRes probe"), filmcraft_testkit::ffmpeg_or_skip("interlaced ProRes decode"))
+    else {
+        return;
+    };
+    let (p, seq, m) = project();
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::MxfOp1a, "mxf")] {
+        for (profile, pix) in [("hq", "yuv422p10le"), ("4444", "yuv444p12le")] {
+            for (order, want, tff) in
+                [(FieldOrder::UpperFirst, if ext == "mxf" { "tt" } else { "tb" }, "1"), (FieldOrder::LowerFirst, if ext == "mxf" { "tb" } else { "bt" }, "0")]
+            {
+                let path = tmp(&format!("prores_il_{profile}_{order:?}_{format:?}.{ext}"));
+                let mut s = ExportSettings {
+                    format,
+                    path: path.clone(),
+                    prores_profile: profile.into(),
+                    mxf_video_codec: MxfVideoCodec::ProRes,
+                    field_order: order,
+                    ..Default::default()
+                };
+                s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(3)));
+                export(&p, seq, &s, &m, &Progress::default()).unwrap();
+                let what = format!("{profile} {order:?} {format:?}");
+                let probe = std::process::Command::new(&ffprobe)
+                    .args([
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=codec_name,width,height,pix_fmt,field_order",
+                        "-of",
+                        "compact=p=0",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                let probe = String::from_utf8_lossy(&probe.stdout);
+                assert!(probe.contains("codec_name=prores") && probe.contains("width=320|height=180"), "{what}: {probe}");
+                assert!(probe.contains(&format!("pix_fmt={pix}")), "{what}: {probe}");
+                assert!(probe.contains(&format!("field_order={want}")), "{what}: {probe}");
+                // the decoder reads the coded field order from every frame header
+                let frames = std::process::Command::new(&ffprobe)
+                    .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=interlaced_frame,top_field_first", "-of", "csv=p=0"])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                let frames = String::from_utf8_lossy(&frames.stdout);
+                let lines: Vec<&str> = frames.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                assert_eq!(lines.len(), 3, "{what}: {frames}");
+                assert!(lines.iter().all(|l| *l == format!("1,{tff}")), "{what}: {frames}");
+                let dec = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&path).args(["-f", "null", "-"]).output().unwrap();
+                assert!(dec.status.success() && dec.stderr.is_empty(), "{what}: {}", String::from_utf8_lossy(&dec.stderr));
+            }
+        }
+    }
+}
+
 /// Burn-in: an H.264 export of a dark-blue matte with a caption, decoded by ffmpeg (external test
 /// oracle only), has bright caption pixels in the lower part of the frame, and none without
 /// `burn_captions` or above the caption.
@@ -606,4 +722,204 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
     let plain = encode_all(false);
     assert!(!plain.is_empty());
     assert!(plain == encode_all(true), "converting ahead changed the packets");
+}
+
+/// The encoder-backend registries and counters are process-wide: the tests that fill them run one at a time.
+static BACKENDS: Mutex<()> = Mutex::new(());
+
+/// How the flaky test backends fail from their second frame on: 0 declines, 1 panics in `load`,
+/// 2 panics in `write` after the work was done.
+static FLAKY_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn flaky_fault() -> bool {
+    assert!(FLAKY_MODE.load(Ordering::SeqCst) != 1, "the device is lost");
+    false
+}
+
+fn flaky_write_fault() {
+    assert!(FLAKY_MODE.load(Ordering::SeqCst) != 2, "the device is lost mid-write");
+}
+
+/// The codec crate's own CPU functions behind the ProRes seam, failing from the second frame on.
+#[derive(Default)]
+struct FlakyProRes {
+    inner: filmcraft_prores::ReferenceBackend,
+    frames: u32,
+    flaky: bool,
+}
+
+impl filmcraft_prores::SliceBackend for FlakyProRes {
+    fn load(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &filmcraft_prores::Frame, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.frames += 1;
+        if self.flaky && self.frames >= 2 && FLAKY_MODE.load(Ordering::SeqCst) != 2 {
+            return flaky_fault();
+        }
+        self.inner.load(cfg, frame, slices)
+    }
+    fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+        let out = self.inner.write(qs);
+        if self.flaky && self.frames >= 2 {
+            flaky_write_fault();
+        }
+        out
+    }
+    fn alpha(&mut self) -> Option<Vec<Vec<u8>>> {
+        self.inner.alpha()
+    }
+}
+
+#[derive(Default)]
+struct FlakyDnx {
+    inner: filmcraft_dnx::ReferenceBackend,
+    frames: u32,
+    flaky: bool,
+}
+
+impl filmcraft_dnx::MacroblockBackend for FlakyDnx {
+    fn load(&mut self, cfg: &filmcraft_dnx::EncoderConfig, frame: &filmcraft_dnx::Frame) -> bool {
+        self.frames += 1;
+        if self.flaky && self.frames >= 2 && FLAKY_MODE.load(Ordering::SeqCst) != 2 {
+            return flaky_fault();
+        }
+        self.inner.load(cfg, frame)
+    }
+    fn bits(&mut self, q: u32) -> Option<Vec<u32>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u32]) -> Option<Vec<(Vec<u8>, u32)>> {
+        let out = self.inner.write(qs);
+        if self.flaky && self.frames >= 2 {
+            flaky_write_fault();
+        }
+        out
+    }
+}
+
+const BACKEND_FRAMES: i64 = 6;
+
+/// Export the first frames of the test clip to `format` and decode every one: the file has all of them, all red.
+fn export_and_check(format: Format, hardware: HardwareEncoding, name: &str) -> Vec<u8> {
+    let (p, seq, m) = project();
+    let path = tmp(name);
+    let mut s = ExportSettings { format, path: path.clone(), include_audio: false, hardware_encoding: hardware, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, BACKEND_FRAMES as u64, "{name}: every frame is exported");
+    let bytes = std::fs::read(&path).unwrap();
+    let src = filmcraft_codecs::open_bytes(name, bytes.clone().into()).unwrap();
+    for i in 0..BACKEND_FRAMES {
+        let px = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8();
+        assert!(px[0] > 240 && px[1] < 15 && px[2] < 15, "{name} frame {i}: {:?}", &px[..4]);
+    }
+    bytes
+}
+
+fn prores_reference() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    Some(Box::new(FlakyProRes::default()))
+}
+
+fn prores_flaky() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    Some(Box::new(FlakyProRes { flaky: true, ..Default::default() }))
+}
+
+fn dnx_reference() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    Some(Box::new(FlakyDnx::default()))
+}
+
+fn dnx_flaky() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    Some(Box::new(FlakyDnx { flaky: true, ..Default::default() }))
+}
+
+#[test]
+fn a_registered_prores_backend_encodes_under_auto_only() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_prores_backend(prores_reference);
+    let off = export_and_check(Format::ProRes, HardwareEncoding::Off, "be-pr-off.mov");
+    assert_eq!(gpu_render_stats().encoded, 0, "Off never takes the backend");
+    let auto = export_and_check(Format::ProRes, HardwareEncoding::Auto, "be-pr-auto.mov");
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (BACKEND_FRAMES as u64, 0), "{st:?}");
+    assert_eq!(off, auto, "a backend doing the CPU's work gives the CPU's file");
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_registered_dnx_backend_encodes_under_auto_only() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_dnx_backend(dnx_reference);
+    let off = export_and_check(Format::DnxHr, HardwareEncoding::Off, "be-dnx-off.mov");
+    assert_eq!(gpu_render_stats().encoded, 0, "Off never takes the backend");
+    let auto = export_and_check(Format::DnxHr, HardwareEncoding::Auto, "be-dnx-auto.mov");
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (BACKEND_FRAMES as u64, 0), "{st:?}");
+    assert_eq!(off, auto, "a backend doing the CPU's work gives the CPU's file");
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_failing_backend_never_breaks_an_export() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    for mode in 0u8..3 {
+        let panics = mode != 0;
+        FLAKY_MODE.store(mode, Ordering::SeqCst);
+        crate::reset_encoder_backends_for_tests();
+        crate::register_prores_backend(prores_flaky);
+        let off = export_and_check(Format::ProRes, HardwareEncoding::Off, "fl-pr-off.mov");
+        let auto = export_and_check(Format::ProRes, HardwareEncoding::Auto, "fl-pr-auto.mov");
+        let st = gpu_render_stats();
+        assert_eq!(st.encoded, 1, "mode {mode}: only the first frame is the backend's: {st:?}");
+        // a declining backend is asked for every frame; one that panicked is dropped for the rest
+        assert_eq!(st.encode_fallbacks, if panics { 1 } else { BACKEND_FRAMES as u64 - 1 }, "mode {mode}: {st:?}");
+        assert_eq!(off, auto, "mode {mode}: the CPU's frames are the CPU's");
+    }
+    FLAKY_MODE.store(0, Ordering::SeqCst);
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_failing_dnx_backend_never_breaks_an_export() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    for mode in 0u8..3 {
+        let panics = mode != 0;
+        FLAKY_MODE.store(mode, Ordering::SeqCst);
+        crate::reset_encoder_backends_for_tests();
+        crate::register_dnx_backend(dnx_flaky);
+        let off = export_and_check(Format::DnxHr, HardwareEncoding::Off, "fl-dnx-off.mov");
+        let auto = export_and_check(Format::DnxHr, HardwareEncoding::Auto, "fl-dnx-auto.mov");
+        let st = gpu_render_stats();
+        assert_eq!(st.encoded, 1, "mode {mode}: only the first frame is the backend's: {st:?}");
+        assert_eq!(st.encode_fallbacks, if panics { 1 } else { BACKEND_FRAMES as u64 - 1 }, "mode {mode}: {st:?}");
+        assert_eq!(off, auto, "mode {mode}: the CPU's frames are the CPU's");
+    }
+    FLAKY_MODE.store(0, Ordering::SeqCst);
+    crate::reset_encoder_backends_for_tests();
+}
+
+fn prores_factory_panics() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    panic!("no driver");
+}
+
+fn dnx_factory_panics() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    panic!("no driver");
+}
+
+#[test]
+fn a_backend_factory_that_panics_leaves_the_export_on_the_cpu() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_prores_backend(prores_factory_panics);
+    crate::register_dnx_backend(dnx_factory_panics);
+    for (format, name) in [(Format::ProRes, "pr"), (Format::DnxHr, "dnx")] {
+        let off = export_and_check(format, HardwareEncoding::Off, &format!("fp-{name}-off.mov"));
+        let auto = export_and_check(format, HardwareEncoding::Auto, &format!("fp-{name}-auto.mov"));
+        assert_eq!(off, auto, "{name}: the CPU's file");
+    }
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (0, 0), "{st:?}");
+    crate::reset_encoder_backends_for_tests();
 }
