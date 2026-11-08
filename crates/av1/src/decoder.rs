@@ -422,10 +422,23 @@ fn default_threads() -> usize {
     }
 }
 
-/// Frames decoded concurrently with `threads` threads (each in-flight 1080p frame holds a few
-/// tens of MB of state).
+/// Frame worker threads with `threads` threads. A frame worker spends most of its time waiting
+/// for the parse results and rows of its references, so there is one per thread (at least two,
+/// at most [`MAX_FRAME_THREADS`]); the memory is bounded by [`in_flight_limit`] instead.
 fn frame_threads(threads: usize) -> usize {
-    if threads <= 1 { 1 } else { threads.div_ceil(2).clamp(2, 8) }
+    if threads <= 1 { 1 } else { threads.clamp(2, MAX_FRAME_THREADS) }
+}
+
+const MAX_FRAME_THREADS: usize = 16;
+
+/// Luma samples of the frames in flight (each in-flight frame holds its state, parse record and
+/// samples, roughly 10 bytes per luma sample): ten 2160p frames.
+const IN_FLIGHT_SAMPLES: usize = 10 * 3840 * 2160;
+
+/// Frames submitted to the frame workers that may be unfinished: two more than the workers,
+/// fewer for large frames (at least four).
+fn in_flight_limit(frame_threads: usize, luma_samples: usize) -> usize {
+    (frame_threads + 2).min((IN_FLIGHT_SAMPLES / luma_samples.max(1)).max(4))
 }
 
 impl Default for Decoder {
@@ -841,6 +854,8 @@ impl Decoder {
         }
         let output = job.picture.clone().map(Output::Decoded);
         #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+        let fh_samples = (fh.upscaled_width as usize).max(fh.frame_width as usize) * fh.frame_height as usize;
+        #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
         if let Some(w) = &self.workers
             && let Some(tx) = &w.tx
         {
@@ -849,7 +864,8 @@ impl Decoder {
                 Ok(()) => {
                     self.in_flight.push_back(slot);
                     // Bound the frames in flight (memory): wait for the oldest.
-                    while self.in_flight.len() > self.max_in_flight {
+                    let limit = in_flight_limit(w.handles.len(), fh_samples);
+                    while self.in_flight.len() > limit {
                         let Some(s) = self.in_flight.pop_front() else { break };
                         let _ = s.wait();
                     }

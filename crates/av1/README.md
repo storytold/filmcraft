@@ -82,7 +82,8 @@ reach (row wavefront), and the in-loop filters (deblocking, CDEF, loop restorati
 64-row bands behind and publish each final band for the frames predicting from it
 (`decoder.rs` and `postfilter.rs` give the dependency rules). Frames with several tiles decode
 their tiles in parallel into private buffers that are merged afterwards, once their references
-are finished, and filter in parallel bands of 64 rows. Independent frames (hierarchical GOP
+are finished, and filter in parallel bands of 64 rows. There is one frame worker per thread (at
+most 16), and the frames in flight are bounded by their size. Independent frames (hierarchical GOP
 layers) decode concurrently. Results never depend on scheduling (the oracle tests compare 1 thread, many threads
 and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
