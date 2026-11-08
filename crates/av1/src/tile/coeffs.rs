@@ -458,6 +458,17 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     /// reconstruction does).
     pub(super) fn record_coeffs(&mut self, eob: usize, tx_sz: usize) {
         let scan = self.get_scan(tx_sz);
+        let scan = scan.get(..eob).unwrap_or(scan);
+        if !self.record.grow(4 * (3 + 2 * scan.len())) {
+            // Over the limit: the record is dropped (the frame is decoded again in one pass);
+            // `quant` must still be left zero.
+            for &pos in scan {
+                if let Some(q) = self.quant.get_mut(pos as usize) {
+                    *q = 0;
+                }
+            }
+            return;
+        }
         let rec = &mut self.record.coeffs;
         rec.push(eob as i32);
         if eob == 0 {
@@ -467,7 +478,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let count_at = rec.len();
         rec.push(0);
         let mut count = 0;
-        for &pos in scan.get(..eob).unwrap_or(scan) {
+        for &pos in scan {
             let v = std::mem::take(&mut self.quant[pos as usize]);
             if v != 0 {
                 rec.push(pos as i32);

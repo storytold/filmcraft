@@ -128,6 +128,9 @@ pub(crate) struct TileRecord {
     next_coeff: usize,
     next_sb: usize,
     next_sb_row: usize,
+    /// Bytes recorded and the most allowed.
+    pub bytes: usize,
+    pub limit: usize,
 }
 
 /// The motion of a recorded block (what a reference row wait depends on).
@@ -144,6 +147,16 @@ pub(crate) struct BlockMotion {
 }
 
 impl TileRecord {
+    /// Whether recording stopped at [`TileRecord::limit`] (the record is unusable).
+    pub fn over_limit(&self) -> bool {
+        self.bytes > self.limit
+    }
+
+    /// Account for `n` more recorded bytes; false once over the limit (nothing more is kept).
+    fn grow(&mut self, n: usize) -> bool {
+        self.bytes = self.bytes.saturating_add(n);
+        self.bytes <= self.limit
+    }
     /// The recorded blocks of superblock rows [first, end), for a tile `sbs_per_row` superblocks wide.
     pub fn row_blocks(&self, sbs_per_row: usize, first: usize, end: usize) -> impl Iterator<Item = BlockMotion> + '_ {
         let start: usize = self.sb_blocks.iter().take(first * sbs_per_row).map(|&n| n as usize).sum();
@@ -396,8 +409,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             self.mvs.cand_list = w.1;
         }
         if let Some(maps) = &rec.color_maps {
-            self.color_map_y.copy_from_slice(&maps.0);
-            self.color_map_uv.copy_from_slice(&maps.1);
+            if let Some(d) = self.color_map_y.get_mut(..maps.0.len()) {
+                d.copy_from_slice(&maps.0);
+            }
+            if let Some(d) = self.color_map_uv.get_mut(..maps.1.len()) {
+                d.copy_from_slice(&maps.1);
+            }
         }
         self.compute_prediction()?;
         self.residual()
@@ -406,8 +423,16 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     /// Records the block for [`Pass::Reconstruct`] (its variables as parsed).
     fn record_block(&mut self) {
         let b = &self.b;
+        // The rows of the color maps (stride 64) the block's palette prediction reads.
+        let map_rows = |n: usize, h: usize| if n > 0 { (h + 2).min(64) * 64 } else { 0 };
+        let rows_y = map_rows(b.palette_size_y, block_height(b.mi_size));
+        let rows_uv = map_rows(b.palette_size_uv, block_height(b.mi_size) >> self.fs.ssy);
+        let size = std::mem::size_of::<BlockRecord>() + rows_y + rows_uv + if b.motion_mode as usize == crate::spec_tables::LOCALWARP { 160 } else { 0 };
+        if !self.record.grow(size) {
+            return;
+        }
         let warp_samples = (b.motion_mode as usize == crate::spec_tables::LOCALWARP).then(|| Box::new((self.mvs.num_samples, self.mvs.cand_list)));
-        let color_maps = (b.palette_size_y > 0 || b.palette_size_uv > 0).then(|| Box::new((self.color_map_y.clone(), self.color_map_uv.clone())));
+        let color_maps = (rows_y + rows_uv > 0).then(|| Box::new((self.color_map_y[..rows_y].to_vec(), self.color_map_uv[..rows_uv].to_vec())));
         self.record.blocks.push(BlockRecord { b: b.clone(), current_q_index: self.current_q_index, warp_samples, color_maps });
     }
 

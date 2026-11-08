@@ -11,9 +11,9 @@
 //! So a frame can parse while its references are still being reconstructed, and reconstruct
 //! while their bottom is still being filtered. Within a frame, tiles and the post-filter row
 //! bands run on a shared worker pool; waits happen only on frame worker threads. Every result
-//! depends only on final reference data, so the output is identical whatever the scheduling. Shown pictures are
-//! returned in order; with frame threads they can come out of a later `decode` call (or
-//! `flush`), each carrying the `pts` of the temporal unit that showed it.
+//! depends only on final reference data, so the output is identical whatever the scheduling.
+//! Shown pictures are returned in order; with frame threads they can come out of a later
+//! `decode` call (or `flush`), each carrying the `pts` of the temporal unit that showed it.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -123,6 +123,12 @@ impl Progress {
         self.cv.notify_all();
     }
 
+    /// Rows published so far.
+    #[cfg(test)]
+    fn rows(&self) -> usize {
+        self.state.lock().map(|g| g.rows).unwrap_or(0)
+    }
+
     /// Blocks until rows [0, rows) are final; an error when the frame failed first.
     pub fn wait(&self, rows: usize) -> Result<()> {
         #[cfg(test)]
@@ -141,8 +147,9 @@ impl Progress {
 }
 
 /// Everything a decoding frame publishes for the frames that reference it and for the output:
-/// its parse results, the progress of its final rows and the finished frame. Each is set exactly
-/// once, also when decoding fails, so no waiter blocks forever.
+/// its parse results, its final rows (bands, then the row progress) and the finished frame. The
+/// parse results and the frame are set exactly once and the progress ends complete or failed,
+/// also when decoding fails, so no waiter blocks forever.
 pub(crate) struct FrameSlot {
     parsed: Slot<Arc<Parsed>>,
     pub progress: Progress,
@@ -271,9 +278,13 @@ struct FrameJob {
     draft: bool,
     #[cfg(test)]
     force_panic: bool,
-    /// Panic in the row wavefront after reconstructing this superblock row (tests).
+    /// Panic in the row wavefront at the first superblock row from this one after which rows
+    /// are published (tests).
     #[cfg(test)]
     panic_at_row: Option<usize>,
+    /// Overrides [`RECORD_BYTES_PER_SAMPLE`] (tests).
+    #[cfg(test)]
+    record_limit: Option<usize>,
 }
 
 /// A shown picture in output order.
@@ -390,10 +401,12 @@ pub struct Decoder {
     /// Make every frame job panic (tests of the worker panic handling).
     #[cfg(test)]
     force_panic: bool,
-    /// (frame number, superblock row): that frame panics in the row wavefront after the row,
+    /// (frame number, superblock row): that frame panics in the row wavefront after that row,
     /// once it has published rows that later frames may already be using (tests).
     #[cfg(test)]
     panic_at_row: Option<(usize, usize)>,
+    #[cfg(test)]
+    record_limit: Option<usize>,
     #[cfg(test)]
     frame_number: usize,
 }
@@ -459,6 +472,8 @@ impl Decoder {
             force_panic: false,
             #[cfg(test)]
             panic_at_row: None,
+            #[cfg(test)]
+            record_limit: None,
             #[cfg(test)]
             frame_number: 0,
         }
@@ -735,6 +750,8 @@ impl Decoder {
             force_panic: self.force_panic,
             #[cfg(test)]
             panic_at_row: self.panic_at_row.filter(|&(f, _)| f == self.frame_number).map(|(_, r)| r),
+            #[cfg(test)]
+            record_limit: self.record_limit,
         }));
         #[cfg(test)]
         {
@@ -890,6 +907,17 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     if fh.primary_ref_frame != PRIMARY_REF_NONE {
         used[fh.ref_frame_idx[fh.primary_ref_frame]] = true;
     }
+    // Prediction reads the reference planes with this frame's chroma format.
+    if !fh.frame_is_intra {
+        for i in 0..NUM_REF_FRAMES {
+            let Some(slot) = job.refs[i].as_ref().filter(|_| used[i]) else { continue };
+            let b = &slot.bands;
+            let c = &seq.color;
+            if b.num_planes != c.num_planes || b.subsampling_x != c.subsampling_x as usize || b.subsampling_y != c.subsampling_y as usize {
+                return Err(Error::Invalid("reference frame has another chroma format"));
+            }
+        }
+    }
     // Parse dependencies first (CDFs, segment ids, saved motion vectors), then the samples.
     let mut parsed: [Option<Arc<Parsed>>; NUM_REF_FRAMES] = Default::default();
     for i in 0..NUM_REF_FRAMES {
@@ -917,48 +945,66 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     // before reconstruction, and parsing does not wait for the reference samples; on one
     // thread each block is reconstructed as it is read.
     let split = pool.is_parallel();
-    let t = Timer::start();
-    let mut fs = FrameState::new(seq, fh);
-    if !split {
-        fs.refs = wait_samples()?;
-    }
-    fs.parsed = parsed;
-    fs.ref_info = job.ref_info.clone();
-    if fh.primary_ref_frame != PRIMARY_REF_NONE {
-        // load_previous_segment_ids( )
-        let (mi_cols, mi_rows) = (fs.mi.cols, fs.mi.rows);
-        let sh = &mut fs.sh;
-        if let Some(rf) = &sh.parsed[fh.ref_frame_idx[fh.primary_ref_frame]]
-            && fh.seg.enabled
-            && rf.mi_cols == mi_cols
-            && rf.mi_rows == mi_rows
-        {
-            sh.prev_segment_ids.copy_from_slice(&rf.segment_ids);
+    // The frame state before tile decoding (with the reference samples when `with_refs`).
+    let setup = |with_refs: bool| -> Result<(FrameState, Box<Cdfs>)> {
+        let mut fs = FrameState::new(seq, fh);
+        if with_refs {
+            fs.refs = wait_samples()?;
         }
-    }
-    if fh.use_ref_frame_mvs {
-        motion_field_estimation(&mut fs);
-    }
-    let mut cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {
-        Cdfs::new(fh.quant.base_q_idx)
-    } else {
-        let rf = fs.parsed[fh.ref_frame_idx[fh.primary_ref_frame]].as_ref().ok_or(Error::Invalid("primary reference frame missing"))?;
-        let mut c = rf.cdfs.clone();
-        c.clear_counts();
-        c
+        fs.parsed = parsed.clone();
+        fs.ref_info = job.ref_info.clone();
+        if fh.primary_ref_frame != PRIMARY_REF_NONE {
+            // load_previous_segment_ids( )
+            let (mi_cols, mi_rows) = (fs.mi.cols, fs.mi.rows);
+            let sh = &mut fs.sh;
+            if let Some(rf) = &sh.parsed[fh.ref_frame_idx[fh.primary_ref_frame]]
+                && fh.seg.enabled
+                && rf.mi_cols == mi_cols
+                && rf.mi_rows == mi_rows
+            {
+                sh.prev_segment_ids.copy_from_slice(&rf.segment_ids);
+            }
+        }
+        if fh.use_ref_frame_mvs {
+            motion_field_estimation(&mut fs);
+        }
+        let cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {
+            Cdfs::new(fh.quant.base_q_idx)
+        } else {
+            let rf = fs.parsed[fh.ref_frame_idx[fh.primary_ref_frame]].as_ref().ok_or(Error::Invalid("primary reference frame missing"))?;
+            let mut c = rf.cdfs.clone();
+            c.clear_counts();
+            c
+        };
+        Ok((fs, cdfs))
     };
+    let t = Timer::start();
+    let (mut fs, mut cdfs) = setup(!split)?;
     stats.add(Stage::Setup, t.secs());
     let t = Timer::start();
     // Time spent waiting for reference samples is not decoding time.
     let mut waited = 0.0;
-    let mut tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, if split { Pass::Parse } else { Pass::Full })?;
+    #[cfg(not(test))]
+    let record_limit = RECORD_BYTES_PER_SAMPLE;
+    #[cfg(test)]
+    let record_limit = job.record_limit.unwrap_or(RECORD_BYTES_PER_SAMPLE);
+    let mut tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, if split { Pass::Parse } else { Pass::Full }, record_limit)?;
+    // A frame whose record would take too much memory (pathological streams) is decoded again
+    // in one pass, as on one thread.
+    let one_pass = split && tiles.records.iter().any(|(_, r)| r.over_limit());
+    if one_pass {
+        let wait = Timer::start();
+        (fs, cdfs) = setup(true)?;
+        waited = wait.secs();
+        tiles = parse_tiles(pool, &mut fs, &cdfs, &job.tiles, Pass::Full, record_limit)?;
+    }
     stats.tiles += job.tiles.len() as u64;
     if !fh.disable_frame_end_update_cdf
         && let Some(s) = tiles.saved.take()
     {
         cdfs = s;
     }
-    if split {
+    if split && !one_pass {
         if tiles.whole {
             if let Some(state) = tiles.states.pop() {
                 fs.put_tile_state(state);
@@ -997,8 +1043,20 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
     }
     stats.add(Stage::Tiles, t.secs() - waited);
-    if !split {
+    if !split || one_pass {
         crate::postfilter::apply(&mut fs, stats, pool, job.draft);
+    }
+    if one_pass {
+        publish_bands(&job.slot, &fs.cur, 0, usize::MAX, fh.frame_height as usize);
+    }
+    if split {
+        // A frame using a reference only for its parse results (an intra frame's CDFs) still
+        // fails with it, as it does on one thread.
+        for i in 0..NUM_REF_FRAMES {
+            if used[i] {
+                job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?.wait()?;
+            }
+        }
     }
     stats.draft_frames += job.draft as u64;
     let t = Timer::start();
@@ -1168,7 +1226,7 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
         }
         other += f.secs();
         #[cfg(test)]
-        assert!(job.panic_at_row != Some(row), "forced panic in the row wavefront");
+        assert!(!(job.panic_at_row.is_some_and(|r| row >= r) && job.slot.progress.rows() > 0), "forced panic in the row wavefront after publishing rows");
     }
     // A reference that failed after publishing the rows used here still fails this frame, as
     // it does when frames are decoded one after another.
@@ -1180,6 +1238,11 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
     }
     Ok(other)
 }
+
+/// Most bytes a tile's parse record may take per luma sample of the tile. Typical streams need
+/// a fraction of this; past it (pathological streams: tiny blocks, large palettes, every
+/// coefficient coded) the frame is decoded in one pass instead, so memory stays bounded.
+const RECORD_BYTES_PER_SAMPLE: usize = 32;
 
 /// The tiles of a frame between parsing and reconstruction.
 struct FrameTiles {
@@ -1211,13 +1274,16 @@ impl FrameTiles {
 }
 
 /// Run `pass` (Full or Parse) over the tiles of a frame.
-fn parse_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)], pass: Pass) -> Result<FrameTiles> {
+/// `record_limit`: most record bytes per luma sample of a tile (see [`RECORD_BYTES_PER_SAMPLE`]).
+fn parse_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)], pass: Pass, record_limit: usize) -> Result<FrameTiles> {
     let ti = fs.fh.tile_info.clone();
     let ctx_tile = ti.context_update_tile_id as usize;
     let run = |sh: &FrameShared, t: &mut TileState, num: usize, data: &[u8]| -> Result<(Option<Box<Cdfs>>, TileRecord)> {
         t.intra_frame_y_mode_cdf = DEFAULT_INTRA_FRAME_Y_MODE_CDF;
         let mut td = TileDecoder::new(sh, t, data, Box::new(cdfs.clone()), num / ti.cols, num % ti.cols);
         td.pass = pass;
+        let (rows, cols) = (td.mi_row_end.saturating_sub(td.mi_row_start), td.mi_col_end.saturating_sub(td.mi_col_start));
+        td.record.limit = rows.saturating_mul(cols).saturating_mul(16 * record_limit);
         td.decode_tile()?;
         let rec = std::mem::take(&mut td.record);
         Ok(((num == ctx_tile).then_some(td.cdf), rec))
@@ -1480,6 +1546,8 @@ mod tests {
             force_panic: false,
             #[cfg(test)]
             panic_at_row: None,
+            #[cfg(test)]
+            record_limit: None,
         }));
         decoder
     }
@@ -1662,22 +1730,43 @@ mod tests {
         }
     }
 
-    /// The temporal units of a generated inter fixture (made by the oracle tests with ffmpeg),
-    /// or None (reported) when it is not there.
-    fn inter_fixture(name: &str) -> Option<Vec<Vec<u8>>> {
-        let path = filmcraft_testkit::fixtures_dir("av1").join(name);
-        let Ok(d) = std::fs::read(&path) else {
-            filmcraft_testkit::skip("av1 wavefront", &format!("{} is missing (run the oracle tests first)", path.display()));
+    /// Inter test streams made with ffmpeg / SVT-AV1 (None, reported, without them): several
+    /// superblock rows and hierarchical references; odd size; super-resolution; 2x2 tiles.
+    const STREAMS: [(&str, &str, &str); 4] = [
+        ("wavefront_unit_352x288", "testsrc2=size=352x288:rate=25", "-preset 8 -crf 35"),
+        ("wavefront_unit_odd", "testsrc2=size=203x117:rate=25,noise=alls=15:allf=t", "-preset 8 -crf 40"),
+        ("wavefront_unit_superres", "testsrc2=size=416x240:rate=25", "-preset 8 -crf 35 -svtav1-params superres-mode=1:superres-denom=12"),
+        ("wavefront_unit_tiles", "mandelbrot=size=650x370:rate=25", "-preset 8 -crf 32 -svtav1-params tile-columns=1:tile-rows=1"),
+    ];
+
+    fn inter_stream((name, src, args): (&str, &str, &str)) -> Option<Vec<Vec<u8>>> {
+        let ff = filmcraft_testkit::ffmpeg_or_skip("av1 wavefront")?;
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libsvtav1") {
+            filmcraft_testkit::skip("av1 wavefront", "this ffmpeg has no libsvtav1 encoder");
             return None;
-        };
-        let mut pos = usize::from(u16::from_le_bytes([*d.get(6)?, *d.get(7)?]));
+        }
+        let out = filmcraft_testkit::fixtures_dir("av1").join(format!("{name}.ivf"));
+        let path = filmcraft_testkit::fixtures::generate(&out, |tmp| {
+            std::process::Command::new(&ff)
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src, "-frames:v", "16", "-pix_fmt", "yuv420p", "-c:v", "libsvtav1"])
+                .args(args.split_whitespace())
+                .args(["-f", "ivf"])
+                .arg(tmp)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        });
+        let path = path.unwrap_or_else(|| panic!("ffmpeg has libsvtav1 but could not encode {name}"));
+        let d = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut pos = usize::from(u16::from_le_bytes([d[6], d[7]]));
         let mut out = Vec::new();
         while let Some(h) = d.get(pos..pos + 12) {
             let n = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
             pos += 12;
-            out.push(d.get(pos..pos + n)?.to_vec());
+            out.push(d[pos..pos + n].to_vec());
             pos += n;
         }
+        assert_eq!(out.len(), 16, "{name}: temporal units");
         Some(out)
     }
 
@@ -1699,8 +1788,9 @@ mod tests {
 
     #[test]
     fn jittered_wavefront_gives_the_single_thread_pictures() {
-        for name in ["inter_testsrc_p3.ivf", "inter_noise_odd_p6.ivf", "inter_superres.ivf", "inter_tiles_odd_10bit.ivf"] {
-            let Some(tus) = inter_fixture(name) else { continue };
+        for stream in STREAMS {
+            let Some(tus) = inter_stream(stream) else { return };
+            let name = stream.0;
             let (want, errors) = decode_tus(Decoder::with_threads(1), &tus);
             assert_eq!(errors, 0, "{name}");
             let _jitter = JitterGuard::on();
@@ -1716,8 +1806,27 @@ mod tests {
     }
 
     #[test]
+    fn frames_over_the_record_limit_decode_in_one_pass() {
+        for stream in [STREAMS[0], STREAMS[3]] {
+            let Some(tus) = inter_stream(stream) else { return };
+            let name = stream.0;
+            let (want, _) = decode_tus(Decoder::with_threads(1), &tus);
+            for (threads, limit) in [(3, 0), (8, 0), (8, 1)] {
+                let tus = tus.clone();
+                let (got, errors) = within_a_minute(move || {
+                    let mut dec = Decoder::with_threads(threads);
+                    dec.record_limit = Some(limit);
+                    decode_tus(dec, &tus)
+                });
+                assert_eq!(errors, 0, "{name}: threads {threads}, limit {limit}");
+                assert!(got == want, "{name}: threads {threads}, limit {limit}: pictures differ");
+            }
+        }
+    }
+
+    #[test]
     fn a_reference_panicking_after_publishing_rows_fails_without_a_hang() {
-        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        let Some(tus) = inter_stream(STREAMS[0]) else { return };
         let _jitter = JitterGuard::on();
         // Frame 1 is the first inter frame; later frames predict from it.
         for threads in [2, 3, 8] {
@@ -1735,7 +1844,7 @@ mod tests {
 
     #[test]
     fn dropping_a_busy_decoder_does_not_hang() {
-        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        let Some(tus) = inter_stream(STREAMS[0]) else { return };
         for threads in [2, 3, 8, 16] {
             for cut in [1, 3, tus.len() / 2] {
                 let tus = tus.clone();
@@ -1752,7 +1861,7 @@ mod tests {
 
     #[test]
     fn a_flush_mid_stream_keeps_the_pictures() {
-        let Some(tus) = inter_fixture("inter_testsrc_p3.ivf") else { return };
+        let Some(tus) = inter_stream(STREAMS[0]) else { return };
         let (want, _) = decode_tus(Decoder::with_threads(1), &tus);
         for threads in [2, 8] {
             for cut in [2, 5, tus.len() / 2] {

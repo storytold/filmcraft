@@ -74,11 +74,16 @@ with libdav1d: **bit-exact** on all 6 fixtures.
 
 `Decoder::new()` uses all cores (`Decoder::with_threads(1)` decodes on the calling thread; on
 wasm32, or without the default `threads` feature, everything runs on the calling thread). Headers are parsed in order; each frame is
-then decoded by a frame worker once the reference frames it reads are finished, so independent
-frames (hierarchical GOP layers) decode concurrently; tiles of a frame decode in parallel into
-private buffers that are merged afterwards; the in-loop filters (deblocking, CDEF, loop
-restoration) each run in parallel bands of 64 rows (`postfilter.rs` explains why the bands are
-independent). Results never depend on scheduling (the oracle tests compare 1 thread, many threads
+then decoded by a frame worker. With worker threads it first reads the symbols of all its tiles,
+which needs only the parse results of its references (CDFs, segment ids, saved motion vectors),
+publishes its own, and then reconstructs from the recorded blocks. A one-tile frame reconstructs
+superblock row by superblock row, each row waiting only for the reference rows its motion vectors
+reach (row wavefront), and the in-loop filters (deblocking, CDEF, loop restoration) follow a few
+64-row bands behind and publish each final band for the frames predicting from it
+(`decoder.rs` and `postfilter.rs` give the dependency rules). Frames with several tiles decode
+their tiles in parallel into private buffers that are merged afterwards, once their references
+are finished, and filter in parallel bands of 64 rows. Independent frames (hierarchical GOP
+layers) decode concurrently. Results never depend on scheduling (the oracle tests compare 1 thread, many threads
 and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
 

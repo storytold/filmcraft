@@ -266,8 +266,9 @@ pub struct BandPlane {
     stride: usize,
     rows: usize,
     log2: u32,
-    /// Returned for rows of a band that is not published (a scheduling bug, never in a correct
-    /// run): zeros instead of a panic.
+    /// Returned for rows of a band that is not published: zeros instead of a panic. Readers wait
+    /// for the row progress first and references of another chroma format are refused, so
+    /// this only happens through a scheduling bug.
     missing: Box<[u16]>,
 }
 
@@ -322,6 +323,8 @@ impl BandPlane {
 pub struct BandFrame {
     pub planes: [BandPlane; 3],
     pub num_planes: usize,
+    pub subsampling_x: usize,
+    pub subsampling_y: usize,
 }
 
 impl BandFrame {
@@ -335,7 +338,7 @@ impl BandFrame {
             let (sx, sy) = if p == 0 { (0, 0) } else { (subsampling_x, subsampling_y) };
             BandPlane::new(aw >> sx, (height + sy) >> sy, BAND_LOG2 - sy as u32)
         });
-        BandFrame { planes, num_planes }
+        BandFrame { planes, num_planes, subsampling_x, subsampling_y }
     }
 
     /// Number of bands (of 64 luma rows).
