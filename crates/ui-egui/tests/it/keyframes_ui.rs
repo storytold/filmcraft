@@ -938,3 +938,33 @@ fn effect_controls_delete_with_no_selection_leaves_the_clip_and_keyframes() {
     assert_eq!(items(&mut d), clips_before, "the selected timeline clip is not deleted");
     assert_eq!(d.undo_len(), undo_before, "no undo step was created");
 }
+
+/// A shortcut set saved before this change has no Effect Controls keyframe-delete binding, so Delete
+/// there falls to the application-wide Clear (which deletes the clip). Even then, with keyframes
+/// selected it deletes the keyframes, not the clip: Clear / Ripple Delete are intercepted in the panel.
+#[test]
+fn effect_controls_delete_without_the_panel_binding_still_spares_the_clip() {
+    let (mut d, clip) = Driver::demo();
+    // A Premiere-compatible set binds Delete to Clear application-wide; dropping the Effect Controls
+    // keyframe-delete binding mimics such a set customized before this change existed, so Delete there
+    // reaches the clip-deleting Clear.
+    d.exec("shortcuts.loadPreset", json!({"name": "Premiere Pro Compatible"}));
+    d.exec("shortcuts.clear", json!({"command": "effects.deleteKeyframes"}));
+    d.frames(2);
+    three_keyframes_first_easing_in(&mut d, &clip);
+    let scale_times = d.scale(&clip).0;
+    let effect = {
+        let s = &d.harness.state().session;
+        let it = s.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+        it.effects.iter().position(|e| e.effect == "motion").unwrap()
+    };
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().len();
+    let clips_before = items(&mut d);
+    let sel = json!([{"clip": clip.id, "effect": effect, "param": "scale", "time": scale_times[0]}]);
+    d.ok("ui.set", json!({"keyframeSelection": sel, "focused": "EffectControls"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    assert_eq!(items(&mut d), clips_before, "the clip is not deleted even without the panel binding");
+    assert!(!d.scale(&clip).0.contains(&scale_times[0]), "the selected keyframe was deleted instead");
+}

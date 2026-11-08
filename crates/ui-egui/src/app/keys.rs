@@ -146,14 +146,14 @@ impl FilmcraftApp {
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for id in fire {
-            // Delete / Backspace in Effect Controls removes every selected keyframe (across
-            // parameters), not the clip the application-wide Clear would delete: the panel owns the
-            // selection. With nothing selected the key does nothing, so it never falls through to
-            // deleting the clip from this panel.
-            if self.ui.focused == PanelKind::EffectControls && id == "effects.deleteKeyframes" {
+            // In Effect Controls the clip-clearing keys act on the selected keyframes and never
+            // delete the clip, whatever a shortcut set maps them to: the panel keyframe binding
+            // handles default sets, and intercepting Clear / Ripple Delete covers sets customized
+            // before it existed. With nothing selected the key does nothing (it never deletes the clip).
+            if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "effects.deleteKeyframes" | "edit.clear" | "edit.rippleDelete") {
                 if !self.ui.keyframe_selection.is_empty() {
                     let params = json!({ "keyframes": self.ui.keyframe_selection });
-                    match menus::invoke(self, ctx, &id, params) {
+                    match menus::invoke(self, ctx, "effects.deleteKeyframes", params) {
                         // Drop the now-deleted keys so a second Delete does not reference stale refs.
                         Ok(_) => self.ui.keyframe_selection.clear(),
                         Err(e) => self.ui.status = e,
