@@ -1061,9 +1061,9 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/whatever-industries/craft-libs.git?rev=c6c6e32a9bea41c11a39bd7d6991425f62a1b247#c6c6e32a9bea41c11a39bd7d6991425f62a1b247"
+source = "git+https://github.com/whatever-industries/craft-libs.git?rev=ea5c2fade816a7a3642d9b1bb1cb3e43c8b06b8f#ea5c2fade816a7a3642d9b1bb1cb3e43c8b06b8f"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/whatever-industries/craft-libs.git?rev=c6c6e32a9bea41c11a39bd7d6991425f62a1b247)",
+ "craft-media 0.1.0 (git+https://github.com/whatever-industries/craft-libs.git?rev=ea5c2fade816a7a3642d9b1bb1cb3e43c8b06b8f)",
  "thiserror 2.0.21",
 ]
 
@@ -1111,7 +1111,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/whatever-industries/craft-libs.git?rev=c6c6e32a9bea41c11a39bd7d6991425f62a1b247#c6c6e32a9bea41c11a39bd7d6991425f62a1b247"
+source = "git+https://github.com/whatever-industries/craft-libs.git?rev=ea5c2fade816a7a3642d9b1bb1cb3e43c8b06b8f#ea5c2fade816a7a3642d9b1bb1cb3e43c8b06b8f"
 
 [[package]]
 name = "craft-ui"
