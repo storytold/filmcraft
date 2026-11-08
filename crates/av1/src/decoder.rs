@@ -934,10 +934,22 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
             }
         }
     }
-    // Parse dependencies first (CDFs, segment ids, saved motion vectors), then the samples.
+    // Parse dependencies first, then the samples. Parsing reads the CDFs and segment ids of
+    // the primary reference frame, and the saved motion vectors of the inter references only
+    // with use_ref_frame_mvs; the parse results of the other references are not waited for
+    // (their failures still fail this frame through the waits for their samples below).
+    let mut parse_deps = [false; NUM_REF_FRAMES];
+    if fh.primary_ref_frame != PRIMARY_REF_NONE {
+        parse_deps[fh.ref_frame_idx[fh.primary_ref_frame]] = true;
+    }
+    if fh.use_ref_frame_mvs {
+        for i in 0..REFS_PER_FRAME {
+            parse_deps[fh.ref_frame_idx[i]] = true;
+        }
+    }
     let mut parsed: [Option<Arc<Parsed>>; NUM_REF_FRAMES] = Default::default();
     for i in 0..NUM_REF_FRAMES {
-        if used[i] {
+        if parse_deps[i] {
             let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
             parsed[i] = Some(slot.wait_parsed()?);
         }
