@@ -591,3 +591,19 @@ fn lumetri_panel_menu_offers_export_cube() {
     assert!(text.contains("LUT_3D_SIZE 9"), "{text}");
     std::fs::remove_file(&path).ok();
 }
+
+/// An explicit clip does not require a timeline selection when the save dialog is opened.
+#[test]
+fn export_cube_dialog_honours_an_explicit_clip_without_a_selection() {
+    let mut d = Driver::demo();
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.harness.state_mut().session.state.selection.clear();
+    let path = std::env::temp_dir().join(format!("filmcraft-explicit-grade-{}.cube", std::process::id()));
+    let answer = path.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    let result = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"clip": clip, "size": 9}}));
+    assert_eq!(result["size"], 9, "{result}");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("LUT_3D_SIZE 9"));
+    std::fs::remove_file(&path).unwrap();
+}
