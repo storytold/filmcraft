@@ -232,6 +232,33 @@ fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[filmcr
 const AVC_ORDER_HEAD: usize = 2 << 10;
 const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
 
+/// The first DNG's developed size, pixel format and as-shot white balance (or why it failed).
+type DngProbe = Result<(u32, u32, String, Option<(f64, f64)>), MediaError>;
+
+/// CinemaDNG: the first DNG's developed size, pixel format and as-shot white balance (the RGBA
+/// descriptor describes the decoded picture, but nothing checks it does).
+fn probe_cinema_dng(file: &MxfFile, bytes: &crate::Src, track: usize, name: &str) -> DngProbe {
+    let s = file.read_sample(bytes, track, 0).map_err(|e| MediaError::Decode(e.to_string()))?;
+    let (w, h, pf, _) = filmcraft_media::still::dng::probe(name, &s)?;
+    Ok((w, h, pf, filmcraft_media::still::dng::as_shot(&s)))
+}
+
+/// CinemaDNG: the codec name for the probe result, setting up the developed-picture cache, or
+/// the reason the track cannot be played.
+fn cinema_dng_codec(probe: Option<&DngProbe>, dng: &mut Option<DngPictures>, unsupported: &mut Option<String>) -> String {
+    match probe {
+        Some(Ok((_, _, _, as_shot))) => {
+            *dng = Some(DngPictures { cache: filmcraft_media::FrameCache::new(256 << 20), settings: Default::default(), as_shot: *as_shot });
+            filmcraft_media::still::dng::MXF_CODEC.into()
+        }
+        Some(Err(e)) => {
+            *unsupported = Some(format!("CinemaDNG in MXF: {e}"));
+            "CinemaDNG (unsupported)".into()
+        }
+        None => "CinemaDNG".into(),
+    }
+}
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -299,14 +326,7 @@ impl MxfSource {
                 .then(|| file.read_sample(&bytes, vi, 0).ok())
                 .flatten()
                 .and_then(|s| Some((filmcraft_mpeg2v::probe(&s)?, filmcraft_mpeg2v::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
-            // CinemaDNG: the first DNG's developed size and format (the RGBA descriptor describes
-            // the decoded picture, but nothing checks it does)
-            let dng_probe = (t.codec == Codec::CinemaDng).then(|| {
-                file.read_sample(&bytes, vi, 0).map_err(|e| filmcraft_media::MediaError::Decode(e.to_string())).and_then(|s| {
-                    let (w, h, pf, _) = filmcraft_media::still::dng::probe(name, &s)?;
-                    Ok((w, h, pf, filmcraft_media::still::dng::as_shot(&s)))
-                })
-            });
+            let dng_probe = (t.codec == Codec::CinemaDng).then(|| probe_cinema_dng(&file, &bytes, vi, name));
             let (w, h) = match (&mpeg, &dng_probe) {
                 (Some((info, _, _)), _) => (info.width, info.height),
                 (None, Some(Ok((w, h, _, _)))) => (*w, *h),
@@ -333,17 +353,7 @@ impl MxfSource {
                 Codec::ProRes { profile } => prores_name(profile).into(),
                 c @ Codec::Avc { .. } => c.name().into(),
                 Codec::Mpeg2 if mpeg.is_some() => mpeg.as_ref().map(|m| m.0.codec_name()).unwrap_or_default(),
-                Codec::CinemaDng => match &dng_probe {
-                    Some(Ok((_, _, _, as_shot))) => {
-                        dng = Some(DngPictures { cache: filmcraft_media::FrameCache::new(256 << 20), settings: Default::default(), as_shot: *as_shot });
-                        filmcraft_media::still::dng::MXF_CODEC.into()
-                    }
-                    Some(Err(e)) => {
-                        unsupported = Some(format!("CinemaDNG in MXF: {e}"));
-                        "CinemaDNG (unsupported)".into()
-                    }
-                    None => "CinemaDNG".into(),
-                },
+                Codec::CinemaDng => cinema_dng_codec(dng_probe.as_ref(), &mut dng, &mut unsupported),
                 other => {
                     let why = format!("{} video in MXF (FilmCraft has no {} decoder)", other.name(), other.name());
                     unsupported = Some(why);
@@ -370,11 +380,10 @@ impl MxfSource {
                 pixel_format = crate::video::mpeg2_pixel_format(info, fo);
                 mpeg2_header = header.clone();
             }
+            let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
+            // CinemaDNG (developed: `dng` is set exactly when the probe succeeded)
             if let Some(Ok((_, _, pf, _))) = &dng_probe {
                 pixel_format = pf.clone();
-            }
-            let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
-            if dng.is_some() {
                 color = filmcraft_media::still::dng::LINEAR_709;
             } else if p.full_range() {
                 color.range = filmcraft_color::Range::Full;
