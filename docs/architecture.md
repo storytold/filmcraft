@@ -562,8 +562,10 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
 
 ```text
 frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour
-  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF ─► 3×3 to working gamut
-  ─► BT.2390 tone map (HDR/log into an SDR sequence, Auto Tone Map Media) ─► gamut compression
+  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF (γ = 1.2 into HDR,
+     or the SDR display's ≈ 0.846 straight to SDR light — the `hlgSdr` choice)
+  ─► BT.2446 A (HLG into SDR, Auto Tone Map Media, broadcast choice) ─► 3×3 to working gamut
+  ─► BT.2390 (PQ into SDR, Auto Tone Map Media) ─► gamut mapping
   ─► effects + compositing in working linear (1.0 = reference white = SDR white = 203 cd/m²)
   ─► monitors: working → SDR BT.709 (tone map from HDR, gamut map from BT.2020)
   ─► HDR export: working → PQ/HLG BT.2020 R'G'B' → Y'CbCr (BT.2020 NCL) + VUI/colr/mdcv/clli/SEI
@@ -578,9 +580,20 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
-  sRGB decodes exactly as before, and its layers stay on the GPU. Log, HDR or wide-gamut media,
-  and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
-  as pre-rendered images, like layers with effects).
+  sRGB decodes exactly as before, and its layers stay on the GPU. Display-referred HDR/wide-gamut
+  Y'CbCr on a plain Rec. 709 sequence also stays on the GPU: `GpuInputParams` carries the curve,
+  HLG OOTF, tone-map method, gamut matrix and desaturation. BT.2446 A runs in BT.2020 before the
+  matrix; BT.2390 retains its post-matrix stage. Log and HDR/wide-gamut sequences are converted
+  on the CPU and drawn as pre-rendered images.
+- **HLG → SDR.** Sequence colour settings pick the conversion (`hlgSdr`): the default
+  re-runs the BT.2100 OOTF at the SDR display's system gamma (≈ 0.846 at 100 cd/m², matching
+  phones and Apple's own conversion, no second tone map); `bt2446` keeps the 1000-nit OOTF
+  plus BT.2446-1 Method A (the broadcast convention). Either way the same conversion is
+  shared by Source, automatic HLG input into an SDR sequence, HLG sequence monitoring
+  (the output transform composes the two OOTFs into one luma ratio) and SDR export.
+  SDR output is relative linear BT.709 before sRGB display encoding. The HDR working
+  scale remains 203 cd/m² = 1, and HDR export bypasses SDR conversion. Projects without
+  the setting default to the OOTF conversion.
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
@@ -608,8 +621,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   exports the tone-mapped SDR picture instead; render previews always do.
 - **Monitors / display colour management.** The monitors are SDR (sRGB-encoded RGBA8 textures):
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
-  wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
-  values above SDR white are never sent to the display. The scopes of an HDR sequence show the
+  wired up: HDR values above SDR white are never sent to the display. Dolby Vision per-frame
+  metadata is not processed, so HLG SDR conversion need not match QuickTime HDR playback.
+  The scopes of an HDR sequence show the
   working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
 - **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
