@@ -23,10 +23,11 @@ only as an external fixture generator and test oracle.
 | 8-, 10-, 12-bit; 4:2:2, 4:4:4; Y′CbCr and RGB (per-macroblock ACF) | done (12-bit: our encoder's streams, compared with ffmpeg's decode) |
 | 4:2:0 (RI only) | done, not oracle-tested (ffmpeg can't encode it) |
 | Interlaced: field-coded (two coding units) and frame-coded MACF | done |
-| Alpha: DCT-coded and lossless differential RLE (Amendment 1 for HD CIDs) | done, not oracle-tested (no encoder produces it) |
+| Alpha: DCT-coded and lossless differential RLE (Amendment 1 for HD CIDs) | done, not oracle-tested (no third-party encoder produces it; round-trips with ours) |
 | CBR padding, VBR, scan-line indices, EOF signature / CRC flag | done |
 | Encoder: DNxHR LB, SQ, HQ (8-bit), HQX (10/12-bit), 444 (10/12-bit); CBR | done |
-| Encoder: DNxHD (HD CIDs), interlaced, alpha, VBR | not yet |
+| Encoder: alpha, DCT-coded or lossless (`EncoderConfig::alpha`) | done |
+| Encoder: DNxHD (HD CIDs), interlaced, VBR | not yet |
 
 ## API
 
@@ -41,6 +42,11 @@ let name = cid_name(hdr.cid);                            // "DNxHR HQX", "DNxHD 
 let mut enc = Encoder::new(Profile::Hq, 1920, 1080)?;    // or Encoder::with_config(EncoderConfig { .. })
 let sample: Vec<u8> = enc.encode(&frame)?;               // exactly enc.frame_size() bytes (CBR)
 ```
+
+`frame_layout(&sample)` parses and checks a frame's coding units and scan indices as the decoder
+does and returns where every macroblock scan line is; with `layout::tables` (VLC tables, weights,
+zig-zag order, DCT basis, block layouts) it is what `filmcraft-gpu` decodes frames on the GPU
+with (all but CID 1260 and 4:2:0).
 
 `Frame { width, height, chroma, rgb, bit_depth, y, cb, cr: Vec<u16>, alpha, interlace,
 color_volume, cid, par }` holds planar samples without row padding. Interlaced frames are woven
@@ -90,6 +96,11 @@ the prose of §7.3.1.2; we follow the prose (normative text takes precedence).
 - DNxHR LB/SQ/HQ (8-bit 4:2:2), HQX (10- or 12-bit 4:2:2) and 444 (10- or 12-bit 4:4:4,
   Y′CbCr or RGB), progressive, CBR at exactly the equation 7.1 frame size (e.g. 917 504 bytes
   for 1080p HQ, 606 208 for SQ). Input at any depth 8–16 is rescaled to the coded depth.
+- Alpha (`EncoderConfig::alpha`): DCT-coded like luma with each macroblock's quantiser, or
+  lossless — per macroblock the differential run lengths (each run with whichever predictor,
+  previous sample or linear, extends it furthest) or the raw samples where those are shorter.
+  The frame grows by equation 7.1's alpha factor; lossless alpha that does not fit the budget is
+  an error.
 - Every macroblock is transformed once (orthonormal FDCT) and stored pre-divided by its weights.
   Rate control binary-searches the smallest uniform `qsf` whose frame fits the payload
   (including the 4-byte scan-line alignment), starting from the previous frame's value, then
@@ -97,6 +108,15 @@ the prose of §7.3.1.2; we follow the prose (normative text takes precedence).
 - `export::Format::DnxHr` (`file.exportMedia {"format":"dnxhr","dnxProfile":"lb|sq|hq|hqx"}`)
   writes QuickTime `AVdh` + PCM. The Avid-specific `ACLR`/`ADHR` sample-entry atoms are not
   written (ffmpeg and our reader don't need them).
+
+### Backend seam (GPU encoding)
+
+`Encoder::encode_with(frame, Some(&mut backend))` hands the per-macroblock work (`MacroblockBackend`: forward DCT,
+bits at a quantiser including DC differences, bit layout and coding, alpha, rate-control choice) to a backend, `filmcraft-gpu`'s compute
+shaders in the app ([ADR 0003](../../docs/adr/0003-gpu-intra-encode.md)). Rate control, headers and frame
+assembly stay here, and a backend that declines, fails or answers inconsistently makes the encoder code
+the frame itself (the returned flag says which). `encode_resident` does the same for planes the backend
+already holds. `ReferenceBackend` is the CPU test double, behind the `test-support` feature (off by default; other crates enable it in their dev-dependencies only). No new dependency.
 
 ## Accuracy (vs ffmpeg as an external oracle)
 
@@ -135,7 +155,8 @@ lower bounds by a factor of roughly 4–10:
 ## Gaps
 
 - Decode is within IDCT precision of ffmpeg, not bit-exact (see above).
-- Encoder: no DNxHD (HD CIDs), interlaced, alpha or VBR output; no RDO/trellis.
+- Encoder: no DNxHD (HD CIDs), interlaced or VBR output; no RDO/trellis.
 - CIDs 1256/1260 and alpha decoding are implemented from the standard but have no oracle
-  fixtures, because no available encoder produces them.
+  fixtures, because no available encoder produces them (alpha round-trips with our encoder, which
+  shares our reading of the standard).
 - No MXF; DNx in MOV only (via `filmcraft-isobmff` / `filmcraft-codecs`).

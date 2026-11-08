@@ -3512,6 +3512,7 @@
 	Click to zoom in; Alt-click to zoom out.	Clique para ampliar; Alt+clique para reduzir.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Arrastar: mover · Alt+clique: suave/canto · Ctrl+clique: excluir
 	Include Alpha Channel	Incluir canal alfa
+	Alpha in DNxHR is not yet checked against Avid's decoder.	O alfa em DNxHR ainda não foi verificado com o decodificador da Avid.
 	Sequence Settings	Configurações da sequência
 	Color Management	Gerenciamento de cores
 	VR Properties	Propriedades de RV
@@ -3572,6 +3573,11 @@
 	Solid	Sólido
 	GPU Rendering	Renderização por GPU
 	Composite on the GPU when available	Compor na GPU quando disponível
+	Hardware Encoding	Codificação por hardware
+	Use the hardware encoder when available	Usar o codificador por hardware quando disponível
+	GPU Encoding	Codificação por GPU
+	Encode on the GPU when available	Codificar na GPU quando disponível
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Shaders de computação na placa de vídeo fazem o trabalho de codificação; um quadro que a GPU não consegue codificar é codificado na CPU.
 	Text to Speech	Texto para fala
 	Edit Narration	Editar narração
 	Project Notes	Notas do projeto

@@ -229,7 +229,7 @@ read-back copies each row out of the mapped buffer in one go before reading it s
 ms for the same frame on the integrated GPU).
 
 Same laptop, `cargo xtask bench --sections export --repeat 2 --hw auto` (GPU rendering Auto and
-NVENC; ProRes has no hardware encoder), best of 2, 2026-10-24:
+NVENC; this run predates the GPU ProRes encoder of ADR 0003, so `prores` encodes on the CPU), best of 2, 2026-10-24:
 
 | scene | before | after (RTX 5090) | after, integrated GPU forced (`WGPU_POWER_PREF=low`) |
 |---|---|---|---|
@@ -341,6 +341,38 @@ playback with hardware decoding: the hardware ignores draft mode (`set_draft` is
 the draft plan's box decimation of the planes, cheap next to software decoding, is now the main
 CPU cost. Zero-copy upload of the decoded `CVPixelBuffer` into wgpu (no copy-out at all) is the
 next step (issue #30).
+
+## Results (GPU ProRes and DNx encode, ADR 0003)
+
+RTX 4090 (Vulkan), Ryzen 7 7800X3D, release build, 2026-11-07. Hardware encoding Auto against Off; the
+GPU encoders are byte-identical to the CPU encoders, so the files are the same.
+
+### The encoder alone (3840x2160 HQ, 30 frames, median per frame, GPU rate control, 3 runs)
+
+`cargo test --release -p filmcraft-gpu --lib -- --ignored --nocapture prores_gpu_encode_bench dnx_gpu_encode_bench`
+
+| Codec | CPU (runs) | GPU (runs) |
+|---|---|---|
+| ProRes 422 HQ | **42.4 ms** (42.8 / 42.4 / 42.4) | **10.6 ms** (10.7 / 10.2 / 10.6) |
+| DNxHR HQ | **57.9 ms** (56.4 / 58.4 / 57.9) | **8.0 ms** (8.1 / 8.0 / 8.0) |
+
+The rate control on the GPU costs DNx about 0.7 ms per frame against CPU rate control over GPU-measured
+bits (about 7.5 to 8.2 ms, measured when it landed); ProRes is within noise.
+
+### UHD exports (100 frames, `stage_times()` = `perf.stats` `export.stages`, median of 3)
+
+`cargo test --release -p filmcraft-gpu --test export_pipeline -- --ignored --nocapture bench_uhd`
+
+| Export | CPU (render + encode Off) | GPU, read-back | GPU, resident |
+|---|---:|---:|---:|
+| ProRes 422 HQ | 6.98 s | 3.83 s | **0.99 s** |
+| DNxHR HQX | 9.14 s | 4.06 s | **1.05 s** |
+
+Resident means the rendered frame stays on the GPU into the encoder (post-render conversion in a
+compute pass); resident exports are encode-bound (the renderer's wait is 0). Overlay and HDR exports
+take the read-back path. The encoders stay byte-identical to the CPU's, but the resident post-render
+conversion is not bit-identical to the CPU's, so resident files differ slightly from read-back ones
+(within 0.1 dB PSNR, `resident_export_matches_the_read_back_export`). Not measured: AMD, Intel and Apple GPUs.
 
 ## Results (HW2: VideoToolbox hardware H.264 encoding, built-in → hardware)
 
@@ -711,6 +743,37 @@ A stack with blend modes now costs what the same stack in Normal does: the frame
 decode, and the UI-thread present (upload and draw, including the backdrop copies for the two
 blended layers) stays at 9–10 ms p50, as for `stack3`. Before, every frame was composited on the
 CPU (≈ 2 cores more at 23.976 fps) and Full resolution could not keep up at this load.
+
+## Results (ADR 0002: ProRes and DNx decoded on the GPU, before → after)
+
+A ProRes frame through the GPU compositor, until the GPU is done (`cargo test --release -p
+filmcraft-gpu --lib prores_gpu_vs_cpu_bench -- --ignored --nocapture`): before, the CPU decodes
+(all cores), converts the planes to half floats and uploads them; after, the bitstream is
+uploaded and decoded in compute shaders. Frames are our encoder's at Apple's nominal rate over
+busy content (gradients, checkerboard, noise). Linux, AMD Ryzen 7 7800X3D (16 threads), RTX 4090,
+2026-10-19, 30 frames each:
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| ProRes 422 HQ 3840×2160 | 3.6 MB | 14.65 ms | **2.83 ms** | 5.2× |
+| ProRes 4444 3840×2160 | 5.5 MB | 19.37 ms | **3.76 ms** | 5.2× |
+| ProRes 422 HQ 1920×1080 | 0.9 MB | 3.55 ms | **1.28 ms** | 2.8× |
+
+DNxHD / DNxHR the same way (`dnx_gpu_vs_cpu_bench`), our encoder's frames over the same content,
+2026-10-20; a scan line is cut into 1024-bit segments decoded in parallel (ADR 0002). One
+invocation per scan line had taken 27 ms per 4K frame. The median of 60 frames (the mean of 30,
+first measured, put HQ 4K at 4.5 ms: GPU clocks change under a benchmark's bursts); the alpha
+rows code a matte with a soft-edged disc, a fine gradient over a quarter of the frame and a noisy
+corner, the worst case for lossless alpha (a matte without the gradient: 5.9 ms):
+
+| frame | bytes | CPU decode + upload | GPU decode | speed-up |
+|---|---|---|---|---|
+| DNxHR HQ 8-bit 3840×2160 | 3.6 MB | 14.44 ms | **3.34 ms** | 4.3× |
+| DNxHR HQX 10-bit 3840×2160 | 3.6 MB | 16.73 ms | **3.19 ms** | 5.2× |
+| DNxHR HQX 10-bit 1920×1080 | 0.9 MB | 4.33 ms | **1.33 ms** | 3.3× |
+| DNxHR 444 10-bit RGB 3840×2160 | 7.3 MB | 57.81 ms | **6.01 ms** | 9.6× |
+| DNxHR HQX 10-bit 3840×2160 + DCT alpha | 5.5 MB | 23.55 ms | **6.37 ms** | 3.7× |
+| DNxHR HQX 10-bit 3840×2160 + lossless alpha | 5.5 MB | 21.18 ms | **17.49 ms** | 1.2× |
 
 ## Results (#847: AV1 in-loop filters in parallel row bands, before → after)
 

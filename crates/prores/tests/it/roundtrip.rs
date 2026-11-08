@@ -134,3 +134,98 @@ fn profile_identifiers() {
     assert_eq!(Profile::Proxy.chroma(), ChromaFormat::Yuv422);
     assert_eq!(Profile::P4444Xq.chroma(), ChromaFormat::Yuv444);
 }
+
+/// A frame whose two fields show different pictures (the even lines one, the odd lines another),
+/// so a field coded in the wrong place, or the wrong one first, shows as a large error.
+fn two_fields(w: u32, h: u32, chroma: ChromaFormat, alpha: bool) -> Frame {
+    let a = synth(w, h, chroma, 10, alpha, 11);
+    let mut b = synth(w, h, chroma, 10, alpha, 29);
+    // the second picture mirrored and inverted
+    for plane in [&mut b.y, &mut b.cb, &mut b.cr] {
+        let stride = plane.len() / h as usize;
+        for row in plane.chunks_exact_mut(stride) {
+            row.reverse();
+            row.iter_mut().for_each(|v| *v = 1023 - *v);
+        }
+    }
+    let mut f = a.clone();
+    let weave = |dst: &mut Vec<u16>, odd: &[u16]| {
+        let stride = dst.len() / h as usize;
+        for (y, (d, s)) in dst.chunks_exact_mut(stride).zip(odd.chunks_exact(stride)).enumerate() {
+            if y % 2 == 1 {
+                d.copy_from_slice(s);
+            }
+        }
+    };
+    weave(&mut f.y, &b.y);
+    weave(&mut f.cb, &b.cb);
+    weave(&mut f.cr, &b.cr);
+    if let (Some(fa), Some(ba)) = (f.alpha.as_mut(), b.alpha.as_ref()) {
+        weave(fa, ba);
+    }
+    f
+}
+
+#[test]
+fn interlaced_frames_round_trip() {
+    for order in [Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+        for (profile, w, h) in [
+            (Profile::Hq, 1920u32, 1080u32),
+            (Profile::Standard, 720, 486),
+            (Profile::Lt, 70, 37),
+            (Profile::Proxy, 33, 33),
+            (Profile::Hq, 17, 2),
+            (Profile::P4444, 333, 201),
+            (Profile::P4444Xq, 64, 31),
+        ] {
+            let chroma = profile.chroma();
+            let alpha = chroma == ChromaFormat::Yuv444;
+            let src = two_fields(w, h, chroma, alpha);
+            for log2 in [3u8, 1] {
+                let cfg = EncoderConfig { interlace: order, log2_slice_mbs: log2, ..EncoderConfig::new(profile, w, h) };
+                let mut enc = Encoder::with_config(cfg);
+                let coded = enc.encode(&src).unwrap();
+                let l = frame_layout(&coded).unwrap();
+                assert_eq!(l.header.interlace, order);
+                let dec = decode_frame_with(&coded, &DecodeOptions { bit_depth: Some(10), threads: true }).unwrap();
+                let single = decode_frame_with(&coded, &DecodeOptions { bit_depth: Some(10), threads: false }).unwrap();
+                assert_eq!(dec, single);
+                assert_eq!((dec.width, dec.height, dec.interlace), (w, h, order));
+                assert_eq!(dec.alpha, src.alpha, "{profile:?} {w}x{h}: alpha is lossless");
+                let py = psnr(&dec.y, &src.y, 1023.0);
+                let pc = psnr(&[dec.cb, dec.cr].concat(), &[src.cb.clone(), src.cr.clone()].concat(), 1023.0);
+                // (Proxy's budget is small at tiny sizes; a misplaced field, mirrored and
+                // inverted, would be far below either floor)
+                let min = if profile == Profile::Proxy { 28.0 } else { 38.0 };
+                assert!(py > min && pc > min, "{order:?} {profile:?} {w}x{h} log2 {log2}: PSNR {py:.1}/{pc:.1}");
+                if (w, h) == (1920, 1080) {
+                    assert!(coded.len() as f64 <= enc.target_frame_bytes() as f64 * 1.15, "{} bytes", coded.len());
+                }
+            }
+        }
+    }
+}
+
+/// An interlaced frame codes two field pictures of `ceil(height / 32)` macroblock rows, the
+/// temporally first field first: the even lines for top field first, the odd lines for bottom.
+#[test]
+fn interlaced_pictures_are_the_fields_in_order() {
+    let (w, h) = (64u32, 70u32);
+    let src = two_fields(w, h, ChromaFormat::Yuv422, false);
+    let enc = |interlace| Encoder::with_config(EncoderConfig { interlace, ..EncoderConfig::new(Profile::Hq, w, h) }).encode(&src).unwrap();
+    let p = frame_layout(&enc(Interlace::Progressive)).unwrap();
+    assert_eq!((p.mb_height, p.slices.len()), (5, 5));
+    for (order, first) in [(Interlace::TopFieldFirst, 0u8), (Interlace::BottomFieldFirst, 1)] {
+        let l = frame_layout(&enc(order)).unwrap();
+        assert_eq!((l.mb_height, l.slices.len()), (3, 6), "{order:?}");
+        let parities: Vec<u8> = l.slices.iter().map(|s| s.parity).collect();
+        assert_eq!(parities, [first, first, first, 1 - first, 1 - first, 1 - first], "{order:?}");
+    }
+}
+
+#[test]
+fn interlaced_needs_two_lines() {
+    let src = synth(16, 1, ChromaFormat::Yuv422, 10, false, 1);
+    let cfg = EncoderConfig { interlace: Interlace::TopFieldFirst, ..EncoderConfig::new(Profile::Hq, 16, 1) };
+    assert!(Encoder::with_config(cfg).encode(&src).is_err());
+}

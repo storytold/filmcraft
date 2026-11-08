@@ -1,0 +1,22 @@
+[package]
+name = "filmcraft-gpu-export"
+description = "Glue between the GPU compositor and encoders (filmcraft-gpu) and the export pipeline (filmcraft-export): GPU frame rendering, ProRes / DNxHR backends, frames kept on the GPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+filmcraft-dnx = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-gpu = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-prores = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+
+[dev-dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl"] }

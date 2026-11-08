@@ -55,6 +55,13 @@
 //!   dropped as soon as they are encoded.
 //! * **Two-pass** exports overlap in the analysis pass (encode only) and in the real pass; the
 //!   prefetch never runs past the end of a pass.
+//! * **Resident frames** (ADR 0003 Step 2): with a [`crate::GpuPair`]'s renderers and encoder
+//!   backend, decided once in [`Exporter::new`] ([`Pipeline::choose_resident`]), a batch holds the
+//!   encoder's planes on the GPU instead of pixels (counted against the same budget). A frame whose
+//!   resident render or encode fails is rendered again through the read-back path and coded from
+//!   its pixels; every frame is intra, so the file may mix both. A frame the encoder refuses ends
+//!   the resident path for the rest of the export ([`Pipeline::stop_resident`]): only the frames
+//!   already rendered resident by then are rendered twice.
 //! * **Timers.** `Render` and `Encode` are wall times of work that now runs at the same time, so
 //!   their sum may exceed the export's wall time; `Wait` is the time the encoding side then spent
 //!   waiting for the render (large: render-bound; near zero: encode-bound).
@@ -75,7 +82,7 @@ use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
     AudioEncoder, ColorSignal, EncodedPacket, EncoderFactory, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report,
-    Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
+    ResidentFrame, Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_gpu_frame, note_resident, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -87,12 +94,22 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
-type Frame = (Vec<u8>, Vec<f32>);
+/// One rendered picture: straight RGBA8, or the encoded R'G'B' floats ([`Pipeline::frame`]); or
+/// the encoder's planes left on the GPU by the renderer ([`Pipeline::frame_resident`]).
+enum Frame {
+    Pixels(Vec<u8>, Vec<f32>),
+    Resident(ResidentFrame),
+}
 
-/// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
-pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
-    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(if hdr { 12 } else { 4 })
+/// Bytes of one [`Frame`] of a `w` x `h` export: RGBA8 (4 per pixel), three f32 per pixel for float
+/// frames, or both (16) for a float frame that also keeps its RGBA8 ([`Pipeline::keeps_rgba_with_floats`]).
+pub(crate) fn frame_bytes(w: u32, h: u32, float: bool, keeps_rgba: bool) -> u64 {
+    let per_pixel = match (float, keeps_rgba) {
+        (false, _) => 4,
+        (true, false) => 12,
+        (true, true) => 16,
+    };
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(per_pixel)
 }
 
 /// Frames per batch when two batches are in flight: `batch` (what a sequential export would use),
@@ -120,13 +137,22 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider,
     let frames: Vec<Frame> = (f..end)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+            let frame = match pipe.frame_resident(fi, sources) {
+                Some(planes) => Frame::Resident(planes),
+                None => {
+                    if pipe.resident() {
+                        pipe.note_resident_missed();
+                    }
+                    let (rgba, floats) = pipe.frame(fi, sources);
+                    Frame::Pixels(rgba, floats)
+                }
+            };
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
-            if let Some(prepare) = prepare {
+            if let (Some(prepare), Frame::Pixels(rgba, floats)) = (prepare, &frame) {
                 let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
-                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.hdr_out.then_some(frame.1.as_slice()), index });
+                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba, hdr: pipe.float_frames.then_some(floats.as_slice()), index });
             }
             frame
         })
@@ -266,7 +292,7 @@ impl Exporter {
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
-        let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
+        let mut pipe = Pipeline::new(project.clone(), seq, &settings, hdr_out)?;
         let (f0, f1) = frame_span(pipe.rate, range);
         let nframes = (f1 - f0) as u64;
         if !settings.part_of_batch {
@@ -274,6 +300,9 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+        // frames stay on the GPU, or are read back: decided here, for the whole export
+        pipe.choose_resident(venc.resident_input());
+        let pipe = Arc::new(pipe);
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
@@ -356,10 +385,19 @@ impl Exporter {
         self.ahead.as_ref().map_or(0, |a| a.frames.len())
     }
 
-    /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
+    /// Frames in the next batch, bounded before Rayon can steal nested frame tasks. Resident
+    /// frames hold their planes on the GPU instead (bounded the same way) until one is read back.
     fn batch_len(&self) -> i64 {
         let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+        if self.overlapping() {
+            let bytes = self
+                .pipe
+                .resident_frame_bytes()
+                .unwrap_or_else(|| frame_bytes(self.pipe.w, self.pipe.h, self.pipe.float_frames, self.pipe.keeps_rgba_with_floats()));
+            overlap_batch(batch, bytes, self.budget)
+        } else {
+            batch
+        }
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
@@ -614,7 +652,7 @@ impl Exporter {
     fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider) -> Result<Encoded> {
         if self.first_pass {
             for (k, frame) in frames.into_iter().enumerate() {
-                timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), f + k as i64))?;
+                timed(Stage::Encode, || self.encode(frame, f + k as i64, sources))?;
             }
             return Ok(Encoded::Done);
         }
@@ -639,7 +677,7 @@ impl Exporter {
         let mut mixed = mixed.into_iter();
         for (k, frame) in frames.into_iter().enumerate() {
             let fi = f + k as i64;
-            let packets = timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), fi))?;
+            let packets = timed(Stage::Encode, || self.encode(frame, fi, sources))?;
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
                 timed(Stage::Mux, || -> Result<()> {
@@ -656,19 +694,28 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
-        let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
-            };
-            packets.extend(self.venc.encode(&fr)?);
-        }
-        Ok(packets)
+    /// Encode output frame `f`. A resident frame the encoder does not code is rendered again
+    /// through the read-back path and coded from its pixels.
+    fn encode(&mut self, frame: Frame, f: i64, sources: &dyn SourceProvider) -> Result<Vec<EncodedPacket>> {
+        let index = u64::try_from(f - self.f0).unwrap_or(u64::MAX);
+        let (rgba, hdr) = match frame {
+            Frame::Pixels(rgba, hdr) => (rgba, hdr),
+            Frame::Resident(planes) => {
+                if let Some(packets) = self.venc.encode_resident(&planes, index) {
+                    note_gpu_frame();
+                    note_resident();
+                    return Ok(packets);
+                }
+                drop(planes);
+                // a refusal is the encoder's (limits, a device error, a dropped backend): frames
+                // already rendered resident are tried, later ones are read back from the start
+                self.pipe.note_resident_missed();
+                self.pipe.stop_resident();
+                self.pipe.frame(f, sources)
+            }
+        };
+        let fr = EncoderFrame { width: self.pipe.w, height: self.pipe.h, rgba: &rgba, hdr: self.pipe.float_frames.then_some(hdr.as_slice()), index };
+        self.venc.encode(&fr)
     }
 }
 
@@ -752,25 +799,35 @@ mod tests {
 
     #[test]
     fn frame_bytes_by_format() {
-        assert_eq!(frame_bytes(1920, 1080, false), 1920 * 1080 * 4);
-        assert_eq!(frame_bytes(3840, 2160, true), 3840 * 2160 * 12);
-        assert_eq!(frame_bytes(u32::MAX, u32::MAX, true), u64::MAX, "saturates");
-        assert_eq!(frame_bytes(0, 1080, false), 0);
+        // (what, width, height, float frames, RGBA8 kept next to the floats, bytes)
+        let cases: [(&str, u32, u32, bool, bool, u64); 6] = [
+            ("RGBA8", 1920, 1080, false, false, 1920 * 1080 * 4),
+            ("RGBA8 ignores the RGBA8 flag", 1920, 1080, false, true, 1920 * 1080 * 4),
+            ("floats", 3840, 2160, true, false, 3840 * 2160 * 12),
+            ("floats and RGBA8 for alpha", 1920, 1080, true, true, 1920 * 1080 * 16),
+            ("saturates", u32::MAX, u32::MAX, true, true, u64::MAX),
+            ("empty", 0, 1080, false, false, 0),
+        ];
+        for (what, w, h, float, rgba, bytes) in cases {
+            assert_eq!(frame_bytes(w, h, float, rgba), bytes, "{what}");
+        }
     }
 
     #[test]
     fn the_overlap_batch_fits_the_memory_budget() {
         let budget = IN_FLIGHT_BUDGET;
         // 1080p keeps the full 16 frames, 4K SDR (33 MB a frame) 8 + 8 in flight (2 x 8 x 33 MB = 512 MiB)
-        assert_eq!(overlap_batch(16, frame_bytes(1920, 1080, false), budget), 16);
-        assert_eq!(overlap_batch(16, frame_bytes(3840, 2160, false), budget), 8);
-        // 4K HDR (100 MB a frame): 256 MiB per batch is 2 frames, not 16
-        let hdr4k = frame_bytes(3840, 2160, true);
-        let n = overlap_batch(16, hdr4k, budget);
-        assert_eq!(n, 2);
-        assert!(2 * n as u64 * hdr4k <= budget);
+        assert_eq!(overlap_batch(16, frame_bytes(1920, 1080, false, false), budget), 16);
+        assert_eq!(overlap_batch(16, frame_bytes(3840, 2160, false, false), budget), 8);
+        // 4K HDR (100 MB a frame): 256 MiB per batch is 2 frames, not 16; 1080p ProRes 4444 with alpha
+        // (floats and RGBA8, 33 MB a frame) 8, not the 10 the floats alone would allow
+        for (what, bytes, frames) in [("4K HDR", frame_bytes(3840, 2160, true, false), 2), ("1080p alpha", frame_bytes(1920, 1080, true, true), 8)] {
+            let n = overlap_batch(16, bytes, budget);
+            assert_eq!(n, frames, "{what}");
+            assert!(2 * n as u64 * bytes <= budget, "{what}");
+        }
         // 8K HDR: one frame at a time, even though two do not fit (never fewer than one)
-        assert_eq!(overlap_batch(16, frame_bytes(7680, 4320, true), budget), 1);
+        assert_eq!(overlap_batch(16, frame_bytes(7680, 4320, true, false), budget), 1);
         // a smaller batch (web: 1) is never raised, a degenerate one is one frame
         assert_eq!(overlap_batch(1, 4, budget), 1);
         assert_eq!(overlap_batch(0, 4, budget), 1);

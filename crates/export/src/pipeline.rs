@@ -1,7 +1,8 @@
 //! The per-frame picture pipeline shared by every export format: render the sequence at the
 //! output frame rate, fit it into the output frame (scale to fit / fill / stretch, pixel aspect),
 //! apply the Export effects (image, name and timecode overlays, video limiter) and convert to the
-//! encoder's input (straight sRGB RGBA8, or encoded R'G'B' floats for HDR).
+//! encoder's input (straight sRGB RGBA8, or encoded R'G'B' floats for HDR and for SDR encoders that
+//! code more than 8 bits).
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -13,7 +14,10 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{
+    ExportError, ExportSettings, FrameRenderer, GpuRendering, PlaneFormat, PostSettings, ResidentFrame, Result, build_frame_renderer, note_gpu_fallback,
+    note_gpu_frame, note_resident_fallback,
+};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -72,19 +76,33 @@ struct RendererPool {
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
     failed: std::sync::atomic::AtomicBool,
+    /// Every renderer came from a [`crate::GpuPair`] (and so shares its device with the pair's
+    /// encoder backends).
+    paired: bool,
 }
 
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
-    fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
-        let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+    fn new(renderers: Vec<(Box<dyn FrameRenderer>, bool)>) -> Option<Self> {
+        let adjust_side = renderers.iter().map(|(r, _)| r.caps().adjust_side).min()?;
+        let paired = renderers.iter().all(|(_, paired)| *paired);
+        let renderers: Vec<Box<dyn FrameRenderer>> = renderers.into_iter().map(|(r, _)| r).collect();
         Some(Self {
             capacity: renderers.len(),
             caps: filmcraft_render::plan::DeviceCaps { adjust_side },
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
+            paired,
         })
+    }
+
+    /// Whether every renderer keeps frames on its device with `post` run there (asked before the
+    /// first frame, while every renderer is in the pool; a panic answers no).
+    fn resident_supported(&self, post: &PostSettings) -> bool {
+        let free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let all = || free.len() == self.capacity && free.iter().all(|r| r.resident_supported(post));
+        self.paired && std::panic::catch_unwind(std::panic::AssertUnwindSafe(all)).unwrap_or(false)
     }
 
     /// Run `f` with a free renderer. Frame batches must respect `Pipeline::render_batch_limit`:
@@ -142,11 +160,23 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Frames are encoded R'G'B' floats: HDR, and SDR for an encoder that codes more than 8 bits.
+    pub float_frames: bool,
     /// Keep straight alpha in the RGBA8 output instead of flattening over black.
     alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
+    /// Size frames are rendered at.
+    rendered: (u32, u32),
+    /// Frames stay on the GPU from the renderer into the encoder, with this post-render work
+    /// ([`Pipeline::choose_resident`]); `None`: every frame is read back.
+    resident: Option<PostSettings>,
+    /// A frame of a resident export was read back: batches are sized for read-back frames again.
+    resident_missed: std::sync::atomic::AtomicBool,
+    /// The encoder refused a resident frame: the rest of the export is read back (rendering frames
+    /// on the GPU only to render them again would double the work of every frame).
+    resident_off: std::sync::atomic::AtomicBool,
     start_tc: i64,
     drop_frame: bool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
@@ -174,11 +204,21 @@ impl Drop for Pipeline {
 }
 
 impl Pipeline {
+    /// Whether [`Pipeline::frame`] returns the RGBA8 picture next to the floats: an SDR float frame
+    /// with alpha keeps it for the alpha channel; so does an HDR frame (its floats are straight colour).
+    pub(crate) fn keeps_rgba_with_floats(&self) -> bool {
+        self.float_frames && self.alpha
+    }
+
     /// Bound outer frame tasks before spawning them, not inside a Rayon job. A renderer can
     /// invoke nested parallel decoding/conversion; those joins may steal another frame task.
     /// With at most one active batch and no more tasks than the initial renderer capacity,
     /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
     /// Keep the immutable capacity even after a failed renderer retires the pool.
+    /// The encode side's re-render of a resident frame the encoder refused (`self.pipe.frame` in
+    /// the job's `encode`) is one more frame task outside this count; that is safe because it runs
+    /// on the export's own std thread (the `in_place_scope` caller), not on a Rayon worker, so its
+    /// wait for a renderer cannot hold up a frame task that would return one.
     pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
         let requested = requested.max(1);
         self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
@@ -200,6 +240,7 @@ impl Pipeline {
         let w = u32::try_from(w).map_err(|_| ExportError::Unsupported("rendered picture width is too large".into()))?;
         let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("rendered picture height is too large".into()))?;
         filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
+        let rendered = (w, h);
         let pipe = q.settings.color;
         let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
         let opts = RenderOptions { scale: geom.render_scale, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
@@ -217,7 +258,7 @@ impl Pipeline {
             let count = rayon::current_num_threads().clamp(2, 4);
             let mut list = Vec::with_capacity(count);
             for _ in 0..count {
-                if let Some(r) = build_frame_renderer() {
+                if let Some(r) = build_frame_renderer(settings.uses_gpu_encoder()) {
                     list.push(r);
                 } else {
                     break;
@@ -239,15 +280,99 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            float_frames: hdr_out || settings.encodes_above_8_bit(),
             alpha: settings.keeps_alpha(),
             out_tf,
             effects,
             overlay,
+            rendered,
+            resident: None,
+            resident_missed: std::sync::atomic::AtomicBool::new(false),
+            resident_off: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
+    /// What the export does to a rendered frame, for an encoder that codes `planes`.
+    fn post_settings(&self, planes: PlaneFormat) -> Option<PostSettings> {
+        let fx = &self.effects;
+        let content = match self.geom.content {
+            Some((w, h)) => Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?)),
+            None => None,
+        };
+        let lim = &fx.video_limiter;
+        Some(PostSettings {
+            rendered: self.rendered,
+            width: self.w,
+            height: self.h,
+            content,
+            offset: self.geom.offset,
+            limiter: lim.enabled.then_some((lim.min_percent, lim.max_percent)),
+            hdr: self.hdr_out,
+            floats: self.float_frames,
+            alpha: self.alpha,
+            planes,
+            image_overlay: self.overlay.is_some(),
+            name_overlay: fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty(),
+            timecode_overlay: fx.timecode_overlay.enabled,
+        })
+    }
+
+    /// Decide, once and before the first frame, whether frames stay on the GPU (ADR 0003 Step 2):
+    /// the encoder takes resident frames (`input`, [`crate::VideoEncoder::resident_input`]), the
+    /// renderers came from the same [`crate::GpuPair`] as its backend, and they run every enabled
+    /// post-render step. Anything else (an overlay, HDR, a CPU renderer) keeps the read-back path.
+    pub(crate) fn choose_resident(&mut self, input: Option<PlaneFormat>) {
+        self.resident = input
+            .filter(|planes| planes.alpha == self.alpha)
+            .and_then(|planes| self.post_settings(planes))
+            .filter(|post| self.renderer.as_ref().is_some_and(|pool| pool.resident_supported(post)));
+    }
+
+    /// Whether frames stay on the GPU in this export (from now on).
+    pub(crate) fn resident(&self) -> bool {
+        self.resident.is_some() && !self.resident_off.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The encoder refused a resident frame: read every later frame back.
+    pub(crate) fn stop_resident(&self) {
+        self.resident_off.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Bytes a resident frame holds on the GPU (its planes), while every frame so far stayed
+    /// there; `None` otherwise (frames are read back, see [`crate::job`]'s `frame_bytes`).
+    pub(crate) fn resident_frame_bytes(&self) -> Option<u64> {
+        let post = self.resident.as_ref().filter(|_| self.resident() && !self.resident_missed.load(std::sync::atomic::Ordering::Relaxed))?;
+        let luma = u64::from(self.w).saturating_mul(u64::from(self.h));
+        let chroma = if post.planes.chroma_422 { u64::from(self.w.div_ceil(2)).saturating_mul(u64::from(self.h)) } else { luma };
+        let alpha = if post.planes.alpha { luma } else { 0 };
+        Some(luma.saturating_add(chroma.saturating_mul(2)).saturating_add(alpha).saturating_mul(2))
+    }
+
+    /// A frame of a resident export takes the read-back path (counted).
+    pub(crate) fn note_resident_missed(&self) {
+        self.resident_missed.store(true, std::sync::atomic::Ordering::Relaxed);
+        note_resident_fallback();
+    }
+
+    /// Output frame `f` rendered and post-processed on the GPU and left there for the encoder;
+    /// `None` when the export is not resident or this frame must be read back ([`Pipeline::frame`]):
+    /// a frame the renderers' device cannot composite, or one whose resident render failed.
+    /// (Counted as a GPU frame once the encoder has taken it, see `job`.)
+    pub(crate) fn frame_resident(&self, f: i64, sources: &dyn SourceProvider) -> Option<ResidentFrame> {
+        let post = self.resident.as_ref().filter(|_| self.resident())?;
+        let t = self.rate.tick_of(f);
+        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps))?;
+        let asked = web_time::Instant::now();
+        pool.with(|r| {
+            crate::note_lock_wait(asked.elapsed());
+            filmcraft_media::cancel::with_gpu_frames(true, || r.render_resident(&self.project, self.seq, t, self.opts, sources, post))
+        })
+        .flatten()
+    }
+
+    /// Output frame `f` as straight sRGB RGBA8 at the output size, or the encoded R'G'B' floats
+    /// (3 per pixel) for HDR exports and SDR exports to an encoder that codes more than 8 bits. With
+    /// alpha, an SDR float frame also carries the RGBA8 picture, for its alpha.
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
@@ -262,7 +387,9 @@ impl Pipeline {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                    // a GPU renderer: decoders may hand it pictures it decodes itself (ProRes / DNx
+                    // bitstreams, in compute shaders), as the monitors get them
+                    filmcraft_media::cancel::with_gpu_frames(true, || r.render(&self.project, self.seq, t, self.opts, sources))
                 })
                 .flatten()
             }
@@ -285,17 +412,35 @@ impl Pipeline {
         let lim = &self.effects.video_limiter;
         if let Some(tf) = self.out_tf.as_ref().filter(|_| self.hdr_out) {
             let mut out = vec![0f32; img.w * img.h * 3];
+            let straight = self.alpha;
             out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
                 for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                    o.copy_from_slice(&tf.encode([p[0], p[1], p[2]]));
+                    // with alpha the colour is straight, next to the alpha channel
+                    let k = match straight {
+                        false => 1.0,
+                        true if p[3] > 0.0 => 1.0 / p[3].min(1.0),
+                        true => 0.0,
+                    };
+                    o.copy_from_slice(&tf.encode([p[0] * k, p[1] * k, p[2] * k]));
                 }
             });
             if lim.enabled {
                 limit_f32(&mut out, lim.min_percent, lim.max_percent);
             }
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return (rgba, out);
+        }
+        if self.float_frames {
+            let mut out = srgb_floats(&img, self.alpha);
+            if lim.enabled {
+                limit_f32(&mut out, lim.min_percent, lim.max_percent);
+            }
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
+            // the float image is not needed any more: its buffer serves the next frame's layers
+            filmcraft_frame::pool::recycle_f32(img.px);
+            return (rgba, out);
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -503,6 +648,27 @@ fn resample_axis(src: &Image, n: usize, horizontal: bool) -> Image {
                 }
             }
             row[x * 4..x * 4 + 4].copy_from_slice(&acc);
+        }
+    });
+    out
+}
+
+/// The float counterpart of [`Image::over_black_rgba8`], or with `straight` of [`Image::to_rgba8`]:
+/// sRGB-encoded R'G'B' (3 per pixel, 0..1) of a premultiplied linear image. NaN counts as 0.
+pub(crate) fn srgb_floats(img: &Image, straight: bool) -> Vec<f32> {
+    if img.w == 0 || img.h == 0 {
+        return Vec::new();
+    }
+    let encode = |v: f32| if v > 0.0 { filmcraft_color::linear_to_srgb(v.min(1.0)) } else { 0.0 };
+    let mut out = vec![0f32; img.w * img.h * 3];
+    out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
+        for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
+            let k = match straight {
+                false => 1.0,
+                true if p[3] > 0.0 => 1.0 / p[3].min(1.0),
+                true => 0.0,
+            };
+            *o = [encode(p[0] * k), encode(p[1] * k), encode(p[2] * k)];
         }
     });
     out

@@ -1196,9 +1196,44 @@ fn metadata_and_quicktime_multiplexer() {
 #[test]
 fn interlaced_output_is_rejected_honestly() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
-    let s = ExportSettings { format: Format::ProRes, path: "unused.mov".into(), field_order: FieldOrder::UpperFirst, ..Default::default() };
+    // (ProRes codes fields; H.264 does not)
+    let s = ExportSettings { format: Format::H264, path: "unused.mp4".into(), field_order: FieldOrder::UpperFirst, ..Default::default() };
     let e = export(&p, seq, &s, &m, &Progress::default()).unwrap_err();
-    assert!(e.to_string().contains("progressive"), "{e}");
+    assert!(e.to_string().contains("progressive") && e.to_string().contains("ProRes"), "{e}");
+}
+
+/// Settings carried over from another format (the MXF video codec switched from ProRes, a preset
+/// or project saved that way) keep a field order the new format cannot write: `fit_field_order`
+/// makes it progressive, and the export then runs. A field order the format writes is kept.
+#[test]
+fn a_field_order_the_format_cannot_write_fits_back_to_progressive() {
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
+    let dir = std::env::temp_dir().join(format!("fc-field-fit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = |n: &str| dir.join(n).to_string_lossy().to_string();
+    let range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+    let carried = [
+        ExportSettings { format: Format::H264, path: path("h264.mp4"), field_order: FieldOrder::UpperFirst, range, ..Default::default() },
+        ExportSettings { format: Format::DnxHr, path: path("dnx.mov"), field_order: FieldOrder::LowerFirst, range, ..Default::default() },
+        ExportSettings {
+            format: Format::MxfOp1a,
+            mxf_video_codec: MxfVideoCodec::Dnxhr,
+            path: path("dnx.mxf"),
+            field_order: FieldOrder::UpperFirst,
+            range,
+            ..Default::default()
+        },
+    ];
+    for mut s in carried {
+        assert!(s.fit_field_order(), "{:?}: changed", s.format);
+        assert_eq!(s.field_order, FieldOrder::Progressive, "{:?}", s.format);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{:?}: {e}", s.format));
+    }
+    for (format, mxf_video_codec) in [(Format::ProRes, MxfVideoCodec::default()), (Format::MxfOp1a, MxfVideoCodec::ProRes)] {
+        let mut s = ExportSettings { format, mxf_video_codec, field_order: FieldOrder::LowerFirst, ..Default::default() };
+        assert!(!s.fit_field_order() && s.field_order == FieldOrder::LowerFirst, "{format:?} writes fields");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -14,6 +14,8 @@ filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-project = { workspace = true }
+filmcraft-prores = { workspace = true }
+filmcraft-dnx = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
@@ -22,9 +24,16 @@ pollster = "1"
 rayon = { workspace = true }
 
 [dev-dependencies]
+# `ReferenceBackend` / `rate_control_for_tests` for the backend-seam tests (never in a shipped build)
+filmcraft-prores = { workspace = true, features = ["test-support"] }
+filmcraft-dnx = { workspace = true, features = ["test-support"] }
 pollster = "1"
+filmcraft-codecs = { workspace = true }
 filmcraft-export = { workspace = true }
+filmcraft-gpu-export = { workspace = true }
+filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = { version = "30", features = ["wgsl", "metal", "vulkan", "dx12", "gles"] }
 filmcraft-media = { workspace = true }
+filmcraft-testkit = { workspace = true }
 filmcraft-time = { workspace = true }

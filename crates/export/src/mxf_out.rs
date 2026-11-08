@@ -59,6 +59,10 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
     if matches!(coding, PictureCoding::Avc { .. }) {
         d.depth = u32::from(settings.h264_profile.bit_depth());
     }
+    // interlaced ProRes (either field first): two fields per frame
+    let order = settings.field_order;
+    d.interlaced = order != crate::FieldOrder::Progressive;
+    d.bottom_field_first = order == crate::FieldOrder::LowerFirst;
     d.color = match settings.signal {
         s if s == ColorSignal::PQ => ColorSpace::Rec2020Pq,
         s if s == ColorSignal::HLG => ColorSpace::Rec2020Hlg,

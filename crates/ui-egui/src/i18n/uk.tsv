@@ -441,3 +441,9 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Альфа-канал у DNxHR ще не перевірено з декодером Avid.
+	Hardware Encoding	Апаратне кодування
+	Use the hardware encoder when available	Використовувати апаратний кодувальник, коли це можливо
+	GPU Encoding	Кодування на GPU
+	Encode on the GPU when available	Кодувати на GPU, коли це можливо
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Обчислювальні шейдери відеокарти виконують кодування; кадр, який GPU не може закодувати, кодується на CPU.

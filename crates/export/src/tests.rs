@@ -214,6 +214,122 @@ fn dnxhr_export_roundtrip() {
     }
 }
 
+/// ProRes codes interlaced frames in either field order (QuickTime and MXF); other formats stay
+/// progressive.
+#[test]
+fn prores_exports_interlaced_frames() {
+    let (p, seq, m) = project();
+    for (order, il, detail) in
+        [(FieldOrder::UpperFirst, filmcraft_prores::Interlace::TopFieldFirst, 9u8), (FieldOrder::LowerFirst, filmcraft_prores::Interlace::BottomFieldFirst, 14)]
+    {
+        let path = tmp(&format!("prores_{order:?}.mov"));
+        let mut s = ExportSettings { format: Format::ProRes, path: path.clone(), field_order: order, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        assert!(s.supports_field_order(order));
+        assert_eq!(s.prores_interlace(), il);
+        assert!(s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video.contains(order.label()));
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        let fiel = data.windows(4).position(|w| w == b"fiel").expect("the movie says it is interlaced");
+        assert_eq!(data.get(fiel + 4..fiel + 6), Some(&[2u8, detail][..]), "{order:?}");
+        let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
+        let vt = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let v = file.tracks[vt].entries[0].video.as_ref().unwrap();
+        assert_eq!(v.field_info, Some(filmcraft_isobmff::FieldInfo { fields: 2, detail }), "{order:?}");
+        for i in 0..file.tracks[vt].samples.len() {
+            let sample = file.read_sample(data.as_slice(), vt, i).unwrap();
+            let h = filmcraft_prores::probe(&sample).unwrap();
+            assert_eq!(h.interlace, il, "the frames are field-coded");
+        }
+        let src = filmcraft_codecs::open_bytes("p.mov", data.into()).unwrap();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 24))).unwrap();
+        let px = f.to_rgba8();
+        let mid = ((90 * 320 + 160) * 4) as usize;
+        assert!(px[mid] > 240 && px[mid + 1] < 15 && px[mid + 2] < 15, "{order:?}: {:?}", &px[mid..mid + 4]);
+        // MXF OP1a ProRes too
+        let mxf = ExportSettings { format: Format::MxfOp1a, mxf_video_codec: MxfVideoCodec::ProRes, path: tmp(&format!("prores_{order:?}.mxf")), ..s.clone() };
+        assert!(mxf.supports_field_order(order));
+        export(&p, seq, &mxf, &m, &Progress::default()).unwrap();
+        let file = filmcraft_mxf::open(&std::fs::read(&mxf.path).unwrap()).unwrap();
+        let pic = file.tracks.iter().find_map(|t| t.picture.clone()).unwrap();
+        assert_eq!((pic.frame_layout, pic.field_dominance, pic.frame_height()), (1, if order == FieldOrder::LowerFirst { 2 } else { 1 }, 180), "{order:?}");
+    }
+    // progressive ProRes stays progressive; H.264 and DNxHR have no field coding
+    let prog = ExportSettings { format: Format::ProRes, ..Default::default() };
+    assert_eq!(prog.prores_interlace(), filmcraft_prores::Interlace::Progressive);
+    for (format, dnx) in [(Format::H264, ""), (Format::DnxHr, "hq")] {
+        let s = ExportSettings { format, dnx_profile: dnx.into(), field_order: FieldOrder::LowerFirst, path: tmp("interlaced.mov"), ..Default::default() };
+        assert!(!s.supports_field_order(FieldOrder::LowerFirst) && !s.supports_field_order(FieldOrder::UpperFirst), "{format:?}");
+        assert!(export(&p, seq, &s, &m, &Progress::default()).is_err(), "{format:?}");
+    }
+}
+
+/// Interlaced ProRes in QuickTime and MXF OP1a: ffprobe (an external test oracle only) reads the
+/// field order of the container and of every decoded frame, and ffmpeg decodes every frame without
+/// complaint. QuickTime's `fiel` 9 / 14 (Apple's codes for ProRes 1080i) read as `tb` / `bt`. (MXF
+/// says lower field first the way SMPTE ST 377-1 does, field dominance 2 with the SMPTE 274M line
+/// map; ffmpeg names that `tb`, "bottom displayed first", and would say `bb` only for a line map
+/// with other line numbers.)
+#[test]
+fn prores_interlaced_exports_ffprobe_oracle() {
+    let (Some(ffprobe), Some(ffmpeg)) =
+        (filmcraft_testkit::ffprobe_or_skip("interlaced ProRes probe"), filmcraft_testkit::ffmpeg_or_skip("interlaced ProRes decode"))
+    else {
+        return;
+    };
+    let (p, seq, m) = project();
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::MxfOp1a, "mxf")] {
+        for (profile, pix) in [("hq", "yuv422p10le"), ("4444", "yuv444p12le")] {
+            for (order, want, tff) in
+                [(FieldOrder::UpperFirst, if ext == "mxf" { "tt" } else { "tb" }, "1"), (FieldOrder::LowerFirst, if ext == "mxf" { "tb" } else { "bt" }, "0")]
+            {
+                let path = tmp(&format!("prores_il_{profile}_{order:?}_{format:?}.{ext}"));
+                let mut s = ExportSettings {
+                    format,
+                    path: path.clone(),
+                    prores_profile: profile.into(),
+                    mxf_video_codec: MxfVideoCodec::ProRes,
+                    field_order: order,
+                    ..Default::default()
+                };
+                s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(3)));
+                export(&p, seq, &s, &m, &Progress::default()).unwrap();
+                let what = format!("{profile} {order:?} {format:?}");
+                let probe = std::process::Command::new(&ffprobe)
+                    .args([
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=codec_name,width,height,pix_fmt,field_order",
+                        "-of",
+                        "compact=p=0",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                let probe = String::from_utf8_lossy(&probe.stdout);
+                assert!(probe.contains("codec_name=prores") && probe.contains("width=320|height=180"), "{what}: {probe}");
+                assert!(probe.contains(&format!("pix_fmt={pix}")), "{what}: {probe}");
+                assert!(probe.contains(&format!("field_order={want}")), "{what}: {probe}");
+                // the decoder reads the coded field order from every frame header
+                let frames = std::process::Command::new(&ffprobe)
+                    .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=interlaced_frame,top_field_first", "-of", "csv=p=0"])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                let frames = String::from_utf8_lossy(&frames.stdout);
+                let lines: Vec<&str> = frames.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                assert_eq!(lines.len(), 3, "{what}: {frames}");
+                assert!(lines.iter().all(|l| *l == format!("1,{tff}")), "{what}: {frames}");
+                let dec = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&path).args(["-f", "null", "-"]).output().unwrap();
+                assert!(dec.status.success() && dec.stderr.is_empty(), "{what}: {}", String::from_utf8_lossy(&dec.stderr));
+            }
+        }
+    }
+}
+
 /// Burn-in: an H.264 export of a dark-blue matte with a caption, decoded by ffmpeg (external test
 /// oracle only), has bright caption pixels in the lower part of the frame, and none without
 /// `burn_captions` or above the caption.
@@ -360,6 +476,8 @@ fn hdr_exports_signal_pq_and_hlg() {
 /// process-global and parallel tests would see each other's factories.
 #[test]
 fn gpu_hook_scenarios() {
+    // (the backend tests register GPU pairs, whose renderers this test would take)
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
     // 1. Declining renderer: byte-equal to Off, and an empty registry too.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| None);
@@ -606,4 +724,436 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
     let plain = encode_all(false);
     assert!(!plain.is_empty());
     assert!(plain == encode_all(true), "converting ahead changed the packets");
+}
+
+/// The encoder-backend registries and counters are process-wide: the tests that fill them run one at a time.
+static BACKENDS: Mutex<()> = Mutex::new(());
+
+/// How the flaky test backends fail from their second frame on: 0 declines, 1 panics in `load`,
+/// 2 panics in `write` after the work was done.
+static FLAKY_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn flaky_fault() -> bool {
+    assert!(FLAKY_MODE.load(Ordering::SeqCst) != 1, "the device is lost");
+    false
+}
+
+fn flaky_write_fault() {
+    assert!(FLAKY_MODE.load(Ordering::SeqCst) != 2, "the device is lost mid-write");
+}
+
+/// The codec crate's own CPU functions behind the ProRes seam, failing from the second frame on.
+#[derive(Default)]
+struct FlakyProRes {
+    inner: filmcraft_prores::ReferenceBackend,
+    frames: u32,
+    flaky: bool,
+}
+
+impl filmcraft_prores::SliceBackend for FlakyProRes {
+    fn load(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &filmcraft_prores::Frame, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.frames += 1;
+        if self.flaky && self.frames >= 2 && FLAKY_MODE.load(Ordering::SeqCst) != 2 {
+            return flaky_fault();
+        }
+        self.inner.load(cfg, frame, slices)
+    }
+    fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+        let out = self.inner.write(qs);
+        if self.flaky && self.frames >= 2 {
+            flaky_write_fault();
+        }
+        out
+    }
+    fn alpha(&mut self) -> Option<Vec<Vec<u8>>> {
+        self.inner.alpha()
+    }
+}
+
+#[derive(Default)]
+struct FlakyDnx {
+    inner: filmcraft_dnx::ReferenceBackend,
+    frames: u32,
+    flaky: bool,
+}
+
+impl filmcraft_dnx::MacroblockBackend for FlakyDnx {
+    fn load(&mut self, cfg: &filmcraft_dnx::EncoderConfig, frame: &filmcraft_dnx::Frame) -> bool {
+        self.frames += 1;
+        if self.flaky && self.frames >= 2 && FLAKY_MODE.load(Ordering::SeqCst) != 2 {
+            return flaky_fault();
+        }
+        self.inner.load(cfg, frame)
+    }
+    fn bits(&mut self, q: u32) -> Option<Vec<u32>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u32]) -> Option<Vec<(Vec<u8>, u32)>> {
+        let out = self.inner.write(qs);
+        if self.flaky && self.frames >= 2 {
+            flaky_write_fault();
+        }
+        out
+    }
+}
+
+const BACKEND_FRAMES: i64 = 6;
+
+/// Export the first frames of the test clip to `format` and decode every one: the file has all of them, all red.
+fn export_and_check(format: Format, hardware: HardwareEncoding, name: &str) -> Vec<u8> {
+    let (p, seq, m) = project();
+    let path = tmp(name);
+    let mut s = ExportSettings { format, path: path.clone(), include_audio: false, hardware_encoding: hardware, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, BACKEND_FRAMES as u64, "{name}: every frame is exported");
+    let bytes = std::fs::read(&path).unwrap();
+    let src = filmcraft_codecs::open_bytes(name, bytes.clone().into()).unwrap();
+    for i in 0..BACKEND_FRAMES {
+        let px = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap().to_rgba8();
+        assert!(px[0] > 240 && px[1] < 15 && px[2] < 15, "{name} frame {i}: {:?}", &px[..4]);
+    }
+    bytes
+}
+
+fn prores_reference() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    Some(Box::new(FlakyProRes::default()))
+}
+
+fn prores_flaky() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    Some(Box::new(FlakyProRes { flaky: true, ..Default::default() }))
+}
+
+fn dnx_reference() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    Some(Box::new(FlakyDnx::default()))
+}
+
+fn dnx_flaky() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    Some(Box::new(FlakyDnx { flaky: true, ..Default::default() }))
+}
+
+#[test]
+fn a_registered_prores_backend_encodes_under_auto_only() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_prores_backend(prores_reference);
+    let off = export_and_check(Format::ProRes, HardwareEncoding::Off, "be-pr-off.mov");
+    assert_eq!(gpu_render_stats().encoded, 0, "Off never takes the backend");
+    let auto = export_and_check(Format::ProRes, HardwareEncoding::Auto, "be-pr-auto.mov");
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (BACKEND_FRAMES as u64, 0), "{st:?}");
+    assert_eq!(off, auto, "a backend doing the CPU's work gives the CPU's file");
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_registered_dnx_backend_encodes_under_auto_only() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_dnx_backend(dnx_reference);
+    let off = export_and_check(Format::DnxHr, HardwareEncoding::Off, "be-dnx-off.mov");
+    assert_eq!(gpu_render_stats().encoded, 0, "Off never takes the backend");
+    let auto = export_and_check(Format::DnxHr, HardwareEncoding::Auto, "be-dnx-auto.mov");
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (BACKEND_FRAMES as u64, 0), "{st:?}");
+    assert_eq!(off, auto, "a backend doing the CPU's work gives the CPU's file");
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_failing_backend_never_breaks_an_export() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    for mode in 0u8..3 {
+        let panics = mode != 0;
+        FLAKY_MODE.store(mode, Ordering::SeqCst);
+        crate::reset_encoder_backends_for_tests();
+        crate::register_prores_backend(prores_flaky);
+        let off = export_and_check(Format::ProRes, HardwareEncoding::Off, "fl-pr-off.mov");
+        let auto = export_and_check(Format::ProRes, HardwareEncoding::Auto, "fl-pr-auto.mov");
+        let st = gpu_render_stats();
+        assert_eq!(st.encoded, 1, "mode {mode}: only the first frame is the backend's: {st:?}");
+        // a declining backend is asked for every frame; one that panicked is dropped for the rest
+        assert_eq!(st.encode_fallbacks, if panics { 1 } else { BACKEND_FRAMES as u64 - 1 }, "mode {mode}: {st:?}");
+        assert_eq!(off, auto, "mode {mode}: the CPU's frames are the CPU's");
+    }
+    FLAKY_MODE.store(0, Ordering::SeqCst);
+    crate::reset_encoder_backends_for_tests();
+}
+
+#[test]
+fn a_failing_dnx_backend_never_breaks_an_export() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    for mode in 0u8..3 {
+        let panics = mode != 0;
+        FLAKY_MODE.store(mode, Ordering::SeqCst);
+        crate::reset_encoder_backends_for_tests();
+        crate::register_dnx_backend(dnx_flaky);
+        let off = export_and_check(Format::DnxHr, HardwareEncoding::Off, "fl-dnx-off.mov");
+        let auto = export_and_check(Format::DnxHr, HardwareEncoding::Auto, "fl-dnx-auto.mov");
+        let st = gpu_render_stats();
+        assert_eq!(st.encoded, 1, "mode {mode}: only the first frame is the backend's: {st:?}");
+        assert_eq!(st.encode_fallbacks, if panics { 1 } else { BACKEND_FRAMES as u64 - 1 }, "mode {mode}: {st:?}");
+        assert_eq!(off, auto, "mode {mode}: the CPU's frames are the CPU's");
+    }
+    FLAKY_MODE.store(0, Ordering::SeqCst);
+    crate::reset_encoder_backends_for_tests();
+}
+
+fn prores_factory_panics() -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+    panic!("no driver");
+}
+
+fn dnx_factory_panics() -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+    panic!("no driver");
+}
+
+#[test]
+fn a_backend_factory_that_panics_leaves_the_export_on_the_cpu() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::register_prores_backend(prores_factory_panics);
+    crate::register_dnx_backend(dnx_factory_panics);
+    for (format, name) in [(Format::ProRes, "pr"), (Format::DnxHr, "dnx")] {
+        let off = export_and_check(format, HardwareEncoding::Off, &format!("fp-{name}-off.mov"));
+        let auto = export_and_check(format, HardwareEncoding::Auto, &format!("fp-{name}-auto.mov"));
+        assert_eq!(off, auto, "{name}: the CPU's file");
+    }
+    let st = gpu_render_stats();
+    assert_eq!((st.encoded, st.encode_fallbacks), (0, 0), "{st:?}");
+    crate::reset_encoder_backends_for_tests();
+}
+
+/// How [`CpuResident`] fails at frame 2: 0 not at all, 1 its resident render declines, 2 it panics
+/// there, 3 it hands a frame the backend does not take.
+static RESIDENT_FAULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// A renderer whose "resident" frames are the planes the read-back path makes for ProRes HQ (the
+/// codec's `ReferenceBackend` takes a `filmcraft_prores::Frame` as the handle): a stand-in for a
+/// GPU pair, to test the export's switch without a device.
+struct CpuResident;
+
+impl FrameRenderer for CpuResident {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::NONE
+    }
+
+    fn resident_supported(&self, post: &PostSettings) -> bool {
+        !(post.hdr || post.image_overlay || post.name_overlay || post.timecode_overlay) && post.content.is_none() && post.limiter.is_none() && post.floats
+    }
+
+    fn render_resident(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+        post: &PostSettings,
+    ) -> Option<ResidentFrame> {
+        let fault = RESIDENT_FAULT.load(Ordering::SeqCst);
+        let at = t == FrameRate::FPS_24.tick_of(2);
+        match (at, fault) {
+            (true, 1) => return None,
+            (true, 2) => panic!("the device is lost"),
+            (true, 3) => return Some(Box::new(42u32)),
+            _ => {}
+        }
+        RESIDENT_RENDERS.fetch_add(1, Ordering::SeqCst);
+        let img = filmcraft_render::render_sequence(project, seq, t, opts, sources);
+        let (w, h) = (post.width as usize, post.height as usize);
+        let rgb = crate::pipeline::srgb_floats(&img, false);
+        let mut f = filmcraft_prores::Frame::new(post.width, post.height, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        rgbf_to_yuv422_10(&rgb, w, h, Matrix::new(post.planes.kr, post.planes.kb), &mut f.y, &mut f.cb, &mut f.cr);
+        Some(Box::new(f))
+    }
+}
+
+/// Resident frames [`CpuResident`] made (the planes of a frame, rendered on the "device").
+static RESIDENT_RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The reference backend, refusing resident frames from its third on when [`RESIDENT_FAULT`] is 4
+/// (an encoder that cannot take resident frames any more: limits, a lost device, dropped).
+#[derive(Default)]
+struct RefusingBackend {
+    inner: filmcraft_prores::ReferenceBackend,
+    resident: u32,
+}
+
+impl filmcraft_prores::SliceBackend for RefusingBackend {
+    fn load(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &filmcraft_prores::Frame, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.inner.load(cfg, frame, slices)
+    }
+    fn load_resident(&mut self, cfg: &filmcraft_prores::EncoderConfig, frame: &dyn std::any::Any, slices: &[filmcraft_prores::SliceJob]) -> bool {
+        self.resident += 1;
+        if RESIDENT_FAULT.load(Ordering::SeqCst) == 4 && self.resident >= 3 {
+            return false;
+        }
+        self.inner.load_resident(cfg, frame, slices)
+    }
+    fn bits(&mut self, q: u8) -> Option<Vec<[u32; 3]>> {
+        self.inner.bits(q)
+    }
+    fn write(&mut self, qs: &[u8]) -> Option<Vec<[Vec<u8>; 3]>> {
+        self.inner.write(qs)
+    }
+}
+
+struct CpuPair;
+
+impl GpuPair for CpuPair {
+    fn renderer(&self) -> Option<Box<dyn FrameRenderer>> {
+        Some(Box::new(CpuResident))
+    }
+    fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+        Some(Box::new(RefusingBackend::default()))
+    }
+    fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+        None
+    }
+}
+
+fn cpu_pair() -> Option<Box<dyn GpuPair>> {
+    Some(Box::new(CpuPair))
+}
+
+/// With a pair registered and GPU rendering and encoding Auto, frames stay "on the device" from
+/// the renderer into the encoder; a frame whose resident render declines or panics, or whose
+/// planes the backend does not take, is rendered and encoded through the read-back path, and the
+/// file is the read-back path's either way. An overlay the pair has no pass for keeps the whole
+/// export on the read-back path, decided before the first frame.
+#[test]
+fn a_resident_frame_that_fails_takes_the_read_back_path() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+    crate::register_gpu_pair(cpu_pair);
+    let (p, seq, m) = project();
+    let run = |name: &str, on: bool, timecode: bool| -> Vec<u8> {
+        let path = tmp(name);
+        let mut s = ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), path: path.clone(), include_audio: false, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+        s.effects.timecode_overlay.enabled = timecode;
+        (s.gpu_rendering, s.hardware_encoding) = if on { (GpuRendering::Auto, HardwareEncoding::Auto) } else { (GpuRendering::Off, HardwareEncoding::Off) };
+        let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert_eq!(r.frames, BACKEND_FRAMES as u64, "{name}");
+        std::fs::read(&path).unwrap()
+    };
+    let off = run("rs-off.mov", false, false);
+    let n = BACKEND_FRAMES as u64;
+    for fault in 0u8..4 {
+        RESIDENT_FAULT.store(fault, Ordering::SeqCst);
+        let before = gpu_render_stats();
+        let auto = run(&format!("rs-auto-{fault}.mov"), true, false);
+        let st = gpu_render_stats();
+        let (resident, missed) = (st.resident - before.resident, st.resident_fallbacks - before.resident_fallbacks);
+        assert!(auto == off, "fault {fault}: the read-back path's file");
+        assert_eq!(resident + missed, n, "fault {fault}: {st:?}");
+        assert_eq!(st.encoded - before.encoded, n, "fault {fault}: every frame on the backend: {st:?}");
+        match fault {
+            0 => assert_eq!(missed, 0, "every frame stayed resident"),
+            1 | 3 => assert_eq!(missed, 1, "fault {fault}: frame 2 only was read back"),
+            // (the panicking renderer retires the pool: frames from then on render on the CPU)
+            _ => assert!(missed >= 1, "fault {fault}: {st:?}"),
+        }
+    }
+    // an encoder that refuses resident frames from frame 2 on: frame 2 is rendered twice, every
+    // later frame is read back from the start (one frame per step, so nothing is rendered ahead)
+    RESIDENT_FAULT.store(4, Ordering::SeqCst);
+    let path = tmp("rs-refused.mov");
+    let mut s = ExportSettings { format: Format::ProRes, prores_profile: "hq".into(), path: path.clone(), include_audio: false, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(BACKEND_FRAMES)));
+    (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Auto, HardwareEncoding::Auto);
+    let (before, renders) = (gpu_render_stats(), RESIDENT_RENDERS.load(Ordering::SeqCst));
+    let prog = Progress::default();
+    let mut ex = Exporter::new(p.clone(), seq, &s, &prog).unwrap();
+    ex.set_batch(1);
+    ex.set_overlap(false);
+    while !matches!(ex.step(&m, &prog).unwrap(), Step::Done(_)) {}
+    let st = gpu_render_stats();
+    assert!(std::fs::read(&path).unwrap() == off, "the read-back path's file");
+    assert_eq!(RESIDENT_RENDERS.load(Ordering::SeqCst) - renders, 3, "frames 0, 1 and 2 rendered resident, no later one");
+    assert_eq!((st.resident - before.resident, st.resident_fallbacks - before.resident_fallbacks), (2, 1), "{st:?}");
+    assert_eq!(st.frames - before.frames, BACKEND_FRAMES as u64, "every frame counts once as a GPU frame, the refused one too");
+    RESIDENT_FAULT.store(0, Ordering::SeqCst);
+    let off = run("rs-tc-off.mov", false, true);
+    let before = gpu_render_stats();
+    let auto = run("rs-tc-auto.mov", true, true);
+    let st = gpu_render_stats();
+    assert!(auto == off, "the overlay export is the read-back path's");
+    assert_eq!((st.resident, st.resident_fallbacks), (before.resident, before.resident_fallbacks), "no frame tried resident: {st:?}");
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+}
+
+/// Renderers taken from [`CountingPair`].
+static PAIR_RENDERERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A [`GpuPair`] that counts the renderers taken from it (each one renders like the CPU).
+struct CountingPair;
+
+impl GpuPair for CountingPair {
+    fn renderer(&self) -> Option<Box<dyn FrameRenderer>> {
+        PAIR_RENDERERS.fetch_add(1, Ordering::SeqCst);
+        Some(Box::new(CpuResident))
+    }
+    fn prores_backend(&self) -> Option<Box<dyn filmcraft_prores::SliceBackend>> {
+        Some(Box::new(RefusingBackend::default()))
+    }
+    fn dnx_backend(&self) -> Option<Box<dyn filmcraft_dnx::MacroblockBackend>> {
+        None
+    }
+}
+
+/// The renderers of a GPU pair share the device of its encoder backends: an export takes them only
+/// when it will use a GPU encoder (Hardware encoding Auto and ProRes / DNxHR video, MXF included).
+/// Any other GPU-rendered export (H.264, an image sequence, ProRes with Hardware encoding Off)
+/// takes the plain renderer factory's.
+#[test]
+fn only_an_export_with_a_gpu_encoder_renders_on_the_pair() {
+    let _g = BACKENDS.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    crate::register_gpu_pair(|| Some(Box::new(CountingPair) as Box<dyn GpuPair>));
+    let (p, seq, m) = project();
+    let cases = [
+        ("h264", Format::H264, MxfVideoCodec::default(), HardwareEncoding::Auto, false),
+        ("png", Format::PngSequence, MxfVideoCodec::default(), HardwareEncoding::Auto, false),
+        ("prores-hw-off", Format::ProRes, MxfVideoCodec::default(), HardwareEncoding::Off, false),
+        ("mxf-h264", Format::MxfOp1a, MxfVideoCodec::H264, HardwareEncoding::Auto, false),
+        ("prores", Format::ProRes, MxfVideoCodec::default(), HardwareEncoding::Auto, true),
+        ("dnxhr", Format::DnxHr, MxfVideoCodec::default(), HardwareEncoding::Auto, true),
+        ("mxf-prores", Format::MxfOp1a, MxfVideoCodec::ProRes, HardwareEncoding::Auto, true),
+    ];
+    for (name, format, mxf_video_codec, hardware_encoding, paired) in cases {
+        let ext = match format {
+            Format::H264 => "mp4",
+            Format::PngSequence => "png",
+            Format::MxfOp1a => "mxf",
+            _ => "mov",
+        };
+        let mut s = ExportSettings { format, mxf_video_codec, path: tmp(&format!("pair-{name}.{ext}")), include_audio: false, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        (s.gpu_rendering, s.hardware_encoding) = (GpuRendering::Auto, hardware_encoding);
+        let (taken, frames) = (PAIR_RENDERERS.load(Ordering::SeqCst), gpu_render_stats().frames);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        assert!(gpu_render_stats().frames > frames, "{name}: rendered on a GPU renderer");
+        assert_eq!(PAIR_RENDERERS.load(Ordering::SeqCst) > taken, paired, "{name}: the pair's renderers taken");
+    }
+    crate::reset_encoder_backends_for_tests();
+    crate::reset_frame_renderers_for_tests();
 }

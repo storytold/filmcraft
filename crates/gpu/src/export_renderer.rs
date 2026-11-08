@@ -10,12 +10,20 @@
 //! machine, unsupported GPU) [`ExportRenderer::new`] returns `None` and the export falls back to
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
+//!
+//! A renderer made on the GPU encoders' device ([`ExportDevice::renderer`]) can also keep a frame
+//! there ([`ExportRenderer::render_resident`], ADR 0003 Step 2): the export's post-render work runs
+//! in a compute pass ([`crate::export_post`]) and the encoder codes the planes it leaves, so only
+//! the coded frame crosses the bus.
 
+use crate::export_post::{PostConfig, PostPass, ResidentPlanes};
+use crate::intra_enc::ExportDevice;
 use crate::{GpuCompositor, prepare};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
+use std::sync::atomic::Ordering;
 
 /// Where export rendering spends its time (process-wide totals, for the bench).
 pub mod timing {
@@ -88,13 +96,32 @@ fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The adapter off-screen GPU work runs on (export rendering, GPU encoding): the GPU the app's
+/// window asks for, the high-performance one (`WGPU_POWER_PREF` overrides it, as for the window).
+/// With no preference the first adapter listed can be an integrated GPU whose read-back memory is
+/// uncached.
+pub(crate) fn offscreen_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
+    let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+    // the adapter `request_adapter` would return, except where that one's driver is known to crash
+    // creating the device (`adapter::choose`); among the backends `WGPU_BACKEND` names, as for the
+    // window, when this instance has any of them
+    let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if let Some(named) = wgpu::Backends::from_env()
+        && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+    {
+        adapters.retain(|a| named.contains(a.get_info().backend.into()));
+    }
+    crate::adapter::pick(&adapters, None, power_preference).ok()
+}
+
 pub struct ExportRenderer {
-    _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
+    _instance: Option<wgpu::Instance>,
     device: wgpu::Device,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
     compositor: GpuCompositor,
+    /// Made on the [`ExportDevice`]: its lost flag (instead of the renderers' own device's), and
+    /// the pass that keeps a frame on the GPU for the encoders there (`None` if it failed to build).
+    paired: Option<(std::sync::Arc<std::sync::atomic::AtomicBool>, Option<PostPass>)>,
 }
 
 impl ExportRenderer {
@@ -112,20 +139,7 @@ impl ExportRenderer {
                     return None;
                 }
                 let instance = crate::adapter::native_instance();
-                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
-                // overrides it, as for the window). With no preference the first adapter listed
-                // can be an integrated GPU whose read-back memory is uncached.
-                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-                // the adapter `request_adapter` would return, except where that one's driver is
-                // known to crash creating the device (`adapter::choose`); among the backends
-                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
-                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-                if let Some(named) = wgpu::Backends::from_env()
-                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
-                {
-                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
-                }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = offscreen_adapter(&instance)?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
@@ -140,13 +154,54 @@ impl ExportRenderer {
             return None;
         }
         let compositor = GpuCompositor::new(&device, &queue);
-        Some(Self { _instance: instance, device, queue, compositor })
+        Some(Self { _instance: Some(instance), device, queue, compositor, paired: None })
+    }
+
+    /// A renderer on the export device the GPU encoders use, whose frames can stay there
+    /// ([`Self::render_resident`]). `None` once that device is lost.
+    pub(crate) fn on(dev: &ExportDevice) -> Option<Self> {
+        if dev.lost.load(Ordering::SeqCst) {
+            return None;
+        }
+        let (device, queue) = (dev.device.clone(), dev.queue.clone());
+        let compositor = GpuCompositor::new(&device, &queue);
+        // (the pipeline is made inside error scopes: a device that cannot build it keeps the
+        // renderer, without resident frames)
+        let scopes = Scopes::push(&device);
+        let pass = PostPass::new(&device, &queue);
+        let pass = match scopes.pop() {
+            Ok(()) => Some(pass),
+            Err(e) => {
+                log::warn!("GPU export: the post-render pass did not build ({e}); rendered frames are read back");
+                None
+            }
+        };
+        Some(Self { _instance: None, device, queue, compositor, paired: Some((dev.lost.clone(), pass)) })
+    }
+
+    /// Whether this renderer's device failed: the renderers' own, or the export device.
+    fn failed(&self) -> bool {
+        match &self.paired {
+            Some((lost, _)) => lost.load(Ordering::SeqCst),
+            None => device_failed(),
+        }
+    }
+
+    /// Whether [`Self::render_resident`] can run `post` on this renderer: made on the export
+    /// device, with its post-render pass, for a configuration the pass runs entirely.
+    pub fn resident_supported(&self, post: &PostConfig) -> bool {
+        matches!(&self.paired, Some((_, Some(_)))) && !self.failed() && post.supported(&self.device.limits())
     }
 
     /// What this renderer's device runs: frames are planned with it, here and by the export
     /// before it takes this renderer.
     pub fn caps(&self) -> DeviceCaps {
         self.compositor.caps()
+    }
+
+    /// Pictures decoded by the compositor's compute shaders, and those it handed to the CPU.
+    pub fn intra_decodes(&self) -> (u64, u64) {
+        self.compositor.intra_decodes()
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
@@ -157,19 +212,129 @@ impl ExportRenderer {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
-                if device_failed() {
+                if self.failed() {
                     return None;
                 }
                 let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let (w, h, px) = self.composite_and_read(&plan, &prep)?;
+                // A picture the GPU decoded (ProRes, DNx) and found corrupt is marked once the
+                // GPU's report is read back: the monitors show its CPU decode from the next frame
+                // on, but an exported frame is final, so this one goes to the CPU renderer.
+                let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
                 // an error reported while this frame was drawn leaves its pixels untrusted
-                if device_failed() {
+                if self.failed() || has_corrupt_coded_picture(&plan) {
                     return None;
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }
+    }
+
+    /// Composite `plan` and read the accumulator back. A paired renderer does it inside error
+    /// scopes: its device is the encoders' too, and an error that reached the device's handler
+    /// would retire GPU rendering and encoding for the process; here it only sends this frame to
+    /// the CPU renderer.
+    fn composite_and_read(&mut self, plan: &FramePlan, prep: &crate::PreparedPlan) -> Option<(u32, u32, Vec<f32>)> {
+        if self.paired.is_none() {
+            return self.compositor.render_export_prepared(plan, Some(prep));
+        }
+        let scopes = Scopes::push(&self.device);
+        let read = self.compositor.render_export_prepared(plan, Some(prep));
+        if let Err(e) = scopes.pop() {
+            log::warn!("GPU export: a frame failed ({e}); the CPU renders it");
+            return None;
+        }
+        read
+    }
+
+    /// One frame rendered and post-processed into the encoders' planes, left on the export
+    /// device (ADR 0003 Step 2): `post` says what the export does to it after rendering. `None`
+    /// when this frame must take the read-back path ([`Self::render`]): a renderer not on the
+    /// export device or without its post pass, a frame planned as one CPU image, a rendered size
+    /// other than `post.rendered`, a corrupt coded picture, or any device error.
+    pub fn render_resident(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+        post: &PostConfig,
+    ) -> Option<ResidentPlanes> {
+        if !self.resident_supported(post) {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        if matches!(plan, FramePlan::Image(_)) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let t0 = std::time::Instant::now();
+        let scopes = Scopes::push(&self.device);
+        let (view, size) = self.compositor.render_plan(&plan, Some(&prep), true, false);
+        let planes = match (&self.paired, size == post.rendered) {
+            (Some((_, Some(pass))), true) => pass.run(&self.device, &self.queue, &view, post),
+            _ => None,
+        };
+        let settled = scopes.pop();
+        timing::add_submit(t0.elapsed());
+        if let Err(e) = settled {
+            log::warn!("GPU export: a resident frame failed ({e}); it is rendered again and read back");
+            return None;
+        }
+        let planes = planes?;
+        let t0 = std::time::Instant::now();
+        // the corrupt-picture report of a GPU decode (see `render`) is known once the frame is done
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        timing::add_map_wait(t0.elapsed());
+        if self.failed() || has_corrupt_coded_picture(&plan) {
+            return None;
+        }
+        timing::add_frame();
+        Some(planes)
+    }
+}
+
+/// The out-of-memory and validation error scopes around one step of a paired renderer (this
+/// thread's errors only).
+struct Scopes {
+    oom: wgpu::ErrorScopeGuard,
+    validation: wgpu::ErrorScopeGuard,
+}
+
+impl Scopes {
+    fn push(device: &wgpu::Device) -> Scopes {
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        Scopes { oom, validation }
+    }
+
+    /// The first error the step raised (a scope that has not resolved counts as one).
+    fn pop(self) -> Result<(), String> {
+        let Scopes { oom, validation } = self;
+        // (scopes pop in reverse order)
+        let errors = [crate::poll_now(validation.pop()), crate::poll_now(oom.pop())];
+        match errors.into_iter().find(|e| !matches!(e, Some(None))) {
+            None => Ok(()),
+            Some(Some(Some(e))) => Err(e.to_string()),
+            Some(_) => Err("an error scope did not resolve".into()),
+        }
+    }
+}
+
+/// Whether a layer of `plan` is a coded picture the GPU decode found corrupt.
+fn has_corrupt_coded_picture(plan: &FramePlan) -> bool {
+    let corrupt =
+        |layers: &[filmcraft_render::plan::PlanLayer]| layers.iter().any(|l| matches!(&l.frame.data, filmcraft_frame::PixelData::Coded(c) if c.gpu_failed()));
+    match plan {
+        FramePlan::Layers { layers, .. } => corrupt(layers),
+        FramePlan::Composite { steps, .. } => steps.iter().any(|s| match s {
+            filmcraft_render::plan::PlanStep::Layers(layers) => corrupt(layers),
+            filmcraft_render::plan::PlanStep::Transition { inputs, .. } => inputs.iter().any(|ls| corrupt(ls)),
+            filmcraft_render::plan::PlanStep::Adjust { .. } => false,
+        }),
+        FramePlan::Image(_) => false,
     }
 }
 

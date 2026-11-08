@@ -36,4 +36,7 @@ web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tiff", "bmp"] }
 
 [dev-dependencies]
+# `ReferenceBackend` / `rate_control_for_tests` for the backend-seam tests (never in a shipped build)
+filmcraft-prores = { workspace = true, features = ["test-support"] }
+filmcraft-dnx = { workspace = true, features = ["test-support"] }
 filmcraft-testkit = { workspace = true }

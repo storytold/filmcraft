@@ -423,32 +423,11 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
 }
 
-/// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
-/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
-/// CPU reference renderer wherever it cannot.
-struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
-
-impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
-    fn render(
-        &mut self,
-        project: &filmcraft_project::Project,
-        seq: filmcraft_project::ItemId,
-        t: filmcraft_time::Tick,
-        opts: filmcraft_render::RenderOptions,
-        sources: &dyn filmcraft_render::SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
-        self.0.render(project, seq, t, opts, sources)
-    }
-
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
-        self.0.caps()
-    }
-}
-
+/// GPU export: filmcraft-gpu's frame renderer and ProRes / DNxHR encoders behind filmcraft-export's
+/// hooks, paired on one device so a rendered frame stays on the GPU into the encoder; exports fall
+/// back to the CPU renderer and encoders wherever the GPU cannot.
 fn register_gpu_frame_renderer() {
-    filmcraft_export::register_frame_renderer(|| {
-        filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
-    });
+    filmcraft_gpu_export::register();
 }
 
 /// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:

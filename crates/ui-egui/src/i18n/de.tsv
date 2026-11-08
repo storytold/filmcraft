@@ -3524,6 +3524,7 @@
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Ziehen: verschieben · Alt+Klick: glatt/Ecke · Strg+Klick: löschen
 	Drag inward to round the corners	Nach innen ziehen, um die Ecken abzurunden
 	Include Alpha Channel	Alphakanal einschließen
+	Alpha in DNxHR is not yet checked against Avid's decoder.	Alpha in DNxHR ist noch nicht mit dem Decoder von Avid geprüft.
 	Sequence Settings	Sequenzeinstellungen
 	Color Management	Farbmanagement
 	VR Properties	VR-Eigenschaften
@@ -3580,6 +3581,11 @@
 	Solid	Vollton
 	GPU Rendering	GPU-Rendering
 	Composite on the GPU when available	Auf der GPU zusammensetzen, wenn verfügbar
+	Hardware Encoding	Hardware-Kodierung
+	Use the hardware encoder when available	Hardware-Encoder verwenden, wenn verfügbar
+	GPU Encoding	GPU-Kodierung
+	Encode on the GPU when available	Auf der GPU kodieren, wenn verfügbar
+	Compute shaders on the graphics card do the encoding work; a frame the GPU cannot encode is encoded on the CPU.	Compute-Shader auf der Grafikkarte übernehmen die Kodierung; ein Frame, den die GPU nicht kodieren kann, wird auf der CPU kodiert.
 	Text to Speech	Text zu Sprache
 	Edit Narration	Erzählung bearbeiten
 	Dock Panel	Bedienfeld andocken
