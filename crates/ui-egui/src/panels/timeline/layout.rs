@@ -135,6 +135,19 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Show Next / Previous Screen: moves the left edge one screen of content on or back, at the zoom
+/// the view is heading to, and returns where it goes. `last_timeline_width` is already the width
+/// right of the track headers. A wheel or Zoom tool zoom still easing in keeps the time under the
+/// pointer in place every frame, which would put the left edge back, so the page ends that and the
+/// rest of the zoom eases in about the paged view.
+pub(crate) fn page_screen(app: &mut FilmcraftApp, forward: bool) -> f64 {
+    let v = &mut app.ui.timeline;
+    let page = f64::from(app.last_timeline_width.max(1.0)) / v.target_pps.max(1e-6);
+    v.target_scroll = (v.target_scroll + if forward { page } else { -page }).max(0.0);
+    app.tl.zoom_anchor = None;
+    v.target_scroll
+}
+
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
     let old = v.target_pps;

@@ -45,9 +45,9 @@ pub(crate) use interact::wheel_input;
 use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
-pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
 pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+pub(crate) use layout::{page_screen, reveal_playhead};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
