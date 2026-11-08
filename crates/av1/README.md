@@ -76,14 +76,14 @@ with libdav1d: **bit-exact** on all 6 fixtures.
 wasm32, or without the default `threads` feature, everything runs on the calling thread). Headers are parsed in order; each frame is
 then decoded by a frame worker. With worker threads it first reads the symbols of all its tiles,
 which needs only the parse results of its references (CDFs, segment ids, saved motion vectors),
-publishes its own, and then reconstructs from the recorded blocks. A one-tile frame reconstructs
-superblock row by superblock row, each row waiting only for the reference rows its motion vectors
+publishes its own, and then reconstructs from the recorded blocks. Frames with several tiles
+read the symbols of their tiles in parallel (one after another with intra block copy). A frame reconstructs superblock row by superblock
+row (that row of every tile), each row waiting only for the reference rows its motion vectors
 reach (row wavefront), and the in-loop filters (deblocking, CDEF, loop restoration) follow a few
 64-row bands behind and publish each final band for the frames predicting from it
-(`decoder.rs` and `postfilter.rs` give the dependency rules). Frames with several tiles decode
-their tiles in parallel into private buffers that are merged afterwards, once their references
-are finished, and filter in parallel bands of 64 rows. There is one frame worker per thread (at
-most 16), and the frames in flight are bounded by their size. Independent frames (hierarchical GOP
+(`decoder.rs` and `postfilter.rs` give the dependency rules). Super-resolution frames wait for
+their whole references and filter the whole frame. There is one frame worker per thread (at most
+16), and the frames in flight are bounded by their size. Independent frames (hierarchical GOP
 layers) decode concurrently. Results never depend on scheduling (the oracle tests compare 1 thread, many threads
 and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.

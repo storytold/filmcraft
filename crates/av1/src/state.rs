@@ -293,6 +293,14 @@ impl FrameState {
     pub fn merge_tile_state(&mut self, t: &TileState) {
         for p in 0..self.num_planes {
             t.cur.planes[p].copy_into(&mut self.cur.planes[p]);
+        }
+        self.merge_tile_modes(t);
+    }
+
+    /// Copy a tile's private buffers except the samples (after parsing, before reconstruction)
+    /// into the frame.
+    pub fn merge_tile_modes(&mut self, t: &TileState) {
+        for p in 0..self.num_planes {
             t.lf_tx_size[p].copy_into(&mut self.lf_tx_size[p]);
             for &u in &t.lr_written[p] {
                 self.lr.lr_type[p][u] = t.lr.lr_type[p][u];

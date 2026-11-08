@@ -40,6 +40,28 @@ fn every_thread_count_gives_the_single_thread_pictures_repeatedly() {
     });
 }
 
+/// 128x128 superblocks in two tile columns (libaom), with motion field estimation: the
+/// wavefront over the superblock rows of every tile column.
+fn spec_sb128_tiles() -> Spec {
+    let enc = ["-cpu-used", "8", "-crf", "40", "-tile-columns", "1", "-lag-in-frames", "16", "-aom-params", "sb-size=128:enable-ref-frame-mvs=1"];
+    Spec::new("wavefront_sb128_tiles", "testsrc2=s=640x400:r=25,rotate=a=t*0.5:c=black", 16, "yuv420p", &enc).encoder("libaom-av1")
+}
+
+#[test]
+fn superblocks_of_128_in_tile_columns_give_the_single_thread_pictures() {
+    let Some(ff) = ffmpeg_libaom() else { return };
+    let tus = ivf_frames(&make(&ff, &spec_sb128_tiles()));
+    filmcraft_testkit::with_deadline(DEADLINE_SECS, move || {
+        let want = decode(&tus, 1);
+        assert_eq!(want.len(), 16);
+        for threads in [2, 3, 4, 8, 16] {
+            for round in 0..2 {
+                assert!(decode(&tus, threads) == want, "threads {threads}, round {round}: pictures differ");
+            }
+        }
+    });
+}
+
 #[test]
 fn dropping_or_flushing_a_busy_decoder_never_hangs() {
     let Some(ff) = ffmpeg() else { return };

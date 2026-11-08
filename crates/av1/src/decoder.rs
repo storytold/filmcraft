@@ -4,11 +4,11 @@
 //! Threading: headers are parsed in order on the calling thread; each frame then becomes a job
 //! on a frame worker thread. A job first reads the symbols of its tiles (parse), which needs
 //! only the parse results of its references (CDFs, segment ids, saved motion vectors), and
-//! publishes its own; it then reconstructs. A one-tile frame is reconstructed superblock row by
-//! superblock row, each row waiting only for the reference rows its motion vectors reach, with
-//! the in-loop filters following a few bands behind and every final band published for the
-//! frames that predict from it (row wavefront); other frames wait for their whole references.
-//! So a frame can parse while its references are still being reconstructed, and reconstruct
+//! publishes its own; it then reconstructs. A frame is reconstructed superblock row by
+//! superblock row (that row of every tile), each row waiting only for the reference rows its
+//! motion vectors reach, with the in-loop filters following a few bands behind and every final
+//! band published for the frames that predict from it (row wavefront); super-resolution frames
+//! wait for their whole references. So a frame can parse while its references are still being reconstructed, and reconstruct
 //! while their bottom is still being filtered. Within a frame, tiles and the post-filter row
 //! bands run on a shared worker pool; waits happen only on frame worker threads. Every result
 //! depends only on final reference data, so the output is identical whatever the scheduling.
@@ -1029,13 +1029,21 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
             }
         } else {
             for state in &tiles.states {
-                fs.merge_tile_state(state);
+                fs.merge_tile_modes(state);
             }
             job.slot.set_parsed(Ok(Arc::new(parse_results(&fs, cdfs))));
         }
-        if tiles.whole && tiles.records.len() == 1 && !fh.use_superres {
-            // One tile: reconstruct superblock row by superblock row, each waiting only for
-            // the reference rows it reads, with the in-loop filters following behind.
+        if !fh.use_superres {
+            if !tiles.whole {
+                // The tiles were parsed into private buffers, merged into the frame above:
+                // reconstruct them in the frame's own buffers.
+                tiles.states.clear();
+                tiles.states.push(fs.take_tile_state());
+                tiles.whole = true;
+            }
+            // Reconstruct superblock row by superblock row (every tile of the row), each
+            // waiting only for the reference rows it reads, with the in-loop filters following
+            // behind.
             waited = reconstruct_wavefront(job, pool, &mut fs, &mut tiles, stats)?;
         } else {
             let wait = Timer::start();
@@ -1177,16 +1185,24 @@ fn rows_needed(
 /// parallel).
 const FILTER_STEP_ROWS: usize = 128;
 
-/// Reconstruct a one-tile frame superblock row by superblock row (row wavefront): before each
-/// row, wait only for the reference rows it reads; after it, run the in-loop filters on what
-/// that allows and publish the bands that became final. Returns the seconds spent waiting for
-/// references and filtering (not tile decoding).
+/// Reconstruct a frame superblock row by superblock row (row wavefront): before each row, wait
+/// only for the reference rows it reads; then reconstruct that row in every tile it crosses
+/// (tiles share no prediction context, so the order of the tiles within a row does not matter)
+/// and run the in-loop filters on what that allows, publishing the bands that became final.
+/// `tiles` holds the whole frame's buffers. Returns the seconds spent waiting for references
+/// and filtering (not tile decoding).
 fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles: &mut FrameTiles, stats: &mut DecodeStats) -> Result<f64> {
     let fh = &job.fh;
     let mut other = 0.0;
-    let (Some((num, mut rec)), Some(state)) = (tiles.records.pop(), tiles.states.pop()) else {
+    let ti = fh.tile_info.clone();
+    let Some(state) = tiles.states.pop() else {
         return Err(Error::Invalid("no tile to reconstruct"));
     };
+    // The record of every tile, by tile number.
+    let mut recs: Vec<Option<TileRecord>> = (0..ti.rows * ti.cols).map(|_| None).collect();
+    for (num, rec) in std::mem::take(&mut tiles.records) {
+        *recs.get_mut(num).ok_or(Error::Invalid("tile number out of range"))? = Some(rec);
+    }
     let mut used = [false; NUM_REF_FRAMES];
     if !fh.frame_is_intra {
         for i in 0..REFS_PER_FRAME {
@@ -1202,15 +1218,28 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
     fs.put_tile_state(state);
     let mut pipe = crate::postfilter::Pipeline::new(fs, job.draft);
     let sb4 = if job.seq.use_128x128_superblock { 32 } else { 16 };
-    let (mi_rows, mi_cols) = (fh.mi_rows as usize, fh.mi_cols as usize);
-    let (sb_rows, sbs_per_row) = (mi_rows.div_ceil(sb4), mi_cols.div_ceil(sb4));
-    let ti = fh.tile_info.clone();
+    let mi_rows = fh.mi_rows as usize;
+    let sb_rows = mi_rows.div_ceil(sb4);
     let mut bufs = (crate::tile::Buffers::new(), Cdfs::new(fh.quant.base_q_idx));
     let mut filtered = 0;
+    let mut tile_row = 0;
     for row in 0..sb_rows {
+        // Tile rows start on superblock rows.
+        while tile_row + 1 < ti.rows && row * sb4 >= ti.mi_row_starts[tile_row + 1] as usize {
+            tile_row += 1;
+        }
+        let local = (row * sb4).saturating_sub(ti.mi_row_starts[tile_row] as usize) / sb4;
         let w = Timer::start();
         if !fh.frame_is_intra {
-            let need = rows_needed(fh, &job.ref_info, rec.row_blocks(sbs_per_row, row.saturating_sub(1), row + 1), (row + 1) * sb4 * 4);
+            let mut need = [0usize; NUM_REF_FRAMES];
+            for col in 0..ti.cols {
+                let Some(rec) = &recs[tile_row * ti.cols + col] else { continue };
+                let width = (ti.mi_col_starts[col + 1] as usize).min(fh.mi_cols as usize).saturating_sub(ti.mi_col_starts[col] as usize);
+                let n = rows_needed(fh, &job.ref_info, rec.row_blocks(width.div_ceil(sb4), local.saturating_sub(1), local + 1), (row + 1) * sb4 * 4);
+                for i in 0..NUM_REF_FRAMES {
+                    need[i] = need[i].max(n[i]);
+                }
+            }
             for i in 0..NUM_REF_FRAMES {
                 if used[i] && need[i] > 0 {
                     let slot = job.refs[i].as_ref().ok_or(Error::Invalid("missing reference frame"))?;
@@ -1220,16 +1249,20 @@ fn reconstruct_wavefront(job: &FrameJob, pool: &Pool, fs: &mut FrameState, tiles
         }
         other += w.secs();
         let mut t = fs.take_tile_state();
-        let res = {
+        let mut res = Ok(());
+        for col in 0..ti.cols {
+            let Some(rec) = recs[tile_row * ti.cols + col].as_mut() else { continue };
             let (b, cdf) = bufs;
-            let mut td = TileDecoder::with_buffers(&fs.sh, &mut t, &[], cdf, num / ti.cols, num % ti.cols, b);
+            let mut td = TileDecoder::with_buffers(&fs.sh, &mut t, &[], cdf, tile_row, col, b);
             td.pass = Pass::Reconstruct;
-            td.record = std::mem::take(&mut rec);
-            let res = td.reconstruct_sb_rows(1);
-            rec = std::mem::take(&mut td.record);
+            td.record = std::mem::take(rec);
+            res = td.reconstruct_sb_rows(1);
+            *rec = std::mem::take(&mut td.record);
             bufs = td.into_buffers();
-            res
-        };
+            if res.is_err() {
+                break;
+            }
+        }
         fs.put_tile_state(t);
         res?;
         let f = Timer::start();
