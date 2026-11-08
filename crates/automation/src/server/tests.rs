@@ -110,7 +110,22 @@ async fn tools_are_titled_and_annotated() {
         }
     }
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "ui_click"] {
+    for want in [
+        "command_list",
+        "command_run",
+        "command_batch",
+        "doc_inspect",
+        "render_preview",
+        "project_inspect",
+        "render_frame",
+        "ui_click",
+        "timeline_sample",
+        "cut_inspect",
+        "clip_cut",
+        "clip_trim",
+        "clip_delete",
+        "clip_arrange",
+    ] {
         assert!(names.contains(&want), "{want} not listed");
     }
     let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
@@ -400,4 +415,189 @@ async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
     let v = m.document().await.unwrap();
     assert_eq!(v["project"]["activeSequence"].as_u64(), Some(HUGE), "{v}");
     assert_eq!(v["sequence"]["id"].as_u64(), Some(HUGE), "an id above i64::MAX must still be inspected, not dropped to a null sequence: {v}");
+}
+
+#[tokio::test]
+async fn timeline_sample_grid_and_strip() {
+    let m = FilmcraftMcp::headless(demo());
+
+    // Grid layout with 4 samples
+    let p = Parameters(TimelineSampleParams {
+        range: None,
+        count: Some(4),
+        layout: Some(SampleLayout::Grid),
+        max_side: Some(400),
+    });
+    let res = m.timeline_sample(p).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 2, "must return image and text content blocks");
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["count"], 4);
+    assert_eq!(meta["layout"], "grid");
+    assert!(meta["sequence_duration"].as_f64().unwrap() > 0.0);
+    let samples = meta["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 4);
+    assert!(samples[0]["active_clips"].is_array());
+
+    // Strip layout with range
+    let p_strip = Parameters(TimelineSampleParams {
+        range: Some([1.0, 3.0]),
+        count: Some(3),
+        layout: Some(SampleLayout::Strip),
+        max_side: Some(300),
+    });
+    let res_strip = m.timeline_sample(p_strip).await.unwrap();
+    assert_ne!(res_strip.is_error, Some(true));
+    let contents_strip = serde_json::to_value(&res_strip.content).unwrap();
+    let text_strip = contents_strip.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta_strip: Value = serde_json::from_str(text_strip).unwrap();
+    assert_eq!(meta_strip["count"], 3);
+    assert_eq!(meta_strip["layout"], "strip");
+}
+
+#[tokio::test]
+async fn cut_inspect_continuity_and_metadata() {
+    let m = FilmcraftMcp::headless(demo());
+    // Create an explicit cut at 2.0s
+    m.run("sequence.addEditAllTracks", json!({"seconds": 2.0})).await.unwrap();
+
+    let p = Parameters(CutInspectParams {
+        seconds: 2.0,
+        frames_before: Some(2),
+        frames_after: Some(2),
+        max_side: Some(400),
+    });
+    let res = m.cut_inspect(p).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 2);
+
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["frames_count"], 4);
+    assert_eq!(meta["cut_seconds"], 2.0);
+    assert!(meta["outgoing_clips"].is_array());
+    assert!(meta["incoming_clips"].is_array());
+}
+
+#[tokio::test]
+async fn clip_cut_with_verification() {
+    let m = FilmcraftMcp::headless(demo());
+
+    // Cut with verify: false
+    let p_no_verify = Parameters(ClipCutParams {
+        seconds: 2.5,
+        clip: None,
+        track: None,
+        verify: Some(false),
+    });
+    let res = m.clip_cut(p_no_verify).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 1, "verify=false returns json only");
+
+    // Cut with verify: true
+    let p_verify = Parameters(ClipCutParams {
+        seconds: 3.5,
+        clip: None,
+        track: None,
+        verify: Some(true),
+    });
+    let res_v = m.clip_cut(p_verify).await.unwrap();
+    assert_ne!(res_v.is_error, Some(true));
+    assert_eq!(res_v.content.len(), 2, "verify=true attaches image strip");
+    let contents = serde_json::to_value(&res_v.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert!(meta["cuts_made"].as_u64().unwrap() >= 1);
+    assert!(meta["verification"].is_object());
+}
+
+#[tokio::test]
+async fn clip_trim_and_delete_operations() {
+    let m = FilmcraftMcp::headless(demo());
+    let seq_before = m.run("sequence.inspect", json!({})).await.unwrap();
+    let orig_duration = seq_before["duration"].as_i64().unwrap();
+    let clip_id = seq_before["video"][0]["items"][0]["clip"].as_u64().unwrap();
+
+    // Ripple trim Out point backward by 0.5s
+    let p_trim = Parameters(ClipTrimParams {
+        clip: clip_id,
+        edge: "out".into(),
+        delta_seconds: Some(-0.5),
+        delta_frames: None,
+        ripple: Some(true),
+        verify: Some(true),
+    });
+    let res_trim = m.clip_trim(p_trim).await.unwrap();
+    assert_ne!(res_trim.is_error, Some(true));
+    assert_eq!(res_trim.content.len(), 2, "verify=true attaches visual check");
+
+    let seq_after_trim = m.run("sequence.inspect", json!({})).await.unwrap();
+    let dur_after_trim = seq_after_trim["duration"].as_i64().unwrap();
+    assert!(dur_after_trim < orig_duration, "ripple trim should shrink duration");
+
+    // Ripple delete the trimmed clip
+    let p_del = Parameters(ClipDeleteParams {
+        clip: Some(clip_id),
+        gap_at: None,
+        track: None,
+        ripple: Some(true),
+        verify: Some(false),
+    });
+    let res_del = m.clip_delete(p_del).await.unwrap();
+    assert_ne!(res_del.is_error, Some(true));
+
+    let seq_after_del = m.run("sequence.inspect", json!({})).await.unwrap();
+    let dur_after_del = seq_after_del["duration"].as_i64().unwrap();
+    assert!(dur_after_del < dur_after_trim, "ripple delete should shrink duration further");
+}
+
+#[tokio::test]
+async fn clip_arrange_move_operation() {
+    let m = FilmcraftMcp::headless(demo());
+    let seq_before = m.run("sequence.inspect", json!({})).await.unwrap();
+    let clip_id = seq_before["video"][0]["items"][0]["clip"].as_u64().unwrap();
+
+    let p_arrange = Parameters(ClipArrangeParams {
+        clip: clip_id,
+        to_seconds: 4.0,
+        to_track: None,
+        insert: Some(false),
+    });
+    let res = m.clip_arrange(p_arrange).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["clip"], clip_id);
+    assert_eq!(meta["to_seconds"], 4.0);
+}
+
+#[tokio::test]
+async fn autonomous_agent_edit_and_verify_e2e_loop() {
+    let mut c = Client::start(demo());
+    let _init = c.init().await;
+
+    // Step 1: Agent samples timeline to understand sequence structure
+    let sample_res = c.call(1, "timeline_sample", json!({"count": 4, "layout": "grid", "max_side": 300})).await;
+    assert_eq!(sample_res["result"]["isError"], Value::Null);
+    let contents = sample_res["result"]["content"].as_array().unwrap();
+    assert_eq!(contents.len(), 2, "returns image + json");
+
+    // Step 2: Agent cuts clip at 2.0s with automatic verification
+    let cut_res = c.call(2, "clip_cut", json!({"seconds": 2.0, "verify": true})).await;
+    assert_eq!(cut_res["result"]["isError"], Value::Null);
+    let cut_contents = cut_res["result"]["content"].as_array().unwrap();
+    assert_eq!(cut_contents.len(), 2, "cut with verify returns image + json");
+
+    // Step 3: Agent checks cut continuity explicitly
+    let inspect_res = c.call(3, "cut_inspect", json!({"seconds": 2.0, "frames_before": 2, "frames_after": 2, "max_side": 300})).await;
+    assert_eq!(inspect_res["result"]["isError"], Value::Null);
+
+    // Step 4: Agent inspects document to confirm state
+    let doc_res = c.call(4, "doc_inspect", json!({})).await;
+    assert_eq!(doc_res["result"]["isError"], Value::Null);
 }

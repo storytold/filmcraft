@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use filmcraft_engine::Session;
+use filmcraft_time::{FrameRate, Tick};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
@@ -12,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::sample::{SampleLayout, SampledFrame, format_timestamp, stitch};
 use crate::{AutomationError, BridgeClient, png_rgba};
 
 pub enum Backend {
@@ -179,6 +181,106 @@ pub struct ControlParams {
     pub params: Option<Value>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TimelineSampleParams {
+    /// Start and end time in seconds (e.g. [0.0, 10.0]). Default: full sequence range [0.0, duration].
+    #[serde(default)]
+    pub range: Option<[f64; 2]>,
+    /// Number of evenly spaced samples across the timeline or range (2 to 16, default 6).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Layout format: "grid" (default) or "strip".
+    #[serde(default)]
+    pub layout: Option<SampleLayout>,
+    /// Longest side of the composite PNG (default 1200).
+    #[serde(default)]
+    pub max_side: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CutInspectParams {
+    /// Cut boundary timestamp in seconds.
+    pub seconds: f64,
+    /// Number of frames preceding the cut to sample (1 to 8, default 2).
+    #[serde(default)]
+    pub frames_before: Option<u32>,
+    /// Number of frames following the cut to sample (1 to 8, default 2).
+    #[serde(default)]
+    pub frames_after: Option<u32>,
+    /// Longest side of the composite PNG (default 1200).
+    #[serde(default)]
+    pub max_side: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClipCutParams {
+    /// Timestamp in seconds where the cut should be made.
+    pub seconds: f64,
+    /// Specific clip ID to cut (optional; if omitted, cuts across targeted tracks or all tracks).
+    #[serde(default)]
+    pub clip: Option<u64>,
+    /// Specific track to cut, e.g. "V1" (optional).
+    #[serde(default)]
+    pub track: Option<String>,
+    /// When true, automatically attaches visual cut inspection frames to the response.
+    #[serde(default)]
+    pub verify: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClipTrimParams {
+    /// ID of the clip to trim.
+    pub clip: u64,
+    /// Which edge to trim: "in" (head) or "out" (tail).
+    pub edge: String,
+    /// Trim adjustment in seconds (positive trims forward/right, negative trims backward/left).
+    #[serde(default)]
+    pub delta_seconds: Option<f64>,
+    /// Or trim adjustment in integer frames.
+    #[serde(default)]
+    pub delta_frames: Option<i64>,
+    /// Whether to ripple trim (shifting downstream clips) or regular trim (leaving gaps/overwriting). Default true.
+    #[serde(default)]
+    pub ripple: Option<bool>,
+    /// When true, attaches visual inspection of the trimmed edit point.
+    #[serde(default)]
+    pub verify: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClipDeleteParams {
+    /// ID of the clip to delete.
+    #[serde(default)]
+    pub clip: Option<u64>,
+    /// Or timestamp in seconds within a gap to delete.
+    #[serde(default)]
+    pub gap_at: Option<f64>,
+    /// Track for gap deletion, e.g. "V1" (defaults to "V1").
+    #[serde(default)]
+    pub track: Option<String>,
+    /// When true, closes the gap by shifting downstream clips left (ripple delete).
+    /// When false, leaves empty space (lift / clear). Default true.
+    #[serde(default)]
+    pub ripple: Option<bool>,
+    /// When true, attaches visual verification around the deletion point.
+    #[serde(default)]
+    pub verify: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClipArrangeParams {
+    /// ID of the clip to move.
+    pub clip: u64,
+    /// Destination start time on the timeline in seconds.
+    pub to_seconds: f64,
+    /// Destination track, e.g. "V1", "V2", "A1", or track ID. Default: stay on same track.
+    #[serde(default)]
+    pub to_track: Option<String>,
+    /// When true, inserts the clip by splitting and shifting existing clips (ripple move). Default false (overwrite).
+    #[serde(default)]
+    pub insert: Option<bool>,
+}
+
 fn ok_json(v: &Value) -> CallToolResult {
     CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(v).unwrap_or_default())])
 }
@@ -187,6 +289,64 @@ fn fail(e: impl std::fmt::Display) -> CallToolResult {
 }
 fn png_result(png: &[u8], note: &str) -> CallToolResult {
     CallToolResult::success(vec![Content::image(base64::engine::general_purpose::STANDARD.encode(png), "image/png"), Content::text(note.to_string())])
+}
+fn image_with_json(png: &[u8], metadata: &Value) -> CallToolResult {
+    CallToolResult::success(vec![
+        Content::image(base64::engine::general_purpose::STANDARD.encode(png), "image/png"),
+        Content::text(serde_json::to_string_pretty(metadata).unwrap_or_default()),
+    ])
+}
+fn active_clips_at(seq_info: &Value, t: Tick) -> Vec<Value> {
+    let mut clips = Vec::new();
+    let mut scan_tracks = |tracks: Option<&Vec<Value>>, default_kind: &str| {
+        if let Some(tracks) = tracks {
+            for track in tracks {
+                let track_name = track.get("name").and_then(Value::as_str).unwrap_or(default_kind);
+                if let Some(items) = track.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let start = item.get("start").and_then(Value::as_i64).unwrap_or(0);
+                        let duration = item.get("duration").and_then(Value::as_i64).unwrap_or(0);
+                        let end = item.get("end").and_then(Value::as_i64).unwrap_or_else(|| start.saturating_add(duration));
+                        if start <= t.0 && t.0 < end {
+                            clips.push(json!({
+                                "clip": item.get("clip"),
+                                "name": item.get("name"),
+                                "track": track_name,
+                                "start": item.get("start"),
+                                "duration": item.get("duration"),
+                                "start_seconds": Tick(start).as_seconds_f64(),
+                                "duration_seconds": Tick(duration).as_seconds_f64(),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    };
+    scan_tracks(seq_info.get("video").and_then(Value::as_array), "video");
+    scan_tracks(seq_info.get("audio").and_then(Value::as_array), "audio");
+    clips
+}
+fn find_clip_in_seq(seq_info: &Value, clip_id: u64) -> Option<Value> {
+    for kind in ["video", "audio"] {
+        if let Some(tracks) = seq_info.get(kind).and_then(Value::as_array) {
+            for track in tracks {
+                let track_name = track.get("name").and_then(Value::as_str).unwrap_or(kind);
+                let track_id = track.get("id").and_then(Value::as_u64).unwrap_or(0);
+                if let Some(items) = track.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        if item.get("clip").and_then(Value::as_u64) == Some(clip_id) {
+                            let mut res = item.clone();
+                            res["track_name"] = json!(track_name);
+                            res["track_id"] = json!(track_id);
+                            return Some(res);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     Ok(match r {
@@ -563,6 +723,323 @@ impl FilmcraftMcp {
     async fn ui_control(&self, Parameters(p): Parameters<ControlParams>) -> Result<CallToolResult, McpError> {
         self.ui(&p.method, p.params.unwrap_or(json!({}))).await
     }
+
+    #[tool(
+        title = "Sample timeline frames",
+        description = "Sample N frames evenly spaced across the sequence (or a range) and return a composite contact sheet (grid or strip) with timestamp overlays and active clip metadata.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn timeline_sample(&self, Parameters(p): Parameters<TimelineSampleParams>) -> Result<CallToolResult, McpError> {
+        let seq_info = match self.run("sequence.inspect", json!({})).await {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+        let duration_ticks = seq_info.get("duration").and_then(Value::as_i64).unwrap_or(0);
+        let duration = Tick(duration_ticks);
+        if duration <= Tick::ZERO {
+            return Ok(fail("sequence is empty or has zero duration"));
+        }
+
+        let (start_sec, end_sec) = if let Some([s, e]) = p.range {
+            if !s.is_finite() || !e.is_finite() || s < 0.0 || e <= s {
+                return Ok(fail("invalid range: start must be non-negative and end must be greater than start"));
+            }
+            (s, e.min(duration.as_seconds_f64()))
+        } else {
+            (0.0, duration.as_seconds_f64())
+        };
+
+        let count = p.count.unwrap_or(6).clamp(2, 16) as usize;
+        let step = (end_sec - start_sec) / (count as f64);
+        let rate = seq_info
+            .get("settings")
+            .and_then(|s| s.get("frame_rate"))
+            .and_then(|r| serde_json::from_value::<FrameRate>(r.clone()).ok())
+            .unwrap_or(FrameRate::FPS_23_976);
+
+        let mut points = Vec::with_capacity(count);
+        for i in 0..count {
+            let sec = start_sec + (i as f64 + 0.5) * step;
+            let tick = rate.snap_nearest(Tick::from_seconds_f64(sec));
+            let label = format_timestamp(tick.as_seconds_f64());
+            points.push((tick, Some(label)));
+        }
+
+        let max = p.max_side.unwrap_or(1200);
+        let frames = match self.sample_frames(points, max).await {
+            Ok(f) => f,
+            Err(e) => return Ok(fail(e)),
+        };
+        let layout = p.layout.unwrap_or(SampleLayout::Grid);
+        let png = match stitch(&frames, layout, max) {
+            Ok(b) => b,
+            Err(e) => return Ok(fail(e)),
+        };
+
+        let mut samples_meta = Vec::with_capacity(frames.len());
+        for (i, f) in frames.iter().enumerate() {
+            let t = Tick::from_seconds_f64(f.seconds);
+            let active = active_clips_at(&seq_info, t);
+            samples_meta.push(json!({
+                "index": i,
+                "seconds": f.seconds,
+                "tick": t.0,
+                "frame": rate.frame_at(t),
+                "timestamp": format_timestamp(f.seconds),
+                "active_clips": active,
+            }));
+        }
+
+        let meta = json!({
+            "sequence_duration": duration.as_seconds_f64(),
+            "sequence_duration_ticks": duration.0,
+            "frame_rate": rate.as_f64(),
+            "count": frames.len(),
+            "layout": if layout == SampleLayout::Strip { "strip" } else { "grid" },
+            "samples": samples_meta,
+        });
+
+        Ok(image_with_json(&png, &meta))
+    }
+
+    #[tool(
+        title = "Inspect cut continuity",
+        description = "Sample frames immediately preceding and following a cut point (side-by-side strip) with A/B outgoing/incoming clip labels and gap/transition metadata.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn cut_inspect(&self, Parameters(p): Parameters<CutInspectParams>) -> Result<CallToolResult, McpError> {
+        if !p.seconds.is_finite() || p.seconds < 0.0 {
+            return Ok(fail("cut seconds must be a non-negative finite number"));
+        }
+        match self.inspect_cut_internal(p.seconds, p.frames_before, p.frames_after, p.max_side).await {
+            Ok((png, meta)) => Ok(image_with_json(&png, &meta)),
+            Err(e) => Ok(fail(e)),
+        }
+    }
+
+    #[tool(
+        title = "Cut clip at timestamp",
+        description = "Split a clip (or targeted tracks) at `seconds`. Returns the left and right split clip IDs and boundaries. When `verify: true`, attaches visual cut continuity inspection.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn clip_cut(&self, Parameters(p): Parameters<ClipCutParams>) -> Result<CallToolResult, McpError> {
+        if !p.seconds.is_finite() || p.seconds < 0.0 {
+            return Ok(fail("cut time must be a non-negative finite number of seconds"));
+        }
+        let cut_res = if let Some(clip) = p.clip {
+            self.run("timeline.razor", json!({"clip": clip, "seconds": p.seconds})).await
+        } else if let Some(ref tr) = p.track {
+            self.run("timeline.razor", json!({"track": tr, "seconds": p.seconds})).await
+        } else {
+            self.run("sequence.addEditAllTracks", json!({"seconds": p.seconds})).await
+        };
+        let cut_val = match cut_res {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+
+        let seq_info = self.run("sequence.inspect", json!({})).await.unwrap_or_default();
+        let rate = seq_info
+            .get("settings")
+            .and_then(|s| s.get("frame_rate"))
+            .and_then(|r| serde_json::from_value::<FrameRate>(r.clone()).ok())
+            .unwrap_or(FrameRate::FPS_23_976);
+        let cut_tick = rate.snap(Tick::from_seconds_f64(p.seconds));
+
+        let outgoing = active_clips_at(&seq_info, rate.tick_of((rate.frame_at(cut_tick) - 1).max(0)));
+        let incoming = active_clips_at(&seq_info, cut_tick);
+
+        let mut meta = json!({
+            "cut_seconds": p.seconds,
+            "cut_tick": cut_tick.0,
+            "cuts_made": cut_val.get("cuts").and_then(Value::as_u64).unwrap_or(0),
+            "left_clip": outgoing.first(),
+            "right_clip": incoming.first(),
+        });
+
+        if p.verify.unwrap_or(false) {
+            match self.inspect_cut_internal(p.seconds, Some(2), Some(2), Some(800)).await {
+                Ok((png, vmeta)) => {
+                    meta["verification"] = vmeta;
+                    return Ok(image_with_json(&png, &meta));
+                }
+                Err(e) => {
+                    meta["verification_error"] = json!(e.to_string());
+                }
+            }
+        }
+        Ok(ok_json(&meta))
+    }
+
+    #[tool(
+        title = "Trim clip edge",
+        description = "Adjust the In (head) or Out (tail) point of a clip by seconds or frames. When `ripple: true` (default), shifts downstream clips to close or open gaps. When `verify: true`, attaches visual inspection.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn clip_trim(&self, Parameters(p): Parameters<ClipTrimParams>) -> Result<CallToolResult, McpError> {
+        let edge = p.edge.to_ascii_lowercase();
+        if edge != "in" && edge != "out" {
+            return Ok(fail("edge must be 'in' or 'out'"));
+        }
+        let mode = if p.ripple.unwrap_or(true) { "ripple" } else { "regular" };
+        let mut trim_params = json!({
+            "clip": p.clip,
+            "edge": edge,
+            "mode": mode,
+        });
+        if let Some(df) = p.delta_frames {
+            trim_params["deltaFrames"] = json!(df);
+        } else if let Some(ds) = p.delta_seconds {
+            if !ds.is_finite() {
+                return Ok(fail("delta_seconds must be a finite number"));
+            }
+            trim_params["delta"] = json!(Tick::from_seconds_f64(ds).0);
+        } else {
+            return Ok(fail("need either delta_seconds or delta_frames"));
+        }
+
+        let res = match self.run("timeline.trim", trim_params).await {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+
+        let seq_info = self.run("sequence.inspect", json!({})).await.unwrap_or_default();
+        let updated_clip = find_clip_in_seq(&seq_info, p.clip);
+
+        let mut meta = json!({
+            "clip": p.clip,
+            "edge": edge,
+            "ripple": p.ripple.unwrap_or(true),
+            "trim_result": res,
+            "updated_clip": updated_clip,
+        });
+
+        if p.verify.unwrap_or(false)
+            && let Some(ref c) = updated_clip
+        {
+            let start = c.get("start").and_then(Value::as_i64).unwrap_or(0);
+            let dur = c.get("duration").and_then(Value::as_i64).unwrap_or(0);
+            let inspect_sec = if edge == "in" {
+                Tick(start).as_seconds_f64()
+            } else {
+                Tick(start.saturating_add(dur)).as_seconds_f64()
+            };
+            match self.inspect_cut_internal(inspect_sec, Some(2), Some(2), Some(800)).await {
+                Ok((png, vmeta)) => {
+                    meta["verification"] = vmeta;
+                    return Ok(image_with_json(&png, &meta));
+                }
+                Err(e) => {
+                    meta["verification_error"] = json!(e.to_string());
+                }
+            }
+        }
+        Ok(ok_json(&meta))
+    }
+
+    #[tool(
+        title = "Delete clip or gap",
+        description = "Remove a clip or gap. When `ripple: true` (default), shifts downstream clips to close the gap. When `verify: true`, attaches visual inspection.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn clip_delete(&self, Parameters(p): Parameters<ClipDeleteParams>) -> Result<CallToolResult, McpError> {
+        let ripple = p.ripple.unwrap_or(true);
+        let seq_before = self.run("sequence.inspect", json!({})).await.unwrap_or_default();
+
+        let (inspect_sec, del_res) = if let Some(clip) = p.clip {
+            let clip_info = find_clip_in_seq(&seq_before, clip);
+            let start_sec = clip_info.as_ref()
+                .and_then(|c| c.get("start").and_then(Value::as_i64))
+                .map(|t| Tick(t).as_seconds_f64())
+                .unwrap_or(0.0);
+            let cmd = if ripple { "edit.rippleDelete" } else { "edit.clear" };
+            let r = self.run(cmd, json!({"clip": clip})).await;
+            (start_sec, r)
+        } else if let Some(gap_at) = p.gap_at {
+            if !gap_at.is_finite() || gap_at < 0.0 {
+                return Ok(fail("gap_at must be a non-negative finite number of seconds"));
+            }
+            let track = p.track.unwrap_or_else(|| "V1".into());
+            if let Err(e) = self.run("timeline.selectGap", json!({"seconds": gap_at, "track": track})).await {
+                return Ok(fail(e));
+            }
+            let cmd = if ripple { "edit.rippleDelete" } else { "edit.clear" };
+            let r = self.run(cmd, json!({})).await;
+            (gap_at, r)
+        } else {
+            return Ok(fail("need either `clip` or `gap_at`"));
+        };
+
+        let del_val = match del_res {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+
+        let mut meta = json!({
+            "deleted_clip": p.clip,
+            "deleted_gap_at": p.gap_at,
+            "ripple": ripple,
+            "result": del_val,
+        });
+
+        if p.verify.unwrap_or(false) {
+            match self.inspect_cut_internal(inspect_sec, Some(2), Some(2), Some(800)).await {
+                Ok((png, vmeta)) => {
+                    meta["verification"] = vmeta;
+                    return Ok(image_with_json(&png, &meta));
+                }
+                Err(e) => {
+                    meta["verification_error"] = json!(e.to_string());
+                }
+            }
+        }
+        Ok(ok_json(&meta))
+    }
+
+    #[tool(
+        title = "Move or arrange clip",
+        description = "Move a clip to `to_seconds` and optionally to a different track (e.g. \"V1\", \"V2\"). When `insert: true`, ripples downstream clips instead of overwriting.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn clip_arrange(&self, Parameters(p): Parameters<ClipArrangeParams>) -> Result<CallToolResult, McpError> {
+        if !p.to_seconds.is_finite() || p.to_seconds < 0.0 {
+            return Ok(fail("destination time must be a non-negative finite number of seconds"));
+        }
+        let seq_before = self.run("sequence.inspect", json!({})).await.unwrap_or_default();
+        let clip_info = match find_clip_in_seq(&seq_before, p.clip) {
+            Some(c) => c,
+            None => return Ok(fail(format!("clip {} not found in sequence", p.clip))),
+        };
+        let track_val = match p.to_track {
+            Some(ref tr) => json!(tr),
+            None => clip_info.get("track_id").cloned().unwrap_or_else(|| json!("V1")),
+        };
+        let to_tick = Tick::from_seconds_f64(p.to_seconds);
+        let move_params = json!({
+            "moves": [{
+                "clip": p.clip,
+                "track": track_val,
+                "time": to_tick.0,
+            }],
+            "insert": p.insert.unwrap_or(false),
+        });
+
+        match self.run("timeline.move", move_params).await {
+            Ok(res) => {
+                let seq_after = self.run("sequence.inspect", json!({})).await.unwrap_or_default();
+                let updated = find_clip_in_seq(&seq_after, p.clip);
+                let meta = json!({
+                    "clip": p.clip,
+                    "to_seconds": p.to_seconds,
+                    "to_tick": to_tick.0,
+                    "result": res,
+                    "updated_clip": updated,
+                });
+                Ok(ok_json(&meta))
+            }
+            Err(e) => Ok(fail(e)),
+        }
+    }
 }
 
 impl FilmcraftMcp {
@@ -592,6 +1069,152 @@ impl FilmcraftMcp {
         };
         Ok(png_result(&bytes, "screenshot of the live FilmCraft window"))
     }
+
+    /// Sample a list of frames at specific tick positions and labels.
+    async fn sample_frames(&self, points: Vec<(Tick, Option<String>)>, max_side: u32) -> Result<Vec<SampledFrame>, AutomationError> {
+        match &*self.backend {
+            Backend::Headless(s) => {
+                let s = s.clone();
+                tokio::task::spawn_blocking(move || -> Result<Vec<SampledFrame>, AutomationError> {
+                    let g = s.lock().unwrap_or_else(PoisonError::into_inner);
+                    let (w, h) = g.active_sequence()
+                        .map(|q| (q.settings.width, q.settings.height))
+                        .ok_or_else(|| AutomationError::Other("no sequence".into()))?;
+                    let scale = render_scale(max_side, w, h);
+                    let mut frames = Vec::with_capacity(points.len());
+                    for (tick, label) in points {
+                        let img = g.try_render_program_at(scale, tick)
+                            .map_err(|e| AutomationError::Other(e.to_string()))?;
+                        let width = img.w as u32;
+                        let height = img.h as u32;
+                        let rgba = img.over_black_rgba8();
+                        frames.push(SampledFrame {
+                            seconds: tick.as_seconds_f64(),
+                            label,
+                            width,
+                            height,
+                            rgba,
+                        });
+                    }
+                    Ok(frames)
+                })
+                .await
+                .map_err(join_error)?
+            }
+            Backend::Bridge(b) => {
+                let before = self.run("sequence.inspect", json!({})).await?;
+                let mut frames = Vec::with_capacity(points.len());
+                for (tick, label) in points {
+                    if let Err(e) = self.run("playhead.set", json!({"time": tick.0})).await {
+                        return Err(e);
+                    }
+                    let dir = tempfile::tempdir().map_err(|e| AutomationError::Other(format!("screenshot: {e}")))?;
+                    let path = dir.path().join("screenshot.png");
+                    if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": "Program"})).await {
+                        return Err(AutomationError::Other(format!("screenshot: {e}")));
+                    }
+                    let bytes = tokio::fs::read(&path).await.map_err(|e| AutomationError::Other(format!("screenshot: {e}")))?;
+                    let img = image::load_from_memory(&bytes).map_err(|e| AutomationError::Other(format!("screenshot: {e}")))?;
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    frames.push(SampledFrame {
+                        seconds: tick.as_seconds_f64(),
+                        label,
+                        width,
+                        height,
+                        rgba: rgba.into_raw(),
+                    });
+                }
+                if let Some(t) = before.get("playhead").and_then(Value::as_i64) {
+                    let _ = self.run("playhead.set", json!({"time": t})).await;
+                }
+                let now = self.run("sequence.inspect", json!({})).await.ok();
+                if let Some(sel) = before.get("selection").filter(|v| v.is_array())
+                    && now.as_ref().and_then(|n| n.get("selection")) != Some(sel)
+                {
+                    let _ = self.run("timeline.select", json!({"clips": sel})).await;
+                }
+                Ok(frames)
+            }
+        }
+    }
+
+    async fn inspect_cut_internal(
+        &self,
+        seconds: f64,
+        frames_before: Option<u32>,
+        frames_after: Option<u32>,
+        max_side: Option<u32>,
+    ) -> Result<(Vec<u8>, Value), AutomationError> {
+        let seq_info = self.run("sequence.inspect", json!({})).await?;
+        let rate = seq_info
+            .get("settings")
+            .and_then(|s| s.get("frame_rate"))
+            .and_then(|r| serde_json::from_value::<FrameRate>(r.clone()).ok())
+            .unwrap_or(FrameRate::FPS_23_976);
+
+        let cut_tick = rate.snap(Tick::from_seconds_f64(seconds));
+        let cut_frame = rate.frame_at(cut_tick);
+
+        let before_cnt = frames_before.unwrap_or(2).clamp(1, 8) as i64;
+        let after_cnt = frames_after.unwrap_or(2).clamp(1, 8) as i64;
+
+        let mut points: Vec<(Tick, Option<String>)> = Vec::new();
+        // Outgoing frames before the cut
+        for i in (1..=before_cnt).rev() {
+            let f = (cut_frame - i).max(0);
+            let t = rate.tick_of(f);
+            points.push((t, Some(format!("T-{i}"))));
+        }
+        // Incoming frames at and after the cut
+        for j in 0..after_cnt {
+            let f = cut_frame + j;
+            let t = rate.tick_of(f);
+            let label = if j == 0 { "CUT".to_string() } else { format!("T+{j}") };
+            points.push((t, Some(label)));
+        }
+
+        let max = max_side.unwrap_or(1200);
+        let frames = self.sample_frames(points, max).await?;
+        let png = stitch(&frames, SampleLayout::Strip, max)?;
+
+        let outgoing = active_clips_at(&seq_info, rate.tick_of((cut_frame - 1).max(0)));
+        let incoming = active_clips_at(&seq_info, rate.tick_of(cut_frame));
+
+        let same_clip = outgoing.first().and_then(|o| o.get("clip")) == incoming.first().and_then(|i| i.get("clip"))
+            && outgoing.first().is_some();
+        let is_gap = outgoing.is_empty() || incoming.is_empty();
+
+        let mut is_transition = false;
+        if let Some(tracks) = seq_info.get("video").and_then(Value::as_array) {
+            for track in tracks {
+                if let Some(transitions) = track.get("transitions").and_then(Value::as_array) {
+                    for tr in transitions {
+                        let start = tr.get("start").and_then(Value::as_i64).unwrap_or(0);
+                        let duration = tr.get("duration").and_then(Value::as_i64).unwrap_or(0);
+                        if start <= cut_tick.0 && cut_tick.0 <= start.saturating_add(duration) {
+                            is_transition = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let meta = json!({
+            "cut_seconds": cut_tick.as_seconds_f64(),
+            "cut_tick": cut_tick.0,
+            "cut_frame": cut_frame,
+            "outgoing_clips": outgoing,
+            "incoming_clips": incoming,
+            "same_clip": same_clip,
+            "is_gap": is_gap,
+            "is_transition": is_transition,
+            "frames_count": frames.len(),
+        });
+
+        Ok((png, meta))
+    }
 }
 
 impl FilmcraftMcp {
@@ -606,7 +1229,7 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. For autonomous editing loops: `timeline_sample` renders multi-frame contact sheets, `cut_inspect` verifies A/B cut continuity, and `clip_cut`, `clip_trim`, `clip_delete`, and `clip_arrange` perform timeline edits with optional instant visual verification (`verify: true`). In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";

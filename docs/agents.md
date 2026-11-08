@@ -84,6 +84,12 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
 | `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
 | `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were |
+| `timeline_sample` | both | multi-frame composite contact sheet (grid/strip) across the sequence or range with timestamp labels and active clip metadata |
+| `cut_inspect` | both | side-by-side filmstrip immediately around a cut point (`[T-2, T-1 \| CUT \| T, T+1]`) with A/B continuity metadata |
+| `clip_cut` | both | split clip/track at `seconds` with resulting clip IDs; optional `verify: true` attaches visual cut continuity |
+| `clip_trim` | both | ripple or regular trim clip in/out edge by seconds or frames; optional `verify: true` attaches visual edit point check |
+| `clip_delete` | both | ripple delete or clear clip or gap; optional `verify: true` attaches visual check |
+| `clip_arrange` | both | move clip to `to_seconds` and optional `to_track` with overwrite or ripple insert |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
@@ -95,6 +101,99 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
+
+### Autonomous Visual Edit Loop
+
+For autonomous editing tasks (assembly, rough cut, trimming dead air, b-roll placement), agents should use the visual sampling and semantic editing suite rather than low-level tick arithmetic and repeated single-frame renders:
+
+```
+                  ┌────────────────────────┐
+                  │ 1. timeline_sample     │
+                  │    (survey sequence)   │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │ 2. clip_cut / clip_trim│  with verify: true
+                  │    (execute edit)      │  (single round-trip)
+                  └───────────┬────────────┘
+                              │
+                              ▼
+                  ┌────────────────────────┐
+                  │ 3. cut_inspect         │
+                  │    (verify continuity) │
+                  └───────────┬────────────┘
+                              │
+                   [Looks good? Undo / Next]
+```
+
+#### Token-Saving Multi-Frame Sampling (`timeline_sample`)
+
+Calling `render_frame` 10 times in a row burns significant context tokens and tool call round-trips. `timeline_sample` composites multiple frames into a single tiled contact sheet with clean timestamp banners (`MM:SS.CC`):
+
+```json
+{
+  "range": [0.0, 12.0],
+  "count": 6,
+  "layout": "grid",
+  "max_side": 960
+}
+```
+
+The response includes:
+1. **Multimodal image block (PNG)**: A 3×2 tiled grid showing the sequence progression over time.
+2. **Structured JSON metadata**: Exact timestamps, tick positions, frame indices, and which clips are active on each track at each sample point.
+
+#### Cut Continuity Inspection (`cut_inspect`)
+
+To check whether a cut is seamless or causes an awkward jump cut, `cut_inspect` renders frames immediately preceding and following the edit boundary into a linear horizontal strip:
+
+```json
+{
+  "seconds": 4.5,
+  "frames_before": 2,
+  "frames_after": 2,
+  "max_side": 800
+}
+```
+
+Produces a `[T-2, T-1 | CUT | T+0, T+1]` strip alongside continuity metadata:
+- `outgoing_clips` and `incoming_clips`: clip IDs, names, tracks, and bounds.
+- `same_clip`: `true` if outgoing and incoming are the same clip (no cut point exists here).
+- `is_gap`: `true` if either side is empty black space.
+- `is_transition`: `true` if a cross-dissolve, dip to black, or wipe overlaps the cut.
+
+#### Instant Verification with `verify: true`
+
+`clip_cut`, `clip_trim`, and `clip_delete` accept an optional `"verify": true` flag. When set, the tool executes the edit and attaches the post-edit visual verification strip directly in the same tool reply, eliminating an extra MCP round-trip:
+
+```json
+// Split clip and inspect cut in one step:
+{
+  "seconds": 3.25,
+  "verify": true
+}
+```
+
+```json
+// Ripple trim head by 12 frames and verify:
+{
+  "clip": 42,
+  "edge": "in",
+  "delta_frames": 12,
+  "ripple": true,
+  "verify": true
+}
+```
+
+```json
+// Move clip to 6.5s on track V2:
+{
+  "clip": 42,
+  "to_seconds": 6.5,
+  "to_track": "V2"
+}
+```
 
 ### Conventions
 
