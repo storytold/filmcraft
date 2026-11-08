@@ -39,6 +39,26 @@ fn yuv_code_range_uniforms() {
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
+/// #3798: a layer shrunk n× takes n taps per axis (up to 16, the CPU's largest draft decimation),
+/// so every source texel reaches the box average.
+#[test]
+fn downscale_taps_cover_the_footprint() {
+    let src = SrcInfo {
+        kind: 0,
+        code_scale: 1.0,
+        code_levels: 1.0,
+        alpha: 0.0,
+        chroma: (1, 1),
+        size: (1, 1),
+        color: filmcraft_color::ColorInfo::REC709,
+        input: None,
+    };
+    for (n, taps) in [(1.0, 1.0), (2.0, 2.0), (8.0, 8.0), (16.0, 16.0), (64.0, 16.0)] {
+        let u = GpuCompositor::uniforms(&src, &Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (1, 1));
+        assert_eq!((u[14], u[23]), (taps, n as f32), "scale 1/{n}");
+    }
+}
+
 #[test]
 fn yuv_code_range_gpu_matches_cpu() {
     let Some((dev, q)) = device() else {

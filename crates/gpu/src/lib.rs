@@ -648,7 +648,8 @@ impl GpuCompositor {
         let sx = (m.a * m.a + m.b * m.b).sqrt();
         let sy = (m.c * m.c + m.d * m.d).sqrt();
         let footprint = (1.0 / sx.min(sy).max(1e-6)) as f32;
-        let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
+        // Up to 16 per axis, the CPU's largest draft decimation (#3798).
+        let taps = if footprint > 1.25 { footprint.ceil().min(16.0) } else { 1.0 };
         let _ = Matrix::Bt709;
         // colour management (q0..q5), stage by stage as `InputTransform::apply`
         let q = src.input.map_or([0.0; 24], |p| {

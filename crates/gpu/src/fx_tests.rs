@@ -898,7 +898,8 @@ fn effect_source_quarter_turns_match_the_cpu() {
     }
 }
 
-/// The exact source grid keeps the existing box-minification behavior at non-unit factors.
+/// The exact source grid keeps the existing box-minification behavior at non-unit factors, up to
+/// the CPU's largest draft decimation (16, #3798: 4 taps per axis skipped half the texels there).
 #[test]
 fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
     let Some((dev, q)) = device() else {
@@ -908,7 +909,7 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
     let mut c = GpuCompositor::new(&dev, &q);
     for (w, h) in [(67u32, 41u32), (96, 54)] {
         let frame = VideoFrame::rgba_f32(w, h, picture(w, h));
-        for n in [2, 4, 8] {
+        for n in [2, 4, 8, 16] {
             let (ow, oh, cpu) = frame.to_linear_f32_decimated(n as usize);
             let (gw, gh, gpu) =
                 c.effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, turns: 0, ops: Vec::new() }).expect("decimated source image");
