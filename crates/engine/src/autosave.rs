@@ -709,6 +709,7 @@ pub enum WorkerEvent {
     SavedProject {
         path: String,
         revision: u64,
+        view_epoch: u64,
     },
     Error(String),
 }
@@ -794,6 +795,7 @@ impl Persistence {
             latest: None,
             journaled: 0,
             journaled_view: 0,
+            journaled_dirty: false,
             autosaved: 0,
             autosaved_view: 0,
             first_pending: None,
@@ -983,6 +985,7 @@ struct Worker {
     /// counters sit beside them: a view-only change must journal again at the same revision.
     journaled: u64,
     journaled_view: u64,
+    journaled_dirty: bool,
     autosaved: u64,
     autosaved_view: u64,
     first_pending: Option<Instant>,
@@ -998,7 +1001,7 @@ impl Worker {
 
     fn journal_due(&self) -> Option<Instant> {
         let s = self.latest.as_ref()?;
-        if !self.prefs.recovery_journal || (s.revision == self.journaled && s.view_epoch == self.journaled_view) {
+        if !self.prefs.recovery_journal || journal_matches(s, self.journaled, self.journaled_view, self.journaled_dirty) {
             return None;
         }
         let max = self.first_pending.unwrap_or(self.last_change) + Duration::from_secs(self.prefs.recovery_interval_seconds as u64);
@@ -1050,7 +1053,7 @@ impl Worker {
                     let result = match self.latest.as_ref() {
                         None => Ok(None),
                         Some(_) if !self.prefs.recovery_journal => Err("recovery journal is disabled".to_string()),
-                        Some(s) if s.revision == self.journaled && s.view_epoch == self.journaled_view => Ok(Some(self.journaled)),
+                        Some(s) if journal_matches(s, self.journaled, self.journaled_view, self.journaled_dirty) => Ok(Some(self.journaled)),
                         Some(_) => self.write_journal().map(Some),
                     };
                     let _ = ack.send(result);
@@ -1103,6 +1106,7 @@ impl Worker {
             Ok(()) => {
                 self.journaled = s.revision;
                 self.journaled_view = s.view_epoch;
+                self.journaled_dirty = s.content_dirty;
                 self.first_pending = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 Ok(s.revision)
@@ -1123,6 +1127,7 @@ impl Worker {
         let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
         self.journaled = 0;
         self.journaled_view = 0;
+        self.journaled_dirty = false;
     }
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
@@ -1157,7 +1162,7 @@ impl Worker {
                 {
                     match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                         Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision, view_epoch: s.view_epoch });
                         }
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }
@@ -1187,6 +1192,11 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
         write(&meta_path, &metadata)
     }
 }
+
+fn journal_matches(snapshot: &Snapshot, revision: u64, view_epoch: u64, content_dirty: bool) -> bool {
+    snapshot.revision == revision && snapshot.view_epoch == view_epoch && snapshot.content_dirty == content_dirty
+}
+
 #[cfg(test)]
 mod durability_tests {
     use super::*;
@@ -1205,6 +1215,20 @@ mod durability_tests {
         assert!(result.is_err());
         assert_eq!(scan_candidates(&dir, None).len(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn journal_identity_includes_dirty_state() {
+        let snapshot = Snapshot {
+            project: Arc::new(Project::default()),
+            view: filmcraft_project::ProjectView::default(),
+            revision: 7,
+            view_epoch: 3,
+            content_dirty: false,
+            path: None,
+        };
+        assert!(journal_matches(&snapshot, 7, 3, false));
+        assert!(!journal_matches(&snapshot, 7, 3, true), "a save must clear a previously dirty journal");
     }
 
     #[test]
