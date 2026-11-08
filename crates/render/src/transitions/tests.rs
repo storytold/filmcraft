@@ -587,9 +587,20 @@ fn cross_dissolve_eases_the_encoded_mix() {
     assert!((lin - (0.5 + 0.5 * to_linear(0.2, Transfer::Bt709))).abs() < 1e-5, "{lin}");
     let hdr = apply_in(&straight, &a, &b, 0.5, 1.0, false).px[0];
     assert!((hdr - lin).abs() < 1e-5, "{hdr} vs {lin}");
+    // ... with the default eases too: 0.1633 of the way at 0.25, in linear light (1 + (0.0331 − 1) · 0.1633)
+    let hdr_eased = apply_in(&default, &a, &b, 0.25, 1.0, false).px[0];
+    assert!((hdr_eased - 0.8421).abs() < 1e-3, "{hdr_eased}");
     // transparent stays transparent; a half-transparent pixel converts its colour, not its premultiplied value
     let clear = paint(4, 2, |_, _| [0.0, 0.0, 0.0, 0.0]);
     assert!(apply_scaled(&default, &clear, &clear, 0.5, 1.0).px.iter().all(|v| *v == 0.0));
     let semi = paint(4, 2, |_, _| [0.25, 0.25, 0.25, 0.5]);
     assert!(mean_abs(&apply_scaled(&default, &semi, &semi, 0.5, 1.0), &semi) < 1e-5);
+    // half-transparent (colour 0.5 / 0.2 / 0.8) halfway into opaque 0.04 / 0.6 / 0: worked out by hand
+    // (encode each colour, mix premultiplied, decode at alpha 0.75). Encoding the premultiplied
+    // values would give 0.119 / 0.288 / 0.090, mixing unpremultiplied 0.146 / 0.277 / 0.130.
+    let semi = paint(4, 2, |_, _| [0.25, 0.1, 0.4, 0.5]);
+    let opaque = paint(4, 2, |_, _| [0.04, 0.6, 0.0, 1.0]);
+    let got = &apply_scaled(&straight, &semi, &opaque, 0.5, 1.0).px[..4];
+    let want = [0.0957, 0.3289, 0.0557, 0.75];
+    assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-3), "{got:?} vs {want:?}");
 }

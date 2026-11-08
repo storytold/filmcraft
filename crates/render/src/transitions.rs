@@ -54,20 +54,41 @@ pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32
 }
 
 /// [`apply_scaled`] in a sequence whose colour pipeline is plain Rec. 709 (`plain`) or HDR /
-/// wide gamut. Cross Dissolve mixes the encoded pictures in a plain Rec. 709 sequence, as Premiere
-/// 26's does (#4477); everything else, and every transition in an HDR or wide-gamut sequence,
-/// mixes in linear light.
+/// wide gamut.
+///
+/// `plain` only changes `cross_dissolve`: in a plain Rec. 709 sequence it mixes the encoded
+/// pictures, as Premiere 26's does (#4477), in one pass over `a` and `b`. Every other transition,
+/// and every transition in an HDR or wide-gamut sequence, mixes in linear light as before. The ends
+/// (`p` ≤ 0 or ≥ 1, NaN counts as 0) and layers of different sizes take the linear path too, so
+/// they return the pictures themselves rather than their encode / decode round trip.
 pub fn apply_in(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32, plain: bool) -> Image {
     let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
-    // the ends are the pictures themselves, not their encode/decode round trip
     if !(plain && e.effect == "cross_dissolve") || p <= 0.0 || p >= 1.0 || a.w == 0 || a.h == 0 || (a.w, a.h) != (b.w, b.h) {
         return mixed(e, a, b, p, scale);
     }
-    // encoded with the Rec. 709 curve FilmCraft decodes and encodes with: the mix is the mix of the
-    // decoded R'G'B' values
-    let encode = |v: f32| filmcraft_color::from_linear(v, filmcraft_color::Transfer::Bt709);
-    let decode = |v: f32| filmcraft_color::to_linear(v, filmcraft_color::Transfer::Bt709);
-    recoded(&mixed(e, &recoded(a, encode), &recoded(b, encode), p, scale), decode)
+    let t = Tx { e, a, b, p, w: a.w, h: a.h, wf: a.w as f32, hf: a.h as f32, scale: 1.0 };
+    let k = dissolve::cross_dissolve_curve(p, t.num("ease_in"), t.num("ease_out"));
+    encoded_mix(a, b, k)
+}
+
+/// `a` and `b` mixed `k` of the way in the encoded signal: each unpremultiplied colour encoded with
+/// the Rec. 709 curve FilmCraft decodes and encodes with, the premultiplied encoded values and the
+/// alphas mixed, the result decoded again. A fully transparent pixel's values pass through as they
+/// are.
+fn encoded_mix(a: &Image, b: &Image, k: f32) -> Image {
+    use filmcraft_color::{Transfer, from_linear, to_linear};
+    let encoded = |c: f32, alpha: f32| if alpha > 0.0 { from_linear(c / alpha, Transfer::Bt709) * alpha } else { c };
+    let mut out = Image::new(a.w, a.h);
+    out.px.par_chunks_exact_mut(4).zip(a.px.par_chunks_exact(4)).zip(b.px.par_chunks_exact(4)).for_each(|((o, pa), pb)| {
+        let alpha = pa[3] + (pb[3] - pa[3]) * k;
+        for c in 0..3 {
+            let (ea, eb) = (encoded(pa[c], pa[3]), encoded(pb[c], pb[3]));
+            let m = ea + (eb - ea) * k;
+            o[c] = if alpha > 0.0 { to_linear(m / alpha, Transfer::Bt709) * alpha } else { m };
+        }
+        o[3] = alpha;
+    });
+    out
 }
 
 /// Transition `e` at progress `p` on `a` and `b` as they are (the legacy implementations first,
@@ -95,20 +116,6 @@ fn mixed(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image 
         .or_else(|| grunge::apply(id, &t))
         .or_else(|| special::apply(id, &t))
         .unwrap_or_else(|| paint(t.w, t.h, |x, y| mix(t.sa(x, y), t.sb(x, y), p)))
-}
-
-/// `img` with `f` applied to every pixel's unpremultiplied colour.
-fn recoded(img: &Image, f: impl Fn(f32) -> f32 + Sync) -> Image {
-    let mut out = img.clone();
-    out.px.par_chunks_exact_mut(4).for_each(|px| {
-        let alpha = px[3];
-        if alpha > 0.0 {
-            for c in &mut px[..3] {
-                *c = f(*c / alpha) * alpha;
-            }
-        }
-    });
-    out
 }
 
 /// Audio crossfade gains (out, in) for progress p.
