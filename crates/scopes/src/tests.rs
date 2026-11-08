@@ -315,3 +315,11 @@ fn perf_scopes_at_1080p() {
         println!("{k:?} {wt:?}/{pt:?}: {:.3} ms", t.elapsed().as_secs_f64() * 1000.0 / reps as f64);
     }
 }
+
+#[test]
+fn angle_deg_tiny_negative_angle_stays_below_360() {
+    for (cb, cr) in [(0.3, -1e-9), (1.0, -1e-12)] {
+        let a = angle_deg(cb, cr);
+        assert!((0.0..360.0).contains(&a), "angle_deg({cb}, {cr}) = {a}");
+    }
+}
