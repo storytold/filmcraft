@@ -649,12 +649,18 @@ pub(crate) fn overwrite(track: &mut Track, item: TrackItem, alloc: &mut dyn FnMu
         if o.start < s {
             let mut l = o.clone();
             l.duration = s - o.start;
+            if o.reverse {
+                // reversed: the left piece shows the later media
+                l.source_in = o.source_in + scaled(o.end() - s, o.speed);
+            }
             out.push(l);
         }
         if o.end() > e {
             let mut r = o.clone();
             r.id = ClipId(alloc());
-            r.source_in = o.source_in + scaled(e - o.start, o.speed);
+            if !o.reverse {
+                r.source_in = o.source_in + scaled(e - o.start, o.speed);
+            }
             r.start = e;
             r.duration = o.end() - e;
             out.push(r);
@@ -884,6 +890,31 @@ mod tests {
         assert!(!plausible_rate(FrameRate { num: 0, den: 1 }));
         assert!(plausible_rate(FrameRate::FPS_23_976));
         assert_eq!(frames_round(FrameRate::FPS_24, FrameRate::FPS_24.tick_of(5) + Tick(10)), 5);
+    }
+
+    #[test]
+    fn overwrite_keeps_media_continuous_for_reversed_and_forward_clips() {
+        for (reverse, os, oe, left_in, right_in) in
+            [(true, 40, 60, 1060, 1000), (true, 30, 50, 1070, 1000), (false, 40, 60, 1000, 1060), (false, 30, 50, 1000, 1050)]
+        {
+            let mut b = Builder::new("ow");
+            let item = ItemId(1);
+            let mut track = b.track(TrackKind::Video, 0);
+            let mut orig = b.clip(item, TrackKind::Video, "a", Tick(0), Tick(100), Tick(1000));
+            orig.reverse = reverse;
+            track.items.push(orig);
+            let new = b.clip(item, TrackKind::Video, "b", Tick(os), Tick(oe - os), Tick(5000));
+            let mut next = 100;
+            overwrite(&mut track, new, &mut || {
+                next += 1;
+                next
+            });
+            assert_eq!(track.items.len(), 3);
+            let (l, r) = (&track.items[0], &track.items[2]);
+            assert_eq!((l.start, l.duration, l.source_in), (Tick(0), Tick(os), Tick(left_in)), "left reverse={reverse} {os}");
+            assert_eq!((r.start, r.duration, r.source_in), (Tick(oe), Tick(100 - oe), Tick(right_in)), "right reverse={reverse} {os}");
+            assert_eq!((l.reverse, r.reverse), (reverse, reverse));
+        }
     }
 
     #[test]
