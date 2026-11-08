@@ -91,7 +91,9 @@ fn run_all(frames: &[Vec<u8>], threads: &[usize], label: &str) {
                 })
             })
             .collect();
-        runs.into_iter().fold(true, |ok, r| r.join().is_ok() && ok)
+        // Join every run (no short cut), then check them all.
+        let joined: Vec<bool> = runs.into_iter().map(|r| r.join().is_ok()).collect();
+        joined.into_iter().all(|ok| ok)
     });
     assert!(ok && PANICS.load(Ordering::SeqCst) == before, "panic: {label}");
 }
