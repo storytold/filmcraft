@@ -885,3 +885,65 @@ fn system_language_picks_bosnian() {
     }
     assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
 }
+
+// Check presentation values, never compatibility ids, saved keys or user-supplied text.
+fn retired_feature_label(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    [
+        "lumetri",
+        "mercury transmit",
+        "ultra key",
+        "warp stabilizer",
+        "morph cut",
+        "ウルトラキー",
+        "ワープスタビライザー",
+        "モーフカット",
+        "울트라 키",
+        "워프 안정기",
+        "모프 컷",
+    ]
+    .into_iter()
+    .find(|retired| {
+        lower.match_indices(retired).any(|(start, _)| !retired.is_ascii() || lower[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
+    })
+}
+
+#[test]
+fn retired_feature_labels_stay_out_of_visible_and_translated_names() {
+    let source_labels = interface_strings();
+    for label in &source_labels {
+        assert_eq!(retired_feature_label(label), None, "English display label: {label}");
+    }
+    for language in Language::ALL {
+        for label in &source_labels {
+            let shown = language.tr(label);
+            assert_eq!(retired_feature_label(shown), None, "{}: {label} → {shown}", language.code());
+        }
+        if let Some(text) = catalog_text(language) {
+            for (_, source, translated) in catalog::parse_entries(text).0 {
+                assert_eq!(retired_feature_label(&translated), None, "{}: {source} → {translated}", language.code());
+            }
+        }
+        // Naming guards must not replace the documented English fallback or alter user text.
+        assert_eq!(language.tr("A future descriptive feature"), "A future descriptive feature");
+    }
+}
+
+#[test]
+fn display_guard_catches_retired_marks_without_banning_descriptive_terms() {
+    for label in ["LUMETRI Color", "Enable Mercury Transmit", "Ultra Key", "Warp Stabilizer", "Morph Cut", "ウルトラキー"] {
+        assert!(retired_feature_label(label).is_some(), "{label}");
+    }
+    for label in [
+        "Color Grading",
+        "Video Scopes",
+        "Chroma Key",
+        "Motion Stabilizer",
+        "Optical Flow Dissolve",
+        "Enable External Video Output",
+        "Volumetric Rays",
+        "Volumetrijske zrake",
+    ] {
+        assert_eq!(retired_feature_label(label), None, "{label}");
+    }
+}

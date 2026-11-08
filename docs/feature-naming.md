@@ -27,7 +27,7 @@ These names describe the existing implementations, including a 2-D motion stabil
 - Effect, renderer, command, preference, preset and panel enum ids are unchanged. Old human-readable effect/panel names remain lookup aliases.
 - Scoped shortcut imports accept both old and current panel names. The Effects panel keeps its original serialized folder key and old automation paths, with descriptive-name aliases for callers of the original draft.
 - Folder dispatch and persistence use the stable key, not its translated label. Old folder expansion state still opens the same folder.
-- All 16 shipped locale catalogs include the selected effect names, grading/scopes/preset labels, add-to-clip button and color-management settings note. The locale regression checks parsing, unique keys and absence of the old display mark in translated entries.
+- All 16 shipped locale catalogs include the selected effect names, grading/scopes/preset labels, add-to-clip button and color-management settings note. The locale regression checks parsing, unique keys and absence of retired display marks in translated entries. Additional guards scan the actual built-in interface names and translated output, while retaining English fallback and excluding compatibility identifiers and user text.
 - Existing license, source and author records are preserved. Internal filenames and golden scene ids are not renamed.
 
 ## Remaining validation gates
