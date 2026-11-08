@@ -107,6 +107,16 @@ fn main() -> eframe::Result {
     }
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
+    // This thread runs the UI and presents each frame at the display's refresh. During 4K
+    // playback the decoder, its slice pool and the frame workers keep every core busy, and at
+    // normal priority the UI thread, woken by the vertical blank, often waited for a core, missed
+    // the next blank and showed a frame twice (7% of the frames at 4K50p, with the UI pass itself
+    // 2-6 ms). One step above normal, it is scheduled first; the decoders lose nothing they need.
+    #[cfg(windows)]
+    if let Err(e) = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Os(thread_priority::WinAPIThreadPriority::AboveNormal.into()))
+    {
+        log::warn!("UI thread priority not raised: {e:?}");
+    }
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
     let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
