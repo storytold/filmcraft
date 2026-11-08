@@ -10,19 +10,33 @@ use crate::state::FrameState;
 /// equals CurrFrame). Bands of 64 luma rows (whole 64x64 filter blocks) are filtered in
 /// parallel: every block reads only CurrFrame and writes only its own samples.
 pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
+    if !active(fs) {
+        return None;
+    }
+    let mut out = fs.cur.clone();
+    let ranges = bands(pool, fs.fh.mi_rows as usize * 4);
+    filter_bands(fs, pool, out.row_bands(&ranges), &ranges);
+    Some(out)
+}
+
+/// Whether CDEF filters any block of the frame (it reads only parse results).
+pub(crate) fn active(fs: &FrameState) -> bool {
     let fh = &fs.fh;
     if fh.coded_lossless || fh.allow_intrabc || !fs.seq.enable_cdef {
-        return None;
+        return false;
     }
     let (mi_rows, mi_cols) = (fh.mi_rows as usize, fh.mi_cols as usize);
     let fb_rows = mi_rows.div_ceil(16);
     let fb_cols = mi_cols.div_ceil(16);
-    if !(0..fb_rows).any(|fr| (0..fb_cols).any(|fc| fb_skip_mask(fs, fr * 16, fc * 16).is_some())) {
-        return None;
-    }
-    let mut out = fs.cur.clone();
-    let ranges = bands(pool, mi_rows * 4);
-    let mut planes = out.row_bands(&ranges);
+    (0..fb_rows).any(|fr| (0..fb_cols).any(|fc| fb_skip_mask(fs, fr * 16, fc * 16).is_some()))
+}
+
+/// Filter the bands `planes` covering luma rows `ranges` (whole 64x64 filter block rows), which
+/// hold CurrFrame; reads CurrFrame up to 2 rows beyond each band.
+pub(crate) fn filter_bands(fs: &FrameState, pool: &Pool, mut planes: Vec<[RowBand; 3]>, ranges: &[(usize, usize)]) {
+    let (mi_rows, mi_cols) = (fs.fh.mi_rows as usize, fs.fh.mi_cols as usize);
+    let fb_rows = mi_rows.div_ceil(16);
+    let fb_cols = mi_cols.div_ceil(16);
     pool.map_mut(&mut planes, |b, band| {
         let (start, end) = ranges[b];
         let mut buf = [0i16; BUF_LEN];
@@ -34,8 +48,6 @@ pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
             }
         }
     });
-    drop(planes);
-    Some(out)
 }
 
 /// The filtered 8x8 blocks of the 64x64 filter block at (r, c): bit `(i << 3) | j` is set for

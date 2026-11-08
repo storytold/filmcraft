@@ -7,7 +7,7 @@
 //! outside themselves), which are then copied into the frame.
 
 use crate::decoder::{Parsed, RefFrame};
-use crate::frame::{FrameBuf, MiInfo};
+use crate::frame::{BandFrame, FrameBuf, MiInfo, PlaneRef};
 use crate::header::{FrameHeader, RefInfo, SequenceHeader};
 use crate::spec_tables::{DEFAULT_INTRA_FRAME_Y_MODE_CDF, NUM_REF_FRAMES, RESTORE_NONE, SUBSAMPLED_SIZE};
 use std::ops::{Deref, DerefMut};
@@ -28,6 +28,9 @@ pub(crate) struct FrameShared {
     pub refs: [Option<Arc<RefFrame>>; NUM_REF_FRAMES],
     /// Parse results (CDFs, segment ids, saved motion vectors) of the same slots.
     pub parsed: [Option<Arc<Parsed>>; NUM_REF_FRAMES],
+    /// The published bands of references that are still being decoded (row wavefront): read
+    /// only below the row progress that was waited for.
+    pub ref_rows: [Option<Arc<BandFrame>>; NUM_REF_FRAMES],
     pub ref_info: [RefInfo; NUM_REF_FRAMES],
     /// MotionFieldMvs[ ref ][ y8 * w8 + x8 ] (7.9); empty when unused.
     pub motion_field: [Vec<[i32; 2]>; 8],
@@ -36,6 +39,16 @@ pub(crate) struct FrameShared {
 }
 
 impl FrameShared {
+    /// The samples of reference slot `ref_idx` to predict from (None for a missing reference).
+    #[inline]
+    pub fn ref_samples(&self, ref_idx: i32, plane: usize) -> Option<PlaneRef<'_>> {
+        let i = usize::try_from(ref_idx).ok()?;
+        if let Some(b) = self.ref_rows.get(i)?.as_ref() {
+            return b.planes.get(plane).map(PlaneRef::Bands);
+        }
+        self.refs.get(i)?.as_ref().map(|r| r.plane(plane))
+    }
+
     pub fn plane_residual_size(&self, subsize: usize, plane: usize) -> usize {
         let sx = if plane > 0 { self.ssx } else { 0 };
         let sy = if plane > 0 { self.ssy } else { 0 };
@@ -213,6 +226,7 @@ impl FrameState {
                 cdef_cols,
                 refs: Default::default(),
                 parsed: Default::default(),
+                ref_rows: Default::default(),
                 ref_info: Default::default(),
                 motion_field: Default::default(),
                 prev_segment_ids: vec![0; mi_cols * mi_rows],

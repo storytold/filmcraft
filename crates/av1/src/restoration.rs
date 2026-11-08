@@ -69,10 +69,16 @@ struct LrPlane<'a> {
 /// Bands of 64 luma rows are restored in parallel: every unit reads only the two input frames
 /// and writes only its own samples.
 pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf, pool: &Pool) -> FrameBuf {
-    let fh = &fs.fh;
     let mut lr = cdef.clone();
-    let ranges = bands(pool, fh.frame_height as usize);
-    let mut planes = lr.row_bands(&ranges);
+    let ranges = bands(pool, fs.fh.frame_height as usize);
+    restore_bands(fs, cur, cdef, lr.row_bands(&ranges), pool, &ranges);
+    lr
+}
+
+/// Restore the bands `planes` covering luma rows `ranges`, which hold UpscaledCdefFrame; reads
+/// both inputs up to 3 rows beyond each band.
+pub(crate) fn restore_bands(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf, mut planes: Vec<[RowBand; 3]>, pool: &Pool, ranges: &[(usize, usize)]) {
+    let fh = &fs.fh;
     pool.map_mut(&mut planes, |b, band| {
         let (start, end) = ranges[b];
         let mut scratch = Scratch::default();
@@ -99,8 +105,6 @@ pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf,
             p.restore(out, start >> sub_y, end >> sub_y, &mut scratch);
         }
     });
-    drop(planes);
-    lr
 }
 
 /// Row buffers reused across stripes.

@@ -126,13 +126,72 @@ pub(crate) struct TileRecord {
     /// Read positions while reconstructing.
     next_block: usize,
     next_coeff: usize,
+    next_sb: usize,
+    next_sb_row: usize,
+}
+
+/// The motion of a recorded block (what a reference row wait depends on).
+pub(crate) struct BlockMotion {
+    pub mi_row: usize,
+    pub bh4: usize,
+    /// Inter prediction from reference frames (not intra block copy).
+    pub inter: bool,
+    pub ref_frame: [i8; 2],
+    /// Mv[ list ] (row, col) in 1/8 samples.
+    pub mv: [[i32; 2]; 2],
+    pub motion_mode: u8,
+    pub y_mode: usize,
 }
 
 impl TileRecord {
+    /// The recorded blocks of superblock rows [first, end), for a tile `sbs_per_row` superblocks wide.
+    pub fn row_blocks(&self, sbs_per_row: usize, first: usize, end: usize) -> impl Iterator<Item = BlockMotion> + '_ {
+        let start: usize = self.sb_blocks.iter().take(first * sbs_per_row).map(|&n| n as usize).sum();
+        let count: usize = self.sb_blocks.iter().skip(first * sbs_per_row).take((end - first) * sbs_per_row).map(|&n| n as usize).sum();
+        self.blocks.iter().skip(start).take(count).map(|r| BlockMotion {
+            mi_row: r.b.mi_row,
+            bh4: r.b.bh4,
+            inter: r.b.is_inter && !r.b.use_intrabc,
+            ref_frame: r.b.ref_frame,
+            mv: r.b.mv_i,
+            motion_mode: r.b.motion_mode,
+            y_mode: r.b.y_mode,
+        })
+    }
+
     fn next_coeff(&mut self) -> Result<i32> {
         let v = *self.coeffs.get(self.next_coeff).ok_or(crate::Error::Invalid("coefficient record exhausted"))?;
         self.next_coeff += 1;
         Ok(v)
+    }
+}
+
+/// The work buffers of a [`TileDecoder`] (`quant` all zero between transform blocks).
+pub(crate) struct Buffers {
+    quant: Vec<i32>,
+    dequant: Vec<i32>,
+    residual: Vec<i32>,
+    color_map_y: Vec<u8>,
+    color_map_uv: Vec<u8>,
+    pred_buf: [Vec<i32>; 2],
+    mask: Vec<i32>,
+    mc_tmp: Vec<i32>,
+    levels: Vec<u8>,
+}
+
+impl Buffers {
+    pub fn new() -> Buffers {
+        Buffers {
+            quant: vec![0; 1024],
+            dequant: vec![0; 64 * 64],
+            residual: vec![0; 64 * 64],
+            color_map_y: vec![0; 64 * 64],
+            color_map_uv: vec![0; 64 * 64],
+            pred_buf: [vec![0; 128 * 128], vec![0; 128 * 128]],
+            mask: vec![0; 128 * 128],
+            mc_tmp: vec![0; (2 * 128 + 8) * 128],
+            levels: vec![0; (32 + TX_PAD) * (32 + TX_PAD)],
+        }
     }
 }
 
@@ -186,6 +245,13 @@ fn block_height(bs: usize) -> usize {
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
     pub fn new(fs: &'f FrameShared, t: &'f mut TileState, data: &'a [u8], cdf: Box<Cdfs>, tile_row: usize, tile_col: usize) -> Self {
+        Self::with_buffers(fs, t, data, cdf, tile_row, tile_col, Buffers::new())
+    }
+
+    /// [`TileDecoder::new`] reusing the work buffers of an earlier decoder of the same frame
+    /// (see [`TileDecoder::into_buffers`]).
+    pub fn with_buffers(fs: &'f FrameShared, t: &'f mut TileState, data: &'a [u8], cdf: Box<Cdfs>, tile_row: usize, tile_col: usize, bufs: Buffers) -> Self {
+        let Buffers { quant, dequant, residual, color_map_y, color_map_uv, pred_buf, mask, mc_tmp, levels } = bufs;
         let ti = &fs.fh.tile_info;
         let (rs, re) = (ti.mi_row_starts[tile_row] as usize, ti.mi_row_starts[tile_row + 1] as usize);
         let (cs, ce) = (ti.mi_col_starts[tile_col] as usize, ti.mi_col_starts[tile_col + 1] as usize);
@@ -209,19 +275,25 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             b: Block::default(),
             mvs: Default::default(),
             nb: Default::default(),
-            quant: vec![0; 1024],
-            dequant: vec![0; 64 * 64],
-            residual: vec![0; 64 * 64],
-            color_map_y: vec![0; 64 * 64],
-            color_map_uv: vec![0; 64 * 64],
+            quant,
+            dequant,
+            residual,
+            color_map_y,
+            color_map_uv,
             plane_tx_type: 0,
-            pred_buf: [vec![0; 128 * 128], vec![0; 128 * 128]],
-            mask: vec![0; 128 * 128],
-            mc_tmp: vec![0; (2 * 128 + 8) * 128],
-            levels: vec![0; (32 + TX_PAD) * (32 + TX_PAD)],
+            pred_buf,
+            mask,
+            mc_tmp,
+            levels,
             pass: Pass::Full,
             record: TileRecord::default(),
         }
+    }
+
+    /// The work buffers and CDFs, for [`TileDecoder::with_buffers`].
+    pub fn into_buffers(self) -> (Buffers, Box<Cdfs>) {
+        let TileDecoder { quant, dequant, residual, color_map_y, color_map_uv, pred_buf, mask, mc_tmp, levels, cdf, .. } = self;
+        (Buffers { quant, dequant, residual, color_map_y, color_map_uv, pred_buf, mask, mc_tmp, levels }, cdf)
     }
 
     fn seq(&self) -> &SequenceHeader {
@@ -288,21 +360,28 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     /// The reconstruction half of decode_tile( ): the superblocks in the same order, each block
     /// predicted and reconstructed from its record.
     fn reconstruct_tile(&mut self) -> Result<()> {
+        self.reconstruct_sb_rows(usize::MAX)
+    }
+
+    /// Reconstruct the next `rows` superblock rows of the tile (the record keeps the position).
+    pub fn reconstruct_sb_rows(&mut self, rows: usize) -> Result<()> {
         let sb4 = if self.seq().use_128x128_superblock { 32 } else { 16 };
-        let mut sb = 0;
-        let mut r = self.mi_row_start;
-        while r < self.mi_row_end {
+        let mut r = self.mi_row_start + self.record.next_sb_row * sb4;
+        let mut done = 0;
+        while r < self.mi_row_end && done < rows {
             let mut c = self.mi_col_start;
             while c < self.mi_col_end {
                 self.clear_block_decoded_flags(r, c, sb4);
-                let n = *self.record.sb_blocks.get(sb).ok_or(crate::Error::Invalid("block record exhausted"))?;
-                sb += 1;
+                let n = *self.record.sb_blocks.get(self.record.next_sb).ok_or(crate::Error::Invalid("block record exhausted"))?;
+                self.record.next_sb += 1;
                 for _ in 0..n {
                     self.reconstruct_block()?;
                 }
                 c += sb4;
             }
             r += sb4;
+            done += 1;
+            self.record.next_sb_row += 1;
         }
         Ok(())
     }

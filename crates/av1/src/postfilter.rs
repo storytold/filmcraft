@@ -1,7 +1,7 @@
 //! In-loop post filters run by decode_frame_wrapup: loop filter (7.14), CDEF (7.15),
 //! super-resolution upscaling (7.16) and loop restoration (7.17).
 
-use crate::frame::RowBand;
+use crate::frame::{FrameBuf, Plane, RowBand};
 use crate::spec_tables::{
     GLOBAL_GLOBALMV, GLOBALMV, INTRA_FRAME, MAX_LOOP_FILTER, NEARESTMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SEG_LVL_ALT_LF_Y_V, TX_HEIGHT, TX_WIDTH,
 };
@@ -47,6 +47,110 @@ pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::
     stats.add(Stage::Restoration, t.lap());
 }
 
+/// The in-loop filters run band by band behind reconstruction (row wavefront): each stage of a
+/// band starts once the stage before has finished the band below it, which bounds what the
+/// stage reads beyond the band (the loop filter changes up to 7 rows above a band and intra
+/// prediction of the next superblock row reads the unfiltered row above it; CDEF reads 2 rows
+/// and loop restoration 3 rows beyond a band). Bands are 64 luma rows. The result is the same
+/// as running each filter over the whole frame. Super-resolution frames use [`apply`].
+///
+/// The last active stage writes each band into its own buffers, which are handed out as the
+/// band's final samples without a copy.
+pub(crate) struct Pipeline {
+    bands: Vec<(usize, usize)>,
+    /// Luma rows of the coded frame (mi_rows * 4).
+    rows: usize,
+    lf_on: bool,
+    cdef_on: bool,
+    lr_on: bool,
+    /// Bands finished by each stage.
+    lf: usize,
+    cdef: usize,
+    lr: usize,
+    pending: [Vec<u16>; 3],
+    /// CdefFrame when loop restoration reads it.
+    cdef_out: Option<FrameBuf>,
+}
+
+/// Final bands from [`Pipeline::advance`]: (band, its samples starting at the band's first row).
+pub(crate) type FinalBands = Vec<(usize, [Plane; 3])>;
+
+impl Pipeline {
+    pub fn new(fs: &FrameState, draft: bool) -> Pipeline {
+        let rows = fs.fh.mi_rows as usize * 4;
+        let n = rows.div_ceil(BAND_ROWS).max(1);
+        let bands = (0..n).map(|b| (b * BAND_ROWS, if b + 1 == n { usize::MAX } else { (b + 1) * BAND_ROWS })).collect();
+        let lvl = fs.fh.lf.level;
+        let cdef_on = !draft && crate::cdef::active(fs);
+        let lr_on = fs.fh.lr.uses_lr && !draft;
+        let cdef_out = (cdef_on && lr_on).then(|| fs.cur.same_geometry());
+        Pipeline { bands, rows, lf_on: (lvl[0] != 0 || lvl[1] != 0) && !draft, cdef_on, lr_on, lf: 0, cdef: 0, lr: 0, pending: Default::default(), cdef_out }
+    }
+
+    /// Filter what luma rows [0, `recon_rows`) of reconstructed samples allow (everything once
+    /// they cover the frame); returns the bands whose samples became final.
+    pub fn advance(&mut self, fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::par::Pool, recon_rows: usize) -> FinalBands {
+        let n = self.bands.len();
+        let all = recon_rows >= self.rows;
+        let mut out = FinalBands::new();
+        let mut t = Timer::start();
+        // The loop filter of a band waits for the band below it to be reconstructed.
+        let lf_to = if all { n } else { (recon_rows / BAND_ROWS).saturating_sub(1) };
+        if lf_to > self.lf {
+            if self.lf_on {
+                loop_filter_bands(fs, pool, &self.bands, self.lf..lf_to, &mut self.pending);
+            }
+            self.lf = lf_to;
+        }
+        stats.add(Stage::LoopFilter, t.lap());
+        let cdef_to = if all { n } else { self.lf.saturating_sub(1) };
+        if cdef_to > self.cdef {
+            let r = &self.bands[self.cdef..cdef_to];
+            if self.cdef_on {
+                if let Some(cdef) = &mut self.cdef_out {
+                    cdef.copy_rows_from(&fs.cur, r[0].0, r[r.len() - 1].1);
+                    crate::cdef::filter_bands(fs, pool, cdef.row_bands(r), r);
+                } else {
+                    let mut own: Vec<[Plane; 3]> = r.iter().map(|&(a, b)| fs.cur.rows_copy(a, b)).collect();
+                    crate::cdef::filter_bands(fs, pool, own_bands(&mut own), r);
+                    out.extend((self.cdef..cdef_to).zip(own));
+                }
+            } else if !self.lr_on {
+                // The loop filter is the last stage: the band is final once the band below it
+                // is filtered.
+                out.extend((self.cdef..cdef_to).zip(r.iter().map(|&(a, b)| fs.cur.rows_copy(a, b))));
+            }
+            self.cdef = cdef_to;
+        }
+        stats.add(Stage::Cdef, t.lap());
+        let lr_to = if all { n } else { self.cdef.saturating_sub(1) };
+        if self.lr_on && lr_to > self.lr {
+            let r = &self.bands[self.lr..lr_to];
+            let cdef = self.cdef_out.as_ref().unwrap_or(&fs.cur);
+            let mut own: Vec<[Plane; 3]> = r.iter().map(|&(a, b)| cdef.rows_copy(a, b)).collect();
+            crate::restoration::restore_bands(fs, &fs.cur, cdef, own_bands(&mut own), pool, r);
+            out.extend((self.lr..lr_to).zip(own));
+            self.lr = lr_to;
+        }
+        stats.add(Stage::Restoration, t.lap());
+        out
+    }
+}
+
+/// Row bands over per-band buffers made by [`FrameBuf::rows_copy`].
+fn own_bands(own: &mut [[Plane; 3]]) -> Vec<[RowBand<'_>; 3]> {
+    fn band(p: &mut Plane) -> RowBand<'_> {
+        let (stride, y0) = (p.stride.max(1), p.oy);
+        RowBand { data: p.data.as_mut_slice(), stride, y0 }
+    }
+    own.iter_mut()
+        .map(|planes| {
+            let [a, b, c] = planes;
+            [band(a), band(b), band(c)]
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Loop filter (7.14)
 
@@ -68,23 +172,34 @@ const LF_MARGIN: usize = 8;
 /// written back; the band above never touches them.
 fn loop_filter(fs: &mut FrameState, pool: &crate::par::Pool) {
     let luma = bands(pool, fs.fh.mi_rows as usize * 4);
+    loop_filter_bands(fs, pool, &luma, 0..luma.len(), &mut Default::default());
+}
+
+/// The loop filter on bands `range` of `all` (the frame's bands). The bands above the range
+/// are filtered already: `pending` holds the unfiltered rows above the first band of the range
+/// (empty for band 0), saved before the band above was filtered, and is set to those of the
+/// band after the range.
+fn loop_filter_bands(fs: &mut FrameState, pool: &crate::par::Pool, all: &[(usize, usize)], range: std::ops::Range<usize>, pending: &mut [Vec<u16>; 3]) {
+    let Some(luma) = all.get(range.clone()) else { return };
     let planes: Vec<usize> = (0..fs.num_planes).filter(|&p| p == 0 || fs.fh.lf.level[1 + p] != 0).collect();
     let mut cur = std::mem::take(&mut fs.cur);
     let f: &FrameState = fs;
-    // Unfiltered copies of the rows above each band but the first.
-    let margins: Vec<[Vec<u16>; 3]> = luma
-        .iter()
-        .map(|&(start, _)| {
-            std::array::from_fn(|p| {
-                let sub_y = if p == 0 { 0 } else { f.ssy };
-                let pl = &cur.planes[p];
-                let (y0, y1) = ((start.saturating_sub(LF_MARGIN)) >> sub_y, start >> sub_y);
-                let rows = pl.data.get(y0 * pl.stride..y1 * pl.stride);
-                if start == 0 || !planes.contains(&p) { Vec::new() } else { rows.map(<[u16]>::to_vec).unwrap_or_default() }
-            })
+    // Unfiltered copies of the rows above a band (none above the first).
+    let margin = |cur: &crate::frame::FrameBuf, start: usize| -> [Vec<u16>; 3] {
+        std::array::from_fn(|p| {
+            let sub_y = if p == 0 { 0 } else { f.ssy };
+            let pl = &cur.planes[p];
+            let (y0, y1) = ((start.saturating_sub(LF_MARGIN)) >> sub_y, start >> sub_y);
+            let rows = pl.data.get(y0 * pl.stride..y1 * pl.stride);
+            if start == 0 || !planes.contains(&p) { Vec::new() } else { rows.map(<[u16]>::to_vec).unwrap_or_default() }
         })
-        .collect();
-    let mut bands: Vec<([RowBand; 3], [Vec<u16>; 3])> = cur.row_bands(&luma).into_iter().zip(margins).collect();
+    };
+    let margins: Vec<[Vec<u16>; 3]> =
+        luma.iter().enumerate().map(|(i, &(start, _))| if i == 0 { std::mem::take(pending) } else { margin(&cur, start) }).collect();
+    if let Some(&(next, _)) = all.get(range.end) {
+        *pending = margin(&cur, next);
+    }
+    let mut bands: Vec<([RowBand; 3], [Vec<u16>; 3])> = cur.row_bands(luma).into_iter().zip(margins).collect();
     let changed = pool.map_mut(&mut bands, |b, (band, margin)| {
         let mut changed: [Vec<(usize, u16)>; 3] = Default::default();
         for &p in &planes {

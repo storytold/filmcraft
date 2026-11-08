@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use crate::frame::Plane;
+use crate::frame::{Plane, PlaneRef};
 use crate::mvpred::round2_signed64;
 use crate::spec_tables::{
     BLOCK_8X8, BLOCK_SIZES, COMPOUND_AVERAGE, COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_WEDGE, DIV_LUT, DIV_LUT_BITS, DIV_LUT_PREC_BITS,
@@ -226,12 +226,9 @@ impl TileDecoder<'_, '_> {
         (start_x as i32, start_y as i32, step_x as i32, step_y as i32)
     }
 
-    fn ref_plane(&self, ref_idx: i32, plane: usize) -> &Plane {
+    fn ref_plane(&self, ref_idx: i32, plane: usize) -> PlaneRef<'_> {
         // A missing reference (rejected earlier for valid streams) predicts from the current frame.
-        match usize::try_from(ref_idx).ok().and_then(|i| self.fs.refs.get(i)).and_then(|r| r.as_ref()) {
-            Some(r) => &r.buf.planes[plane],
-            None => &self.t.cur.planes[plane],
-        }
+        self.fs.ref_samples(ref_idx, plane).unwrap_or(PlaneRef::Whole(&self.t.cur.planes[plane]))
     }
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
@@ -502,12 +499,12 @@ impl TileDecoder<'_, '_> {
             return false;
         }
         let fs = self.fs;
-        let Some(r) = usize::try_from(ref_idx).ok().and_then(|i| fs.refs.get(i)).and_then(|r| r.as_ref()) else {
+        let Some(refp) = fs.ref_samples(ref_idx, plane) else {
             return false;
         };
         let dims = self.ref_plane_dims(ref_idx, plane);
         let max = ((1u32 << fs.bit_depth) - 1) as u16;
-        copy_fullpel(&r.buf.planes[plane], dims, McBlock { x: sx, y: sy, w, h }, &mut self.t.cur.planes[plane], (x, y), max);
+        copy_fullpel(refp, dims, McBlock { x: sx, y: sy, w, h }, &mut self.t.cur.planes[plane], (x, y), max);
         true
     }
 
@@ -753,7 +750,7 @@ impl TileDecoder<'_, '_> {
 /// Unscaled single-reference prediction at a whole-sample position: both filter phases are the
 /// identity and Round2(128 * Round2(128 * v, InterRound0), InterRound1) == v for every bit
 /// depth, so the prediction is the (clamped) reference sample.
-fn copy_fullpel(refp: &Plane, (last_x, last_y): (i32, i32), src_blk: McBlock, dst: &mut Plane, (dx, dy): (usize, usize), max: u16) {
+fn copy_fullpel(refp: PlaneRef, (last_x, last_y): (i32, i32), src_blk: McBlock, dst: &mut Plane, (dx, dy): (usize, usize), max: u16) {
     let McBlock { x, y, w, h } = src_blk;
     let x0 = x >> 10;
     let y0 = y >> 10;
@@ -821,7 +818,7 @@ fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32
 /// Block inter prediction without reference scaling: every column / row uses the same filter
 /// phase, so the filters run over whole rows (bit-identical to the per-sample process).
 fn mc_unscaled(
-    refp: &Plane,
+    refp: PlaneRef,
     (last_x, last_y): (i32, i32),
     blk: McBlock,
     (hf, vf): (&[i16; 8], &[i16; 8]),
@@ -970,9 +967,17 @@ mod tests {
                 for &h in &sizes {
                     for (px, py) in [(0, 0), (-5, -3), (7, 9), (last_x - w as i32 / 2, last_y - h as i32 / 2), (last_x + 3, last_y + 2), (-(w as i32) - 4, 3)] {
                         let (x, y) = ((px << 10) | 32, (py << 10) | 32);
-                        mc_unscaled(&refp, (last_x, last_y), McBlock { x, y, w, h }, (&IDENTITY_TAPS, &IDENTITY_TAPS), rnd, &mut pred, &mut tmp);
+                        mc_unscaled(
+                            PlaneRef::Whole(&refp),
+                            (last_x, last_y),
+                            McBlock { x, y, w, h },
+                            (&IDENTITY_TAPS, &IDENTITY_TAPS),
+                            rnd,
+                            &mut pred,
+                            &mut tmp,
+                        );
                         let mut dst = Plane::new(w + 3, h);
-                        copy_fullpel(&refp, (last_x, last_y), McBlock { x, y, w, h }, &mut dst, (3, 0), max);
+                        copy_fullpel(PlaneRef::Whole(&refp), (last_x, last_y), McBlock { x, y, w, h }, &mut dst, (3, 0), max);
                         for i in 0..h {
                             for j in 0..w {
                                 let want =
