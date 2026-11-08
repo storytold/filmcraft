@@ -349,3 +349,38 @@ fn a_dash_bank_path_cannot_become_an_interpreter_option() {
     let _ = std::fs::remove_dir_all(here);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_pinned_caption_that_was_deleted_is_an_error_and_a_dash_out_is_not_an_option() {
+    let root = tmp("gone");
+    let b = bank(&root);
+    let mut s = session_with_caption(None, &b);
+    let pinned = s.execute("lettering.fx.prepare", json!({})).unwrap()["captions"].clone();
+    s.execute("captions.delete", json!({"captions": pinned})).unwrap();
+    let other =
+        s.execute("captions.add", json!({"track": "C1", "text": "outra", "seconds": 1.0, "durationSeconds": 1.0})).unwrap()["caption"].as_u64().unwrap();
+    let both = json!([pinned[0], other]);
+    assert!(s.execute("lettering.fx.prepare", json!({"captions": both})).is_err(), "one of the pinned captions is gone");
+    assert!(s.execute("lettering.fx.prepare", json!({"captions": pinned})).is_err());
+}
+
+#[test]
+fn a_relative_out_that_starts_with_a_dash_is_prefixed_in_the_order_argument() {
+    struct Spy(Mutex<Vec<ProcessSpec>>);
+    impl ProcessRunner for Spy {
+        fn run(&self, spec: &ProcessSpec, _: &AtomicBool) -> std::result::Result<ProcessOutput, ProcessError> {
+            self.0.lock().unwrap().push(spec.clone());
+            Err(ProcessError::Cancelled)
+        }
+    }
+    let root = tmp("dashout");
+    let b = bank(&root);
+    let spy = Arc::new(Spy(Mutex::new(Vec::new())));
+    let mut s = session_with_caption(Some(spy.clone()), &b);
+    let rel = format!("-saida-{}", std::process::id());
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": rel})).unwrap()["job"].as_u64().unwrap();
+    wait(&s, job);
+    assert_eq!(spy.0.lock().unwrap()[0].args[1], format!("./{rel}/pedido.json"));
+    let _ = std::fs::remove_dir_all(&rel);
+    let _ = std::fs::remove_dir_all(root);
+}
