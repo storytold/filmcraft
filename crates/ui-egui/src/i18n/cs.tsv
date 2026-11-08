@@ -2980,6 +2980,9 @@
 	AAC Audio	Zvuk AAC
 	AAC Audio 48 kHz 320 kbps	Zvuk AAC 48 kHz 320 kb/s
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Zvuk MPEG-4 (.m4a), stereo 48 kHz AAC-LC při 320 kb/s
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kb/s
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Zvuk MPEG (.mp3), sdružené stereo 48 kHz při 320 kb/s
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16bitový
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, stereo 48 kHz 16bitové PCM
@@ -3796,3 +3799,10 @@
 	Preset library updated: {imported} loaded, {removed} removed	Knihovna přednastavení byla aktualizována: načteno {imported}, odebráno {removed}
 	Scan Presets Folder	Prohledat složku přednastavení
 	Ticked attributes are removed from the selected clips.	Zaškrtnuté atributy budou z vybraných klipů odebrány.
+
+# Czech catch-up: strings `cargo xtask i18n-report` lists after merging main on 2026-11-08
+# (caption export, Lumetri .cube export, timecode burn-in time format).
+	Caption Track	Stopa titulků
+	Cube LUT	LUT Cube
+	Export .cube…	Exportovat .cube…
+	Time Format	Formát času
