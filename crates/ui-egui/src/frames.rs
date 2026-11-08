@@ -462,7 +462,7 @@ pub fn unchanged_frames<'s>(
     new: &'s [filmcraft_render::preview::Segment],
 ) -> Option<impl Fn(i64) -> bool + 's> {
     let (a, b) = (was.sequence(seq)?, now.sequence(seq)?);
-    if a.caption_tracks != b.caption_tracks || was.luts != now.luts {
+    if a.caption_tracks != b.caption_tracks || was.luts != now.luts || draws_names(was, seq, 0) || draws_names(now, seq, 0) {
         return None;
     }
     let same_settings = a.settings == b.settings;
@@ -471,6 +471,17 @@ pub fn unchanged_frames<'s>(
         (None, None) => same_settings,
         _ => false,
     })
+}
+
+/// Whether the sequence, or a sequence nested in it, has a Metadata & Timecode Burn-in: it can draw
+/// the sequence's, a clip's or a file's name, which the segments' hashes leave out, so a rename
+/// would carry frames that still show the old name.
+fn draws_names(project: &Project, seq: ItemId, depth: u32) -> bool {
+    let Some(s) = project.sequence(seq) else { return false };
+    s.video_tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .any(|it| it.effects.iter().any(|e| e.enabled && e.effect == "metadata_burnin") || (depth < 8 && draws_names(project, it.item, depth + 1)))
 }
 
 pub struct FrameServer {
@@ -1482,6 +1493,49 @@ mod carry_tests {
             });
         });
         assert_eq!(luts, None);
+    }
+
+    /// A burn-in can draw names the segments leave out: with one in the sequence, or in a sequence
+    /// nested in it, a rename carries nothing.
+    #[test]
+    fn a_burn_in_keeps_renamed_frames_from_being_carried() {
+        let (mut was, seq, _, b) = two_clips();
+        let burnin = find_effect("metadata_burnin").unwrap().instance();
+        was.sequence_mut(seq).unwrap().find_item_mut(b).unwrap().1.effects.push(burnin);
+        let mut now = was.clone();
+        now.items.get_mut(&seq).unwrap().name = "renamed".into();
+        let (old, new) = (video_segments(&was, seq), video_segments(&now, seq));
+        assert!(unchanged_frames(&was, &now, seq, &old, &new).is_none(), "the sequence");
+
+        let outer = now.new_sequence("outer", SequenceSettings { width: 1920, height: 1080, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+        place(&mut now, outer, seq, 0, 96);
+        let mut renamed = now.clone();
+        renamed.items.get_mut(&seq).unwrap().name = "again".into();
+        let (old, new) = (video_segments(&now, outer), video_segments(&renamed, outer));
+        assert!(unchanged_frames(&now, &renamed, outer, &old, &new).is_none(), "a nested sequence");
+    }
+
+    fn plan(px: usize) -> GpuPlan {
+        GpuPlan { plan: filmcraft_render::plan::FramePlan::Image(filmcraft_render::Image::new(px, 1)), prepared: Default::default() }
+    }
+
+    /// `PlanCache::rekey` moves plans as `Cache::rekey` moves frames: a plan already at the new key
+    /// stays, the carried one is dropped and its bytes with it.
+    #[test]
+    fn plans_rekey_like_frames() {
+        let key = |frame, revision| FrameKey { target: Target::Sequence(ItemId(1)), frame, size: 1000, revision, draft: false };
+        let mut c = PlanCache::default();
+        c.insert(key(10, 5), plan(1));
+        c.insert(key(60, 5), plan(2));
+        c.insert(key(70, 5), plan(3));
+        c.insert(key(70, 6), plan(4));
+        let moved = c.rekey(|k| (k.revision == 5 && k.frame >= 60).then_some(FrameKey { revision: 6, ..*k }));
+        assert_eq!(moved, 1, "frame 60; frame 70 was already rendered at 6");
+        assert!(c.map.contains_key(&key(60, 6)) && !c.map.contains_key(&key(60, 5)));
+        assert!(c.map.contains_key(&key(10, 5)), "a plan not carried stays");
+        assert!(!c.map.contains_key(&key(70, 5)));
+        assert_eq!(c.map[&key(70, 6)].2, plan(4).bytes(), "the plan rendered at the new revision stays");
+        assert_eq!(c.bytes, c.map.values().map(|v| v.2).sum::<usize>(), "bytes counted once");
     }
 
     fn frame(v: u8) -> Arc<Rgba> {
