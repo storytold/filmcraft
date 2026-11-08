@@ -211,8 +211,14 @@ pub fn stitch(frames: &[SampledFrame], layout: SampleLayout, max_side: u32) -> R
     let cell_h = frames.iter().map(|f| f.height).max().unwrap_or(180).max(1);
     let border: u32 = 4;
 
-    let canvas_w = cols_u32.checked_mul(cell_w).and_then(|w| w.checked_add((cols_u32 + 1) * border)).ok_or("canvas width overflows")?;
-    let canvas_h = rows_u32.checked_mul(cell_h).and_then(|h| h.checked_add((rows_u32 + 1) * border)).ok_or("canvas height overflows")?;
+    let canvas_w = cols_u32
+        .checked_mul(cell_w)
+        .and_then(|w| w.checked_add((cols_u32 + 1) * border))
+        .ok_or_else(|| AutomationError::Other("canvas width overflows".into()))?;
+    let canvas_h = rows_u32
+        .checked_mul(cell_h)
+        .and_then(|h| h.checked_add((rows_u32 + 1) * border))
+        .ok_or_else(|| AutomationError::Other("canvas height overflows".into()))?;
 
     // Create dark slate background canvas: #18181b
     let mut canvas = RgbaImage::from_pixel(canvas_w, canvas_h, Rgba([24, 24, 27, 255]));
