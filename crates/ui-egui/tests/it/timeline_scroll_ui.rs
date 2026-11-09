@@ -550,4 +550,17 @@ fn keyboard_zoom_keeps_the_playhead_still_on_screen() {
             d.frames(1);
         }
     }
+    // at the start of the Timeline the view cannot scroll before 0: zooming out keeps the start at
+    // the left edge, so the playhead eases in with the zoom instead of jumping on the first frame
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.exec("playhead.set", json!({"time": 5 * 254_016_000_000_i64}));
+    d.frames(3);
+    assert_eq!(d.view().0, 0.0);
+    d.exec("view.zoomOut", json!({}));
+    for frame in 0..12 {
+        assert_eq!(d.app().ui.timeline.scroll, 0.0, "zoom out from the start, frame {frame}");
+        d.frames(1);
+    }
+    let (scroll, pps, ..) = d.view();
+    assert_eq!((scroll, pps), (0.0, 62.5));
 }

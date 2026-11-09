@@ -135,14 +135,15 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
+/// Zoom about a time (keeps it under the same screen x); returns that x from the view's left edge.
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) -> f32 {
     let old = v.target_pps;
     let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+    x
 }
 
 /// View ▸ Zoom In and Zoom Out (`=` and `-`): zoom about the playhead and hold it at that screen
@@ -151,7 +152,7 @@ pub(crate) fn zoom_playhead(app: &mut FilmcraftApp, factor: f64) {
     let ph = app.session.playhead().seconds();
     let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
     let v = &mut app.ui.timeline;
-    zoom_about(v, factor, ph, app.last_timeline_width, seconds);
-    let x = ((ph - v.target_scroll) * v.target_pps) as f32;
+    // the x before the zoom, so a view held at 0 eases the playhead over instead of jumping it
+    let x = zoom_about(v, factor, ph, app.last_timeline_width, seconds);
     app.tl.zoom_anchor = app.tl.layout.as_ref().map(|l| (ph, l.content.min.x + x));
 }
