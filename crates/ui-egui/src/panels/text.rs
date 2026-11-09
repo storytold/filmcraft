@@ -805,7 +805,17 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
 ///
 /// A dragged value only lives on the frames of the drag: the field is rebuilt from the stored style
 /// every frame and egui doesn't write on the release frame, so the value is kept until release,
-/// and dropped if Escape ended the drag (#580). A typed edit commits at once.
+/// and dropped if Escape ended the drag (#580). It returns:
+/// - during a drag: `None`, keeping `value` for release when the field changed this frame;
+/// - on the frame the drag stops: the kept value, or `None` if Escape is pressed on that frame or
+///   the drag never changed the field (a click without a drag);
+/// - otherwise: `value` if the field changed (a typed edit commits at once), else `None`.
+///
+/// egui ignores a pointer move delivered on the release frame itself, so the value saved is the one
+/// the field showed on the frame before, the one the user saw.
+///
+/// Pair it with [`drag_start`]: call that immediately before adding the field, every frame and with
+/// no widget in between, so both work on the field's id (`resp.id` here).
 fn committed_drag(ui: &egui::Ui, resp: &egui::Response, value: f32) -> Option<f32> {
     let pending = resp.id.with("caption-style-pending");
     if resp.dragged() {
@@ -835,6 +845,10 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
 ///
 /// egui reports a change against this value, so a drag back to `stored` still registers, and the
 /// field keeps showing the dragged value while the pointer holds still.
+///
+/// Call it immediately before adding the field, every frame and with no widget in between: it reads
+/// `ui.next_auto_id()`, which is the field's id only then, and [`committed_drag`] keeps the value
+/// under that same id.
 fn drag_start(ui: &egui::Ui, stored: f32) -> f32 {
     let id = ui.next_auto_id();
     if !ui.ctx().is_being_dragged(id) {
@@ -847,26 +861,34 @@ fn drag_start(ui: &egui::Ui, stored: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// Drags a number field stored as 50 (rebuilt from the store every frame, like the style
-    /// fields) by `steps` moves, pressing Escape on move `escape_at`; returns what it committed.
-    fn drag_field(steps: usize, escape_at: Option<usize>) -> Vec<f32> {
-        let ctx = egui::Context::default();
+    /// Drags a number field stored as 50 on `ctx` (rebuilt from the store every frame, with
+    /// [`drag_start`], like the style fields) by `steps` moves of 10 px; returns what it committed.
+    ///
+    /// `escape_at` is 0-based: `Some(i)` presses Escape on move `i`, and `Some(steps)` on the release
+    /// frame.
+    fn drag_field(ctx: &egui::Context, steps: usize, escape_at: Option<usize>) -> Vec<f32> {
         let start = egui::pos2(30.0, 12.0);
+        let at = |step: usize| egui::pos2(30.0 + 10.0 * step as f32, 12.0);
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let escape = || egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         let mut frames = vec![vec![egui::Event::PointerMoved(start)], vec![button(start, true)]];
-        for step in 1..=steps {
-            let mut events = vec![egui::Event::PointerMoved(egui::pos2(30.0 + 10.0 * step as f32, 12.0))];
+        for step in 0..steps {
+            let mut events = vec![egui::Event::PointerMoved(at(step + 1))];
             if escape_at == Some(step) {
-                events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+                events.push(escape());
             }
             frames.push(events);
         }
-        frames.push(vec![button(egui::pos2(30.0 + 10.0 * steps as f32, 12.0), false)]);
+        let mut release = vec![button(at(steps), false)];
+        if escape_at == Some(steps) {
+            release.push(escape());
+        }
+        frames.push(release);
         frames.push(vec![]);
         let mut committed = Vec::new();
         for events in frames {
             let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-                let mut v = 50.0_f32;
+                let mut v = drag_start(ui, 50.0);
                 let resp = ui.add(crate::widgets::number_drag(&mut v).range(5.0..=100.0).speed(0.5));
                 committed.extend(committed_drag(ui, &resp, v));
             });
@@ -877,13 +899,15 @@ mod tests {
 
     #[test]
     fn a_style_drag_commits_the_dragged_value_once_on_release() {
-        let committed = drag_field(4, None);
-        assert_eq!(committed.len(), 1, "{committed:?}");
-        assert!(committed[0] > 50.0, "the drag's value, not the stored one: {committed:?}");
-        assert_eq!(drag_field(0, None), Vec::<f32>::new(), "a click without a drag commits nothing");
-        assert_eq!(drag_field(4, Some(2)), Vec::<f32>::new(), "Escape cancels the drag");
-        // nothing is left behind for the next drag on a fresh context either
-        assert_eq!(drag_field(4, None), committed);
+        // one context throughout, so a value left behind by one drag would show up in the next
+        let ctx = egui::Context::default();
+        // 4 moves of 10 px at 0.5 per px, each past the 5 px drag threshold
+        assert_eq!(drag_field(&ctx, 4, None), [70.0], "the drag's value, once");
+        assert_eq!(drag_field(&ctx, 0, None), Vec::<f32>::new(), "a click without a drag commits nothing");
+        assert_eq!(drag_field(&ctx, 4, Some(1)), Vec::<f32>::new(), "Escape cancels the drag");
+        assert_eq!(drag_field(&ctx, 4, None), [70.0], "a drag after a cancelled one starts afresh");
+        assert_eq!(drag_field(&ctx, 4, Some(4)), Vec::<f32>::new(), "Escape on the release frame cancels it too");
+        assert_eq!(drag_field(&ctx, 4, None), [70.0], "and leaves nothing behind either");
     }
 
     /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
