@@ -182,6 +182,13 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_header_param_is_ignored() {
+        let mut data = "YUV4MPEG2 W2 H2 éX\nFRAME\n".as_bytes().to_vec();
+        data.extend([0u8; 6]);
+        assert!(Y4mSource::open("a.y4m", Arc::from(data)).is_ok());
+    }
+
+    #[test]
     fn colour_space_names() {
         let l = |c: Option<craft_y4m::Chroma>, bits, alpha| Some(craft_y4m::Layout { chroma: c, bits, alpha });
         assert_eq!(craft_y4m::Layout::parse("420jpeg"), l(Some(craft_y4m::Chroma::C420), 8, false));
