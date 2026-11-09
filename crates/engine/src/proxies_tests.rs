@@ -498,6 +498,16 @@ fn proxies_keep_the_source_timecode_reel_and_channels() {
             want: (tc_25, false),
         },
         ProxyCase {
+            name: "stereo",
+            rate: FrameRate::FPS_25,
+            drop_frame: false,
+            start: tc_25,
+            channels: 2,
+            interpret: None,
+            presets: &["prores_proxy_quarter"],
+            want: (tc_25, false),
+        },
+        ProxyCase {
             name: "5.1",
             rate: FrameRate::FPS_25,
             drop_frame: false,
@@ -563,6 +573,33 @@ fn proxies_keep_the_source_timecode_reel_and_channels() {
                 assert!(diff <= 1.0 / 32768.0, "mono sound changed by up to {diff}");
             }
         }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Project Manager's trimmed copies go through `transcode` with a range, and the copy's timecode
+/// starts at the range's first frame. A source without a timecode gets no timecode track.
+#[test]
+fn a_trimmed_transcode_starts_at_its_first_frame_and_an_untimed_one_has_no_track() {
+    use filmcraft_time::{FrameRate, TimeRange};
+    let root = tmp_dir("proxy-range");
+    let tc_25 = ((14 * 60 + 30) * 60 + 42) * 25;
+    let timed = root.join("timed.mxf");
+    make_mxf(&timed, FrameRate::FPS_25, tc_25, false, 1);
+    let untimed = root.join("untimed.mov");
+    make_movie(&untimed, DemoScene::Aurora, W, H, 12);
+    let (s, items, _) = session_with(&[&timed, &untimed]);
+    let preset = crate::proxies::preset("prores_proxy_quarter").unwrap();
+    let r = FrameRate::FPS_25;
+    // (source, range, the copy's start timecode)
+    let cases = [(items[0], Some(TimeRange::new(r.tick_of(4), r.tick_of(6))), Some(tc_25 + 4)), (items[0], None, Some(tc_25)), (items[1], None, None)];
+    for (k, (item, range, want)) in cases.into_iter().enumerate() {
+        let source = s.project.item(item).unwrap().clone();
+        let src = s.media.full_res_source(&s.project, item, &*s.services).unwrap();
+        let out = root.join(format!("copy{k}.mov"));
+        crate::proxies::transcode(&source, src, range, &out.to_string_lossy(), preset, &Default::default()).unwrap();
+        let info = filmcraft_codecs::open_bytes("copy.mov", std::fs::read(&out).unwrap().into()).unwrap().info().clone();
+        assert_eq!(info.start_timecode, want, "case {k}");
     }
     let _ = std::fs::remove_dir_all(&root);
 }
