@@ -179,6 +179,13 @@ pub fn zoomed_thumbnail_tiles(
     tiles.into_iter().map(|(x, t)| (x0 + (x - x0) * r, tile_w * r, t)).collect()
 }
 
+fn thumbnail_render_height(width: f32, aspect: f32, max_height: f32) -> f32 {
+    if !width.is_finite() || !aspect.is_finite() || aspect <= 0.0 || !max_height.is_finite() {
+        return 0.0;
+    }
+    (width / aspect).clamp(0.0, max_height.max(0.0))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_clip(
     app: &mut FilmcraftApp,
@@ -244,11 +251,10 @@ pub(super) fn draw_clip(
             let subpixel = cap_w < 1.0;
             let cap_w = if subpixel { th.width() } else { cap_w };
             let frozen = if subpixel { None } else { frozen };
-            let mut fh = th.height();
+            let fh = th.height();
             let mut tw = fh * aspect;
             if tw > cap_w {
                 tw = cap_w;
-                fh = (tw / aspect).min(th.height());
             }
             let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
             let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
@@ -266,7 +272,10 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, fh));
+                    // Continuous tiles stretch horizontally with live zoom; derive their height
+                    // from that same rendered width to preserve the source aspect ratio.
+                    let tile_h = thumbnail_render_height(w, aspect, th.height());
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, tile_h));
                     cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
             }
@@ -336,6 +345,18 @@ pub(super) fn draw_clip(
     if selected {
         p.rect_stroke(body.shrink(1.0), 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
         p.rect_stroke(body, 0.0, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_height_tests {
+    use super::thumbnail_render_height;
+
+    #[test]
+    fn rendered_thumbnail_height_tracks_live_width_and_stays_in_clip() {
+        assert_eq!(thumbnail_render_height(160.0, 16.0 / 9.0, 120.0), 90.0);
+        assert_eq!(thumbnail_render_height(320.0, 16.0 / 9.0, 100.0), 100.0);
+        assert_eq!(thumbnail_render_height(100.0, 0.0, 100.0), 0.0);
     }
 }
 
