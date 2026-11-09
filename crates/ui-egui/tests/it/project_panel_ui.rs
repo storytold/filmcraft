@@ -1732,3 +1732,87 @@ fn save_arrangement_refuses_an_unknown_bin() {
     d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
     assert!(d.app().ui.project_panel.dialog.is_some());
 }
+
+#[test]
+fn new_items_land_in_the_bin_the_panel_shows() {
+    // #4093: New Item, File > New and the New Sequence and Color Matte dialogs make their item in
+    // the open bin, not the project root
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    let root = d.app().session.project.root.id;
+    let parent = |d: &mut Driver, id: u64| d.app().session.project.root.parent_of(filmcraft_project::ItemId(id));
+    let newest = |d: &mut Driver| d.app().session.project.items.keys().map(|i| i.0).max().unwrap();
+    let in_root = |d: &mut Driver| d.app().session.project.root.children.len();
+    // at the root: still the root
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(root), "no bin open");
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.frames(3);
+    let root_children = in_root(&mut d);
+    // the footer's New Item menu
+    d.click("project.button.new-item");
+    d.wait_for("project.newItem.file.newBlackVideo");
+    d.click("project.newItem.file.newBlackVideo");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "New Item > Black Video");
+    // File > New
+    d.ok("ui.menu.invoke", json!({"id": "file.newAdjustmentLayer"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "File > New > Adjustment Layer");
+    // the Color Matte dialog
+    d.ok("ui.menu.invoke", json!({"id": "file.newColorMatte"}));
+    d.click("colorMatte.ok");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "Color Matte dialog");
+    // the New Sequence dialog
+    d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
+    d.frames(10);
+    d.click("sequenceSettings.ok");
+    let id = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(bin)), "New Sequence dialog");
+    assert_eq!(in_root(&mut d), root_children, "nothing new in the root");
+}
+
+#[test]
+fn new_items_land_in_the_bin_of_the_panel_they_were_made_in() {
+    // #4093: a floating bin panel makes its items in its own bin while the Project panel shows
+    // another one; an explicit `bin: null` is the root, not the shown bin
+    let mut d = project_driver();
+    let (footage, _) = d.footage();
+    let other = d.exec("file.newBin", json!({"name": "Other"}))["bin"].as_u64().unwrap();
+    let root = d.app().session.project.root.id;
+    let parent = |d: &mut Driver, id: u64| d.app().session.project.root.parent_of(filmcraft_project::ItemId(id));
+    let newest = |d: &mut Driver| d.app().session.project.items.keys().map(|i| i.0).max().unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": footage, "how": "newWindow"}}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": other, "how": "inPlace"}}));
+    d.frames(3);
+    assert!(d.app().ui.project_panel.tabs.first().is_some_and(|t| t.floating && t.bin == footage));
+    // the floating panel's New Item menu: a generator, then the Color Matte dialog
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newBlackVideo");
+    d.click("projectBin.0.newItem.file.newBlackVideo");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Black Video");
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newColorMatte");
+    d.click("projectBin.0.newItem.file.newColorMatte");
+    d.click("colorMatte.ok");
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Color Matte");
+    // the New Sequence dialog keeps the bin of the panel it was opened from
+    d.click("projectBin.0.button.new-item");
+    d.wait_for("projectBin.0.newItem.file.newSequence");
+    d.click("projectBin.0.newItem.file.newSequence");
+    d.frames(10);
+    d.click("sequenceSettings.ok");
+    let id = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(footage)), "floating panel > New Item > Sequence");
+    // an explicit null is the root even though the main panel shows a bin
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone", "params": {"bin": null}}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(root), "explicit null bin");
+    d.ok("ui.menu.invoke", json!({"id": "file.newBarsAndTone"}));
+    let id = newest(&mut d);
+    assert_eq!(parent(&mut d, id), Some(filmcraft_project::BinId(other)), "no bin: the shown one");
+}

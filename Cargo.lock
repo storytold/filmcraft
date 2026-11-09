@@ -1278,6 +1278,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-web-api"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d6ed9c725c678cb3f43b2f8ba83eda10ee11c323#d6ed9c725c678cb3f43b2f8ba83eda10ee11c323"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "craft-web-host"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=d6ed9c725c678cb3f43b2f8ba83eda10ee11c323#d6ed9c725c678cb3f43b2f8ba83eda10ee11c323"
@@ -2086,6 +2097,7 @@ dependencies = [
 name = "filmcraft-ac3"
 version = "0.17.0"
 dependencies = [
+ "filmcraft-bitstream",
  "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
@@ -2128,7 +2140,6 @@ dependencies = [
 name = "filmcraft-av1"
 version = "0.17.0"
 dependencies = [
- "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
  "rustix 1.1.5",
@@ -2240,7 +2251,10 @@ name = "filmcraft-dng"
 version = "0.17.0"
 dependencies = [
  "filmcraft-dng",
+ "image",
  "rayon",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2324,6 +2338,7 @@ dependencies = [
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-mp3enc",
  "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-prores",
@@ -2516,6 +2531,15 @@ dependencies = [
  "png",
  "rayon",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mp3enc"
+version = "0.17.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
 
@@ -2813,6 +2837,7 @@ dependencies = [
 name = "filmcraft-web"
 version = "0.17.0"
 dependencies = [
+ "craft-web-api",
  "craft-web-host",
  "eframe",
  "egui",
