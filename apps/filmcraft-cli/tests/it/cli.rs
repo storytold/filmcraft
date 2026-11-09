@@ -246,7 +246,7 @@ fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A run that stops at a failed line saves nothing, all or nothing, and says so; `--keep-going`
+/// A run that stops at a failed line skips its save, all or nothing, and says so; `--keep-going`
 /// saves the lines that pass. A malformed line is caught before anything runs (#4598).
 #[test]
 fn a_run_that_stops_saves_nothing_and_says_so() {
@@ -272,24 +272,30 @@ fn a_run_that_stops_saves_nothing_and_says_so() {
     let (code, stdout, stderr) = run(&["--save"], &(bin("stopped") + fails));
     assert_eq!(code, Some(1));
     assert!(stdout.contains("\"ok\":true"), "{stdout}");
-    assert!(stderr.contains("line 2 failed, so nothing was saved"), "{stderr}");
+    assert!(stderr.contains("line 2 failed, so the run stopped before saving to"), "{stderr}");
     assert!(!saved("stopped"));
 
     let other = dir.join("other.fcproj").to_str().unwrap().to_string();
     let (code, _, stderr) = run(&["--save-as", &other], &(bin("stopped-as") + fails));
     assert_eq!(code, Some(1));
-    assert!(stderr.contains(&format!("nothing was saved: {other} is unchanged")), "{stderr}");
+    assert!(stderr.contains(&format!("stopped before saving to {other}.")), "{stderr}");
     assert!(!dir.join("other.fcproj").exists());
+    // a line of the script saved the file already: the message mustn't call it unchanged
+    let save_line = format!("{{\"id\":\"file.saveAs\",\"params\":{{\"path\":\"{other}\"}}}}\n");
+    let (code, _, stderr) = run(&["--save-as", &other], &(bin("saved-by-a-line") + &save_line + fails));
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains(&format!("stopped before saving to {other}.")) && !stderr.contains("unchanged"), "{stderr}");
+    assert!(std::fs::read_to_string(&other).unwrap().contains("saved-by-a-line"));
 
     let (code, _, stderr) = run(&["--save", "--keep-going"], &(bin("kept") + fails));
     assert_eq!(code, Some(1));
-    assert!(!stderr.contains("nothing was saved"), "{stderr}");
+    assert!(!stderr.contains("stopped before saving"), "{stderr}");
     assert!(saved("kept"));
 
     let (code, stdout, stderr) = run(&[], &(bin("not-saving") + fails));
     assert_eq!(code, Some(1));
     assert!(stdout.contains("\"ok\":false"), "{stdout}");
-    assert!(!stderr.contains("nothing was saved"), "a run that doesn't save has nothing to say about it: {stderr}");
+    assert!(!stderr.contains("stopped before saving"), "a run that doesn't save has nothing to say about it: {stderr}");
 
     let (code, stdout, stderr) = run(&["--save", "--keep-going"], &(bin("before-bad-json") + "{not json\n"));
     assert_eq!(code, Some(2), "{stderr}");

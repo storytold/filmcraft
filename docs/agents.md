@@ -254,9 +254,9 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere. A run that stops at a failed
-line saves nothing, so the file keeps none of the lines that passed either; it says so on stderr and
-exits 1. With `--keep-going`, the lines that pass are saved and the exit status is still 1. Every
-line is read before any runs, so a malformed line is a usage error (exit 2) with nothing run.
+line skips that save, so the lines that passed aren't saved either; it says so on stderr and exits 1.
+With `--keep-going`, the lines that pass are saved and the exit status is still 1. Every line is read
+before any runs, so a malformed line is a usage error (exit 2) with nothing run.
 
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;

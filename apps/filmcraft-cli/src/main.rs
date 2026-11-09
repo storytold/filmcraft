@@ -112,7 +112,7 @@ OPTIONS
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
   --keep-going                  `run`: report failing lines and continue; without it a run stops
-                                at the first failure and saves nothing
+                                at the first failure and skips --save / --save-as
   --compact                     one-line JSON output
 
 VALUES
@@ -405,7 +405,8 @@ async fn cli_exec(a: &Args) {
 }
 
 /// The file `--save` or `--save-as` would write, as the user named it, if the run saves at all.
-/// A run that stops at a failed line saves nothing, all or nothing, and says so (#4598).
+/// A run that stops at a failed line skips that save, all or nothing, and says so (#4598). It
+/// doesn't claim the file is unchanged: a line of the script may have saved it already.
 fn save_target(a: &Args) -> Option<String> {
     match (a.opt("--save-as"), a.flag("--save")) {
         (Some(path), _) => Some(path.to_string()),
@@ -440,7 +441,7 @@ async fn cli_run(a: &Args) {
                 if !a.flag("--keep-going") {
                     if let Some(target) = save_target(a) {
                         diag(format_args!(
-                            "filmcraft-cli: line {line} failed, so nothing was saved: {target} is unchanged. Run with --keep-going to save the lines that pass."
+                            "filmcraft-cli: line {line} failed, so the run stopped before saving to {target}. Run with --keep-going to save the lines that pass."
                         ));
                     }
                     std::process::exit(1);
