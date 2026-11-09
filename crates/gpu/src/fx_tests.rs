@@ -464,7 +464,7 @@ fn gpu_noise_matches_cpu_at_any_frame() {
         let op = FxOp::eval(&e, &cx(t, 1.0), w as usize, h as usize).expect("noise op");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst <= EXACT && flips == 0.0, "noise at {t:?}: {worst:.2e}, flips {flips}");
         fields.push(cpu.px);
