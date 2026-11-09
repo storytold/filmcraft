@@ -101,6 +101,96 @@ pub fn cct((x, y): (f64, f64)) -> f64 {
     if t.is_finite() { t.clamp(1_000.0, 50_000.0) } else { 50_000.0 }
 }
 
+/// Tint units per Δuv, with the sign of the usual raw-converter control ("more tint, more
+/// magenta picture"): a tint of +150 is a white 0.05 above the Planckian locus in CIE 1960 uv
+/// (a greener light, which the white balance compensates towards magenta), −150 as far below it.
+/// D65 reads about +10.
+pub const TINT_PER_DUV: f64 = 3000.0;
+
+/// CIE 1960 uv of a Planckian radiator at `t` kelvin, 1 000–15 000 K (M. Krystek, "An algorithm
+/// to calculate correlated colour temperature", Color Research & Application 10(1), 1985: a
+/// rational approximation accurate to better than 1e-4 in uv).
+pub fn planck_uv(t: f64) -> (f64, f64) {
+    let t = if t.is_finite() { t.clamp(1_000.0, 15_000.0) } else { 6_500.0 };
+    let u = (0.860_117_757 + 1.541_182_54e-4 * t + 1.286_412_12e-7 * t * t) / (1.0 + 8.424_202_35e-4 * t + 7.081_451_63e-7 * t * t);
+    let v = (0.317_398_726 + 4.228_062_45e-5 * t + 4.204_816_91e-8 * t * t) / (1.0 - 2.897_418_16e-5 * t + 1.614_560_53e-7 * t * t);
+    (u, v)
+}
+
+/// The unit normal of the Planckian locus at `t` in uv, pointing towards green (larger v).
+fn planck_normal(t: f64) -> (f64, f64) {
+    let t = if t.is_finite() { t.clamp(1_000.0, 15_000.0) } else { 6_500.0 };
+    let (a, b) = (planck_uv((t - 1.0).max(1_000.0)), planck_uv((t + 1.0).min(15_000.0)));
+    let (du, dv) = (b.0 - a.0, b.1 - a.1);
+    let len = (du * du + dv * dv).sqrt();
+    if len < 1e-15 {
+        return (0.0, 1.0);
+    }
+    // perpendicular to the tangent; the locus runs right to left as t grows, so (dv, -du) points up
+    let n = (-dv / len, du / len);
+    if n.1 < 0.0 { (-n.0, -n.1) } else { n }
+}
+
+fn uv_to_xy((u, v): (f64, f64)) -> Option<(f64, f64)> {
+    let d = 2.0 * u - 8.0 * v + 4.0;
+    (d.abs() > 1e-12).then(|| (3.0 * u / d, 2.0 * v / d))
+}
+
+fn xy_to_uv((x, y): (f64, f64)) -> Option<(f64, f64)> {
+    let d = -2.0 * x + 12.0 * y + 3.0;
+    (d.abs() > 1e-12).then(|| (4.0 * x / d, 6.0 * y / d))
+}
+
+/// The white chromaticity of a colour temperature (kelvin, 1 000–15 000 on the Planckian locus)
+/// and tint ([`TINT_PER_DUV`] units; positive makes the developed picture more magenta, negative
+/// greener, ±150 is the useful range).
+pub fn temperature_tint_to_xy(temperature: f64, tint: f64) -> Option<(f64, f64)> {
+    if !temperature.is_finite() || !tint.is_finite() {
+        return None;
+    }
+    let t = temperature.clamp(1_000.0, 15_000.0);
+    let (u, v) = planck_uv(t);
+    let (nu, nv) = planck_normal(t);
+    let duv = tint.clamp(-1_000.0, 1_000.0) / TINT_PER_DUV;
+    uv_to_xy((u + nu * duv, v + nv * duv))
+}
+
+/// The colour temperature and tint of a white chromaticity (the inverse of
+/// [`temperature_tint_to_xy`]): the nearest point of the Planckian locus in uv, searched in
+/// reciprocal temperature.
+pub fn xy_to_temperature_tint(xy: (f64, f64)) -> Option<(f64, f64)> {
+    let (u, v) = xy_to_uv(xy)?;
+    if !u.is_finite() || !v.is_finite() {
+        return None;
+    }
+    let dist = |mired: f64| {
+        let (pu, pv) = planck_uv(1e6 / mired);
+        (u - pu).powi(2) + (v - pv).powi(2)
+    };
+    // coarse scan over 1 000–15 000 K, then golden-section refinement
+    let (lo_m, hi_m) = (1e6 / 15_000.0, 1e6 / 1_000.0);
+    let steps = 200;
+    let mut best = lo_m;
+    for i in 0..=steps {
+        let m = lo_m + (hi_m - lo_m) * f64::from(i) / f64::from(steps);
+        if dist(m) < dist(best) {
+            best = m;
+        }
+    }
+    let step = (hi_m - lo_m) / f64::from(steps);
+    let (mut a, mut b) = ((best - step).max(lo_m), (best + step).min(hi_m));
+    let g = (5f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let (c, d) = (b - g * (b - a), a + g * (b - a));
+        if dist(c) < dist(d) { b = d } else { a = c }
+    }
+    let t = 1e6 / ((a + b) / 2.0);
+    let (pu, pv) = planck_uv(t);
+    let (nu, nv) = planck_normal(t);
+    let duv = (u - pu) * nu + (v - pv) * nv;
+    Some((t, duv * TINT_PER_DUV))
+}
+
 /// Colour temperature of an EXIF LightSource code used as a DNG CalibrationIlluminant.
 pub fn illuminant_kelvin(code: u64) -> Option<f64> {
     Some(match code {
@@ -370,6 +460,32 @@ mod tests {
         for v in s.neutral {
             assert!((v - s.neutral[1]).abs() < 1e-3, "D65 is neutral for an sRGB camera: {:?}", s.neutral);
         }
+    }
+
+    #[test]
+    fn temperature_and_tint_round_trip() {
+        // the Planckian locus at 6504 K is within 0.0035 of D65 in uv (D65 sits above it)
+        let xy = temperature_tint_to_xy(6504.0, 0.0).unwrap();
+        assert!((xy.0 - D65.0).abs() < 0.005 && (xy.1 - D65.1).abs() < 0.01, "{xy:?}");
+        // illuminant A is a Planckian radiator at 2856 K
+        let a = temperature_tint_to_xy(2856.0, 0.0).unwrap();
+        assert!((a.0 - 0.44757).abs() < 5e-4 && (a.1 - 0.40745).abs() < 5e-4, "{a:?}");
+        for t in [2000.0, 3200.0, 5600.0, 9000.0, 14_000.0] {
+            for tint in [-100.0, 0.0, 37.0, 150.0] {
+                let (t2, tint2) = xy_to_temperature_tint(temperature_tint_to_xy(t, tint).unwrap()).unwrap();
+                assert!((t2 - t).abs() / t < 1e-4, "{t} {tint}: {t2}");
+                assert!((tint2 - tint).abs() < 1e-3, "{t} {tint}: {tint2}");
+            }
+        }
+        // positive tint is a greener white (above the locus), so the picture turns magenta
+        let m = temperature_tint_to_xy(5000.0, 50.0).unwrap();
+        let g = temperature_tint_to_xy(5000.0, -50.0).unwrap();
+        assert!(m.1 > g.1);
+        // D65 sits above the locus: about +10
+        let (_, d65_tint) = xy_to_temperature_tint(D65).unwrap();
+        assert!((8.0..12.0).contains(&d65_tint), "{d65_tint}");
+        assert!(temperature_tint_to_xy(f64::NAN, 0.0).is_none());
+        assert!(xy_to_temperature_tint((0.0, 0.0)).is_some_and(|(t, _)| t.is_finite()));
     }
 
     #[test]

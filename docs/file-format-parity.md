@@ -26,7 +26,7 @@ only). "Tested" names the evidence.
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
 | Templates (`.prproj` templates) | yes | — | our templates | — | 70% |
 | Motion Graphics templates `.mogrt` | read + write | **refused by design** (clean-room, AGENTS.md §1); our `.fcgt` instead | `.fcgt` | — | n/a |
-| Effect presets `.prfpset` | read + write | no | our JSON presets | — | 40% |
+| Effect presets `.prfpset` | read + write | yes (plain XML and gzip `.prfpset`, bin folders, keyframes, Bezier easing, Motion / Opacity / Transform / Crop / Blur / Color / Keying / Distort / Stylize / Time / Transition / Audio effects, `<data dir>/Effect Presets` drop folder) | our JSON presets | unit tests | 80% |
 | Keyboard shortcuts `.kys` | read + write | no | our presets incl. a Premiere layout | — | 60% |
 | Export presets `.epr` | read + write | no | our presets (import / export) | — | 50% |
 | LUTs `.cube`, `.3dl` | read | yes (1D / 3D / shaper) | — | tetrahedral CPU = WGSL | 95% |
@@ -68,7 +68,7 @@ only). "Tested" names the evidence.
 |---|---|---|---|---|
 | WAV / BWF (timecode, iXML partial) | read + write | yes | yes | 90% |
 | AIFF / AIFC | read + write | yes | yes | 95% |
-| MP3 | read + write | read | **no** | 60% |
+| MP3 | read + write | read | yes (MP3 format: CBR 32-320 kbit/s, 16-48 kHz, mono / joint stereo, own encoder, #977; no VBR, gapless tag or ID3) | 85% |
 | AAC / M4A | read + write | yes | yes (in MP4 / MOV, and AAC Audio: `.m4a` or ADTS `.aac`, #814) | 95% |
 | FLAC, Ogg, Opus | partial | yes | no | ahead on read |
 | WMA | read (Windows) | no | no | 0% |
