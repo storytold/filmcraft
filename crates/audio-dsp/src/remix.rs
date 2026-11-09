@@ -40,6 +40,7 @@ pub const XFADE_S: f64 = 0.02;
 /// Long enough for a complete music cue while bounding the audio decoded and analysed by Remix.
 pub const MAX_ANALYSIS_SECONDS: u64 = 10 * 60;
 /// A dense similarity matrix is useful for planning, but must remain a bounded allocation.
+#[allow(dead_code)]
 const MAX_SIMILARITY_CELLS: usize = 4_000_000;
 /// Remix analysis supports ordinary production and high-resolution audio rates, not arbitrary
 /// integers supplied through a public library API.
@@ -210,6 +211,7 @@ fn onset_frame(sr: u32) -> usize {
 }
 
 /// Below this normalised autocorrelation at the beat period there is no usable pulse.
+#[allow(dead_code)]
 const MIN_PULSE: f64 = 0.1;
 
 /// Onset strength per hop: half-wave rectified log-magnitude spectral flux, normalised to unit
@@ -232,6 +234,7 @@ pub fn onset_envelope(x: &[f32], sr: u32) -> (Vec<f32>, usize, usize) {
 }
 
 /// Beat period in envelope frames from the autocorrelation (50–200 BPM, prior centred at 120 BPM).
+#[allow(dead_code)]
 fn tempo(env: &[f32], frame_rate: f64) -> Option<f64> {
     let mean = env.iter().sum::<f32>() / env.len().max(1) as f32;
     let e: Vec<f32> = env.iter().map(|v| v - mean).collect();
@@ -266,6 +269,7 @@ fn tempo(env: &[f32], frame_rate: f64) -> Option<f64> {
 }
 
 /// Dynamic-programming beat tracker: frame indices of beats.
+#[allow(dead_code)]
 fn track_beats(env: &[f32], period: f64) -> Vec<usize> {
     let n = env.len();
     let mut score = vec![0f64; n];
@@ -301,20 +305,24 @@ fn track_beats(env: &[f32], period: f64) -> Vec<usize> {
     beats
 }
 
+#[allow(dead_code)]
 fn hz_to_mel(f: f64) -> f64 {
     2595.0 * (1.0 + f / 700.0).log10()
 }
 
+#[allow(dead_code)]
 fn mel_to_hz(m: f64) -> f64 {
     700.0 * (10f64.powf(m / 2595.0) - 1.0)
 }
 
 /// Mel bands of the cepstra.
+#[allow(dead_code)]
 const BANDS: usize = 26;
 
 /// Triangular mel filterbank (26 bands, 30 Hz … min(8 kHz, Nyquist)) for an `n`-point STFT: per
 /// band, the bins it covers with their weights, in increasing bin order. Every other bin has
 /// weight 0 in that band.
+#[allow(dead_code)]
 fn mel_weights(sr: u32, n: usize) -> Vec<Vec<(usize, f64)>> {
     let hz = |k: usize| k as f64 * sr as f64 / n as f64;
     let fmax = (sr as f64 / 2.0).min(8000.0);
@@ -340,9 +348,10 @@ fn mel_weights(sr: u32, n: usize) -> Vec<Vec<(usize, f64)>> {
 }
 
 /// Mel band energies of one magnitude spectrum.
-fn mel_bands(L: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
+#[allow(dead_code)]
+fn mel_bands(l: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
     let mut band = [0f64; BANDS];
-    for (e, weights) in band.iter_mut().zip(L) {
+    for (e, weights) in band.iter_mut().zip(l) {
         for &(k, w) in weights {
             let v = mag[k];
             *e += w * (v as f64) * (v as f64);

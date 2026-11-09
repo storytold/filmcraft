@@ -411,7 +411,7 @@ fn leader(px: &mut [u8], w: usize, h: usize, t: f32, _frame: i64, _rate: FrameRa
     });
     let dh = (h as i32) / 3;
     let s = n.to_string();
-    let tw = text_width(dh, &s);
+    let _tw = text_width(dh, &s);
 }
 
 fn demo_pixel(scene: DemoScene, u: f32, v: f32, aspect: f32, t: f32) -> [f32; 3] {
