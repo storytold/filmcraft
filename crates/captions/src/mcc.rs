@@ -223,17 +223,21 @@ const G2: &[(u8, char)] = &[
     (0x79, '⅞'),
 ];
 
-/// Service-data atoms (a command with its parameters, or one character) for a character.
-fn char_atom(c: char) -> Vec<u8> {
-    match c {
+/// Service-data atoms (a command with its parameters, or one character) for a character, if
+/// CEA-708 has a code for it.
+fn char_atom(c: char) -> Option<Vec<u8>> {
+    Some(match c {
         '♪' => vec![0x7f],
         ' '..='~' => vec![c as u8],
         '\u{a0}'..='\u{ff}' => vec![c as u32 as u8],
-        _ => match G2.iter().find(|g| g.1 == c) {
-            Some((b, _)) => vec![0x10, *b],
-            None => vec![b'?'],
-        },
-    }
+        _ => vec![0x10, G2.iter().find(|g| g.1 == c)?.0],
+    })
+}
+
+/// What a CEA-708 decoder shows for `c`: `c`, or `?`, which the writer sends for a character
+/// with no code.
+pub fn shown_as_708(c: char) -> char {
+    if char_atom(c).is_some() { c } else { '?' }
 }
 
 /// Atoms that define window `win` hidden and load `rows` into it.
@@ -250,7 +254,7 @@ fn load_atoms(win: u8, rows: &[String]) -> Vec<Vec<u8>> {
         if i > 0 {
             v.push(vec![0x0d]);
         }
-        v.extend(r.chars().map(char_atom));
+        v.extend(r.chars().map(|c| char_atom(c).unwrap_or_else(|| vec![b'?'])));
     }
     v
 }
@@ -348,6 +352,11 @@ struct Win {
     max_cols: usize,
 }
 
+/// Total cue text one CEA-708 import may retain. Every packet can change the visible text and
+/// so retain another full snapshot of up to eight windows; without a cap a file can expand by a
+/// few hundred times into retained strings.
+const MAX_708_TEXT_BYTES: usize = 16 << 20;
+
 struct Dec708 {
     win: [Win; 8],
     cur: usize,
@@ -355,11 +364,15 @@ struct Dec708 {
     want: usize,
     open: Option<(i64, String)>,
     cues: Vec<(i64, i64, String)>,
+    /// Cue text bytes that may still be retained (see [`MAX_708_TEXT_BYTES`]).
+    budget: usize,
+    /// Set once the budget ran out; later packets are ignored.
+    truncated: bool,
 }
 
 impl Dec708 {
     fn new() -> Self {
-        Dec708 { win: Default::default(), cur: 0, packet: Vec::new(), want: 0, open: None, cues: Vec::new() }
+        Dec708 { win: Default::default(), cur: 0, packet: Vec::new(), want: 0, open: None, cues: Vec::new(), budget: MAX_708_TEXT_BYTES, truncated: false }
     }
     fn visible_text(&self) -> String {
         let mut lines = Vec::new();
@@ -370,19 +383,38 @@ impl Dec708 {
     }
     fn sync(&mut self, f: i64) {
         let now = self.visible_text();
+        // Check the open cue before the unchanged-text return, so an unchanged oversized cue still stops later packets.
+        if let Some((s, t)) = &self.open
+            && f > *s
+            && t.len() > self.budget
+        {
+            self.truncated = true;
+        }
         if self.open.as_ref().map(|o| o.1.as_str()) == Some(now.as_str()) || (self.open.is_none() && now.is_empty()) {
             return;
         }
         if let Some((s, t)) = self.open.take()
             && f > s
         {
-            self.cues.push((s, f, t));
+            self.retain(s, f, t);
         }
-        if !now.is_empty() {
+        if !now.is_empty() && !self.truncated {
             self.open = Some((f, now));
         }
     }
+    /// Keep a finished cue unless that would exceed the text budget.
+    fn retain(&mut self, s: i64, e: i64, t: String) {
+        if self.truncated || t.len() > self.budget {
+            self.truncated = true;
+            return;
+        }
+        self.budget -= t.len();
+        self.cues.push((s, e, t));
+    }
     fn pair(&mut self, f: i64, start: bool, a: u8, b: u8) {
+        if self.truncated {
+            return;
+        }
         if start {
             self.packet.clear();
             let size = (a & 0x3f) as usize;
@@ -663,7 +695,10 @@ pub fn parse(text: &str) -> Result<Document> {
             last = f + 1;
         }
         if let Some((s, t)) = d.open.take() {
-            d.cues.push((s, last.max(s + 1), t));
+            d.retain(s, last.max(s + 1), t);
+        }
+        if d.truncated {
+            doc.warnings.push(format!("CEA-708 captions exceed {} MiB of text; the rest were not imported", MAX_708_TEXT_BYTES >> 20));
         }
         doc.cues = d.cues.into_iter().map(|(s, e, text)| Cue { start: rate.0.tick_of(s), end: rate.0.tick_of(e), text, ..Default::default() }).collect();
     }
@@ -800,5 +835,35 @@ mod tests {
         // Define window 0 with one row and one column, then try to overflow both.
         decoder.service_data(&[0x98, 0, 0, 0, 0, 0, 0, b'A', b'B', 0x0d, b'C']);
         assert_eq!(decoder.win[0].rows, ["A"]);
+    }
+
+    /// Bound the text a 708 import retains when every packet changes a large visible display.
+    #[test]
+    fn decoder_retains_a_bounded_amount_of_708_text() {
+        let mut decoder = Dec708::new();
+        // Eight visible windows of 16 rows x 64 columns, filled with text.
+        for n in 0..8u8 {
+            decoder.service_data(&[0x98 + n, 0x20, 0, 0, 0x0f, 0x3f, 0]);
+            for row in 0..16 {
+                decoder.service_data(&[b'x'; 64]);
+                if row < 15 {
+                    decoder.service_data(&[0x0d]);
+                }
+            }
+        }
+        let snapshot = decoder.visible_text().len();
+        assert!(snapshot > 8000, "{snapshot}");
+        // Toggle every window off and on: each "on" retains another full snapshot.
+        let mut frame = 0;
+        for _ in 0..(2 * MAX_708_TEXT_BYTES / snapshot) {
+            for cmd in [0x8a, 0x89] {
+                decoder.service_data(&[cmd, 0xff]);
+                frame += 1;
+                decoder.sync(frame);
+            }
+        }
+        assert!(decoder.truncated);
+        assert!(decoder.cues.iter().map(|c| c.2.len()).sum::<usize>() <= MAX_708_TEXT_BYTES);
+        assert!(decoder.open.is_none());
     }
 }

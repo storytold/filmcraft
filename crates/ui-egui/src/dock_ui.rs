@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use craft_ui::docking::{
-    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, WindowKind, Workspace,
+    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Node, ResizeEdge, WindowKind, Workspace,
 };
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
@@ -149,6 +149,21 @@ impl FilmcraftApp {
         self.apply_dock_all(vec![action])
     }
 
+    /// Clicking the Timeline brings the Program monitor to the front of its tab group, as in
+    /// Premiere, so the frame being edited is on show (#3653). The focus stays on the Timeline.
+    /// Only a tab behind another in a docked group: not when Program is floating, closed, already
+    /// in front, in a group the user collapsed (minimized, icon-only column or accordion), or in the
+    /// Timeline's own group (fronting it would hide the Timeline).
+    fn raise_program_for_timeline(&mut self) {
+        let dock = &self.ui.dock;
+        if dock.is_visible(PanelKind::Program) || tab_group(dock, PanelKind::Program).is_none_or(|group| group.contains(&PanelKind::Timeline)) {
+            return;
+        }
+        if let Err(error) = self.apply_dock(Action::Activate { panel: PanelKind::Program }) {
+            log::warn!("could not bring the Program monitor to the front: {error}");
+        }
+    }
+
     fn apply_dock_all(&mut self, actions: Vec<Action<PanelKind>>) -> Result<(), String> {
         let mut layout = self.ui.dock.clone();
         let mut relocating = false;
@@ -203,12 +218,12 @@ impl FilmcraftApp {
     }
 
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
-    /// egui `Modal` shown last frame, the Save changes? prompt of Quit or Close Project, or a
-    /// native file dialog. egui's `Modal` blocks input only in the main window, so the dock area
-    /// blocks its native windows meanwhile.
+    /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
+    /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
+    /// the dock area blocks its native windows meanwhile.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
         matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
-            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject"))
+            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
             || self.native_dialog_open()
             || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
@@ -268,6 +283,9 @@ impl FilmcraftApp {
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
+            if panel == PanelKind::Timeline {
+                self.raise_program_for_timeline();
+            }
         }
         self.handle_forwarded_keys(&ctx, output.forwarded_events);
         self.window_files = output.window_files;
@@ -599,5 +617,55 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             self.app.ui.focused = *active;
             self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
+    }
+}
+
+/// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
+/// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
+fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+    fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+        match node {
+            Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),
+            Node::Dock { columns, .. } => columns
+                .iter()
+                .filter(|column| !column.iconic)
+                .flat_map(|column| column.groups.iter())
+                .find(|group| !group.minimized && group.panels.contains(&panel))
+                .map(|group| group.panels.clone()),
+            Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
+            _ => None,
+        }
+    }
+    layout.root.as_ref().and_then(|root| find(root, panel))
+}
+
+#[cfg(test)]
+mod tests {
+    use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
+    use craft_ui::layout::{SplitAxis, SplitSize};
+
+    use super::tab_group;
+    use crate::dock::{Layout, PanelKind};
+
+    /// The Timeline beside a dock column holding `group`.
+    fn beside_dock(group: Group<PanelKind>, iconic: bool) -> Layout {
+        let column = Column { groups: vec![group], width: 300.0, iconic, iconic_width: None };
+        let dock = Node::Dock { side: Side::End, columns: vec![column] };
+        let timeline = Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 };
+        let root = Node::Split { axis: SplitAxis::Horizontal, size: SplitSize::Ratio(0.5), first: Box::new(timeline), second: Box::new(dock) };
+        Layout { root: Some(root), floating: vec![] }
+    }
+
+    /// #3653: Program is fronted only from an expanded group that shows one tab at a time, so a
+    /// Timeline click never expands what the user collapsed.
+    #[test]
+    fn program_is_fronted_only_from_an_expanded_tab_group() {
+        let group = || Group::new(vec![PanelKind::Properties, PanelKind::Program], 0);
+        assert_eq!(tab_group(&beside_dock(group(), false), PanelKind::Program), Some(vec![PanelKind::Properties, PanelKind::Program]));
+        assert_eq!(tab_group(&beside_dock(Group { minimized: true, ..group() }, false), PanelKind::Program), None, "a minimized group");
+        assert_eq!(tab_group(&beside_dock(group(), true), PanelKind::Program), None, "an icon-only column");
+        let entries = [PanelKind::Properties, PanelKind::Program].map(|panel| StackEntry { panel, open: false, height: None }).to_vec();
+        let accordion = Layout { root: Some(Node::Stack { entries }), floating: vec![] };
+        assert_eq!(tab_group(&accordion, PanelKind::Program), None, "an accordion");
     }
 }

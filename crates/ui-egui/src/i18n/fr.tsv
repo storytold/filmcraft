@@ -467,7 +467,7 @@
 	Replace	Remplacer
 	Yes	Oui
 	No	Non
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Ajoutez des médias à votre projet. Déposez des fichiers n'importe où dans la fenêtre ou choisissez une source ci-dessous.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Ajoutez des médias à votre projet. Déposez des fichiers ou des dossiers n'importe où dans la fenêtre ou choisissez une source ci-dessous.
 	Browse files…	Parcourir les fichiers…
 	Movies, audio and stills from disk	Films, audio et images fixes depuis le disque
 	Demo footage	Rushes de démonstration
@@ -3004,6 +3004,9 @@
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), AAC-LC stéréo 48 kHz à 320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Audio MPEG (.mp3), stéréo conjointe 48 kHz à 320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, PCM stéréo 48 kHz 16 bits
@@ -3458,6 +3461,7 @@
 	Clip Speed / Duration	Vitesse/durée du clip
 	Speed:	Vitesse :
 	Reverse Speed	Vitesse inversée
+	Maintain Audio Pitch	Conserver la hauteur du son
 	Ripple Edit, Shifting Trailing Clips	Montage avec décalage, déplacement des clips suivants
 	About	À propos
 	Contributors	Contributeurs
@@ -3771,3 +3775,13 @@
 	Alternate drag speed multiplier	Multiplicateur de la vitesse de déplacement alternative
 	Playhead centering range in seconds	Plage de centrage de la tête de lecture en secondes
 	Alternate drag speed for the track sliders	Vitesse de déplacement alternative des curseurs de pistes
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Couleur 10 bits
+	All Intra	Tout intra
+	Every frame a keyframe (edit-friendly, larger files)	Chaque image est une image clé (facile à monter, fichiers plus gros)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) à la taille de la séquence, qualité constante CRF 16, AAC 320 kbps ; un master 10 bits
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, chaque image est une image clé), CRF 12, AAC 320 kbps ; un intermédiaire facile à monter
+
