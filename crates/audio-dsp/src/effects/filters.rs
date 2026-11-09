@@ -4,7 +4,7 @@
 //! gain curve applied by STFT overlap-add).
 
 use super::eq::{BandBank, BandSettings, MAX_BANDS};
-use super::stft::{Spectral, StftChannel, fft_size};
+use super::stft::{Pairing, Plan, Spectral, StftChannel, fft_size, stream};
 use crate::biquad::{Biquad, FilterType};
 use crate::design::{self, Band, Family, MAX_SECTIONS, Prototype, Sections};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
@@ -671,32 +671,21 @@ impl AudioEffect for FftFilter {
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
-        let nch = channels.len().min(self.stft.len());
         let (n, hop) = (self.n, self.hop);
         let scale = 1.0 / (n as f32 * 2.0);
         let bins = n / 2 + 1;
-        for i in 0..len {
-            for ch in 0..nch {
-                let spec = &mut self.spec;
-                let gains = &mut self.gains;
-                let target = &self.target;
-                // Every channel frames at the same samples; the gains glide once per frame.
-                let first = ch == 0;
-                let mut frame = |input: &[f32], out: &mut [f32]| {
-                    if first {
-                        for k in 0..bins {
-                            gains[k] += (target[k] - gains[k]) * 0.5;
-                        }
-                    }
-                    spec.analyse(input);
-                    for k in 0..bins {
-                        spec.re[k] *= gains[k];
-                        spec.im[k] *= gains[k];
-                    }
-                    spec.synthesise_add(out, scale);
-                };
-                channels[ch][i] = self.stft[ch].tick(channels[ch][i], hop, &mut frame);
+        let (gains, target) = (&mut self.gains, &self.target);
+        stream(&mut self.stft, &mut self.spec, channels, len, Plan { hop, scale, pairing: Pairing::Full }, &mut |ch, _, re, im| {
+            // Every channel frames at the same samples; the gains glide once per frame.
+            if ch == 0 {
+                for k in 0..bins {
+                    gains[k] += (target[k] - gains[k]) * 0.5;
+                }
             }
-        }
+            for k in 0..bins {
+                re[k] *= gains[k];
+                im[k] *= gains[k];
+            }
+        });
     }
 }

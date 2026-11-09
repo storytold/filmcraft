@@ -756,6 +756,14 @@ fn transform_presets_animate_over_the_clip() {
         fn media_timecode(&self) -> String {
             "00:00:10:00".into()
         }
+        fn sequence_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(40), r, false, display, 48_000))
+        }
+        fn media_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(240), r, false, display, 48_000))
+        }
         fn file_name(&self) -> String {
             "A001.mov".into()
         }
@@ -800,6 +808,26 @@ fn transform_presets_animate_over_the_clip() {
     assert_eq!(text::burnin_text(&e2, &end), "FILE A001.mov");
     set(&mut e2, "source", ParamValue::Choice(4));
     assert_eq!(text::burnin_text(&e2, &mid), "FILE 24");
+    // Time Format: the film formats replace the timecode of the timecode sources only
+    let mut e3 = e.clone();
+    set(&mut e3, "time_format", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "2+08");
+    set(&mut e3, "time_format", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "1+00");
+    set(&mut e3, "time_format", ParamValue::Choice(3));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    set(&mut e3, "source", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "240");
+    set(&mut e3, "source", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "clip", "clip name is unaffected");
+    // an out-of-range choice (a newer file) clamps instead of panicking
+    set(&mut e3, "source", ParamValue::Choice(0));
+    set(&mut e3, "time_format", ParamValue::Choice(99));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    // a project from before Time Format has no such parameter: Timecode
+    let mut old = e.clone();
+    old.params.remove("time_format");
+    assert_eq!(text::burnin_text(&old, &end), "01:00:00:00");
 }
 
 #[test]
@@ -1439,4 +1467,38 @@ mod stabilizer_corrections_cache {
             assert_eq!(c.corr[60].e, direct[60].e, "smooth {smooth}");
         }
     }
+}
+
+#[test]
+fn extreme_long_shadow_and_glint_lengths_finish() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // an infinite Long Shadow length used to keep its doubling loop running forever
+    for len in [f64::INFINITY, f64::MAX, 1e30] {
+        for id in ["long_shadow", "glint"] {
+            let mut e = inst(id);
+            setf(&mut e, "length", len);
+            let o = run(id, &e, &img, &cx());
+            assert!(o.px.iter().all(|v| !v.is_nan()), "{id} at {len}");
+        }
+    }
+}
+
+/// A length beyond the picture's extent still sets the weighting: only the work is capped.
+#[test]
+fn lengths_past_the_picture_keep_their_fade_and_weighting() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    let render = |id: &str, len: f64| {
+        let mut e = inst(id);
+        setf(&mut e, "length", len);
+        run(id, &e, &img, &cx())
+    };
+    let total = |o: &Image| o.px.iter().map(|&v| v as f64).sum::<f64>();
+    // 32 is the extent of this 16 x 16 picture
+    let (shadow_320, shadow_far) = (total(&render("long_shadow", 320.0)), total(&render("long_shadow", 1e9)));
+    assert!(shadow_320 > 0.9 * shadow_far, "fade over the requested 320 px ({shadow_320}) must stay near the unfaded shadow ({shadow_far})");
+    assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
+    let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
+    assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
 }
