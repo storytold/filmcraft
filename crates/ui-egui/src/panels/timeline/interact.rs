@@ -1,7 +1,7 @@
 use super::clips::paint_hatch;
 use super::layout::{Layout, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
-use super::snap::{snap, snap_playhead, snap_transition};
+use super::snap::{snap, snap_marker, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
     Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_flag_at,
@@ -776,10 +776,8 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             Drag::Marker { id, from, start, .. } => {
                 let raw = rate.snap_nearest(start + (t_here - from)).max(Tick::ZERO);
-                // not onto the playhead (parked on the marker by the press) nor the marker's own
-                // start, or it would stick there; a target between frames lands on its frame
-                let snapped = snap_playhead(app, seq, layout, raw);
-                let to = if snapped == start { raw } else { rate.snap_nearest(snapped) };
+                // a target between frames lands on its frame
+                let to = rate.snap_nearest(snap_marker(app, seq, layout, raw, id));
                 app.tl.snap_x = (to != raw).then(|| layout.x_of(to));
                 Some(Drag::Marker { id, from, start, to })
             }

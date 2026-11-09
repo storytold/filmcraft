@@ -214,3 +214,35 @@ fn a_marker_snapped_to_an_off_frame_marker_lands_on_a_frame() {
     d.drag((x, y), o[0] + o[2] / 2.0 + 2.0 - x);
     assert_eq!(d.marker(id).start, rate.snap_nearest(target), "on the frame of the marker it snapped to");
 }
+
+/// #4491: brought back near where it started, a dragged marker still snaps to another marker in
+/// reach, though its own old start is nearer: the marker is not a snap target of its own drag.
+#[test]
+fn a_dragged_marker_snaps_past_its_own_start() {
+    let mut d = Driver::demo();
+    d.exec("sequence.snap", json!({"on": true}));
+    let id = d.setup();
+    let r = d.flag(id);
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let near = d.ok("ui.timeline.hit", json!({"x": x + 7.0, "y": y}))["time"].as_i64().unwrap();
+    d.exec("markers.add", json!({"time": near}));
+    d.frames(2);
+    let rate = d.harness.state().session.sequence_rate();
+    // out past the click distance so the drag starts, then back to 3 px from the start (4 px from
+    // the other marker, both in snapping reach)
+    let at = |x: f64| egui::pos2(x as f32, y as f32);
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    for e in [
+        egui::Event::PointerMoved(at(x)),
+        button(at(x), true),
+        egui::Event::PointerMoved(at(x + 10.0)),
+        egui::Event::PointerMoved(at(x + 20.0)),
+        egui::Event::PointerMoved(at(x + 3.0)),
+        button(at(x + 3.0), false),
+    ] {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    }
+    d.frames(2);
+    assert_eq!(d.marker(id).start, rate.snap_nearest(filmcraft_time::Tick(near)), "on the other marker's frame");
+}
