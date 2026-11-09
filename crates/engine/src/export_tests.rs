@@ -1225,6 +1225,23 @@ mod running_export_outputs {
     }
 
     #[test]
+    fn a_replacing_import_with_no_path_that_can_import_leaves_the_project_as_it_is() {
+        let dir = tmp_dir("running-export-replace-mixed");
+        let (a, dest) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"));
+        let missing = dir.join("missing.mov").to_string_lossy().into_owned();
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        running(&mut s, &dest, Format::default(), None);
+        let (items, history) = (s.project.items.len(), s.history.undo.len());
+        let err = s.execute("file.import", json!({"paths": [dest, missing], "replace": true})).unwrap_err().to_string();
+        assert!(err.contains("being written by") && err.contains("no such file"), "{err}");
+        assert_eq!((s.project.items.len(), s.history.undo.len()), (items, history), "the project and its undo history are kept");
+        // a path that can import still replaces the project
+        let r = s.execute("file.import", json!({"paths": [dir.join("dest.mov").to_string_lossy(), a], "replace": true})).unwrap();
+        assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_search_does_not_offer_a_file_a_running_export_is_writing() {
         let dir = tmp_dir("running-export-search");
         let (a, elsewhere) = (movie(&dir, "a.mov"), dir.join("other"));
@@ -1240,6 +1257,29 @@ mod running_export_outputs {
         assert_eq!(found(&mut s), 0, "not while an export is writing it");
         finish(&mut s, job);
         assert_eq!(found(&mut s), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_still_that_is_a_link_to_another_folder_is_refused_as_named() {
+        let dir = tmp_dir("running-export-still-link");
+        let a = movie(&dir, "a.mov");
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        let target = dir.join("elsewhere").join("frame.png");
+        std::fs::write(&target, b"png").unwrap();
+        let still = dir.join("Shot000.png");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&target, &still).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&target, &still).is_ok(); // needs the privilege to link
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if linked {
+            let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+            running(&mut s, &dir.join("Shot.png").to_string_lossy(), Format::PngSequence, None);
+            let err = s.execute("file.import", json!({"paths": [still.to_string_lossy()]})).unwrap_err().to_string();
+            assert!(err.contains("being written by"), "{err}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

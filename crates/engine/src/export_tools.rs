@@ -532,13 +532,17 @@ impl ExportOutputs {
 /// `candidate` is named like a numbered still of an image sequence exported to `path`
 /// (`Shot.png` → `Shot000.png`, `Shot1234.png`), in the same folder.
 fn is_numbered_still_of(path: &str, candidate: &str) -> bool {
-    // a link to a still is the still: look at the file it names
-    let resolved = canonical(Path::new(candidate));
-    let (dest, cand) = (Path::new(path), resolved.as_path());
+    let dest = Path::new(path);
     let (Some(stem), Some(ext)) = (dest.file_stem().map(|x| x.to_string_lossy()), dest.extension().map(|x| x.to_string_lossy())) else { return false };
-    let (Some(name), Some(cand_ext)) = (cand.file_stem().map(|x| x.to_string_lossy()), cand.extension().map(|x| x.to_string_lossy())) else { return false };
-    let digits = name.get(stem.len()..).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
-    cand_ext.eq_ignore_ascii_case(&ext) && name.get(..stem.len()).is_some_and(|head| same_name(head, &stem)) && digits.is_some() && same_folder(dest, cand)
+    let named_like_a_still = |cand: &Path| {
+        let (Some(name), Some(cand_ext)) = (cand.file_stem().map(|x| x.to_string_lossy()), cand.extension().map(|x| x.to_string_lossy())) else { return false };
+        let digits = name.get(stem.len()..).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+        cand_ext.eq_ignore_ascii_case(&ext) && name.get(..stem.len()).is_some_and(|head| same_name(head, &stem)) && digits.is_some() && same_folder(dest, cand)
+    };
+    // the path as it is named (the exporter writes through a link at `Shot000.png`, wherever it
+    // leads) and the file it resolves to (a link `alias.png` to the still `Shot000.png`)
+    let named = Path::new(candidate);
+    named_like_a_still(named) || named_like_a_still(&canonical(named))
 }
 
 fn same_folder(a: &Path, b: &Path) -> bool {
