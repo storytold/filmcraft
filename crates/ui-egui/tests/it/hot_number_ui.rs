@@ -1,4 +1,4 @@
-//! Hot numbers (the blue values in Properties, Effect Controls, the Audio Clip Mixer and Lumetri),
+//! Hot numbers (the blue values in Properties, Effect Controls, the Audio Clip Mixer and Color Grading),
 //! driven headless through the control channel: once a click turns one into a text field, Left and
 //! Right move the caret inside it (#3372) instead of moving focus out, which committed the value.
 
