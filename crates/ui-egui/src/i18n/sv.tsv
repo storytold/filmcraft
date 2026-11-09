@@ -3750,3 +3750,26 @@
 	Toggle Color Grading Section	Växla färggraderingsavsnitt
 	Color Grading Section	Färggraderingsavsnitt
 	Read Video Scopes	Läs av videoskop
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbit/s
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG-ljud (.mp3), joint stereo 48 kHz med 320 kbit/s
+	Open Presets Folder	Öppna mappen för förinställningar
+	Scan Presets Folder	Skanna mappen för förinställningar
+	From preset file:	Från förinställningsfil:
+	No presets folder: the app has no data directory	Ingen mapp för förinställningar: appen har ingen datakatalog
+	Imported {n} preset(s)	Importerade {n} förinställning(ar)
+	Imported {n} preset(s); {skipped} skipped	Importerade {n} förinställning(ar); {skipped} överhoppade
+	Imported {n} preset(s); {warnings} with unsupported parameters	Importerade {n} förinställning(ar); {warnings} med parametrar som inte stöds
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Importerade {n} förinställning(ar); {skipped} överhoppade, {warnings} med parametrar som inte stöds
+	Imported {n} preset(s); not imported: {error}	Importerade {n} förinställning(ar); inte importerade: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Förinställningsbiblioteket har uppdaterats: {imported} inlästa, {removed} borttagna
+	Preset library updated	Förinställningsbiblioteket har uppdaterats
+	Preset library is up to date	Förinställningsbiblioteket är uppdaterat
+	Caption Track	Undertextspår
+	Copy of the project saved to {path}	En kopia av projektet sparades i {path}
+	Cube LUT	Cube-LUT
+	Export .cube…	Exportera .cube…
+	Exported {path}; not in the LUT: {effects}	Exporterade {path}; inte med i LUT:en: {effects}
+	Project saved to {path}	Projektet sparades i {path}
+	This preference is not available yet.	Den här inställningen är inte tillgänglig än.
+	Ticked attributes are removed from the selected clips.	Ikryssade attribut tas bort från de markerade klippen.
