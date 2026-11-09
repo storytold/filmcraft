@@ -286,3 +286,18 @@ fn strict_copy_respects_host_missing_media_and_never_creates_output() {
     assert!(matches!(result, Err(ExportError::CopyIneligible { code: "media", .. })));
     assert!(!Path::new(&settings.path).exists());
 }
+
+#[test]
+fn strict_copy_rejects_unknown_container_color_signaling() {
+    let root = Scratch::new();
+    let (p, seq, source) = fixture(&root, FrameRate::FPS_24);
+    let mut bytes = std::fs::read(&source).unwrap();
+    let color = bytes.windows(8).position(|b| b == b"colrnclx").unwrap();
+    // Unspecified primaries cannot prove compatibility with a Rec.709 export.
+    bytes[color + 8..color + 10].copy_from_slice(&2u16.to_be_bytes());
+    std::fs::write(source, bytes).unwrap();
+    let settings = settings(&root);
+    let result = export(&Arc::new(p.clone()), seq, &settings, &metadata_sources(&p), &Progress::default());
+    assert!(matches!(result, Err(ExportError::CopyIneligible { code: "color", .. })));
+    assert!(!Path::new(&settings.path).exists());
+}
