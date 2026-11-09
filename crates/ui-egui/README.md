@@ -3,6 +3,15 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Selected text strokes
+
+With characters selected using the Type tool, both Stroke rows read and write that range's
+enablement, colour, width and Outer/Center/Inner placement. Unstyled characters inherit each
+layer property independently; without a character selection the controls edit the layer.
+Overrides survive text edits, project saves and Undo/Redo. A width or colour drag is one undo
+step. `graphics_ui::stroke_colour_pickers_edit_only_the_type_tool_selection` drives both rows
+through the control channel; `FILMCRAFT_UI_SHOTS` enables a rendered screenshot.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range
@@ -103,7 +112,7 @@ Timeline sequence tabs retain their sequence-opening, closing and horizontal reo
 
 On desktop each floating panel opens in its own OS window. Tool panels are palettes: they stay
 above other windows and hide while another application is active. The video viewers (Program,
-Source, Reference Monitor, Lumetri Scopes) are normal windows, say on a second display: they
+Source, Reference Monitor, Video Scopes) are normal windows, say on a second display: they
 stack with the main window and stay shown in the background. A floating window moves by its
 title bar, resizes from every edge and splits like the main window. While a modal dialog is open
 (Settings, Recovery, Revert, a file dialog), the native windows are dimmed and take no input.
@@ -165,7 +174,7 @@ leave custom markers visible. Selecting a preset clears the override, preserving
 The opaque sRGB editor lives in `widgets::color_picker`, independently of marker models,
 dialogs and project commands. Callers provide a `ColorDraft`, automation registry and id
 prefix. Its HSV conversion operates on sRGB channels; using linear-light saturation would
-make the center too white. Lumetri's grading wheels remain separate: they edit grading
+make the center too white. Color Grading's grading wheels remain separate: they edit grading
 offsets. Existing effect/graphics pickers retain their alpha/float/color-space semantics.
 
 The same author and hex values are available to Source marker commands. Existing markers

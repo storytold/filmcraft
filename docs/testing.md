@@ -180,7 +180,7 @@ Each codec README has the full fixture matrix and the measured results.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
   projects (demo-generator footage, bars, no media files) at 320×180 and renders one frame of each
   through the CPU compositor: Motion transform + opacity, four blend modes (Multiply, Screen,
-  Overlay, Difference), Gaussian Blur, Lumetri basic correction, Crop, Cross Dissolve at 50 %, Dip
+  Overlay, Difference), Gaussian Blur, Color Grading basic correction, Crop, Cross Dissolve at 50 %, Dip
   to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips (also a built-in
   graphics template with overridden properties and per-character styles with a pinned box), and colour
   management: S-Log3/S-Gamut3.Cine footage interpreted into Rec. 709 (`log_to_rec709`) and
@@ -266,7 +266,7 @@ delete), the queue panel (Send to Queue, Up/Down, Cancel, Start, Retry, Clear) w
 the Export button and the header's Quick Export popup (`export-*.png` snapshots).
 
 `crates/ui-egui/tests/it/color_ui.rs` drives colour features the same way (`color-*.png` snapshots):
-Lumetri Input/Look LUT menus and section switches, the Interpret Footage ▸ Color Management and
+Color Grading Input/Look LUT menus and section switches, the Interpret Footage ▸ Color Management and
 Sequence Color Management dialogs, and the HDR scopes of a PQ sequence.
 
 Colour science tests: `filmcraft-color` (curve round trips and published reference values per
@@ -353,7 +353,7 @@ cargo xtask bench-playback --json target/bench-playback.json # machine-readable 
 | `stack3-blend` | `stack3` with V2 in Screen and V3 in Overlay (blend modes on the GPU) |
 | `h264-2160` | one 2160p23.976 H.264 clip |
 | `demo` | the built-in demo project (procedural footage, transitions, effects) |
-| `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render In to Out, then two plays of the green segment |
+| `after-preview` | 1080p H.264 + Color Grading/Sharpen/Levels/Tint: a live play, Render In to Out, then two plays of the green segment |
 | `seek-storm` | 40 jumps to random frames 150 ms apart (scrubbing), time until the exact frame shows |
 
 Options: `--res full,half,quarter`, `--cpu` (CPU compositor + texture conversion instead of the

@@ -196,6 +196,9 @@ struct State {
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     /// The cached frames that were decoded in draft mode: served to draft requests only.
     drafts: std::collections::BTreeSet<i64>,
+    /// The cached frames still waiting for [`GopCache::finish`]'s crop and rotation: the request
+    /// that takes one does it off the lock (#3467).
+    raw: std::collections::BTreeSet<i64>,
     bytes: usize,
     /// When a frame was last asked of this cache.
     last_used: Instant,
@@ -227,6 +230,7 @@ impl State {
         while more() {
             let Some((pts, f)) = self.frames.pop_first() else { break };
             self.drafts.remove(&pts);
+            self.raw.remove(&pts);
             self.bytes = self.bytes.saturating_sub(f.byte_size());
             pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
@@ -240,9 +244,20 @@ impl State {
     }
 
     /// The nearest usable frame at or before `pts` (robust to decoder pts quirks).
-    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
-        self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
+    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Taken> {
+        let (pts, frame) = match self.cached(pts, draft_ok) {
+            Some(f) => (pts, f),
+            None => self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(p, f)| (*p, f))?,
+        };
+        Some(Taken { pts, frame: frame.clone(), raw: self.raw.contains(&pts) })
     }
+}
+
+/// A cached frame handed to a request, `raw` while it still waits for [`GopCache::finish`].
+struct Taken {
+    pts: i64,
+    frame: Arc<VideoFrame>,
+    raw: bool,
 }
 
 thread_local! {
@@ -574,6 +589,7 @@ impl GopCache {
         Self::in_pool(explicit_color, pool)
     }
 
+    /// An empty cache whose decoders and frame memory count against `pool`.
     fn in_pool(explicit_color: Option<ColorInfo>, pool: Arc<Pool>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -585,6 +601,7 @@ impl GopCache {
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
+                raw: Default::default(),
                 bytes: 0,
                 last_used: Instant::now(),
                 pin: i64::MIN,
@@ -612,20 +629,52 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
-        if let Some(c) = self.explicit_color
-            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
-        {
-            f.color = c;
-        }
+    fn finish(&self, f: VideoFrame) -> VideoFrame {
+        let mut f = self.colored(f);
         if let Some(r) = self.crop {
             f = f.cropped(r);
         }
         if self.rotation != 0 { f.rotated(self.rotation) } else { f }
     }
 
+    /// `f` with the container's colour, which costs nothing (raw frames carry it too).
+    fn colored(&self, mut f: VideoFrame) -> VideoFrame {
+        if let Some(c) = self.explicit_color
+            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
+        {
+            f.color = c;
+        }
+        f
+    }
+
+    /// Cache decoder output. Cropping and rotating a 4K frame takes longer than decoding it: with
+    /// the lock held, every frame worker and the decoder itself would wait for it, and a rotated
+    /// phone clip played at 2 fps (#3467). The frame is cached raw instead and [`Self::finished`]
+    /// does that work off the lock, for the frames requests actually take.
     fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+        if self.crop.is_none() && self.rotation == 0 {
+            return self.store_finished(st, pts, self.finish(f), draft);
+        }
+        self.store_finished(st, pts, self.colored(f), draft);
+        st.raw.insert(pts);
+    }
+
+    /// `t`'s frame with [`Self::finish`] applied, which must run without the cache's lock. The
+    /// finished frame replaces the raw one in the cache unless that was evicted or replaced meanwhile.
+    fn finished(&self, t: Taken) -> Arc<VideoFrame> {
+        if !t.raw {
+            return t.frame;
+        }
+        let done = Arc::new(self.finish(VideoFrame::clone(&t.frame)));
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if st.frames.get(&t.pts).is_some_and(|f| Arc::ptr_eq(f, &t.frame)) {
+            let draft = st.drafts.contains(&t.pts);
+            self.store_finished(&mut st, t.pts, done.clone(), draft);
+        }
+        drop(st);
+        // the raw planes serve the next decoded pictures once nothing else holds them
+        filmcraft_frame::pool::recycle(t.frame);
+        done
     }
 
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
@@ -634,8 +683,9 @@ impl GopCache {
         self.budget.min(FRAME_CACHE_CEILING).max(reserve)
     }
 
-    /// Cache a frame [`Self::finish`] has been applied to.
-    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+    /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).
+    fn store_finished(&self, st: &mut State, pts: i64, f: impl Into<Arc<VideoFrame>>, draft: bool) {
+        let f = f.into();
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -646,7 +696,8 @@ impl GopCache {
         let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
-        if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
+        st.raw.remove(&pts);
+        if let Some(old) = st.frames.insert(pts, f) {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
@@ -665,6 +716,7 @@ impl GopCache {
             }
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
+                st.raw.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
                 // its planes serve the next decoded pictures instead of going back to the allocator
@@ -708,22 +760,42 @@ impl GopCache {
     /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
     /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
-        let r = self.frame_late_locked(s, target, late_before);
-        if filmcraft_media::cancel::background() {
-            // Outside the cache's lock (see `release_background`). A thumbnail leaves the decoders
-            // of earlier thumbnails no reason to stay: each costs hundreds of MB at 4K.
-            drop(self.shared.pool.release_background(&self.shared));
-        }
+        let r = self.frame_late_locked(s, target, late_before).map(|t| self.finished(t));
+        self.after_request();
         r
     }
 
-    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
+    /// Run once a request is answered, outside the cache's lock (see `release_background`). A
+    /// thumbnail leaves the decoders of earlier thumbnails no reason to stay: each costs hundreds
+    /// of MB at 4K.
+    fn after_request(&self) {
+        if filmcraft_media::cancel::background() {
+            drop(self.shared.pool.release_background(&self.shared));
+        }
+    }
+
+    /// [`Self::frame_late`] leaving the display rotation to the caller: the frame comes with the
+    /// clockwise quarter turns still to apply (0 when it is already upright). The GPU compositor
+    /// folds them into the layer's placement for free, where turning a 4K frame on the CPU at
+    /// every frame of playback is too slow (#3467).
+    pub fn frame_late_unturned(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<(Arc<VideoFrame>, u8)> {
+        let r = self.frame_late_locked(s, target, late_before).map(|t| {
+            // shortcut: a clean aperture is still cut and turned on the CPU; rare outside camera files
+            if !t.raw || self.crop.is_some() { (self.finished(t), 0) } else { (t.frame, self.rotation) }
+        });
+        self.after_request();
+        r
+    }
+
+    /// The cached or decoded frame for [`Self::frame_late`] and [`Self::frame_late_unturned`], raw
+    /// when it still waits for [`Self::finish`]. The cache's lock is released when this returns.
+    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Taken> {
         let n = s.count();
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
         let want_pts = s.pts(i);
         let me = self as *const Self as usize;
         if DecodingGuard::active(me) {
-            return self.private_frame(s, i, want_pts, n);
+            return Ok(Taken { pts: want_pts, frame: self.private_frame(s, i, want_pts, n)?, raw: false });
         }
         let draft = filmcraft_media::cancel::draft();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
@@ -735,11 +807,11 @@ impl GopCache {
         st.last_used = Instant::now();
         st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
-        if let Some(f) = st.cached(want_pts, draft).cloned() {
+        if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
             st.background &= background;
-            return Ok(f);
+            return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
         if !background {
@@ -773,15 +845,7 @@ impl GopCache {
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
-    fn decode_until(
-        &self,
-        st: &mut State,
-        s: &dyn VideoSamples,
-        i: usize,
-        want_pts: i64,
-        late_before: Option<i64>,
-        draft: bool,
-    ) -> crate::Result<Arc<VideoFrame>> {
+    fn decode_until(&self, st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>, draft: bool) -> crate::Result<Taken> {
         let n = s.count();
         let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
@@ -916,7 +980,7 @@ impl GopCache {
 
     /// Intra-only streams: decode the one sample outside the lock, so several frame workers
     /// decode different frames of the same source at once.
-    fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Arc<VideoFrame>> {
+    fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Taken> {
         let mut st = st;
         let spare = st.spare.pop();
         drop(st);
@@ -928,17 +992,15 @@ impl GopCache {
             DECODED.fetch_add(1, Ordering::Relaxed);
             timed(|| dec.decode(&data, want_pts))
         });
-        // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
-            count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
-        });
+        let res = res.inspect(|out| count_frames(out));
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        for (pts, frame, draft) in res? {
-            self.store_finished(&mut st, pts, frame, draft);
+        // cached raw: the request that takes a frame crops and turns it off the lock, or leaves
+        // the turn to the GPU (`frame_late_unturned`)
+        for d in res? {
+            self.store(&mut st, d.pts, d.frame, d.draft);
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }

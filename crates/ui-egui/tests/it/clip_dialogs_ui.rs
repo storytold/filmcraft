@@ -143,6 +143,63 @@ fn paste_attributes_dialog() {
     assert_eq!(d.v1(2).effect("motion").unwrap().param("rotation").unwrap().value.as_f64(), Some(0.0));
 }
 
+/// #3789: the dialog says that ticked attributes are removed; an effect on the selected clip is
+/// offered ticked, unticking it keeps it, and OK with the defaults removes it.
+#[test]
+fn remove_attributes_dialog_removes_the_clips_effect() {
+    let mut d = Driver::new();
+    let a = d.v1(0);
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "focus_blur"}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    // unticked: the effect stays
+    d.menu("edit.removeAttributes");
+    d.click("removeAttributes.effect.focus_blur");
+    d.click("removeAttributes.ok");
+    assert!(d.v1(0).effect("focus_blur").is_some(), "an unticked effect is kept");
+    // the defaults: removed
+    assert_eq!(d.menu("edit.removeAttributes")["dialog"], "removeAttributes");
+    let hint = d.ok("ui.elements", json!({"prefix": "removeAttributes.hint"}));
+    assert_eq!(hint[0]["label"], "Ticked attributes are removed from the selected clips.");
+    assert!(d.has("removeAttributes.effect.focus_blur"));
+    let params = d.app().ui.clip_dialog.as_ref().unwrap().params.clone();
+    assert_eq!(params["effects"], json!(["focus_blur"]), "the effect is offered ticked: {params}");
+    d.click("removeAttributes.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "closed on OK");
+    assert!(d.v1(0).effect("focus_blur").is_none(), "the effect is removed");
+}
+
+/// The effects Essential Sound adds are not offered: Remove Attributes keeps them, so a ticked box
+/// for one would promise a removal that does not happen. The same effect added by hand is offered.
+#[test]
+fn remove_attributes_dialog_leaves_out_essential_sound_effects() {
+    let mut d = Driver::new();
+    let a1 = |d: &mut Driver| d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let clip = a1(&mut d).id;
+    d.exec("essentialSound.setType", json!({"clips": [clip.0], "type": "dialogue"}));
+    d.exec("essentialSound.set", json!({"clips": [clip.0], "values": {"repair.noise.on": true, "clarity.eq.on": true}}));
+    let essential: Vec<String> = a1(&mut d).effects.iter().filter(|e| e.essential).map(|e| e.effect.clone()).collect();
+    assert!(!essential.is_empty(), "Dialogue adds its effects");
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    let offered = d.app().ui.clip_dialog.as_ref().unwrap().params["effects"].clone();
+    assert_eq!(offered, json!([]), "Essential Sound's effects are not offered: {offered}");
+    for id in &essential {
+        assert!(!d.has(&format!("removeAttributes.effect.{id}")), "{id}");
+    }
+    d.click("removeAttributes.ok");
+    assert_eq!(a1(&mut d).effects.iter().filter(|e| e.essential).count(), essential.len(), "OK keeps them");
+    // the same effect added from the Effects panel is offered and removed
+    let manual = essential[0].clone();
+    d.exec("effects.apply", json!({"clips": [clip.0], "effect": manual}));
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["effects"], json!([manual]));
+    d.click("removeAttributes.ok");
+    let left = a1(&mut d);
+    assert_eq!(left.effects.iter().filter(|e| e.effect == manual).count(), 1, "the Essential Sound one stays");
+    assert!(left.effects.iter().filter(|e| e.effect == manual).all(|e| e.essential));
+}
+
 #[test]
 fn make_subclip_frame_hold_and_audio_channel_dialogs() {
     let mut d = Driver::new();
