@@ -23,6 +23,8 @@ impl FilmcraftApp {
     /// Build the app around one shared `FrameServer`, falling back to the default language on an unparsable preference, loading workspaces from the prefs
     /// directory and seeding IME epoch/sequence identity.
     pub fn new(mut session: Session) -> Self {
+        // This host polls the background EffectCraft renders (see `tick_media_refresh`).
+        session.ec_background = true;
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
@@ -112,6 +114,8 @@ impl FilmcraftApp {
             bindings_rev: 0,
             menu_sent: Vec::new(),
             shortcut_editor: Default::default(),
+            toast: None,
+            ec_prompt: None,
             graphics_notice: None,
             tl: Default::default(),
             transcript_cache: Default::default(),

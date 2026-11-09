@@ -146,7 +146,7 @@ pub struct Entry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
-    /// `folder` | `video` | `audio` | `image` | `project` | `caption`.
+    /// `folder` | `video` | `audio` | `image` | `project` | `caption` | `effectcraft`.
     pub kind: &'static str,
     pub size: Option<u64>,
     pub modified: Option<u64>,
@@ -171,6 +171,9 @@ pub fn kind_of(name: &str) -> Option<&'static str> {
         Some("project")
     } else if CAPTION_EXTENSIONS.contains(&e.as_str()) {
         Some("caption")
+    } else if e == "ecproj" {
+        // An EffectCraft project: listed under All Supported Files, opened in EffectCraft.
+        Some("effectcraft")
     } else {
         None
     }

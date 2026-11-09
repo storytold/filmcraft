@@ -206,8 +206,98 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
     items
 }
 
+/// The question Replace With EffectCraft Composition asks when the files of an earlier replacement
+/// exist: Overwrite them, or Keep Old and write numbered files (`-2`, `-3`...) beside them.
+/// Automation ids: `effectcraft.prompt.overwrite`, `effectcraft.prompt.keepOld`,
+/// `effectcraft.prompt.cancel`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn show_effectcraft_prompt(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some((params, files)) = app.ec_prompt.clone() else { return };
+    let mut choice: Option<&'static str> = None;
+    let mut elems: Vec<(&str, egui::Rect, &str)> = Vec::new();
+    egui::Window::new(tl!("Replace With EffectCraft Composition"))
+        .id(egui::Id::unique("effectcraft-prompt"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.label(tl!("Files from an earlier replacement of this clip already exist:"));
+            for f in &files {
+                ui.label(egui::RichText::new(f).small().monospace());
+            }
+            ui.add_space(6.0);
+            ui.label(tl!("Overwrite them, or keep them and write new files beside them (numbered -2, -3, …)?"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let o = ui.button(tl!("Overwrite"));
+                elems.push(("effectcraft.prompt.overwrite", o.rect, "Overwrite"));
+                if o.clicked() {
+                    choice = Some("overwrite");
+                }
+                let k = ui.button(tl!("Keep Old"));
+                elems.push(("effectcraft.prompt.keepOld", k.rect, "Keep Old"));
+                if k.clicked() {
+                    choice = Some("keepOld");
+                }
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("effectcraft.prompt.cancel", c.rect, "Cancel"));
+                if c.clicked() {
+                    choice = Some("cancel");
+                }
+            });
+        });
+    for (id, r, label) in elems {
+        app.auto.add(id, r, label);
+    }
+    if choice.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.pointer.any_down()) {
+        choice = Some("cancel");
+    }
+    if let Some(c) = choice {
+        app.ec_prompt = None;
+        if c != "cancel" {
+            let mut again = params;
+            again["existing"] = json!(c);
+            // Errors and the "rendering" message are shown by `invoke` itself.
+            let _ = invoke(app, ctx, "effectcraft.replaceClip", again);
+        }
+    }
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // EffectCraft links run outside programs and can fail for reasons the user can fix (the tools
+    // not found, a render error): say so in a toast, not only in the status line.
+    if id.starts_with("effectcraft.") {
+        // The render of a long clip takes a while: do it in the background and say so.
+        if id == "effectcraft.replaceClip"
+            && let Some(o) = params.as_object_mut()
+        {
+            o.entry("background").or_insert(json!(true));
+        }
+        let sent = params.clone();
+        let r = app.session.execute(id, params).map_err(|e| e.to_string());
+        match &r {
+            // The files of an earlier replacement exist: ask what to do with them.
+            Ok(v) if v["needsDecision"] == json!("exists") => {
+                let mut again = sent;
+                again["clip"] = v["clip"].clone();
+                let files = v["paths"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                app.ec_prompt = Some((again, files));
+            }
+            Ok(v) if v["started"] == json!(true) => {
+                app.toast = Some((tl!("Rendering the EffectCraft composition… the clip is replaced when it is done").to_string(), ctx.input(|i| i.time)))
+            }
+            Ok(v) if v["openError"].is_string() => app.toast = Some((v["openError"].as_str().unwrap_or_default().to_string(), ctx.input(|i| i.time))),
+            Ok(_) => {}
+            Err(e) => {
+                app.ui.status = e.clone();
+                app.toast = Some((e.clone(), ctx.input(|i| i.time)));
+            }
+        }
+        return r;
+    }
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
