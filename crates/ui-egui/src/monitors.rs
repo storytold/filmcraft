@@ -25,7 +25,7 @@ pub struct Display {
 pub type DisplayList = dyn Fn() -> Vec<Display>;
 
 /// How often the OS is asked which displays exist, in seconds.
-const POLL_SECS: f64 = 2.0;
+pub(crate) const POLL_SECS: f64 = 2.0;
 /// Displays kept; a real desktop has a handful.
 const MAX_MONITORS: usize = 16;
 /// The largest side of a display kept, in points. Larger is a bad report.
