@@ -62,7 +62,9 @@ pub struct MxfSource {
 /// Picture order counts of AVC access units (Annex B), in stored order, as presentation
 /// positions: the rank of (IDR period, POC) (8.2.1.1, picture order count type 0; types 1 and 2
 /// never reorder for the streams written by AVC encoders we have seen, so they keep stored order).
-pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
+///
+/// `heads` is consumed one access unit at a time, so a long stream need not hold every head at once.
+pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>) -> Option<Vec<i64>> {
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
     use filmcraft_h264::params::{Pps, Sps};
     use filmcraft_h264::slice::{NalHeader, SliceHeader};
@@ -70,10 +72,10 @@ pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
     let mut ppss: Vec<Option<Pps>> = vec![None; 256];
     let (mut prev_msb, mut prev_lsb) = (0i64, 0i64);
     let mut period = 0i64;
-    let mut keys: Vec<(i64, i64)> = Vec::with_capacity(heads.len());
-    for (i, h) in heads.iter().enumerate() {
+    let mut keys: Vec<(i64, i64)> = Vec::new();
+    for (i, h) in heads.into_iter().enumerate() {
         let mut key = None;
-        for nal in annexb_nals(h) {
+        for nal in annexb_nals(h.as_ref()) {
             let Ok(hdr) = NalHeader::parse(nal[0]) else { continue };
             let rbsp = unescape_rbsp(&nal[1..]);
             match hdr.nal_unit_type {
@@ -191,6 +193,30 @@ fn start_frames(tc: &Timecode, rate: FrameRate) -> i64 {
     ((n + d / 2) / d) as i64
 }
 
+/// [`avc_presentation_order`] over the first `cap` bytes of every picture, read lazily one at a
+/// time. A failed read is an error; `Ok(None)` means only that a slice header was unreadable.
+fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[filmcraft_mxf::Sample], cap: usize) -> crate::Result<Option<Vec<i64>>> {
+    let mut failed = None;
+    let heads = samples.iter().map_while(|s| match filmcraft_media::reader::read_range(r, s.offset, (s.size as usize).min(cap)) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            failed = Some(CodecError::Container(format!("MXF: reading the picture at offset {}: {e}", s.offset)));
+            None
+        }
+    });
+    let order = avc_presentation_order(heads);
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(order),
+    }
+}
+
+/// Bytes read from the front of every picture to find its slice header when the index has no
+/// temporal offsets (`avc_presentation_order`), and the longer read for pictures where that is
+/// not enough.
+const AVC_ORDER_HEAD: usize = 2 << 10;
+const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -229,13 +255,15 @@ impl MxfSource {
             vpts = t.samples.iter().map(|s| s.pts).collect();
             vorder = t.display_order.clone();
             if t.needs_reorder && matches!(t.codec, Codec::Avc { .. }) {
-                let heads: Vec<Vec<u8>> = (0..t.samples.len())
-                    .map(|i| {
-                        let s = t.samples[i];
-                        filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(16 << 10)).unwrap_or_default()
-                    })
-                    .collect();
-                match avc_presentation_order(&heads) {
+                // Only the slice headers are needed. The first picture of a stream has its
+                // parameter sets and SEI in front of the slice, so read a short head of every
+                // picture first and the long one only if some slice header does not fit.
+                let order = match avc_order_from_samples(&*bytes.0, &t.samples, AVC_ORDER_HEAD)? {
+                    Some(o) => Some(o),
+                    None if t.samples.iter().all(|s| s.size as usize <= AVC_ORDER_HEAD) => None,
+                    None => avc_order_from_samples(&*bytes.0, &t.samples, AVC_ORDER_HEAD_MAX)?,
+                };
+                match order {
                     Some(pts) => {
                         vorder = vec![0; pts.len()];
                         for (s, &d) in pts.iter().enumerate() {
@@ -321,6 +349,7 @@ impl MxfSource {
                 has_alpha: p.alpha_depth > 0,
                 bitrate: (secs > 0.0).then(|| (bytes_total as f64 * 8.0 / (t.samples.len().max(1) as f64 / rate.as_f64().max(1e-9))) as u64),
                 hdr: None,
+                color_assumed: Some(filmcraft_color::ColorAssumed::ALL),
             });
         }
         // Audio: all PCM sound tracks of the first track's rate, channels in track order
@@ -546,5 +575,22 @@ mod tests {
         let f = start_frames(&df, FrameRate::FPS_23_976);
         let secs = f as f64 * 1001.0 / 24000.0;
         assert!((secs - 107_892.0 * 1001.0 / 30000.0).abs() < 0.05, "{secs}");
+    }
+
+    struct Failing;
+    impl filmcraft_media::ByteReader for Failing {
+        fn len(&self) -> u64 {
+            1 << 20
+        }
+        fn read_at(&self, _: u64, _: &mut [u8]) -> std::io::Result<()> {
+            Err(std::io::Error::other("disk gone"))
+        }
+    }
+
+    #[test]
+    fn failed_picture_head_read_is_an_error() {
+        let samples = [filmcraft_mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false }];
+        let e = avc_order_from_samples(&Failing, &samples, AVC_ORDER_HEAD).unwrap_err();
+        assert!(matches!(e, CodecError::Container(ref m) if m.contains("disk gone")), "{e}");
     }
 }

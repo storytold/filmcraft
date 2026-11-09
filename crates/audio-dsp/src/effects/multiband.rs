@@ -17,7 +17,7 @@ fn smooth(env: &mut f32, target: f32, att: f32, rel: f32) {
     // Gains in dB (≤ 0): falling = attack, rising = release.
     let c = if target < *env { att } else { rel };
     *env = c * *env + (1.0 - c) * target;
-    if env.abs() < 1e-7 {
+    if !(1e-7..=f32::MAX).contains(&env.abs()) {
         *env = 0.0;
     }
 }
@@ -598,14 +598,14 @@ impl AudioEffect for TubeCompressor {
         for i in 0..n {
             let sq = channels.iter().fold(0.0f32, |a, ch| a.max(ch[i] * ch[i]));
             self.ms = self.rms_c * self.ms + (1.0 - self.rms_c) * sq;
-            if self.ms < 1e-30 {
+            if !(1e-30..=f32::MAX).contains(&self.ms) {
                 self.ms = 0.0;
             }
             let l = 10.0 * self.ms.max(1e-20).log10();
             let target = compressor_curve(l, t, r, TUBE_KNEE) - l;
             // Program-dependent release: long, sustained reduction releases more slowly.
             self.slow = slow_c * self.slow + (1.0 - slow_c) * self.env;
-            if self.slow.abs() < 1e-7 {
+            if !(1e-7..=f32::MAX).contains(&self.slow.abs()) {
                 self.slow = 0.0;
             }
             let rel = self.rel + (self.slow / -20.0).clamp(0.0, 1.0) * (1.0 - self.rel) * 0.5;

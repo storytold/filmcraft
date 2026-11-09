@@ -214,9 +214,10 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
         ItemKind::Sequence(q) => (q.mark_in, q.mark_out),
         _ => (None, None),
     };
+    // `mark_out` is the start of the last frame kept, as edits and the Project panel read it
     if let (Some(i), Some(o)) = marks {
         add("Clip", "In Point", tc(start + i, rate), false);
-        add("Clip", "Out Point", tc(start + o - rate.frame_duration(), rate), false);
+        add("Clip", "Out Point", tc(start + o, rate), false);
     }
     if let Some(v) = media.and_then(|m| m.info.video.as_ref()) {
         add("Clip", "Video Info", format!("{} x {} ({:.4})", v.width, v.height, v.par.0 as f64 / v.par.1.max(1) as f64), false);
@@ -386,7 +387,17 @@ fn notes_set(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------ registry
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
-    let q = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false };
+    let q = |id, label, params, run| CommandSpec {
+        id,
+        label,
+        menu: &[],
+        shortcut: None,
+        params,
+        enabled: always,
+        run,
+        journal: false,
+        named: crate::commands::NamedKeys::NONE,
+    };
     vec![
         q("events.list", "List Events", r#"{"level":"info|warning|error"?,"since":id?}"#, events_list),
         CommandSpec {
@@ -402,6 +413,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"cleared": n}))
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         q("metadata.get", "Get Metadata", r#"{"item":id?,"clip":id?}"#, metadata_get),
         CommandSpec {
@@ -413,6 +425,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: metadata_set,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         q("project.notes", "Get Project Notes", "{}", notes_get),
         CommandSpec {
@@ -424,6 +437,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: notes_set,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }
