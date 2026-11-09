@@ -917,8 +917,8 @@ fn effect_controls_delete_key_removes_every_selected_keyframe() {
     assert_eq!((d.scale(&clip).0.len(), d.parameter(&clip, "motion", "position").keyframes.len()), (2, 1), "undo restores every deleted keyframe");
 }
 
-/// Delete in Effect Controls with nothing selected does nothing: it must not fall through to the
-/// application-wide Clear and delete the selected timeline clip, nor touch the keyframes or history.
+/// Delete and Backspace in Effect Controls with nothing selected do nothing: neither falls through
+/// to the application-wide Clear and deletes the selected timeline clip, nor touches keyframes or history.
 #[test]
 fn effect_controls_delete_with_no_selection_leaves_the_clip_and_keyframes() {
     let (mut d, clip) = Driver::demo();
@@ -932,24 +932,24 @@ fn effect_controls_delete_with_no_selection_leaves_the_clip_and_keyframes() {
     let selected = d.ok("ui.inspect", json!({}))["ui"]["keyframe_selection"].as_array().map_or(0, Vec::len);
     assert_eq!(selected, 0, "no keyframe is selected");
     let undo_before = d.undo_len();
-    d.ok("ui.key", json!({"key": "Delete"}));
-    d.frames(3);
-    assert_eq!(d.scale(&clip).0, scale_before, "the keyframes are untouched");
-    assert_eq!(items(&mut d), clips_before, "the selected timeline clip is not deleted");
-    assert_eq!(d.undo_len(), undo_before, "no undo step was created");
+    for key in ["Delete", "Backspace"] {
+        d.ok("ui.key", json!({ "key": key }));
+        d.frames(3);
+        assert_eq!(d.scale(&clip).0, scale_before, "{key}: the keyframes are untouched");
+        assert_eq!(items(&mut d), clips_before, "{key}: the selected timeline clip is not deleted");
+        assert_eq!(d.undo_len(), undo_before, "{key}: no undo step was created");
+    }
 }
 
-/// A shortcut set saved before this change has no Effect Controls keyframe-delete binding, so Delete
-/// there falls to the application-wide Clear (which deletes the clip). Even then, with keyframes
-/// selected it deletes the keyframes, not the clip: Clear / Ripple Delete are intercepted in the panel.
+/// A legacy / customized shortcut set can map Delete to a clip-deleting command — here
+/// `timeline.delete` — with no Effect Controls keyframe binding at all. Delete there must still remove
+/// the selected keyframes, never the clip: the key is handled before command dispatch.
 #[test]
-fn effect_controls_delete_without_the_panel_binding_still_spares_the_clip() {
+fn effect_controls_delete_spares_the_clip_when_delete_maps_to_timeline_delete() {
     let (mut d, clip) = Driver::demo();
-    // A Premiere-compatible set binds Delete to Clear application-wide; dropping the Effect Controls
-    // keyframe-delete binding mimics such a set customized before this change existed, so Delete there
-    // reaches the clip-deleting Clear.
-    d.exec("shortcuts.loadPreset", json!({"name": "Premiere Pro Compatible"}));
-    d.exec("shortcuts.clear", json!({"command": "effects.deleteKeyframes"}));
+    // Bind Delete to timeline.delete (which deletes the selected clip): the legacy route the key guard
+    // must catch before any command runs.
+    d.exec("shortcuts.set", json!({"command": "timeline.delete", "keys": "Delete"}));
     d.frames(2);
     three_keyframes_first_easing_in(&mut d, &clip);
     let scale_times = d.scale(&clip).0;
@@ -965,6 +965,30 @@ fn effect_controls_delete_without_the_panel_binding_still_spares_the_clip() {
     d.frames(2);
     d.ok("ui.key", json!({"key": "Delete"}));
     d.frames(3);
-    assert_eq!(items(&mut d), clips_before, "the clip is not deleted even without the panel binding");
+    assert_eq!(items(&mut d), clips_before, "the clip is not deleted, though Delete maps to timeline.delete");
+    assert!(!d.scale(&clip).0.contains(&scale_times[0]), "the selected keyframe was deleted instead");
+}
+
+/// Shift+Delete (Ripple Delete) carries a modifier, so it passes the plain-key guard and reaches
+/// dispatch; the command backstop then makes it delete the selected keyframes in Effect Controls,
+/// not ripple-delete the clip.
+#[test]
+fn effect_controls_shift_delete_spares_the_clip() {
+    let (mut d, clip) = Driver::demo();
+    three_keyframes_first_easing_in(&mut d, &clip);
+    let scale_times = d.scale(&clip).0;
+    let effect = {
+        let s = &d.harness.state().session;
+        let it = s.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1;
+        it.effects.iter().position(|e| e.effect == "motion").unwrap()
+    };
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().len();
+    let clips_before = items(&mut d);
+    let sel = json!([{"clip": clip.id, "effect": effect, "param": "scale", "time": scale_times[0]}]);
+    d.ok("ui.set", json!({"keyframeSelection": sel, "focused": "EffectControls"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Shift+Delete"}));
+    d.frames(3);
+    assert_eq!(items(&mut d), clips_before, "Shift+Delete does not ripple-delete the clip from Effect Controls");
     assert!(!d.scale(&clip).0.contains(&scale_times[0]), "the selected keyframe was deleted instead");
 }

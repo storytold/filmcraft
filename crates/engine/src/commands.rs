@@ -3922,7 +3922,7 @@ fn build() -> Vec<CommandSpec> {
             "Delete Keyframes",
             [],
             None,
-            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}]}"#,
+            r#"{"keyframes":[{"clip":id,"effect":str|index,"param":str,"mask":n?,"mediaTime":ticks}]} (as effects.deleteKeyframe; `time` also accepted)"#,
             has_seq,
             crate::keyframe_move::delete_many
         ),
