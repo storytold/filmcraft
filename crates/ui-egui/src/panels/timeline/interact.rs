@@ -4,7 +4,7 @@ use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker
 use super::snap::{snap, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_rect,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_flag_at,
     marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
 
@@ -398,7 +398,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
 
 /// A press on a marker's flag drags the marker; elsewhere on the ruler it scrubs (#4491).
 fn ruler_drag(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, p: Pos2, t: Tick) -> Drag {
-    match seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(p)) {
+    match marker_flag_at(seq, layout, p) {
         Some(m) => Drag::Marker { id: m.id, from: t, start: m.start, to: m.start },
         None => Drag::Scrub { initial: app.session.playhead() },
     }
@@ -776,14 +776,11 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             Drag::Marker { id, from, start, .. } => {
                 let raw = rate.snap_nearest(start + (t_here - from)).max(Tick::ZERO);
-                // its own start (and the playhead parked on it) would hold it there: snap elsewhere only
-                let snapped = snap(app, seq, layout, raw, &[]);
-                let to = if snapped == start && raw != start {
-                    app.tl.snap_x = None;
-                    raw
-                } else {
-                    snapped
-                };
+                // not onto the playhead (parked on the marker by the press) nor the marker's own
+                // start, or it would stick there; a target between frames lands on its frame
+                let snapped = snap_playhead(app, seq, layout, raw);
+                let to = if snapped == start { raw } else { rate.snap_nearest(snapped) };
+                app.tl.snap_x = (to != raw).then(|| layout.x_of(to));
                 Some(Drag::Marker { id, from, start, to })
             }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),

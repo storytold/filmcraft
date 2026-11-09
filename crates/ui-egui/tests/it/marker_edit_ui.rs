@@ -57,6 +57,20 @@ impl Driver {
         self.ok("ui.elements", json!({"prefix": id})).as_array().is_some_and(|v| v.iter().any(|e| e["id"] == id))
     }
 
+    /// The screen rect of a marker's flag on the Timeline ruler: x, y, width, height.
+    fn flag(&mut self, id: u64) -> [f64; 4] {
+        let flag = format!("timeline.marker.{id}");
+        let e = self.ok("ui.elements", json!({"prefix": flag}));
+        let r = e.as_array().unwrap().iter().find(|e| e["id"] == flag.as_str()).unwrap()["rect"].clone();
+        [0, 1, 2, 3].map(|i| r[i].as_f64().unwrap())
+    }
+
+    /// Drags with the primary button from `from`, `dx` px sideways, and lets the release land.
+    fn drag(&mut self, from: (f64, f64), dx: f64) {
+        self.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + dx, "y": from.1}, "steps": 8}));
+        self.frames(3);
+    }
+
     fn marker(&self, id: u64) -> filmcraft_project::Marker {
         self.harness.state().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone()
     }
@@ -145,14 +159,12 @@ fn dragging_a_marker_flag_moves_the_marker() {
     d.exec("sequence.snap", json!({"on": false}));
     let id = d.setup();
     let before = d.marker(id).start;
-    let flag = format!("timeline.marker.{id}");
-    let e = d.ok("ui.elements", json!({"prefix": flag}));
-    let r = e.as_array().unwrap().iter().find(|e| e["id"] == flag.as_str()).unwrap()["rect"].clone();
-    let (x, y) = (r[0].as_f64().unwrap() + r[2].as_f64().unwrap() / 2.0, r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0);
+    let r = d.flag(id);
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
     let tick_at = |d: &mut Driver, x: f64| d.ok("ui.timeline.hit", json!({"x": x, "y": y}))["time"].as_i64().unwrap();
     let delta = tick_at(&mut d, x + 120.0) - tick_at(&mut d, x);
-    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 120.0, "y": y}, "steps": 8}));
-    d.frames(3);
+    let undo_before = d.harness.state().session.history.undo.len();
+    d.drag((x, y), 120.0);
     let rate = d.harness.state().session.sequence_rate();
     let after = d.marker(id).start;
     assert!((after.0 - (before.0 + delta)).abs() <= rate.frame_duration().0, "the marker follows the pointer: {before:?} -> {after:?}, moved {delta}");
@@ -161,4 +173,44 @@ fn dragging_a_marker_flag_moves_the_marker() {
     // within a frame: the playhead shows a whole frame, and 2 s is not one at the demo's 23.976
     assert!((playhead.0 - before.0).abs() <= rate.frame_duration().0, "the playhead stays on the press, not dragged along: {playhead:?}");
     assert_eq!(d.harness.state().session.history.undo.last().map(|u| u.0.as_str()), Some("Edit Markers"));
+    assert_eq!(d.harness.state().session.history.undo.len(), undo_before + 1, "one drag is one undo step");
+}
+
+/// #4491: the bottom of a flag reaches into the work area bar's row; a drag there moves the marker,
+/// not the bar.
+#[test]
+fn a_marker_flag_over_the_work_area_bar_drags_the_marker() {
+    let mut d = Driver::demo();
+    d.exec("sequence.snap", json!({"on": false}));
+    let id = d.setup();
+    let second = filmcraft_time::Tick::from_seconds_f64(1.0).0;
+    d.exec("sequence.setWorkArea", json!({"start": second, "end": 4 * second}));
+    d.frames(2);
+    let area = d.harness.state().session.active_sequence().unwrap().work_area;
+    let before = d.marker(id).start;
+    let r = d.flag(id);
+    // 0.5 px above the flag's bottom: inside the bar's hit row too
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] - 0.5);
+    assert_eq!(d.ok("ui.timeline.hit", json!({"x": x, "y": y}))["hit"], "ruler", "the flag wins over the bar");
+    d.drag((x, y), 120.0);
+    assert!(d.marker(id).start > before, "the marker moved");
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().work_area, area, "the bar stayed");
+}
+
+/// #4491: snapped onto another marker that starts between frames, the dragged marker lands on that
+/// marker's frame, not between frames.
+#[test]
+fn a_marker_snapped_to_an_off_frame_marker_lands_on_a_frame() {
+    let mut d = Driver::demo();
+    d.exec("sequence.snap", json!({"on": true}));
+    let id = d.setup();
+    let target = filmcraft_time::Tick::from_seconds_f64(6.0);
+    let other = d.exec("markers.add", json!({"time": target.0}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let rate = d.harness.state().session.sequence_rate();
+    assert_ne!(rate.snap_nearest(target), target, "6 s is between frames at the demo's rate");
+    let (r, o) = (d.flag(id), d.flag(other));
+    let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    d.drag((x, y), o[0] + o[2] / 2.0 + 2.0 - x);
+    assert_eq!(d.marker(id).start, rate.snap_nearest(target), "on the frame of the marker it snapped to");
 }
