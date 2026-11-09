@@ -1,6 +1,6 @@
 # filmcraft-scopes
 
-Video scope maths for the Lumetri Scopes panel (layer L3; depends only on `filmcraft-color` and
+Video scope maths for the Video Scopes panel (layer L3; depends only on `filmcraft-color` and
 `serde`; no UI, builds for wasm32). The UI (`crates/ui-egui/src/panels/scopes.rs`) draws what this
 crate computes; `scopes.read` (`crates/engine/src/scopes.rs`) returns it as numbers for agents.
 
