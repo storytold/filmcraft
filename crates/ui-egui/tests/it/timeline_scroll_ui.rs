@@ -830,7 +830,7 @@ fn both_slider_menus_keep_their_controls_flyouts() {
     assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
     d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));
     d.frames(2);
-    assert!(!d.app().session.state.timeline_ui.track_slider_snap, "the toggle changes the drag-release snapping setting");
+    assert!(d.app().session.state.timeline_ui.track_slider_snap, "an unavailable setting cannot be toggled as if it worked");
 }
 
 /// The Controls boxes: clicking one listens ("Enter Shortcut"), the next key becomes the binding

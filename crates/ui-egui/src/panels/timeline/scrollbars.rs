@@ -2784,14 +2784,14 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.session.state.timeline_ui.inverted_controls = !inv;
         app.session.project_view_changed();
     }
-    // Snap to Tracks is on by default and controls snapping when a dragged thumb is released.
+    // Track-boundary snapping is still under development. Keep the saved preference visible, but
+    // don't present a control that appears to work while the slider ignores it.
     let snap = app.session.state.timeline_ui.track_slider_snap;
-    let c = settings_pill_row(ui, &t, row_w, tl!("Snap to Tracks"), egui::Id::unique("timeline-track-slider-snap"), snap);
+    let c = ui
+        .add_enabled_ui(false, |ui| settings_pill_row(ui, &t, row_w, tl!("Snap to Tracks"), egui::Id::unique("timeline-track-slider-snap"), snap))
+        .inner
+        .on_hover_text("Track-boundary snapping is not available yet.");
     app.auto.add("timeline.trackSlider.settings.snapToTracks", c.rect, "Snap to Tracks");
-    if c.clicked() {
-        app.session.state.timeline_ui.track_slider_snap = !snap;
-        app.session.project_view_changed();
-    }
     // Decouple Edges: an end circle drag moves only that end, the other one stays put
     let dec = app.session.state.timeline_ui.track_slider_decouple;
     let c = settings_pill_row(ui, &t, row_w, tl!("Decouple Edges"), egui::Id::unique("timeline-track-slider-decouple"), dec);
