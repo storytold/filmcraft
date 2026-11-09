@@ -251,6 +251,21 @@ fn saving_without_previews_creates_no_previews_folder() {
 }
 
 #[test]
+fn render_selection_does_not_read_in_and_out() {
+    let (mut s, a) = session("sel-marks");
+    let seq = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    project.sequence_mut(seq).unwrap().mark_in = Some(Tick(-1));
+    s.project = std::sync::Arc::new(project);
+    assert!(s.execute("sequence.renderInToOut", json!({"wait": true})).is_err(), "In/Out rendering refuses a negative In point");
+    s.state.selection = vec![a];
+    let v = s.execute("sequence.renderSelection", json!({"wait": true})).unwrap();
+    assert_eq!(v["segments"], 1);
+    job_ok(&s, &v);
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+#[test]
 fn render_selection_and_audio_previews() {
     let (mut s, a) = session("sel");
     s.state.selection = vec![a];

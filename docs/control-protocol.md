@@ -181,8 +181,9 @@ the render bar inside the active sequence's work area, and `sequence.renderEntir
 `wait` defaults to `false`. `sequence.deleteWorkAreaRenderFiles` deletes every preview file that
 holds a frame inside the work area, except a file another sequence also uses, and returns
 `{deleted}`. All three return an error when the active sequence has no work area. `engine.execute`
-and `ui.menu.invoke` with a non-empty `params` object run the delete at once; `ui.menu.invoke`
-without params, the Sequence menu and a key open a confirmation first (ids
+always runs the delete at once, with or without params, and `ui.menu.invoke` with a non-empty
+`params` object also runs it at once; `ui.menu.invoke` without params, the Sequence menu and a key
+open a confirmation first (ids
 `sequence.deleteWorkAreaRenderFiles.ok|cancel`). While the Work Area Bar is on, the keys of
 `sequence.renderEffectsInToOut`, `sequence.renderInToOut` and `sequence.deleteRenderFilesInToOut`
 run the matching work-area command.

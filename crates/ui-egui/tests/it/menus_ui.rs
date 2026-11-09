@@ -433,9 +433,15 @@ fn work_area_menu_switches_and_in_out_keys_run_the_work_area_commands() {
     assert_eq!(press(&mut d, "Alt+Shift+F8"), in_out_error, "the key runs Render In to Out without the bar");
     assert_eq!(native(&mut d, "sequence.renderEffectsInWorkArea").unwrap_err(), in_out_error, "the work-area item runs In to Out without the bar");
     d.exec("sequence.workAreaBar", json!({"show": true}));
+    // A work area past the sequence's end has no frames to render.
+    let seq = d.app().session.state.active_sequence.unwrap();
+    let end = d.app().session.project.sequence(seq).unwrap().duration().0;
+    let frame = d.app().session.sequence_rate().frame_duration().0;
+    d.exec("sequence.setWorkArea", json!({"start": end, "end": end + frame}));
     assert_ne!(press(&mut d, "Enter"), in_out_error, "Enter runs Render Effects in Work Area with the bar");
     assert_ne!(press(&mut d, "Alt+Shift+F8"), in_out_error, "the key runs Render Entire Work Area with the bar");
     assert!(native(&mut d, "sequence.renderEffectsInToOut").is_ok(), "the In/Out item runs Render Effects in Work Area with the bar");
+    assert!(d.app().session.jobs.is_empty(), "a work area with no frames in it starts no render job");
     let shortcut = |d: &mut Driver, id: &str| -> Value {
         let menus = d.ok("ui.menu.list", json!({}));
         menus.as_array().unwrap().iter().find(|m| m["id"] == json!(id)).map(|m| m["shortcut"].clone()).unwrap_or_default()

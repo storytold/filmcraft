@@ -661,6 +661,8 @@ struct Todo {
 pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let (seq, range) = match mode {
         RenderMode::EffectsInWorkArea | RenderMode::EntireWorkArea => work_area(s)?,
+        // Render Selection takes whole segments and doesn't read the range.
+        RenderMode::Selection => (s.state.active_sequence.ok_or(EngineError::NoSequence)?, TimeRange::from_bounds(Tick::ZERO, Tick::ZERO)),
         _ => in_out(s)?,
     };
     let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
