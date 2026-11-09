@@ -430,3 +430,37 @@ fn hostile_colours_are_refused_before_anything_is_written() {
     assert!(!std::path::Path::new(&out).exists(), "nothing was written");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn words_per_line_changes_the_phrases_and_stays_in_range() {
+    let five: Vec<FxWord> = (0..5).map(|i| w("ab", i as f64 * 0.1, i as f64 * 0.1 + 0.1)).collect();
+    assert_eq!(phrases_with(&five, 4), phrases(&five), "4 is the default");
+    assert_eq!(phrases_with(&five, 2), vec![vec![0, 1], vec![2, 3], vec![4]]);
+    assert_eq!(phrases_with(&five, 1), vec![vec![0], vec![1], vec![2], vec![3], vec![4]]);
+    assert_eq!(phrases_with(&five, 5), vec![vec![0, 1, 2, 3, 4]]);
+    // out of range never panics: 0 acts as 1, a huge value as the most allowed
+    assert_eq!(phrases_with(&five, 0), phrases_with(&five, 1));
+    assert_eq!(phrases_with(&five, usize::MAX), phrases_with(&five, MAX_WORDS_PER_LINE));
+    // a longer line is not cut early by the letters
+    let eight: Vec<FxWord> = (0..8).map(|i| w("frases", i as f64 * 0.1, i as f64 * 0.1 + 0.1)).collect();
+    assert_eq!(phrases_with(&eight, 8), vec![(0..8).collect::<Vec<_>>()]);
+}
+
+#[test]
+fn send_writes_the_chosen_words_per_line_and_refuses_bad_values() {
+    let root = tmp("perline");
+    let b = bank(&root);
+    let fake = Arc::new(Fake { seen: Mutex::new(Vec::new()), outcome: Ok(0), write_mov: true });
+    let mut s = session_with_caption(Some(fake), &b);
+    let out = root.join("l").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out, "palavrasPorLinha": 2})).unwrap()["job"].as_u64().unwrap();
+    wait(&s, job);
+    let words: Value = serde_json::from_slice(&std::fs::read(format!("{out}/words.json")).unwrap()).unwrap();
+    assert!(words["phrases"].as_array().unwrap().iter().all(|p| p["words"].as_array().unwrap().len() <= 2));
+    let bad_out = root.join("bad").to_string_lossy().into_owned();
+    for v in [json!(0), json!(13), json!(-1), json!(2.5), json!("3"), json!(true), json!(u64::MAX)] {
+        assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": bad_out, "palavrasPorLinha": v})).is_err(), "{v}");
+    }
+    assert!(!std::path::Path::new(&bad_out).exists(), "nothing was written");
+    let _ = std::fs::remove_dir_all(root);
+}

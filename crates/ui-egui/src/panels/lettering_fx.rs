@@ -9,11 +9,13 @@
 //! order's progress and can cancel it. Putting the rendered `.mov` back on the timeline is not part
 //! of this window.
 //!
+//! The words per line (1 to 12) go to `lettering.fx.send` as `palavrasPorLinha`: they set how
+//! `words.json` is cut into lines.
 //! The colours (text, outline, spoken word, highlight words) start as the style's own; a changed one
 //! goes to `lettering.fx.send` as `cores`.
 //!
 //! Automation ids: `letteringFx.word.<index>`, `letteringFx.template.<id>`, `letteringFx.send`,
-//! `letteringFx.color.<key>` (+ `.reset`),
+//! `letteringFx.perLine`, `letteringFx.color.<key>` (+ `.reset`),
 //! `letteringFx.cancel` (closes, or cancels the running order), `letteringFx.close`.
 
 use crate::widgets::CenteredDialog as _;
@@ -27,6 +29,9 @@ struct Template {
     name: String,
     description: String,
 }
+
+/// Words per line when the user does not change it (the engine's default).
+const DEFAULT_PER_LINE: u8 = 4;
 
 /// The colour options: the key sent in `cores` and the colour offered when it is changed.
 const COLORS: [(&str, [u8; 3]); 4] = [("texto", [255, 255, 255]), ("contorno", [0, 0, 0]), ("falada", [255, 214, 10]), ("destaque", [255, 255, 255])];
@@ -56,6 +61,8 @@ struct Draft {
     captions: Vec<u64>,
     words: Vec<String>,
     heroes: Vec<bool>,
+    /// Words per line (1 to 12; the default is 4).
+    per_line: u8,
     /// The colours the user changed, in [`COLORS`] order (`None`: the style's own).
     colors: [Option<[u8; 3]>; 4],
     templates: Vec<Template>,
@@ -114,7 +121,18 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
     ctx.data_mut(|m| {
         m.insert_temp(
             draft_id(),
-            Some(Draft { summary, captions, words, heroes: vec![false; n], colors: [None; 4], templates, template, problem, phase: Phase::Editing }),
+            Some(Draft {
+                summary,
+                captions,
+                words,
+                heroes: vec![false; n],
+                per_line: DEFAULT_PER_LINE,
+                colors: [None; 4],
+                templates,
+                template,
+                problem,
+                phase: Phase::Editing,
+            }),
         )
     });
     Ok(json!({"dialog": "letteringFx"}))
@@ -208,6 +226,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tl!("Words per line")).strong());
+            let r = ui.add(egui::DragValue::new(&mut d.per_line).range(1..=12));
+            elems.push(("letteringFx.perLine".into(), r.rect, "Words per line".into()));
+        });
+        ui.add_space(8.0);
         ui.label(egui::RichText::new(tl!("Colors (the style's own unless changed)")).strong());
         for (i, (key, start)) in COLORS.iter().enumerate() {
             let label = color_label(i);
@@ -266,7 +290,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if send && let Some(template) = d.template.clone() {
         let heroes: Vec<usize> = d.heroes.iter().enumerate().filter(|(_, h)| **h).map(|(i, _)| i).collect();
         let cores = cores_json(&d.colors);
-        match app.session.execute("lettering.fx.send", json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores})) {
+        match app.session.execute(
+            "lettering.fx.send",
+            json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores, "palavrasPorLinha": d.per_line}),
+        ) {
             Ok(v) => {
                 d.problem = None;
                 match v["job"].as_u64() {

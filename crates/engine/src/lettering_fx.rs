@@ -32,6 +32,8 @@ pub const MAX_WORDS: usize = 4000;
 pub const PAUSE_BREAK: f64 = 0.45;
 pub const MAX_PHRASE_WORDS: usize = 4;
 pub const MAX_PHRASE_LETTERS: usize = 22;
+/// Most words per line the user may ask for.
+pub const MAX_WORDS_PER_LINE: usize = 12;
 /// Largest `template.json` read.
 const MAX_TEMPLATE_JSON: u64 = 1 << 20;
 /// Default time an order may take.
@@ -373,6 +375,18 @@ fn heroes_p(p: &Value, cmd: &str) -> Result<Vec<usize>> {
 /// highlight words.
 pub const COLOR_KEYS: [&str; 4] = ["texto", "contorno", "falada", "destaque"];
 
+/// The `palavrasPorLinha` of a send: 1 to [`MAX_WORDS_PER_LINE`]; absent means the default.
+fn per_line_p(p: &Value, cmd: &str) -> Result<usize> {
+    match p.get("palavrasPorLinha") {
+        None | Some(Value::Null) => Ok(MAX_PHRASE_WORDS),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_WORDS_PER_LINE).contains(n))
+            .ok_or_else(|| bad(cmd, format!("`palavrasPorLinha` must be a whole number from 1 to {MAX_WORDS_PER_LINE}"))),
+    }
+}
+
 /// The `cores` of a send: an object from [`COLOR_KEYS`] to `#rrggbb`, only for the colours the user
 /// changed (the template's own colour stands for the others). Returns them normalised to lower case;
 /// anything else (an unknown key, a name, `#fff`, an alpha channel) is an error.
@@ -399,6 +413,14 @@ fn cores_p(p: &Value, cmd: &str) -> Result<serde_json::Map<String, Value>> {
 /// Splits the words into phrases (lists of word indices): sentence punctuation, a pause longer than
 /// [`PAUSE_BREAK`], more than [`MAX_PHRASE_WORDS`] words or [`MAX_PHRASE_LETTERS`] letters.
 pub fn phrases(words: &[FxWord]) -> Vec<Vec<usize>> {
+    phrases_with(words, MAX_PHRASE_WORDS)
+}
+
+/// [`phrases`] with `max_words` words per line (the letter limit grows with it, so a longer line is
+/// not cut early by the letters).
+pub fn phrases_with(words: &[FxWord], max_words: usize) -> Vec<Vec<usize>> {
+    let max_words = max_words.clamp(1, MAX_WORDS_PER_LINE);
+    let max_letters = MAX_PHRASE_LETTERS + max_words.saturating_sub(MAX_PHRASE_WORDS) * 8;
     let letters = |t: &str| t.chars().filter(|c| c.is_alphanumeric()).count();
     let mut out: Vec<Vec<usize>> = Vec::new();
     let mut cur: Vec<usize> = Vec::new();
@@ -409,7 +431,7 @@ pub fn phrases(words: &[FxWord]) -> Vec<Vec<usize>> {
             let p = &words[prev];
             let pause = w.start - p.end;
             let ends = p.text.trim_end().ends_with(['.', '!', '?', '…', ';', ':']);
-            if ends || pause > PAUSE_BREAK || cur.len() >= MAX_PHRASE_WORDS || cur_letters + n > MAX_PHRASE_LETTERS {
+            if ends || pause > PAUSE_BREAK || cur.len() >= max_words || cur_letters + n > max_letters {
                 out.push(std::mem::take(&mut cur));
                 cur_letters = 0;
             }
@@ -425,9 +447,14 @@ pub fn phrases(words: &[FxWord]) -> Vec<Vec<usize>> {
 
 /// The `words.json` of the order.
 pub fn words_json(sp: &Span) -> Value {
+    words_json_with(sp, MAX_PHRASE_WORDS)
+}
+
+/// [`words_json`] with `max_words` words per line.
+pub fn words_json_with(sp: &Span, max_words: usize) -> Value {
     let mut prev_end: Option<f64> = None;
     let mut phrases_json = Vec::new();
-    for group in phrases(&sp.words) {
+    for group in phrases_with(&sp.words, max_words) {
         let mut ws = Vec::new();
         for &i in &group {
             let Some(w) = sp.words.get(i) else { continue };
@@ -498,6 +525,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let mut sp = span(s, ID, captions_p(p, ID)?)?;
     mark_heroes(&mut sp.words, &heroes_p(p, ID)?, ID)?;
     let cores = cores_p(p, ID)?;
+    let per_line = per_line_p(p, ID)?;
     let dir = match p.get("out").and_then(Value::as_str) {
         Some(o) if o.contains('\0') || o.is_empty() => return Err(bad(ID, "invalid `out`")),
         Some(o) => o.to_string(),
@@ -511,7 +539,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let words_path = join(&dir, "words.json");
     let order_path = join(&dir, "pedido.json");
     let out = join(&dir, "lettering.mov");
-    let words = serde_json::to_vec_pretty(&words_json(&sp)).map_err(|e| EngineError::Other(e.to_string()))?;
+    let words = serde_json::to_vec_pretty(&words_json_with(&sp, per_line)).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut order_json = json!({"template": template, "palavras": words_path, "saida": out});
     if !cores.is_empty() {
         order_json["opcoes"] = json!({"cores": cores});
@@ -632,7 +660,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Send Lettering Order",
             menu: &[],
             shortcut: None,
-            params: r##"{"template":id,"heroes":[index]?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
+            params: r##"{"template":id,"heroes":[index]?,"palavrasPorLinha":1-12?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
             enabled: enabled_captions,
             run: send,
             journal: false,
