@@ -485,6 +485,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let div = Rect::from_min_max(pos2(full.min.x, split_y), pos2(full.max.x, split_y + DIVIDER_H));
     painter.rect_filled(div, 0.0, t.app_bg);
     let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::click_and_drag());
+    app.auto.add("timeline.avDivider", div, "Audio/video track divider");
     if div_resp.hovered() || div_resp.dragged() {
         ctx.set_cursor_icon(CursorIcon::ResizeVertical);
     }

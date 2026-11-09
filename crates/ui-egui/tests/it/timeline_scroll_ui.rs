@@ -886,3 +886,8 @@ fn control_channel_sets_and_reads_back_timeline_slider_preferences() {
     assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
 }
 
+#[test]
+fn timeline_audio_video_divider_has_an_automation_target() {
+    let mut d = Driver::demo();
+    assert!(d.app().auto.find("timeline.avDivider").is_some(), "the Timeline divider must be available to automation");
+}
