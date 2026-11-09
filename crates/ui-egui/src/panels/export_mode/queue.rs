@@ -1,3 +1,4 @@
+use super::settings::roomy;
 use super::{Align2, CUSTOM, Color32, FilmcraftApp, Rect, Reg, Tokens, Value, json, pos2, vec2};
 
 // ---------------------------------------------------------------------------------------------
@@ -16,7 +17,7 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
     let qtop = mf.max.y + 18.0;
     let n = app.session.export_queue.items.len();
     p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
-    let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
+    let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 46.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
     let now = app.now();
     let encoding: std::collections::HashMap<u64, String> = items
@@ -89,8 +90,9 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
     // footer
     let running = app.session.export_queue.running;
     let has_ready = items.iter().any(|i| i["status"] == "ready");
-    let foot = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.max.y - 34.0), pos2(rect.max.x - 8.0, rect.max.y - 6.0));
+    let foot = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.max.y - 40.0), pos2(rect.max.x - 8.0, rect.max.y - 6.0));
     let mut f = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    roomy(&mut f);
     let r = f.add_enabled(!running && has_ready, egui::Button::new(tl!("Start Queue")));
     reg.add("export.queue.start", r.rect, "Start Queue");
     if r.clicked() {
