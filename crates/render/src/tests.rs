@@ -221,6 +221,46 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// A Frame Blending clip plans as a GPU layer whose effect stage carries the next frame, and the
+/// plan draws what the reference renderer draws: with its opacity, with and without effects
+/// (#4589). Optical Flow stays a CPU layer.
+#[test]
+fn frame_blending_plans_the_next_frame_on_the_gpu_layer() {
+    let (mut p, _, ocean, seq, map) = setup();
+    let id = place(&mut p, seq, 0, ocean, 0, 48);
+    fn clip(p: &mut Project, seq: ItemId, id: filmcraft_project::ClipId) -> &mut filmcraft_project::TrackItem {
+        p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap().1
+    }
+    {
+        let it = clip(&mut p, seq, id);
+        it.speed = 0.5;
+        it.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+        it.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(70.0);
+    }
+    let r = FrameRate::FPS_24;
+    let mixed_layers = |p: &Project, f: i64| {
+        let plan = plan::plan_frame(p, seq, r.tick_of(f), RenderOptions::default(), plan::DeviceCaps::ALL, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("frame {f} should be GPU-drawable") };
+        let mixed = layers.iter().filter(|l| l.fx.as_ref().is_some_and(|x| x.mix.is_some())).count();
+        let (got, reference) = (plan::execute_cpu(&plan), render_sequence(p, seq, r.tick_of(f), RenderOptions::default(), &map));
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "frame {f}: max diff {max}");
+        mixed
+    };
+    for effects in [false, true] {
+        if effects {
+            clip(&mut p, seq, id).effects.push(filmcraft_project::find_effect("tint").unwrap().instance());
+        }
+        let mixed: usize = [1, 3, 10, 21].into_iter().map(|f| mixed_layers(&p, f)).sum();
+        assert!(mixed > 0, "effects {effects}: no frame mixed the next one on the GPU layer");
+    }
+    clip(&mut p, seq, id).time_interpolation = filmcraft_project::TimeInterpolation::OpticalFlow;
+    let plan = plan::plan_frame(&p, seq, r.tick_of(1), RenderOptions::default(), plan::DeviceCaps::ALL, &map);
+    let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("an Optical Flow frame still plans as layers") };
+    assert!(layers.iter().all(|l| l.fx.is_none()), "Optical Flow is drawn as a CPU canvas layer");
+}
+
 #[test]
 fn push_plan_preserves_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();

@@ -63,6 +63,24 @@ pub struct LayerFx {
     /// [`MediaSource::video_frame_unturned`]: filmcraft_media::MediaSource::video_frame_unturned
     pub turns: u8,
     pub ops: Vec<FxOp>,
+    /// Frame Blending: the next source frame, mixed into the frame's working image before `ops`
+    /// run, as `media_image` mixes the two on the CPU.
+    pub mix: Option<FrameMix>,
+}
+
+/// The next source frame of a Frame Blending layer ([`LayerFx::mix`]): the same size, turns and
+/// colour as the layer's frame, and its weight (0..1).
+#[derive(Clone, Debug)]
+pub struct FrameMix {
+    pub frame: Arc<VideoFrame>,
+    pub weight: f32,
+}
+
+/// The same frame (not equal pixels) at the same weight.
+impl PartialEq for FrameMix {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.frame, &other.frame) && self.weight == other.weight
+    }
 }
 
 impl PlanLayer {
@@ -588,13 +606,27 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let upright = |f: &VideoFrame| if turns % 2 == 1 { (f.height, f.width) } else { (f.width, f.height) };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
-        // media and other pipelines are converted on the CPU (below), and so are blended
-        // in-between frames (Frame Blending / Optical Flow on speed-changed or rate-conformed clips)
+        // media and other pipelines are converted on the CPU (below), and so are Optical Flow's
+        // in-between frames (on speed-changed or rate-conformed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
-        let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
-            && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none();
-        if plain && !chain.is_empty() {
+        // Frame Blending: the next frame, mixed into the effect stage's working image as
+        // `media_image` mixes it (None: no in-between frame; a next frame it would not mix in, as
+        // one of another size, is left out the same way). Some(None) is planned on the CPU.
+        let mix = match crate::media_interpolation(item, t, &src, seq.settings.frame_rate) {
+            None => Some(None),
+            Some(_) if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow => None,
+            Some((next, w)) => match src.video_frame_unturned(FrameRequest { time: next, scale: want }) {
+                // (decoded through the first frame's input transform, so it must share its colour)
+                Ok((f2, t2)) if (f2.width, f2.height, t2) == (frame.width, frame.height, turns) => {
+                    (f2.color == frame.color).then_some(Some(FrameMix { frame: f2, weight: w }))
+                }
+                _ => Some(None),
+            },
+        };
+        let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && mix.is_some();
+        let mix = mix.flatten();
+        if plain && (!chain.is_empty() || mix.is_some()) {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
             let (fw, fh) = upright(&frame);
@@ -618,7 +650,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, turns, ops };
+                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, turns, ops, mix };
                 out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
                 return;
             }
@@ -672,6 +704,9 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
 /// [`effect_image`] of a colour-managed layer ([`PlanLayer::input`]).
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
     let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
+    if let Some(m) = &fx.mix {
+        img = img.lerp(&turned(linear_image(&m.frame, fx.decimation.max(1) as usize, input), fx.turns), m.weight);
+    }
     for op in &fx.ops {
         op.apply(&mut img);
     }

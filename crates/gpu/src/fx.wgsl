@@ -55,6 +55,7 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_FRAME_MIX: u32 = 37u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -704,6 +705,12 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 acc += sample_clamped(pc.x + dx * t, pc.y + dy * t);
             }
             return acc / f32(steps);
+        }
+        case OP_FRAME_MIX: {
+            // Frame Blending: src is the frame's working image, aux the next frame's, mixed as
+            // `Image::lerp` mixes them
+            let a = ld(p);
+            return a + (textureLoad(aux, p, 0) - a) * u.p0.x;
         }
         case OP_UNSHARP: {
             // src: the blurred image, aux: the original. Each colour channel on its own, as

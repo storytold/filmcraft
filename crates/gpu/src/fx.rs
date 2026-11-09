@@ -57,6 +57,7 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_FRAME_MIX: u32 = 37;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -86,6 +87,8 @@ struct Dispatch {
 pub(crate) struct FxJob {
     source_bg: wgpu::BindGroup,
     source_target: wgpu::TextureView,
+    /// Frame Blending: the next frame's source draw and the working image it is drawn onto.
+    mix_source: Option<(wgpu::BindGroup, wgpu::TextureView)>,
     dispatches: Vec<Dispatch>,
     /// The texture holding the result.
     pub(crate) result: wgpu::TextureView,
@@ -464,15 +467,17 @@ impl FxStage {
     }
 
     /// Prepare the passes of `fx`, whose source draw uses `source_bg` (a layer bind group whose
-    /// uniforms map the frame onto the working image). None when the working image does not fit
-    /// in a texture (the layer is then drawn without its effects — never larger than the source
-    /// frame, which would not have uploaded either).
+    /// uniforms map the frame onto the working image) and, for Frame Blending (`fx.mix`),
+    /// `mix_bg` the next frame's. None when the working image does not fit in a texture (the
+    /// layer is then drawn without its effects — never larger than the source frame, which would
+    /// not have uploaded either) or when `fx.mix` comes without `mix_bg`.
     pub(crate) fn job(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         fx: &LayerFx,
         source_bg: wgpu::BindGroup,
+        mix_bg: Option<wgpu::BindGroup>,
         dummy: &wgpu::TextureView,
     ) -> Option<FxJob> {
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
@@ -480,12 +485,27 @@ impl FxStage {
         if w > max || h > max {
             return None;
         }
+        let mix = match (&fx.mix, mix_bg) {
+            (Some(m), Some(bg)) => Some((m.weight, bg)),
+            (Some(_), None) => return None,
+            (None, _) => None,
+        };
         let all: Vec<Step> = fx.ops.iter().flat_map(|op| steps(op, w, h)).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
+        let n = if all.iter().any(|s| s.combine) || mix.is_some() { 3 } else { 2 };
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
-        let mut dispatches = Vec::with_capacity(all.len());
+        let mut dispatches = Vec::with_capacity(all.len() + 1);
         let mut cur = 0usize;
+        // Frame Blending: the next frame is drawn onto working image 1 and mixed with the frame's
+        // (0) into 2, where the effects start
+        let mut mix_source = None;
+        if let Some((weight, bg)) = mix {
+            let s = step(OP_FRAME_MIX, [0; 4], &[weight]);
+            let (src, aux, dst) = (views.first()?, views.get(1)?, views.get(2)?);
+            dispatches.push(Dispatch { run: false, bg: self.step_group(device, queue, &s, (w, h), src, dst, aux), groups: (w.div_ceil(16), h.div_ceil(16)) });
+            mix_source = Some((bg, aux.clone()));
+            cur = 2;
+        }
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
         for s in &all {
@@ -501,30 +521,7 @@ impl FxStage {
                 (_, _, Some(k)) => k,
                 _ => dummy,
             };
-            let mut bytes = Vec::with_capacity(128);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in &s.p {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fx-u"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buf, 0, &bytes);
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("fx"),
-                layout: &self.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
-                ],
-            });
+            let bg = self.step_group(device, queue, s, (w, h), views.get(cur)?, views.get(dst)?, aux);
             let groups = if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
                 (lines.div_ceil(64), 1)
@@ -540,19 +537,61 @@ impl FxStage {
         Some(FxJob {
             source_bg,
             source_target: views.first()?.clone(),
+            mix_source,
             dispatches,
             result: views.get(cur)?.clone(),
             result_texture: targets.get(cur)?.0.clone(),
         })
     }
 
-    /// Record a job (source draw, then its compute passes) into `enc`.
+    /// The bind group of one compute pass of `s` on a `size` working image: `src` read, `dst`
+    /// written, `aux` the extra input (the original image, a kernel, or the dummy).
+    #[expect(clippy::too_many_arguments, reason = "a pass's device, uniforms and its three images")]
+    fn step_group(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        s: &Step,
+        size: (u32, u32),
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        aux: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut bytes = Vec::with_capacity(128);
+        for v in [s.code, size.0, size.1, 0].iter().chain(&s.i1) {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &s.p {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-u"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, &bytes);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fx"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+            ],
+        })
+    }
+
+    /// Record a job (source draw, the next frame's for Frame Blending, then its compute passes)
+    /// into `enc`.
     pub(crate) fn record(&self, enc: &mut wgpu::CommandEncoder, job: &FxJob) {
-        {
+        let sources = std::iter::once((&job.source_bg, &job.source_target)).chain(job.mix_source.as_ref().map(|(bg, view)| (bg, view)));
+        for (bg, view) in sources {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fx-source"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &job.source_target,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
@@ -563,7 +602,7 @@ impl FxStage {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.source);
-            pass.set_bind_group(0, &job.source_bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.draw(0..6, 0..1);
         }
         if job.dispatches.is_empty() {
