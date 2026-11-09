@@ -30,6 +30,23 @@ fn start(s: &mut Session, data: &std::path::Path) {
     s.start_autosave(cfg).unwrap();
 }
 
+#[test]
+fn view_only_changes_do_not_write_recovery_snapshots() {
+    let d = temp_dir("view-only-recovery");
+    let mut s = Session::default();
+    start(&mut s, &d);
+
+    s.view_changed();
+    s.sync_persistence();
+
+    let persistence = s.persistence.as_ref().unwrap();
+    assert_eq!(persistence.flush().unwrap(), None);
+    assert!(!persistence.session_dir.join("snapshot.fcproj").exists());
+
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision
