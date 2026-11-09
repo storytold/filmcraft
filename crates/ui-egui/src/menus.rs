@@ -221,6 +221,18 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
+    // Copy with keyframes selected in the Timeline or Effect Controls copies them, not the clips (#3562)
+    if id == "edit.copy"
+        && params.as_object().is_none_or(|m| m.is_empty())
+        && let Some(keys) = selected_keyframes(app)
+    {
+        let r = invoke(app, ctx, "edit.copyKeyframes", keys);
+        if r.is_ok() {
+            // files already on the OS clipboard must not win the next Paste over these keyframes
+            remember_stale_clipboard_media(app);
+        }
+        return r;
+    }
     // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
     if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
@@ -954,6 +966,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "edit.copy" => it.enabled |= selected_keyframes(app).is_some(),
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {
@@ -967,6 +980,18 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
+}
+
+/// The `edit.copyKeyframes` parameters for the keyframes Copy takes instead of clips (#3562): those
+/// selected on the Timeline's lanes or in Effect Controls, while one of those panels has focus.
+fn selected_keyframes(app: &FilmcraftApp) -> Option<Value> {
+    if !matches!(app.ui.focused, PanelKind::Timeline | PanelKind::EffectControls) {
+        return None;
+    }
+    let clip = app.ui.keyframe_selection.iter().filter_map(|k| serde_json::to_value(k).ok());
+    let track = app.ui.track_keyframe_selection.iter().filter_map(|k| serde_json::to_value(k).ok());
+    let keys: Vec<Value> = clip.chain(track).collect();
+    (!keys.is_empty()).then(|| json!({"keyframes": keys}))
 }
 
 /// Checkmark state of the engine's on/off menu commands (`{"on":bool?}`, toggled when invoked from a

@@ -249,3 +249,44 @@ fn volume_keyframes_on_the_timeline() {
     d.click(&format!("{id}.kf.0.delete"));
     assert_eq!(d.level(pair.audio).1, keys[1..]);
 }
+
+/// Copy and paste of Volume keyframes on the Timeline (#3562): a click selects a keyframe (Shift
+/// adds one), Cmd+C copies them, and Cmd+V puts them at the playhead on the selected clip with
+/// their levels and spacing.
+#[test]
+fn volume_keyframes_copy_and_paste_on_the_timeline() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let id = format!("timeline.clip.{}.volume", pair.audio);
+    let clip = d.rect(&format!("timeline.clip.{}", pair.audio));
+    let (_, y) = centre(d.rect(&id));
+    d.ok("ui.set", json!({"tool": "Pen"}));
+    for f in [0.3, 0.6] {
+        d.ok("ui.click", json!({"x": clip[0] + clip[2] * f, "y": y}));
+        d.frames(3);
+    }
+    d.ok("ui.set", json!({"tool": "Selection"}));
+    let m = d.level(pair.audio).1[1].0;
+    d.exec("effects.setKeyframe", json!({"clip": pair.audio, "effect": "volume", "param": "level", "mediaTime": m, "value": -12.0}));
+    let (_, keys) = d.level(pair.audio);
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    d.click(&format!("{id}.kf.0"));
+    d.ok("ui.click", json!({"id": format!("{id}.kf.1"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+
+    // the next sound clip on A1 takes them, the first at the playhead
+    let seq = d.exec("sequence.inspect", json!({}));
+    let other = seq["audio"][0]["items"][1]["clip"].as_u64().expect("a second clip on A1");
+    d.click(&format!("timeline.clip.{other}"));
+    d.exec("playhead.set", json!({"time": d.item(other).start.0 + 1_000_000}));
+    let at = d.harness.state().session.playhead().0;
+    d.ok("ui.key", json!({"key": "Cmd+V"}));
+    let (_, pasted) = d.level(other);
+    assert_eq!(pasted.len(), 2, "pasted on the selected clip: {pasted:?}");
+    let (src, dst) = (d.item(pair.audio), d.item(other));
+    let on = |it: &TrackItem, k: &(i64, f64)| it.timeline_time(filmcraft_time::Tick(k.0)).0;
+    assert!((on(&dst, &pasted[0]) - at).abs() <= 1, "the first at the playhead: {pasted:?}");
+    let (gap, copied_gap) = (on(&dst, &pasted[1]) - on(&dst, &pasted[0]), on(&src, &keys[1]) - on(&src, &keys[0]));
+    assert!((gap - copied_gap).abs() <= 2, "spacing kept: {gap} vs {copied_gap}");
+    assert_eq!((pasted[0].1, pasted[1].1), (keys[0].1, keys[1].1), "levels kept");
+}

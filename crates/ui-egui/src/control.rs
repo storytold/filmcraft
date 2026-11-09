@@ -180,6 +180,13 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Err(e) => return err(format!("`keyframeSelection`: {e}")),
         }
     }
+    // Timeline track keyframe selection (`[{strip, lane, time}]`), replaced
+    if let Some(v) = p.get("trackKeyframeSelection") {
+        match serde_json::from_value(v.clone()) {
+            Ok(sel) => app.ui.track_keyframe_selection = sel,
+            Err(e) => return err(format!("`trackKeyframeSelection`: {e}")),
+        }
+    }
     if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
         app.ui.program.safe_margins = v;
     }

@@ -4,7 +4,8 @@
 //! parameters) instead of clip keyframes: the header's keyframe button picks it (Premiere's
 //! "Show Keyframes ▸ Track Keyframes"). The lane is drawn across the whole track as a line with
 //! keyframe diamonds; the Pen tool (or ⌘-click) adds keyframes, dragging a diamond moves it in time
-//! and value, right-click deletes. Everything goes through `mixer.setKeyframe` /
+//! and value, right-click deletes, a click selects (Shift adds or removes) for Edit ▸ Copy (#3562).
+//! Everything goes through `mixer.setKeyframe` /
 //! `mixer.moveKeyframe` / `mixer.deleteKeyframe`.
 //!
 //! Automation ids: `timeline.track.A1.keyframes` (the header button) with its menu entries
@@ -20,7 +21,7 @@ use serde_json::json;
 use super::timeline::{Layout, Row};
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::Tool;
+use crate::state::{Tool, TrackKeyframeRef};
 use crate::theme::Tokens;
 
 const LANE_COL: Color32 = Color32::from_rgb(0xe8, 0xc5, 0x47);
@@ -208,7 +209,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             let hr = Rect::from_center_size(c, vec2(11.0, 11.0));
             let resp = ui.interact(hr, egui::Id::unique(("lane-kf", r.track.0, i)), Sense::click_and_drag());
-            let hot = resp.hovered() || dragging.is_some();
+            let sel = TrackKeyframeRef { strip: r.track.0, lane: key.clone(), time: k.time };
+            let selected = app.ui.track_keyframe_selection.contains(&sel);
+            if resp.clicked() || (resp.drag_started_by(egui::PointerButton::Primary) && !selected) {
+                super::timeline_volume::pick(&mut app.ui.track_keyframe_selection, sel.clone(), ui.input(|i| i.modifiers.shift));
+                app.ui.keyframe_selection.clear();
+            }
+            let hot = resp.hovered() || dragging.is_some() || app.ui.track_keyframe_selection.contains(&sel);
             icons::paint(&p, Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, if hot { Color32::WHITE } else { LANE_COL });
             app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}"), hr, &format!("{name} keyframe {v:.1}"));
             if resp.drag_started_by(egui::PointerButton::Primary)
@@ -224,6 +231,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     let nt = layout.tick_at(c.x).max(Tick::ZERO);
                     let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
                     acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));
+                    // the selection follows the moved key, so Copy still finds it
+                    if let Some(s) = app.ui.track_keyframe_selection.iter_mut().find(|s| s.strip == r.track.0 && s.lane == key && s.time == d.orig) {
+                        s.time = nt;
+                    }
                 }
                 ui.data_mut(|dd| dd.remove::<KfDrag>(drag_id()));
             }

@@ -540,7 +540,7 @@ pub fn strip_label(seq: &Sequence, id: TrackId) -> String {
     id.0.to_string()
 }
 
-fn strip_p(s: &Session, p: &Value, cmd: &str) -> Result<TrackId> {
+pub(crate) fn strip_p(s: &Session, p: &Value, cmd: &str) -> Result<TrackId> {
     let seq = active_seq(s)?;
     let v = p.get("strip").or_else(|| p.get("track")).ok_or_else(|| bad(cmd, "need `strip` (\"A1\", \"S1\", \"Mix\" or an id)"))?;
     strip_ref(seq, v).ok_or_else(|| bad(cmd, format!("no strip {v}")))

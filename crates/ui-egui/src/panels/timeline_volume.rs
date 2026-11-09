@@ -2,6 +2,7 @@
 //! on the same scale as the track faders. As in Premiere, drag the line up or down to change the
 //! level (with keyframes: the stretch between the two around the pointer), Cmd/Ctrl-click it or
 //! click it with the Pen tool to add a keyframe, drag keyframes, right-click one to delete it.
+//! A click on a keyframe selects it (Shift adds or removes), for Edit ▸ Copy (#3562).
 //! Presses on the line go through the Timeline's own hit-testing ([`super::timeline_hit`]), so a
 //! right-click on it still opens the clip menu.
 //!
@@ -19,7 +20,7 @@ use super::timeline::{Layout, Row};
 use super::timeline_hit::EDGE_PX;
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::Tool;
+use crate::state::{KeyframeRef, Tool};
 use crate::theme::Tokens;
 
 const KEY_COL: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8);
@@ -45,12 +46,6 @@ pub fn gain_at(it: &TrackItem, t: Tick) -> f32 {
         Some(e) => filmcraft_render::audio::db_to_gain(e.f64_at("level", it.source_time_at(t))),
         None => 1.0,
     }
-}
-
-/// Timeline time of media time `m`, the inverse of [`TrackItem::moving_source_time_at`].
-fn timeline_time(it: &TrackItem, m: Tick) -> Tick {
-    let rel = if it.reverse { it.source_out().0.saturating_sub(1).saturating_sub(m.0) } else { m.0.saturating_sub(it.source_in.0) };
-    Tick(it.start.0.saturating_add((rel as f64 / it.speed.abs().max(1e-6)).round() as i64))
 }
 
 fn x_of(it: &TrackItem, body: Rect, t: Tick) -> f32 {
@@ -81,7 +76,7 @@ fn line(it: &TrackItem, body: Rect, x0: f32, x1: f32) -> Vec<Pos2> {
 /// The keyframes: media time and where each is drawn.
 fn keys(it: &TrackItem, body: Rect) -> Vec<(Tick, Pos2)> {
     let Some(p) = level(it) else { return Vec::new() };
-    p.keyframes.iter().map(|k| (k.time, pos2(x_of(it, body, timeline_time(it, k.time)), y_of(body, k.value.as_f64().unwrap_or(0.0))))).collect()
+    p.keyframes.iter().map(|k| (k.time, pos2(x_of(it, body, it.timeline_time(k.time)), y_of(body, k.value.as_f64().unwrap_or(0.0))))).collect()
 }
 
 /// Draw the line over an audio clip drawn at `body`: white with a dark shadow.
@@ -180,6 +175,17 @@ pub fn add_keyframe(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, cli
     run(app, vec![("effects.addKeyframe", json!({"clip": clip.0, "effect": "volume", "param": "level", "time": t.0}))]);
 }
 
+/// Select `key` alone, or with `add` (Shift) add it to the selection or take it out.
+pub(crate) fn pick<T: PartialEq>(selection: &mut Vec<T>, key: T, add: bool) {
+    match selection.iter().position(|k| *k == key) {
+        Some(i) if add => {
+            selection.remove(i);
+        }
+        _ if add => selection.push(key),
+        _ => *selection = vec![key],
+    }
+}
+
 fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) {
     for (id, p) in acts {
         if let Err(e) = app.session.execute(id, p) {
@@ -252,6 +258,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 app.auto.add(&format!("timeline.clip.{}.volume", it.id.0), Rect::from_center_size(c, vec2(12.0, 8.0)), "Volume");
             }
             let ks = keys(it, body);
+            let volume = it.effects.iter().position(|e| e.effect == "volume").unwrap_or(0);
             for (i, &(time, c)) in ks.iter().enumerate() {
                 if !vis.expand2(vec2(5.0, 0.0)).contains(c) {
                     continue;
@@ -260,9 +267,18 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 let resp = ui.interact(kr, egui::Id::unique(("tl-volume-kf", it.id.0, i)), Sense::click_and_drag());
                 app.auto.add(&format!("timeline.clip.{}.volume.kf.{i}", it.id.0), kr, "Volume keyframe");
                 let mine = held.filter(|h| h.clip == it.id && h.index == i);
-                if resp.hovered() || mine.is_some() {
+                let key = KeyframeRef { clip: it.id.0, effect: volume, param: "level".into(), mask: None, time };
+                let selected = app.ui.keyframe_selection.contains(&key);
+                if resp.hovered() || mine.is_some() || selected {
                     icons::paint(&ui.painter().with_clip_rect(area), Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, Color32::WHITE);
+                }
+                if resp.hovered() || mine.is_some() {
                     ui.ctx().set_cursor_icon(CursorIcon::Move);
+                }
+                let shift = ui.input(|i| i.modifiers.shift);
+                if resp.clicked() || (resp.drag_started_by(egui::PointerButton::Primary) && !selected) {
+                    pick(&mut app.ui.keyframe_selection, key.clone(), shift);
+                    app.ui.track_keyframe_selection.clear();
                 }
                 if resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(p) = pointer
@@ -275,11 +291,11 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     let q = p - h.grab;
                     // on a frame, at least a frame away from the keyframes on either side
                     let fd = rate.frame_duration();
-                    let now = timeline_time(it, time);
+                    let now = it.timeline_time(time);
                     let (mut lo, mut hi) = (it.start, Tick(it.end().0.saturating_sub(fd.0)));
                     for j in [i.checked_sub(1), i.checked_add(1)].into_iter().flatten() {
                         if let Some(&(m, _)) = ks.get(j) {
-                            let n = timeline_time(it, m);
+                            let n = it.timeline_time(m);
                             if n < now {
                                 lo = lo.max(Tick(n.0.saturating_add(fd.0)));
                             } else {
@@ -293,6 +309,10 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                         let to = it.moving_source_time_at(t);
                         let p = json!({"clip": h.clip.0, "effect": "volume", "param": "level", "mediaTime": time.0, "to": to.0, "value": db, "merge": true, "begin": !h.begun});
                         acts.push(("effects.moveKeyframe", p));
+                        // the selection follows the dragged key, so Copy still finds it
+                        if let Some(k) = app.ui.keyframe_selection.iter_mut().find(|k| **k == key) {
+                            k.time = to;
+                        }
                         next = Some(KeyDrag { begun: true, ..h });
                     }
                     tip(ui, db);
@@ -363,7 +383,7 @@ mod tests {
             let it = clip(speed, reverse);
             for t in [1_000, 1_001, 2_500, 4_999] {
                 let m = it.moving_source_time_at(Tick(t));
-                assert!((timeline_time(&it, m).0 - t).abs() <= 1, "speed {speed} reverse {reverse}: {t}");
+                assert!((it.timeline_time(m).0 - t).abs() <= 1, "speed {speed} reverse {reverse}: {t}");
             }
         }
     }

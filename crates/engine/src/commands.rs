@@ -186,7 +186,11 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.keyframe_clipboard.is_empty() {
+        Err("clipboard is empty".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -2123,8 +2127,33 @@ fn build() -> Vec<CommandSpec> {
             copy_selection(s);
             Ok(json!({"copied": s.state.clipboard.len()}))
         }),
-        cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_clipboard, |s, _| paste(s, false)),
-        cmd!("edit.pasteInsert", "Paste Insert", ["Edit"], Some("Cmd+Shift+V"), "{}", has_clipboard, |s, _| paste(s, true)),
+        cmd!(
+            "edit.copyKeyframes",
+            "Copy Keyframes",
+            [],
+            None,
+            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}|{"strip":id,"lane":str,"time":ticks}]}"#,
+            has_seq,
+            crate::keyframe_clipboard::copy
+        ),
+        cmd!(
+            "edit.paste",
+            "Paste",
+            ["Edit"],
+            Some("Cmd+V"),
+            r#"{"time":ticks?,"clip":id?,"strip":id?} (copied keyframes only; clips and captions take none)"#,
+            has_clipboard,
+            |s, p| paste(s, p, false)
+        ),
+        cmd!(
+            "edit.pasteInsert",
+            "Paste Insert",
+            ["Edit"],
+            Some("Cmd+Shift+V"),
+            r#"{"time":ticks?,"clip":id?,"strip":id?} (copied keyframes only; clips and captions take none)"#,
+            has_clipboard,
+            |s, p| paste(s, p, true)
+        ),
         cmd!(
             "edit.clear",
             "Clear",
@@ -4509,6 +4538,7 @@ fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
     st.clipboard_markers = markers;
     st.clipboard_transitions.clear();
     st.caption_clipboard.clear();
+    st.keyframe_clipboard.clear();
 }
 
 /// Put a Lift or Extract cut on the clipboard; returns how many clips it holds (0 leaves the
@@ -4551,7 +4581,10 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
 /// Paste the clipboard at the playhead (`insert` ripples later clips right instead of
 /// overwriting). Caption clipboards go to the caption track. Pasted clips get fresh ids, links
 /// and groups of their own, are selected, and the playhead moves to their end.
-fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+fn paste(s: &mut Session, p: &Value, insert: bool) -> Result<Value> {
+    if !s.state.keyframe_clipboard.is_empty() {
+        return crate::keyframe_clipboard::paste(s, p);
+    }
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);
     }
