@@ -1139,6 +1139,26 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
 
+/// #1216: the app-wide default (Settings ▸ Playback ▸ Export CPU Threads) applies to exports that
+/// set no cap of their own, including an explicit 0 and a preset's cap taking precedence.
+#[test]
+fn export_thread_default_applies_when_no_cap_is_given() {
+    let mut session = Session::default();
+    session.prefs.playback.export_threads = 2;
+    let settings_of = |params: Value| crate::export_tools::settings_from_params(&session, &params, "file.exportMedia").map(|(_, s)| s);
+    assert_eq!(settings_of(json!({"format": "mjpeg", "path": "out.mov"})).unwrap().max_threads, 2, "no cap: the default applies");
+    assert_eq!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": 0})).unwrap().max_threads, 0, "an explicit 0 is preserved");
+    assert_eq!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": 5})).unwrap().max_threads, 5, "an explicit cap wins");
+    assert_eq!(
+        settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThreads": 0}})).unwrap().max_threads,
+        0,
+        "an explicit nested 0 is preserved"
+    );
+    let plain = Session::default();
+    let plain_of = |params: Value| crate::export_tools::settings_from_params(&plain, &params, "file.exportMedia").map(|(_, s)| s);
+    assert_eq!(plain_of(json!({"format": "mjpeg", "path": "out.mov"})).unwrap().max_threads, 0, "no default: all cores");
+}
+
 /// #1216: `maxThreads` is saved with a user export preset and comes back with it, in the same
 /// session and in a fresh one (the acceptance item "saved with export presets").
 #[test]

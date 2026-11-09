@@ -137,11 +137,11 @@ impl FilmcraftApp {
                 self.set_workspace(&w);
             }
         }
-        // Export ▸ CPU Threads: the app-wide default seeds Export mode's control while the user
-        // has not set one (#1216). `prev` is the default applied last (0 before the first apply),
-        // so a value picked in Export mode is left alone.
-        let old_export_threads = prev.as_ref().map_or(0, |q| q.playback.export_threads);
-        if self.ui.export.settings.max_threads == old_export_threads {
+        // Export ▸ CPU Threads: the app-wide default seeds Export mode's control while it still
+        // follows the default (#1216). A cap picked in Export mode, applied from a preset or set
+        // over the control channel is explicit (`export_threads_inherited` is off) and wins,
+        // even when it equals the default it was inherited from.
+        if self.ui.export.export_threads_inherited {
             self.ui.export.settings.max_threads = p.playback.export_threads;
         }
 

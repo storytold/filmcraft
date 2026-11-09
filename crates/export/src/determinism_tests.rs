@@ -394,5 +394,10 @@ fn a_capped_export_sets_the_thread_cap_on_its_workers() {
     let pool = capped_pool(2).expect("a pool for a cap below the machine's cores");
     assert_eq!(pool.install(filmcraft_media::cancel::max_threads), Some(2), "the workers carry the cap");
     assert!(capped_pool(0).is_none(), "no cap: no pool");
-    assert!(capped_pool(u32::MAX).is_none(), "a cap above the pool: no pool");
+    // a cap at or above the pool still borrows its own pool (same width), so its workers carry
+    // the hint too; the hint is clamped to the machine's cores.
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let wide = capped_pool(u32::MAX).expect("a cap above the pool: a pool of the same width");
+    assert_eq!(wide.install(rayon::current_num_threads), rayon::current_num_threads(), "no added threads");
+    assert_eq!(wide.install(filmcraft_media::cancel::max_threads), Some(cores), "the workers carry the core-clamped cap");
 }

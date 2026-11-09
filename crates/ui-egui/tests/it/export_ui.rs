@@ -687,7 +687,23 @@ fn the_export_thread_default_seeds_export_mode() {
     assert_eq!(d.app().ui.export.settings.max_threads, 2);
     // a value picked in Export mode is left alone when the default changes
     d.app().ui.export.settings.max_threads = 5;
+    d.app().ui.export.export_threads_inherited = false;
     d.app().session.prefs.playback.export_threads = 3;
     d.frames(4);
     assert_eq!(d.app().ui.export.settings.max_threads, 5, "an export cap picked in Export mode wins");
+}
+
+/// #1216: a preset whose cap equals the app-wide default applied when it was picked is still
+/// explicit: a later default change must not rewrite it.
+#[test]
+fn an_explicit_preset_cap_equal_to_the_default_is_not_reseeded() {
+    let mut d = Driver::new("export-threads-preset");
+    d.exec("export.presets.save", json!({"name": "Capped 2", "format": "h264", "maxThreads": 2}));
+    d.app().session.prefs.playback.export_threads = 2;
+    d.ok("ui.set", json!({"mode": "export", "export": {"preset": "Capped 2"}}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "the preset's own cap wins over a later default");
 }

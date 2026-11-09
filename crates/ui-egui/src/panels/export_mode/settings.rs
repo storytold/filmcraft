@@ -344,7 +344,12 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             ui.add_space(8.0);
             let s = &mut ex.settings;
             if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+                let mut threads_picked = false;
+                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr, &mut threads_picked);
+                // #1216: a cap picked here is explicit and wins over the app-wide default
+                if threads_picked {
+                    ex.export_threads_inherited = false;
+                }
             }
             if (s.has_audio()
                 || !s.has_video()
@@ -437,7 +442,8 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+#[allow(clippy::too_many_arguments)]
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool, threads_picked: &mut bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -684,6 +690,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let cur = if sel == 0 { all } else { sel.to_string() };
         if let Some(i) = combo(ui, reg, "export.video.maxThreads", &cur, &labels, 120.) {
             s.max_threads = i as u32;
+            *threads_picked = true;
         }
     });
 }

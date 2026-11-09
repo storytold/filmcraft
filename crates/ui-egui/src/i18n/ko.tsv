@@ -2239,6 +2239,7 @@
 	Path Points	패스 점
 	Path: {path}	경로: {path}
 	Pause Media Encoder queue during playback	재생 중 Media Encoder 대기열 일시 중지
+	Export CPU Threads	내보내기 CPU 스레드
 	Paused Resolution	일시 정지 해상도
 	Peak Amplitude: {peak}	피크 진폭: {peak}
 	Peak Frequency	피크 주파수
@@ -3340,6 +3341,8 @@
 	Use file metadata	파일 메타데이터 사용
 	Use Glow Color	광선 색상 사용
 	Use Maximum Render Quality	최고 렌더 품질 사용
+	CPU Threads	CPU 스레드
+	All cores	모든 코어
 	Use Media Source	미디어 소스 사용
 	Use the file's timecode	파일 타임코드 사용
 	Use Tint Color	색조 색상 사용

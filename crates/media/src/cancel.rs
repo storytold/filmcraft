@@ -62,10 +62,16 @@ pub fn background() -> bool {
 /// ([`max_threads`]); `None` means no cap. Set by an export so its decoders do not use the whole
 /// machine (#1216).
 pub fn with_max_threads<R>(max_threads: Option<usize>, f: impl FnOnce() -> R) -> R {
-    let prev = MAX_THREADS.with(|c| c.replace(max_threads));
-    let r = f();
-    MAX_THREADS.with(|c| c.set(prev));
-    r
+    /// Restores the previous hint however `f` ends (a panic caught further up must not leave the
+    /// worker thread carrying a stale cap into later work).
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MAX_THREADS.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(MAX_THREADS.with(|c| c.replace(max_threads)));
+    f()
 }
 
 /// The most worker threads work on this thread may start (None: no cap). See [`with_max_threads`].
@@ -225,6 +231,18 @@ mod tests {
         let r = std::panic::catch_unwind(|| with_background(true, || panic!("boom")));
         assert!(r.is_err());
         assert!(!background());
+    }
+
+    #[test]
+    fn a_panic_inside_scoped_max_threads_does_not_leave_the_hint() {
+        let r = std::panic::catch_unwind(|| with_max_threads(Some(3), || panic!("boom")));
+        assert!(r.is_err());
+        assert_eq!(max_threads(), None);
+        with_max_threads(Some(2), || {
+            let r = std::panic::catch_unwind(|| with_max_threads(Some(5), || panic!("boom")));
+            assert!(r.is_err());
+            assert_eq!(max_threads(), Some(2), "the outer cap is back");
+        });
     }
 
     #[test]
