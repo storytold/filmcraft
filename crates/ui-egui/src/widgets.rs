@@ -142,7 +142,6 @@ fn hot_number_editor(
     // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
     let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
-<<<<<<< HEAD
     let mut numeric_input_valid = true;
     if numeric_only {
         // A decimal comma is a decimal point in many locales. Keep invalid text visible so
@@ -157,13 +156,11 @@ fn hot_number_editor(
         }
     }
     let mut out = stepped;
-=======
-    let mut out = stepped;
->>>>>>> upstream/main
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
         let unit = suffix.trim();
-        let typed = buf.trim_end().strip_suffix(unit).unwrap_or(buf).to_string();
+        let trimmed = buf.trim_end();
+        let typed = trimmed.strip_suffix(unit).unwrap_or(trimmed).trim_end().to_string();
         if numeric_input_valid && let Some(v) = crate::calc::eval(&typed, value) {
             out = Some(v.clamp(range.0, range.1));
         }
@@ -530,16 +527,7 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
 /// partly out of its half: the button keeps its size and is cut off at the edge (the painter
 /// clips, the layout rectangle is never shortened) and takes clicks only where it shows.
 #[allow(clippy::too_many_arguments)]
-pub fn icon_toggle_clipped(
-    ui: &mut Ui,
-    rect: Rect,
-    clip: Rect,
-    icon: Icon,
-    on: bool,
-    t: &Tokens,
-    id: egui::Id,
-    on_color: Option<Color32>,
-) -> Response {
+pub fn icon_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     // a degenerate (clipped-away) rect paints nothing and can never blow the icon up: a
     // negative width would make the shrink below grow the icon instead
     let rect = if rect.is_positive() { rect } else { Rect::NOTHING };

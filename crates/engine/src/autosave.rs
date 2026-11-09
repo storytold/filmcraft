@@ -1084,7 +1084,7 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|snapshot| snapshot.content_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
