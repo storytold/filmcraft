@@ -171,11 +171,9 @@ pub fn open_chosen_project(app: &mut FilmcraftApp, path: &str) -> Result<Value, 
     app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
 }
 
-/// Whether the prompt that [`open_chosen_project`] showed for `path` is still waiting for an
-/// answer, including a replace prompt that its **Save** raised.
+/// Whether the prompt that [`open_chosen_project`] showed for `path` is still waiting for an answer.
 pub fn open_prompt_pending(app: &FilmcraftApp, path: &str) -> bool {
-    let asking = app.ui.clip_dialog.as_ref().is_some_and(|d| d.command == "file.open" && d.params.get("path").and_then(Value::as_str) == Some(path));
-    asking || app.overwrite_prompt_path().is_some()
+    app.ui.clip_dialog.as_ref().is_some_and(|d| d.command == "file.open" && d.params.get("path").and_then(Value::as_str) == Some(path))
 }
 
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved

@@ -1,5 +1,5 @@
 // Web Open Project prompt: a project dropped on the page with unsaved changes asks first.
-// Synthetic browser drop event exercises the production handler; physical OS drag/picker UI is outside this test.
+// Synthetic browser drop events and a stubbed File System Access picker exercise the production handlers; physical OS drag/picker UI is outside this test.
 
 function silence() {
   // RIFF/WAVE PCM16 mono, 0.1 s of silence at 48 kHz: 44-byte header + 2 bytes/sample.
@@ -51,6 +51,7 @@ export async function checkOpenProjectPrompt({ evaluate, timeoutMs = 60000 }) {
   await evaluate(`(async () => {window.__promptFixtures = {
     other: await filmcraft.readFile("/prompt-test/Other.fcproj"),
     wav: Uint8Array.from(atob(${JSON.stringify(silence().toString("base64"))}), c => c.charCodeAt(0)),
+    corrupt: new TextEncoder().encode("not a project"),
   };})()`);
   await execute("file.newProject", {name: "Current"});
   await execute("file.newSequence", {name: "Current sequence"});
@@ -60,6 +61,25 @@ export async function checkOpenProjectPrompt({ evaluate, timeoutMs = 60000 }) {
   await drop([["Other.fcproj", "other"]]);
   await openedAt("/projects/Other.fcproj");
   report.gates.opensWithoutPromptWhenSaved = !(await prompted());
+
+  // A project that fails to open leaves the file table as it was, and the next drop still runs.
+  await execute("file.open", {path: current});
+  await drop([["Corrupt.fcproj", "corrupt"]]);
+  await drop([["Current.fcproj", "corrupt"]]);
+  await drop([["Other.fcproj", "other"]]);
+  await openedAt("/projects/Other.fcproj");
+  report.gates.failedOpenRemovesCopy = !(await hasFile("/projects/Corrupt.fcproj"));
+  await execute("file.open", {path: current});
+  report.gates.failedOpenKeepsReplacedFile = (await inspect()).name === "Current";
+
+  // The same with unsaved changes: Don't Save keeps the open project and its changes.
+  await execute("file.newBin", {name: "Failed open"});
+  await drop([["Corrupt.fcproj", "corrupt"]]);
+  await answer("openProject.dontSave");
+  await until("the failed copy's removal", async () => !(await hasFile("/projects/Corrupt.fcproj")));
+  const failed = await inspect();
+  report.gates.failedOpenKeepsProject = failed.path === current && failed.dirty && (await hasChild("Failed open"));
+  await execute("file.save", {path: current});
 
   // Cancel keeps the open project and its changes, and the dropped file's copy is removed.
   await execute("file.open", {path: current});
@@ -89,6 +109,38 @@ export async function checkOpenProjectPrompt({ evaluate, timeoutMs = 60000 }) {
   report.gates.saveOpensDroppedFile = (await inspect()).name === "Other";
   await execute("file.open", {path: current});
   report.gates.saveWritesOpenProject = await hasChild("Unsaved");
+
+  // Save on a project never saved writes it under its name, then opens the dropped file.
+  await execute("file.newProject", {name: "Fresh"});
+  await execute("file.newSequence", {name: "Fresh sequence"});
+  await change();
+  await drop([["Never saved.fcproj", "other"]]);
+  await answer("openProject.save");
+  await openedAt("/projects/Never saved.fcproj");
+  await execute("file.open", {path: "/projects/Fresh.fcproj"});
+  report.gates.saveWritesNeverSavedProject = await hasChild("Unsaved");
+  await execute("file.open", {path: current});
+
+  // File ▸ Open asks too. The picker's answer is a real file handle, since headless Chromium shows no dialog.
+  await evaluate(`(async () => {
+    const dir = await navigator.storage.getDirectory();
+    const handle = await dir.getFileHandle("picked-project.fcproj", {create: true});
+    const writable = await handle.createWritable();
+    await writable.write(window.__promptFixtures.other);
+    await writable.close();
+    window.__promptFixtures.picker = window.showOpenFilePicker;
+    window.showOpenFilePicker = async () => [handle];
+  })()`);
+  await execute("file.newBin", {name: "Picked change"});
+  await evaluate('filmcraft.request("ui.menu.invoke", {id: "file.open"})');
+  await answer("openProject.dontSave");
+  await openedAt("/projects/picked-project.fcproj");
+  report.gates.filePickerAsks = (await inspect()).name === "Other";
+  await evaluate(`(async () => {
+    window.showOpenFilePicker = window.__promptFixtures.picker;
+    await (await navigator.storage.getDirectory()).removeEntry("picked-project.fcproj");
+  })()`);
+  await execute("file.open", {path: current});
 
   // A second drop waits for the first prompt's answer.
   await execute("file.newBin", {name: "Second change"});

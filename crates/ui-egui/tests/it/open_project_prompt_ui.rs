@@ -347,7 +347,9 @@ fn a_project_chosen_outside_the_menus_asks_first() {
     let mut d = Driver::new();
     let (dir, current, other) = projects(&mut d, "chosen");
     // nothing unsaved: it opens now
+    assert!(!open_prompt_pending(d.app(), &other), "no prompt yet");
     assert!(open_chosen_project(d.app(), &other).unwrap()["schemaVersion"].is_u64());
+    assert!(!open_prompt_pending(d.app(), &other), "it opened without a prompt");
     assert_eq!(d.path(), Some(other.clone()));
     d.exec("file.open", json!({"path": current}));
     // unsaved changes: nothing opens before an answer
@@ -362,6 +364,16 @@ fn a_project_chosen_outside_the_menus_asks_first() {
     assert!(!open_prompt_pending(d.app(), &other));
     assert_eq!(d.path(), Some(current.clone()));
     assert_eq!(d.label(clip), Label::Yellow, "Cancel keeps the change");
+    // Don't Save: the chosen project opens and the change is not written
+    open_chosen_project(d.app(), &other).unwrap();
+    d.frames(3);
+    d.click("openProject.dontSave");
+    assert!(!open_prompt_pending(d.app(), &other));
+    assert_eq!(d.path(), Some(other.clone()));
+    assert!(!d.app().session.is_dirty());
+    d.exec("file.open", json!({"path": current}));
+    assert_ne!(d.label(clip), Label::Yellow, "Don't Save leaves the file as it was");
+    let clip = d.edit();
     // Save: saved, then the chosen project opens
     open_chosen_project(d.app(), &other).unwrap();
     d.frames(3);
@@ -372,6 +384,48 @@ fn a_project_chosen_outside_the_menus_asks_first() {
     assert!(!d.app().session.is_dirty());
     d.exec("file.open", json!({"path": current}));
     assert_eq!(d.label(clip), Label::Yellow, "the change was saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A chosen file that cannot be opened leaves the open project alone: without a prompt the error
+/// goes to the caller, and after Don't Save it goes to the status line with the changes kept.
+#[test]
+fn a_chosen_project_that_fails_to_open_keeps_the_open_project() {
+    let mut d = Driver::new();
+    let (dir, current, _) = projects(&mut d, "chosenFails");
+    let missing = dir.join("missing.fcproj").to_string_lossy().into_owned();
+    assert!(open_chosen_project(d.app(), &missing).is_err());
+    assert_eq!(d.path(), Some(current.clone()));
+    let corrupt = dir.join("corrupt.fcproj").to_string_lossy().into_owned();
+    std::fs::write(&corrupt, b"not a project").unwrap();
+    assert!(open_chosen_project(d.app(), &corrupt).is_err());
+    assert_eq!(d.path(), Some(current.clone()));
+
+    let clip = d.edit();
+    d.app().ui.status.clear();
+    open_chosen_project(d.app(), &corrupt).unwrap();
+    d.frames(3);
+    d.click("openProject.dontSave");
+    assert!(!open_prompt_pending(d.app(), &corrupt));
+    assert_eq!(d.path(), Some(current));
+    assert!(d.app().session.is_dirty());
+    assert_eq!(d.label(clip), Label::Yellow);
+    assert!(!d.app().ui.status.is_empty(), "the status line shows why it did not open");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A replace prompt raised by another save is not the prompt for the chosen project.
+#[test]
+fn a_replace_prompt_from_another_save_is_not_the_open_prompt() {
+    let mut d = Driver::new();
+    let (dir, current, other) = projects(&mut d, "otherReplace");
+    let answer = other.strip_suffix(".fcproj").unwrap().to_string();
+    d.app().hooks.pick_save = Some(Box::new(move |_| Some(answer.clone())));
+    d.app().session.path = None;
+    d.menu("file.saveAs");
+    assert_eq!(d.app().overwrite_prompt_path(), Some(other.as_str()));
+    assert!(!open_prompt_pending(d.app(), &current));
+    d.click("overwrite.cancel");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

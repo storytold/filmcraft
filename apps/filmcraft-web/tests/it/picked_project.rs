@@ -44,6 +44,13 @@ fn a_picked_project_does_not_replace_another_file() {
     // a file picked before under the same name, while another project has unsaved changes
     let taken = |p: &str| p == "/projects/Trailer.fcproj";
     assert_eq!(picked_project_path("Trailer.fcproj", Some("/projects/Cut.fcproj"), taken), "/projects/opened/Trailer.fcproj");
+    // the save target further down the numbered folders, and a path both taken and the save target
+    let taken = |p: &str| matches!(p, "/projects/Cut.fcproj" | "/projects/opened/Cut.fcproj");
+    assert_eq!(picked_project_path("Cut.fcproj", Some("/projects/opened/2/Cut.fcproj"), taken), "/projects/opened/3/Cut.fcproj");
+    assert_eq!(picked_project_path("Cut.fcproj", Some("/projects/opened/Cut.fcproj"), taken), "/projects/opened/2/Cut.fcproj");
+    let taken =
+        |p: &str| matches!(p, "/projects/Cut.fcproj" | "/projects/opened/Cut.fcproj" | "/projects/opened/2/Cut.fcproj" | "/projects/opened/3/Cut.fcproj");
+    assert_eq!(picked_project_path("Cut.fcproj", Some("/projects/opened/4/Cut.fcproj"), taken), "/projects/opened/5/Cut.fcproj");
 }
 
 #[test]

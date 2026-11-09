@@ -148,8 +148,8 @@ pub async fn open_project_bytes(path: String, bytes: Vec<u8>) -> Result<Value, S
 /// Open a `.fcproj` the user picked with File › Open or dropped on the page. With unsaved changes,
 /// the Save Project prompt asks first, as on the desktop
 /// ([`filmcraft_ui_egui::panels::clip_dialogs::open_chosen_project`]), and this returns once the
-/// prompt is answered. When the prompt was shown and the project did not open (Cancel, or it failed
-/// to load), its copy is removed from the file table again.
+/// prompt is answered. When the project did not open (Cancel, or it failed to load), its copy is
+/// removed from the file table again, and without a prompt a file it replaced is put back.
 async fn open_picked_project(file: web_sys::File) -> Result<(), String> {
     use filmcraft_ui_egui::panels::clip_dialogs::{open_chosen_project, open_prompt_pending};
     let buf = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
@@ -160,8 +160,18 @@ async fn open_picked_project(file: web_sys::File) -> Result<(), String> {
         let save_target = s.is_dirty().then(|| crate::picked_project::save_target(s.path.as_deref(), &s.project.name));
         let taken = |p: &str| fs::mem_bytes(p).is_some() || fs::blob(p).is_some();
         let path = crate::picked_project::picked_project_path(&name, save_target.as_deref(), taken);
+        let replaced = fs::mem_bytes(&path);
         fs::put(&path, bytes);
-        open_chosen_project(&mut w.app, &path).map(|v| (path, v.get("dialog").is_some()))
+        match open_chosen_project(&mut w.app, &path) {
+            Ok(v) => Ok((path, v.get("dialog").is_some())),
+            Err(e) => {
+                match replaced {
+                    Some(earlier) => fs::put(&path, earlier.to_vec()),
+                    None => fs::remove_mem(&path),
+                }
+                Err(e)
+            }
+        }
     })
     .await?;
     if !asked {
