@@ -96,7 +96,8 @@ fn skip_flags(p: &[u8]) -> (bool, bool) {
 
 /// Drops an exact duplicate packet (§2.4.3.3: a packet may be sent twice, same continuity counter
 /// and same content). Conservative: only a payload-bearing packet with the previous payload-bearing
-/// packet's counter and identical payload bytes counts; anything else is kept.
+/// packet's counter and identical payload bytes counts; a packet that signals a discontinuity
+/// starts a new sequence and is never a duplicate; anything else is kept.
 struct DupGuard {
     cc: Option<u8>,
     len: usize,
@@ -112,10 +113,15 @@ impl Default for DupGuard {
 impl DupGuard {
     /// Whether `pk` repeats the previous packet of its PID; remembers `pk` as the previous one.
     fn is_dup(&mut self, pk: &Packet<'_>) -> bool {
+        if pk.discontinuity {
+            // a restart: the saved counter and payload belong to the old sequence, even when
+            // this packet carries only an adaptation field
+            self.cc = None;
+        }
         if !pk.has_payload {
             return false;
         }
-        let dup = self.cc == Some(pk.cc) && self.data.get(..self.len) == Some(pk.payload);
+        let dup = !pk.discontinuity && self.cc == Some(pk.cc) && self.data.get(..self.len) == Some(pk.payload);
         if !dup {
             self.cc = Some(pk.cc);
             self.len = pk.payload.len().min(self.data.len());
@@ -683,4 +689,38 @@ pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         off += (whole * packet_size) as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod dup_tests {
+    use super::*;
+
+    #[test]
+    fn a_discontinuity_packet_is_never_a_duplicate() {
+        let payload = [7u8; 20];
+        let pk = |discontinuity| Packet { pusi: true, pid: 0x100, cc: 3, has_payload: true, discontinuity, pcr: None, payload: &payload };
+        let mut g = DupGuard::default();
+        assert!(!g.is_dup(&pk(false)));
+        assert!(!g.is_dup(&pk(true)), "same counter and payload, but the stream restarts here");
+        assert!(g.is_dup(&pk(false)), "the discontinuity packet is the new reference");
+    }
+
+    #[test]
+    fn an_adaptation_only_discontinuity_resets_the_duplicate_history() {
+        let payload = [7u8; 20];
+        let pk = |has_payload, discontinuity| Packet {
+            pusi: true,
+            pid: 0x100,
+            cc: 3,
+            has_payload,
+            discontinuity,
+            pcr: None,
+            payload: if has_payload { &payload } else { &[] },
+        };
+        let mut g = DupGuard::default();
+        assert!(!g.is_dup(&pk(true, false)));
+        assert!(!g.is_dup(&pk(false, true)), "adaptation-only packets are never dropped");
+        assert!(!g.is_dup(&pk(true, false)), "payload A with CC=3 after the restart is new");
+        assert!(g.is_dup(&pk(true, false)), "a real repeat is still dropped");
+    }
 }
