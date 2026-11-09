@@ -515,6 +515,22 @@ fn work_area_delete_dialog_cancel_and_ok() {
 }
 
 #[test]
+fn work_area_delete_dialog_closes_when_the_active_sequence_changes() {
+    let mut d = Driver::new();
+    d.exec("sequence.workAreaBar", json!({"show": true}));
+    assert_eq!(d.menu("sequence.deleteWorkAreaRenderFiles")["dialog"], "deleteWorkAreaRenderFiles");
+    assert!(d.has("sequence.deleteWorkAreaRenderFiles.ok"));
+    let seq = d.app().session.state.active_sequence.unwrap();
+    let mut project = (*d.app().session.project).clone();
+    let settings = project.sequence(seq).unwrap().settings.clone();
+    let other = project.new_sequence("Other", settings, 1, 1, None);
+    d.app().session.project = std::sync::Arc::new(project);
+    d.app().session.state.active_sequence = Some(other);
+    d.frames(2);
+    assert!(!d.has("sequence.deleteWorkAreaRenderFiles.ok"), "the confirmation named the sequence that was active when it opened");
+}
+
+#[test]
 fn saving_the_project_says_where_in_the_status_bar() {
     let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
