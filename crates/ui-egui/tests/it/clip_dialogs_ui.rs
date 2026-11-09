@@ -143,6 +143,63 @@ fn paste_attributes_dialog() {
     assert_eq!(d.v1(2).effect("motion").unwrap().param("rotation").unwrap().value.as_f64(), Some(0.0));
 }
 
+/// #3789: the dialog says that ticked attributes are removed; an effect on the selected clip is
+/// offered ticked, unticking it keeps it, and OK with the defaults removes it.
+#[test]
+fn remove_attributes_dialog_removes_the_clips_effect() {
+    let mut d = Driver::new();
+    let a = d.v1(0);
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "focus_blur"}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    // unticked: the effect stays
+    d.menu("edit.removeAttributes");
+    d.click("removeAttributes.effect.focus_blur");
+    d.click("removeAttributes.ok");
+    assert!(d.v1(0).effect("focus_blur").is_some(), "an unticked effect is kept");
+    // the defaults: removed
+    assert_eq!(d.menu("edit.removeAttributes")["dialog"], "removeAttributes");
+    let hint = d.ok("ui.elements", json!({"prefix": "removeAttributes.hint"}));
+    assert_eq!(hint[0]["label"], "Ticked attributes are removed from the selected clips.");
+    assert!(d.has("removeAttributes.effect.focus_blur"));
+    let params = d.app().ui.clip_dialog.as_ref().unwrap().params.clone();
+    assert_eq!(params["effects"], json!(["focus_blur"]), "the effect is offered ticked: {params}");
+    d.click("removeAttributes.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "closed on OK");
+    assert!(d.v1(0).effect("focus_blur").is_none(), "the effect is removed");
+}
+
+/// The effects Essential Sound adds are not offered: Remove Attributes keeps them, so a ticked box
+/// for one would promise a removal that does not happen. The same effect added by hand is offered.
+#[test]
+fn remove_attributes_dialog_leaves_out_essential_sound_effects() {
+    let mut d = Driver::new();
+    let a1 = |d: &mut Driver| d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let clip = a1(&mut d).id;
+    d.exec("essentialSound.setType", json!({"clips": [clip.0], "type": "dialogue"}));
+    d.exec("essentialSound.set", json!({"clips": [clip.0], "values": {"repair.noise.on": true, "clarity.eq.on": true}}));
+    let essential: Vec<String> = a1(&mut d).effects.iter().filter(|e| e.essential).map(|e| e.effect.clone()).collect();
+    assert!(!essential.is_empty(), "Dialogue adds its effects");
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    let offered = d.app().ui.clip_dialog.as_ref().unwrap().params["effects"].clone();
+    assert_eq!(offered, json!([]), "Essential Sound's effects are not offered: {offered}");
+    for id in &essential {
+        assert!(!d.has(&format!("removeAttributes.effect.{id}")), "{id}");
+    }
+    d.click("removeAttributes.ok");
+    assert_eq!(a1(&mut d).effects.iter().filter(|e| e.essential).count(), essential.len(), "OK keeps them");
+    // the same effect added from the Effects panel is offered and removed
+    let manual = essential[0].clone();
+    d.exec("effects.apply", json!({"clips": [clip.0], "effect": manual}));
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["effects"], json!([manual]));
+    d.click("removeAttributes.ok");
+    let left = a1(&mut d);
+    assert_eq!(left.effects.iter().filter(|e| e.effect == manual).count(), 1, "the Essential Sound one stays");
+    assert!(left.effects.iter().filter(|e| e.effect == manual).all(|e| e.essential));
+}
+
 #[test]
 fn make_subclip_frame_hold_and_audio_channel_dialogs() {
     let mut d = Driver::new();
@@ -737,4 +794,106 @@ fn speed_edits_preserve_one_frame_minimum() {
         d.exec("edit.undo", json!({}));
         assert_eq!(d.v1(0).speed, 1.0);
     }
+}
+
+/// A file the OS dropped on the window, as the native integration hands it to egui.
+#[derive(Debug)]
+struct OsFile(std::path::PathBuf);
+
+impl egui::DroppedFile for OsFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+impl Driver {
+    /// Drop `paths` on the window: one frame carries them, as egui reports a drop once.
+    fn drop_files(&mut self, paths: &[&std::path::Path]) {
+        for p in paths {
+            self.harness.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(p.to_path_buf())));
+        }
+        self.frames(1);
+        self.harness.input_mut().dropped_files.clear();
+        self.frames(3);
+    }
+
+    fn path(&mut self) -> Option<String> {
+        self.app().session.path.clone()
+    }
+}
+
+/// #3843: a project file dropped on the window opens, as File ▸ Open does, instead of being
+/// imported (which did nothing). With unsaved changes Save / Don't Save / Cancel is asked first,
+/// as it now is for File ▸ Open and Open Recent too.
+#[test]
+fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (a, b) = (dir.join("A.fcproj"), dir.join("B.FCPROJ"));
+    let mut d = Driver::new();
+    d.exec("file.saveCopy", json!({"path": b.to_string_lossy()}));
+    d.exec("file.saveAs", json!({"path": a.to_string_lossy()}));
+    let a_path = d.path().expect("saved as A");
+    let items = d.app().session.project.items.len();
+
+    // Save on a never-saved project: Save As first, then the dropped project opens
+    let saved = dir.join("saved-from-prompt.fcproj");
+    let saved_path = saved.to_string_lossy().into_owned();
+    let mut fresh = Driver::new();
+    fresh.app().session.path = None;
+    fresh.app().hooks.pick_save = Some(Box::new(move |_| Some(saved_path.clone())));
+    fresh.edit();
+    fresh.drop_files(&[&b]);
+    fresh.click("openProject.save");
+    assert!(saved.exists(), "saved to the chosen file");
+    assert!(fresh.path().is_some_and(|p| p.ends_with("B.FCPROJ")), "opened {:?}", fresh.path());
+    assert!(!fresh.app().session.is_dirty());
+
+    // unsaved changes: the prompt, and Cancel keeps the project and its changes
+    d.edit();
+    d.drop_files(&[&b]);
+    assert!(d.has("openProject.save") && d.has("openProject.dontSave") && d.has("openProject.cancel"));
+    d.click("openProject.cancel");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()), "still the first project");
+    assert!(d.app().session.is_dirty(), "its changes are kept");
+    assert!(d.app().ui.clip_dialog.is_none());
+    // Don't Save: the dropped project opens; nothing was imported into either project
+    d.drop_files(&[&b]);
+    d.click("openProject.dontSave");
+    assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")), "opened {:?}", d.path());
+    assert!(!d.app().session.is_dirty());
+    assert_eq!(d.app().session.project.items.len(), items, "the project file was not imported as media");
+
+    // nothing unsaved: the dropped project opens at once; media dropped with it is not imported
+    let media = dir.join("note.txt");
+    std::fs::write(&media, "not a project").unwrap();
+    d.drop_files(&[&media, &a]);
+    assert!(d.app().ui.clip_dialog.is_none(), "no prompt without unsaved changes");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()));
+    assert_eq!(d.app().session.project.items.len(), items);
+
+    // a project file that fails to open: Don't Save keeps the open project and its changes
+    let broken = dir.join("broken.fcproj");
+    std::fs::write(&broken, "not a project").unwrap();
+    d.edit();
+    d.drop_files(&[&broken]);
+    d.click("openProject.dontSave");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()), "still the open project");
+    assert!(d.app().session.is_dirty(), "its changes are kept");
+    assert!(d.app().ui.status.contains("broken.fcproj"), "the reason is shown: {}", d.app().ui.status);
+
+    // Open Recent and File ▸ Open ask the same question
+    assert_eq!(d.menu("file.openRecent.1")["dialog"], "openProject");
+    d.click("openProject.cancel");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()));
+    let picked = b.to_string_lossy().into_owned();
+    d.app().hooks.pick_open_project = Some(Box::new(move || Some(picked.clone())));
+    d.menu("file.open");
+    assert!(d.has("openProject.dontSave"), "File ▸ Open asks too");
+    d.click("openProject.dontSave");
+    assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")));
 }
