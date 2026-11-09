@@ -111,7 +111,8 @@ OPTIONS
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
-  --keep-going                  `run`: report failing lines and continue
+  --keep-going                  `run`: report failing lines and continue; without it a run stops
+                                at the first failure and saves nothing
   --compact                     one-line JSON output
 
 VALUES
@@ -403,6 +404,16 @@ async fn cli_exec(a: &Args) {
     b.finish(a).await;
 }
 
+/// The file `--save` or `--save-as` would write, as the user named it, if the run saves at all.
+/// A run that stops at a failed line saves nothing, all or nothing, and says so (#4598).
+fn save_target(a: &Args) -> Option<String> {
+    match (a.opt("--save-as"), a.flag("--save")) {
+        (Some(path), _) => Some(path.to_string()),
+        (None, true) => Some(a.opt("--project").unwrap_or("the project file").to_string()),
+        (None, false) => None,
+    }
+}
+
 async fn cli_run(a: &Args) {
     let script = a.pos(1).unwrap_or_else(|| usage("run <script.jsonl | ->"));
     let text = if script == "-" {
@@ -410,18 +421,28 @@ async fn cli_run(a: &Args) {
     } else {
         read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
     };
+    // Every line is read before any runs, so a malformed one is a usage error with nothing run.
+    let mut steps = Vec::new();
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
+        let mut v: Value = serde_json::from_str(line).unwrap_or_else(|e| usage(format!("line {}: {e}", n + 1)));
+        let id = v["id"].as_str().map(str::to_string).unwrap_or_else(|| usage(format!("line {}: missing \"id\"", n + 1)));
+        steps.push((n + 1, id, v.get_mut("params").map(Value::take).unwrap_or(json!({}))));
+    }
     let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     let mut failed = 0;
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
-        let v: Value = serde_json::from_str(line).unwrap_or_else(|e| usage(format!("line {}: {e}", n + 1)));
-        let id = v["id"].as_str().unwrap_or_else(|| usage(format!("line {}: missing \"id\"", n + 1)));
-        match b.exec(id, v.get("params").cloned().unwrap_or(json!({}))).await {
-            Ok(r) => outln!("{}", json!({"line": n + 1, "id": id, "ok": true, "result": r})),
+    for (line, id, params) in steps {
+        match b.exec(&id, params).await {
+            Ok(r) => outln!("{}", json!({"line": line, "id": id, "ok": true, "result": r})),
             Err(e) => {
-                outln!("{}", json!({"line": n + 1, "id": id, "ok": false, "error": e}));
+                outln!("{}", json!({"line": line, "id": id, "ok": false, "error": e}));
                 failed += 1;
                 if !a.flag("--keep-going") {
+                    if let Some(target) = save_target(a) {
+                        diag(format_args!(
+                            "filmcraft-cli: line {line} failed, so nothing was saved: {target} is unchanged. Run with --keep-going to save the lines that pass."
+                        ));
+                    }
                     std::process::exit(1);
                 }
             }
