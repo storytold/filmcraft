@@ -91,9 +91,20 @@ fn check_pixel_count(name: &str, bytes: &[u8]) -> Result<()> {
 /// decoded; the probe's copy of the file is gone before the real decode starts). A missing,
 /// unknown or unreadable value means no transform: a damaged tag never fails an import.
 fn exif_orientation(bytes: &[u8]) -> Orientation {
-    let probe = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?.orientation().ok();
+    let probe = || {
+        let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
+        match decoder.exif_metadata() {
+            // a PNG eXIf or WebP EXIF chunk may keep the `Exif\0\0` header of a JPEG APP1, which
+            // the image crate's own `orientation()` doesn't skip: read the TIFF data behind it
+            Ok(Some(chunk)) if chunk.starts_with(EXIF_HEADER) => Orientation::from_exif_chunk(chunk.get(EXIF_HEADER.len()..)?),
+            _ => decoder.orientation().ok(),
+        }
+    };
     probe().unwrap_or(Orientation::NoTransforms)
 }
+
+/// The header before the TIFF data in a JPEG APP1 EXIF segment.
+const EXIF_HEADER: &[u8] = b"Exif\0\0";
 
 pub struct StillSource {
     info: MediaInfo,

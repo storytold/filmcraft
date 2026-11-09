@@ -92,19 +92,33 @@ fn jpeg(exif: Option<Vec<u8>>) -> Vec<u8> {
 }
 
 fn png(o: u16) -> Vec<u8> {
+    png_with_exif(orientation_exif(o))
+}
+
+fn png_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::png::PngEncoder::new(&mut out);
-    enc.set_exif_metadata(orientation_exif(o)).unwrap();
+    enc.set_exif_metadata(exif).unwrap();
     enc.write_image(&picture(1), W, H, image::ExtendedColorType::Rgb8).unwrap();
     out
 }
 
 fn webp(o: u16) -> Vec<u8> {
+    webp_with_exif(orientation_exif(o))
+}
+
+fn webp_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
-    enc.set_exif_metadata(orientation_exif(o)).unwrap();
+    enc.set_exif_metadata(exif).unwrap();
     enc.write_image(&picture(1), W, H, image::ExtendedColorType::Rgb8).unwrap();
     out
+}
+
+/// EXIF with only an Orientation tag of value `o`, behind the `Exif\0\0` header a JPEG APP1
+/// carries. Some writers copy that header into a PNG eXIf or WebP EXIF chunk too.
+fn prefixed_orientation_exif(o: u16) -> Vec<u8> {
+    [&b"Exif\0\0"[..], &orientation_exif(o)].concat()
 }
 
 /// An uncompressed, single-strip, little-endian TIFF of `width` × `height`, 8 bits × 3 samples,
@@ -198,6 +212,16 @@ fn webp_exif_chunk_orientation_is_applied() {
 }
 
 #[test]
+fn png_and_webp_exif_with_an_exif_header_is_applied() {
+    for o in 1..=8 {
+        let png = png_with_exif(prefixed_orientation_exif(o));
+        assert_oriented(&decode_raster("shot.png", &png).unwrap(), o, 1, 0, &format!("PNG Exif-prefixed orientation {o}"));
+        let webp = webp_with_exif(prefixed_orientation_exif(o));
+        assert_oriented(&decode_raster("shot.webp", &webp).unwrap(), o, 1, 0, &format!("WebP Exif-prefixed orientation {o}"));
+    }
+}
+
+#[test]
 fn rgb_tiff_orientation_tag_is_applied() {
     for o in 1..=8 {
         assert_oriented(&decode_raster("scan.tiff", &rgb_tiff(o)).unwrap(), o, 1, 0, &format!("TIFF orientation {o}"));
@@ -269,6 +293,9 @@ fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     }
     for (what, o) in [("PNG orientation 0", 0), ("PNG orientation 9", 9)] {
         assert_oriented(&decode_raster("shot.png", &png(o)).unwrap(), 1, 1, 0, what);
+    }
+    for (what, e) in [("PNG with only an Exif header", b"Exif\0\0".to_vec()), ("PNG Exif-prefixed orientation 9", prefixed_orientation_exif(9))] {
+        assert_oriented(&decode_raster("shot.png", &png_with_exif(e)).unwrap(), 1, 1, 0, what);
     }
     for (what, o) in [("TIFF orientation 0", 0), ("TIFF orientation 9", 9), ("TIFF orientation 255", 255)] {
         assert_oriented(&decode_raster("scan.tiff", &rgb_tiff(o)).unwrap(), 1, 1, 0, what);
