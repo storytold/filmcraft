@@ -264,6 +264,55 @@ fn relinking_to_another_frame_size_keeps_masks_and_effect_points_on_the_same_spo
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A relink to a file whose width and height ratios differ (here 2 and 3): points and mask vertices
+/// scale by the width ratio in x and the height ratio in y, a mask's feather and expansion (lengths)
+/// by the width ratio.
+#[test]
+fn relinking_to_a_size_with_other_ratios_scales_each_axis_by_its_own_ratio() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{ParamValue, find_effect};
+    let root = tmp_dir("relink-points-ratios");
+    std::fs::create_dir_all(root.join("proxy")).unwrap();
+    std::fs::create_dir_all(root.join("original")).unwrap();
+    let (proxy, original) = (root.join("proxy/a.mov"), root.join("original/a.mov"));
+    make_movie(&proxy, DemoScene::Aurora, W, H, 12);
+    make_movie(&original, DemoScene::Aurora, W * 2, H * 3, 12);
+    let (mut s, items, seq) = session_with(&[&proxy]);
+    let clip_id = s.project.sequence(seq).unwrap().video_tracks[0].items[0].id;
+    s.execute("masks.add", json!({"clip": clip_id.0, "shape": "ellipse", "center": [80, 45], "size": [40, 20]})).unwrap();
+    let mut p = (*s.project).clone();
+    let clip = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+    let mask = &mut clip.effect_mut("opacity").unwrap().masks[0];
+    mask.feather.value = ParamValue::Float(10.0);
+    mask.expansion.value = ParamValue::Float(-3.0);
+    let mut transform = find_effect("transform").unwrap().instance();
+    transform.param_mut("position").unwrap().value = ParamValue::Vec2(Vec2::new(80.0, 45.0));
+    clip.effects.push(transform);
+    s.project = std::sync::Arc::new(p);
+    let clip_of = |s: &Session| s.project.sequence(seq).unwrap().video_tracks[0].items[0].clone();
+    let before = clip_of(&s);
+
+    s.execute("media.relink", json!({"item": items[0].0, "path": original.to_string_lossy(), "force": true})).unwrap();
+    assert_eq!(s.project.source_size(items[0]), Some((W * 2, H * 3)));
+    let after = clip_of(&s);
+    let (m0, m1) = (&before.effect("opacity").unwrap().masks[0], &after.effect("opacity").unwrap().masks[0]);
+    let path = |m: &filmcraft_project::Mask| match &m.path.value {
+        ParamValue::Path(p) => p.clone(),
+        other => panic!("{other:?}"),
+    };
+    let (a, b) = (path(m0), path(m1));
+    assert_eq!(a.vertices.len(), b.vertices.len());
+    for (a, b) in a.vertices.iter().zip(&b.vertices) {
+        assert_eq!((b.p.x, b.p.y), (a.p.x * 2.0, a.p.y * 3.0), "vertices: x by the width ratio, y by the height ratio");
+        assert_eq!((b.t_in.x, b.t_in.y), (a.t_in.x * 2.0, a.t_in.y * 3.0), "tangents too");
+        assert_eq!((b.t_out.x, b.t_out.y), (a.t_out.x * 2.0, a.t_out.y * 3.0));
+    }
+    assert_eq!((m1.feather.value.as_f64(), m1.expansion.value.as_f64()), (Some(20.0), Some(-6.0)), "lengths follow the width ratio");
+    let position = after.effect("transform").unwrap().param("position").unwrap().value.as_vec2();
+    assert_eq!(position, Some(Vec2::new(160.0, 135.0)), "a point: x by 2, y by 3");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The same relink, seen in the picture: the opacity mask still cuts out the middle of the frame
 /// after the clip is linked to a file twice the size.
 #[test]
