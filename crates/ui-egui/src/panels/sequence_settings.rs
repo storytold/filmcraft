@@ -400,6 +400,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let n = match d.mix.as_str() {
                 "Mono" => "1",
                 "5.1" => "6",
+                "7.1" => "8",
                 "Adaptive" => "—",
                 _ => "2",
             };
