@@ -4,7 +4,7 @@
 # Polish video-editing vocabulary. No proprietary localisation resource, string table or product UI
 # was consulted or copied; add entries the same way. Drafted with AI assistance; not yet reviewed by
 # a native speaker. Commands use the imperative ("Otwórz projekt…"), menus and panels are nouns.
-# Product, format and feature names (FilmCraft, ArtCraft, Lumetri, ProRes, EDL, AAF…) keep their
+# Product, format and feature names (FilmCraft, ArtCraft, ProRes, EDL, AAF…) keep their
 # spelling. Counts are written count-neutral ("Klipy: {n}") so every Polish number reads right.
 #
 # Terms: track = ścieżka, bin = kosz, marker = znacznik, playhead = głowica, In/Out = punkt
@@ -193,8 +193,8 @@
 	Refresh Changed Media	Odśwież zmienione multimedia
 	Linked Selection	Połączone zaznaczanie
 	Lock Guides	Zablokuj linie pomocnicze
-	Lumetri Color	Kolor Lumetri
-	Lumetri Scopes	Wykresy Lumetri
+	Color Grading	Korekcja kolorów
+	Video Scopes	Wskaźniki wideo
 	Magnification	Powiększenie
 	Make Offline…	Ustaw jako offline…
 	Make Subclip…	Utwórz podklip…
@@ -447,7 +447,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Czy na pewno odrzucić zmiany w „{file}”?
 	Yes	Tak
 	No	Nie
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodaj multimedia do projektu. Upuść pliki w dowolnym miejscu okna lub wybierz źródło poniżej.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Dodaj multimedia do projektu. Upuść pliki lub foldery w dowolnym miejscu okna lub wybierz źródło poniżej.
 	Browse files…	Przeglądaj pliki…
 	Movies, audio and stills from disk	Filmy, audio i zdjęcia z dysku
 	Demo footage	Materiał demonstracyjny
@@ -887,7 +887,7 @@
 	Clip Volume	Głośność klipu
 	(no clip selected)	(nie zaznaczono klipu)
 	Master · {name}	Główny · {name}
-	Add Lumetri Color to clip	Dodaj Kolor Lumetri do klipu
+	Add Color Grading to clip	Dodaj korekcję kolorów do klipu
 	Input LUT	Wejściowy LUT
 	Color	Kolor
 	Temperature	Temperatura
@@ -1665,7 +1665,7 @@
 	Elliptical	Eliptyczne
 	Emboss	Wytłoczenie
 	Enable HSL Secondary	Włącz drugorzędne HSL
-	Enable Mercury Transmit	Włącz Mercury Transmit
+	Enable External Video Output	Włącz zewnętrzne wyjście wideo
 	Enable ProRes hardware accelerated encoding, if available	Włącz sprzętowe kodowanie ProRes, jeśli jest dostępne
 	Enable clip and XMP metadata linking	Włącz łączenie metadanych klipu i XMP
 	Enable developer mode	Włącz tryb deweloperski
@@ -1733,7 +1733,7 @@
 	Focus Size	Rozmiar ostrości
 	Fold Motion	Ruch składania
 	Foldback	Odsłuch
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Parametry zarządzania kolorem znajdziesz na karcie Ustawienia w panelu Kolor Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Parametry zarządzania kolorami znajdują się na karcie Ustawienia w panelu Korekcja kolorów.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Cztery wykresy (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Cztery wykresy (YUV, float, bez ograniczania)
@@ -2002,7 +2002,7 @@
 	Luma Key	Klucz lumy
 	Luma Source	Źródło lumy
 	Luma and Chroma	Luma i chrominancja
-	Lumetri Presets	Ustawienia Lumetri
+	Color Grading Presets	Ustawienia korekcji kolorów
 	Luminance	Luminancja
 	Luminance Threshold	Próg luminancji
 	Luminosity	Jasność
@@ -3123,7 +3123,6 @@
 	Left align text	Wyrównaj tekst do lewej
 	Looping GIF, 640×360 at 15 fps	Zapętlony GIF, 640×360 przy 15 kl./s
 	Lower First	Najpierw dolne
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3457,6 +3456,7 @@
 	Clip Speed / Duration	Szybkość / czas trwania klipu
 	Speed:	Szybkość:
 	Reverse Speed	Odwróć kierunek
+	Maintain Audio Pitch	Zachowaj wysokość dźwięku
 	Ripple Edit, Shifting Trailing Clips	Edycja ripple, przesuwanie kolejnych klipów
 	About	Informacje
 	Contributors	Współtwórcy
@@ -3621,3 +3621,19 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Kolor 10-bitowy
+	All Intra	Tylko intra
+	Every frame a keyframe (edit-friendly, larger files)	Każda klatka kluczowa (wygodne w montażu, większe pliki)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) w rozmiarze sekwencji, stała jakość CRF 16, AAC 320 kb/s; master 10-bitowy
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, każda klatka kluczowa), CRF 12, AAC 320 kb/s; plik pośredni wygodny w montażu
+	List Color Grading Presets	Wyświetl ustawienia korekcji kolorów
+	Apply Color Grading Preset	Zastosuj ustawienie korekcji kolorów
+	Color Grading Preset Thumbnails	Miniatury ustawień korekcji kolorów
+	Toggle Color Grading Section	Przełącz sekcję korekcji kolorów
+	Color Grading Section	Sekcja korekcji kolorów
+	Read Video Scopes	Odczytaj wskaźniki wideo

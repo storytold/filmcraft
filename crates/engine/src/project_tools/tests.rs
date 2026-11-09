@@ -757,3 +757,16 @@ fn offline_files_keep_a_drop_frame_timecode() {
         assert_eq!(fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "Media Start").unwrap()["value"], shown, "{fps} {typed}");
     }
 }
+
+#[test]
+fn project_subset_drops_source_graphics_of_items_left_behind() {
+    let mut p = filmcraft_project::Project::new("P");
+    let kept = p.new_sequence("kept", filmcraft_project::SequenceSettings::default(), 1, 0, None);
+    let dropped = p.new_sequence("dropped", filmcraft_project::SequenceSettings::default(), 1, 0, None);
+    for id in [kept, dropped] {
+        p.source_graphics.insert(id, filmcraft_project::SourceGraphic::default());
+    }
+    let sub = crate::project_tools::project_subset(&p, &[kept].into_iter().collect());
+    assert!(sub.source_graphics.contains_key(&kept));
+    assert!(!sub.source_graphics.contains_key(&dropped));
+}

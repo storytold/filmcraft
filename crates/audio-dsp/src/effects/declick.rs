@@ -52,7 +52,7 @@ fn lpc(x: &[f64], p: usize, a: &mut [f64; MAX_ORDER + 1]) -> bool {
     for (k, rk) in r.iter_mut().enumerate().take(p + 1) {
         *rk = x[k..].iter().zip(x).map(|(u, v)| u * v).sum();
     }
-    if r[0] <= 1e-12 {
+    if !r[0].is_finite() || r[0] <= 1e-12 {
         return false;
     }
     r[0] *= 1.0 + 1e-6; // white-noise correction

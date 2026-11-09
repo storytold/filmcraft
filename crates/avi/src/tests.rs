@@ -407,3 +407,29 @@ fn lists_do_not_reach_past_their_container() {
     scan(&movi, &mut streams, &|_| true, 12, movi.len() as u64, 0);
     assert_eq!(streams[0].chunks.len(), 32);
 }
+
+#[test]
+fn read_chunk_range_reads_only_the_range_and_refuses_one_outside_the_chunk() {
+    let data: Vec<u8> = (0..100).collect();
+    let stream = Stream {
+        kind: StreamKind::Audio,
+        handler: [0; 4],
+        scale: 1,
+        rate: 1,
+        start: 0,
+        length: 0,
+        sample_size: 0,
+        video: None,
+        audio: None,
+        name: None,
+        chunks: vec![Chunk { offset: 10, size: 50, key: true }],
+        keyframes_known: false,
+        super_index: Vec::new(),
+    };
+    let file = AviFile { header: MainHeader::default(), streams: vec![stream], index: IndexSource::Scan };
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 5, 3).unwrap(), [15, 16, 17]);
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 0, 50).unwrap().len(), 50);
+    assert!(file.read_chunk_range(&data, 0, 0, 48, 3).is_err(), "past the chunk's size");
+    assert!(file.read_chunk_range(&data, 0, 0, usize::MAX, 2).is_err());
+    assert!(file.read_chunk_range(&data, 0, 1, 0, 1).is_err());
+}
