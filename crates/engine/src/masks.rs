@@ -180,6 +180,18 @@ fn source_size(s: &Session, clip: ClipId) -> (f64, f64) {
     (w as f64, h as f64)
 }
 
+/// Size of the frame an effect mask on `clip` is drawn in: `source` for a clip, but the sequence's
+/// for an adjustment layer, whose effects (and their masks) work on the sequence picture below it
+/// whatever the layer's own size.
+fn mask_frame_size(s: &Session, clip: ClipId, source: (f64, f64)) -> (f64, f64) {
+    let Some(seq) = s.active_sequence() else {
+        return source;
+    };
+    let adjustment =
+        seq.find_item(clip).and_then(|(_, i)| s.project.item(i.item)).is_some_and(|pi| matches!(pi.kind, filmcraft_project::ItemKind::AdjustmentLayer { .. }));
+    if adjustment { (f64::from(seq.settings.width), f64::from(seq.settings.height)) } else { source }
+}
+
 /// Run `f` on the addressed mask as one undoable edit. `f` gets the mask and the clip (media) time
 /// of the edit.
 fn edit_mask<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Mask, Tick) -> Result<R>) -> Result<R> {
@@ -233,7 +245,10 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             // a colour range over the whole frame (and well past it, so no edge shows)
-            "color" => MaskPath::rect(-w, -h, 2.0 * w, 2.0 * h),
+            "color" => {
+                let (fw, fh) = mask_frame_size(s, clip, (w, h));
+                MaskPath::rect(-fw, -fh, 2.0 * fw, 2.0 * fh)
+            }
             _ => return Err(bad("masks.add", "a bezier mask needs `path` (pen points)")),
         },
     };

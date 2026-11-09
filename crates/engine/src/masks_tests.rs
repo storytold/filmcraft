@@ -203,6 +203,34 @@ fn color_range_mask_limits_an_effect_to_a_colour() {
     assert_eq!(s.execute("masks.list", json!({})).unwrap()["masks"][1]["colorRange"]["color_luma_max"], 95.0);
 }
 
+/// An adjustment layer's effects (and their masks) work in sequence pixels, so a colour range mask
+/// on a layer smaller than the sequence still covers the whole frame, not just the layer's size
+/// measured from the top-left corner.
+#[test]
+fn color_range_mask_on_a_small_adjustment_layer_covers_the_frame() {
+    let (mut s, _) = demo();
+    let item = s.execute("file.newAdjustmentLayer", json!({"seconds": 4})).unwrap()["item"].as_u64().unwrap();
+    // a 100 x 100 layer, as one made for a smaller sequence: it adjusts a centred 100 x 100 square
+    if let Some(filmcraft_project::ItemKind::AdjustmentLayer { width, height, .. }) =
+        std::sync::Arc::make_mut(&mut s.project).item_mut(filmcraft_project::ItemId(item)).map(|i| &mut i.kind)
+    {
+        (*width, *height) = (100, 100);
+    }
+    let t = s.playhead();
+    let layer = s.execute("timeline.place", json!({"item": item, "track": "V3", "seconds": t.seconds()})).unwrap()["clips"][0].as_u64().unwrap();
+    let plain = s.render_program(0.25).unwrap();
+    s.execute("effects.apply", json!({"clips": [layer], "effect": "invert"})).unwrap();
+    let inverted = s.render_program(0.25).unwrap();
+    assert!(dist(px(&plain, 0.5, 0.5), px(&inverted, 0.5, 0.5)) > 0.05, "the layer inverts the frame centre");
+    let r = s.execute("masks.add", json!({"clip": layer, "effect": "invert", "shape": "color"})).unwrap();
+    // a range that keys every colour: the mask covers everything the layer adjusts
+    for (k, v) in [("color_hue_range", 180.0), ("color_sat_min", 0.0), ("color_luma_min", 0.0), ("color_luma_max", 100.0), ("color_soften", 0.0)] {
+        s.execute("effects.setParam", json!({"clip": layer, "effect": "invert", "mask": r["mask"], "param": k, "value": v})).unwrap();
+    }
+    let masked = s.render_program(0.25).unwrap();
+    assert!(dist(px(&masked, 0.5, 0.5), px(&inverted, 0.5, 0.5)) < 1e-4, "the colour range mask covers the layer's region");
+}
+
 // ---------------------------------------------------------------- tracking
 
 /// A 320×240 24 fps clip of a textured disc moving under a known similarity motion over a static
