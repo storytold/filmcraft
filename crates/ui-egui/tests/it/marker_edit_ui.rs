@@ -136,3 +136,29 @@ fn ok_keeps_a_duration_that_was_not_edited() {
         assert_eq!((m.name.as_str(), m.duration), ("Renamed", want), "only the name changed");
     }
 }
+
+/// #4491: dragging a marker's flag on the ruler moves the marker, in one undo step, and leaves the
+/// playhead on the press (it no longer scrubs along).
+#[test]
+fn dragging_a_marker_flag_moves_the_marker() {
+    let mut d = Driver::demo();
+    d.exec("sequence.snap", json!({"on": false}));
+    let id = d.setup();
+    let before = d.marker(id).start;
+    let flag = format!("timeline.marker.{id}");
+    let e = d.ok("ui.elements", json!({"prefix": flag}));
+    let r = e.as_array().unwrap().iter().find(|e| e["id"] == flag.as_str()).unwrap()["rect"].clone();
+    let (x, y) = (r[0].as_f64().unwrap() + r[2].as_f64().unwrap() / 2.0, r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0);
+    let tick_at = |d: &mut Driver, x: f64| d.ok("ui.timeline.hit", json!({"x": x, "y": y}))["time"].as_i64().unwrap();
+    let delta = tick_at(&mut d, x + 120.0) - tick_at(&mut d, x);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 120.0, "y": y}, "steps": 8}));
+    d.frames(3);
+    let rate = d.harness.state().session.sequence_rate();
+    let after = d.marker(id).start;
+    assert!((after.0 - (before.0 + delta)).abs() <= rate.frame_duration().0, "the marker follows the pointer: {before:?} -> {after:?}, moved {delta}");
+    assert_eq!(after, rate.snap_nearest(after), "it lands on a frame");
+    let playhead = d.harness.state().session.playhead();
+    // within a frame: the playhead shows a whole frame, and 2 s is not one at the demo's 23.976
+    assert!((playhead.0 - before.0).abs() <= rate.frame_duration().0, "the playhead stays on the press, not dragged along: {playhead:?}");
+    assert_eq!(d.harness.state().session.history.undo.last().map(|u| u.0.as_str()), Some("Edit Markers"));
+}

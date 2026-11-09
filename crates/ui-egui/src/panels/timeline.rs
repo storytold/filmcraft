@@ -243,6 +243,15 @@ pub enum Drag {
         start: Tick,
         end: Tick,
     },
+    /// A sequence marker dragged by its flag on the ruler (#4491): `start` is where it was at the
+    /// press, `to` where it is shown now, committed on release as one `markers.edit`.
+    Marker {
+        id: MarkerId,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        start: Tick,
+        to: Tick,
+    },
     /// The Timeline dragged by the middle button or the Hand tool: sideways in time, and up and down
     /// the half it began in (`audio`: the audio tracks below the divider, else the video tracks).
     Pan {
