@@ -3,7 +3,7 @@ use super::output::{AudioWriter, Out, SharedBuf, write_output};
 use super::still_encode::encode_still_with;
 use super::{
     Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
-    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped,
+    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, mp3_out, pcm, pipeline, stepped,
 };
 
 /// The range to export (settings → In/Out → whole sequence).
@@ -95,6 +95,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Aac => aac_out::export(project, seq, settings, range, sources, progress)?,
+        Format::Mp3 => mp3_out::export(project, seq, settings, range, sources, progress)?,
         Format::Wav | Format::Aiff | Format::Flac => {
             let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             let (ch, sr, fmt) = (a.channels as u16, a.sr, settings.audio.sample_format());
@@ -244,5 +245,8 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
         progress.finished.store(true, Ordering::Relaxed);
         progress.set_status(format!("Done in {secs:.1}s"));
     }
-    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    // an image sequence writes numbered stills, never `settings.path` itself: report its first
+    // still, the name `file.import` and `probe --image-sequence` take for the sequence (#4009)
+    let path = if settings.format.is_image_sequence() && nframes > 0 { pcm::image_sequence_path(&settings.path, 0, nframes) } else { settings.path.clone() };
+    Ok(Report { path, frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
 }

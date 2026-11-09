@@ -164,7 +164,8 @@ proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `p
 (`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
 
 **Moving clips**: `timeline.move {moves: [{clip, track, time}], insert?, linked?, captions?}` → `{moved: [clip ids]}`.
-With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
+`time` is ticks or a time object at the sequence rate (`{"seconds": 2}`, `{"frame": 48}`, `{"timecode": "00:00:02:00"}`),
+and an entry without a `clip`, `track` or `time` is refused by its index. With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
 partners of a listed clip that are not listed themselves move by the same time offset and stay on
 their own tracks, so picture and sound stay in sync. Like a listed clip, a partner overwrites
 what is at its destination (or inserts, with `insert`). A partner on a locked track stays where it
@@ -207,7 +208,12 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
-`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without
+`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`,
+`lumetri.exportCube {clip?, path, size?=33}` (the clip's Lumetri grade, an Apply Match result too,
+sampled on a 2..65 lattice in the sequence's output encoding and written as a 3D `.cube`; the
+result's `leftOut` names what a LUT cannot hold: vignette, sharpen, HSL Secondary denoise and blur,
+and the clip's other effects; Rec. 709 sequences without wide gamut only; the Lumetri panel menu
+entry `panel.menu.LumetriColor.exportCube` asks for the path). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,
