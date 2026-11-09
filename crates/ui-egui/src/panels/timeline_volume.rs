@@ -377,6 +377,7 @@ mod tests {
         }
     }
 
+    /// A keyframe's timeline time maps back to the media time it plays, at any speed or reversed.
     #[test]
     fn keyframes_sit_where_their_media_time_plays() {
         for (speed, reverse) in [(1.0, false), (2.0, false), (0.5, false), (1.0, true), (2.0, true)] {

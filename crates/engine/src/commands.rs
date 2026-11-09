@@ -184,6 +184,7 @@ fn has_previews(s: &Session) -> std::result::Result<(), String> {
 pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), String> {
     if s.state.project_selection.is_empty() { Err("select an item in the Project panel".into()) } else { Ok(()) }
 }
+/// Paste is enabled when a clip, caption or keyframe clipboard holds something.
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.keyframe_clipboard.is_empty() {
@@ -4533,6 +4534,7 @@ fn copy_selection(s: &mut Session) {
 /// Timeline clips (track kind, track index, item) and the sequence markers that go with them.
 type Clipboard = (Vec<(TrackKind, usize, filmcraft_project::TrackItem)>, Vec<Marker>);
 
+/// Put copied clips and markers on the clipboard, emptying the caption and keyframe clipboards.
 fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
     st.clipboard = clips;
     st.clipboard_markers = markers;

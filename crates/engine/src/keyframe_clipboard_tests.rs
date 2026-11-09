@@ -1,23 +1,26 @@
 //! Copy and paste of keyframes (#3562): clip Volume keys and track automation keys keep their
 //! values and spacing, the first lands at the playhead on the same parameter of the target.
 
-use filmcraft_project::mixer::LANE_VOLUME;
+use filmcraft_project::mixer::{LANE_PAN, LANE_VOLUME, MASTER_STRIP};
 use filmcraft_project::{ClipId, ParamValue, TrackItem};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
 use crate::Session;
 
+/// A session with the demo project open.
 fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s
 }
 
+/// `x` seconds in ticks.
 fn sec(x: f64) -> i64 {
     (x * TICKS_PER_SECOND as f64) as i64
 }
 
+/// A copy of clip `id` in the active sequence.
 fn clip(s: &Session, id: ClipId) -> TrackItem {
     s.active_sequence().unwrap().find_item(id).unwrap().1.clone()
 }
@@ -29,6 +32,7 @@ fn volume_keys(s: &Session, id: ClipId) -> Vec<(i64, f64)> {
     p.keyframes.iter().map(|k| (it.timeline_time(k.time).0, k.value.as_f64().unwrap())).collect()
 }
 
+/// Copied Volume keys paste on the selected clip, the first at the playhead, in one undo step.
 #[test]
 fn copied_volume_keyframes_paste_at_the_playhead_on_the_selected_clip() {
     let mut s = demo();
@@ -65,6 +69,7 @@ fn copied_volume_keyframes_paste_at_the_playhead_on_the_selected_clip() {
     assert!(volume_keys(&s, dst.id).is_empty(), "one undo step");
 }
 
+/// Copied track lane keys paste on their track with their values, the first at the playhead.
 #[test]
 fn copied_track_keyframes_paste_at_the_playhead() {
     let mut s = demo();
@@ -90,6 +95,7 @@ fn copied_track_keyframes_paste_at_the_playhead() {
     );
 }
 
+/// Copying clips empties the keyframe clipboard, and references to no keyframe are refused.
 #[test]
 fn copying_clips_after_keyframes_pastes_clips_and_bad_refs_are_refused() {
     let mut s = demo();
@@ -108,4 +114,23 @@ fn copying_clips_after_keyframes_pastes_clips_and_bad_refs_are_refused() {
     ] {
         assert!(s.execute("edit.copyKeyframes", bad.clone()).is_err(), "{bad}");
     }
+}
+
+/// Pasting track keys on the Mix track keeps only the lanes Mix has (volume and effects), as the
+/// mixer commands do: a copied pan lane is skipped, and pan alone is refused.
+#[test]
+fn pasting_on_mix_skips_the_lanes_mix_has_not() {
+    let mut s = demo();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "lane": LANE_VOLUME, "time": sec(1.0), "value": -3.0})).unwrap();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "lane": LANE_PAN, "time": sec(1.0), "value": 0.5})).unwrap();
+    let strip = s.active_sequence().unwrap().audio_tracks[0].id.0;
+    let both = json!([{"strip": strip, "lane": LANE_VOLUME, "time": sec(1.0)}, {"strip": strip, "lane": LANE_PAN, "time": sec(1.0)}]);
+    s.execute("edit.copyKeyframes", json!({"keyframes": both})).unwrap();
+    assert_eq!(s.execute("edit.paste", json!({"strip": "Mix", "time": sec(5.0)})).unwrap()["pasted"], 1);
+    let mix = |s: &Session, lane: &str| s.active_sequence().unwrap().strip(MASTER_STRIP).unwrap().lane_keyframes(lane).len();
+    assert_eq!((mix(&s, LANE_VOLUME), mix(&s, LANE_PAN)), (1, 0));
+
+    s.execute("edit.copyKeyframes", json!({"keyframes": [{"strip": strip, "lane": LANE_PAN, "time": sec(1.0)}]})).unwrap();
+    assert!(s.execute("edit.paste", json!({"strip": "Mix", "time": sec(5.0)})).is_err(), "pan alone has nowhere to go on Mix");
+    assert_eq!(mix(&s, LANE_PAN), 0);
 }

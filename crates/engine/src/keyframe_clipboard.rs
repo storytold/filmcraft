@@ -154,7 +154,15 @@ pub(crate) fn paste(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 KeyframeLane::Track { lane } => {
                     let times: Vec<Tick> = c.keys.iter().map(place).collect();
-                    n += q.with_strip_mut(strip.unwrap_or(TrackId(c.source)), |tr| tr.lane_mut(lane).map_or(0, |par| put(par, &c.keys, &times))).unwrap_or(0);
+                    n += q
+                        .with_strip_mut(strip.unwrap_or(TrackId(c.source)), |tr| {
+                            // the same lanes the mixer commands accept, so pasted keys stay editable
+                            if crate::mixer::lane_refusal(tr, lane).is_some() {
+                                return 0;
+                            }
+                            tr.lane_mut(lane).map_or(0, |par| put(par, &c.keys, &times))
+                        })
+                        .unwrap_or(0);
                 }
             }
         }

@@ -228,7 +228,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             {
                 // egui ends a drag on Escape: that stop abandons it (#580)
                 if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    let nt = layout.tick_at(c.x).max(Tick::ZERO);
+                    // between the neighbours, as `mixer.moveKeyframe` keeps it, so the selection matches
+                    let lo = i.checked_sub(1).and_then(|j| kfs.get(j)).map_or(Tick::ZERO, |n| Tick(n.time.0.saturating_add(1)));
+                    let hi = kfs.get(i + 1).map_or(Tick(i64::MAX), |n| Tick(n.time.0.saturating_sub(1)));
+                    let nt = layout.tick_at(c.x).max(Tick::ZERO).clamp(lo, hi.max(lo));
                     let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
                     acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));
                     // the selection follows the moved key, so Copy still finds it

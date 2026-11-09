@@ -1017,6 +1017,7 @@ fn yes() -> bool {
 }
 
 impl Default for UiState {
+    /// The UI state of a fresh session.
     fn default() -> Self {
         Self {
             marker_properties: None,

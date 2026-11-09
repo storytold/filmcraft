@@ -209,6 +209,7 @@ fn clicks_on_the_volume_line_still_reach_the_clip() {
     assert!(d.level(pair.audio).1.is_empty());
 }
 
+/// The Pen tool adds Volume keyframes on a clip's line in the Timeline, and they can be deleted.
 #[test]
 fn volume_keyframes_on_the_timeline() {
     let (mut d, pair) = Driver::demo(&[]);

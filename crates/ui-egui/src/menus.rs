@@ -944,6 +944,7 @@ pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Gr
 /// the catalogs like menu labels (`apps/filmcraft/src/native_menu.rs`).
 pub const NATIVE_APP_MENU: [&str; 4] = ["Settings", "Hide FilmCraft", "Hide Others", "Quit FilmCraft"];
 
+/// The menu items with translated labels and the UI's own checked and enabled states.
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
@@ -984,12 +985,24 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
 
 /// The `edit.copyKeyframes` parameters for the keyframes Copy takes instead of clips (#3562): those
 /// selected on the Timeline's lanes or in Effect Controls, while one of those panels has focus.
+/// Selected keyframes that no longer exist (an Undo moved them back) are left out.
 fn selected_keyframes(app: &FilmcraftApp) -> Option<Value> {
     if !matches!(app.ui.focused, PanelKind::Timeline | PanelKind::EffectControls) {
         return None;
     }
-    let clip = app.ui.keyframe_selection.iter().filter_map(|k| serde_json::to_value(k).ok());
-    let track = app.ui.track_keyframe_selection.iter().filter_map(|k| serde_json::to_value(k).ok());
+    let q = app.session.active_sequence()?;
+    let clip = app
+        .ui
+        .keyframe_selection
+        .iter()
+        .filter(|k| q.find_item(filmcraft_project::ClipId(k.clip)).is_some_and(|(_, it)| crate::panels::effect_controls::keyframe_exists(it, k)));
+    let track = app
+        .ui
+        .track_keyframe_selection
+        .iter()
+        .filter(|k| q.strip(filmcraft_project::TrackId(k.strip)).is_some_and(|t| t.lane_keyframes(&k.lane).iter().any(|x| x.time == k.time)));
+    let clip = clip.filter_map(|k| serde_json::to_value(k).ok());
+    let track = track.filter_map(|k| serde_json::to_value(k).ok());
     let keys: Vec<Value> = clip.chain(track).collect();
     (!keys.is_empty()).then(|| json!({"keyframes": keys}))
 }

@@ -117,6 +117,7 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
+/// `ui.set`: apply the given UI state fields (tool, focus, selections, panel drafts…).
 fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
