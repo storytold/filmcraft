@@ -454,7 +454,8 @@ impl eframe::App for FilmcraftApp {
         // is dropped exactly as in `--control-input-only` mode, so drops, clicks and shortcuts
         // outside the sheet do nothing. Agent-driven synthetic input below and the control channel
         // keep working, and a close request (not an event) still reaches `intercept_quit`: Quit works.
-        if self.native_dialog_open() {
+        // The Quit prompt that request opens stays clickable, or Quit could not be answered.
+        if self.native_dialog_open() && self.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
             drop_native_input(raw_input);
         }
         if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {

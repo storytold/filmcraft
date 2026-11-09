@@ -240,8 +240,11 @@ impl FilmcraftApp {
                 ctx.request_repaint_after(Duration::from_millis(100));
                 return;
             }
-            // the host's dialog ended without an answer (its thread failed): as if cancelled
-            Err(TryRecvError::Disconnected) => Vec::new(),
+            // the host's dialog ended without an answer (its thread failed): as if cancelled, but said
+            Err(TryRecvError::Disconnected) => {
+                self.ui.status = tl!("The file dialog could not be shown").into();
+                Vec::new()
+            }
         };
         let Some(pending) = self.native_dialog.take() else { return };
         if let Err(e) = (pending.then)(self, paths) {
