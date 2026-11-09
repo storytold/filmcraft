@@ -461,7 +461,7 @@
 	Replace	Reemplazar
 	Yes	Sí
 	No	No
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos en cualquier parte de la ventana o elige un origen abajo.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos o carpetas en cualquier parte de la ventana o elige un origen abajo.
 	Browse files…	Examinar archivos…
 	Movies, audio and stills from disk	Películas, audio e imágenes fijas del disco
 	Demo footage	Material de demostración
@@ -3007,6 +3007,9 @@
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), estéreo, AAC-LC de 48 kHz a 320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Audio MPEG (.mp3), estéreo conjunto de 48 kHz a 320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, estéreo, PCM de 48 kHz y 16 bits
@@ -3479,6 +3482,7 @@
 	Clip Speed / Duration	Velocidad/duración del clip
 	Speed:	Velocidad:
 	Reverse Speed	Invertir velocidad
+	Maintain Audio Pitch	Mantener tono del audio
 	Ripple Edit, Shifting Trailing Clips	Edición de rizo, desplazando los clips posteriores
 	About	Acerca de
 	Contributors	Colaboradores
@@ -3664,3 +3668,84 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+	Temporal Interpolation	Interpolación temporal
+	Select items to clear	Selecciona los elementos que quieres borrar
+	Opens in your web browser: {url}	Se abre en el navegador web: {url}
+	A range marker needs a positive duration	Un marcador de rango necesita una duración positiva
+	Add Custom Color	Añadir color personalizado
+	Add and apply	Añadir y aplicar
+	Add color	Añadir color
+	Add custom color	Añadir color personalizado
+	Add custom color…	Añadir color personalizado…
+	Author	Autor
+	Chapter	Capítulo
+	Choose Color…	Elegir color…
+	Choose color with system picker	Elegir color con el selector del sistema
+	Color picker	Selector de color
+	Color selected markers	Cambiar el color de los marcadores seleccionados
+	Custom Color…	Color personalizado…
+	Delete Marker	Eliminar marcador
+	Delete selected markers	Eliminar los marcadores seleccionados
+	Edit Custom Color	Editar color personalizado
+	Edit Marker	Editar marcador
+	Edit color	Editar color
+	Editing or removing a swatch leaves assigned colors unchanged.	Editar o eliminar una muestra no cambia los colores asignados.
+	Enter six hex digits, for example FF80C0.	Introduce seis dígitos hexadecimales, por ejemplo FF80C0.
+	Hex	Hex
+	Hex color	Color hexadecimal
+	Manage Colors	Gestionar colores
+	Manage Colors…	Gestionar colores…
+	Marker owner is unavailable	El propietario del marcador no está disponible
+	No markers	No hay marcadores
+	No matching markers	No hay marcadores coincidentes
+	No saved colors	No hay colores guardados
+	No sequence open	No hay ninguna secuencia abierta
+	No source clip open	No hay ningún clip de origen abierto
+	Notes	Notas
+	Project Colors	Colores del proyecto
+	Range marker	Marcador de rango
+	Remove saved color	Eliminar color guardado
+	Save color	Guardar color
+	Search markers	Buscar marcadores
+	Search name, notes, author	Buscar nombre, notas o autor
+	Select all	Seleccionar todo
+	Select all visible markers	Seleccionar todos los marcadores visibles
+	Sequence: {name}	Secuencia: {name}
+	Source: {name}	Origen: {name}
+	Source: {name} (shared source markers)	Origen: {name} (marcadores de origen compartidos)
+	System color picker unavailable: {error}	El selector de color del sistema no está disponible: {error}
+	Time is outside the supported range	El tiempo está fuera del rango admitido
+	{count} selected	{count} seleccionados
+	Remove Custom Color	Eliminar color personalizado
+	Edit Markers	Editar marcadores
+	Delete Markers	Eliminar marcadores
+	Marker changed or was removed. Reopen it to continue.	El marcador cambió o se eliminó. Ábrelo de nuevo para continuar.
+	URL	URL
+	Open Link	Abrir enlace
+	Opens this address in your web browser	Abre esta dirección en tu navegador web
+	Enter a valid HTTP or HTTPS URL without credentials	Introduce una URL HTTP o HTTPS válida sin credenciales
+	Previous	Anterior
+	Next	Siguiente
+	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF
+	Open Presets Folder	Abrir carpeta de ajustes preestablecidos
+	Scan Presets Folder	Escanear carpeta de ajustes preestablecidos
+	From preset file:	Desde archivo de ajustes preestablecidos:
+	No presets folder: the app has no data directory	No hay carpeta de ajustes preestablecidos: la aplicación no tiene directorio de datos
+	Imported {n} preset(s)	Se importaron {n} ajustes preestablecidos
+	Imported {n} preset(s); {skipped} skipped	Se importaron {n} ajustes preestablecidos; {skipped} omitidos
+	Imported {n} preset(s); {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {warnings} con parámetros no compatibles
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {skipped} omitidos, {warnings} con parámetros no compatibles
+	Imported {n} preset(s); not imported: {error}	Se importaron {n} ajustes preestablecidos; no se importó: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes preestablecidos actualizada: {imported} cargados, {removed} eliminados
+	Preset library updated	Biblioteca de ajustes preestablecidos actualizada
+	Preset library is up to date	La biblioteca de ajustes preestablecidos está actualizada
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Color de 10 bits
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Cada fotograma es clave (fácil de editar, archivos más grandes)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) con el tamaño de la secuencia, calidad constante CRF 16, AAC 320 kbps; un máster de 10 bits
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, cada fotograma es clave), CRF 12, AAC 320 kbps; un intermedio fácil de editar

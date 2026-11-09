@@ -464,7 +464,7 @@
 	Replace	Ganti
 	Yes	Ya
 	No	Tidak
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas atau folder di mana saja di jendela, atau pilih sumber di bawah.
 	Browse files…	Telusuri berkas…
 	Movies, audio and stills from disk	Film, audio, dan gambar diam dari disk
 	Demo footage	Rekaman demo
@@ -3467,6 +3467,7 @@
 	Clip Speed / Duration	Kecepatan / Durasi Klip
 	Speed:	Kecepatan:
 	Reverse Speed	Balik Kecepatan
+	Maintain Audio Pitch	Pertahankan Nada Audio
 	Ripple Edit, Shifting Trailing Clips	Edit Ripple, Geser Klip Berikutnya
 	About	Tentang
 	Contributors	Kontributor
@@ -3611,3 +3612,71 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolasi Temporal
+	Select items to clear	Pilih item yang akan dihapus
+	A range marker needs a positive duration	Penanda rentang memerlukan durasi positif
+	Add Custom Color	Tambah Warna Kustom
+	Add and apply	Tambah dan terapkan
+	Add color	Tambah warna
+	Add custom color	Tambah warna kustom
+	Add custom color…	Tambah warna kustom…
+	Author	Pembuat
+	Chapter	Bab
+	Choose Color…	Pilih Warna…
+	Choose color with system picker	Pilih warna dengan pemilih sistem
+	Color picker	Pemilih warna
+	Color selected markers	Ubah warna penanda terpilih
+	Custom Color…	Warna Kustom…
+	Delete Marker	Hapus Penanda
+	Delete selected markers	Hapus penanda terpilih
+	Edit Custom Color	Edit Warna Kustom
+	Edit Marker	Edit Penanda
+	Edit color	Edit warna
+	Editing or removing a swatch leaves assigned colors unchanged.	Mengedit atau menghapus contoh warna tidak mengubah warna yang sudah diterapkan.
+	Enter six hex digits, for example FF80C0.	Masukkan enam digit heksadesimal, misalnya FF80C0.
+	Hex	Heksadesimal
+	Hex color	Warna heksadesimal
+	Manage Colors	Kelola Warna
+	Manage Colors…	Kelola Warna…
+	Marker owner is unavailable	Pemilik penanda tidak tersedia
+	No markers	Tidak ada penanda
+	No matching markers	Tidak ada penanda yang cocok
+	No saved colors	Tidak ada warna tersimpan
+	No sequence open	Tidak ada sekuens yang terbuka
+	No source clip open	Tidak ada klip sumber yang terbuka
+	Notes	Catatan
+	Project Colors	Warna Proyek
+	Range marker	Penanda rentang
+	Remove saved color	Hapus warna tersimpan
+	Save color	Simpan warna
+	Search markers	Cari penanda
+	Search name, notes, author	Cari nama, catatan, pembuat
+	Select all	Pilih semua
+	Select all visible markers	Pilih semua penanda yang terlihat
+	Sequence: {name}	Sekuens: {name}
+	Source: {name}	Sumber: {name}
+	Source: {name} (shared source markers)	Sumber: {name} (penanda sumber bersama)
+	System color picker unavailable: {error}	Pemilih warna sistem tidak tersedia: {error}
+	Time is outside the supported range	Waktu di luar rentang yang didukung
+	{count} selected	{count} dipilih
+	Remove Custom Color	Hapus Warna Kustom
+	Edit Markers	Edit Penanda
+	Delete Markers	Hapus Penanda
+	Marker changed or was removed. Reopen it to continue.	Penanda telah diubah atau dihapus. Buka kembali untuk melanjutkan.
+	URL	URL
+	Open Link	Buka Tautan
+	Opens this address in your web browser	Membuka alamat ini di peramban web
+	Enter a valid HTTP or HTTPS URL without credentials	Masukkan URL HTTP atau HTTPS yang valid tanpa kredensial
+	Previous	Sebelumnya
+	Next	Berikutnya
+	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Warna 10-bit
+	All Intra	Semua intra
+	Every frame a keyframe (edit-friendly, larger files)	Setiap bingkai adalah bingkai kunci (mudah disunting, file lebih besar)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) pada ukuran sekuens, kualitas konstan CRF 16, AAC 320 kbps; master 10-bit
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, setiap bingkai adalah bingkai kunci), CRF 12, AAC 320 kbps; intermediate yang mudah disunting

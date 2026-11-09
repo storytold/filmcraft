@@ -292,6 +292,24 @@ fn open_section(
     open
 }
 
+/// The Lumetri Color panel's ≡ menu items: Export .cube… saves the grade of the clip the panel
+/// shows (also an Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id
+/// `panel.menu.LumetriColor.exportCube`). It is enabled only when that clip has an enabled
+/// Lumetri Color, and exports that clip even when another selected clip has one.
+/// True when the menu should close.
+pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let shown = selected(app).filter(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri")).map(|(c, _)| c);
+    let r = ui.add_enabled(shown.is_some(), egui::Button::new(tl!("Export .cube…")));
+    app.auto.add_response("panel.menu.LumetriColor.exportCube", &r, "Export .cube…");
+    if let (true, Some(clip)) = (r.clicked(), shown) {
+        if let Err(e) = crate::menus::invoke(app, ui.ctx(), "lumetri.exportCube", json!({"clip": clip.0})) {
+            app.ui.status = e;
+        }
+        return true;
+    }
+    false
+}
+
 /// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
 fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;

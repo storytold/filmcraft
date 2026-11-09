@@ -270,3 +270,244 @@ fn eac3_garbage_never_panics() {
         }
     }
 }
+
+/// Golden hashes of the decoder output, so that a change of the bit reader cannot change a
+/// decoded sample or an error. The values were made on upstream/main (68919ed8), before the
+/// private bit-by-bit reader was replaced by the shared one: every frame below is decoded with a
+/// fresh decoder, and every output sample bit (as `f32::to_bits`, channel after channel) and every
+/// error (its `Debug` text) goes into an FNV-1a 64 hash. The frames are deterministic: valid
+/// AC-3 and E-AC-3 syncframe headers (all fscod, frmsizecod, bsid, acmod and lfeon values in
+/// the tables below) with random, zero-heavy or all-ones payload bits, plus truncated and
+/// bit-flipped variants of the same frames.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        for &x in b {
+            self.0 = (self.0 ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+struct Rng(u32);
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0
+    }
+}
+
+/// One payload byte for the given flavour: random, zero-heavy, or ones-heavy.
+fn payload_byte(rng: &mut Rng, flavour: usize) -> u8 {
+    let v = rng.next();
+    match flavour % 3 {
+        0 => (v >> 7) as u8,
+        1 => ((v >> 7) as u8) & ((v >> 19) as u8) & ((v >> 3) as u8),
+        _ => ((v >> 7) as u8) | ((v >> 19) as u8) | ((v >> 3) as u8),
+    }
+}
+
+/// See `synthetic_frames`: 12 syncframes, back to back.
+const REAL_FRAMES: &[u8] = include_bytes!("golden_frames.bin");
+
+fn synthetic_frames() -> Vec<Vec<u8>> {
+    let mut rng = Rng(0x00C0_FFEE);
+    let mut frames = Vec::new();
+    // AC-3: bsid 8 and the half / quarter rate variants 9 and 10, every fscod and a spread of
+    // frmsizecod, acmod 0 to 7, lfeon off and on.
+    for n in 0..1200usize {
+        let fscod = n % 3;
+        let frmsizecod = (n * 7 + n / 3) % 38;
+        let bsid = [8u8, 8, 8, 9, 10, 6][n % 6];
+        let acmod = (n / 3) % 8;
+        let lfeon = (n / 24) % 2;
+        let Ok(h) = parse_header(&[0x0B, 0x77, 0, 0, ((fscod << 6) | frmsizecod) as u8, bsid << 3, (acmod as u8) << 5, 0]) else { continue };
+        let mut f = vec![0u8; h.frame_bytes];
+        for b in f.iter_mut() {
+            *b = payload_byte(&mut rng, n);
+        }
+        f[0] = 0x0B;
+        f[1] = 0x77;
+        f[4] = ((fscod << 6) | frmsizecod) as u8;
+        f[5] = bsid << 3;
+        // acmod in the top 3 bits; the mix-level bits that follow depend on acmod and are random
+        f[6] = (f[6] & 0x1F) | ((acmod as u8) << 5);
+        // lfeon follows the optional 2-bit fields (cmixlev, surmixlev, dsurmod)
+        let mut at = 3;
+        if acmod & 1 != 0 && acmod != 1 {
+            at += 2;
+        }
+        if acmod & 4 != 0 {
+            at += 2;
+        }
+        if acmod == 2 {
+            at += 2;
+        }
+        let bit = 48 + at;
+        f[bit / 8] = (f[bit / 8] & !(0x80 >> (bit % 8))) | ((lfeon as u8) * (0x80 >> (bit % 8)));
+        frames.push(f);
+    }
+    // E-AC-3: strmtyp 0 / 1 / 2, fscod 0..=3 (3 = reduced rate), numblkscod, acmod, lfeon
+    for n in 0..800usize {
+        let words = 24 + (n * 13) % 400;
+        let fscod = n % 4;
+        let blk = (n / 4) % 4;
+        let acmod = (n / 16) % 8;
+        let lfeon = (n / 128) % 2;
+        let strmtyp = [0u32, 0, 0, 1, 2][n % 5];
+        let bsid = 11 + (n % 6) as u32;
+        let mut f = vec![0u8; words * 2];
+        for b in f.iter_mut() {
+            *b = payload_byte(&mut rng, n);
+        }
+        let head: u32 = (strmtyp << 30)
+            | (((n % 7) as u32) << 27)
+            | (((words - 1) as u32) << 16)
+            | ((fscod as u32) << 14)
+            | ((if fscod == 3 { (n / 7 % 3) as u32 } else { blk as u32 }) << 12)
+            | ((acmod as u32) << 9)
+            | ((lfeon as u32) << 8)
+            | (bsid << 3)
+            | (f[5] as u32 & 7);
+        f[0] = 0x0B;
+        f[1] = 0x77;
+        f[2..6].copy_from_slice(&head.to_be_bytes());
+        frames.push(f);
+    }
+    // real frames (two of each stream, made with ffmpeg's ac3 / eac3 encoders from tones and noise:
+    // mono 64k 32 kHz, coupled stereo 96k 44.1 kHz, noise stereo 96k, 5.1 192k; E-AC-3 noise
+    // stereo 96k and 5.1 192k) reach exponents, bit allocation and mantissas of every block, which
+    // random payload bits almost never do. Each one is decoded as is, with 60 bit-flipped copies
+    // and cut at every 16th byte.
+    let mut p = 0;
+    while let Ok(h) = parse_header(&REAL_FRAMES[p..]) {
+        let f = &REAL_FRAMES[p..p + h.frame_bytes];
+        p += h.frame_bytes;
+        frames.push(f.to_vec());
+        for _ in 0..60 {
+            let mut m = f.to_vec();
+            for _ in 0..1 + rng.next() % 3 {
+                let bit = 64 + rng.next() as usize % (m.len() * 8 - 64);
+                m[bit / 8] ^= 0x80 >> (bit % 8);
+            }
+            frames.push(m);
+        }
+        for cut in (8..f.len()).step_by(16) {
+            frames.push(f[..cut].to_vec());
+        }
+    }
+    // truncated and bit-flipped variants of every 5th frame
+    let base = frames.clone();
+    for (i, f) in base.iter().enumerate().step_by(5) {
+        let mut t = f.clone();
+        t.truncate(rng.next() as usize % f.len());
+        frames.push(t);
+        let mut m = f.clone();
+        for _ in 0..1 + rng.next() % 6 {
+            let bit = rng.next() as usize % (m.len() * 8);
+            m[bit / 8] ^= 0x80 >> (bit % 8);
+        }
+        frames.push(m);
+        // cut the payload to just a few bytes after the header, so that the reads run past the end
+        let mut s = f.clone();
+        s.truncate((8 + i % 40).min(f.len()));
+        frames.push(s);
+    }
+    frames
+}
+
+#[test]
+fn decoded_output_matches_golden_hashes() {
+    let (mut all, mut ok, mut err, mut audio) = (Fnv::new(), 0usize, 0usize, 0usize);
+    for (i, f) in synthetic_frames().iter().enumerate() {
+        let mut dec = Decoder::new();
+        // decode each frame twice with the same decoder: the second pass also covers the
+        // E-AC-3 carry-over and the overlap state
+        for _ in 0..2 {
+            match dec.decode(f) {
+                Ok(d) => {
+                    ok += 1;
+                    audio += usize::from(!d.channels.is_empty());
+                    all.bytes(&[1]);
+                    for ch in &d.channels {
+                        for s in ch {
+                            all.bytes(&s.to_bits().to_le_bytes());
+                        }
+                    }
+                }
+                Err(e) => {
+                    err += 1;
+                    all.bytes(format!("{i}:{e:?}").as_bytes());
+                }
+            }
+        }
+    }
+    eprintln!("golden: ok {ok} ({audio} with audio) err {err} hash {:#018x}", all.0);
+    assert_eq!((ok, err, all.0), GOLDEN);
+}
+
+const GOLDEN: (usize, usize, u64) = (2960, 7024, 0x1dc9_31d6_0e89_e8c8);
+
+/// The private reader this crate used before it moved to the shared `BitReader`, verbatim.
+struct OldBits<'a> {
+    d: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> OldBits<'a> {
+    fn new(d: &'a [u8]) -> Self {
+        Self { d, pos: 0 }
+    }
+    fn read(&mut self, n: u32) -> u32 {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let byte = self.d.get(self.pos >> 3).copied().unwrap_or(0);
+            v = (v << 1) | ((byte >> (7 - (self.pos & 7))) & 1) as u32;
+            self.pos += 1;
+        }
+        v
+    }
+    fn bit(&mut self) -> bool {
+        self.read(1) == 1
+    }
+    fn skip(&mut self, n: usize) {
+        self.pos += n;
+    }
+    fn overrun(&self) -> bool {
+        self.pos > self.d.len() * 8
+    }
+}
+
+#[test]
+fn bits_match_the_old_bit_by_bit_reader() {
+    let mut rng = Rng(0x5EED_0001);
+    for round in 0..3000usize {
+        let len = (rng.next() % 40) as usize;
+        let data: Vec<u8> = (0..len).map(|_| payload_byte(&mut rng, round)).collect();
+        let (mut old, mut new) = (OldBits::new(&data), Bits::new(&data));
+        for op in 0..80 {
+            match rng.next() % 5 {
+                // widths 0 to 40 include more than 32 bits, where only the low 32 bits are kept
+                0 | 1 => {
+                    let n = rng.next() % 41;
+                    assert_eq!(old.read(n), new.read(n), "round {round} op {op}: read({n})");
+                }
+                2 => assert_eq!(old.bit(), new.bit(), "round {round} op {op}: bit"),
+                3 => {
+                    let n = (rng.next() % 70) as usize;
+                    old.skip(n);
+                    new.skip(n);
+                }
+                _ => {}
+            }
+            assert_eq!(old.overrun(), new.overrun(), "round {round} op {op}: overrun");
+            assert_eq!(old.pos, new.r.position(), "round {round} op {op}: position");
+        }
+    }
+}
