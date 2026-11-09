@@ -2683,8 +2683,8 @@ pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 /// The rows of the track sliders' settings popup (see [`track_slider_settings`]).
 fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    /// 20% narrower than the zoom bar's settings popup (274 pt of frame).
-    const CONTENT_W: f32 = 193.38;
+    /// Match the zoom bar's settings popup (274 pt of frame).
+    const CONTENT_W: f32 = 257.4;
     ui.set_max_width(CONTENT_W + 16.0);
     ui.set_min_width(CONTENT_W + 16.0);
     let t = app.tokens;
