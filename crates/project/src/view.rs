@@ -245,7 +245,7 @@ pub fn normalize_hex_color(value: &str) -> Option<String> {
     }
 }
 
-/// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
+/// A LUT imported into the project (`lut.import`). Color Grading refers to it as `lib:<id>`.
 /// Largest embedded LUT source accepted from a project or import (8 MiB).
 pub const MAX_LUT_TEXT_BYTES: usize = 8 << 20;
 

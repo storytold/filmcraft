@@ -556,3 +556,55 @@ fn poc_type1_reordering() {
         }
     }
 }
+
+/// A stream this decoder does not implement fails as unsupported whatever its slice headers hold
+/// (#626). A 10-bit slice may code a QP below 0 (down to -12); checked against the 8-bit range
+/// first, it failed as invalid, so the media pool took it for a damaged frame and rendered black
+/// instead of the unreadable slate. 4:4:4 here, which stays unsupported after High 10 and 4:2:2.
+#[test]
+fn unsupported_stream_fails_as_unsupported_at_any_slice_qp() {
+    let mut w = BitWriter::new();
+    w.write_bits(244, 8); // High 4:4:4 Predictive
+    w.write_bits(0, 8);
+    w.write_bits(30, 8);
+    w.write_ue(0); // sps id
+    w.write_ue(3); // chroma_format_idc: 4:4:4
+    w.write_bit(false); // separate_colour_plane
+    w.write_ue(2); // bit_depth_luma - 8
+    w.write_ue(2); // bit_depth_chroma - 8
+    w.write_bit(false); // qpprime_y_zero_transform_bypass
+    w.write_bit(false); // seq_scaling_matrix_present
+    w.write_ue(0); // log2_max_frame_num - 4
+    w.write_ue(2); // pic_order_cnt_type
+    w.write_ue(0); // max_num_ref_frames
+    w.write_bit(false); // gaps
+    w.write_ue(MB_W as u32 - 1);
+    w.write_ue(MB_H as u32 - 1);
+    w.write_bit(true); // frame_mbs_only
+    w.write_bit(true); // direct_8x8_inference
+    w.write_bit(false); // cropping
+    w.write_bit(false); // vui
+    w.rbsp_trailing();
+    let sps = nal(3, 7, &w.finish());
+    // QP 26, and QP -4 (pic_init_qp 26 + slice_qp_delta -30)
+    for qp_delta in [0, -30] {
+        let mut w = BitWriter::new();
+        w.write_ue(0); // first_mb
+        w.write_ue(7); // I slice
+        w.write_ue(0); // pps id
+        w.write_bits(0, 4); // frame_num
+        w.write_ue(0); // idr_pic_id
+        w.write_bit(false); // no_output_of_prior_pics
+        w.write_bit(false); // long_term_reference
+        w.write_se(qp_delta);
+        w.write_ue(1); // disable_deblocking_filter_idc
+        w.rbsp_trailing();
+        let mut stream = sps.clone();
+        stream.extend(pps(false, false));
+        stream.extend(nal(3, 5, &w.finish()));
+        for threads in [1, 2] {
+            let r = Decoder::with_threads(threads).decode(&stream, 0).map(|pics| pics.len());
+            assert!(matches!(&r, Err(crate::Error::Unsupported(m)) if m.contains("chroma_format_idc 3")), "slice_qp_delta {qp_delta}: {r:?}");
+        }
+    }
+}
