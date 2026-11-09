@@ -31,7 +31,9 @@ unaffected; `cargo xtask wasm` (part of `cargo xtask ci`) checks it, with `filmc
 URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project),
 `?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
 the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (decode with
-FilmCraft's own decoders only).
+FilmCraft's own decoders only), `?host=parent` (host mode: a same-origin page embedding the app
+hands it files and takes its saves back instead of downloads; `data-host="page"` on the canvas
+is the no-iframe form — [hosting](../packaging/web/README.md)).
 
 If the app panics after start-up (or runs out of memory), `index.html` shows a "FilmCraft stopped
 working" overlay with the panic message and a Reload button instead of a frozen canvas, and sets
@@ -109,13 +111,15 @@ eframe creates a WebGPU device when the browser has one, else WebGL2. FilmCraft'
 The control channel of the desktop app (`docs/control-protocol.md`) as promises. Results resolve
 with the method's `result`, errors reject.
 
+`request`, `execute`, `commands`, `uiInspect` and `screenshot` come from [`craft-web-api`](https://github.com/storytold/craft-libs/tree/main/crates/web-api) (storytold/craft-libs#413), the same shape in every Craft app; a call the app does not answer within 30 seconds rejects. The rest are FilmCraft's own.
+
 | Call | |
 |---|---|
 | `filmcraft.execute(command, params)` | run an engine command (same ids and params as MCP / `filmcraft-cli`) |
 | `filmcraft.request(method, params)` | any control method: `ui.inspect`, `ui.click`, `ui.key`, `ui.playback`, `ui.menu.invoke`… |
 | `filmcraft.commands()` | the command list |
-| `filmcraft.inspect()` | `ui.inspect` |
-| `filmcraft.screenshot(params)` | `{pngBase64, width, height}` of the canvas (or `{panel}`) |
+| `filmcraft.inspect()` / `filmcraft.uiInspect(params)` | `ui.inspect` |
+| `filmcraft.screenshot(params)` | `{pngBase64, width, height}` of the canvas (or `{panel}`), and the same PNG as `data` |
 | `filmcraft.importFiles(files)` | import `File` / `FileList` / `File[]`; resolves `{items, errors, paths}` |
 | `filmcraft.importUrl(url, name?)` | fetch a URL and import it (tests) |
 | `filmcraft.openProject(fileOrUrl)` | open a `.fcproj` |

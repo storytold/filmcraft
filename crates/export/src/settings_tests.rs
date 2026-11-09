@@ -701,6 +701,92 @@ fn aac_audio_settings_and_names() {
     assert_eq!(preset.settings.format, Format::Aac);
 }
 
+/// Decode the first second of an MP3 export with the media pool's decoder: (sample rate, planar
+/// samples).
+fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
+    let bytes: Arc<[u8]> = std::fs::read(path).unwrap().into();
+    let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
+    let info = src.info().audio_streams[0].clone();
+    // the exported second, past the encoder delay
+    let buf = src.audio(i64::from(filmcraft_mp3enc::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    assert_eq!(buf.channels.len(), info.channels as usize);
+    (info.sample_rate, buf.channels)
+}
+
+#[test]
+fn mp3_export_writes_layer_iii_frames() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("mp3-audio");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
+    let path = dir.path("a.mp3");
+    let s = ExportSettings { format: Format::Mp3, path: path.clone(), range, ..Default::default() };
+    assert!(!s.has_video());
+    assert_eq!((s.audio_codec(), s.extension()), (AudioCodec::Mp3, "mp3"));
+    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 48_000, "one second of samples");
+    let b = std::fs::read(&path).unwrap();
+    // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
+    assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
+    // whole 960-byte frames covering the second and the encoder delay
+    assert_eq!(b.len(), 960 * (48_000 + filmcraft_mp3enc::DELAY as usize).div_ceil(1152));
+    let (rate, pcm) = decode_mp3(&path);
+    assert_eq!((rate, pcm.len()), (48_000, 2));
+    // the -6 dBFS tone (RMS about 0.35) survives the round trip
+    assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
+
+    // what MP3 cannot carry maps onto what it can: 96 kHz 5.1 at 1000 kbps becomes 48 kHz stereo
+    // at 320 kbps; mono 22.05 kHz at 64 kbps is MPEG-2
+    let wide = dir.path("wide.mp3");
+    let mut s = ExportSettings { format: Format::Mp3, path: wide.clone(), range, ..Default::default() };
+    s.audio = AudioSettings { sample_rate: Some(96_000), channels: 6, bitrate_kbps: 1000, ..Default::default() };
+    assert_eq!(s.mp3_stream(48_000), (48_000, 2, 320));
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(decode_mp3(&wide).1.len(), 2);
+    let lsf = dir.path("lsf.mp3");
+    let mut s = ExportSettings { format: Format::Mp3, path: lsf.clone(), range, ..Default::default() };
+    s.audio = AudioSettings { sample_rate: Some(22_050), channels: 1, bitrate_kbps: 64, ..Default::default() };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let b = std::fs::read(&lsf).unwrap();
+    assert_eq!((b[1] >> 3) & 3, 2, "MPEG-2");
+    let (rate, pcm) = decode_mp3(&lsf);
+    assert_eq!((rate, pcm.len()), (22_050, 1));
+    assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &path) {
+        assert_eq!(j["format"]["format_name"], "mp3");
+        let st = &j["streams"][0];
+        assert_eq!((st["codec_name"].as_str(), st["sample_rate"].as_str(), st["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)));
+    }
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("MP3 decode") {
+        for f in [&path, &wide, &lsf] {
+            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", f, "-f", "null", "-"]).output().unwrap();
+            assert!(out.status.success() && out.stderr.is_empty(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+}
+
+#[test]
+fn mp3_settings_and_names() {
+    assert_eq!(Format::from_name("MP3"), Some(Format::Mp3));
+    assert_eq!(Format::from_name(Format::Mp3.id()), Some(Format::Mp3));
+    assert!(Format::ALL.contains(&Format::Mp3) && Format::Mp3.is_audio_only());
+    let s = ExportSettings { format: Format::Mp3, ..Default::default() };
+    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 44_100, Tick(10 * TICKS_PER_SECOND));
+    assert_eq!(sum.video, "No video");
+    assert_eq!(sum.audio, "MP3, 320 kbps, 44100 Hz, Stereo");
+    assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s");
+    // the bit rate snaps to a Layer III one, the codec setting cannot leak into other formats
+    let mut s = ExportSettings { format: Format::Mp3, ..Default::default() };
+    s.audio.bitrate_kbps = 300;
+    s.audio.sample_rate = Some(16_000);
+    assert_eq!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio, "MP3, 160 kbps, 16000 Hz, Stereo");
+    let mut mov = ExportSettings { format: Format::ProRes, ..Default::default() };
+    mov.audio.codec = AudioCodec::Mp3;
+    assert_eq!(mov.audio_codec(), AudioCodec::Pcm);
+    let preset = presets::find_builtin("MP3 48 kHz 320 kbps").unwrap();
+    assert_eq!((preset.settings.format, preset.settings.audio.bitrate_kbps), (Format::Mp3, 320));
+    assert_eq!(serde_json::to_value(Format::Mp3).unwrap(), "mp3");
+}
+
 #[test]
 fn wav_export_honours_explicit_sample_rates() {
     let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
@@ -1081,6 +1167,54 @@ fn h264_profile_level_and_keyframes() {
     }
 }
 
+/// H.264 High 10 (#1221): MP4 and MOV carry a 10-bit stream ffmpeg decodes without a message;
+/// All Intra makes High 10 Intra with every frame a keyframe; the grey matte keeps its 10-bit code.
+#[test]
+fn h264_high10_and_all_intra_export() {
+    let (p, seq, m) = matte([0.5, 0.5, 0.5, 1.0], 320, 180, None);
+    let dir = Scratch::new("high10");
+    for (ext, intra) in [("mp4", false), ("mov", false), ("mp4", true)] {
+        let path = dir.path(&format!("high10_{intra}.{ext}"));
+        let mut s = ExportSettings {
+            format: Format::H264,
+            path: path.clone(),
+            h264_profile: H264Profile::High10,
+            h264_intra_only: intra,
+            bitrate_mode: BitrateMode::Crf,
+            crf: 18.0,
+            include_audio: false,
+            ..Default::default()
+        };
+        if ext == "mov" {
+            s.multiplexer = Multiplexer::Mov;
+        }
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert_eq!(summary.contains("every frame a keyframe"), intra, "{summary}");
+        assert!(summary.contains(if intra { "High 10 Intra (10-bit)" } else { "High 10 (10-bit)" }), "{summary}");
+        let high = ExportSettings { h264_profile: H264Profile::High, ..s.clone() }.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert!(high.contains("High (8-bit)") || high.contains("High Intra (8-bit)"), "{high}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
+        let st = &j["streams"][0];
+        assert_eq!(st["profile"], if intra { "High 10 Intra" } else { "High 10" }, "{path}");
+        assert_eq!(st["pix_fmt"], "yuv420p10le", "{path}");
+        if let Some(j) = ffprobe_json(&["-show_frames", "-select_streams", "v:0", "-show_entries", "frame=key_frame"], &path) {
+            let keys = j["frames"].as_array().unwrap().iter().filter(|f| f["key_frame"] == 1).count();
+            assert_eq!(keys == 12, intra, "{path}: {keys} keyframes of 12");
+        }
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high10") else { return };
+        let out = std::process::Command::new(ffmpeg)
+            .args(["-v", "warning", "-i", &path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        // 50 % grey renders as RGBA 127 or 128: Y = 64 + 876 * 127/255 = 500 .. 64 + 876 * 128/255 = 504
+        let y0 = u16::from_le_bytes([out.stdout[2 * (90 * 320 + 160)], out.stdout[2 * (90 * 320 + 160) + 1]]);
+        assert!((499..=505).contains(&y0), "{path}: Y {y0}");
+    }
+}
+
 #[test]
 fn video_limiter_clamps_luma() {
     let (p, seq, m) = matte([1.0, 1.0, 1.0, 1.0], 64, 36, None);
@@ -1282,7 +1416,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 21);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1565,6 +1699,7 @@ fn sample_formats_each_codec_and_container_stores() {
     assert_eq!(supported(Format::Flac, AudioCodec::Auto), [Int16, Int24, Int32]);
     assert_eq!(supported(Format::ProRes, AudioCodec::Flac), [Int16, Int24, Int32]);
     assert!(supported(Format::H264, AudioCodec::Auto).is_empty(), "MP4 is AAC");
+    assert!(supported(Format::Mp3, AudioCodec::Auto).is_empty(), "MP3 has no sample size");
     // `bits` rounds down to a size; `float` only with 32
     let fmt = |bits, float| AudioSettings { bits, float, ..Default::default() }.sample_format();
     assert_eq!(
