@@ -2,6 +2,7 @@
 
 use filmcraft_project::EffectInstance;
 use filmcraft_text::{Align, ParagraphStyle, TextStyle, layout, render};
+use filmcraft_time::TimeDisplay;
 
 use super::{FxCtx, Image, Vec2, chv, cv, fv, pv, tv};
 use crate::graphics::paint_mask;
@@ -65,10 +66,26 @@ pub fn simple_text(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     draw_text(img, &text, TextLook { family, pos, px: size, align: chv(e, "alignment"), color, box_alpha: bg });
 }
 
+/// The burn-in's Time Format choices, in the order of the effect's `time_format` list.
+const TIME_FORMATS: [TimeDisplay; 4] = [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames];
+
+/// The film time format (not Timecode) of a burn-in's timecode sources, which the host formats.
+pub(crate) fn film_time_format(e: &EffectInstance) -> Option<TimeDisplay> {
+    let display = TIME_FORMATS[(chv(e, "time_format") as usize).min(TIME_FORMATS.len() - 1)];
+    (e.effect == "metadata_burnin" && display != TimeDisplay::Timecode && matches!(chv(e, "source"), 0 | 1)).then_some(display)
+}
+
 /// The text a Metadata & Timecode Burn-in shows.
 pub(crate) fn burnin_text(e: &EffectInstance, cx: &FxCtx) -> String {
+    // Time Format applies to the two timecode sources; Timecode keeps the precomputed string
+    // (drop-frame aware), the film formats are formatted by the host
+    let display = TIME_FORMATS[(chv(e, "time_format") as usize).min(TIME_FORMATS.len() - 1)];
     let body = match chv(e, "source") {
+        0 if display != TimeDisplay::Timecode => cx.env.and_then(|env| env.sequence_time(display)).unwrap_or_else(|| cx.timecode.to_string()),
         0 => cx.timecode.to_string(),
+        1 if display != TimeDisplay::Timecode => {
+            cx.env.and_then(|env| env.media_time(display)).unwrap_or_else(|| cx.env.map_or_else(|| cx.timecode.to_string(), |env| env.media_timecode()))
+        }
         1 => cx.env.map_or_else(|| cx.timecode.to_string(), |env| env.media_timecode()),
         2 => cx.clip_name.to_string(),
         3 => cx.env.map_or_else(|| cx.clip_name.to_string(), |env| env.file_name()),
