@@ -536,6 +536,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let start = if src_in == Tick::ZERO && speed == 1.0 { rel } else { src_in + scaled(rel, speed) };
             let d = attr_time(m, "duration").unwrap_or(Tick::ZERO);
             out.push(Marker {
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
                 id: MarkerId(self.b.alloc()),
                 start,
                 duration: if d <= frame { Tick::ZERO } else { d },
@@ -704,6 +707,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     let seq = p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,
@@ -1093,7 +1097,7 @@ impl Exp<'_, '_> {
             }
         }
         for e in standard_effects(it) {
-            let n = e.def().map(|d| d.name).unwrap_or(&e.effect).to_string();
+            let n = e.def().map(|d| filmcraft_project::interchange_name(d).to_string()).unwrap_or_else(|| e.effect.clone());
             let r = self.effect(&n, &e.effect);
             let tag = if kind == TrackKind::Video { "filter-video" } else { "filter-audio" };
             let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape_attr(&n));

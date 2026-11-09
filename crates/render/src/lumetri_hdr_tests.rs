@@ -1,4 +1,4 @@
-//! Lumetri in HDR working spaces (known cd/m² values through PQ and HLG) and HSL Secondary ▸
+//! Color Grading in HDR working spaces (known cd/m² values through PQ and HLG) and HSL Secondary ▸
 //! Refine (Denoise, Blur of the key).
 
 use filmcraft_color::{GradeSpace, REFERENCE_WHITE_NITS, WorkingSpace};

@@ -37,6 +37,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         enabled: has_video_selection,
         run: detect,
         journal: true,
+        named: crate::commands::NamedKeys::NONE,
     }]
 }
 
@@ -286,6 +287,9 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                             continue;
                         }
                         m.markers.push(Marker {
+                            url: String::new(),
+                            author: String::new(),
+                            custom_color: None,
                             id: MarkerId(id),
                             start: *mt,
                             duration: Tick::ZERO,
