@@ -571,6 +571,38 @@ fn a_click_on_the_lumetri_curve_places_a_point() {
     assert_eq!(points(&mut d), before + 1, "a click off the curve adds none");
 }
 
+/// #4568: the Color Grading panel's vertical scroll bar floats over its right edge, so it took the
+/// drag meant for the luma curve's top-right point. The curve leaves room for the bar.
+#[test]
+fn the_scroll_bar_leaves_the_right_end_of_a_lumetri_curve_draggable() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(2);
+    let curve = |d: &mut Driver| {
+        let q = d.app().session.active_sequence().unwrap().clone();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+        e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
+    };
+    let before = curve(&mut d);
+    assert!(before.is_empty() || before.contains(&[1.0, 1.0]), "the luma curve ends at the top right: {before:?}");
+    let r = d.element("lumetri.curve.curve_luma").expect("the luma curve has an automation element");
+    // grab the top-right end point and pull it down a quarter of the curve's height
+    let (x, y) = (r[0] + r[2] - 1.0, r[1] + 1.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y + r[3] * 0.25}, "steps": 6}));
+    d.frames(3);
+    let after = curve(&mut d);
+    assert!(
+        after.iter().any(|p| p[0] > 0.95 && p[1] < 0.9 && p[1] > 0.6),
+        "the drag moved the curve's right end point down (the scroll bar must not take it): {before:?} -> {after:?}"
+    );
+}
+
 #[test]
 fn lumetri_panel_menu_offers_export_cube() {
     // #4127: the Color Grading panel menu has Export .cube… for the selected clip's grade
