@@ -5,8 +5,9 @@
 //! - Exact checks ([`gpu_effects_match_cpu_exactly`]): the working image read back as f32 from a
 //!   half-float-representable source (so the source draw is lossless) must match the CPU op to
 //!   [`EXACT`] per value (f32 arithmetic and the GPU's `pow` / `sqrt` differ in the last bits).
-//!   Step functions (Posterize, Color Pass, Leave Color and Change to Color keys, Extract) may
-//!   flip a pixel that lands on a threshold; at most [`FLIPS`] of the values may differ by more.
+//!   Step functions (Posterize, Color Pass, Leave Color and Change to Color keys, Extract,
+//!   Threshold) may flip a pixel that lands on a threshold; at most [`FLIPS`] of the values may
+//!   differ by more.
 //! - Composited plans ([`gpu_effect_layers_match_cpu_plan`]): the compositor's criterion (p99 of
 //!   the per-pixel max 8-bit channel difference ≤ 6, mean < 1.5) away from layer outlines, as for
 //!   the blend modes.
@@ -183,6 +184,7 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("threshold", vec![], true),
         ("threshold", vec![("level", fl(0.0))], true),
         ("threshold", vec![("level", fl(200.0))], true),
+        ("threshold", vec![("level", fl(54.5))], true),
         ("posterize", vec![("levels", fl(7.0))], true),
         ("posterize", vec![("levels", fl(255.0))], true),
         ("gaussian_blur", vec![("blurriness", fl(0.0))], false),

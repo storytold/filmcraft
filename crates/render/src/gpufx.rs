@@ -104,6 +104,11 @@ pub enum FxOp {
     Posterize {
         n: f32,
     },
+    /// Threshold: white where the Rec. 709 luma of the encoded colour is at least `level`
+    /// (already moved half an 8-bit code down, so a code at the level counts), black elsewhere.
+    Threshold {
+        level: f32,
+    },
     /// Three box passes per axis approximating a Gaussian (radii per pass; empty: axis untouched).
     Gaussian {
         rx: Vec<u32>,
@@ -389,10 +394,9 @@ impl FxOp {
             }
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
-            // an inverted hard Extract with no lower edge: white where the luma, rounded to an 8-bit
-            // code (the linear round trip leaves a code just under itself), is at least Level (`max`
-            // first: a NaN level becomes 0)
-            "threshold" => FxOp::Extract { lo: -1.0, hi: (f(e, "level", cx).max(0.0).clamp(0.0, 255.0) - 0.5) / 255.0, soft: 0.0, invert: true },
+            // the first whole code at or above Level, half a code down: luma that rounds to it counts
+            // (the linear round trip leaves a code just under itself; `max` first: NaN becomes 0)
+            "threshold" => FxOp::Threshold { level: (f(e, "level", cx).max(0.0).clamp(0.0, 255.0).ceil() - 0.5) / 255.0 },
             "gaussian_blur" | "gaussian_blur_legacy" => {
                 let r = f(e, "blurriness", cx) * cx.px_scale * 0.5;
                 let dims = choice(e, "dimensions");
@@ -693,6 +697,7 @@ impl FxOp {
             FxOp::Extract { lo, hi, soft, .. } => fin(&[*lo, *hi, *soft]),
             FxOp::Invert { blend, .. } => blend.is_finite(),
             FxOp::Posterize { n } => n.is_finite(),
+            FxOp::Threshold { level } => level.is_finite(),
             FxOp::Gaussian { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
             FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
@@ -895,6 +900,14 @@ impl FxOp {
             FxOp::Posterize { n } => {
                 let n = *n;
                 img.map_rgb(|c, _, _| dec(enc(c).map(|v| (v * n).round() / n)));
+            }
+            FxOp::Threshold { level } => {
+                let level = *level;
+                img.map_rgb(|c, _, _| {
+                    let e = enc(c);
+                    let v = if 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2] >= level { 1.0 } else { 0.0 };
+                    [v, v, v]
+                });
             }
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
@@ -1275,9 +1288,9 @@ mod tests {
         }
     }
 
-    /// Runs Threshold at `level` on one pixel per 8-bit grey `code` (premultiplied by `alpha`) and
+    /// Runs Threshold at `level` on one pixel per 8-bit RGB `code` (premultiplied by `alpha`) and
     /// returns the resulting pixels, checking the op stays GPU-capable.
-    fn threshold(level: f64, codes: &[u8], alpha: f32) -> Vec<[f32; 4]> {
+    fn threshold(level: f64, codes: &[[u8; 3]], alpha: f32) -> Vec<[f32; 4]> {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
@@ -1293,9 +1306,9 @@ mod tests {
         e.params.get_mut("level").unwrap().value = ParamValue::Float(level);
         let px = codes
             .iter()
-            .flat_map(|k| {
-                let c = filmcraft_color::srgb_to_linear(f32::from(*k) / 255.0) * alpha;
-                [c, c, c, alpha]
+            .flat_map(|rgb| {
+                let [r, g, b] = rgb.map(|k| filmcraft_color::srgb_to_linear(f32::from(k) / 255.0) * alpha);
+                [r, g, b, alpha]
             })
             .collect();
         let mut img = Image { w: codes.len(), h: 1, px };
@@ -1309,23 +1322,45 @@ mod tests {
     #[test]
     fn threshold_is_white_from_the_level_up_and_keeps_alpha() {
         assert_eq!(find_effect("threshold").unwrap().instance().f64_at("level", Tick::ZERO), 128.0);
-        let codes: Vec<u8> = (0..=255).collect();
+        let codes: Vec<[u8; 3]> = (0..=255).map(|k| [k; 3]).collect();
         for level in [0u8, 1, 127, 128, 200, 254, 255] {
             for alpha in [1.0, 0.5] {
                 for (k, p) in codes.iter().zip(threshold(f64::from(level), &codes, alpha)) {
-                    let v = if *k >= level { alpha } else { 0.0 };
-                    assert_eq!(p, [v, v, v, alpha], "level {level}, code {k}, alpha {alpha}");
+                    let v = if k[0] >= level { alpha } else { 0.0 };
+                    assert_eq!(p, [v, v, v, alpha], "level {level}, code {k:?}, alpha {alpha}");
                 }
             }
         }
         // transparent pixels stay transparent
-        assert_eq!(threshold(0.0, &[255], 0.0), [[0.0; 4]]);
+        assert_eq!(threshold(0.0, &[[255; 3]], 0.0), [[0.0; 4]]);
+    }
+
+    /// Luma is weighed on the encoded code values (Rec. 709), not on linear light: pure red, green
+    /// and blue have luma codes 54, 182 and 18, opaque or premultiplied.
+    #[test]
+    fn threshold_weighs_the_encoded_colour() {
+        for (rgb, luma) in [([255, 0, 0], 54.0), ([0, 255, 0], 182.0), ([0, 0, 255], 18.0)] {
+            for alpha in [1.0, 0.5] {
+                assert_eq!(threshold(luma, &[rgb], alpha), [[alpha, alpha, alpha, alpha]], "{rgb:?} at {luma}, alpha {alpha}");
+                assert_eq!(threshold(luma + 1.0, &[rgb], alpha), [[0.0, 0.0, 0.0, alpha]], "{rgb:?} at {}, alpha {alpha}", luma + 1.0);
+            }
+        }
+        // linear luminance would put pure red near code 127, white at Level 100
+        assert_eq!(threshold(100.0, &[[255, 0, 0]], 1.0), [[0.0, 0.0, 0.0, 1.0]]);
+    }
+
+    /// A fractional Level needs the next whole code: at 128.5, code 128 is black and 129 white.
+    #[test]
+    fn threshold_rounds_a_fractional_level_up() {
+        let (black, white) = ([0.0, 0.0, 0.0, 1.0], [1.0; 4]);
+        assert_eq!(threshold(128.5, &[[128; 3], [129; 3]], 1.0), [black, white]);
+        assert_eq!(threshold(127.2, &[[127; 3], [128; 3]], 1.0), [black, white]);
     }
 
     /// Out-of-range, infinite and NaN levels are clamped to 0..=255 and stay GPU-capable.
     #[test]
     fn threshold_clamps_hostile_levels() {
-        let codes = [0u8, 128, 255];
+        let codes = [[0u8; 3], [128; 3], [255; 3]];
         let white = [1.0; 4];
         let black = [0.0, 0.0, 0.0, 1.0];
         for level in [-50.0, f64::NEG_INFINITY, f64::NAN] {
