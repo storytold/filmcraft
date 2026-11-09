@@ -68,6 +68,10 @@ pub(crate) struct FxStage {
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    /// Open [`begin_frame`](Self::begin_frame)s.
+    frames: u32,
+    /// Working textures created so far (a steady stream of frames creates none).
+    created: u64,
 }
 
 /// One compute pass of a job.
@@ -98,6 +102,9 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
+    /// texture.
+    kernel: Vec<(i32, i32, f32)>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -105,7 +112,39 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+}
+
+/// Texels a row of a kernel texture holds.
+const KERNEL_ROW: usize = 64;
+
+/// Bokeh Blur's kernel as a texture: entry `k` at (`k` % [`KERNEL_ROW`], `k` / [`KERNEL_ROW`]),
+/// (dx, dy, weight, 0). At most 2500 entries: 40 rows.
+fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i32, f32)]) -> wgpu::TextureView {
+    let rows = kernel.len().div_ceil(KERNEL_ROW).max(1);
+    let mut texels = vec![0f32; rows * KERNEL_ROW * 4];
+    for (t, &(dx, dy, wt)) in texels.as_chunks_mut::<4>().0.iter_mut().zip(kernel) {
+        *t = [dx as f32, dy as f32, wt, 0.0];
+    }
+    let size = wgpu::Extent3d { width: KERNEL_ROW as u32, height: rows as u32, depth_or_array_layers: 1 };
+    let t = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("filmcraft-fx-kernel"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let bytes: Vec<u8> = texels.iter().flat_map(|v| v.to_le_bytes()).collect();
+    queue.write_texture(
+        t.as_image_copy(),
+        &bytes,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some((KERNEL_ROW * 16) as u32), rows_per_image: Some(rows as u32) },
+        size,
+    );
+    t.create_view(&Default::default())
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -167,7 +206,10 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 if *boost > 0.0 {
                     out.push(step(OP_BOKEH_BOOST, [ww, wh, 0, 0], &[*boost, *threshold]));
                 }
-                out.push(step(OP_BOKEH, [ww, wh, *sides, *rings], &[*rr, *rot]));
+                let kernel = filmcraft_render::vfx::bokeh_kernel(*sides, *rot, *rr, *rings);
+                let mut gather = step(OP_BOKEH, [ww, wh, kernel.len() as u32, 0], &[]);
+                gather.kernel = kernel;
+                out.push(gather);
                 if *levels > 0 {
                     // `Image::transformed` by scale(w / ww, h / wh): its inverse, in f64 as there
                     let m = filmcraft_geom::Affine::scale(w as f64 / ww as f64, h as f64 / wh as f64);
@@ -365,18 +407,30 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
-    /// are released then.
+    /// are released then. Frames nest (a composite of several steps is one frame around the
+    /// layers of each step): the pool is trimmed when the outermost one ends.
     pub(crate) fn begin_frame(&mut self) {
-        self.used.clear();
+        if self.frames == 0 {
+            self.used.clear();
+        }
+        self.frames = self.frames.saturating_add(1);
     }
 
     pub(crate) fn end_frame(&mut self) {
-        let used = &self.used;
-        self.pool.retain(|k, _| used.contains(k));
+        self.frames = self.frames.saturating_sub(1);
+        if self.frames == 0 {
+            let used = &self.used;
+            self.pool.retain(|k, _| used.contains(k));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn created(&self) -> u64 {
+        self.created
     }
 
     /// No working textures held.
@@ -404,6 +458,7 @@ impl FxStage {
             });
             let view = t.create_view(&Default::default());
             v.push((t, view));
+            self.created = self.created.saturating_add(1);
         }
         v.iter().take(n).cloned().collect()
     }
@@ -440,8 +495,10 @@ impl FxStage {
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let aux = match (s.combine, orig) {
-                (true, Some(o)) => views.get(o)?,
+            let kernel = (!s.kernel.is_empty()).then(|| kernel_texture(device, queue, &s.kernel));
+            let aux = match (s.combine, orig, &kernel) {
+                (true, Some(o), _) => views.get(o)?,
+                (_, _, Some(k)) => k,
                 _ => dummy,
             };
             let mut bytes = Vec::with_capacity(128);
