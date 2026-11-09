@@ -137,3 +137,24 @@ fn roll_linked_reversed_clips_keeps_media_mapping() {
     assert_eq!(source_in(&s, v1), right_in);
     assert_eq!(source_in(&s, a1), right_in);
 }
+
+/// #4287: an Alt-roll (`followLinks: false`) moves only the picture cut and leaves the linked
+/// sound cut where it was, making an L-cut; the previewed delta is the one applied, and Undo
+/// puts the picture cut back.
+#[test]
+fn unlinked_roll_moves_only_this_cut() {
+    let mut s = Session::default();
+    let [(v0, a0), (v1, a1)] = two_clips(&mut s);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    assert_eq!(crate::commands::roll_delta_linked(&s, v0, v1, -f(12), false).unwrap(), -f(12));
+    let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "deltaFrames": -12, "followLinks": false})).unwrap();
+    assert_eq!(r["pairs"], json!(1), "{r}");
+    assert_eq!(range(&s, v0), (f(0), f(36)));
+    assert_eq!(range(&s, v1), (f(36), f(96)));
+    assert_eq!(range(&s, a0), (f(0), f(48)), "the linked sound cut stays");
+    assert_eq!(range(&s, a1), (f(48), f(96)));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(range(&s, v0), (f(0), f(48)));
+    assert_eq!(range(&s, v1), (f(48), f(96)));
+}

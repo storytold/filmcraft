@@ -197,6 +197,9 @@ pub enum Drag {
         delta: Tick,
         /// As in [`Drag::Trim`].
         from: Tick,
+        /// Linked partners' cut rolls along; false when Alt was held as the drag started, so
+        /// only this cut rolls (a J- or L-cut, #4287).
+        linked: bool,
     },
     Slip {
         clip: ClipId,
@@ -970,7 +973,7 @@ mod trim_preview_tests {
         let (mut app, seq) = demo();
         let (left, right) = seq.audio_tracks[0].items.windows(2).find(|w| w[0].end() == w[1].start).map(|w| (w[0].clone(), w[1].clone())).unwrap();
         let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 2);
-        app.tl.drag = Some(Drag::Roll { left: left.id, right: right.id, delta, from: Tick::ZERO });
+        app.tl.drag = Some(Drag::Roll { left: left.id, right: right.id, delta, from: Tick::ZERO, linked: true });
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert_same_media(&left, &edited[&left.id]);

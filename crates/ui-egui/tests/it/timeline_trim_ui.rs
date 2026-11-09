@@ -850,6 +850,36 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
     }
 }
 
+/// #4287: with the Rolling Edit tool and Alt held, dragging a linked A/V cut rolls only the
+/// picture cut, so the sound cut stays (an L-cut, as in Premiere). Without Alt the sound cut
+/// rolls along.
+#[test]
+fn alt_rolling_a_linked_cut_rolls_only_that_side() {
+    for alt in [true, false] {
+        let mut d = Driver::demo();
+        let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+        let seq = d.app().session.active_sequence().expect("sequence");
+        let partner = |v: u64| {
+            let link = seq.find_item(ClipId(v)).and_then(|(_, i)| i.link);
+            seq.audio_tracks.iter().flat_map(|t| &t.items).find(|a| link.is_some() && a.link == link).map(|a| a.id.0).expect("linked sound")
+        };
+        let (city_a, dunes_a) = (partner(city), partner(dunes));
+        let cut0 = d.span(city).1;
+        assert_eq!(d.span(city_a).1, cut0, "the sound cut is at the picture cut");
+        assert_eq!(d.span(dunes_a).0, cut0);
+        d.ok("ui.menu.invoke", json!({"id": "tool.rolling"}));
+        let (cut, _, y) = d.edges(dunes);
+        d.ok("ui.drag", json!({"from": {"x": cut + 3.0, "y": y}, "to": {"x": cut + 33.0, "y": y}, "steps": 20, "modifiers": {"alt": alt}}));
+        d.frames(2);
+        let cut1 = d.span(city).1;
+        assert!(cut1 > cut0, "alt={alt}: the picture cut rolled: {cut0} -> {cut1}");
+        assert_eq!(d.span(dunes).0, cut1, "alt={alt}: the picture clips still meet");
+        let want = if alt { cut0 } else { cut1 };
+        assert_eq!(d.span(city_a).1, want, "alt={alt}: the sound cut");
+        assert_eq!(d.span(dunes_a).0, want, "alt={alt}: the sound cut");
+    }
+}
+
 impl Driver {
     /// Press at `from` and move to `to` over `steps` frames, the button still down.
     fn press_and_move(&mut self, from: Pos2, to: Pos2, steps: usize) {
