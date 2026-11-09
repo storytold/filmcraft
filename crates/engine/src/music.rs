@@ -426,17 +426,17 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let bytes = music::wav::encode_f32(&audio);
         s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-        let prov = music::provenance::Provenance::from_generation(
-            info.id,
-            info.kind,
-            model_name(info.id),
-            info.license,
-            info.source,
-            info.capabilities,
-            &r.params,
-            &audio,
-            now_unix(),
-        );
+        let prov = music::provenance::Provenance::from_generation(music::provenance::GenerationCtx {
+            provider_id: info.id,
+            provider_kind: info.kind,
+            model: model_name(info.id),
+            license: info.license,
+            source: info.source,
+            capabilities: info.capabilities,
+            params: &r.params,
+            audio: &audio,
+            now_unix: now_unix(),
+        });
         let sidecar = music::provenance::Provenance::sidecar_path(&path);
         let text = serde_json::to_vec_pretty(&prov.to_json()).unwrap_or_default();
         s.services.write_file(&sidecar, &text).map_err(|e| EngineError::Other(format!("{sidecar}: {e}")))?;
@@ -558,7 +558,7 @@ fn spec(
     run: fn(&mut Session, &Value) -> Result<Value>,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

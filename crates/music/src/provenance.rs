@@ -28,37 +28,41 @@ pub struct Provenance {
     pub generated_at_utc_unix: u64,
 }
 
+/// Context required to build a [`Provenance`] record from a successful generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerationCtx<'a> {
+    pub provider_id: &'a str,
+    pub provider_kind: &'a str,
+    pub model: &'a str,
+    pub license: &'a str,
+    pub source: &'a str,
+    pub capabilities: &'a [Capability],
+    pub params: &'a Params,
+    pub audio: &'a crate::Audio,
+    pub now_unix: u64,
+}
+
 impl Provenance {
-    pub fn from_generation(
-        provider_id: &str,
-        provider_kind: &str,
-        model: &str,
-        license: &str,
-        source: &str,
-        capabilities: &[Capability],
-        params: &Params,
-        audio: &crate::Audio,
-        now_unix: u64,
-    ) -> Self {
+    pub fn from_generation(ctx: GenerationCtx<'_>) -> Self {
         Self {
-            provider: provider_id.into(),
-            provider_kind: provider_kind.into(),
-            model: model.into(),
-            prompt: params.prompt.clone(),
-            negative_prompt: params.negative_prompt.clone(),
-            duration: params.duration,
-            bpm: params.bpm,
-            key: params.key.clone(),
-            instrumental: params.instrumental,
-            seed: params.seed,
-            capabilities: capabilities.to_vec(),
-            sample_rate: audio.sample_rate,
-            channels: audio.channels,
-            samples: audio.samples.len(),
-            seconds: audio.seconds(),
-            license: license.into(),
-            source: source.into(),
-            generated_at_utc_unix: now_unix,
+            provider: ctx.provider_id.into(),
+            provider_kind: ctx.provider_kind.into(),
+            model: ctx.model.into(),
+            prompt: ctx.params.prompt.clone(),
+            negative_prompt: ctx.params.negative_prompt.clone(),
+            duration: ctx.params.duration,
+            bpm: ctx.params.bpm,
+            key: ctx.params.key.clone(),
+            instrumental: ctx.params.instrumental,
+            seed: ctx.params.seed,
+            capabilities: ctx.capabilities.to_vec(),
+            sample_rate: ctx.audio.sample_rate,
+            channels: ctx.audio.channels,
+            samples: ctx.audio.samples.len(),
+            seconds: ctx.audio.seconds(),
+            license: ctx.license.into(),
+            source: ctx.source.into(),
+            generated_at_utc_unix: ctx.now_unix,
         }
     }
 
@@ -86,17 +90,17 @@ mod tests {
     fn provenance_roundtrips() {
         let p = Params { prompt: "warm pad".into(), duration: 30.0, instrumental: true, ..Default::default() };
         let a = Audio { samples: vec![0.0; 100], sample_rate: 44_100, channels: 2 };
-        let pv = Provenance::from_generation(
-            "stable-audio-local",
-            "local",
-            "stable-audio-3-small",
-            "Stability Community License",
-            "https://huggingface.co/stabilityai/stable-audio-3-small",
-            &[Capability::Seed, Capability::Instrumental],
-            &p,
-            &a,
-            1_700_000_000,
-        );
+        let pv = Provenance::from_generation(GenerationCtx {
+            provider_id: "stable-audio-local",
+            provider_kind: "local",
+            model: "stable-audio-3-small",
+            license: "Stability Community License",
+            source: "https://huggingface.co/stabilityai/stable-audio-3-small",
+            capabilities: &[Capability::Seed, Capability::Instrumental],
+            params: &p,
+            audio: &a,
+            now_unix: 1_700_000_000,
+        });
         let v = pv.to_json();
         assert_eq!(v["provider"], "stable-audio-local");
         assert_eq!(v["seed"], serde_json::Value::Null);

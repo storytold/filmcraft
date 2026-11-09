@@ -214,7 +214,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
         label(ui, &t, "Provider");
         let name = chosen["name"].as_str().unwrap_or("Choose a provider").to_string();
-        let cb = egui::ComboBox::from_id_salt("music-provider").selected_text(name).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("music-provider").selected_text(name).width(w).show_ui(ui, |ui| {
             for p in &providers {
                 let id = p["id"].as_str().unwrap_or("");
                 let suffix = if p["ready"].as_bool().unwrap_or(false) { "" } else { " (set up)" };
@@ -273,7 +273,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         auto.add("music.ducking", visible(ui, c.rect), "Duck under dialogue");
 
         ui.add_space(8.0);
-        let (hr, open) = crate::widgets::section_header(ui, egui::Id::new("music-advanced"), "Advanced", d.advanced_open, &t, true);
+        let (hr, open) = crate::widgets::section_header(ui, egui::Id::unique("music-advanced"), "Advanced", d.advanced_open, &t, true);
         auto.add("music.advanced", visible(ui, hr.rect), "Advanced");
         d.advanced_open = open;
         if open {

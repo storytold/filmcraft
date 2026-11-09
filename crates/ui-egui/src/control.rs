@@ -128,7 +128,7 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Ok(d) => app.ui.tts = d,
             Err(e) => return err(format!("bad `tts`: {e}")),
         }
-    }    // Music panel draft (prompt, provider, duration…), merged into the current one
+    } // Music panel draft (prompt, provider, duration…), merged into the current one
     if let Some(patch) = p.get("music") {
         let mut cur = serde_json::to_value(&app.ui.music).unwrap_or_default();
         merge(&mut cur, patch);
