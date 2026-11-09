@@ -85,18 +85,30 @@ fn hostile_audio_stream_counts_and_indices_are_repaired_not_rejected() {
     assert_eq!(loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
 }
 
-/// Persisted media metadata is used to allocate synthetic and offline source frames, so it must
-/// have the same bounded dimensions as a sequence before the project is opened.
+/// Unsupported codecs are reported as zero dimensions; keep that marker so such projects still
+/// open. Other persisted dimensions are bounded because they drive frame allocations.
 #[test]
-fn hostile_media_video_dimensions_are_rejected() {
+fn hostile_media_video_dimensions_are_bounded() {
     let mut p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
-    let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
-    let video = media.info.video.as_mut().unwrap();
-    video.width = u32::MAX;
-    video.height = 1;
+    {
+        let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+        let video = media.info.video.as_mut().unwrap();
+        video.width = u32::MAX;
+        video.height = 1;
+    }
 
     let err = decode(&encode(&p, false)).unwrap_err();
     assert!(matches!(err, FormatError::Corrupt(ref message) if message.contains("media `Ocean_Sunset.mp4`") && message.contains("frame size")), "{err}");
+
+    {
+        let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+        let video = media.info.video.as_mut().unwrap();
+        video.width = 0;
+        video.height = 0;
+    }
+    let loaded = decode(&encode(&p, false)).unwrap();
+    let video = loaded.project.item(ItemId(5)).unwrap().as_media().unwrap().info.video.as_ref().unwrap();
+    assert_eq!((video.width, video.height), (0, 0), "the unsupported-codec marker still opens");
 }
 
 /// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels
