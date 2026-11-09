@@ -149,6 +149,7 @@ fn view_order(app: &FilmcraftApp, v: &View, filter: &str, with_bins: bool) -> Ve
         ViewMode::List => {
             let sort = &app.session.prefs.project_panel.view.sort;
             let mut out = Vec::new();
+            /// Append `b`'s rows in List view order, descending into the bins shown open.
             fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, with_bins: bool, out: &mut Vec<ItemId>) {
                 let (bins, items) = pp::bin_children(&app.session.project, b, sort);
                 for bid in bins {
@@ -313,6 +314,7 @@ fn bin_selected(app: &FilmcraftApp, bin: u64) -> bool {
     app.ui.project_panel.selected_bin == Some(bin) || app.session.state.project_selection.contains(&ItemId(bin))
 }
 
+/// Handle a click (select), double-click (open), drag and right-click menu on an item.
 pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: &mut Actions, interaction: ItemInteraction<'_>) {
     let ItemInteraction { view: v, response: resp, item: id, kind, allow_drag: drag, allow_menu: menu } = interaction;
     if resp.clicked() {
@@ -338,6 +340,7 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
     }
 }
 
+/// The right-click menu of an item row or card.
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
@@ -454,13 +457,16 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         app.auto.add("project.itemMenu.proxy", r.response.rect, tl!("Proxy"));
     }
     ui.separator();
-    if ui.button(tl!("Clear")).clicked() {
+    let b = ui.button(tl!("Clear"));
+    app.auto.add("project.itemMenu.clear", b.rect, tl!("Clear"));
+    if b.clicked() {
         let items: Vec<u64> = menu_targets(&panel_selection(app), id).iter().map(|i| i.0).collect();
         actions.push(("project.delete".into(), json!({"items": items})));
         ui.close();
     }
 }
 
+/// The right-click menu of a bin row or card.
 fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actions: &mut Actions) {
     for (label, how) in [(tl!("Open in Place"), "inPlace"), (tl!("Open in New Tab"), "newTab"), (tl!("Open in New Window"), "newWindow")] {
         let b = ui.button(label);
@@ -835,6 +841,7 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
     ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, new_bin, actions));
 }
 
+/// Draw `bin`'s List view rows (its bins, open ones recursively, then its items) and handle them.
 #[allow(clippy::too_many_arguments)]
 fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, filter: &str, row: &mut usize, actions: &mut Actions, v: &View, lc: &ListCtx) {
     let t = app.tokens;
@@ -860,8 +867,10 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), r.intersect(ui.clip_rect()), &b.name);
         app.auto.add(&format!("{}.bin.{}.toggle", v.prefix, b.id.0), tri, "Expand");
-        if selected {
-            app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), r.intersect(ui.clip_rect()), "Selected");
+        // a selection marker only where the row shows: none for a row scrolled out of view
+        let shown = r.intersect(ui.clip_rect());
+        if selected && shown.is_positive() {
+            app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), shown, "Selected");
         }
         accept_bin_drop(app, ui, r, b.id.0, actions);
         if resp.drag_started_by(egui::PointerButton::Primary) {
@@ -1098,6 +1107,7 @@ fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, ma
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// Draw an Icon view bin card and handle its clicks, drops, drag and menu.
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
@@ -1134,8 +1144,9 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     if resp.drag_started_by(egui::PointerButton::Primary) {
         crate::panels::start_drag_bin(ui, b.id.0);
     }
-    if selected {
-        app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), th, "Selected");
+    let shown = th.intersect(ui.clip_rect());
+    if selected && shown.is_positive() {
+        app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), shown, "Selected");
     }
     if resp.clicked() {
         bin_click(app, ui, v, b.id.0, actions);

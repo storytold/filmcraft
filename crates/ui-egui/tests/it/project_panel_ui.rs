@@ -845,6 +845,41 @@ fn several_bins_selected_are_deleted_at_once() {
     assert_eq!([a, b, c].map(|bin| find(&mut d, bin)), [true, true, true], "one undo puts both back");
 }
 
+/// #4382 review: a bin clicked alone, then Select All, then Clear from a selected item's menu
+/// clears only the selected items: the bin clicked before Select All, and what is in it, stay.
+#[test]
+fn select_all_after_a_bin_click_keeps_the_bin_out_of_clear() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let bin = d.exec("file.newBin", json!({"name": "Keep me"}))["bin"].as_u64().unwrap();
+    let (footage, _) = d.footage();
+    let kept = d.footage().1[0];
+    d.exec("project.moveToBin", json!({"items": [kept], "bin": bin}));
+    // Footage twirled open, so Select All has its items to select; "Keep me" stays closed
+    d.app().ui.expanded_bins = vec![footage];
+    d.frames(3);
+    d.click(&format!("project.bin.{bin}"));
+    assert_eq!(d.app().ui.project_panel.selected_bin, Some(bin));
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(!sel.is_empty(), "Select All selects the root's items");
+    assert!(![bin, footage, kept].iter().any(|i| sel.contains(&ItemId(*i))), "Select All selects the shown items only: {sel:?}");
+    let bins0 = d.app().session.project.root.children.iter().filter(|e| matches!(e, BinEntry::Bin(_))).count();
+    d.ok("ui.click", json!({"id": format!("project.item.{}", sel[0].0), "button": "right"}));
+    d.frames(2);
+    d.wait_for("project.itemMenu.clear");
+    d.click("project.itemMenu.clear");
+    let p = &d.app().session.project;
+    assert!(p.root.find_bin(filmcraft_project::BinId(bin)).is_some(), "the bin stays");
+    assert!(p.item(ItemId(kept)).is_some(), "and the clip in it");
+    assert_eq!(p.root.children.iter().filter(|e| matches!(e, BinEntry::Bin(_))).count(), bins0, "no bin removed");
+    for i in &sel {
+        assert!(p.item(*i).is_none_or(|it| it.as_media().is_some_and(|m| m.offline)), "selected item {i:?} cleared");
+    }
+    assert_eq!(d.app().ui.project_panel.selected_bin, None, "the bin clicked alone is no longer selected");
+    assert!(!d.has(&format!("project.bin.{bin}.selected")), "nor drawn selected");
+}
+
 /// #2106: with nothing selected, Clear and Automate to Sequence are disabled, as in the ≡ menu: a
 /// click does nothing (it used to only put "Select items to clear" / "select an item" in the
 /// status bar). With an item selected both act.
