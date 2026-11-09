@@ -594,9 +594,11 @@ fn project_patterns() -> Vec<String> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn save_name_parts(name: &str) -> (Option<String>, String) {
     let p = std::path::Path::new(name);
-    let file = p.file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned());
-    let dir = p.parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
-    (dir, file)
+    // a folder (`/tmp/`) or a root has no file name to suggest: keep the text as typed
+    let Some(file) = p.file_name().filter(|_| !name.ends_with(std::path::MAIN_SEPARATOR)) else { return (None, name.to_string()) };
+    // a relative parent would resolve against the app's working folder, not the user's
+    let dir = p.parent().filter(|d| d.is_absolute() && d.is_dir()).map(|d| d.to_string_lossy().into_owned());
+    (dir, file.to_string_lossy().into_owned())
 }
 
 /// The macOS async save sheet (project saves and exports): filtered, suggesting `file`, and
@@ -652,7 +654,8 @@ fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> st
         }
         FileDialog::Folder { at } => {
             let mut f = rfd::AsyncFileDialog::new();
-            if let Some(dir) = at.filter(|d| !d.is_empty()) {
+            // a remembered folder that is gone would leave the panel's start folder to AppKit
+            if let Some(dir) = at.filter(|d| std::path::Path::new(d).is_dir()) {
                 f = f.set_directory(dir);
             }
             let f = f.pick_folder();
@@ -734,5 +737,11 @@ mod tests {
         let (dir, file) = super::save_name_parts("clip.mp4");
         assert_eq!(file, "clip.mp4");
         assert_eq!(dir, None);
+        // a folder, a root, an empty name and a relative parent suggest no folder and keep the text
+        let tmp_dir = format!("{}{}", std::env::temp_dir().to_string_lossy().trim_end_matches('/'), '/');
+        for name in [tmp_dir.as_str(), "/", ""] {
+            assert_eq!(super::save_name_parts(name), (None, name.to_string()), "{name:?}");
+        }
+        assert_eq!(super::save_name_parts("src/clip.mp4"), (None, "clip.mp4".to_string()));
     }
 }
