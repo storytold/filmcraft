@@ -35,6 +35,12 @@ pub fn track_format(format: Format) -> CaptionFormat {
     }
 }
 
+/// Whether a cue's start and duration stay inside the supported time range (`Tick::MIN..=Tick::MAX`).
+fn in_bounds(c: &Cue) -> bool {
+    let within = |t: i64| (Tick::MIN.0..=Tick::MAX.0).contains(&t);
+    c.end.0.checked_sub(c.start.0).is_some_and(|d| within(d) && within(c.start.0) && within(c.end.0))
+}
+
 /// Build a caption track from a document, in the document's language when it has one (else
 /// the default, `en`). Ids are allocated with `alloc`.
 pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: CaptionFormat, alloc: &mut dyn FnMut() -> u64) -> CaptionTrack {
@@ -46,7 +52,7 @@ pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: Capt
     t.captions = doc
         .cues
         .iter()
-        .filter(|c| c.end > c.start)
+        .filter(|c| c.end > c.start && in_bounds(c))
         .map(|c| Caption {
             id: ClipId(alloc()),
             start: c.start,
