@@ -33,22 +33,70 @@ pub struct CommandSpec {
     pub run: Run,
     /// Record in the journal (false for pure queries).
     pub journal: bool,
+    /// The keys through which a caller may name this command's targets instead of selecting them
+    /// (see [`Session::execute`]). Set once for the whole registry by [`command_specs`] from the
+    /// parameter doc, and checked against what each command really reads by the
+    /// `named_targets_are_read_by_the_commands_that_declare_them` test; a command that documents
+    /// a key but reads only the selection is listed in [`SELECTION_ONLY`].
+    pub named: NamedKeys,
 }
+
+/// Which target keys a command accepts (#65): `clips` (list of clip ids), `clip` (one clip id),
+/// `items` (list of project item ids), `item` (one project item id).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NamedKeys(u8);
+
+impl NamedKeys {
+    pub const NONE: NamedKeys = NamedKeys(0);
+    pub const CLIPS: NamedKeys = NamedKeys(1);
+    pub const CLIP: NamedKeys = NamedKeys(2);
+    pub const ITEMS: NamedKeys = NamedKeys(4);
+    pub const ITEM: NamedKeys = NamedKeys(8);
+
+    pub fn contains(self, other: NamedKeys) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub fn is_none(self) -> bool {
+        self.0 == 0
+    }
+    /// The keys the parameter doc of a command declares as ids (`"clips":[id]`, `"item":id`).
+    fn from_doc(doc: &str) -> NamedKeys {
+        let has = |k: &str| doc.contains(k);
+        let mut bits = 0;
+        for (bit, doc_form) in [(1, "\"clips\":[id]"), (2, "\"clip\":id"), (4, "\"items\":[id]"), (8, "\"item\":id")] {
+            if has(doc_form) {
+                bits |= bit;
+            }
+        }
+        NamedKeys(bits)
+    }
+}
+
+/// Commands whose parameter doc names a target key that their `run` does not read: they act on
+/// the selection only, so naming targets must not stand in for one. Empty today; the
+/// differential test in `named_targets_tests` fails for a command that belongs here.
+const SELECTION_ONLY: &[&str] = &[];
 
 macro_rules! cmd {
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true }
+        CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, named: NamedKeys::NONE }
     };
 }
 macro_rules! query {
     ($id:literal, $label:literal, $params:literal, $run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false }
+        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false, named: NamedKeys::NONE }
     };
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
-    SPECS.get_or_init(build)
+    SPECS.get_or_init(|| {
+        let mut v = build();
+        for c in &mut v {
+            c.named = if SELECTION_ONLY.contains(&c.id) { NamedKeys::NONE } else { NamedKeys::from_doc(c.params) };
+        }
+        v
+    })
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
@@ -93,6 +141,16 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
         Ok(())
     }
 }
+/// The selected captions a Clear / Ripple Delete can still take after the clip edit: the ripple of
+/// a clip removes the captions of sync-locked caption tracks that lay inside its range, and
+/// captions on a locked track stay.
+fn deletable_captions(q: &filmcraft_project::Sequence, caps: &[ClipId]) -> Vec<ClipId> {
+    caps.iter().copied().filter(|c| q.find_caption(*c).is_some_and(|(t, _)| q.caption_track(t).is_some_and(|t| !t.locked))).collect()
+}
+/// Delete/Ripple Delete with no explicit clips and both clips and captions selected (Select All).
+fn clips_and_captions_selected(s: &Session, p: &Value) -> bool {
+    p.get("clips").is_none() && p.get("clip").is_none() && !s.state.selection.is_empty() && !s.state.caption_selection.is_empty()
+}
 /// Clips, captions or a gap selected (Ripple Delete: a transition has no length of its own to close).
 fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -133,13 +191,13 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
-fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec<u64>> {
-    let ids: Vec<u64> = if spec.params.contains(&format!("\"{many}\":[id]"))
-        && let Some(a) = p.get(many).and_then(Value::as_array)
+fn named_ids(spec: &CommandSpec, p: &Value, many: (&str, NamedKeys), one: (&str, NamedKeys)) -> Option<Vec<u64>> {
+    let ids: Vec<u64> = if spec.named.contains(many.1)
+        && let Some(a) = p.get(many.0).and_then(Value::as_array)
     {
         a.iter().filter_map(Value::as_u64).collect()
-    } else if spec.params.contains(&format!("\"{one}\":id")) {
-        u64_p(p, one).into_iter().collect()
+    } else if spec.named.contains(one.1) {
+        u64_p(p, one.0).into_iter().collect()
     } else {
         Vec::new()
     };
@@ -149,7 +207,8 @@ fn named_ids(spec: &CommandSpec, p: &Value, many: &str, one: &str) -> Option<Vec
 /// the active sequence count, so an id of nothing does not stand in for a selection.
 pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<Vec<ClipId>> {
     let seq = s.active_sequence()?;
-    let clips: Vec<ClipId> = named_ids(spec, p, "clips", "clip")?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
+    let clips: Vec<ClipId> =
+        named_ids(spec, p, ("clips", NamedKeys::CLIPS), ("clip", NamedKeys::CLIP))?.into_iter().map(ClipId).filter(|c| seq.find_item(*c).is_some()).collect();
     (!clips.is_empty()).then_some(clips)
 }
 /// Why the clips a caller named in `clips` / `clip` stand in for no selection (#591): a clip of
@@ -157,11 +216,11 @@ pub(crate) fn named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 /// `None` when the caller named nothing or no sequence is open, so the selection's reason stands.
 pub(crate) fn named_clips_missing(s: &Session, spec: &CommandSpec, p: &Value) -> Option<String> {
     s.active_sequence()?;
-    let first = if spec.params.contains("\"clips\":[id]")
+    let first = if spec.named.contains(NamedKeys::CLIPS)
         && let Some(a) = p.get("clips").and_then(Value::as_array)
     {
         a.first()?
-    } else if spec.params.contains("\"clip\":id") {
+    } else if spec.named.contains(NamedKeys::CLIP) {
         p.get("clip").filter(|v| !v.is_null())?
     } else {
         return None;
@@ -184,7 +243,7 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
         let b = filmcraft_project::BinId(i.0);
         s.project.item(*i).is_some() || (b != root && s.project.root.find_bin(b).is_some())
     };
-    let items: Vec<ItemId> = named_ids(spec, p, "items", "item")?.into_iter().map(ItemId).filter(exists).collect();
+    let items: Vec<ItemId> = named_ids(spec, p, ("items", NamedKeys::ITEMS), ("item", NamedKeys::ITEM))?.into_iter().map(ItemId).filter(exists).collect();
     (!items.is_empty()).then_some(items)
 }
 
@@ -324,11 +383,46 @@ pub(crate) fn tick_or_time_p(p: &Value, key: &str, rate: FrameRate, drop_frame: 
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
+
+fn resolve_effect_alias(name: &str) -> Option<&'static str> {
+    let lower = name.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "ae.adbe drop shadow" | "sombra paralela" | "drop shadow" | "drop_shadow" | "dropshadow" => Some("drop_shadow"),
+        "pr.adbe lens distortion" | "distorsión de lente" | "distorsion de lente" | "lens distortion" | "lens_distortion" => Some("lens_distortion"),
+        "ae.mettle skybox chromatic aberrations"
+        | "aberraciones cromáticas vr"
+        | "aberraciones cromaticas vr"
+        | "vr chromatic aberrations"
+        | "vr_chromatic_aberrations" => Some("vr_chromatic_aberrations"),
+        "ae.mettle skybox glow" | "resplandor vr" | "vr glow" | "vr_glow" => Some("vr_glow"),
+        "ae.mettle skybox digital glitch" | "vr digital glitch" | "vr_digital_glitch" => Some("vr_digital_glitch"),
+        "ae.adbe gaussian blur 2" | "ae.adbe gaussian blur" | "desenfoque gaussiano" | "gaussian blur" | "gaussian_blur" => Some("gaussian_blur"),
+        "ae.adbe directional blur" | "desenfoque direccional" | "directional blur" | "directional_blur" => Some("directional_blur"),
+        "ae.adbe geometry2" | "ae.adbe geometry" | "transformar" | "transform" => Some("transform"),
+        "ae.adbe basic 3d" | "3d básico" | "3d basico" | "basic 3d" | "basic_3d" => Some("basic_3d"),
+        "ae.adbe mirror" | "reflejar" | "mirror" => Some("mirror"),
+        "ae.adbe wave warp" | "deformación de onda" | "deformacion de onda" | "wave warp" | "wave_warp" => Some("wave_warp"),
+        "ae.adbe turbulent displace" | "desplazamiento turbulento" | "turbulent displace" | "turbulent_displace" => Some("turbulent_displace"),
+        "ae.adbe tint" | "teñir" | "tenir" | "tint" => Some("tint"),
+        "ae.adbe mosaic" | "mosaico" | "mosaic" => Some("mosaic"),
+        "ae.adbe roughen edges" | "bordes rugosos" | "roughen edges" | "roughen_edges" => Some("roughen_edges"),
+        "ae.adbe linear wipe" | "barrido lineal" | "linear wipe" | "linear_wipe" | "linear_wipe_legacy" => Some("linear_wipe_legacy"),
+        "ae.adbe circle" | "círculo" | "circulo" | "circle" => Some("circle"),
+        "ae.adbe ultra key" | "incrustación ultra" | "incrustacion ultra" | "ultra key" | "ultra_key" => Some("ultra_key"),
+        _ => None,
+    }
+}
+
 /// Effect by id or display name. Names shared by several definitions ("Invert", "Volume",
 /// "Channel Volume") resolve to an applicable (non-intrinsic) effect whose kind matches the
 /// target clips' tracks.
 fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static filmcraft_project::EffectDef> {
     if let Some(d) = filmcraft_project::find_effect(name) {
+        return Some(d);
+    }
+    if let Some(alias_id) = resolve_effect_alias(name)
+        && let Some(d) = filmcraft_project::find_effect(alias_id)
+    {
         return Some(d);
     }
     let n = name.to_ascii_lowercase();
@@ -421,8 +515,12 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
 /// with `copy`, and not with `insert`, which already carries the sync-locked caption tracks.
 fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.move";
+    let rate = s.sequence_rate();
+    let df = s.active_sequence().is_some_and(|q| q.settings.drop_frame);
     let mut listed: Vec<(ClipId, TrackId, Tick, bool)> = Vec::new();
-    for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
+    for (i, m) in p.get("moves").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        // ticks, or a time object at the sequence rate (as `sourceIn` of `timeline.place`)
+        let time = tick_or_time_p(m, "time", rate, df, CMD)?;
         let new_track = str_p(m, "track").is_some_and(|t| t.eq_ignore_ascii_case("new"));
         let track = if new_track {
             let clip = clip_p(m, "clip").ok_or_else(|| bad(CMD, "new track needs a clip"))?;
@@ -431,16 +529,17 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
             if q.track(source).is_some_and(|t| t.locked) {
                 return Err(edit::EditError::Locked.into());
             }
-            if m.get("time").and_then(Value::as_i64).is_none() {
-                return Err(bad(CMD, "new track needs a time"));
-            }
             Some(source)
         } else {
             track_p(s, m, "track", CMD)?
         };
-        if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
-            listed.push((clip, track, Tick(time), new_track));
-        }
+        // an entry the move cannot use is refused, never skipped: skipping it moved the rest of
+        // the list, or failed with "need `moves`" when it was the only entry
+        let needs = |what: &str| bad(CMD, format!("`moves[{i}]` needs {what}"));
+        let clip = clip_p(m, "clip").ok_or_else(|| needs("`clip`"))?;
+        let track = track.ok_or_else(|| needs("`track`"))?;
+        let time = time.ok_or_else(|| needs("`time`: ticks or a time object like {\"seconds\": n}, {\"frame\": n} or {\"timecode\": \"…\"}"))?;
+        listed.push((clip, track, time, new_track));
     }
     if listed.is_empty() {
         return Err(bad(CMD, "need `moves`"));
@@ -984,7 +1083,19 @@ fn import_source(
     Ok(id)
 }
 
+/// The optional `bin` of a `file.new…` command: the bin the new item lands in (the project's root
+/// when absent or null). A bin that does not exist is an error, not a silent fall back to the root.
+fn bin_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<filmcraft_project::BinId>> {
+    let Some(v) = p.get("bin").filter(|v| !v.is_null()) else { return Ok(None) };
+    let id = v.as_u64().map(filmcraft_project::BinId).ok_or_else(|| bad(cmd, "`bin` must be a bin id"))?;
+    if s.project.root.find_bin(id).is_none() {
+        return Err(bad(cmd, format!("no bin {}", id.0)));
+    }
+    Ok(Some(id))
+}
+
 fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+    let bin = bin_p(s, p, "file.new")?;
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
     let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
     let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
@@ -994,7 +1105,7 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
     let pool = s.media.clone();
     let par = filmcraft_project::sane_par(st.par);
     let id = s.edit(&format!("New {name}"), |pr, st| {
-        let id = crate::demo::add_generator(pr, &pool, src, &name, label, None);
+        let id = crate::demo::add_generator(pr, &pool, src, &name, label, bin);
         // made for the sequence: its pixels have the sequence's aspect, as in Premiere
         if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|i| &mut i.kind)
             && let Some(v) = m.info.video.as_mut()
@@ -1507,9 +1618,10 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"bin":binId?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
+                let bin = bin_p(s, p, "file.newSequence")?;
                 // `fromItems` is `fromItem` for a list: the first sets the sequence, the rest follow it back to back
                 let mut from_ids: Vec<ItemId> = match p.get("fromItems") {
                     None => Vec::new(),
@@ -1559,7 +1671,7 @@ fn build() -> Vec<CommandSpec> {
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
                 let id = s.edit("New Sequence", |pr, st2| {
-                    let id = pr.new_sequence(&name, st, nv as usize, na as usize, None);
+                    let id = pr.new_sequence(&name, st, nv as usize, na as usize, bin);
                     if let Some(it) = pr.item_mut(id) {
                         it.label = seq_label;
                     }
@@ -1603,7 +1715,8 @@ fn build() -> Vec<CommandSpec> {
             let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, parent)))?;
             Ok(json!({"bin": id.0}))
         }),
-        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5}"#, always, |s, p| {
+        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5,"bin":binId?}"#, always, |s, p| {
+            let bin = bin_p(s, p, "file.newAdjustmentLayer")?;
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
             let secs = f64_p(p, "seconds").unwrap_or(5.0);
             let id = s.edit("New Adjustment Layer", |pr, st2| {
@@ -1611,40 +1724,40 @@ fn build() -> Vec<CommandSpec> {
                     "Adjustment Layer",
                     Label::Lavender,
                     ItemKind::AdjustmentLayer { width: st.width, height: st.height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
-                    None,
+                    bin,
                 );
                 st2.project_selection = vec![id];
                 Ok(id)
             })?;
             Ok(json!({"item": id.0}))
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
+        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10,"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::BarsAndTone,
             "Bars and Tone",
             Label::Lavender,
             p
         )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64,"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::BlackVideo,
             "Black Video",
             Label::Lavender,
             p
         )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5}"##, always, |s, p| {
+        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5,"bin":binId?}"##, always, |s, p| {
             let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
             new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
         }),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::CountingLeader,
             "Universal Counting Leader",
             Label::Lavender,
             p
         )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::TransparentVideo,
             "Transparent Video",
@@ -1691,6 +1804,7 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             let mut image_sequences = Vec::new();
+            let mut preset_names = Vec::new();
             // Image Sequence: each path is the first frame of a numbered still sequence. With
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
@@ -1716,7 +1830,7 @@ fn build() -> Vec<CommandSpec> {
                     },
                     Ok(b) => {
                         if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
+                            match crate::captions::import(s, &path, &b, fmt, None, None) {
                                 Ok(r) => reports.push(r),
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
@@ -1724,6 +1838,16 @@ fn build() -> Vec<CommandSpec> {
                             match crate::interchange::import(s, &path, &b, fmt, bin) {
                                 Ok(r) => {
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                    reports.push(r);
+                                }
+                                Err(e) => errors.push(format!("{path}: {e}")),
+                            }
+                        } else if crate::presets::is_preset_file(std::path::Path::new(&path), &b) {
+                            match s.execute("presets.import", json!({"path": path})) {
+                                Ok(r) => {
+                                    if let Some(arr) = r["imported"].as_array() {
+                                        preset_names.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+                                    }
                                     reports.push(r);
                                 }
                                 Err(e) => errors.push(format!("{path}: {e}")),
@@ -1775,6 +1899,9 @@ fn build() -> Vec<CommandSpec> {
             };
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
+            }
+            if !preset_names.is_empty() {
+                out["presets"] = json!(preset_names);
             }
             // Newly imported files may resolve paths the project already listed as offline
             // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
@@ -1955,7 +2082,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -2027,9 +2154,15 @@ fn build() -> Vec<CommandSpec> {
                     Some(clips) => with_links(s, &clips),
                     None => s.state.selection.clone(),
                 };
+                let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
                 s.edit_sequence("Clear", |q, _, st| {
                     edit::delete_items(q, &sel);
                     st.selection.clear();
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, false)?;
+                    }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2057,6 +2190,7 @@ fn build() -> Vec<CommandSpec> {
                     Some(clips) => with_links(s, &clips),
                     None => s.state.selection.clone(),
                 };
+                let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
                 s.edit_sequence("Ripple Delete", |q, _, st| {
                     let spans = edit::ripple_delete_items(q, &sel)?;
                     if st.ripple_sequence_markers {
@@ -2065,6 +2199,11 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     st.selection.clear();
+                    let live = deletable_captions(q, &caps);
+                    if !live.is_empty() {
+                        edit::captions::delete_captions(q, &live, true)?;
+                    }
+                    st.caption_selection.retain(|c| q.find_caption(*c).is_some());
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2124,7 +2263,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_seq, |s, _| {
             let all: Vec<ClipId> = s.active_sequence().map(|q| q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect()).unwrap_or_default();
+            // captions too, so they can all be converted to graphics at once (#1912)
+            let caps: Vec<ClipId> =
+                s.active_sequence().map(|q| q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.id)).collect()).unwrap_or_default();
             s.state.selection = all;
+            s.state.caption_selection = caps;
             s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),
@@ -2272,12 +2415,13 @@ fn build() -> Vec<CommandSpec> {
             "Speed/Duration…",
             ["Clip"],
             Some("Cmd+R"),
-            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
+            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"maintainPitch":bool? (Maintain Audio Pitch; unchanged when left out),"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
             has_selection,
             |s, p| {
                 let speed = f64_p(p, "speed").unwrap_or(100.0) / 100.0;
                 let reverse = bool_p(p, "reverse").unwrap_or(false);
                 let ripple = bool_p(p, "ripple").unwrap_or(false);
+                let maintain_pitch = bool_p(p, "maintainPitch");
                 let interp = match str_p(p, "interpolation") {
                     Some(m) => Some(filmcraft_project::TimeInterpolation::from_name(m).ok_or_else(|| bad("clip.speedDuration", "unknown interpolation"))?),
                     None => None,
@@ -2309,8 +2453,16 @@ fn build() -> Vec<CommandSpec> {
                         edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
                     }
                     for c in &sel {
-                        if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
-                            it.time_interpolation = m;
+                        // a linked partner on a locked track keeps its speed (above) and how its sound
+                        // follows that speed
+                        let locked = q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked));
+                        if let Some((_, it)) = q.find_item_mut(*c) {
+                            if let Some(m) = interp {
+                                it.time_interpolation = m;
+                            }
+                            if let Some(keep) = maintain_pitch.filter(|_| !locked) {
+                                it.maintain_pitch = keep;
+                            }
                         }
                     }
                     Ok(())
@@ -2679,7 +2831,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence Settings…",
             ["Sequence"],
             None,
-            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"videoDisplay":"timecode|feet35|feet16|frames"?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
             has_seq,
             |s, p| {
                 const CMD: &str = "sequence.settings";
@@ -2703,6 +2855,14 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 let drop_frame = bool_p(p, "dropFrame");
+                let display = match str_p(p, "videoDisplay") {
+                    Some(d) => Some(
+                        filmcraft_time::TimeDisplay::from_id(d)
+                            .filter(|x| filmcraft_time::TimeDisplay::VIDEO.contains(x))
+                            .ok_or_else(|| bad(CMD, format!("unknown videoDisplay `{d}` (timecode, feet35, feet16, frames)")))?,
+                    ),
+                    None => None,
+                };
                 let rate = fps.or_else(|| s.active_sequence().map(|q| q.settings.frame_rate)).unwrap_or(FrameRate::FPS_23_976);
                 if drop_frame == Some(true) && !rate.supports_drop_frame() {
                     return Err(bad(CMD, format!("drop-frame timecode needs a 29.97, 59.94 or 119.88 fps timebase, not {rate}")));
@@ -2732,6 +2892,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     if let Some(df) = drop_frame {
                         q.settings.drop_frame = df;
+                    }
+                    if let Some(d) = display {
+                        q.settings.display = d;
                     }
                     if let Some(v) = bool_p(&p, "maxRenderQuality") {
                         q.settings.max_render_quality = v;
@@ -3208,7 +3371,7 @@ fn build() -> Vec<CommandSpec> {
             "Move Clips",
             [],
             None,
-            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
+            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks|{"seconds":f}|{"frame":n}|{"timecode":str}}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
             has_seq,
             move_clips
         ),
@@ -3327,6 +3490,7 @@ fn build() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: |s, p| crate::trim::tick(s, p.get("clock").and_then(Value::as_f64).unwrap_or(0.0)),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         query!("trim.monitor", "Trim Monitor State", "{}", |s, _| Ok(crate::trim::monitor_info(s))),
         cmd!("trim.nudge", "Trim by Frames", [], None, r#"{"frames":i64}"#, has_edit_points, |s, p| crate::trim::nudge(s, p)),
@@ -3609,6 +3773,7 @@ fn build() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: select_effect,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         cmd!(
             "effects.setParam",
@@ -5093,7 +5258,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
             "label": t.label.map(|l| l.name()),
             "items": t.items.iter().map(|i| json!({
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
-                "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse,
+                "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse, "maintainPitch": i.maintain_pitch,
                 "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(), "customLabelColor": i.custom_label_color,
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),

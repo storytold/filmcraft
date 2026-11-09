@@ -170,7 +170,9 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
 
 /// Menu / shortcut entry points. Returns None for ids this module doesn't handle.
 pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
-    let empty = params.as_object().is_none_or(|m| m.is_empty());
+    // New Item sends the bin it was clicked in (null = root); the Color Matte dialog takes it
+    let carried = if id == "file.newColorMatte" { crate::panels::project::bin_only(params) } else { None };
+    let empty = params.as_object().is_none_or(|m| m.is_empty()) || carried.is_some();
     // UI commands
     match id {
         "view.dynamicAudioWaveforms" => {
@@ -230,6 +232,40 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.session.execute(&id, p).map_err(|e| e.to_string())
             }));
         }
+        // Color Grading panel menu ▸ Export .cube…: ask where to save the grade, then export it
+        "lumetri.exportCube" if params.get("path").is_none() => {
+            if let Err(e) = enabled(app, id) {
+                return Some(Err(e));
+            }
+            // the clip is fixed now, not when the dialog closes
+            let has_lumetri = |c: &filmcraft_project::ClipId| {
+                let (_, it) = app.session.active_sequence()?.find_item(*c)?;
+                it.effects.iter().any(|e| e.enabled && e.effect == "lumetri").then(|| (c.0, it.name.clone()))
+            };
+            let found = match params.get("clip").and_then(Value::as_u64) {
+                Some(c) => has_lumetri(&filmcraft_project::ClipId(c)),
+                None => app.session.state.selection.iter().find_map(has_lumetri),
+            };
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Color Grading".into())) };
+            let stem: String =
+                stem.unwrap_or_else(|| "Color Grading".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+            let mut p = params.as_object().cloned().unwrap_or_default();
+            p.entry("clip").or_insert(json!(clip));
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::save_as(tl!("Cube LUT"), &["cube"], &format!("{stem}.cube")), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                p.insert("path".into(), json!(path));
+                let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+                // effects the LUT cannot hold (vignette, sharpen, other effects on the clip) are named
+                let left_out: Vec<&str> = r.as_ref().ok().and_then(|v| v["leftOut"].as_array()).into_iter().flatten().filter_map(Value::as_str).collect();
+                app.ui.status = match &r {
+                    Ok(_) if left_out.is_empty() => tlf!("Exported {path}", path),
+                    Ok(_) => tlf!("Exported {path}; not in the LUT: {effects}", path, effects = left_out.join(", ")),
+                    Err(e) => e.clone(),
+                };
+                r
+            }));
+        }
         "file.mediaPropertiesFile" if params.get("path").is_none() => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
@@ -254,7 +290,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         app.ui.status = e.clone();
         return Some(Err(e));
     }
-    let (params, info) = match defaults(app, cmd, id) {
+    let (params, info) = match defaults(app, cmd, id, carried) {
         Ok(x) => x,
         Err(e) => return Some(Err(e)),
     };
@@ -263,7 +299,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 }
 
 /// Initial parameters (and display info) of a dialog.
-fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value), String> {
+fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str, bin: Option<Option<u64>>) -> Result<(Value, Value), String> {
+    let shown_bin = bin.unwrap_or_else(|| crate::panels::project::shown_bin(app));
     let s = &mut app.session;
     Ok(match cmd {
         "edit.find" => {
@@ -349,7 +386,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
         "file.newColorMatte" => {
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0}), Value::Null)
+            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0, "bin": shown_bin}), Value::Null)
         }
         "project.matteColor" => {
             let matte = match s.state.project_selection.as_slice() {
