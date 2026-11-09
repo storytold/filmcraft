@@ -1,4 +1,4 @@
-//! A clip's Lumetri grade sampled on a 3D lattice, for Lumetri's Export .cube (#4127).
+//! A clip's Color Grading grade sampled on a 3D lattice, for Color Grading's Export .cube (#4127).
 //!
 //! The lattice is an image of `size³` pixels holding every grid colour as an encoded (display) RGB
 //! value, so that running the grade's own CPU effect on it gives the grade of each colour, and the
@@ -58,7 +58,7 @@ fn tabulable(e: &EffectInstance, t: Tick, left_out: &mut Vec<&'static str>) -> E
     e
 }
 
-/// Sample the Lumetri effects `effects` (in order; disabled ones are skipped) at effect time `t`
+/// Sample the Color Grading effects `effects` (in order; disabled ones are skipped) at effect time `t`
 /// on a `size³` lattice in the sequence's output encoding. Only Rec. 709 sequences without wide
 /// gamut are supported: the HDR and wide-gamut pipelines grade in another signal.
 pub fn sample_lumetri(
@@ -77,7 +77,7 @@ pub fn sample_lumetri(
         return Err(format!("`size` must be between {MIN_SIZE} and {MAX_SIZE}"));
     }
     if effects.iter().any(|e| e.enabled && e.effect == "lumetri" && !e.masks.is_empty()) {
-        return Err("Lumetri Color with masks cannot be exported to a LUT: a LUT has no spatial input".into());
+        return Err("Color Grading with masks cannot be exported to a LUT: a LUT has no spatial input".into());
     }
     let mut left_out = Vec::new();
     let graded: Vec<EffectInstance> = effects.iter().filter(|e| e.enabled && e.effect == "lumetri").map(|e| tabulable(e, t, &mut left_out)).collect();
@@ -198,7 +198,7 @@ mod tests {
         let s = sample(&[&e], 5);
         let id = Lut3d::identity(5);
         let worst = s.lut.data.iter().zip(&id.data).flat_map(|(a, b)| (0..3).map(move |k| (a[k] - b[k]).abs())).fold(0.0, f32::max);
-        assert!(worst < 1.0 / 255.0, "a disabled Lumetri grades nothing: {worst}");
+        assert!(worst < 1.0 / 255.0, "a disabled Color Grading grades nothing: {worst}");
         for bad in [0, 1, MAX_SIZE + 1, usize::MAX] {
             assert!(sample_lumetri(&[&e], None, Tick::ZERO, 24.0, &ColorPipeline::REC709, bad, "t").is_err(), "{bad}");
         }
