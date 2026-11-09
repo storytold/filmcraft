@@ -971,23 +971,19 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     }
 }
 
-/// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
-/// Longest reel name kept, in characters (a damaged `name` box can be any size).
-const MAX_REEL_CHARS: usize = 255;
-
 /// The source (reel) name of the timecode track the start timecode comes from (the first `tmcd`
-/// track with a start frame), without padding: what the camera, or the tool that wrote the file,
-/// called the tape. A name on another timecode track is not this source's, so it is not used; an
-/// empty name is none.
+/// track with a start frame), cleaned with [`filmcraft_media::clean_reel`]: what the camera, or the
+/// tool that wrote the file, called the tape. A name on another timecode track is not this source's,
+/// so it is not used.
 fn timecode_reel(file: &Mp4File) -> Option<String> {
     let tc = file.tracks.iter().find_map(|t| match t.codec() {
         Some(CodecConfig::Timecode(tc)) if tc.start_frame.is_some() => Some(tc),
         _ => None,
     })?;
-    let name = tc.name.as_deref()?.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    (!name.is_empty()).then(|| name.chars().take(MAX_REEL_CHARS).collect())
+    filmcraft_media::clean_reel(tc.name.as_deref()?)
 }
 
+/// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
 pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
     if !sniff(head) {
         return None;

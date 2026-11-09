@@ -423,6 +423,13 @@ fn import_takes_the_tape_name_from_the_timecode_track() {
     };
     assert_eq!(tape(&s, 0).as_deref(), Some("A001"), "{r}");
     assert_eq!(tape(&s, 1), None);
+    // each import is one undo step, the Tape Name with it
+    let a = filmcraft_project::ItemId(r["items"][0].as_u64().unwrap());
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.item(a).is_none(), "undone");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(tape(&s, 0).as_deref(), Some("A001"), "redone with its Tape Name");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

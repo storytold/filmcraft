@@ -231,11 +231,28 @@ pub trait MediaSource: Send + Sync {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
         if stream == 0 { self.audio(start, frames, sample_rate) } else { Err(MediaError::NoStream("audio")) }
     }
-    /// The reel (tape) name the file gives its source, if any: the source name of a QuickTime
-    /// timecode track. Import makes it the item's Tape Name.
+    /// The reel (tape) name the file gives its source, if any: the source name of the QuickTime
+    /// timecode track its start timecode comes from. Import makes it the item's Tape Name as it is,
+    /// so an implementation returns it through [`clean_reel`]: no control characters, at most
+    /// [`MAX_REEL_CHARS`] characters, `None` when nothing is left.
     fn reel(&self) -> Option<String> {
         None
     }
+}
+
+/// Longest reel name kept, in characters (a damaged file can name one of any size).
+pub const MAX_REEL_CHARS: usize = 255;
+
+/// A reel name read from a file, made safe to keep as a Tape Name. Control characters (NUL, tab,
+/// line breaks and the rest) and runs of whitespace become one space, the ends are trimmed, and at
+/// most [`MAX_REEL_CHARS`] characters are kept; `None` when nothing is left. EDL, ALE and XMP exports
+/// write Tape Name as text, where a control character would end a line or field, or make the XML
+/// invalid.
+pub fn clean_reel(raw: &str) -> Option<String> {
+    let words: Vec<&str> = raw.split(|c: char| c.is_control() || c.is_whitespace()).filter(|w| !w.is_empty()).collect();
+    let name: String = words.join(" ").chars().take(MAX_REEL_CHARS).collect();
+    let name = name.trim_end();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 pub type SharedSource = Arc<dyn MediaSource>;
@@ -328,6 +345,31 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+
+    /// A reel name from a file keeps no control character an EDL, ALE or XMP export would trip on,
+    /// and is cut at 255 characters, not bytes.
+    #[test]
+    fn clean_reel_keeps_text_safe_for_exports() {
+        let accents = "é".repeat(300);
+        let cut = "é".repeat(255);
+        let spaced = format!("{} B", "A".repeat(254));
+        let cases: [(&str, Option<&str>); 10] = [
+            ("A001", Some("A001")),
+            ("  B002\0\0", Some("B002")),
+            ("A\0B", Some("A B")),
+            ("A\tB\r\nC", Some("A B C")),
+            ("R\u{7f}1\u{1b}2", Some("R 1 2")),
+            ("Day  1", Some("Day 1")),
+            ("  \0\0", None),
+            ("", None),
+            (&accents, Some(&cut)),
+            // cut right after a space: the space doesn't stay at the end
+            (&spaced, Some(&spaced[..254])),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(clean_reel(raw).as_deref(), want, "{:?}", raw.chars().take(12).collect::<String>());
+        }
     }
 
     #[test]

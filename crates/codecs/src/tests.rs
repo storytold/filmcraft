@@ -926,9 +926,14 @@ fn mov_timecode_track_names_the_reel() {
     };
     let long = "R".repeat(1000);
     let cut = "R".repeat(255);
-    let cases: [(&[(Option<&str>, u32)], Option<&str>); 6] = [
+    let accents = "é".repeat(300);
+    let accents_cut = "é".repeat(255);
+    let cases: [(&[(Option<&str>, u32)], Option<&str>); 9] = [
         (&[(Some("A001"), 1_306_050)], Some("A001")),
         (&[(Some("  B002\0\0"), 1_306_050)], Some("B002")),
+        (&[(Some("A\tB\r\nC"), 1_306_050)], Some("A B C")),
+        (&[(Some("  \0\0"), 1_306_050)], None),
+        (&[(Some(&accents), 1_306_050)], Some(&accents_cut)),
         (&[(Some(""), 1_306_050)], None),
         (&[(None, 1_306_050)], None),
         (&[(None, 1_306_050), (Some("B002"), 90_000)], None),
