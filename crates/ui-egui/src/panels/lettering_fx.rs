@@ -9,7 +9,11 @@
 //! order's progress and can cancel it. Putting the rendered `.mov` back on the timeline is not part
 //! of this window.
 //!
+//! The colours (text, outline, spoken word, highlight words) start as the style's own; a changed one
+//! goes to `lettering.fx.send` as `cores`.
+//!
 //! Automation ids: `letteringFx.word.<index>`, `letteringFx.template.<id>`, `letteringFx.send`,
+//! `letteringFx.color.<key>` (+ `.reset`),
 //! `letteringFx.cancel` (closes, or cancels the running order), `letteringFx.close`.
 
 use crate::widgets::CenteredDialog as _;
@@ -22,6 +26,20 @@ struct Template {
     id: String,
     name: String,
     description: String,
+}
+
+/// The colour options: the key sent in `cores` and the colour offered when it is changed.
+const COLORS: [(&str, [u8; 3]); 4] = [("texto", [255, 255, 255]), ("contorno", [0, 0, 0]), ("falada", [255, 214, 10]), ("destaque", [255, 255, 255])];
+
+/// The translated label of a colour option.
+fn color_label(i: usize) -> String {
+    match i {
+        0 => tl!("Text color"),
+        1 => tl!("Outline color"),
+        2 => tl!("Spoken word color"),
+        _ => tl!("Highlight color"),
+    }
+    .to_string()
 }
 
 #[derive(Clone, Debug)]
@@ -38,11 +56,18 @@ struct Draft {
     captions: Vec<u64>,
     words: Vec<String>,
     heroes: Vec<bool>,
+    /// The colours the user changed, in [`COLORS`] order (`None`: the style's own).
+    colors: [Option<[u8; 3]>; 4],
     templates: Vec<Template>,
     template: Option<String>,
     /// Why the menu is empty, or why the last send failed.
     problem: Option<String>,
     phase: Phase,
+}
+
+/// The `cores` of a send: `#rrggbb` for each colour the user changed, nothing for the others.
+fn cores_json(colors: &[Option<[u8; 3]>; 4]) -> serde_json::Map<String, Value> {
+    COLORS.iter().zip(colors.iter()).filter_map(|((key, _), c)| c.map(|[r, g, b]| ((*key).to_string(), json!(format!("#{r:02x}{g:02x}{b:02x}"))))).collect()
 }
 
 /// Where the open window keeps its draft.
@@ -87,7 +112,10 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
     let template = templates.first().map(|t| t.id.clone());
     let n = words.len();
     ctx.data_mut(|m| {
-        m.insert_temp(draft_id(), Some(Draft { summary, captions, words, heroes: vec![false; n], templates, template, problem, phase: Phase::Editing }))
+        m.insert_temp(
+            draft_id(),
+            Some(Draft { summary, captions, words, heroes: vec![false; n], colors: [None; 4], templates, template, problem, phase: Phase::Editing }),
+        )
     });
     Ok(json!({"dialog": "letteringFx"}))
 }
@@ -179,6 +207,35 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 d.template = Some(t.id.clone());
             }
         }
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(tl!("Colors (the style's own unless changed)")).strong());
+        for (i, (key, start)) in COLORS.iter().enumerate() {
+            let label = color_label(i);
+            ui.horizontal(|ui| {
+                ui.label(&label);
+                match d.colors.get_mut(i) {
+                    Some(slot @ Some(_)) => {
+                        if let Some(rgb) = slot.as_mut() {
+                            let r = ui.color_edit_button_srgb(rgb);
+                            elems.push((format!("letteringFx.color.{key}"), r.rect, label.clone()));
+                        }
+                        let x = ui.button(tl!("Reset"));
+                        elems.push((format!("letteringFx.color.{key}.reset"), x.rect, "Reset".into()));
+                        if x.clicked() {
+                            *slot = None;
+                        }
+                    }
+                    Some(slot) => {
+                        let b = ui.button(tl!("Change"));
+                        elems.push((format!("letteringFx.color.{key}"), b.rect, label.clone()));
+                        if b.clicked() {
+                            *slot = Some(*start);
+                        }
+                    }
+                    None => {}
+                }
+            });
+        }
         if let Some(p) = &d.problem {
             ui.colored_label(ui.visuals().error_fg_color, p);
         }
@@ -208,7 +265,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if send && let Some(template) = d.template.clone() {
         let heroes: Vec<usize> = d.heroes.iter().enumerate().filter(|(_, h)| **h).map(|(i, _)| i).collect();
-        match app.session.execute("lettering.fx.send", json!({"template": template, "heroes": heroes, "captions": d.captions})) {
+        let cores = cores_json(&d.colors);
+        match app.session.execute("lettering.fx.send", json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores})) {
             Ok(v) => {
                 d.problem = None;
                 match v["job"].as_u64() {
@@ -220,4 +278,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     }
     ctx.data_mut(|m| m.insert_temp(draft_id(), if close { None } else { Some(d) }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_changed_colours_are_sent_as_hex() {
+        assert!(cores_json(&[None; 4]).is_empty());
+        let c = cores_json(&[None, Some([0, 0, 0]), Some([255, 214, 10]), None]);
+        assert_eq!(Value::Object(c), json!({"contorno": "#000000", "falada": "#ffd60a"}));
+    }
 }

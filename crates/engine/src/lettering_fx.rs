@@ -6,7 +6,8 @@
 //! 1. the selected captions (or the caption under the playhead) give the words, timed to the voice;
 //! 2. [`prepare`] (`lettering.fx.prepare`) describes the span: start, duration, frame size, rate, words;
 //! 3. [`send`] (`lettering.fx.send`) writes `words.json` (seconds relative to the span start) and
-//!    `pedido.json` (`{template, palavras, saida}`) in a work folder and starts the *attendant*
+//!    `pedido.json` (`{template, palavras, saida, opcoes?}`; `opcoes.cores` holds the colours the user
+//!    changed, see [`cores_p`]) in a work folder and starts the *attendant*
 //!    (`atender.py` of the template bank) on a background thread through a [`ProcessRunner`];
 //! 4. [`templates`] (`lettering.fx.templates`) is the menu: every `templates/*/template.json` of the bank.
 //!
@@ -368,6 +369,33 @@ fn heroes_p(p: &Value, cmd: &str) -> Result<Vec<usize>> {
     }
 }
 
+/// The colour keys an order may carry: the text, its outline, the word being spoken and the
+/// highlight words.
+pub const COLOR_KEYS: [&str; 4] = ["texto", "contorno", "falada", "destaque"];
+
+/// The `cores` of a send: an object from [`COLOR_KEYS`] to `#rrggbb`, only for the colours the user
+/// changed (the template's own colour stands for the others). Returns them normalised to lower case;
+/// anything else (an unknown key, a name, `#fff`, an alpha channel) is an error.
+fn cores_p(p: &Value, cmd: &str) -> Result<serde_json::Map<String, Value>> {
+    let mut out = serde_json::Map::new();
+    let obj = match p.get("cores") {
+        None | Some(Value::Null) => return Ok(out),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad(cmd, "`cores` must be an object")),
+    };
+    for (k, v) in obj {
+        if !COLOR_KEYS.contains(&k.as_str()) {
+            return Err(bad(cmd, format!("unknown colour `{k}` (one of {})", COLOR_KEYS.join(", "))));
+        }
+        let hex = v.as_str().and_then(|t| t.strip_prefix('#')).filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        let Some(hex) = hex else {
+            return Err(bad(cmd, format!("colour `{k}` must be `#rrggbb`")));
+        };
+        out.insert(k.clone(), Value::String(format!("#{}", hex.to_ascii_lowercase())));
+    }
+    Ok(out)
+}
+
 /// Splits the words into phrases (lists of word indices): sentence punctuation, a pause longer than
 /// [`PAUSE_BREAK`], more than [`MAX_PHRASE_WORDS`] words or [`MAX_PHRASE_LETTERS`] letters.
 pub fn phrases(words: &[FxWord]) -> Vec<Vec<usize>> {
@@ -469,6 +497,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut sp = span(s, ID, captions_p(p, ID)?)?;
     mark_heroes(&mut sp.words, &heroes_p(p, ID)?, ID)?;
+    let cores = cores_p(p, ID)?;
     let dir = match p.get("out").and_then(Value::as_str) {
         Some(o) if o.contains('\0') || o.is_empty() => return Err(bad(ID, "invalid `out`")),
         Some(o) => o.to_string(),
@@ -483,8 +512,11 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let order_path = join(&dir, "pedido.json");
     let out = join(&dir, "lettering.mov");
     let words = serde_json::to_vec_pretty(&words_json(&sp)).map_err(|e| EngineError::Other(e.to_string()))?;
-    let order =
-        serde_json::to_vec_pretty(&json!({"template": template, "palavras": words_path, "saida": out})).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut order_json = json!({"template": template, "palavras": words_path, "saida": out});
+    if !cores.is_empty() {
+        order_json["opcoes"] = json!({"cores": cores});
+    }
+    let order = serde_json::to_vec_pretty(&order_json).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&words_path, &words).map_err(|e| EngineError::Other(format!("cannot write {words_path}: {e}")))?;
     s.services.write_file(&order_path, &order).map_err(|e| EngineError::Other(format!("cannot write {order_path}: {e}")))?;
     // an old render must not pass for the new one
@@ -600,7 +632,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Send Lettering Order",
             menu: &[],
             shortcut: None,
-            params: r#"{"template":id,"heroes":[index]?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"#,
+            params: r##"{"template":id,"heroes":[index]?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
             enabled: enabled_captions,
             run: send,
             journal: false,

@@ -384,3 +384,49 @@ fn a_relative_out_that_starts_with_a_dash_is_prefixed_in_the_order_argument() {
     let _ = std::fs::remove_dir_all(&rel);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn changed_colours_go_to_the_order_and_unchanged_ones_do_not() {
+    let root = tmp("cores");
+    let b = bank(&root);
+    let fake = Arc::new(Fake { seen: Mutex::new(Vec::new()), outcome: Ok(0), write_mov: true });
+    let mut s = session_with_caption(Some(fake), &b);
+    let plain = root.join("plain").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": plain})).unwrap()["job"].as_u64().unwrap();
+    wait(&s, job);
+    let order: Value = serde_json::from_slice(&std::fs::read(format!("{plain}/pedido.json")).unwrap()).unwrap();
+    assert!(order.get("opcoes").is_none(), "no colour changed: the order is the old one");
+    let out = root.join("cor").to_string_lossy().into_owned();
+    let job =
+        s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out, "cores": {"falada": "#FFD60A", "destaque": "#00ff88"}})).unwrap()["job"]
+            .as_u64()
+            .unwrap();
+    wait(&s, job);
+    let order: Value = serde_json::from_slice(&std::fs::read(format!("{out}/pedido.json")).unwrap()).unwrap();
+    assert_eq!(order["opcoes"]["cores"], json!({"falada": "#ffd60a", "destaque": "#00ff88"}));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn hostile_colours_are_refused_before_anything_is_written() {
+    let root = tmp("badcor");
+    let b = bank(&root);
+    let mut s = session_with_caption(None, &b);
+    let out = root.join("nope").to_string_lossy().into_owned();
+    for cores in [
+        json!({"fundo": "#ffffff"}),
+        json!({"texto": "red"}),
+        json!({"texto": "#fff"}),
+        json!({"texto": "#ffffffff"}),
+        json!({"texto": "#gggggg"}),
+        json!({"texto": "#ffff\u{e9}"}),
+        json!({"texto": 5}),
+        json!({"texto": null}),
+        json!("#ffffff"),
+        json!([1, 2, 3]),
+    ] {
+        assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out, "cores": cores})).is_err(), "{cores}");
+    }
+    assert!(!std::path::Path::new(&out).exists(), "nothing was written");
+    let _ = std::fs::remove_dir_all(root);
+}
