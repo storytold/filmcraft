@@ -646,6 +646,7 @@ pub(crate) fn lift_scale(l: f32, nl: f32) -> (f32, f32) {
     (k, nl - l.max(0.0) * k)
 }
 
+/// Lumetri Color on the CPU: Basic, Creative and Vignette per pixel in the SDR / PQ / HLG grading signal, then curves, wheels, HSL and sharpen.
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
