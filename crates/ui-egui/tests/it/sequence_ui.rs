@@ -1713,6 +1713,10 @@ fn sequence_settings_dialog_applies_in_one_undo_step() {
     d.click("sequenceSettings.timebase.option.30000/1001");
     assert_eq!(d.label("sequenceSettings.timebase"), "29.97 frames/second");
     assert_eq!(d.label("sequenceSettings.videoDisplay"), "29.97 fps Drop-Frame Timecode");
+    // Feet + Frames and Frames are real choices now, not greyed out
+    d.click("sequenceSettings.videoDisplay");
+    d.click("sequenceSettings.videoDisplay.option.feet35");
+    assert_eq!(d.label("sequenceSettings.videoDisplay"), "Feet + Frames 35mm");
     // the frame-size fields are drag values; set the draft as typing would
     d.app().ui.sequence_settings.width = 1280;
     d.app().ui.sequence_settings.height = 720;
@@ -1724,6 +1728,7 @@ fn sequence_settings_dialog_applies_in_one_undo_step() {
     let st = d.app().session.active_sequence().unwrap().settings.clone();
     assert_eq!((st.width, st.height, st.frame_rate), (1280, 720, filmcraft_engine::time::FrameRate::FPS_29_97));
     assert!(st.drop_frame && st.max_render_quality);
+    assert_eq!(st.display, filmcraft_engine::time::TimeDisplay::Feet35);
     let (x1, y1, s1) = motion(&mut d);
     let k = 2.0 / 3.0;
     assert!((x1 - x0 * k).abs() < 1e-9 && (y1 - y0 * k).abs() < 1e-9 && (s1 - s0 * k).abs() < 1e-9, "{x0},{y0},{s0} -> {x1},{y1},{s1}");
