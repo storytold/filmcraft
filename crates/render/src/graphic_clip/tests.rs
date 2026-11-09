@@ -34,6 +34,130 @@ fn ink_box(img: &Image) -> Option<[usize; 4]> {
 }
 
 #[test]
+fn character_stroke_kind_colour_and_width_match_their_individual_references() {
+    use filmcraft_project::graphic_design::{LayerExtra, StyleRun};
+    for slot in ["stroke", "stroke2"] {
+        let mut e = new_text_layer("HH", Vec2::new(30.0, 110.0), 70.0);
+        set(&mut e, "tracking", ParamValue::Float(2000.0));
+        set(&mut e, slot, ParamValue::Bool(true));
+        set(&mut e, &format!("{slot}_color"), ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        set(&mut e, &format!("{slot}_width"), ParamValue::Float(2.0));
+        let render = |e| {
+            let mut image = Image::new(400, 200);
+            render_graphic_layers(&[e], Tick::ZERO, (400, 200), &Affine::IDENTITY, &mut image);
+            image
+        };
+        let outer = render(e.clone());
+        let mut inner_layer = e.clone();
+        set(&mut inner_layer, &format!("{slot}_type"), ParamValue::Choice(2));
+        set(&mut inner_layer, &format!("{slot}_width"), ParamValue::Float(10.0));
+        set(&mut inner_layer, &format!("{slot}_color"), ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+        let inner = render(inner_layer);
+        let (colour, width, kind) =
+            if slot == "stroke" { ("strokeColor", "strokeWidth", "strokeType") } else { ("stroke2Color", "stroke2Width", "stroke2Type") };
+        let style = serde_json::from_value(serde_json::json!({colour: [0.0, 0.0, 1.0, 1.0], width: 10.0, kind: 2})).unwrap();
+        e.layer = Some(Box::new(LayerExtra { runs: vec![StyleRun { start: 0, end: 1, style }], ..Default::default() }));
+        let mixed = render(e);
+        for y in 0..mixed.h {
+            for x in 0..mixed.w {
+                let reference = if x < 150 { inner.get(x, y) } else { outer.get(x, y) };
+                let actual = mixed.get(x, y);
+                assert!(actual.iter().zip(reference).all(|(a, b)| (a - b).abs() < 1e-5), "{slot} at {x},{y}: {actual:?} vs {reference:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn per_character_stroke_width_and_enablement_render_independently() {
+    use filmcraft_project::graphic_design::{LayerExtra, StyleRun};
+    for slot in ["stroke", "stroke2"] {
+        for kind in [0, 1, 2] {
+            let mut e = new_text_layer("HH", Vec2::new(60.0, 100.0), 60.0);
+            set(&mut e, "fill", ParamValue::Bool(false));
+            set(&mut e, "tracking", ParamValue::Float(2000.0));
+            set(&mut e, slot, ParamValue::Bool(true));
+            set(&mut e, &format!("{slot}_width"), ParamValue::Float(2.0));
+            set(&mut e, &format!("{slot}_type"), ParamValue::Choice(kind));
+            let key = if slot == "stroke" { "strokeWidth" } else { "stroke2Width" };
+            let style = serde_json::from_value(serde_json::json!({key: 40.0})).unwrap();
+            e.layer = Some(Box::new(LayerExtra { runs: vec![StyleRun { start: 0, end: 1, style }], ..Default::default() }));
+            let mut img = Image::new(400, 200);
+            render_graphic_layers(&[e], Tick::ZERO, (400, 200), &Affine::IDENTITY, &mut img);
+            let (mut left, mut right, mut min_x) = (0, 0, 400);
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    if img.get(x, y)[3] > 0.5 {
+                        min_x = min_x.min(x);
+                        if x < 170 { left += 1 } else { right += 1 }
+                    }
+                }
+            }
+            // An inner stroke saturates once it fills the glyph's narrow stems.
+            let thicker = if kind == 2 { left > right * 6 / 5 } else { left > right * 3 / 2 };
+            assert!(right > 50 && thicker, "{slot}, kind {kind}: selected {left}, inherited {right}");
+            if kind == 0 {
+                assert!(min_x <= 28, "a wide character stroke must not be clipped to the layer's narrow width: {min_x}");
+            }
+        }
+        for enabled in [false, true] {
+            let mut e = new_text_layer("HH", Vec2::new(30.0, 100.0), 60.0);
+            set(&mut e, "fill", ParamValue::Bool(false));
+            set(&mut e, "tracking", ParamValue::Float(2000.0));
+            set(&mut e, slot, ParamValue::Bool(enabled));
+            let style = serde_json::from_value(serde_json::json!({slot: !enabled})).unwrap();
+            e.layer = Some(Box::new(LayerExtra { runs: vec![StyleRun { start: 0, end: 1, style }], ..Default::default() }));
+            let mut img = Image::new(400, 200);
+            render_graphic_layers(&[e], Tick::ZERO, (400, 200), &Affine::IDENTITY, &mut img);
+            let visible = |start, end| (start..end).any(|x| (0..img.h).any(|y| img.get(x, y)[3] > 0.5));
+            assert_eq!(visible(0, 140), !enabled, "{slot}: selected character's switch");
+            assert_eq!(visible(140, 400), enabled, "{slot}: unselected character's switch");
+        }
+    }
+}
+
+#[test]
+fn per_character_stroke_colours_render_independently() {
+    use filmcraft_project::graphic_design::{LayerExtra, StyleRun};
+    for slot in ["stroke", "stroke2"] {
+        for kind in [0, 1, 2] {
+            for filled in [false, true] {
+                let mut e = new_text_layer("AAAA", Vec2::new(30.0, 110.0), 70.0);
+                set(&mut e, "fill", ParamValue::Bool(filled));
+                set(&mut e, slot, ParamValue::Bool(true));
+                set(&mut e, &format!("{slot}_color"), ParamValue::Color([0.0, 0.0, 1.0, 1.0]));
+                set(&mut e, &format!("{slot}_width"), ParamValue::Float(5.0));
+                set(&mut e, &format!("{slot}_type"), ParamValue::Choice(kind));
+                let key = if slot == "stroke" { "strokeColor" } else { "stroke2Color" };
+                let style = serde_json::from_value(serde_json::json!({key: [1.0, 0.0, 0.0, 1.0]})).unwrap();
+                e.layer = Some(Box::new(LayerExtra { runs: vec![StyleRun { start: 2, end: 4, style }], ..Default::default() }));
+                let mut img = Image::new(300, 160);
+                render_graphic_layers(&[e.clone()], Tick::ZERO, (300, 160), &Affine::IDENTITY, &mut img);
+                let spec = eval_layer(&e, Tick::ZERO, (300, 160)).unwrap();
+                let LayerContent::Text(t) = &spec.content else { panic!() };
+                let split = 30.0 + text_layout(t).caret(2).0;
+                let (mut red, mut blue) = (0, 0);
+                for y in 0..img.h {
+                    for x in 0..img.w {
+                        let p = img.get(x, y);
+                        if p[3] > 0.9 && p[1] < 0.05 {
+                            if p[0] > 0.9 && p[2] < 0.05 {
+                                red += 1;
+                                assert!(x as f32 > split - 6.0, "red stays on the selected half");
+                            } else if p[2] > 0.9 && p[0] < 0.05 {
+                                blue += 1;
+                                assert!((x as f32) < split + 6.0, "blue stays on the unselected half");
+                            }
+                        }
+                    }
+                }
+                assert!(red > 50 && blue > 50, "{slot} kind={kind} filled={filled}: red={red}, blue={blue}");
+            }
+        }
+    }
+}
+
+#[test]
 fn per_character_fill_and_size() {
     use filmcraft_project::graphic_design::{CharStyle, LayerExtra, StyleRun};
     let mut e = new_text_layer("AAAA", Vec2::new(20.0, 100.0), 60.0);
@@ -326,4 +450,41 @@ fn tight_image_matches_full_render() {
             assert!((p[3] - q[3]).abs() < 1e-5);
         }
     }
+}
+
+/// #3361: Responsive Design – Time remaps the keyframes of the graphic's *layers* only. The clip's
+/// own effects and masks (Opacity, Motion, ...) are read at plain media time, like on any clip,
+/// so trimming a graphic with an outro moves a layer's outro animation with the clip end but not a
+/// keyframe on the clip's own effect. Documented in docs/graphics.md.
+#[test]
+fn responsive_time_remaps_layer_keyframes_not_the_clips_own_effects() {
+    use filmcraft_project::graphic_design::GraphicMeta;
+    let sec = Tick::from_seconds_f64;
+    let mut layer = new_shape_layer(0, Vec2::new(200.0, 150.0), Vec2::new(100.0, 100.0), vec![]);
+    // layer opacity fades 100 → 0 over the designed outro (4 s .. 5 s)
+    let p = layer.params.get_mut("opacity").expect("opacity");
+    p.put_keyframe(sec(4.0), ParamValue::Float(100.0));
+    p.put_keyframe(sec(5.0), ParamValue::Float(0.0));
+    let mut item = graphic_item(vec![layer]);
+    // the same fade on the clip's own (intrinsic) Opacity effect, at media times
+    let own = item.effect_mut("opacity").expect("intrinsic opacity");
+    let p = own.params.get_mut("opacity").expect("opacity");
+    p.put_keyframe(sec(4.0), ParamValue::Float(100.0));
+    p.put_keyframe(sec(5.0), ParamValue::Float(0.0));
+    // designed 5 s with a 1 s outro, then trimmed to 3 s
+    item.graphic = Some(Box::new(GraphicMeta { outro: sec(1.0), design_duration: sec(5.0), ..Default::default() }));
+    item.duration = sec(3.0);
+    // half way through the trimmed clip's outro (clip time 2.5 s of 3 s)
+    let mt = sec(2.5);
+    let (t, _, _) = graphic_time(&item, mt);
+    assert_eq!(t, sec(4.5), "the layer reads its keyframes half way through the designed outro");
+    let layer_opacity = item_layer_specs(&item, mt, (400, 300))[0].1.transform.opacity;
+    assert!((layer_opacity - 0.5).abs() < 1e-4, "layer fade is half done: {layer_opacity}");
+    // the clip's own Opacity is read at media time: 2.5 s is before its keyframes, so still 100 %
+    assert_eq!(crate::opacity_blend(&item, item.effect_time_at(mt)).0, 1.0);
+    // a head trim advances source_in; the clip's keyframes stay at their media times (4.5 s: half)
+    item.source_in = sec(2.0);
+    let own_at = |item: &TrackItem, clip_t: f64| crate::opacity_blend(item, item.effect_time_at(sec(clip_t))).0;
+    assert!((own_at(&item, 2.5) - 0.5).abs() < 1e-4, "media 4.5 s: {}", own_at(&item, 2.5));
+    assert!((own_at(&item, 0.0) - 1.0).abs() < 1e-4, "media 2 s: {}", own_at(&item, 0.0));
 }

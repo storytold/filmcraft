@@ -241,6 +241,58 @@ pub fn clear_stabilizer_cache() {
     }
 }
 
+/// Frames decoded, prepared and tracked together; the analysis holds this many (plus one carried
+/// over from the block before) at a time, whatever the clip's length.
+pub(super) const ANALYSIS_BLOCK: usize = 64;
+
+/// The step between each pair of consecutive frames of `n`, and the size of the frames. `decode`
+/// makes frame `k` (`None` when it can't be read: its steps are the identity), `size` is a frame's
+/// (width, height), `step` the motion from one frame to the next given the size of the first frame
+/// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
+/// they take part in are known; only the last frame of a block stays for the next one. `None` when
+/// cancelled or when no frame could be read.
+pub(super) fn chunked_steps<T: Send + Sync>(
+    n: usize,
+    block: usize,
+    decode: impl Fn(usize) -> Option<T> + Sync,
+    size: impl Fn(&T) -> (usize, usize) + Sync,
+    step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
+    cancelled: impl Fn() -> bool + Sync,
+) -> Option<(Vec<Affine>, (usize, usize))> {
+    let block = block.max(1);
+    let mut steps = Vec::with_capacity(n.saturating_sub(1));
+    let mut dims = None;
+    let mut carried: Option<Option<T>> = None;
+    let mut next = 0;
+    while next < n {
+        if cancelled() {
+            return None;
+        }
+        let end = (next + block).min(n);
+        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { None } else { decode(k) }).collect();
+        if cancelled() {
+            return None;
+        }
+        let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
+        frames.extend(carried.take());
+        frames.extend(fresh);
+        if dims.is_none() {
+            dims = frames.iter().flatten().next().map(&size);
+        }
+        let pairs: Vec<Affine> = (0..frames.len().saturating_sub(1))
+            .into_par_iter()
+            .map(|i| match (&frames[i], &frames[i + 1], dims) {
+                (Some(a), Some(b), Some(d)) if size(a).0 == size(b).0 => step(a, b, d),
+                _ => Affine::IDENTITY,
+            })
+            .collect();
+        steps.extend(pairs);
+        carried = frames.pop();
+        next = end;
+    }
+    Some((steps, dims?))
+}
+
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
     let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
@@ -252,28 +304,20 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let src_w = env.source_size().0.max(1) as f32;
     let target_w = if detailed { 960.0 } else { 480.0 };
     let scale = (target_w / src_w).min(1.0);
-    let frames: Vec<Option<Prepared>> = (0..n)
-        .into_par_iter()
-        .map(|k| {
-            if filmcraft_media::cancel::cancelled() {
-                return None;
-            }
-            env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f)))
-        })
-        .collect();
-    if filmcraft_media::cancel::cancelled() {
-        return None;
-    }
-    let (w, h) = frames.iter().flatten().next().map(|p| (p.base().w, p.base().h))?;
-    let m = 8.0;
-    let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
-    let steps: Vec<Affine> = (0..n.saturating_sub(1))
-        .into_par_iter()
-        .map(|k| match (&frames[k], &frames[k + 1]) {
-            (Some(a), Some(b)) if a.base().w == b.base().w => track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY),
-            _ => Affine::IDENTITY,
-        })
-        .collect();
+    // A few frames at a time: holding the pyramid of every frame of a long clip (a 10-minute clip
+    // at 30 fps is 18,000 of them) took tens of gigabytes and ended the process (#1381).
+    let (steps, (w, h)) = chunked_steps(
+        n,
+        ANALYSIS_BLOCK,
+        |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
+        |p: &Prepared| (p.base().w, p.base().h),
+        |a: &Prepared, b: &Prepared, (w, h)| {
+            let m = 8.0;
+            let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
+            track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
+        },
+        filmcraft_media::cancel::cancelled,
+    )?;
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     if let Ok(mut c) = path_cache().lock() {
         if c.len() > 64 {
@@ -351,6 +395,62 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         .collect()
 }
 
+/// The corrections of one analysed path for one set of Smoothness / Result / Preserve Scale
+/// settings, and the zoom that hides the borders of the worst of them (per `max` zoom allowed).
+pub(crate) struct Corrected {
+    pub(crate) corr: Vec<Affine>,
+    /// Keeps the path the corrections came from alive, so its address can't be reused by another.
+    _path: Arc<StabilizerPath>,
+    worst: Mutex<Vec<(u64, f64)>>,
+}
+
+impl Corrected {
+    /// The largest [`cover_scale`] of any correction, with at most `max` zoom: what Crop Less
+    /// Smooth Motion framing and Auto-scale need, the same for every frame of the clip.
+    pub(crate) fn worst_cover(&self, w: f64, h: f64, max: f64) -> f64 {
+        let key = max.to_bits();
+        if let Some(v) = self.worst.lock().ok().and_then(|l| l.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)) {
+            return v;
+        }
+        let v = self.corr.iter().map(|c| cover_scale(c, w, h, max)).fold(1.0, f64::max);
+        if let Ok(mut l) = self.worst.lock() {
+            l.push((key, v));
+        }
+        v
+    }
+}
+
+type CorrectedKey = (usize, u64, bool, bool);
+
+/// Corrections already worked out, by path and settings.
+#[derive(Default)]
+pub(crate) struct CorrectedCache(Mutex<HashMap<CorrectedKey, Arc<Corrected>>>);
+
+impl CorrectedCache {
+    pub(crate) fn get(&self, path: &Arc<StabilizerPath>, smooth_frames: f64, no_motion: bool, preserve_scale: bool) -> Arc<Corrected> {
+        let key = (Arc::as_ptr(path) as usize, smooth_frames.to_bits(), no_motion, preserve_scale);
+        if let Some(c) = self.0.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return c;
+        }
+        let c = Arc::new(Corrected { corr: corrections(path, smooth_frames, no_motion, preserve_scale), _path: path.clone(), worst: Mutex::new(Vec::new()) });
+        if let Ok(mut m) = self.0.lock() {
+            // a keyframed Smoothness makes a new key for every frame: don't keep them all
+            if m.len() >= 16 {
+                m.clear();
+            }
+            m.insert(key, c.clone());
+        }
+        c
+    }
+}
+
+/// [`corrections`] for `path`, computed once per set of settings instead of for every rendered
+/// frame: smoothing the whole path and finding its worst border took 0.8 ms per frame for a 30 s
+/// clip, 7 ms for 2 minutes and 15 ms for 10 minutes, on every frame of playback and export.
+pub(crate) fn corrected(path: &Arc<StabilizerPath>, smooth_frames: f64, no_motion: bool, preserve_scale: bool) -> Arc<Corrected> {
+    static CACHE: OnceLock<CorrectedCache> = OnceLock::new();
+    CACHE.get_or_init(Default::default).get(path, smooth_frames, no_motion, preserve_scale)
+}
 /// Smallest zoom about the centre (≥ 1) that hides the borders a correction exposes.
 pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
     let Some(inv) = corr.inverse() else { return 1.0 };
@@ -388,14 +488,15 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let k = ((cx.seconds * path.fps).round().max(0.0) as usize).min(n - 1);
     let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
     let crop_less = fv(e, "crop_less", cx) as f64 / 100.0;
-    let corr = corrections(&path, smooth * (0.5 + crop_less), chv(e, "result") == 1, bv(e, "preserve_scale"));
+    let corrected = corrected(&path, smooth * (0.5 + crop_less), chv(e, "result") == 1, bv(e, "preserve_scale"));
+    let corr = &corrected.corr;
     let framing = chv(e, "framing");
     let (aw, ah) = (path.w as f64, path.h as f64);
     let max_scale = (fv(e, "max_scale", cx) as f64 / 100.0).max(1.0);
     let safe = 1.0 + fv(e, "action_safe", cx) as f64 / 100.0;
     let extra = fv(e, "additional_scale", cx) as f64 / 100.0;
     let zoom = match framing {
-        2 => corr.iter().map(|c| cover_scale(c, aw, ah, max_scale)).fold(1.0, f64::max) * safe,
+        2 => corrected.worst_cover(aw, ah, max_scale) * safe,
         _ => 1.0,
     } * extra;
     // analysis px → layer px
@@ -410,7 +511,7 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     match framing {
         1 => {
             // crop to the area every frame covers
-            let worst = corr.iter().map(|c| cover_scale(c, aw, ah, 4.0)).fold(1.0, f64::max);
+            let worst = corrected.worst_cover(aw, ah, 4.0);
             let (mx, my) = (lw * (1.0 - 1.0 / worst) / 2.0, lh * (1.0 - 1.0 / worst) / 2.0);
             crate::effects::crop(img, (mx / lw) as f32, (my / lh) as f32, (mx / lw) as f32, (my / lh) as f32, 0.0);
         }

@@ -427,53 +427,65 @@ fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::Sa
     let max = (1i32 << bd) - 1;
     let sc = if c == 0 { 0 } else { 1 };
     let offs = p.offsets[c].map(|v| v as i32);
-    // samples of CUs that must not be modified
-    let nofilter = |pic: &PicState<S>, x: usize, y: usize| pic.blk[((y << sc) >> 2) * pic.w4 + ((x << sc) >> 2)].flags & F_NOFILTER != 0;
-    let any_nofilter = {
-        let mut a = false;
-        for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
-            for bx in ((x0 << sc) >> 2)..(((x1 << sc) + 3) >> 2).min(pic.w4) {
-                a |= pic.blk[by * pic.w4 + bx].flags & F_NOFILTER != 0;
-            }
-        }
-        a
-    };
+    let plane = &pic.planes[c];
     if p.type_idx[c] == 1 {
-        let shift = bd - 5;
-        let mut table = [0i32; 32];
-        for k in 0..4 {
-            table[(k + p.band_pos[c] as usize) & 31] = offs[k];
-        }
+        let band = (p.band_pos[c] as i32, offs);
         for y in y0..y1 {
-            if !any_nofilter {
-                let band = (p.band_pos[c] as i32, offs);
-                sao_band_run(&pic.planes[c][y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], shift, band, max);
-                continue;
-            }
-            for x in x0..x1 {
-                if nofilter(pic, x, y) {
+            sao_band_run(&plane[y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], bd - 5, band, max);
+        }
+    } else {
+        sao_edge_ctb(pic, c, rs, x0, x1, y0, y1, w, h, p, max, dst);
+    }
+    // Samples of CUs that must not be modified (transquant bypass, PCM without loop filter) get
+    // their deblocked values back.
+    if pic.pps.transquant_bypass || pic.sps.pcm_loop_filter_disabled {
+        let n = 4 >> sc;
+        for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
+            let ya = (by * 4) >> sc;
+            for bx in ((x0 << sc) >> 2)..(((x1 << sc) + 3) >> 2).min(pic.w4) {
+                if pic.blk[by * pic.w4 + bx].flags & F_NOFILTER == 0 {
                     continue;
                 }
-                let v = pic.planes[c][y * w + x].to_i32();
-                dst[(y - y0) * w + x] = S::from_i32((v + table[(v >> shift) as usize]).clamp(0, max));
+                let xa = (bx * 4) >> sc;
+                let xb = (xa + n).min(x1);
+                for y in ya..(ya + n).min(y1) {
+                    dst[(y - y0) * w + xa..(y - y0) * w + xb].copy_from_slice(&plane[y * w + xa..y * w + xb]);
+                }
             }
         }
-        return;
     }
-    let (hp, vp): ([i32; 2], [i32; 2]) = match p.eo_class[c] {
+}
+
+/// Edge offset of one CTB. Which of the 8 neighbouring CTBs may be used (inside the picture, not
+/// in another slice / tile without cross-boundary filtering) is worked out once; each line is then
+/// split into the left column, the inner run and the right column, and each part whose neighbours
+/// are usable goes through [`sao_edge_run`].
+#[allow(clippy::too_many_arguments)]
+fn sao_edge_ctb<S: Sample>(
+    pic: &PicState<S>,
+    c: usize,
+    rs: usize,
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
+    w: usize,
+    h: usize,
+    p: &crate::slicedec::SaoParams,
+    max: i32,
+    dst: &mut [S],
+) {
+    let offs = p.offsets[c].map(|v| v as i32);
+    let (hp, vp): ([isize; 2], [isize; 2]) = match p.eo_class[c] {
         0 => ([-1, 1], [0, 0]),
         1 => ([0, 0], [-1, 1]),
         2 => ([-1, 1], [-1, 1]),
         _ => ([1, -1], [-1, 1]),
     };
-    // Neighbouring CTBs whose samples may not be used (other slice / tile without cross-boundary
-    // filtering), checked per sample only near CTB borders.
-    let s = pic.log2_ctb as usize - sc;
     let cur_slice = pic.ctb_slice[rs];
     let lf_cur = pic.slices[cur_slice as usize].lf_across;
     let cur_ts = pic.layout.rs_to_ts[rs];
-    let cross_ok = |pic: &PicState<S>, xn: usize, yn: usize| -> bool {
-        let nrs = (yn >> s) * pic.wctb + (xn >> s);
+    let cross_ok = |nrs: usize| -> bool {
         if nrs == rs {
             return true;
         }
@@ -496,57 +508,47 @@ fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::Sa
         }
         true
     };
+    // avail[dy][dx]: the CTB at (rx + dx - 1, ry + dy - 1) may be used.
+    let (rx, ry) = (rs % pic.wctb, rs / pic.wctb);
+    let mut avail = [[false; 3]; 3];
+    for (dy, row) in avail.iter_mut().enumerate() {
+        for (dx, a) in row.iter_mut().enumerate() {
+            let inside = (dx != 0 || x0 > 0) && (dx != 2 || x1 < w) && (dy != 0 || y0 > 0) && (dy != 2 || y1 < h);
+            *a = inside && cross_ok((ry + dy - 1) * pic.wctb + rx + dx - 1);
+        }
+    }
     let edge_map = [1usize, 2, 0, 3, 4];
     // Offset per (2 + sum of neighbour signs); edgeIdx 0 adds nothing.
     let by_sum = edge_map.map(|e| if e == 0 { 0 } else { offs[e - 1] });
-    // Any sample: neighbours outside the picture or in a CTB that may not be used leave it as is.
-    let general = |x: usize, y: usize| -> Option<S> {
-        if any_nofilter && nofilter(pic, x, y) {
-            return None;
+    let side = |v: isize, lo: usize, hi: usize| {
+        if v < lo as isize {
+            0
+        } else if v >= hi as isize {
+            2
+        } else {
+            1
         }
-        let mut sum = 0i32;
-        let v = pic.planes[c][y * w + x].to_i32();
-        for k in 0..2 {
-            let xn = x as i32 + hp[k];
-            let yn = y as i32 + vp[k];
-            if xn < 0 || yn < 0 || xn >= w as i32 || yn >= h as i32 {
-                return None;
-            }
-            let (xn, yn) = (xn as usize, yn as usize);
-            if (xn < x0 || xn >= x1 || yn < y0 || yn >= y1) && !cross_ok(pic, xn, yn) {
-                return None;
-            }
-            sum += (v - pic.planes[c][yn * w + xn].to_i32()).signum();
-        }
-        Some(S::from_i32((v + by_sum[(2 + sum) as usize]).clamp(0, max)))
     };
-    // Samples whose two neighbours lie inside this CTB need none of those checks: a tight loop
-    // (same arithmetic) for them, the general path for the CTB border.
-    let (mx, my) = ((hp[0] != 0) as usize, (vp[0] != 0) as usize);
+    let mx = (hp[0] != 0) as usize;
     let plane = &pic.planes[c];
     for y in y0..y1 {
-        let inner_row = !any_nofilter && y >= y0 + my && y + my < y1 && x1 - x0 > 2 * mx;
-        if !inner_row {
-            for x in x0..x1 {
-                if let Some(v) = general(x, y) {
-                    dst[(y - y0) * w + x] = v;
-                }
+        let (ya, yb) = (y as isize + vp[0], y as isize + vp[1]);
+        let (dya, dyb) = (side(ya, y0, y1), side(yb, y0, y1));
+        for (xs, xe) in [(x0, x0 + mx), (x0 + mx, x1 - mx), (x1 - mx, x1)] {
+            if xs >= xe {
+                continue;
             }
-            continue;
-        }
-        for x in (x0..x0 + mx).chain(x1 - mx..x1) {
-            if let Some(v) = general(x, y) {
-                dst[(y - y0) * w + x] = v;
+            let (xa, xb) = (xs as isize + hp[0], xs as isize + hp[1]);
+            let n = xe - xs;
+            if !avail[dya][side(xa, x0, x1)] || !avail[dyb][side(xb, x0, x1)] {
+                continue;
             }
+            let cur = &plane[y * w + xs..][..n];
+            let na = &plane[ya as usize * w + xa as usize..][..n];
+            let nb = &plane[yb as usize * w + xb as usize..][..n];
+            let out = &mut dst[(y - y0) * w + xs..][..n];
+            sao_edge_run(cur, na, nb, out, &by_sum, max);
         }
-        let (ya, yb) = ((y as i32 + vp[0]) as usize, (y as i32 + vp[1]) as usize);
-        let (xa, xb) = (x0 as i32 + mx as i32 + hp[0], x0 as i32 + mx as i32 + hp[1]);
-        let n = x1 - x0 - 2 * mx;
-        let cur = &plane[y * w + x0 + mx..][..n];
-        let na = &plane[ya * w + xa as usize..][..n];
-        let nb = &plane[yb * w + xb as usize..][..n];
-        let out = &mut dst[(y - y0) * w + x0 + mx..][..n];
-        sao_edge_run(cur, na, nb, out, &by_sum, max);
     }
 }
 

@@ -14,11 +14,6 @@ impl<'a> BitReader<'a> {
         BitReader { data, pos: 0 }
     }
 
-    /// `get_position()`: bits consumed.
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
     pub fn byte_pos(&self) -> usize {
         self.pos.div_ceil(8)
     }
@@ -60,28 +55,6 @@ impl<'a> BitReader<'a> {
         Ok(v + ((1u64 << leading) - 1) as u32)
     }
 
-    /// `le(n)`
-    pub fn le(&mut self, n: u32) -> Result<u32> {
-        let mut t = 0u32;
-        for i in 0..n {
-            t |= self.f(8)? << (8 * i);
-        }
-        Ok(t)
-    }
-
-    /// `leb128()`
-    pub fn leb128(&mut self) -> Result<u64> {
-        let mut v = 0u64;
-        for i in 0..8 {
-            let b = self.f(8)? as u64;
-            v |= (b & 0x7f) << (7 * i);
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        Ok(v)
-    }
-
     /// `su(n)`
     pub fn su(&mut self, n: u32) -> Result<i32> {
         let v = self.f(n)? as i64;
@@ -120,5 +93,32 @@ pub(crate) fn leb128(data: &[u8]) -> Result<(u64, usize)> {
             return Ok((v, i + 1));
         }
     }
-    Ok((v, 8))
+    Err(Error::Truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hostile_lengths_leb128_requires_termination() {
+        for byte in [0x80, 0xff] {
+            let mut data = [byte; 9];
+            data[8] = 0; // A ninth byte cannot terminate an eight-byte AV1 LEB128.
+            for len in 0..=data.len() {
+                let result = std::panic::catch_unwind(|| leb128(&data[..len]));
+                assert!(matches!(result.expect("LEB128 parsing must not panic"), Err(Error::Truncated)));
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_lengths_leb128_preserves_terminated_values() {
+        assert_eq!(leb128(&[0]).unwrap(), (0, 1));
+        for len in 1..=8 {
+            let mut data = [0xff; 9];
+            data[len - 1] = 0x7f;
+            assert_eq!(leb128(&data).unwrap(), ((1u64 << (7 * len)) - 1, len));
+        }
+    }
 }
