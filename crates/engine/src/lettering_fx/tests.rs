@@ -501,3 +501,59 @@ fn send_can_put_the_highlight_alone_and_refuses_a_bad_flag() {
     assert!(!std::path::Path::new(&bad_out).exists());
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn changed_fonts_go_to_the_order_next_to_the_colours() {
+    let root = tmp("fontes");
+    let b = bank(&root);
+    let fake = Arc::new(Fake { seen: Mutex::new(Vec::new()), outcome: Ok(0), write_mov: true });
+    let mut s = session_with_caption(Some(fake), &b);
+    let out = root.join("f").to_string_lossy().into_owned();
+    let job = s
+        .execute(
+            "lettering.fx.send",
+            json!({"template": "pop-amarelo", "out": out, "cores": {"texto": "#ffffff"},
+                   "fontes": {"destaque": {"familia": "  Host Grotesk ", "estilo": "ExtraBold Italic"}, "texto": {"familia": "Inter"}}}),
+        )
+        .unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait(&s, job);
+    let order: Value = serde_json::from_slice(&std::fs::read(format!("{out}/pedido.json")).unwrap()).unwrap();
+    assert_eq!(order["opcoes"]["fontes"], json!({"destaque": {"familia": "Host Grotesk", "estilo": "ExtraBold Italic"}, "texto": {"familia": "Inter"}}));
+    assert_eq!(order["opcoes"]["cores"], json!({"texto": "#ffffff"}), "colours and fonts live side by side");
+    let plain = root.join("p").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": plain})).unwrap()["job"].as_u64().unwrap();
+    wait(&s, job);
+    let order: Value = serde_json::from_slice(&std::fs::read(format!("{plain}/pedido.json")).unwrap()).unwrap();
+    assert!(order.get("opcoes").is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn hostile_fonts_are_refused_before_anything_is_written() {
+    let root = tmp("badfonte");
+    let b = bank(&root);
+    let mut s = session_with_caption(None, &b);
+    let out = root.join("nope").to_string_lossy().into_owned();
+    let long = "x".repeat(101);
+    for fontes in [
+        json!({"titulo": {"familia": "Inter"}}),
+        json!({"texto": "Inter"}),
+        json!({"texto": {}}),
+        json!({"texto": {"familia": ""}}),
+        json!({"texto": {"familia": "   "}}),
+        json!({"texto": {"familia": 5}}),
+        json!({"texto": {"familia": "Inter", "estilo": 5}}),
+        json!({"texto": {"familia": "In\u{0}ter"}}),
+        json!({"texto": {"familia": "In\nter"}}),
+        json!({"texto": {"familia": long}}),
+        json!({"texto": {"familia": "Inter", "cor": "#fff"}}),
+        json!([1]),
+        json!("Inter"),
+    ] {
+        assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out, "fontes": fontes})).is_err(), "{fontes}");
+    }
+    assert!(!std::path::Path::new(&out).exists(), "nothing was written");
+    let _ = std::fs::remove_dir_all(root);
+}

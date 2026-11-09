@@ -11,14 +11,17 @@
 //!
 //! The words per line (1 to 12) go to `lettering.fx.send` as `palavrasPorLinha`: they set how
 //! `words.json` is cut into lines.
+//! The fonts (text, highlight words) are chosen from the installed families and go as `fontes`.
 //! The colours (text, outline, spoken word, highlight words) start as the style's own; a changed one
 //! goes to `lettering.fx.send` as `cores`.
 //!
 //! Automation ids: `letteringFx.word.<index>`, `letteringFx.template.<id>`, `letteringFx.send`,
-//! `letteringFx.perLine`, `letteringFx.solo`, `letteringFx.color.<key>` (+ `.reset`),
+//! `letteringFx.perLine`, `letteringFx.solo`, `letteringFx.font.<key>` (+ `.style`, `.reset`), `letteringFx.color.<key>` (+ `.reset`),
 //! `letteringFx.cancel` (closes, or cancels the running order), `letteringFx.close`.
 
 use crate::widgets::CenteredDialog as _;
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -35,6 +38,43 @@ const DEFAULT_PER_LINE: u8 = 4;
 
 /// The colour options: the key sent in `cores` and the colour offered when it is changed.
 const COLORS: [(&str, [u8; 3]); 4] = [("texto", [255, 255, 255]), ("contorno", [0, 0, 0]), ("falada", [255, 214, 10]), ("destaque", [255, 255, 255])];
+
+/// The font options: the key sent in `fontes`.
+const FONT_KEYS: [&str; 2] = ["texto", "destaque"];
+
+/// The translated label of a font option.
+fn font_label(i: usize) -> String {
+    match i {
+        0 => tl!("Text font"),
+        _ => tl!("Highlight font"),
+    }
+    .to_string()
+}
+
+/// The font offered when one is changed: Inter when there is one (the app's own UI font), else the
+/// first family, with its regular style when it has one.
+fn default_font(fams: &[(String, Vec<String>)]) -> Option<(String, String)> {
+    let (name, styles) = fams.iter().find(|(n, _)| n == "Inter").or_else(|| fams.first())?;
+    let style = styles.iter().find(|s| s.as_str() == "Regular").or_else(|| styles.first()).cloned().unwrap_or_default();
+    Some((name.clone(), style))
+}
+
+/// The `fontes` of a send: family and style for each font the user changed, nothing for the others.
+fn fontes_json(picks: &[Option<(String, String)>; 2]) -> serde_json::Map<String, Value> {
+    FONT_KEYS
+        .iter()
+        .zip(picks.iter())
+        .filter_map(|(key, p)| {
+            let (family, style) = p.as_ref()?;
+            let mut one = serde_json::Map::new();
+            one.insert("familia".into(), json!(family));
+            if !style.is_empty() {
+                one.insert("estilo".into(), json!(style));
+            }
+            Some(((*key).to_string(), Value::Object(one)))
+        })
+        .collect()
+}
 
 /// The translated label of a colour option.
 fn color_label(i: usize) -> String {
@@ -67,6 +107,11 @@ struct Draft {
     solo: bool,
     /// The colours the user changed, in [`COLORS`] order (`None`: the style's own).
     colors: [Option<[u8; 3]>; 4],
+    /// The font families (with their styles), read the first time a font is changed: reading them
+    /// scans the system fonts.
+    fonts: Option<Arc<Vec<(String, Vec<String>)>>>,
+    /// The fonts the user changed, in [`FONT_KEYS`] order: family and style (`None`: the style's own).
+    font_picks: [Option<(String, String)>; 2],
     templates: Vec<Template>,
     template: Option<String>,
     /// Why the menu is empty, or why the last send failed.
@@ -131,6 +176,8 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
                 per_line: DEFAULT_PER_LINE,
                 solo: false,
                 colors: [None; 4],
+                fonts: None,
+                font_picks: [None, None],
                 templates,
                 template,
                 problem,
@@ -265,6 +312,62 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
         }
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(tl!("Fonts (the style's own unless changed)")).strong());
+        for (i, key) in FONT_KEYS.iter().enumerate() {
+            let label = font_label(i);
+            let fams = d.fonts.clone().unwrap_or_default();
+            let mut pick = d.font_picks.get(i).cloned().flatten();
+            let mut start = false;
+            ui.horizontal(|ui| {
+                ui.label(&label);
+                let mut reset = false;
+                match pick.as_mut() {
+                    Some((family, style)) => {
+                        let r = craft_ui::ComboBox::from_id_salt(("lettering-font", *key)).selected_text(family.clone()).width(170.0).show_ui(ui, |ui| {
+                            for (name, styles) in fams.iter() {
+                                if ui.selectable_label(name == family, name).clicked() {
+                                    *family = name.clone();
+                                    if !styles.contains(style) {
+                                        *style = styles.iter().find(|s| s.as_str() == "Regular").or_else(|| styles.first()).cloned().unwrap_or_default();
+                                    }
+                                }
+                            }
+                        });
+                        elems.push((format!("letteringFx.font.{key}"), r.response.rect, label.clone()));
+                        let styles = fams.iter().find(|(n, _)| n == family).map(|(_, s)| s.clone()).unwrap_or_default();
+                        let r = craft_ui::ComboBox::from_id_salt(("lettering-font-style", *key)).selected_text(style.clone()).width(120.0).show_ui(ui, |ui| {
+                            for st in &styles {
+                                if ui.selectable_label(st == style, st).clicked() {
+                                    *style = st.clone();
+                                }
+                            }
+                        });
+                        elems.push((format!("letteringFx.font.{key}.style"), r.response.rect, "Style".into()));
+                        let x = ui.button(tl!("Reset"));
+                        elems.push((format!("letteringFx.font.{key}.reset"), x.rect, "Reset".into()));
+                        reset = x.clicked();
+                    }
+                    None => {
+                        let b = ui.button(tl!("Change"));
+                        elems.push((format!("letteringFx.font.{key}"), b.rect, label.clone()));
+                        start = b.clicked();
+                    }
+                }
+                if reset {
+                    pick = None;
+                }
+            });
+            if start {
+                if d.fonts.is_none() {
+                    d.fonts = Some(Arc::new(filmcraft_text::picker_families()));
+                }
+                pick = d.fonts.as_deref().and_then(|f| default_font(f));
+            }
+            if let Some(slot) = d.font_picks.get_mut(i) {
+                *slot = pick;
+            }
+        }
         if let Some(p) = &d.problem {
             ui.colored_label(ui.visuals().error_fg_color, p);
         }
@@ -297,7 +400,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let cores = cores_json(&d.colors);
         match app.session.execute(
             "lettering.fx.send",
-            json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores, "palavrasPorLinha": d.per_line, "destaqueSozinho": d.solo}),
+            json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores, "palavrasPorLinha": d.per_line, "destaqueSozinho": d.solo, "fontes": fontes_json(&d.font_picks)}),
         ) {
             Ok(v) => {
                 d.problem = None;
@@ -315,6 +418,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_changed_fonts_are_sent() {
+        assert!(fontes_json(&[None, None]).is_empty());
+        let f = fontes_json(&[None, Some(("Host Grotesk".into(), "ExtraBold Italic".into()))]);
+        assert_eq!(Value::Object(f), json!({"destaque": {"familia": "Host Grotesk", "estilo": "ExtraBold Italic"}}));
+        let no_style = fontes_json(&[Some(("Inter".into(), String::new())), None]);
+        assert_eq!(Value::Object(no_style), json!({"texto": {"familia": "Inter"}}));
+    }
+
+    #[test]
+    fn the_offered_font_is_inter_regular_else_the_first() {
+        let fams = vec![("Alfa".to_string(), vec!["Bold".to_string()]), ("Inter".to_string(), vec!["Bold".to_string(), "Regular".to_string()])];
+        assert_eq!(default_font(&fams), Some(("Inter".into(), "Regular".into())));
+        assert_eq!(default_font(&fams[..1]), Some(("Alfa".into(), "Bold".into())));
+        assert_eq!(default_font(&[]), None);
+    }
 
     #[test]
     fn only_the_changed_colours_are_sent_as_hex() {

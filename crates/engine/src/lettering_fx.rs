@@ -6,8 +6,8 @@
 //! 1. the selected captions (or the caption under the playhead) give the words, timed to the voice;
 //! 2. [`prepare`] (`lettering.fx.prepare`) describes the span: start, duration, frame size, rate, words;
 //! 3. [`send`] (`lettering.fx.send`) writes `words.json` (seconds relative to the span start) and
-//!    `pedido.json` (`{template, palavras, saida, opcoes?}`; `opcoes.cores` holds the colours the user
-//!    changed, see [`cores_p`]) in a work folder and starts the *attendant*
+//!    `pedido.json` (`{template, palavras, saida, opcoes?}`; `opcoes.cores` and `opcoes.fontes` hold the
+//!    colours and fonts the user changed, see [`cores_p`], [`fontes_p`]) in a work folder and starts the *attendant*
 //!    (`atender.py` of the template bank) on a background thread through a [`ProcessRunner`];
 //! 4. [`templates`] (`lettering.fx.templates`) is the menu: every `templates/*/template.json` of the bank.
 //!
@@ -387,6 +387,45 @@ fn per_line_p(p: &Value, cmd: &str) -> Result<usize> {
     }
 }
 
+/// The font keys an order may carry: the text and the highlight words.
+pub const FONT_KEYS: [&str; 2] = ["texto", "destaque"];
+/// Longest family or style name accepted.
+const MAX_FONT_NAME: usize = 100;
+
+/// The `fontes` of a send: an object from [`FONT_KEYS`] to `{"familia": name, "estilo": name?}`,
+/// only for the fonts the user changed. A name is 1 to [`MAX_FONT_NAME`] characters with no control
+/// characters; the animation app decides whether it has the font.
+fn fontes_p(p: &Value, cmd: &str) -> Result<serde_json::Map<String, Value>> {
+    let mut out = serde_json::Map::new();
+    let obj = match p.get("fontes") {
+        None | Some(Value::Null) => return Ok(out),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad(cmd, "`fontes` must be an object")),
+    };
+    let name = |v: &Value, what: &str| -> Result<String> {
+        let t = v.as_str().map(str::trim).filter(|t| !t.is_empty() && t.chars().count() <= MAX_FONT_NAME && !t.chars().any(char::is_control));
+        t.map(str::to_string).ok_or_else(|| bad(cmd, format!("font {what} must be 1 to {MAX_FONT_NAME} characters, no control characters")))
+    };
+    for (k, v) in obj {
+        if !FONT_KEYS.contains(&k.as_str()) {
+            return Err(bad(cmd, format!("unknown font `{k}` (one of {})", FONT_KEYS.join(", "))));
+        }
+        let Value::Object(f) = v else {
+            return Err(bad(cmd, format!("font `{k}` must be {{\"familia\":name,\"estilo\":name?}}")));
+        };
+        if let Some(extra) = f.keys().find(|x| !["familia", "estilo"].contains(&x.as_str())) {
+            return Err(bad(cmd, format!("font `{k}` has an unknown field `{extra}`")));
+        }
+        let mut one = serde_json::Map::new();
+        one.insert("familia".into(), Value::String(name(f.get("familia").unwrap_or(&Value::Null), "`familia`")?));
+        if let Some(e) = f.get("estilo").filter(|e| !e.is_null()) {
+            one.insert("estilo".into(), Value::String(name(e, "`estilo`")?));
+        }
+        out.insert(k.clone(), Value::Object(one));
+    }
+    Ok(out)
+}
+
 /// The `destaqueSozinho` of a send: a yes or no, no by default.
 fn solo_p(p: &Value, cmd: &str) -> Result<bool> {
     match p.get("destaqueSozinho") {
@@ -548,6 +587,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let cores = cores_p(p, ID)?;
     let per_line = per_line_p(p, ID)?;
     let solo = solo_p(p, ID)?;
+    let fontes = fontes_p(p, ID)?;
     let dir = match p.get("out").and_then(Value::as_str) {
         Some(o) if o.contains('\0') || o.is_empty() => return Err(bad(ID, "invalid `out`")),
         Some(o) => o.to_string(),
@@ -563,8 +603,15 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let out = join(&dir, "lettering.mov");
     let words = serde_json::to_vec_pretty(&words_json_opts(&sp, per_line, solo)).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut order_json = json!({"template": template, "palavras": words_path, "saida": out});
+    let mut opcoes = serde_json::Map::new();
     if !cores.is_empty() {
-        order_json["opcoes"] = json!({"cores": cores});
+        opcoes.insert("cores".into(), Value::Object(cores));
+    }
+    if !fontes.is_empty() {
+        opcoes.insert("fontes".into(), Value::Object(fontes));
+    }
+    if !opcoes.is_empty() {
+        order_json["opcoes"] = Value::Object(opcoes);
     }
     let order = serde_json::to_vec_pretty(&order_json).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&words_path, &words).map_err(|e| EngineError::Other(format!("cannot write {words_path}: {e}")))?;
@@ -682,7 +729,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Send Lettering Order",
             menu: &[],
             shortcut: None,
-            params: r##"{"template":id,"heroes":[index]?,"palavrasPorLinha":1-12?,"destaqueSozinho":bool?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
+            params: r##"{"template":id,"heroes":[index]?,"palavrasPorLinha":1-12?,"destaqueSozinho":bool?,"fontes":{"texto"|"destaque":{"familia":name,"estilo":name?}}?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
             enabled: enabled_captions,
             run: send,
             journal: false,
