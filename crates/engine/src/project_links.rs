@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::commands::{CommandSpec, always, bad, str_p, u64_p};
+use crate::commands::{CommandSpec, NamedKeys, always, bad, str_p, u64_p};
 use crate::{EngineError, Result, Services, Session};
 
 const MAX_PROJECT: u64 = 16 * 1024 * 1024;
@@ -622,12 +622,12 @@ fn private_dir(dir: &Path) -> std::result::Result<(), String> {
 
 macro_rules! cmd {
     ($id:literal,$label:literal,[$($menu:literal),*],$shortcut:expr,$params:literal,$enabled:expr,$run:expr) => {
-        CommandSpec { id:$id,label:$label,menu:&[$($menu),*],shortcut:$shortcut,params:$params,enabled:$enabled,run:$run,journal:true }
+        CommandSpec { id:$id,label:$label,menu:&[$($menu),*],shortcut:$shortcut,params:$params,enabled:$enabled,run:$run,journal:true,named:NamedKeys::NONE }
     };
 }
 macro_rules! query {
     ($id:literal,$label:literal,$params:literal,$run:expr) => {
-        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false }
+        CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: false, named: NamedKeys::NONE }
     };
 }
 

@@ -4,7 +4,7 @@
 # French video-editing vocabulary. No proprietary localisation resource, string table or product UI
 # was consulted or copied; add entries the same way. Commands use the infinitive ("Enregistrer
 # sous…"), messages address the user as "vous", and labels use French sentence case. Product,
-# format and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, EDL, AAF…) keep their
+# format and technology names (FilmCraft, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their
 # spelling. French spacing: a space before ":", ";", "?" and "!". This catalog has the same entries
 # as `es.tsv` plus the native macOS Settings menu; strings added later show in English until they
 # are translated. A native-speaker review is welcome.
@@ -201,8 +201,8 @@
 	Refresh Changed Media	Actualiser les médias modifiés
 	Linked Selection	Sélection liée
 	Lock Guides	Verrouiller les repères
-	Lumetri Color	Couleur Lumetri
-	Lumetri Scopes	Oscilloscopes Lumetri
+	Color Grading	Étalonnage
+	Video Scopes	Oscilloscopes vidéo
 	Magnification	Agrandissement
 	Make Offline…	Rendre hors ligne…
 	Make Subclip…	Créer un sous-clip…
@@ -897,7 +897,7 @@
 	Clip Volume	Volume du clip
 	(no clip selected)	(aucun clip sélectionné)
 	Master · {name}	Maître · {name}
-	Add Lumetri Color to clip	Ajouter l'effet Couleur Lumetri au clip
+	Add Color Grading to clip	Ajouter un étalonnage au clip
 	Input LUT	LUT d'entrée
 	Color	Couleur
 	Temperature	Température
@@ -1676,7 +1676,7 @@
 	Elliptical	Elliptique
 	Emboss	Estampage
 	Enable HSL Secondary	Activer HSL secondaire
-	Enable Mercury Transmit	Activer Mercury Transmit
+	Enable External Video Output	Activer la sortie vidéo externe
 	Enable ProRes hardware accelerated encoding, if available	Activer l'encodage ProRes accéléré par le matériel, si disponible
 	Enable clip and XMP metadata linking	Activer la liaison des métadonnées de clip et XMP
 	Enable developer mode	Activer le mode développeur
@@ -1744,7 +1744,7 @@
 	Focus Size	Taille de la mise au point
 	Fold Motion	Mouvement de pliage
 	Foldback	Retour
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Pour les paramètres de gestion des couleurs, accédez à l'onglet Paramètres du panneau Couleur Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Pour les paramètres de gestion des couleurs, ouvrez l’onglet Réglages du panneau Étalonnage.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Quatre oscilloscopes (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Quatre oscilloscopes (YUV, virgule flottante, sans écrêtage)
@@ -2013,7 +2013,7 @@
 	Luma Key	Incrustation en luma
 	Luma Source	Source de luma
 	Luma and Chroma	Luma et chroma
-	Lumetri Presets	Préréglages Lumetri
+	Color Grading Presets	Préréglages d’étalonnage
 	Luminance	Luminance
 	Luminance Threshold	Seuil de luminance
 	Luminosity	Luminosité
@@ -2996,6 +2996,9 @@
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), AAC-LC stéréo 48 kHz à 320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Audio MPEG (.mp3), stéréo conjointe 48 kHz à 320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, PCM stéréo 48 kHz 16 bits
@@ -3128,7 +3131,6 @@
 	Left align text	Aligner le texte à gauche
 	Looping GIF, 640×360 at 15 fps	GIF en boucle, 640×360 à 15 fps
 	Lower First	Trame inférieure en premier
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3738,3 +3740,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) à la taille de la séquence, qualité constante CRF 16, AAC 320 kbps ; un master 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, chaque image est une image clé), CRF 12, AAC 320 kbps ; un intermédiaire facile à monter
+	List Color Grading Presets	Lister les préréglages d’étalonnage
+	Apply Color Grading Preset	Appliquer un préréglage d’étalonnage
+	Color Grading Preset Thumbnails	Vignettes des préréglages d’étalonnage
+	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
+	Color Grading Section	Section d’étalonnage
+	Read Video Scopes	Lire les oscilloscopes vidéo

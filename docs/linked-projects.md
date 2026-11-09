@@ -70,9 +70,9 @@ there is a ten-minute subprocess timeout. Status exposes the current object/phas
 frame percentage. Results from a removed/undone/relinked descriptor are discarded.
 
 Cache retention remains a prototype limitation: distinct revisions and interrupted-render files
-can accumulate in the host's temporary directory. Cross-platform private cache placement and a
-quota/cleanup policy still need design. Age alone is not a safe eviction rule because saved projects
-and undo history can reference older revisions; this prototype does not automatically delete them.
+can accumulate in the per-user cache folder described below. A quota/cleanup policy still needs
+design. Age alone is not a safe eviction rule because saved projects and undo history can reference
+older revisions; this prototype does not automatically delete them.
 
 The SHA-256 revision includes project bytes, object ID, directly listed footage contents and
 resolved paths, renderer path/size/mtime, render contract and explicit refresh generation. This

@@ -4,7 +4,7 @@
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Korean video-editing vocabulary (시퀀스, 타임라인, 트랙, 클립, 재생 헤드, 빈, 렌더, 내보내기…). No
 # proprietary localisation resource, string table or product UI was consulted or copied; add entries
-# the same way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS…) keep their
+# the same way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. Hangul is drawn with an installed system font (Malgun Gothic, Apple SD Gothic Neo, Noto
 # Sans CJK KR…, see cjk.rs); native-speaker review welcome.
 
@@ -102,7 +102,7 @@
 	Add Guide	안내선 추가
 	Add Guide…	안내선 추가…
 	Add keyframe	키프레임 추가
-	Add Lumetri Color to clip	클립에 Lumetri Color 추가
+	Add Color Grading to clip	클립에 색 보정 추가
 	Add Marker	마커 추가
 	Add Marker (M)	마커 추가(M)
 	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일이나 폴더를 놓거나 아래에서 소스를 선택하세요.
@@ -1033,7 +1033,7 @@
 	Enable hardware accelerated decoding (requires restart)	하드웨어 가속 디코딩 사용(재시작 필요)
 	Enable HSL Secondary	HSL 보조 사용
 	Enable language auto-detection	언어 자동 감지 사용
-	Enable Mercury Transmit	Mercury Transmit 사용
+	Enable External Video Output	외부 비디오 출력 사용
 	Enable ProRes hardware accelerated encoding, if available	가능한 경우 ProRes 하드웨어 가속 인코딩 사용
 	Enable proxies	프록시 사용
 	Enable Remix	리믹스 사용
@@ -1222,7 +1222,7 @@
 	Font Size	글꼴 크기
 	Font Style	글꼴 스타일
 	Fonts used in the project:	프로젝트에 사용된 글꼴:
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	색상 관리 매개변수는 Lumetri 색상 패널의 설정 탭에서 지정합니다.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	색 관리 매개변수는 색 보정 패널의 설정 탭에서 변경할 수 있습니다.
 	Forest	포레스트
 	Format	형식
 	Format and size	형식 및 크기
@@ -1754,10 +1754,9 @@
 	Luma Min / Max	루마 최소/최대
 	Luma Source	루마 소스
 	Luma vs Sat	휘도 대 채도
-	Lumetri	Lumetri
-	Lumetri Color	Lumetri 색상
-	Lumetri Presets	Lumetri 사전 설정
-	Lumetri Scopes	Lumetri 스코프
+	Color Grading	색 보정
+	Color Grading Presets	색 보정 사전 설정
+	Video Scopes	비디오 스코프
 	Luminance	휘도
 	Luminance Threshold	휘도 임계값
 	Luminosity	광도
@@ -3703,3 +3702,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10비트 4:2:0), 시퀀스 크기, 고정 품질 CRF 16, AAC 320 kbps, 10비트 마스터
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10비트 4:2:0, 모든 프레임이 키프레임), CRF 12, AAC 320 kbps, 편집하기 쉬운 중간 파일
+	List Color Grading Presets	색 보정 사전 설정 목록
+	Apply Color Grading Preset	색 보정 사전 설정 적용
+	Color Grading Preset Thumbnails	색 보정 사전 설정 썸네일
+	Toggle Color Grading Section	색 보정 섹션 전환
+	Color Grading Section	색 보정 섹션
+	Read Video Scopes	비디오 스코프 읽기
