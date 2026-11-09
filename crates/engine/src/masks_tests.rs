@@ -318,6 +318,30 @@ fn tracking_runs_in_the_background_and_can_be_cancelled() {
     assert!(s.execute("masks.track", json!({"direction": "backward"})).is_err(), "nothing before the first frame");
 }
 
+/// A job that writes no stream (mask tracking) has no encoder to name: the result says so by
+/// leaving the field out (#4339).
+#[test]
+fn a_non_stream_report_has_no_encoder() {
+    let (mut s, _) = tracking_session();
+    let rate = filmcraft_time::FrameRate::FPS_24;
+    s.set_playhead(rate.tick_of(10));
+    // a circle of radius 45 inside the disc at frame 10
+    let c = truth(10.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    let r = s.execute("masks.track", json!({"direction": "forward", "frames": 2, "wait": true})).unwrap();
+    let result = &r["status"]["result"];
+    assert!(result.is_object(), "the job reports its result: {r}");
+    assert!(result.get("encoder").is_none(), "a report with no stream names no encoder: {result}");
+    assert!(result.get("declined").is_none(), "{result}");
+    // and the report itself keeps the empty name
+    let id = r["job"].as_u64().unwrap();
+    let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+    let res = job.result.lock().unwrap_or_else(|e| e.into_inner());
+    let report = res.as_ref().unwrap().as_ref().unwrap();
+    assert_eq!(report.encoder, "", "a job that writes no stream names no encoder");
+    assert_eq!(report.declined, None);
+}
+
 /// #813: a rectangle mask with rounded corners (created rounded, or rounded afterwards) cuts the
 /// clip's corners away while the edges stay where they were; one undo step, every keyframe.
 #[test]

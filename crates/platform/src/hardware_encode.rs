@@ -358,6 +358,16 @@ mod tests {
         assert!(packets[0].key);
     }
 
+    /// The encoder says it is VideoToolbox, so the export result names the hardware that wrote
+    /// the file (#4339).
+    #[test]
+    fn the_encoder_names_itself_videotoolbox() {
+        match HardwareEncoder::open(config()) {
+            Ok(enc) => assert_eq!(enc.name(), "VideoToolbox"),
+            Err(why) => eprintln!("SKIPPED: no VideoToolbox hardware encoder ({why})"),
+        }
+    }
+
     #[test]
     fn rgba_input_is_tried_first() {
         let mut attempted = false;

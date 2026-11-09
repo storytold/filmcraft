@@ -81,8 +81,9 @@ fn hardware_export_matches_the_software_export() {
     let (p, seq, m) = project(1280, 720, 72);
     let soft_path = tmp("soft.mp4");
     let before_soft = hw_encode_stats();
-    export(&p, seq, &settings(soft_path.clone(), HardwareEncoding::Off), &m, &Progress::default()).unwrap();
+    let soft_report = export(&p, seq, &settings(soft_path.clone(), HardwareEncoding::Off), &m, &Progress::default()).unwrap();
     assert_eq!(hw_encode_stats(), before_soft, "Off: no hardware encoder attempt");
+    assert_eq!(soft_report.encoder, "software H.264", "the software encoder wrote the file");
 
     let hw_path = tmp("hw.mp4");
     let before = hw_encode_stats();
@@ -92,11 +93,16 @@ fn hardware_export_matches_the_software_export() {
         assert_eq!(after.declined - before.declined, 1, "Auto attempted hardware and reported the fallback");
         assert_eq!(after.frames, before.frames);
         assert_eq!(std::fs::read(&soft_path).unwrap(), std::fs::read(&hw_path).unwrap(), "fallback preserves software determinism");
+        assert_eq!(report.encoder, "software H.264", "the software encoder wrote the file");
         eprintln!("no NVENC here: byte-identical software fallback verified");
         return;
     }
     assert_eq!(report.frames, 72);
     assert_eq!(after.frames - before.frames, 72, "every picture went through NVENC");
+    // the result names the encoder that wrote the file, so a hardware-written file is not
+    // mistaken for a software-written one (#4339)
+    assert_eq!(report.encoder, "NVENC H.264");
+    assert_eq!(report.declined, None, "nothing declined the hardware encoder");
 
     let (soft, hard) = (decode(&soft_path), decode(&hw_path));
     assert_eq!((soft.len(), hard.len()), (72, 72), "frame counts");
