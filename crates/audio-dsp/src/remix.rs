@@ -331,8 +331,6 @@ fn mel_weights(sr: u32, n: usize) -> Vec<Vec<(usize, f64)>> {
                     } else if f >= cn && f < r {
                         Some((k, (r - f) / (r - cn)))
                     } else {
-                        Some((k, (r - f) / (r - cn)))
-                    } else {
                         None
                     }
                 })
@@ -351,5 +349,4 @@ fn mel_bands(L: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
         }
     }
     band
-}
 }

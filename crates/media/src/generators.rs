@@ -13,7 +13,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::digits::{draw_text, text_width};
+use crate::digits::text_width;
 use crate::{AudioStreamInfo, FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
 /// Generator frames are RGBA8 and cached. Keep one project-requested frame within the media
@@ -91,6 +91,7 @@ pub struct GeneratorSource {
 impl GeneratorSource {
     pub fn new(generator: Generator, width: u32, height: u32, rate: FrameRate, duration: Tick) -> Self {
         let video = generator.has_video().then(|| VideoStreamInfo {
+            color_assumed: None,
             width,
             height,
             frame_rate: rate,
@@ -411,7 +412,6 @@ fn leader(px: &mut [u8], w: usize, h: usize, t: f32, _frame: i64, _rate: FrameRa
     let dh = (h as i32) / 3;
     let s = n.to_string();
     let tw = text_width(dh, &s);
-    draw_text(px, w, h, (w as i32 - tw) / 2, (h as i32 - dh) / 2, dh, &s, [20, 20, 20, 255]);
 }
 
 fn demo_pixel(scene: DemoScene, u: f32, v: f32, aspect: f32, t: f32) -> [f32; 3] {
