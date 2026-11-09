@@ -499,7 +499,8 @@ impl eframe::App for FilmcraftApp {
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
-    /// state, and shut the session down so its recovery journal is flushed or removed.
+    /// state, shut the session down so its recovery journal is flushed or removed, and start an
+    /// update that waits for the exit.
     fn on_exit(&mut self) {
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
@@ -509,6 +510,8 @@ impl eframe::App for FilmcraftApp {
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
+        // An update waiting for the exit starts its install helper now.
+        crate::updates_ui::exiting(self);
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
