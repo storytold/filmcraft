@@ -1195,11 +1195,16 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
                     // the hex field, centered under the wheel: six digits only -- longer pastes
                     // are cut to six, shorter ones filled out, both to the closest colour
                     let mut buf = ui.data(|d| d.get_temp::<String>(id.with("hex"))).unwrap_or_else(|| color.clone());
+                    let mut last_color = ui.data(|d| d.get_temp::<String>(id.with("hex-observed-color"))).unwrap_or_else(|| color.clone());
                     if changed {
                         // the wheel or Reset changed the colour outside the field: the stored
                         // text must follow it, or the field shows the last typed value again
                         buf = color.clone();
-                        ui.data_mut(|d| d.insert_temp(id.with("hex"), buf.clone()));
+                        last_color = color.clone();
+                        ui.data_mut(|d| {
+                            d.insert_temp(id.with("hex"), buf.clone());
+                            d.insert_temp(id.with("hex-observed-color"), last_color.clone());
+                        });
                     }
                     // the hex field, dead center under the wheel (placed at an exact rect: layout
                     // alignment refused to centre it)
@@ -1216,6 +1221,11 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
                             changed = true;
                         }
                     }
+                    sync_external_color_buffer(&mut buf, &mut last_color, color, edit.has_focus());
+                    ui.data_mut(|d| {
+                        d.insert_temp(id.with("hex"), buf.clone());
+                        d.insert_temp(id.with("hex-observed-color"), last_color.clone());
+                    });
                 });
             });
         family_push(ui, panel.response.rect);
@@ -1564,7 +1574,7 @@ mod controls_tests {
 
 #[cfg(test)]
 mod color_picker_tests {
-    use super::closest_six;
+    use super::{closest_six, sync_external_color_buffer};
 
     #[test]
     fn hostile_hex_input_never_panics() {
@@ -1576,6 +1586,26 @@ mod color_picker_tests {
         assert_eq!(closest_six("1122334455"), "#112233");
         assert_eq!(closest_six("74b0ff"), "#74b0ff");
         assert_eq!(closest_six("AB"), "#ababab");
+    }
+
+    #[test]
+    fn external_color_changes_sync_after_the_hex_field_loses_focus() {
+        let mut hex = "#111111".to_string();
+        let mut observed = "#111111".to_string();
+        sync_external_color_buffer(&mut hex, &mut observed, "#222222", true);
+        assert_eq!(hex, "#111111", "do not interrupt active typing");
+        sync_external_color_buffer(&mut hex, &mut observed, "#222222", false);
+        assert_eq!(hex, "#222222", "show the current project setting when editing ends");
+        assert_eq!(observed, "#222222");
+    }
+}
+
+fn sync_external_color_buffer(hex: &mut String, observed: &mut String, color: &str, field_focused: bool) {
+    if !field_focused && *observed != color {
+        *hex = color.to_string();
+    }
+    if !field_focused {
+        *observed = color.to_string();
     }
 }
 
@@ -2712,6 +2742,31 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.tl.track_slider_settings_pos = None;
         ui.ctx().request_repaint();
     }
+    // "Controls": not a switch -- the slider's gestures in a flyout beside the menu (the Minimap
+    // Settings flyout's exact recipe, in this menu too).
+    let (arow, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::hover());
+    let alabel = tl!("Controls");
+    let agalley = ui.painter().layout_no_wrap(alabel.to_string(), Tokens::ui(11.5), t.text);
+    ui.painter().galley(pos2(arow.center().x - agalley.size().x / 2.0, arow.center().y - agalley.size().y / 2.0), agalley, t.text);
+    controls_arrow(ui, arow, CONTENT_W, r.max.x, flyout_to_the_right(ui, arow, r.max.x, CONTROLS_FLYOUT_W), t.text_dim);
+    app.auto.add("timeline.trackSlider.settings.controls", arow, "Controls");
+    hover_flyout(
+        app,
+        ui,
+        egui::Id::unique("timeline-track-slider-advanced-flyout"),
+        arow,
+        r.max.x,
+        CONTROLS_FLYOUT_W,
+        true,
+        "timeline.trackSlider.settings.controlsFlyout",
+        "Controls",
+        &[
+            (tl!("Center on Playhead:"), "Double Click", 0),
+            (tl!("Explode Slider:"), "Triple Click", 1),
+            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
+            (tl!("Settings:"), "Right Click", 3),
+        ],
+    );
     // Smooth Animations eases the double-click moves (which land on the OTHER slider);
     // Alternate Slider Position moves the sliders to the left edge of the Timeline.
     let smooth = app.session.state.timeline_ui.track_slider_smooth;
@@ -2729,8 +2784,7 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.session.state.timeline_ui.inverted_controls = !inv;
         app.session.project_view_changed();
     }
-    // Snap to Tracks: on by default. It does not drive the sliders yet -- the snap is being
-    // rebuilt -- but the setting is stored and toggled like the others.
+    // Snap to Tracks is on by default and controls snapping when a dragged thumb is released.
     let snap = app.session.state.timeline_ui.track_slider_snap;
     let c = settings_pill_row(ui, &t, row_w, tl!("Snap to Tracks"), egui::Id::unique("timeline-track-slider-snap"), snap);
     app.auto.add("timeline.trackSlider.settings.snapToTracks", c.rect, "Snap to Tracks");

@@ -212,6 +212,20 @@ fn close_project_prompt_and_nested_menus() {
 }
 
 #[test]
+fn closing_with_unsaved_project_view_settings_asks_before_discarding_them() {
+    let mut d = Driver::new();
+    d.app().session.state.timeline_ui.zoom_bar_hidden = true;
+    d.app().session.project_view_changed();
+    assert!(!d.app().session.is_dirty(), "view settings do not dirty project content");
+    assert!(d.app().session.is_view_dirty());
+
+    assert_eq!(d.menu("file.closeProject")["dialog"], "closeProject");
+    assert!(d.has("closeProject.save") && d.has("closeProject.dontSave") && d.has("closeProject.cancel"));
+    d.click("closeProject.cancel");
+    assert!(d.app().session.is_view_dirty(), "Cancel keeps the unsaved view settings");
+}
+
+#[test]
 fn subclip_in_the_source_monitor_and_project_menu() {
     let mut d = Driver::new();
     let r24 = filmcraft_time::FrameRate::FPS_23_976;
@@ -623,7 +637,7 @@ fn close_all_projects_asks_to_save() {
     d.exec("file.openDemoProject", json!({}));
     let path = std::env::temp_dir().join(format!("fc-close-all-{}.fcproj", std::process::id()));
     d.exec("file.saveAs", json!({"path": path.to_string_lossy()}));
-    assert!(!d.app().session.is_dirty());
+    assert!(!d.app().session.has_unsaved_changes());
     d.menu("file.closeAllProjects");
     let _ = std::fs::remove_file(&path);
     assert!(d.app().ui.clip_dialog.is_none());

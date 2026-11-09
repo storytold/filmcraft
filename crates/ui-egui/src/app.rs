@@ -267,7 +267,7 @@ impl FilmcraftApp {
         if self.session.trim_play.active() {
             ctx.request_repaint();
         }
-        if self.session.persistence.is_some() && self.session.is_dirty() {
+        if self.session.persistence.is_some() && self.session.has_unsaved_changes() {
             // Keep polling the auto-save worker (status, "also save the project" results) while hidden.
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }

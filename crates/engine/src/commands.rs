@@ -1477,6 +1477,7 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
@@ -1497,6 +1498,7 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))

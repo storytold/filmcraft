@@ -804,6 +804,16 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// Whether project-scoped Timeline view settings have not reached the project file yet.
+    pub fn is_view_dirty(&self) -> bool {
+        self.view_epoch != self.saved_view_epoch
+    }
+
+    /// Whether closing or replacing the project would discard unsaved content or view settings.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty() || self.is_view_dirty()
+    }
+
     /// Mark a project-file view setting as changed without dirtying project content.
     pub fn project_view_changed(&mut self) {
         self.view_changed();

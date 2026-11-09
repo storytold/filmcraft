@@ -123,7 +123,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
+    if (id == "file.closeProject" && !app.session.has_unsaved_changes()) || id == "app.quit" {
         return None;
     }
     meta(id)?;
@@ -145,7 +145,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
-    if app.quit_confirmed || !app.session.is_dirty() {
+    if app.quit_confirmed || !app.session.has_unsaved_changes() {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
@@ -732,7 +732,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 };
                 let r = app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string());
                 match &r {
-                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt.command),
+                    Ok(_) if !app.session.has_unsaved_changes() => leave(app, &ctx2, &prompt.command),
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
                     // the save failed: the prompt stays, with the reason in the status bar
                     Err(e) => {
@@ -759,7 +759,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
     // snapshot, so the next launch doesn't offer them back
-    let close = command != "app.quit" || app.session.is_dirty();
+    let close = command != "app.quit" || app.session.has_unsaved_changes();
     if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
         app.ui.status = e.to_string();
     }
