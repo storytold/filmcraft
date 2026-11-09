@@ -3638,13 +3638,13 @@
 	No matching text.	一致するテキストはありません。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
-	Smooth Animations	πé╣πâáπâ╝πé║πéóπâïπâíπâ╝πé╖πâºπâ│
-	Playhead Centering	σåìτöƒπâÿπââπâëπéÆΣ╕¡σñ«πü½µÅâπüêπéï
+	Smooth Animations	滑らかなアニメーション
+	Playhead Centering	再生ヘッドを中央に配置
 	Hide Slider	スライダーを非表示
 	Unhide Slider	スライダーを表示
 	Maximum Zoom Level	最大ズームレベル
 	Alternate Drag Speed (Shift + Left Click)	ドラッグ速度の変更（Shift + 左クリック）
-	Playhead Centering Range (Double Click)	再生ヘッド中央寄せ範囲（トリプルクリック）
+	Playhead Centering Range (Double Click)	再生ヘッド中央寄せ範囲（ダブルクリック）
 	Alternate Drag Speed	ドラッグ速度の変更
 	Value:	値：
 	Closest	最も近く
