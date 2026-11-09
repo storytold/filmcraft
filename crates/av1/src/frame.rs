@@ -141,10 +141,6 @@ pub struct RowBand<'a> {
 
 impl RowBand<'_> {
     #[inline(always)]
-    pub fn set(&mut self, x: usize, y: usize, v: u16) {
-        self.data[(y - self.y0) * self.stride + x] = v;
-    }
-    #[inline(always)]
     pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
         let o = (y - self.y0) * self.stride;
         &mut self.data[o..o + self.stride]

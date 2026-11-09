@@ -20,6 +20,7 @@ pub mod gpufx;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
+pub mod lumetri_cube;
 pub mod lumetri_presets;
 pub mod luts;
 pub mod mask;
