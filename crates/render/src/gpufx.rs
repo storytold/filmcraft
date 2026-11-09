@@ -1305,6 +1305,7 @@ mod tests {
         img.px.as_chunks::<4>().0.to_vec()
     }
 
+    /// Every 8-bit grey at or above Level turns white, every one below turns black, and alpha is kept.
     #[test]
     fn threshold_is_white_from_the_level_up_and_keeps_alpha() {
         assert_eq!(find_effect("threshold").unwrap().instance().f64_at("level", Tick::ZERO), 128.0);
@@ -1321,6 +1322,7 @@ mod tests {
         assert_eq!(threshold(0.0, &[255], 0.0), [[0.0; 4]]);
     }
 
+    /// Out-of-range, infinite and NaN levels are clamped to 0..=255 and stay GPU-capable.
     #[test]
     fn threshold_clamps_hostile_levels() {
         let codes = [0u8, 128, 255];

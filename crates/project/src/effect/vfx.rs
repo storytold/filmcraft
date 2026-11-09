@@ -1257,6 +1257,7 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
+    /// Every effect of Premiere 26's Video Effects bin exists in its folder, and nothing else does.
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;

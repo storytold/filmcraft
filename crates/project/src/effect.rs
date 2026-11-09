@@ -258,6 +258,7 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+/// Every built-in effect definition (video, audio and transitions), in catalogue order.
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
