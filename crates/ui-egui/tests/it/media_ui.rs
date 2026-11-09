@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_media::generators::GeneratorSource;
@@ -514,5 +515,89 @@ fn locate_relinks_instead_of_importing() {
     assert_eq!(d.app().session.project.items.len(), items, "no new project item");
     let st = d.exec("media.status", json!({}));
     assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "item {item}: {st}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [`make_movie`]'s ProRes file with its sample entry retyped `icod`: an Apple Intermediate Codec
+/// movie as far as the demuxer can tell, which no FilmCraft decoder reads (#3646).
+fn aic_movie(path: &Path) {
+    make_movie(path, DemoScene::OceanSunset, 64, 32, 2);
+    let mut b = std::fs::read(path).unwrap();
+    // stsd (ISO/IEC 14496-12 §8.5.2): type, version/flags, entry_count, then the first entry's
+    // size and type; the video track's entry is the ProRes one (`ap..`)
+    let k =
+        (0..b.len().saturating_sub(20)).filter(|&k| &b[k..k + 4] == b"stsd").map(|k| k + 16).find(|&k| b[k..k + 2] == *b"ap").expect("a ProRes sample entry");
+    b[k..k + 4].copy_from_slice(b"icod");
+    std::fs::write(path, b).unwrap();
+}
+
+/// #3646: a movie in a codec FilmCraft cannot decode (Apple Intermediate Codec) imports under the
+/// codec's name, and its Unreadable badge says why on hover, in Icon view and in List view, where a
+/// name longer than the Name column is cut short with "…" to keep the badge in view and shows
+/// in full on hover.
+#[test]
+fn unreadable_badge_says_why_on_hover() {
+    let root = tmp_dir("aic");
+    // wider than the List view's Name column
+    let file = root.join("Holiday on the coast with the whole family, summer 2010.mov");
+    aic_movie(&file);
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [file.to_string_lossy()]})).unwrap();
+    let item = r["items"][0].as_u64().expect("imported item");
+    let id = filmcraft_engine::project::ItemId(item);
+    let codec = s.project.item(id).and_then(|i| i.as_media()).and_then(|m| m.info.video.as_ref()).map(|v| v.codec.clone());
+    assert_eq!(codec.as_deref(), Some("Apple Intermediate Codec"));
+    let mut d = Driver::new(s);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(3);
+    let why = "no decoder for Apple Intermediate Codec video";
+    let badge = format!("project.item.{item}.offline");
+    for view in ["icon", "list"] {
+        d.exec("project.view.set", json!({"view": view}));
+        // a thumbnail decode fails, and the media pool marks the item unreadable
+        let t0 = std::time::Instant::now();
+        while !d.ids(&badge).contains(&badge) {
+            assert!(t0.elapsed().as_secs() < 120, "{view} view: no offline badge on {item}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            d.frames(1);
+        }
+        assert_eq!(d.app().session.media.offline_status(id).map(|st| st.error).as_deref(), Some(why));
+        // the tooltip is a node of its own, with the reason as its label
+        let shown = |d: &Driver| d.harness.query_all_by_label(why).count();
+        let before = shown(&d);
+        d.ok("ui.move", json!({"id": badge, "fx": 0.5, "fy": 0.5}));
+        for _ in 0..60 {
+            if shown(&d) > before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            d.frames(1);
+        }
+        assert!(shown(&d) > before, "{view} view: hovering the Unreadable badge shows why");
+        d.snapshot(&format!("media-unreadable-{view}"));
+        if view == "list" {
+            // the cut name ends just before the badge, and shows in full on hover
+            let e = d.ok("ui.elements", json!({"prefix": badge}));
+            let r = &e.as_array().unwrap().iter().find(|e| e["id"] == badge.as_str()).expect("the badge")["rect"];
+            let (x, y) = (r[0].as_f64().unwrap() - 30.0, r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            let full = |d: &Driver| d.harness.query_all_by_label(&name).count();
+            let before = full(&d);
+            d.ok("ui.move", json!({"x": x, "y": y}));
+            for _ in 0..60 {
+                if full(&d) > before {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                d.frames(1);
+            }
+            assert!(full(&d) > before, "hovering a List-view name cut short shows it in full");
+        }
+        // off the badge before the next view draws its own
+        d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
+        d.frames(3);
+    }
     let _ = std::fs::remove_dir_all(&root);
 }

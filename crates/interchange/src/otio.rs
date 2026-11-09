@@ -443,10 +443,11 @@ fn collect_timelines<'v>(v: &'v Value, out: &mut Vec<&'v Value>) {
     }
 }
 
-/// Finds the first source-range frame rate while walking a timeline's children.
+/// The rate of the first item a sequence can run at. Items at an audio sample rate (a gap or
+/// clip at 48000 is valid OTIO) are skipped: no sequence runs at 48000 fps.
 fn first_rate(v: &Value) -> Option<FrameRate> {
     if let Some(sr) = v.get("source_range").filter(|s| !s.is_null()) {
-        return sr.get("duration").and_then(read_rate);
+        return sr.get("duration").and_then(read_rate).filter(|&r| sequence_rate(r));
     }
     v.get("children").and_then(Value::as_array).into_iter().flatten().find_map(first_rate)
 }
@@ -552,6 +553,10 @@ fn first_video_dimensions(stack: &Value) -> Option<(u32, u32)> {
     first_video_dimensions_at(stack, 0)
 }
 
+fn sequence_rate(rate: FrameRate) -> bool {
+    settings_for(rate, 1920, 1080, false).validate().is_ok()
+}
+
 impl Imp<'_, '_> {
     /// Union each timeline's saved palette into the project's 64 retained colors.
     /// Keep the first valid name, fill missing names even at capacity, and never keep orphan names.
@@ -601,7 +606,7 @@ impl Imp<'_, '_> {
         let meta = fc(tl).or_else(|| fc(stack));
         self.merge_palette(meta);
 
-        let rate = tl.get("global_start_time").and_then(read_rate).or_else(|| first_rate(stack)).unwrap_or_default();
+        let rate = tl.get("global_start_time").and_then(read_rate).filter(|&r| sequence_rate(r)).or_else(|| first_rate(stack)).unwrap_or_default();
         let id = self.sequence(stack, &name, meta, rate);
         if let Some(st) = tl.get("global_start_time").and_then(read_rt)
             && let Some(s) = self.b.p.sequence_mut(id)
