@@ -247,15 +247,14 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
-/// Wheel input over the Timeline: the wheel scrolls the Timeline in time (up = backwards),
-/// Shift+wheel does the same a lot faster, Ctrl+wheel moves the tracks up and down and
-/// Option+wheel zooms about the pointer.
+/// By default the wheel moves tracks, Ctrl+wheel scrolls in time, Shift+wheel scrolls faster,
+/// and Option+wheel zooms about the pointer. The mouse-scrolling preference swaps wheel and Ctrl.
 fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &Layout, seq: &Sequence) {
     let ctx = ui.ctx().clone();
     // ---- wheel:
-    //   wheel            the Timeline in time (up = backwards); Inverted controls flips it
-    //   Shift + wheel    the same, a lot faster
-    //   Ctrl + wheel     the tracks under the pointer, up and down
+    //   wheel            the tracks under the pointer, up and down
+    //   Ctrl + wheel     the Timeline in time (up = backwards); Inverted controls flips it
+    //   Shift + wheel    scrolls in time a lot faster
     //   Option + wheel   zoom about the pointer
     // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
     // wheel. A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
@@ -291,9 +290,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
             // A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
-            // time. The wheel itself does the same -- up = backwards in time -- and with Shift a
-            // lot faster; Ctrl + wheel moves the tracks up and down. Settings ▸ Timeline ▸
-            // Timeline Mouse Scrolling "Horizontal" swaps those two.
+            // time. The setting swaps the plain and Ctrl wheel actions.
             let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
             let time = if w.shift {
                 Some(wdy * 10.0)
