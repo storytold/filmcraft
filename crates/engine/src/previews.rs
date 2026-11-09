@@ -359,7 +359,8 @@ impl PreviewStore {
     /// Delete the preview files named `names`. Returns how many were removed.
     fn delete_files(&self, names: &[String]) -> usize {
         let Some(dir) = self.dir() else { return 0 };
-        let victims: Vec<String> = {
+        // A set: two segments with the same content name the same file.
+        let victims: HashSet<String> = {
             let files = self.files.read().unwrap_or_else(|e| e.into_inner());
             names.iter().filter(|n| files.contains(*n)).cloned().collect()
         };

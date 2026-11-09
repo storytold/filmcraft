@@ -251,6 +251,29 @@ fn saving_without_previews_creates_no_previews_folder() {
 }
 
 #[test]
+fn work_area_delete_counts_a_file_two_segments_share_once() {
+    let (mut s, tint) = session("work-area-delete-repeat");
+    let rate = FrameRate::FPS_24;
+    let seq = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    let first = project.sequence(seq).unwrap().video_tracks[0].items[0].clone();
+    let mut repeat = project.make_track_item(first.item, TrackKind::Video, rate.tick_of(96), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    repeat.effects = first.effects.clone();
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(repeat);
+    s.project = Arc::new(project);
+    render_tint(&mut s, tint);
+    assert_eq!(s.previews.count(), 1);
+    s.edit_sequence("work area", |q, _, _| {
+        q.work_area = Some(TimeRange::from_bounds(Tick::ZERO, rate.tick_of(120)));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap()["deleted"], 1);
+    assert_eq!(s.previews.count(), 0);
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+#[test]
 fn render_selection_does_not_read_in_and_out() {
     let (mut s, a) = session("sel-marks");
     let seq = s.state.active_sequence.unwrap();
