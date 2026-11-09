@@ -69,7 +69,22 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
     }
     let cap_n = seq.caption_tracks.len();
     let tracks_top = layout.content.min.y + if cap_n > 0 { cap_n as f32 * crate::panels::timeline_captions::ROW_H + DIVIDER_H } else { 0.0 };
-    let band = |y0: f32, y1: f32| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1));
+    let band = |y0: f32, y1: f32| {
+        if y0.is_finite() && y1.is_finite() && y1 > y0 {
+            Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1))
+        } else {
+            // A corrupt or overflowed track height must still give the user a visible target, and
+            // must never hand drawing or hit-testing an empty / inverted rectangle.
+            let edge = if y1.is_finite() {
+                y1
+            } else if y0.is_finite() {
+                y0
+            } else {
+                layout.content.min.y
+            };
+            Rect::from_min_max(pos2(layout.content.min.x, edge - 0.5), pos2(layout.content.max.x, edge + 0.5))
+        }
+    };
     if y < layout.split_y {
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
         // ANYWHERE above the top video row counts -- over the ruler, or outside the Timeline's

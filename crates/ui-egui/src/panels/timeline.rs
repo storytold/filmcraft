@@ -1475,6 +1475,8 @@ mod new_track_tests {
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
         assert_eq!(at(300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        let (_, preview) = new_track_at(&seq, &layout, 40.0, -50.0, 50.0).expect("overflowed height keeps a visible target");
+        assert_eq!(preview.height(), 1.0, "an invalid band has a visible one point preview");
         // the Mix row counts as "below the last audio track" now, with the same band
         assert_eq!(at(480.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
         // anywhere above the video rows -- over the ruler, or past the Timeline's own rect --
