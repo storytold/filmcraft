@@ -445,6 +445,44 @@ fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
     assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
 }
 
+/// #4551 review: Threshold on the GPU puts each pixel on the right side of the rounded level,
+/// exactly (no flip allowance): at Level 128.5 code 128 is black and code 129 white, and pure red
+/// (encoded luma 54.2) is black at Level 54.5 and white at Level 54. Opaque and half-alpha pixels.
+#[test]
+fn gpu_threshold_puts_boundary_codes_on_the_right_side() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let cases: [(f64, [u8; 3], bool); 6] = [
+        (128.5, [127; 3], false),
+        (128.5, [128; 3], false),
+        (128.5, [129; 3], true),
+        (128.5, [130; 3], true),
+        (54.5, [255, 0, 0], false),
+        (54.0, [255, 0, 0], true),
+    ];
+    for (level, code, white) in cases {
+        let px: Vec<f32> = (0..w * h)
+            .flat_map(|i| {
+                let a = if i / w % 2 == 0 { 1.0 } else { 0.5 };
+                let [r, g, b] = code.map(|k| half(filmcraft_color::srgb_to_linear(f32::from(k) / 255.0) * a));
+                [r, g, b, a]
+            })
+            .collect();
+        let frame = VideoFrame::rgba_f32(w, h, px.clone());
+        let op = FxOp::eval(&effect("threshold", &[("level", fl(level))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).unwrap();
+        assert_eq!(gpu.len(), px.len());
+        for (src, out) in px.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()) {
+            let expected = if white { src[3] } else { 0.0 };
+            assert_eq!(*out, [expected, expected, expected, src[3]], "level {level}, code {code:?}, alpha {}", src[3]);
+        }
+    }
+}
+
 #[test]
 fn gpu_extract_zero_softness_has_no_fractional_edge() {
     let Some((dev, q)) = device() else {
