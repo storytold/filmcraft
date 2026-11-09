@@ -110,6 +110,8 @@ struct AudioState {
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
+    /// Bytes of the decoded packets held in `packets`.
+    bytes: usize,
 }
 
 struct AviAudio {
@@ -216,8 +218,9 @@ fn split_frames(
             _ if here.len() < 8 && next >= st.chunks.len() => break,
             _ => pos += 1,
         }
-        // drop what is behind
-        if pos - base > 1 << 16 {
+        // Drop what is behind, once it is at least half the window: draining a few KiB at a time
+        // from one huge chunk would move the rest of it again every time.
+        if pos - base > 1 << 16 && (pos - base) * 2 >= win.len() {
             let cut = pos - base;
             win.drain(..cut.min(win.len()));
             base += cut;
@@ -282,22 +285,19 @@ impl AviSource {
             if codec == VCodec::H264
                 && let Some(si) = vstream
             {
-                let heads = |n: usize| -> Vec<Vec<u8>> {
-                    vframes
-                        .iter()
-                        .take(n)
-                        .map(|f| {
-                            file.streams
-                                .get(si)
-                                .and_then(|s| s.chunks.get(f.chunk))
-                                .and_then(|c| filmcraft_media::reader::read_range(&*bytes.0, c.offset, (c.size as usize).min(8 << 10)).ok())
-                                .unwrap_or_default()
-                        })
-                        .collect()
+                // read one picture's head at a time: collecting them all would hold 8 KiB per indexed frame
+                let heads = |n: usize| {
+                    vframes.iter().take(n).map(|f| {
+                        file.streams
+                            .get(si)
+                            .and_then(|s| s.chunks.get(f.chunk))
+                            .and_then(|c| filmcraft_media::reader::read_range(&*bytes.0, c.offset, (c.size as usize).min(8 << 10)).ok())
+                            .unwrap_or_default()
+                    })
                 };
                 let reorders = |p: &[i64]| p.windows(2).any(|w| w[1] < w[0]);
-                if crate::mxf::avc_presentation_order(&heads(300)).is_some_and(|p| reorders(&p))
-                    && let Some(ranks) = crate::mxf::avc_presentation_order(&heads(vframes.len()))
+                if crate::mxf::avc_presentation_order(heads(300)).is_some_and(|p| reorders(&p))
+                    && let Some(ranks) = crate::mxf::avc_presentation_order(heads(vframes.len()))
                 {
                     // the pictures keep the slots they occupy (empty drop-frame chunks between them
                     // stay), shown in their presentation order
@@ -335,6 +335,7 @@ impl AviSource {
                 has_alpha: false,
                 bitrate,
                 hdr: None,
+                color_assumed: Some(crate::stream_color::assumed(&[])),
             });
             vcodec = codec;
         }
@@ -390,7 +391,7 @@ impl AviSource {
                 codec: label,
                 bits_per_sample: (w.bits_per_sample > 0).then_some(u32::from(w.bits_per_sample)),
             });
-            let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+            let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
             audios.push(AviAudio { stream: s, codec, pieces, first, starts, state });
         }
         // the longer of the picture and the sound
@@ -433,8 +434,12 @@ impl AviSource {
         );
         let mut out = Vec::new();
         for &(c, off, len) in a.pieces.get(from..to).unwrap_or_default() {
-            let chunk = self.read(a.stream, c)?;
-            out.extend_from_slice(chunk.get(off..off + len).ok_or_else(|| CodecError::Container("audio chunk shorter than its index".into()))?);
+            // only the piece: a packet that is a small part of one big chunk must not read the whole chunk
+            let piece = self
+                .file
+                .read_chunk_range(&self.bytes, a.stream, c, off, len)
+                .map_err(|_| CodecError::Container("audio chunk shorter than its index".into()))?;
+            out.extend_from_slice(&piece);
         }
         Ok(out)
     }
@@ -469,12 +474,7 @@ impl AviSource {
             }
         };
         let p = Arc::new(decoded);
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 4096 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
