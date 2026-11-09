@@ -184,7 +184,7 @@
 	Refresh Changed Media	Обновить изменённые медиа
 	Linked Selection	Связанное выделение
 	Lock Guides	Заблокировать направляющие
-	Color Grading	Цветокоррекция
+	Color Grading	Грейдинг
 	Video Scopes	Видеоскопы
 	Magnification	Увеличение
 	Make Offline…	Сделать офлайн…
@@ -880,7 +880,7 @@
 	Clip Volume	Громкость клипа
 	(no clip selected)	(клип не выбран)
 	Master · {name}	Мастер · {name}
-	Add Color Grading to clip	Добавить цветокоррекцию к клипу
+	Add Color Grading to clip	Добавить грейдинг к клипу
 	Input LUT	Входной LUT
 	Color	Цвет
 	Temperature	Температура
@@ -1727,7 +1727,7 @@
 	Focus Size	Размер фокуса
 	Fold Motion	Складывание
 	Foldback	Фолдбэк
-	For color management parameters, go to the Settings tab in the Color Grading panel.	Параметры управления цветом находятся на вкладке «Настройки» панели «Цветокоррекция».
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Параметры управления цветом находятся на вкладке «Настройки» панели «Грейдинг».
 	Format	Формат
 	Four Scopes (RGB, 8 bit)	Четыре осциллограммы (RGB, 8 бит)
 	Four Scopes (YUV, float, no clamp)	Четыре осциллограммы (YUV, с плавающей запятой, без отсечения)
@@ -1998,7 +1998,7 @@
 	Luma Key	Кеинг по яркости
 	Luma Source	Источник яркости
 	Luma and Chroma	Яркость и цветность
-	Color Grading Presets	Пресеты цветокоррекции
+	Color Grading Presets	Пресеты грейдинга
 	Luminance	Яркость
 	Luminance Threshold	Порог яркости
 	Luminosity	Светлота
@@ -2075,7 +2075,7 @@
 	Monoscopic	Моноскопический
 	Monospace only	Только моноширинные
 	More colour in the less saturated areas	Больше цвета в менее насыщенных областях
-	Optical Flow Dissolve	Наплыв с оптическим потоком
+	Morph Cut	Morph Cut
 	Mosaic	Мозаика
 	Mosaic (Legacy)	Мозаика (устаревшая)
 	Motion Blur	Размытие в движении
@@ -2579,7 +2579,7 @@
 	Twist	Кручение
 	Twist Smoother	Кручение сглаженное
 	Typewriter	Печатная машинка
-	Chroma Key	Хромакей
+	Ultra Key	Ultra Key
 	Uniform Scale	Равномерный масштаб
 	Uniform Spacing	Равномерные отступы
 	Unsharp Mask	Контурная резкость
@@ -2661,7 +2661,7 @@
 	Warm print stock with gentle roll-off	Тёплая плёночная копия с мягким спадом
 	Warm, soft late-afternoon light	Тёплый мягкий предвечерний свет
 	Warning	Предупреждение
-	Motion Stabilizer	Стабилизация движения
+	Warp Stabilizer	Warp Stabilizer
 	Wave	Волна
 	Wave Height	Высота волны
 	Wave Speed	Скорость волны
@@ -3733,9 +3733,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 бит 4:2:0) в размере последовательности, постоянное качество CRF 16, AAC 320 кбит/с; 10-битный мастер
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 бит 4:2:0, каждый кадр ключевой), CRF 12, AAC 320 кбит/с; промежуточный файл, удобный для монтажа
-	List Color Grading Presets	Список пресетов цветокоррекции
-	Apply Color Grading Preset	Применить пресет цветокоррекции
-	Color Grading Preset Thumbnails	Миниатюры пресетов цветокоррекции
-	Toggle Color Grading Section	Переключить раздел цветокоррекции
-	Color Grading Section	Раздел цветокоррекции
+	List Color Grading Presets	Список пресетов грейдинга
+	Apply Color Grading Preset	Применить пресет грейдинга
+	Color Grading Preset Thumbnails	Миниатюры пресетов грейдинга
+	Toggle Color Grading Section	Переключить раздел грейдинга
+	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов

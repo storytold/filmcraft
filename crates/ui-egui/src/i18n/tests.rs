@@ -41,6 +41,29 @@ fn catalogs_are_well_formed() {
     }
 }
 
+/// A renamed feature label has to read differently from every other label in the same catalog:
+/// before this, "Color Grading" and "Color Correction" both read "Farbkorrektur" in German and
+/// "Цветокоррекция" in Russian, and two different features showed the same words.
+#[test]
+fn feature_labels_do_not_repeat_another_label() {
+    for l in Language::ALL {
+        let Some(text) = catalog_text(l) else { continue };
+        let code = l.code();
+        let (entries, errors) = catalog::parse_entries(text);
+        assert!(errors.is_empty(), "{code}: {errors:?}");
+        for feature in ["Color Grading", "Video Scopes"] {
+            let shown = l.tr(feature);
+            assert_ne!(shown, feature, "{code}: {feature} is translated");
+            for (_, source, translated) in &entries {
+                if source == feature {
+                    continue;
+                }
+                assert_ne!(translated, &shown, "{code}: {feature} → {shown:?} repeats {source:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn unknown_strings_pass_through_and_languages_round_trip() {
     for l in Language::ALL {
@@ -887,23 +910,11 @@ fn system_language_picks_bosnian() {
 }
 
 // Check presentation values, never compatibility ids, saved keys or user-supplied text.
+// Ultra Key, Warp Stabilizer and Morph Cut are not retired: they stay the shipped labels until
+// RFC-0029 decides the trademark names.
 fn retired_feature_label(text: &str) -> Option<&'static str> {
     let lower = text.to_lowercase();
-    [
-        "lumetri",
-        "mercury transmit",
-        "ultra key",
-        "warp stabilizer",
-        "morph cut",
-        "ウルトラキー",
-        "ワープスタビライザー",
-        "モーフカット",
-        "울트라 키",
-        "워프 안정기",
-        "모프 컷",
-    ]
-    .into_iter()
-    .find(|retired| {
+    ["lumetri", "mercury transmit"].into_iter().find(|retired| {
         lower.match_indices(retired).any(|(start, _)| !retired.is_ascii() || lower[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
     })
 }
@@ -931,15 +942,16 @@ fn retired_feature_labels_stay_out_of_visible_and_translated_names() {
 
 #[test]
 fn display_guard_catches_retired_marks_without_banning_descriptive_terms() {
-    for label in ["LUMETRI Color", "Enable Mercury Transmit", "Ultra Key", "Warp Stabilizer", "Morph Cut", "ウルトラキー"] {
+    for label in ["LUMETRI Color", "Enable Mercury Transmit", "Mercury Transmit"] {
         assert!(retired_feature_label(label).is_some(), "{label}");
     }
     for label in [
         "Color Grading",
         "Video Scopes",
-        "Chroma Key",
-        "Motion Stabilizer",
-        "Optical Flow Dissolve",
+        "Ultra Key",
+        "Warp Stabilizer",
+        "Morph Cut",
+        "ウルトラキー",
         "Enable External Video Output",
         "Volumetric Rays",
         "Volumetrijske zrake",

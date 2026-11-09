@@ -216,7 +216,7 @@
 	Link Media…	Medien verknüpfen…
 	Linked Selection	Verknüpfte Auswahl
 	Lock Guides	Hilfslinien sperren
-	Color Grading	Farbkorrektur
+	Color Grading	Farbgrading
 	Video Scopes	Videoskope
 	Magenta	Magenta
 	Magnification	Vergrößerung
@@ -926,7 +926,7 @@
 	Clip Volume	Cliplautstärke
 	(no clip selected)	(kein Clip ausgewählt)
 	Master · {name}	Master · {name}
-	Add Color Grading to clip	Farbkorrektur zum Clip hinzufügen
+	Add Color Grading to clip	Farbgrading zum Clip hinzufügen
 	Input LUT	Eingabe-LUT
 	Temperature	Temperatur
 	Tint	Tönung
@@ -1768,7 +1768,7 @@
 	Focus Size	Fokusgröße
 	Fold Motion	Faltbewegung
 	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Color Grading panel.	Die Farbmanagement-Parameter finden Sie auf der Registerkarte Einstellungen im Bereich Farbkorrektur.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Die Parameter für das Farbmanagement findest du auf dem Reiter „Einstellungen“ des Bedienfelds „Farbgrading“.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Vier Scopes (RGB, 8 Bit)
 	Four Scopes (YUV, float, no clamp)	Vier Scopes (YUV, Gleitkomma, unbegrenzt)
@@ -2036,7 +2036,7 @@
 	Luma Key	Luma-Key
 	Luma Source	Luma-Quelle
 	Luma and Chroma	Luma und Chroma
-	Color Grading Presets	Farbkorrektur-Vorgaben
+	Color Grading Presets	Farbgrading-Vorgaben
 	Luminance	Luminanz
 	Luminance Threshold	Luminanzschwellenwert
 	Luminosity	Luminanz
@@ -2111,7 +2111,7 @@
 	Monoscopic	Monoskopisch
 	Monospace only	Nur dicktengleiche Schriften
 	More colour in the less saturated areas	Mehr Farbe in weniger gesättigten Bereichen
-	Optical Flow Dissolve	Überblendung mit optischem Fluss
+	Morph Cut	Morph-Schnitt
 	Mosaic	Mosaik
 	Mosaic (Legacy)	Mosaik (alt)
 	Motion Blur	Bewegungsunschärfe
@@ -2614,7 +2614,7 @@
 	Twist	Verdrehung
 	Twist Smoother	Verdrehungsglättung
 	Typewriter	Schreibmaschine
-	Chroma Key	Chroma-Key
+	Ultra Key	Ultra Key
 	Uniform Scale	Gleichmäßige Skalierung
 	Uniform Spacing	Gleichmäßiger Abstand
 	Unsharp Mask	Unscharf maskieren
@@ -2696,7 +2696,7 @@
 	Warm print stock with gentle roll-off	Warmes Kopiermaterial mit sanftem Roll-off
 	Warm, soft late-afternoon light	Warmes, weiches Licht am späten Nachmittag
 	Warning	Warnung
-	Motion Stabilizer	Bewegungsstabilisierung
+	Warp Stabilizer	Verkrümmungsstabilisierung
 	Wave	Welle
 	Wave Height	Wellenhöhe
 	Wave Speed	Wellengeschwindigkeit
@@ -3693,9 +3693,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 Bit 4:2:0) in der Größe der Sequenz, konstante Qualität CRF 16, AAC 320 kbps; ein 10-Bit-Master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 Bit 4:2:0, jedes Bild ein Keyframe), CRF 12, AAC 320 kbps; ein schnittfreundliches Zwischenformat
-	List Color Grading Presets	Farbkorrektur-Vorgaben auflisten
-	Apply Color Grading Preset	Farbkorrektur-Vorgabe anwenden
-	Color Grading Preset Thumbnails	Vorschaubilder der Farbkorrektur-Vorgaben
-	Toggle Color Grading Section	Farbkorrektur-Abschnitt umschalten
-	Color Grading Section	Farbkorrektur-Abschnitt
+	List Color Grading Presets	Farbgrading-Vorgaben auflisten
+	Apply Color Grading Preset	Farbgrading-Vorgabe anwenden
+	Color Grading Preset Thumbnails	Vorschaubilder der Farbgrading-Vorgaben
+	Toggle Color Grading Section	Farbgrading-Abschnitt umschalten
+	Color Grading Section	Farbgrading-Abschnitt
 	Read Video Scopes	Videoskope auslesen

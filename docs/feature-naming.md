@@ -11,12 +11,23 @@ Use the existing ArtCraft app identity with short, descriptive feature names. Sh
 | Lumetri Color | Color Grading | `lumetri`, `PanelKind::LumetriColor` |
 | Lumetri Scopes | Video Scopes | `PanelKind::LumetriScopes` |
 | Lumetri Presets | Color Grading Presets | `Lumetri Presets` folder key; existing preset ids |
-| Ultra Key | Chroma Key | `ultra_key` |
-| Warp Stabilizer | Motion Stabilizer | `warp_stabilizer` |
-| Morph Cut | Optical Flow Dissolve | `morph_cut` |
 | Enable Mercury Transmit | Enable External Video Output | `playback.enableTransmit` |
 
-These names describe the existing implementations, including a 2-D motion stabilizer and an optical-flow dissolve without face tracking. The external video output setting currently only stores a preference; this rename does not implement hardware output.
+The external video output setting currently only stores a preference; this rename does not implement hardware output.
+
+### Deferred to RFC-0029
+
+Three Adobe names stay until that RFC decides the replacement, so their labels, catalog rows and
+docs are unchanged here:
+
+| Display label (unchanged) | Stable key |
+| --- | --- |
+| Ultra Key | `ultra_key` |
+| Warp Stabilizer | `warp_stabilizer` |
+| Morph Cut | `morph_cut` |
+
+They are not retired marks: the display guard in `crates/ui-egui/src/i18n/tests.rs` does not ban
+them, and their old/new-name aliases are gone because the label is the name again.
 
 ## Integration and attribution
 
@@ -24,10 +35,11 @@ These names describe the existing implementations, including a 2-D motion stabil
 
 ## Compatibility and localization
 
-- Effect, renderer, command, preference, preset and panel enum ids are unchanged. Old human-readable effect/panel names remain lookup aliases.
+- Effect, renderer, command, preference, preset and panel enum ids are unchanged. Old human-readable effect/panel names remain lookup aliases, and the Effects panel search still matches them (`Lumetri`, `Color Grade`).
+- Interchange files are unchanged: FCP7 XML, FCPXML and EDL write `filmcraft_project::interchange_name`, which is the name an export has always written (`Lumetri Color`), so an export made before and after the rename is byte-identical. Display labels come from `EffectDef::name`.
 - Scoped shortcut imports accept both old and current panel names. The Effects panel keeps its original serialized folder key and old automation paths, with descriptive-name aliases for callers of the original draft.
 - Folder dispatch and persistence use the stable key, not its translated label. Old folder expansion state still opens the same folder.
-- All 16 shipped locale catalogs include the selected effect names, grading/scopes/preset labels, add-to-clip button and color-management settings note. The locale regression checks parsing, unique keys and absence of retired display marks in translated entries. Additional guards scan the actual built-in interface names and translated output, while retaining English fallback and excluding compatibility identifiers and user text.
+- All 16 shipped locale catalogs include the selected effect names, grading/scopes/preset labels, add-to-clip button and color-management settings note. The locale regression checks parsing, unique keys and absence of retired display marks in translated entries. Additional guards scan the actual built-in interface names and translated output, while retaining English fallback and excluding compatibility identifiers and user text. A feature label must also read differently from every other label in its catalog (German and Russian had both read "Color Grading" and "Color Correction" the same way).
 - Existing license, source and author records are preserved. Internal filenames and golden scene ids are not renamed.
 
 ## Remaining validation gates
