@@ -56,6 +56,7 @@ and `filmcraft-cli`.
 | `av1` | L0 | AV1 decoder (Main profile; bit-exact with libdav1d; see its README for the stage table) |
 | `mpeg2v` | L0 | MPEG-2 video (Main / 4:2:2 profile; frame and field pictures, dual prime) and MPEG-1 video decoder ([README](../crates/mpeg2v/README.md)) |
 | `aac` | L0 | AAC-LC decoder and encoder |
+| `mp3enc` | L0 | MPEG-1/2 Audio Layer III (MP3) encoder: CBR, mono / stereo / joint stereo, bit reservoir ([README](../crates/mp3enc/README.md)) |
 | `ac3` | L0 | AC-3 (ATSC A/52) decoder ([README](../crates/ac3/README.md)) |
 | `mpa` | L0 | MPEG-1/2 Audio Layer I and II (MP1 / MP2) decoder ([README](../crates/mpa/README.md)) |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
@@ -321,7 +322,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. An adjustment layer that covers the whole frame at 100 % opacity in
+  Normal, unmasked and with only effects from that set, is a step of the plan: its effects run the
+  same way on the composite of the tracks below it, and the result replaces it before the tracks
+  above are drawn. The plan is made for the device that composites it (`plan::DeviceCaps`, part
+  of the monitor's frame key and of the export's renderer pool): on one without an effect stage,
+  or for a frame larger than its textures, the adjustment layer sends the frame to the CPU
+  renderer on the thread that plans it, not on the UI thread or inside a renderer. Other standard
+  effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
   blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
@@ -565,7 +573,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
   Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
   `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
-  `color.spaces`, `media.colorInfo`.
+  `color.spaces`, `media.colorInfo`. Where no tag in a file gives the matrix, transfer or
+  primaries, the metadata holds a default (BT.709 transfer and primaries, the matrix by frame
+  size); `media.colorInfo`'s `assumed` and `probe`'s `video.color_assumed` say which.
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
@@ -677,6 +687,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `filmcraft-aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
+| `mp3` | `filmcraft-mp3enc` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
 | `png`, `tiff`, `bmp`, `jpg` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
@@ -698,7 +709,8 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
-  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
+  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920 and its
+  TikTok / Instagram Reels / YouTube Shorts variants with loudness normalized to −14 LUFS, ProRes,
   DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
   adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.
