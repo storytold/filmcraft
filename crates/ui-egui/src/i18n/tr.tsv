@@ -10,7 +10,7 @@
 # Turkish video-editing vocabulary (iz, oynatma kafası, sekans, klasör, düzenleme/kesim,
 # anahtar kare, dışa aktarma, işleme…). No proprietary localisation resource, string table or
 # product UI was consulted or copied; add entries the same way. Product and technology names
-# (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, H.264…) keep their spelling.
+# (FilmCraft, ArtCraft, ProRes, LUFS, H.264…) keep their spelling.
 
 	About FilmCraft	FilmCraft Hakkında
 	Add Audio Submix Track	Ses Alt Miksaj İzi Ekle
@@ -193,8 +193,8 @@
 	Refresh Changed Media	Değiştirilen Medyayı Yenile
 	Linked Selection	Bağlı Seçim
 	Lock Guides	Kılavuzları Kilitle
-	Lumetri Color	Lumetri Rengi
-	Lumetri Scopes	Lumetri Kapsamları
+	Color Grading	Renk Derecelendirme
+	Video Scopes	Video Ölçümleri
 	Magnification	Büyütme
 	Make Offline…	Çevrimdışı Yap…
 	Make Subclip…	Alt Klip Oluştur…
@@ -887,7 +887,7 @@
 	Clip Volume	Klip Ses Düzeyi
 	(no clip selected)	(klip seçilmedi)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Klibe Lumetri Rengi ekle
+	Add Color Grading to clip	Klibe Renk Derecelendirme Ekle
 	Input LUT	Giriş LUT'u
 	Color	Renk
 	Temperature	Sıcaklık
@@ -1665,7 +1665,7 @@
 	Elliptical	Eliptik
 	Emboss	Kabartma
 	Enable HSL Secondary	İkincil HSL'yi Etkinleştir
-	Enable Mercury Transmit	Mercury Transmit'i Etkinleştir
+	Enable External Video Output	Harici Video Çıkışını Etkinleştir
 	Enable ProRes hardware accelerated encoding, if available	Varsa ProRes donanım hızlandırmalı kodlamayı etkinleştir
 	Enable clip and XMP metadata linking	Klip ve XMP üstveri bağlantısını etkinleştir
 	Enable developer mode	Geliştirici modunu etkinleştir
@@ -1733,7 +1733,7 @@
 	Focus Size	Odak Boyutu
 	Fold Motion	Katlama Hareketi
 	Foldback	Katlama
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Renk yönetimi parametreleri için Lumetri Rengi panelindeki Ayarlar sekmesine gidin.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Renk yönetimi parametreleri için Renk Derecelendirme panelindeki Ayarlar sekmesini açın.
 	Format	Biçim
 	Four Scopes (RGB, 8 bit)	Dört Kapsam (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Dört Kapsam (YUV, kayan nokta, sınırlamasız)
@@ -2004,7 +2004,7 @@
 	Luma Key	Luma Key
 	Luma Source	Luma Kaynağı
 	Luma and Chroma	Luma ve Kroma
-	Lumetri Presets	Lumetri Hazır Ayarları
+	Color Grading Presets	Renk Derecelendirme Hazır Ayarları
 	Luminance	Luminans
 	Luminance Threshold	Luminans Eşiği
 	Luminosity	Parlaklık
@@ -3126,7 +3126,6 @@
 	Left align text	Metni sola hizala
 	Looping GIF, 640×360 at 15 fps	Döngüsel GIF, 15 fps'de 640×360
 	Lower First	Önce Alt Alan
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3637,3 +3636,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	Sekans boyutunda H.264 High 10 (10 bit 4:2:0), sabit kalite CRF 16, AAC 320 kbps; 10 bit bir master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, her kare bir anahtar kare), CRF 12, AAC 320 kbps; kurgu dostu bir ara dosya
+	List Color Grading Presets	Renk Derecelendirme Hazır Ayarlarını Listele
+	Apply Color Grading Preset	Renk Derecelendirme Hazır Ayarını Uygula
+	Color Grading Preset Thumbnails	Renk Derecelendirme Hazır Ayarı Küçük Resimleri
+	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
+	Color Grading Section	Renk Derecelendirme Bölümü
+	Read Video Scopes	Video Ölçümlerini Oku
