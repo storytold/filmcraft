@@ -281,7 +281,7 @@ fn a_run_that_stops_saves_nothing_and_says_so() {
     assert!(stderr.contains(&format!("stopped before saving to {other}.")), "{stderr}");
     assert!(!dir.join("other.fcproj").exists());
     // a line of the script saved the file already: the message mustn't call it unchanged
-    let save_line = format!("{{\"id\":\"file.saveAs\",\"params\":{{\"path\":\"{other}\"}}}}\n");
+    let save_line = format!("{}\n", json!({"id": "file.saveAs", "params": {"path": other}}));
     let (code, _, stderr) = run(&["--save-as", &other], &(bin("saved-by-a-line") + &save_line + fails));
     assert_eq!(code, Some(1));
     assert!(stderr.contains(&format!("stopped before saving to {other}.")) && !stderr.contains("unchanged"), "{stderr}");
