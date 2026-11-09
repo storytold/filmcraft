@@ -247,7 +247,64 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    let value = serde_json::Value::deserialize(d)?;
+    let Some(values) = value.as_object() else {
+        log::warn!("invalid timeline UI settings in project view; expected an object, using defaults");
+        return Ok(TimelineUiSettings::default());
+    };
+    let default = TimelineUiSettings::default();
+    macro_rules! read {
+        ($field:ident, $ty:ty) => {{
+            match values.get(stringify!($field)) {
+                Some(value) => match serde_json::from_value::<$ty>(value.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log::warn!("invalid timeline UI setting `{}`; using its default: {error}", stringify!($field));
+                        default.$field
+                    }
+                },
+                None => default.$field,
+            }
+        }};
+    }
+    Ok(TimelineUiSettings {
+        smooth_animations: read!(smooth_animations, bool),
+        inverted_controls: read!(inverted_controls, bool),
+        playhead_side_seconds: read!(playhead_side_seconds, f64),
+        playhead_side_custom: read!(playhead_side_custom, bool),
+        shift_drag_speed: read!(shift_drag_speed, f64),
+        shift_drag_custom: read!(shift_drag_custom, bool),
+        playhead_centering: read!(playhead_centering, bool),
+        zoom_bar_hidden: read!(zoom_bar_hidden, bool),
+        alternate_slider_position: read!(alternate_slider_position, bool),
+        slider_minimap: read!(slider_minimap, bool),
+        show_whole_timeline: read!(show_whole_timeline, bool),
+        fill_clips: read!(fill_clips, bool),
+        position_indicator_color: read!(position_indicator_color, String),
+        prioritise_audio: read!(prioritise_audio, bool),
+        video_indicator_color: read!(video_indicator_color, String),
+        audio_indicator_color: read!(audio_indicator_color, String),
+        offline_indicator_color: read!(offline_indicator_color, String),
+        max_zoom_seconds: read!(max_zoom_seconds, f64),
+        max_zoom_custom: read!(max_zoom_custom, bool),
+        playhead_side_last_custom: read!(playhead_side_last_custom, f64),
+        shift_drag_last_custom: read!(shift_drag_last_custom, f64),
+        max_zoom_last_custom: read!(max_zoom_last_custom, f64),
+        track_slider_hidden: read!(track_slider_hidden, bool),
+        track_slider_smooth: read!(track_slider_smooth, bool),
+        track_slider_alternate_position: read!(track_slider_alternate_position, bool),
+        track_slider_snap: read!(track_slider_snap, bool),
+        track_slider_decouple: read!(track_slider_decouple, bool),
+        show_position_indicator: read!(show_position_indicator, bool),
+        track_slider_shift_drag_speed: read!(track_slider_shift_drag_speed, f64),
+        track_slider_shift_drag_custom: read!(track_slider_shift_drag_custom, bool),
+        track_slider_shift_drag_last_custom: read!(track_slider_shift_drag_last_custom, f64),
+        control_center_on_playhead: read!(control_center_on_playhead, String),
+        control_explode_slider: read!(control_explode_slider, String),
+        control_alternate_drag_speed: read!(control_alternate_drag_speed, String),
+        control_settings: read!(control_settings, String),
+    }
+    .checked())
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
@@ -285,6 +342,18 @@ pub struct ProjectLut {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_timeline_field_uses_its_default_and_preserves_other_settings() {
+        let value = serde_json::json!({
+            "open_sequences": [],
+            "timeline_ui": {"inverted_controls": true, "max_zoom_seconds": "not a number"}
+        });
+        let view: ProjectView = serde_json::from_value(value).unwrap();
+        assert!(view.open_sequences.is_empty());
+        assert!(view.timeline_ui.inverted_controls, "a valid setting survives a malformed sibling");
+        assert_eq!(view.timeline_ui.max_zoom_seconds, 0.4, "the invalid field uses its default");
+    }
 
     /// The Controls bindings start empty (the built-in gestures do the actions) and Snap to
     /// Tracks starts on: the defaults of everything the slider menus added.
