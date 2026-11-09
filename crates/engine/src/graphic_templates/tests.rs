@@ -705,3 +705,33 @@ fn gradient_stop_keeps_its_alpha() {
     assert!((start[3] - 128.0 / 255.0).abs() < 1e-3, "{start:?}");
     assert_eq!(col("gradient_end").unwrap()[3], 1.0);
 }
+
+/// Verifies that the built-in `Title – Burning` template animates `burn_progress` across its
+/// duration and allows `burn_direction` to be updated via `graphics.template.set` as a choice.
+#[test]
+fn title_burning_template_animates_progress_and_edits_direction() {
+    let mut s = demo("gt-title-burning");
+    let r = s.execute("graphics.template.apply", json!({"template": "builtin:title-burning"})).unwrap();
+    let c = clip_of(&r);
+    let ctrls = s.execute("graphics.template.controls", json!({"clip": c.0})).unwrap();
+    let dir_ctrl = ctrls["controls"].as_array().unwrap().iter().find(|x| x["id"] == "burn_direction").unwrap();
+    assert_eq!(dir_ctrl["kind"], "choice");
+    assert_eq!(dir_ctrl["value"], 0);
+
+    // Update burn_direction by integer choice index and by name
+    for (val, expected) in [(json!(2), 2u32), (json!("Right"), 3u32)] {
+        s.execute("graphics.template.set", json!({"clip": c.0, "control": "burn_direction", "value": val})).unwrap();
+        let it = item(&s, c);
+        let spec = item_layer_specs(&it, Tick::ZERO, canvas(&s))[0].1.clone();
+        assert_eq!(spec.appearance.burn.unwrap().direction, expected);
+    }
+
+    // Verify keyframed burn_progress advances from 0 at start to 1.0 at the end of the 5s template
+    let it = item(&s, c);
+    let p0 = item_layer_specs(&it, Tick::ZERO, canvas(&s))[0].1.appearance.burn.as_ref().unwrap().progress;
+    let p_mid = item_layer_specs(&it, Tick(it.duration.0 / 2), canvas(&s))[0].1.appearance.burn.as_ref().unwrap().progress;
+    let p_end = item_layer_specs(&it, it.duration, canvas(&s))[0].1.appearance.burn.as_ref().unwrap().progress;
+    assert!((p0 - 0.0).abs() < 1e-4, "starts unburnt: {p0}");
+    assert!((p_mid - 0.5).abs() < 1e-2, "midway burnt: {p_mid}");
+    assert!((p_end - 1.0).abs() < 1e-4, "fully burnt at end: {p_end}");
+}

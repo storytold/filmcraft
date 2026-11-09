@@ -631,6 +631,20 @@ pub(super) fn defs() -> Vec<EffectDef> {
                 grp(seed(), "Evolution Options"),
             ],
         ),
+        video(
+            "tv_static",
+            "TV Static",
+            STYLIZE,
+            vec![
+                pct("intensity", "Master Intensity", 50.0),
+                fs("grain_size", "Grain Size", 2.0, (1.0, 8.0), (1.0, 8.0), "px", 0),
+                b("monochrome", "Monochrome", true),
+                pct("scanlines", "Scanline Opacity", 30.0),
+                pct("bar_intensity", "Rolling Bar Intensity", 20.0),
+                fs("bar_speed", "Rolling Bar Speed", 1.0, (-10.0, 10.0), (-5.0, 5.0), "", 1),
+                pct("jitter", "Horizontal Jitter", 15.0),
+            ],
+        ),
         // ---- Time ----
         video("posterize_time", "Posterize Time", TIME, vec![fs("rate", "Frame Rate", 12.0, (0.1, 99.0), (1.0, 60.0), "", 2)]),
         // ---- Transform ----
@@ -1113,6 +1127,20 @@ pub(super) fn extend_core(v: &mut [EffectDef]) {
                 col("color", "Color", [1.0, 1.0, 1.0, 1.0]),
                 pct("bg_opacity", "Background Opacity", 0.0),
             ]),
+            "burning_text" => e.params.extend([
+                ParamDef { default: ParamValue::Text("BURNING".into()), ..txt("text", "Text") },
+                ch("font", "Font", &["Inter", "JetBrains Mono", "Noto Serif", "Stalinist One"], 0),
+                fs("size", "Size", 72.0, (1.0, 1000.0), (4.0, 300.0), "", 0),
+                ch("position_preset", "Position Preset", &["Center", "Up", "Down", "Left", "Right"], 0),
+                pt("position", "Position", f64::NAN, f64::NAN),
+                pct("progress", "Burn Progress", 0.0),
+                ch("direction", "Burn Direction", &["Up", "Down", "Left", "Right"], 0),
+                b("orange_glow", "Orange Burn Glow", true),
+                col("glow_color", "Glow Color", [1.0, 0.42, 0.05, 1.0]),
+                fs("noise_scale", "Noise Scale", 40.0, (1.0, 500.0), (5.0, 200.0), "", 1),
+                fs("noise_speed", "Noise Speed", 2.5, (0.0, 50.0), (0.0, 10.0), "", 1),
+                col("color", "Text Color", [1.0, 1.0, 1.0, 1.0]),
+            ]),
             _ => {}
         }
     }
@@ -1155,6 +1183,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
                 | "spin"
                 | "wiggle"
                 | "proc_amp"
+                | "tv_static"
+                | "burning_text"
         ) || folder == "Lights & Glows";
         let yuv = matches!(id, "proc_amp" | "lumetri" | "video_limiter" | "black_white" | "alpha_adjust" | "luma_key" | "track_matte");
         let accel = match e.category.first().copied() {
@@ -1257,6 +1287,7 @@ mod tests {
         "Twirl (Legacy)",
     ];
 
+    /// Verifies that the video effects catalog matches Premiere Pro 26's folder layout and badge flags.
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;
@@ -1274,7 +1305,7 @@ mod tests {
         // nothing else sits in the current folders
         for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Video && d.category.first() == Some(&"Video Effects")) {
             let f = d.category[1];
-            if f == "Obsolete" {
+            if f == "Obsolete" || d.id == "tv_static" || d.id == "burning_text" {
                 continue;
             }
             let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));

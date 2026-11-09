@@ -59,23 +59,27 @@ pub enum ControlKind {
     Color,
     Slider,
     Checkbox,
+    Choice,
     Font,
     Position,
 }
 
 impl ControlKind {
-    pub const ALL: [ControlKind; 6] =
-        [ControlKind::Text, ControlKind::Color, ControlKind::Slider, ControlKind::Checkbox, ControlKind::Font, ControlKind::Position];
+    pub const ALL: [ControlKind; 7] =
+        [ControlKind::Text, ControlKind::Color, ControlKind::Slider, ControlKind::Checkbox, ControlKind::Choice, ControlKind::Font, ControlKind::Position];
+    /// Returns the canonical lowercase JSON name for this control kind.
     pub fn name(self) -> &'static str {
         match self {
             ControlKind::Text => "text",
             ControlKind::Color => "color",
             ControlKind::Slider => "slider",
             ControlKind::Checkbox => "checkbox",
+            ControlKind::Choice => "choice",
             ControlKind::Font => "font",
             ControlKind::Position => "position",
         }
     }
+    /// Parses a control kind from its case-insensitive string name.
     pub fn from_name(s: &str) -> Option<ControlKind> {
         let s = s.to_ascii_lowercase();
         let s = if s == "colour" { "color".to_string() } else { s };
@@ -95,6 +99,7 @@ impl ControlKind {
             {
                 Some(d) => match &d.default {
                     ParamValue::Bool(_) => ControlKind::Checkbox,
+                    ParamValue::Choice(_) => ControlKind::Choice,
                     ParamValue::Color(_) => ControlKind::Color,
                     ParamValue::Vec2(_) => ControlKind::Position,
                     ParamValue::Text(_) => ControlKind::Text,
@@ -593,6 +598,37 @@ pub fn builtin_templates() -> Vec<GraphicsTemplate> {
                 ctl("text_color", "Text Color", 1, "fill_color"),
                 ctl("box_color", "Box Color", 1, "background_color"),
                 slider("box_opacity", "Box Opacity", 1, "background_opacity", 0.0, 100.0),
+                ctl("position", "Position", 1, "position"),
+            ],
+        ));
+    }
+    // Burning title with dynamic Perlin noise and orange glow edge.
+    {
+        let mut title = text(1, "Title", "BURNING", (960.0, 540.0), 96.0, "Bold");
+        set(&mut title, "align", ParamValue::Choice(1));
+        set(&mut title, "fill_color", rgb(0xffffff));
+        set(&mut title, "burn", ParamValue::Bool(true));
+        let mut burn_prog = Param::new(ParamValue::Float(0.0));
+        burn_prog.put_keyframe(Tick::ZERO, ParamValue::Float(0.0));
+        burn_prog.put_keyframe(Tick(5 * TICKS_PER_SECOND), ParamValue::Float(100.0));
+        title.params.insert("burn_progress".into(), burn_prog);
+        set(&mut title, "burn_direction", ParamValue::Choice(0));
+        set(&mut title, "burn_glow", ParamValue::Bool(true));
+        set(&mut title, "burn_glow_color", ParamValue::Color([1.0, 0.42, 0.05, 1.0]));
+        v.push(builtin(
+            "title-burning",
+            "Title – Burning",
+            "Titles",
+            "Burning title with dynamic Perlin noise and bright orange burn edge.",
+            5,
+            vec![title],
+            vec![
+                ctl("title", "Title", 1, "text"),
+                ctl("font", "Font", 1, "font"),
+                slider("title_size", "Title Size", 1, "size", 40.0, 240.0),
+                ctl("title_color", "Title Color", 1, "fill_color"),
+                ctl("burn_direction", "Burn Direction", 1, "burn_direction"),
+                ctl("burn_glow", "Orange Burn Glow", 1, "burn_glow"),
                 ctl("position", "Position", 1, "position"),
             ],
         ));

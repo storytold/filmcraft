@@ -258,6 +258,7 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+/// Builds the full list of built-in video, audio, transition, and graphic layer effect definitions.
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
@@ -832,6 +833,7 @@ fn build_effects() -> Vec<EffectDef> {
             vec![pt("position", "Position", f64::NAN, f64::NAN), fs("size", "Size", 15.0, (1.0, 100.0), (1.0, 50.0), "%", 1)],
         ),
         video("simple_text", "Simple Text", vfx::UTILITY, vec![]),
+        video("burning_text", "Burning Text", vfx::UTILITY, vec![]),
         // ---- audio effects ----
         // (defined in effect/audio.rs; appended below)
         EffectDef {

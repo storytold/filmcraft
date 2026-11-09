@@ -428,6 +428,26 @@ pub fn template_controls(
                     set(json!(b), actions);
                 }
             }
+            ControlKind::Choice => {
+                let cur = match pv {
+                    Some(ParamValue::Choice(i)) => i as usize,
+                    _ => 0,
+                };
+                let opts: &[&str] = match filmcraft_project::find_effect(&e.effect).and_then(|d| d.param(&c.param)).map(|d| &d.kind) {
+                    Some(filmcraft_project::ParamKind::Choice(o)) => o,
+                    _ => &[],
+                };
+                let sel_text = opts.get(cur).map(|s| crate::i18n::t(s)).unwrap_or_default();
+                let r =
+                    craft_ui::ComboBox::from_id_salt(("gfx-tpl-choice", clip.0, c.id.as_str())).selected_text(sel_text).width(140.0).show_ui(&mut vui, |ui| {
+                        for (idx, opt) in opts.iter().enumerate() {
+                            if ui.selectable_label(idx == cur, crate::i18n::t(opt)).clicked() {
+                                set(json!(idx as u32), actions);
+                            }
+                        }
+                    });
+                autos.push((id, r.response.rect, c.name.clone()));
+            }
             ControlKind::Font => {
                 let fam = match pv {
                     Some(ParamValue::Text(s)) => s,

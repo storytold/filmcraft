@@ -25,6 +25,7 @@ pub const CAPS_OPTS: &[&str] = &["Normal", "All Caps", "Small Caps"];
 pub const STROKE_OPTS: &[&str] = &["Outer", "Center", "Inner"];
 pub const SHAPE_OPTS: &[&str] = &["Rectangle", "Ellipse", "Polygon", "Path"];
 pub const FILL_KIND_OPTS: &[&str] = &["Solid", "Linear Gradient"];
+pub const BURN_DIR_OPTS: &[&str] = &["Up", "Down", "Left", "Right"];
 
 /// Whether an effect instance is a graphic layer.
 pub fn is_layer_id(id: &str) -> bool {
@@ -95,6 +96,8 @@ fn tx(id: &'static str, label: &'static str, def: &str, animatable: bool, group:
     p(id, label, ParamKind::Text, ParamValue::Text(def.into()), animatable, group)
 }
 
+/// Builds the shared Appearance parameter definitions (fill, stroke, background, shadow, and burn)
+/// for text and shape graphic layers.
 fn appearance() -> Vec<ParamDef> {
     const A: &str = "Appearance";
     vec![
@@ -124,6 +127,13 @@ fn appearance() -> Vec<ParamDef> {
         fl("shadow_distance", "Shadow Distance", 10.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_size", "Shadow Size", 0.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_blur", "Shadow Blur", 40.0, (0.0, 1000.0), (0.0, 200.0), "", A),
+        bo("burn", "Burn", false, A),
+        fl("burn_progress", "Burn Progress", 0.0, (0.0, 100.0), (0.0, 100.0), "%", A),
+        chc("burn_direction", "Burn Direction", BURN_DIR_OPTS, 0, A),
+        bo("burn_glow", "Burn Glow", true, A),
+        co("burn_glow_color", "Burn Glow Color", [1.0, 0.42, 0.05, 1.0], A),
+        fl("burn_noise_scale", "Burn Noise Scale", 40.0, (1.0, 500.0), (5.0, 200.0), "", A),
+        fl("burn_noise_speed", "Burn Noise Speed", 2.5, (0.0, 50.0), (0.0, 10.0), "", A),
     ]
 }
 
@@ -212,6 +222,19 @@ pub struct Appearance {
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+    pub burn: Option<BurnAppearance>,
+}
+
+/// Dynamic burning effect on a graphic layer (perlin noise + orange glow wipe).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BurnAppearance {
+    pub progress: f32,
+    pub direction: u32,
+    pub glow: bool,
+    pub glow_color: [f32; 4],
+    pub noise_scale: f32,
+    pub noise_speed: f32,
+    pub time: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -444,6 +467,15 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             strokes,
             background,
             shadow,
+            burn: bb(e, "burn", t).then(|| BurnAppearance {
+                progress: (ff(e, "burn_progress", t) / 100.0).clamp(0.0, 1.0),
+                direction: ch(e, "burn_direction", t),
+                glow: bb(e, "burn_glow", t),
+                glow_color: cc(e, "burn_glow_color", t),
+                noise_scale: ff(e, "burn_noise_scale", t).clamp(1.0, 1000.0),
+                noise_speed: ff(e, "burn_noise_speed", t).clamp(0.0, 100.0),
+                time: t.seconds() as f32,
+            }),
         },
         transform: LayerTransform {
             position,
