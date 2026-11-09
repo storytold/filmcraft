@@ -516,7 +516,9 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         // whole window edge carries the 1px line instead (Timeline only) -- the native window's
         // edge when the panel has its own window, else the group window with its tab strip.
         if self.app.ui.focused == *panel {
-            let alternate_top = *panel == PanelKind::Timeline && self.app.session.state.timeline_ui.alternate_slider_position;
+            let alternate_top = *panel == PanelKind::Timeline
+                && self.app.session.state.timeline_ui.alternate_slider_position
+                && !self.app.session.state.timeline_ui.zoom_bar_hidden;
             if alternate_top {
                 // Draw the same 2px focus line along the window edge. A floating window can hold
                 // several groups, and the window rect would highlight the neighbours too.
