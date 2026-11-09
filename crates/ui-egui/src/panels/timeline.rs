@@ -1376,6 +1376,7 @@ mod waveform_zone_tests {
 mod overlay_paint_count_tests {
     use super::*;
 
+    /// The demo project's session, its active sequence, and that sequence's id.
     pub(super) fn demo() -> (FilmcraftApp, Sequence, ItemId) {
         let mut s = filmcraft_engine::Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
@@ -1415,6 +1416,8 @@ mod overlay_paint_count_tests {
         out.textures_delta.clear();
     }
 
+    /// The regression test for the per-row overlay paint: one `draw_clips` pass must register
+    /// each transition exactly once, however many rows are visible.
     #[test]
     fn overlays_register_once_per_frame_not_once_per_visible_row() {
         let (mut app, seq, seq_id) = demo();
@@ -1442,6 +1445,7 @@ mod visible_items_tests {
     use super::overlay_paint_count_tests::demo;
     use super::*;
 
+    /// Seconds as ticks.
     fn t(s: f64) -> Tick {
         Tick::from_seconds_f64(s)
     }
@@ -1466,10 +1470,12 @@ mod visible_items_tests {
         make(&[(0.0, 5.0), (10.0, 5.0), (20.0, 80.0), (110.0, 5.0), (120.0, 5.0)])
     }
 
+    /// The start of each item, in order.
     fn starts(items: &[TrackItem]) -> Vec<Tick> {
         items.iter().map(|i| i.start).collect()
     }
 
+    /// A window inside, before, across and past the clips returns exactly the clips it covers.
     #[test]
     fn only_the_clips_the_view_covers_are_returned() {
         let items = five();
@@ -1485,12 +1491,14 @@ mod visible_items_tests {
         assert!(visible_items(&[], (t(0.0), t(10.0)), false).is_empty());
     }
 
+    /// A drag can move a clip anywhere, so previews bypass the window and inspect every item.
     #[test]
     fn a_drag_preview_checks_every_item_because_a_dragged_clip_is_not_at_its_stored_start() {
         let items = five();
         assert_eq!(visible_items(&items, (t(50.0), t(60.0)), true).len(), items.len());
     }
 
+    /// A negative duration can cross the window bounds; the helper falls back instead of panicking.
     #[test]
     fn an_item_whose_end_precedes_its_start_falls_back_instead_of_panicking() {
         let mut items = five();
@@ -1501,6 +1509,7 @@ mod visible_items_tests {
         assert_eq!(all.len(), items.len(), "falls back to inspecting every item");
     }
 
+    /// Overlapping clips break sorted ends; the long clip must not be dropped.
     #[test]
     fn overlapping_clips_whose_ends_are_not_sorted_stay_visible() {
         // 0–100 and 10–15 overlap, so ends (100, 15) are not nondecreasing; the long clip
@@ -1510,6 +1519,7 @@ mod visible_items_tests {
         assert_eq!(all.len(), items.len(), "the overlapping long clip stays visible");
     }
 
+    /// Unordered starts break the upper-bound search; overlapping clips must stay visible.
     #[test]
     fn unordered_starts_fall_back_instead_of_dropping_a_visible_clip() {
         // starts 10, 80, 20 are not nondecreasing; the 20–100 clip overlaps a 30–50 s view
