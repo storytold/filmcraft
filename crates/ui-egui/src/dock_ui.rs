@@ -526,6 +526,16 @@ impl DockContent<PanelKind> for FilmContent<'_> {
                 ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
             }
         }
+        if native_track_slider_outline(*panel, viewport, self.app.session.state.timeline_ui.track_slider_alternate_position)
+            && let Some(window) = ui.ctx().input(|i| i.viewport().inner_rect)
+        {
+            ui.ctx().layer_painter(ui.layer_id()).rect_stroke(
+                window,
+                0.0,
+                Stroke::new(2.0, egui::Color32::from_rgb(0x74, 0xb0, 0xff)),
+                StrokeKind::Inside,
+            );
+        }
     }
 
     /// A native floating window drew its last body: its end-of-pass IME check, for the Program
@@ -620,6 +630,10 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     }
 }
 
+fn native_track_slider_outline(panel: PanelKind, viewport: egui::ViewportId, alternate_position: bool) -> bool {
+    panel == PanelKind::Timeline && viewport != egui::ViewportId::ROOT && alternate_position
+}
+
 /// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
 /// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
 fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
@@ -644,7 +658,7 @@ mod tests {
     use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
     use craft_ui::layout::{SplitAxis, SplitSize};
 
-    use super::tab_group;
+    use super::{native_track_slider_outline, tab_group};
     use crate::dock::{Layout, PanelKind};
 
     /// The Timeline beside a dock column holding `group`.
@@ -667,5 +681,14 @@ mod tests {
         let entries = [PanelKind::Properties, PanelKind::Program].map(|panel| StackEntry { panel, open: false, height: None }).to_vec();
         let accordion = Layout { root: Some(Node::Stack { entries }), floating: vec![] };
         assert_eq!(tab_group(&accordion, PanelKind::Program), None, "an accordion");
+    }
+
+    #[test]
+    fn alternate_track_slider_outline_is_only_for_a_floating_timeline() {
+        let floating = egui::ViewportId::from_hash_of("floating timeline");
+        assert!(native_track_slider_outline(PanelKind::Timeline, floating, true));
+        assert!(!native_track_slider_outline(PanelKind::Timeline, egui::ViewportId::ROOT, true));
+        assert!(!native_track_slider_outline(PanelKind::Timeline, floating, false));
+        assert!(!native_track_slider_outline(PanelKind::Program, floating, true));
     }
 }
