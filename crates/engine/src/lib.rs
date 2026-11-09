@@ -338,6 +338,9 @@ pub struct EditorState {
     /// and takes a sequence's view from here when it becomes the active one.
     #[serde(default)]
     pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
+    /// Project-scoped Timeline settings, restored even when sequence tabs are not restored.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -900,7 +903,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
-            timeline_ui: filmcraft_project::TimelineUiSettings::default(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -910,6 +913,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
