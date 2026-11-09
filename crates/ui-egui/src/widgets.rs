@@ -112,39 +112,19 @@ fn hot_number_editor(
     arrows_start_from_the_end(ui, edit_id, buf);
     // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
     let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
+    let previous_buf = buf.clone();
+    let previous_cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|state| state.cursor.char_range());
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
     if numeric_only {
-        // A decimal comma is a decimal point in many locales: normalise it instead of eating it
-        // ("1,5" must never become "15"). A leading minus survives for signed ranges. Then only
-        // digits and one decimal point remain, and the cursor moves back over whatever was
-        // removed so typing in the middle of a number cannot make it jump to the end.
-        let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
-        let cursor =
-            egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index))).unwrap_or(0);
-        let mut decimal_seen = false;
-        let mut kept = String::with_capacity(before.len());
-        let mut kept_before_cursor = 0usize;
-        for (i, ch) in before.chars().enumerate() {
-            let ok = if ch.is_ascii_digit() {
-                true
-            } else if ch == '.' && !decimal_seen {
-                decimal_seen = true;
-                true
-            } else {
-                ch == '-' && range.0 < 0.0 && kept.is_empty()
-            };
-            if ok {
-                if i < cursor {
-                    kept_before_cursor += 1;
-                }
-                kept.push(ch);
-            }
-        }
-        if kept != *buf {
-            *buf = kept;
-            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
-                st.store(ui.ctx(), edit_id);
+        // Treat malformed input as one rejected edit: dropping only the bad character would
+        // silently turn a paste such as "1x2" into the different number "12".
+        if let Some(normalized) = normalize_numeric_input(buf, range.0 < 0.0) {
+            *buf = normalized;
+        } else {
+            *buf = previous_buf;
+            if let (Some(mut state), Some(cursor)) = (egui::text_edit::TextEditState::load(ui.ctx(), edit_id), previous_cursor) {
+                state.cursor.set_char_range(Some(cursor));
+                state.store(ui.ctx(), edit_id);
             }
         }
     }
@@ -179,6 +159,28 @@ fn hot_number_editor(
         }
     }
     (r, out)
+}
+
+fn normalize_numeric_input(input: &str, allow_negative: bool) -> Option<String> {
+    // These controls accept plain bounded numeric values, never expressions. A long paste is
+    // invalid and must not allocate a second buffer proportional to hostile input.
+    if input.len() > 32 {
+        return None;
+    }
+    let mut output = String::with_capacity(input.len());
+    let mut decimal_seen = false;
+    for (index, ch) in input.chars().enumerate() {
+        match ch {
+            '0'..='9' => output.push(ch),
+            '.' | ',' if !decimal_seen => {
+                decimal_seen = true;
+                output.push('.');
+            }
+            '-' if allow_negative && index == 0 => output.push(ch),
+            _ => return None,
+        }
+    }
+    Some(output)
 }
 
 /// Up/Down in a hot number's text field step the typed value as Premiere does: by 1, or by the last
@@ -729,6 +731,17 @@ pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: 
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    #[test]
+    fn numeric_input_normalizes_decimal_commas_and_rejects_malformed_pastes() {
+        assert_eq!(normalize_numeric_input("1,5", false).as_deref(), Some("1.5"));
+        assert_eq!(normalize_numeric_input("-12.5", true).as_deref(), Some("-12.5"));
+        assert_eq!(normalize_numeric_input("-12", false), None);
+        assert_eq!(normalize_numeric_input("1x2", false), None);
+        assert_eq!(normalize_numeric_input("1.2.3", false), None);
+        assert_eq!(normalize_numeric_input("1,2.3", false), None);
+        assert_eq!(normalize_numeric_input(&"1".repeat(33), false), None);
+    }
 
     /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
     /// drawn at the top of the Ui (its centre is at y = 11).
