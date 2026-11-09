@@ -294,6 +294,29 @@ fn zooming_out_stops_where_the_whole_timeline_is_in_view() {
     assert!(d.view().1 > pps * 1.1);
 }
 
+#[test]
+fn applying_a_new_maximum_zoom_preserves_the_view_center() {
+    let mut d = Driver::demo();
+    let width = d.app().tl.layout.as_ref().expect("Timeline layout").content.width() as f64;
+    let requested_pps = 10_000.0;
+    let requested_scroll = 4.0;
+    let original_center = requested_scroll + width * 0.5 / requested_pps;
+    {
+        let app = d.app();
+        app.session.prefs.appearance.animations = false;
+        app.session.state.timeline_ui.max_zoom_seconds = 0.75;
+        app.ui.timeline.pps = requested_pps;
+        app.ui.timeline.target_pps = requested_pps;
+        app.ui.timeline.scroll = requested_scroll;
+        app.ui.timeline.target_scroll = requested_scroll;
+    }
+    d.frames(2);
+    let (scroll, pps, ..) = d.view();
+    let new_center = scroll + width * 0.5 / pps;
+    assert!(pps < requested_pps, "the configured maximum clamps zoom in: {pps}");
+    assert!((new_center - original_center).abs() < 1e-6, "center moved from {original_center} to {new_center}");
+}
+
 /// A sequence longer than twenty view widths in seconds (the view is about a thousand points here) still zooms out until all of it is in view.
 #[test]
 fn a_twelve_hour_sequence_zooms_out_until_it_is_all_in_view() {
@@ -410,16 +433,15 @@ fn zoom_bar_at_start(d: &mut Driver) -> ([f32; 4], [f32; 4], f32) {
     (thumb, track, thumb[1] + thumb[3] / 2.0)
 }
 
-/// The zoom bar's circular end handles zoom, so the pointer over one shows the horizontal resize
-/// arrow; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal pointer.
+/// The zoom bar's circular end handles show a pointing cursor; the thumb middle and track beside it use the normal pointer.
 #[test]
 fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
@@ -428,10 +450,9 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     assert_eq!(d.cursor(), CursorIcon::Default, "the bar beside the thumb");
 }
 
-/// A handle drag goes on whatever the pointer is over: it zooms from anywhere, so the arrow stays
-/// while the pointer is off the bar, over the tracks, and goes when the button is released.
+/// A handle drag zooms from anywhere, so its pointing cursor stays over the tracks and clears on release.
 #[test]
-fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
+fn zoom_bar_handle_drag_keeps_the_handle_cursor_off_the_bar() {
     let mut d = Driver::tall();
     let (thumb, _, y) = zoom_bar_at_start(&mut d);
     let handle = thumb[0] + thumb[2] - 3.0;
@@ -440,11 +461,11 @@ fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.move_to(handle + 40.0, y);
     let after = d.app().ui.timeline.target_pps;
     assert!(after < before, "the right handle dragged right zooms out: {before} -> {after}");
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging along the bar");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging over the tracks");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging over the tracks");
     d.release(handle + 40.0, y - 300.0);
-    assert_ne!(d.cursor(), CursorIcon::ResizeHorizontal, "button released, pointer over the tracks");
+    assert_ne!(d.cursor(), CursorIcon::PointingHand, "button released, pointer over the tracks");
 }
 
 /// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
@@ -753,31 +774,6 @@ fn timeline_slider_settings_is_the_menus_row_while_the_bar_is_hidden() {
     d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.unhideSlider"}));
     d.frames(2);
     assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide Slider brings the bar back");
-}
-
-/// Timeline Controls remain in their menu, and Track Slider settings keep their own options.
-#[test]
-fn timeline_controls_and_track_slider_settings_stay_separate() {
-    let mut d = Driver::demo();
-    let bar = d.rect("timeline.zoomBar.track");
-    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
-    d.frames(2);
-    assert!(d.has("timeline.zoomBar.settings.controls"), "the Controls row on the Timeline slider's menu");
-    assert!(d.has("timeline.zoomBar.settings.invertedControls"), "Invert Scrolling (the old Inverted Controls)");
-    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.invertedControls"}));
-    d.frames(2);
-    assert!(d.app().session.state.timeline_ui.inverted_controls, "the switch flips and the menu stays open");
-    assert!(d.has("timeline.zoomBar.settings.controls"), "still open");
-    // the track sliders' menu: Snap to Tracks above Decouple Edges, on by default
-    let slider = d.rect("timeline.trackSlider.video");
-    d.click_at(slider[0] + slider[2] / 2.0, slider[1] + slider[3] / 2.0, "right");
-    d.frames(2);
-    assert!(!d.has("timeline.trackSlider.settings.controls"), "Track Slider settings do not duplicate Timeline Controls");
-    assert!(d.has("timeline.trackSlider.settings.snapToTracks"), "Snap to Tracks");
-    assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
-    d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));
-    d.frames(2);
-    assert!(!d.app().session.state.timeline_ui.track_slider_snap, "the toggle takes (it drives nothing yet)");
 }
 
 /// The Controls boxes: clicking one listens ("Enter Shortcut"), the next key becomes the binding

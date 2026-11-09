@@ -2780,8 +2780,7 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.session.state.timeline_ui.inverted_controls = !inv;
         app.session.project_view_changed();
     }
-    // Snap to Tracks: on by default. It does not drive the sliders yet -- the snap is being
-    // rebuilt -- but the setting is stored and toggled like the others.
+    // Snap to Tracks is on by default and controls snapping when a dragged thumb is released.
     let snap = app.session.state.timeline_ui.track_slider_snap;
     let c = settings_pill_row(ui, &t, row_w, tl!("Snap to Tracks"), egui::Id::unique("timeline-track-slider-snap"), snap);
     app.auto.add("timeline.trackSlider.settings.snapToTracks", c.rect, "Snap to Tracks");
