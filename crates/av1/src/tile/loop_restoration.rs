@@ -1,7 +1,7 @@
 use super::coeffs::inverse_recenter;
 use super::{
     NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS,
-    SGRPROJ_PRJ_SUBEXP_K, SUPERRES_NUM, TileDecoder,
+    SGRPROJ_PRJ_SUBEXP_K, SGRPROJ_XQD_MAX, SGRPROJ_XQD_MIN, SUPERRES_NUM, TileDecoder, WIENER_TAPS_K, WIENER_TAPS_MAX, WIENER_TAPS_MIN,
 };
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
@@ -53,9 +53,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.t.lr.lr_type[plane][idx] = rtype;
         self.t.lr_written[plane].push(idx);
         if rtype == RESTORE_WIENER as u8 {
-            const MIN: [i32; 3] = [-5, -23, -17];
-            const MAX: [i32; 3] = [10, 8, 46];
-            const K: [u32; 3] = [1, 2, 3];
             for pass in 0..2 {
                 let first = if plane > 0 {
                     self.t.lr.lr_wiener[plane][idx][pass][0] = 0;
@@ -64,7 +61,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     0
                 };
                 for j in first..3 {
-                    let v = self.decode_signed_subexp_with_ref_bool(MIN[j], MAX[j] + 1, K[j], self.ref_lr_wiener[plane][pass][j]);
+                    let v = self.decode_signed_subexp_with_ref_bool(
+                        WIENER_TAPS_MIN[j] as i32,
+                        WIENER_TAPS_MAX[j] as i32 + 1,
+                        WIENER_TAPS_K[j] as u32,
+                        self.ref_lr_wiener[plane][pass][j],
+                    );
                     self.t.lr.lr_wiener[plane][idx][pass][j] = v as i8;
                     self.ref_lr_wiener[plane][pass][j] = v;
                 }
@@ -72,14 +74,13 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         } else if rtype == RESTORE_SGRPROJ as u8 {
             let set = self.sd.read_literal(SGRPROJ_PARAMS_BITS as u32) as usize;
             self.t.lr.lr_sgr_set[plane][idx] = set as u8;
-            const MIN: [i32; 2] = [-96, -32];
-            const MAX: [i32; 2] = [31, 95];
             for i in 0..2 {
+                let (min, max) = (SGRPROJ_XQD_MIN[i] as i32, SGRPROJ_XQD_MAX[i] as i32);
                 let radius = SGR_PARAMS[set][i * 2];
                 let v = if radius != 0 {
-                    self.decode_signed_subexp_with_ref_bool(MIN[i], MAX[i] + 1, SGRPROJ_PRJ_SUBEXP_K as u32, self.ref_sgr_xqd[plane][i])
+                    self.decode_signed_subexp_with_ref_bool(min, max + 1, SGRPROJ_PRJ_SUBEXP_K as u32, self.ref_sgr_xqd[plane][i])
                 } else if i == 1 {
-                    ((1 << SGRPROJ_PRJ_BITS) - self.ref_sgr_xqd[plane][0]).clamp(MIN[i], MAX[i])
+                    ((1 << SGRPROJ_PRJ_BITS) - self.ref_sgr_xqd[plane][0]).clamp(min, max)
                 } else {
                     0
                 };
