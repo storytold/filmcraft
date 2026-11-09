@@ -1746,39 +1746,55 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"item": id.0}))
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10,"bin":binId?}"#, always, |s, p| new_generator(
-            s,
-            Generator::BarsAndTone,
-            "Bars and Tone",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64,"bin":binId?}"#, always, |s, p| new_generator(
-            s,
-            Generator::BlackVideo,
-            "Black Video",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5,"bin":binId?}"##, always, |s, p| {
-            let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
-            new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
-        }),
+        cmd!(
+            "file.newBarsAndTone",
+            "Bars and Tone…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=10,"width":u32?,"height":u32?,"name":str?,"bin":binId?}"#,
+            always,
+            |s, p| new_generator(s, Generator::BarsAndTone, "Bars and Tone", Label::Lavender, p)
+        ),
+        cmd!(
+            "file.newBlackVideo",
+            "Black Video…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64,"width":u32?,"height":u32?,"name":str?,"bin":binId?}"#,
+            always,
+            |s, p| new_generator(s, Generator::BlackVideo, "Black Video", Label::Lavender, p)
+        ),
+        cmd!(
+            "file.newColorMatte",
+            "Color Matte…",
+            ["File", "New"],
+            None,
+            r##"{"color":"#rrggbb"?,"seconds":f64=5,"width":u32?,"height":u32?,"name":str?,"bin":binId?}"##,
+            always,
+            |s, p| {
+                let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
+                new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
+            }
+        ),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
-            s,
-            Generator::CountingLeader,
-            "Universal Counting Leader",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
-            s,
-            Generator::TransparentVideo,
-            "Transparent Video",
-            Label::Lavender,
-            p
-        )),
+        cmd!(
+            "file.newCountingLeader",
+            "Universal Counting Leader…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?,"bin":binId?}"#,
+            always,
+            |s, p| new_generator(s, Generator::CountingLeader, "Universal Counting Leader", Label::Lavender, p)
+        ),
+        cmd!(
+            "file.newTransparentVideo",
+            "Transparent Video…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?,"bin":binId?}"#,
+            always,
+            |s, p| new_generator(s, Generator::TransparentVideo, "Transparent Video", Label::Lavender, p)
+        ),
         cmd!(
             "file.importDemoFootage",
             "Demo Footage",
@@ -2097,7 +2113,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"gpuRendering":"off|auto"?,"maxThreads":u32?,"maxBitrateKbps":u32?,"keyframeDistance":u32?,"sdr":bool?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -3690,67 +3706,79 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Effects =================
-        cmd!("effects.apply", "Apply Effect", [], None, r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…"}"#, has_seq, |s, p| {
-            let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;
-            let def = resolve_effect_name(s, p, name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
-            if filmcraft_project::graphic::is_layer_id(def.id) {
-                return Err(bad("effects.apply", "graphic layers are added with graphics.newText / graphics.newShape"));
-            }
-            if matches!(def.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition) {
-                let mut q = p.clone();
-                q["effect"] = json!(def.id);
-                return apply_transition(s, &q, if def.kind == filmcraft_project::EffectKind::VideoTransition { TrackKind::Video } else { TrackKind::Audio });
-            }
-            let clips = clips_p(s, p);
-            if clips.is_empty() {
-                return Err(bad("effects.apply", "select clips first"));
-            }
-            let is_audio = def.kind == filmcraft_project::EffectKind::Audio;
-            // Audio effects belong on audio clips. A video clip in an A/V pair is retargeted to
-            // its linked audio so double-click / drop on the picture still applies Parametric EQ.
-            let clips = if is_audio { audio_effect_targets(s, &clips) } else { clips };
-            if clips.is_empty() {
-                return Err(bad("effects.apply", "audio effects need an audio clip (or a video clip with linked audio)"));
-            }
-            let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
-            let label = format!("Apply {}", def.name);
-            // standard effects run on the clip's source picture, so "auto" points (the centre) are
-            // measured in it, not in the sequence frame
-            let source_sizes: std::collections::BTreeMap<ClipId, (u32, u32)> = s
-                .active_sequence()
-                .map(|q| clips.iter().filter_map(|c| q.find_item(*c).and_then(|(_, i)| s.project.source_size(i.item)).map(|sz| (*c, sz))).collect())
-                .unwrap_or_default();
-            // Answer `{"applied":[{"clip","index","effect"}]}`: where each instance landed, so an
-            // agent can address it (`effects.setParam`, `effects.remove`) without a `sequence_inspect`
-            // round trip, as `timeline.place` answers with its clips (#1545).
-            let applied = s.edit_sequence(&label, |q, _, _| {
-                let mut applied = Vec::new();
-                for t in q.all_tracks_mut() {
-                    if (t.kind == TrackKind::Audio) != is_audio {
-                        continue;
-                    }
-                    for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                        let mut inst = def.instance();
-                        let size = source_sizes.get(&i.id).copied().unwrap_or((fw, fh));
-                        // intrinsic effects (Motion) are laid out in the sequence frame, as `reset_params` does
-                        let frame = if def.intrinsic { (fw, fh) } else { size };
-                        resolve_auto_points(&mut inst, frame, size);
-                        // at the end of the stack, as in Premiere, so the indices already
-                        // handed out (graphics.list effectIndex…) stay valid (#1879); the
-                        // renderer applies the intrinsic ones after the standard ones anyway
-                        i.effects.push(inst);
-                        let pos = i.effects.len() - 1;
-                        applied.push(json!({"clip": i.id.0, "index": pos, "effect": def.id}));
-                    }
+        cmd!(
+            "effects.apply",
+            "Apply Effect",
+            [],
+            None,
+            r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…","clip":id?,"frames":i64?,"edge":"in"|"out"?,"align":"center"|"start"|"end"?,"params":{param:value}?,"reverse":bool?}"#,
+            has_seq,
+            |s, p| {
+                let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;
+                let def = resolve_effect_name(s, p, name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
+                if filmcraft_project::graphic::is_layer_id(def.id) {
+                    return Err(bad("effects.apply", "graphic layers are added with graphics.newText / graphics.newShape"));
                 }
-                // a video effect on only audio clips changes nothing: refuse before the edit commits an empty undo step
-                if applied.is_empty() {
-                    return Err(bad("effects.apply", format!("`{}` does not apply to the selected clips", def.name)));
+                if matches!(def.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition) {
+                    let mut q = p.clone();
+                    q["effect"] = json!(def.id);
+                    return apply_transition(
+                        s,
+                        &q,
+                        if def.kind == filmcraft_project::EffectKind::VideoTransition { TrackKind::Video } else { TrackKind::Audio },
+                    );
                 }
-                Ok(applied)
-            })?;
-            Ok(json!({"applied": applied}))
-        }),
+                let clips = clips_p(s, p);
+                if clips.is_empty() {
+                    return Err(bad("effects.apply", "select clips first"));
+                }
+                let is_audio = def.kind == filmcraft_project::EffectKind::Audio;
+                // Audio effects belong on audio clips. A video clip in an A/V pair is retargeted to
+                // its linked audio so double-click / drop on the picture still applies Parametric EQ.
+                let clips = if is_audio { audio_effect_targets(s, &clips) } else { clips };
+                if clips.is_empty() {
+                    return Err(bad("effects.apply", "audio effects need an audio clip (or a video clip with linked audio)"));
+                }
+                let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+                let label = format!("Apply {}", def.name);
+                // standard effects run on the clip's source picture, so "auto" points (the centre) are
+                // measured in it, not in the sequence frame
+                let source_sizes: std::collections::BTreeMap<ClipId, (u32, u32)> = s
+                    .active_sequence()
+                    .map(|q| clips.iter().filter_map(|c| q.find_item(*c).and_then(|(_, i)| s.project.source_size(i.item)).map(|sz| (*c, sz))).collect())
+                    .unwrap_or_default();
+                // Answer `{"applied":[{"clip","index","effect"}]}`: where each instance landed, so an
+                // agent can address it (`effects.setParam`, `effects.remove`) without a `sequence_inspect`
+                // round trip, as `timeline.place` answers with its clips (#1545).
+                let applied = s.edit_sequence(&label, |q, _, _| {
+                    let mut applied = Vec::new();
+                    for t in q.all_tracks_mut() {
+                        if (t.kind == TrackKind::Audio) != is_audio {
+                            continue;
+                        }
+                        for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
+                            let mut inst = def.instance();
+                            let size = source_sizes.get(&i.id).copied().unwrap_or((fw, fh));
+                            // intrinsic effects (Motion) are laid out in the sequence frame, as `reset_params` does
+                            let frame = if def.intrinsic { (fw, fh) } else { size };
+                            resolve_auto_points(&mut inst, frame, size);
+                            // at the end of the stack, as in Premiere, so the indices already
+                            // handed out (graphics.list effectIndex…) stay valid (#1879); the
+                            // renderer applies the intrinsic ones after the standard ones anyway
+                            i.effects.push(inst);
+                            let pos = i.effects.len() - 1;
+                            applied.push(json!({"clip": i.id.0, "index": pos, "effect": def.id}));
+                        }
+                    }
+                    // a video effect on only audio clips changes nothing: refuse before the edit commits an empty undo step
+                    if applied.is_empty() {
+                        return Err(bad("effects.apply", format!("`{}` does not apply to the selected clips", def.name)));
+                    }
+                    Ok(applied)
+                })?;
+                Ok(json!({"applied": applied}))
+            }
+        ),
         cmd!("effects.remove", "Remove Effect", [], None, r#"{"clip":id,"index":n}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.remove", "need `clip`"))?;
             let idx = u64_p(p, "index").ok_or_else(|| bad("effects.remove", "need `index`"))? as usize;
