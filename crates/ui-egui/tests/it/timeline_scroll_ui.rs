@@ -158,6 +158,7 @@ fn none() -> Value {
 #[test]
 fn ctrl_wheel_moves_the_tracks_up_and_down() {
     let mut d = Driver::tall();
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     // over the video tracks: wheeling up brings the higher tracks in (Video 1 is at the bottom)
     d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the video tracks moved, nothing else");
@@ -178,7 +179,9 @@ fn ctrl_wheel_moves_the_tracks_up_and_down() {
 #[test]
 fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     let mut d = Driver::tall();
-    // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    // Horizontal scrolling assigns the plain wheel to time; a point of wheel is a point of
+    // Timeline, and the tracks stay put.
     d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "100 points at 50 points a second: 2 s later");
     d.wheel(0.8, 0.0, 250.0, none());
@@ -203,12 +206,8 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0));
 }
-
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
-#[test]
 
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {

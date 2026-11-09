@@ -297,7 +297,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
             let time = if w.shift {
                 Some(wdy * 10.0)
-            } else if w.command == swap {
+            } else if w.command != swap {
                 Some(wdy)
             } else {
                 None
