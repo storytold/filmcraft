@@ -165,19 +165,21 @@ fn screen_px_to_ui(px: (i32, i32), pixels_per_point: f32, content_min: egui::Pos
 mod screen_px_tests {
     use super::{os_drop_pointer, screen_px_to_ui};
 
-    // macOS points are divided by the UI zoom, not the display scale (#4296 review).
+    /// macOS points are divided by the UI zoom, not the display scale (#4296 review).
     #[test]
     fn points_are_divided_by_the_ui_zoom_not_the_display_scale() {
         let p = os_drop_pointer(Some((1300, 900)), true, 2.0, 3.0, Some(egui::pos2(100.0, 50.0)), None);
         assert_eq!(p.map(|p| (p.x, p.y)), Some((550.0, 400.0)));
     }
 
+    /// Physical pixels are divided by the display scale, not the UI zoom.
     #[test]
     fn pixels_are_divided_by_the_display_scale_not_the_ui_zoom() {
         let p = os_drop_pointer(Some((1950, 1350)), false, 2.0, 3.0, Some(egui::pos2(100.0, 50.0)), None);
         assert_eq!(p.map(|p| (p.x, p.y)), Some((550.0, 400.0)));
     }
 
+    /// With no OS cursor (or no window origin) the drop uses `last`.
     #[test]
     fn no_os_cursor_falls_back_to_last() {
         let last = Some(egui::pos2(7.0, 8.0));
@@ -186,19 +188,21 @@ mod screen_px_tests {
         assert_eq!(os_drop_pointer(Some((1, 2)), false, 1.0, 1.0, None, last), last);
     }
 
-    // A window on a display left of the main one has a negative origin (#4296 review).
+    /// A window on a display left of the main one has a negative origin (#4296 review).
     #[test]
     fn maps_a_window_left_of_the_main_display() {
         let p = screen_px_to_ui((-1000, 300), 1.0, egui::pos2(-1440.0, 0.0));
         assert_eq!((p.x, p.y), (440.0, 300.0));
     }
 
+    /// Screen pixels map into the window relative to its content origin.
     #[test]
     fn maps_screen_pixels_into_the_window() {
         let p = screen_px_to_ui((1300, 900), 2.0, egui::pos2(100.0, 50.0));
         assert_eq!((p.x, p.y), (550.0, 400.0));
     }
 
+    /// A zero, negative or non-finite scale never yields a non-finite position.
     #[test]
     fn a_hostile_scale_does_not_divide_by_zero() {
         for ppp in [0.0, -1.0, f32::NAN, f32::INFINITY] {
