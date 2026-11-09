@@ -160,6 +160,35 @@ fn hsl_refine_denoise_removes_speckles() {
     assert!((0.3..0.7).contains(&m(&half, 3, 3)), "{}", m(&half, 3, 3));
 }
 
+/// #4596: Hue Range is the key's full width around Hue Center. 180° keys ±90°, so cyan (180°
+/// from red) is out; 360° keys every hue.
+#[test]
+fn hsl_hue_range_360_keys_every_hue() {
+    let hues: [[f32; 4]; 6] =
+        [[1.0, 0.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 1.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 1.0, 1.0]];
+    let mask = |range: f64| {
+        let mut img = Image::new(hues.len(), 1);
+        for (i, c) in hues.iter().enumerate() {
+            img.px[i * 4..i * 4 + 4].copy_from_slice(c);
+        }
+        let e = lumetri(&[
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", F(0.0)),
+            ("hsl_hue_range", F(range)),
+            ("hsl_sat_min", F(0.0)),
+            ("hsl_luma_min", F(0.0)),
+            ("hsl_luma_max", F(100.0)),
+            ("hsl_show_mask", ParamValue::Choice(3)),
+        ]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+        (0..hues.len()).map(|i| filmcraft_color::linear_to_srgb(img.get(i, 0)[1])).collect::<Vec<f32>>()
+    };
+    let half = mask(180.0);
+    assert!(half[0] > 0.95 && half[3] < 0.05, "180°: red in, cyan out: {half:?}");
+    let all = mask(360.0);
+    assert!(all.iter().all(|m| *m > 0.95), "360°: every hue keyed: {all:?}");
+}
+
 #[test]
 fn hsl_refine_blur_softens_the_key() {
     let soft = |img: &Image| (0..40).filter(|&x| (0.05..0.95).contains(&img.get(x, 20)[1])).count();
