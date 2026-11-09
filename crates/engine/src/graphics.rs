@@ -833,7 +833,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Vertical Text",
             &["Graphics and Titles", "New Layer"],
             None,
-            r#"{"text":str="New Text","position":[x,y]?,"box":[w,h]?,"clip":id?,"newClip":bool?,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"text":str="New Text","position":[x,y]?,"clip":id?,"newClip":bool?,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let mut p = if p.is_object() { p.clone() } else { json!({}) };

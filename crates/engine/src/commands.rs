@@ -3711,7 +3711,7 @@ fn build() -> Vec<CommandSpec> {
             "Apply Effect",
             [],
             None,
-            r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…","clip":id?,"frames":i64?,"edge":"in"|"out"?,"align":"center"|"start"|"end"?,"params":{param:value}?,"reverse":bool?}"#,
+            r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…","clip":id?,"frames":i64?,"edge":"in"|"out"?,"align":"center"|"start"|"end"?,"params":{param:value}?,"reverse":bool? (frames, edge, align, params and reverse are for a transition)}"#,
             has_seq,
             |s, p| {
                 let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;

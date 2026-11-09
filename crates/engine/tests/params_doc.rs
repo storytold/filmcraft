@@ -61,12 +61,9 @@ fn unknown_params_by_the_params_doc() {
             json!({"path": "a.mp4", "gpuRendering": "off", "maxThreads": 2, "maxBitrateKbps": 9000, "keyframeDistance": 48, "sdr": true}),
             none,
         ),
-        (
-            "vertical text",
-            "graphics.newVerticalText",
-            json!({"text": "A", "newClip": true, "box": [10, 10], "font": "x", "fontStyle": "Bold", "track": 1}),
-            none,
-        ),
+        ("vertical text", "graphics.newVerticalText", json!({"text": "A", "newClip": true, "font": "x", "fontStyle": "Bold", "track": 1}), none),
+        // vertical text has no paragraph box: `graphics.newText` applies `box` only when not vertical
+        ("box on vertical text", "graphics.newVerticalText", json!({"text": "A", "box": [10, 10]}), &["box"]),
         ("template", "file.newProjectFromTemplate", json!({"template": "t", "force": true}), none),
     ];
     for (what, id, params, want) in rows {
