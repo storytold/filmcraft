@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use craft_ui::docking::{
     Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Node, ResizeEdge, WindowKind, Workspace,
 };
-use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{Rangef, Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
 use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
@@ -471,13 +471,12 @@ fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
     style
 }
 
-/// The focused panel's top edge, drawn inside `frame` across the selected `tab` only, so the line
-/// under the tab strip marks that tab, clamped to the frame. `None` when the tab's rect is not
-/// known yet, or when the tab does not overlap the frame horizontally (touching counts as none).
-fn focus_tab_edge(frame: Rect, tab: Option<Rect>) -> Option<[egui::Pos2; 2]> {
+/// The span of the focused panel's top edge: the selected `tab`'s, clamped to `frame`, so the line
+/// under the tab strip marks that tab. `None` when the tab's rect is not known yet, or when the
+/// tab does not overlap the frame horizontally (touching counts as none).
+fn focus_tab_edge(frame: Rect, tab: Option<Rect>) -> Option<Rangef> {
     let (x0, x1) = (tab?.left().max(frame.left()), tab?.right().min(frame.right()));
-    let y = frame.top() + 0.5;
-    (x0 < x1).then(|| [egui::pos2(x0, y), egui::pos2(x1, y)])
+    (x0 < x1).then(|| Rangef::new(x0, x1))
 }
 
 /// The clip that keeps the focus outline's other three edges but drops its top one: `frame` below
@@ -505,6 +504,7 @@ struct FilmContent<'a> {
 }
 
 impl DockContent<PanelKind> for FilmContent<'_> {
+    /// Draws `panel`'s body in its frame, then the focus outline when it is the focused panel.
     fn body(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
         let t = self.tokens;
         let frame = ui.max_rect();
@@ -531,11 +531,18 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             // The outline's top edge would run under the whole tab strip: clip it away and redraw it
             // across the selected tab only (#4432). The other three edges stay one rect for #1075.
             let below_top = focus_clip_below_top(frame, ui.ctx().pixels_per_point());
-            ui.painter().with_clip_rect(below_top.intersect(ui.clip_rect())).rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
-            // hit_rects is last frame's, so right after a tab switch the top edge lags one frame.
-            let tab = DockArea::<PanelKind>::hit_rects(ui.ctx(), area_id()).into_iter().find_map(|(hit, r)| (hit == Hit::Tab(*panel)).then_some(r));
-            if let Some(edge) = focus_tab_edge(frame, tab) {
-                ui.painter().line_segment(edge, Stroke::new(1.0, t.focus));
+            let stroke = Stroke::new(1.0, t.focus);
+            ui.painter().with_clip_rect(below_top.intersect(ui.clip_rect())).rect_stroke(frame, 0.0, stroke, StrokeKind::Inside);
+            // Read in this viewport, so a panel in its own OS window finds its tab too. The tab's
+            // rect is this pass's once the strip is drawn, else last pass's: a tab switch can lag a frame.
+            let tab = ui.ctx().read_response(DockArea::<PanelKind>::hit_id(area_id(), &Hit::Tab(*panel))).map(|r| r.rect);
+            if let Some(span) = focus_tab_edge(frame, tab) {
+                let y = frame.top() + 0.5;
+                ui.painter().line_segment([egui::pos2(span.min, y), egui::pos2(span.max, y)], stroke);
+                // A tab flush with the frame: redraw the side edge's clipped-away top so the corner meets.
+                for x in [frame.left() + 0.5, frame.right() - 0.5].into_iter().filter(|x| span.contains(*x)) {
+                    ui.painter().line_segment([egui::pos2(x, frame.top()), egui::pos2(x, below_top.top())], stroke);
+                }
             }
         }
     }
@@ -659,20 +666,22 @@ mod tests {
     use super::{focus_clip_below_top, focus_tab_edge, tab_group};
     use crate::dock::{Layout, PanelKind};
 
+    /// The top edge spans the selected tab, and there is none before the tab's rect is known.
     #[test]
     fn focus_outline_top_edge_spans_only_the_selected_tab() {
         let frame = egui::Rect::from_min_max(egui::pos2(0.0, 32.0), egui::pos2(300.0, 200.0));
         let tab = egui::Rect::from_min_max(egui::pos2(60.0, 0.0), egui::pos2(120.0, 32.0));
-        let [a, b] = focus_tab_edge(frame, Some(tab)).expect("a tab gives a top edge");
-        assert_eq!((a.x, b.x, a.y, b.y), (60.0, 120.0, 32.5, 32.5));
+        let span = focus_tab_edge(frame, Some(tab)).expect("a tab gives a top edge");
+        assert_eq!((span.min, span.max), (60.0, 120.0));
         assert!(focus_tab_edge(frame, None).is_none(), "no tab, no top edge");
     }
 
+    /// A tab past either side of the frame is clamped to it; one off the frame or zero-width has no edge.
     #[test]
     fn focus_outline_top_edge_is_clamped_to_the_frame() {
         let frame = egui::Rect::from_min_max(egui::pos2(100.0, 32.0), egui::pos2(300.0, 200.0));
         let tab = |x0: f32, x1: f32| egui::Rect::from_min_max(egui::pos2(x0, 0.0), egui::pos2(x1, 32.0));
-        let xs = |t| focus_tab_edge(frame, Some(t)).map(|[a, b]| (a.x, b.x));
+        let xs = |t| focus_tab_edge(frame, Some(t)).map(|span| (span.min, span.max));
         assert_eq!(xs(tab(80.0, 160.0)), Some((100.0, 160.0)), "past the left edge");
         assert_eq!(xs(tab(250.0, 340.0)), Some((250.0, 300.0)), "past the right edge");
         assert_eq!(xs(tab(50.0, 350.0)), Some((100.0, 300.0)), "past both edges");
@@ -682,6 +691,7 @@ mod tests {
         assert_eq!(xs(tab(150.0, 150.0)), None, "zero width");
     }
 
+    /// The clip starts one point plus one physical pixel below the frame top at common UI scales.
     #[test]
     fn focus_outline_clip_drops_the_top_edge_plus_one_physical_pixel() {
         let frame = egui::Rect::from_min_max(egui::pos2(10.0, 32.0), egui::pos2(300.0, 200.0));
