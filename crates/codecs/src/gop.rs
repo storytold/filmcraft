@@ -320,6 +320,28 @@ const HARD_DECODERS: usize = 8;
 /// nobody was looking at.
 pub const FRAME_BUDGET: usize = 1 << 30;
 
+/// Per-cache frame budget set by the host process (bytes; `0` = the built-in
+/// [`FRAME_CACHE_CEILING`]).
+///
+/// A media player wants a small window around the playhead, not the editor's per-clip ceiling:
+/// 384 MB of decoded frames plus the decoder working set and the UI is what a small machine feels
+/// as "almost froze". Set once at start-up, before the first source is opened.
+static CACHE_BUDGET: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets the per-cache frame budget for every [`GopCache`] created from now on. `0` restores the
+/// built-in ceiling; values above it are clamped to it.
+pub fn set_frame_cache_budget(bytes: usize) {
+    CACHE_BUDGET.store(bytes, Ordering::Relaxed);
+}
+
+/// The budget configured by the host, `None` while it is unset.
+fn configured_budget() -> Option<usize> {
+    match CACHE_BUDGET.load(Ordering::Relaxed) {
+        0 => None,
+        n => Some(n.min(FRAME_CACHE_CEILING)),
+    }
+}
+
 /// What the caches of a process share: the cap on live decoders and the frame budget.
 struct Pool {
     caches: Mutex<Vec<Weak<Shared>>>,
@@ -517,6 +539,9 @@ pub struct GopCache {
     /// The container's clean aperture, cut from every frame before the rotation.
     crop: Option<Region>,
     budget: usize,
+    /// `budget` came from [`set_frame_cache_budget`] and is a hard cap: the small-frame reserve
+    /// may not raise it.
+    hard_cap: bool,
 }
 
 /// The cache reserves room for this many small frames: a frame-threaded decoder runs up to ~2x
@@ -610,10 +635,11 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
+        let budget = configured_budget();
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: budget.unwrap_or(FRAME_CACHE_CEILING), hard_cap: budget.is_some() }
     }
 
-    /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
+    /// Turn every decoded frame clockwise by `quarter_turns` Ã— 90Â° (the container's display
     /// rotation, e.g. portrait phone video stored landscape).
     pub fn with_rotation(mut self, quarter_turns: u8) -> Self {
         self.rotation = quarter_turns % 4;
@@ -677,10 +703,15 @@ impl GopCache {
         done
     }
 
-    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it. A
+    /// budget set by the host is a hard cap, so the reserve does not raise it either.
     fn cache_budget(&self, frame_bytes: usize) -> usize {
+        let ceiling = self.budget.min(FRAME_CACHE_CEILING);
+        if self.hard_cap {
+            return ceiling;
+        }
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+        ceiling.max(reserve)
     }
 
     /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).
@@ -744,7 +775,7 @@ impl GopCache {
     /// The frame presented at `target` (track units, clamped to the stream).
     ///
     /// Decoders may run slices on rayon, and a rayon thread waiting inside a decode can pick up
-    /// another render job that asks this same source for a frame — on the thread that holds this
+    /// another render job that asks this same source for a frame â€” on the thread that holds this
     /// cache's lock. Such a nested request must not lock again (deadlock): it decodes the frame
     /// with a private decoder instead ([`Self::private_frame`]).
     pub fn frame(&self, s: &dyn VideoSamples, target: i64) -> crate::Result<Arc<VideoFrame>> {
@@ -756,7 +787,7 @@ impl GopCache {
     /// (no other picture depends on them, so the wanted frame decodes exactly as it would
     /// otherwise; a later request for a skipped frame re-seeks).
     ///
-    /// Inside [`filmcraft_media::cancel::with_draft`]`(true, …)` the decoder runs in draft mode
+    /// Inside [`filmcraft_media::cancel::with_draft`]`(true, â€¦)` the decoder runs in draft mode
     /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
     /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
