@@ -590,6 +590,14 @@ fn visible_items(items: &[TrackItem], visible: (Tick, Tick), previewing: bool) -
     if previewing {
         return items;
     }
+    // The binary searches below are valid only while both starts and ends are nondecreasing
+    // (Track::check keeps that for edits, but a load only checks value bounds, so a legacy
+    // file can break either). Verify both in one pass; on a broken track, fall back to
+    // inspecting every item rather than trusting a wrong boundary that could drop a visible
+    // clip or include an invisible one.
+    if !items.iter().is_sorted_by(|a, b| a.start <= b.start && a.end() <= b.end()) {
+        return items;
+    }
     let lo = items.partition_point(|i| i.end() < visible.0);
     let hi = items.partition_point(|i| i.start <= visible.1);
     items.get(lo..hi).unwrap_or(items)
@@ -1427,7 +1435,8 @@ mod overlay_paint_count_tests {
 /// `visible_items` replaces a scan of every clip on a track with two binary searches. The drawn
 /// output must be exactly the clips the view covers, a drag preview must still see every clip
 /// (a dragged clip is not where its stored `start` says), and a project that breaks the
-/// sorted-ends invariant must fall back rather than panic on crossed window bounds.
+/// sorted-start or sorted-ends invariant must fall back rather than drop a visible clip or
+/// panic on crossed window bounds.
 #[cfg(test)]
 mod visible_items_tests {
     use super::overlay_paint_count_tests::demo;
@@ -1437,19 +1446,24 @@ mod visible_items_tests {
         Tick::from_seconds_f64(s)
     }
 
-    /// Five clips on one track: 0–5, 10–15, 20–100, 110–115, 120–125 seconds.
-    fn five() -> Vec<TrackItem> {
+    /// Clips on one track with the given start/duration pairs, in that order.
+    fn make(pairs: &[(f64, f64)]) -> Vec<TrackItem> {
         let (_, seq, _) = demo();
         let base = seq.all_tracks().flat_map(|tr| &tr.items).next().cloned().expect("the demo project has clips");
-        [(0.0, 5.0), (10.0, 5.0), (20.0, 80.0), (110.0, 5.0), (120.0, 5.0)]
-            .into_iter()
+        pairs
+            .iter()
             .map(|(start, dur)| {
                 let mut it = base.clone();
-                it.start = t(start);
-                it.duration = t(dur);
+                it.start = t(*start);
+                it.duration = t(*dur);
                 it
             })
             .collect()
+    }
+
+    /// Five clips on one track: 0–5, 10–15, 20–100, 110–115, 120–125 seconds.
+    fn five() -> Vec<TrackItem> {
+        make(&[(0.0, 5.0), (10.0, 5.0), (20.0, 80.0), (110.0, 5.0), (120.0, 5.0)])
     }
 
     fn starts(items: &[TrackItem]) -> Vec<Tick> {
@@ -1485,5 +1499,23 @@ mod visible_items_tests {
         items[3].duration = t(-200.0);
         let all = visible_items(&items, (t(105.0), t(108.0)), false);
         assert_eq!(all.len(), items.len(), "falls back to inspecting every item");
+    }
+
+    #[test]
+    fn overlapping_clips_whose_ends_are_not_sorted_stay_visible() {
+        // 0–100 and 10–15 overlap, so ends (100, 15) are not nondecreasing; the long clip
+        // spans a 50–60 s view and must not be dropped by the lower-bound search
+        let items = make(&[(0.0, 100.0), (10.0, 5.0)]);
+        let all = visible_items(&items, (t(50.0), t(60.0)), false);
+        assert_eq!(all.len(), items.len(), "the overlapping long clip stays visible");
+    }
+
+    #[test]
+    fn unordered_starts_fall_back_instead_of_dropping_a_visible_clip() {
+        // starts 10, 80, 20 are not nondecreasing; the 20–100 clip overlaps a 30–50 s view
+        // and must not be dropped by the upper-bound search
+        let items = make(&[(10.0, 30.0), (80.0, 10.0), (20.0, 80.0)]);
+        let all = visible_items(&items, (t(30.0), t(50.0)), false);
+        assert_eq!(all.len(), items.len(), "every overlapping clip stays visible");
     }
 }
