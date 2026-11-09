@@ -12,13 +12,17 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = filmcraft_testkit::fixtures::workspace_root().join("target/packet-copy-tests").join(format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
+        let base = filmcraft_testkit::fixtures::workspace_root().join("target/packet-copy-tests");
+        std::fs::create_dir_all(&base).unwrap();
+        for _ in 0..1000 {
+            let root = base.join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::create_dir(&root) {
+                Ok(()) => return Self(root),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("create test scratch directory: {e}"),
+            }
+        }
+        panic!("no fresh scratch directory available")
     }
     fn name(&self, name: &str) -> String {
         self.0.join(name).to_string_lossy().into_owned()
@@ -103,11 +107,33 @@ impl filmcraft_media::MediaSource for MetadataOnly {
         panic!("copy requested decoded audio");
     }
 }
-fn metadata_sources(p: &Project) -> SourceMap {
-    let mut m = SourceMap::default();
+struct CopySources {
+    decoded: SourceMap,
+    paths: std::collections::BTreeMap<ItemId, String>,
+}
+impl filmcraft_render::SourceProvider for CopySources {
+    fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
+        filmcraft_render::SourceProvider::source(&self.decoded, item)
+    }
+    fn copy_file(&self, item: ItemId, max_bytes: u64) -> Option<std::io::Result<std::fs::File>> {
+        let path = self.paths.get(&item)?;
+        Some((|| {
+            let metadata = std::fs::metadata(path)?;
+            if !metadata.is_file() || metadata.len() > max_bytes {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "source outside budget"));
+            }
+            std::fs::File::open(path)
+        })())
+    }
+}
+fn metadata_sources(p: &Project) -> CopySources {
+    let mut m = CopySources { decoded: SourceMap::default(), paths: Default::default() };
     for (key, item) in &p.items {
         if let Some(media) = item.as_media() {
-            m.0.insert(*key, Arc::new(MetadataOnly(media.info.clone())));
+            m.decoded.0.insert(*key, Arc::new(MetadataOnly(media.info.clone())));
+            if let MediaRef::File { path } = &media.media {
+                m.paths.insert(*key, path.clone());
+            }
         }
     }
     m
@@ -140,6 +166,7 @@ fn compressed_packets_are_copied_exactly_without_a_source_decoder() {
         assert_eq!(report.frames, 24);
         assert_eq!(progress.done.load(Ordering::Relaxed), 24);
         assert!(progress.finished.load(Ordering::Relaxed));
+        let source_before = std::fs::read(&source).unwrap();
         let expected = payloads(&source);
         let actual = payloads(&settings.path);
         assert_eq!(actual, [expected.clone(), expected].concat());
@@ -152,16 +179,18 @@ fn compressed_packets_are_copied_exactly_without_a_source_decoder() {
         }
         for (i, s) in t.samples.iter().enumerate() {
             let original = &st.samples[i % 12];
-            assert_eq!(s.dts, i as i64 * rate.den);
+            let step = i64::from(st.timescale) * rate.den / rate.num;
+            assert_eq!(s.dts, i as i64 * step);
             assert_eq!(s.pts, s.dts + original.pts - original.dts);
-            assert_eq!(s.duration, rate.den as u32);
+            assert_eq!(s.duration, (i64::from(st.timescale) * rate.den / rate.num) as u32);
         }
         assert_eq!(t.edit_offset, st.edit_offset);
         let bytes = std::fs::read(&settings.path).unwrap();
         assert!(bytes.windows(4).position(|s| s == b"moov").unwrap() < bytes.windows(4).position(|s| s == b"mdat").unwrap());
         // Own decoder must also read every copied picture and retain the source display.
         let decoded = filmcraft_codecs::open_bytes("copy.mp4", bytes.into()).unwrap();
-        let original = filmcraft_codecs::open_bytes("source.mp4", std::fs::read(source).unwrap().into()).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), source_before);
+        let original = filmcraft_codecs::open_bytes("source.mp4", source_before.into()).unwrap();
         for i in 0..24 {
             let req = filmcraft_media::FrameRequest::full(rate.tick_of(i));
             let src = filmcraft_media::FrameRequest::full(rate.tick_of(i % 12));
@@ -185,7 +214,10 @@ fn strict_mode_rejects_edits_and_does_not_create_destination() {
         match case {
             0 => q.video_tracks[0].items[0].speed = 0.5,
             1 => q.video_tracks[0].items[0].source_in = FrameRate::FPS_24.tick_of(1),
-            2 => q.video_tracks[0].items[0].duration = FrameRate::FPS_24.tick_of(11),
+            2 => {
+                q.video_tracks[0].items[0].duration = FrameRate::FPS_24.tick_of(11);
+                q.video_tracks[0].items[1].start = FrameRate::FPS_24.tick_of(11);
+            }
             3 => q.video_tracks[0].items[1].start = FrameRate::FPS_24.tick_of(13),
             4 => s.include_audio = true,
             5 => s.scale = 0.5,
@@ -208,7 +240,8 @@ fn strict_mode_rejects_edits_and_does_not_create_destination() {
             }
         }
         let err = export(&Arc::new(p.clone()), seq, &s, &metadata_sources(&p), &Progress::default()).unwrap_err();
-        assert!(err.to_string().contains("copyRequired["), "{case}: {err}");
+        let expected = ["edit", "edit", "trim", "timeline", "format", "conversion", "conversion", "transform", "conversion", "transform", "effects"][case];
+        assert!(matches!(&err, ExportError::CopyIneligible { code, .. } if *code == expected), "{case}: {err}");
         assert!(!Path::new(&s.path).exists());
     }
 }
@@ -236,7 +269,7 @@ fn strict_mode_cancellation_and_stepped_host_never_fall_back_to_render() {
     progress.cancel.store(true, Ordering::Relaxed);
     assert!(matches!(export(&Arc::new(p.clone()), seq, &s, &metadata_sources(&p), &progress), Err(ExportError::Cancelled)));
     assert!(!Path::new(&s.path).exists());
-    assert!(Exporter::new(Arc::new(p), seq, &s, &Progress::default()).is_err());
+    assert!(matches!(Exporter::new(Arc::new(p), seq, &s, &Progress::default()), Err(ExportError::CopyIneligible { code: "host", .. })));
 }
 
 #[test]
@@ -292,12 +325,109 @@ fn strict_copy_rejects_unknown_container_color_signaling() {
     let root = Scratch::new();
     let (p, seq, source) = fixture(&root, FrameRate::FPS_24);
     let mut bytes = std::fs::read(&source).unwrap();
-    let color = bytes.windows(8).position(|b| b == b"colrnclx").unwrap();
+    let color = bytes.windows(8).position(|b| b == b"colrnclx").expect("native encoder fixture carries an nclx color box");
     // Unspecified primaries cannot prove compatibility with a Rec.709 export.
     bytes[color + 8..color + 10].copy_from_slice(&2u16.to_be_bytes());
     std::fs::write(source, bytes).unwrap();
     let settings = settings(&root);
     let result = export(&Arc::new(p.clone()), seq, &settings, &metadata_sources(&p), &Progress::default());
     assert!(matches!(result, Err(ExportError::CopyIneligible { code: "color", .. })));
+    assert!(!Path::new(&settings.path).exists());
+}
+
+#[test]
+fn strict_copy_preserves_batch_progress_ownership() {
+    let root = Scratch::new();
+    let (p, seq, _) = fixture(&root, FrameRate::FPS_24);
+    let progress = Progress::default();
+    progress.total.store(100, Ordering::Relaxed);
+    progress.done.store(10, Ordering::Relaxed);
+    progress.set_status("batch-owned status");
+    let settings = ExportSettings { part_of_batch: true, ..settings(&root) };
+    export(&Arc::new(p.clone()), seq, &settings, &metadata_sources(&p), &progress).unwrap();
+    assert_eq!(progress.total.load(Ordering::Relaxed), 100);
+    assert_eq!(progress.done.load(Ordering::Relaxed), 34);
+    assert!(!progress.finished.load(Ordering::Relaxed));
+    assert_eq!(*progress.status.lock().unwrap(), "batch-owned status");
+}
+
+#[test]
+fn a_decoded_source_without_native_approval_does_not_authorize_copying() {
+    let root = Scratch::new();
+    let (p, seq, _) = fixture(&root, FrameRate::FPS_24);
+    let sources = metadata_sources(&p).decoded;
+    let settings = settings(&root);
+    assert!(matches!(export(&Arc::new(p), seq, &settings, &sources, &Progress::default()), Err(ExportError::CopyIneligible { code: "media", .. })));
+    assert!(!Path::new(&settings.path).exists());
+}
+
+#[test]
+fn approved_file_handle_overrides_the_stored_project_path() {
+    let root = Scratch::new();
+    let (mut p, seq, _) = fixture(&root, FrameRate::FPS_24);
+    let sources = metadata_sources(&p);
+    for item in p.items.values_mut() {
+        if let Some(m) = item.as_media_mut() {
+            m.media = MediaRef::File { path: "not-a-cwd-relative-file.mp4".into() };
+        }
+    }
+    let settings = settings(&root);
+    assert_eq!(export(&Arc::new(p), seq, &settings, &sources, &Progress::default()).unwrap().copied_video_frames, 24);
+}
+
+#[test]
+fn unrelated_existing_destination_is_preserved_and_typed() {
+    let root = Scratch::new();
+    let (p, seq, _) = fixture(&root, FrameRate::FPS_24);
+    let settings = settings(&root);
+    std::fs::write(&settings.path, b"sentinel").unwrap();
+    assert!(matches!(
+        export(&Arc::new(p.clone()), seq, &settings, &metadata_sources(&p), &Progress::default()),
+        Err(ExportError::CopyIneligible { code: "destination", .. })
+    ));
+    assert_eq!(std::fs::read(&settings.path).unwrap(), b"sentinel");
+}
+
+#[test]
+fn strict_settings_validation_rejects_without_resolving_media() {
+    for case in 0..12 {
+        let mut s = ExportSettings { include_audio: false, video_mode: VideoMode::CopyRequired, ..Default::default() };
+        match case {
+            0 => s.format = Format::ProRes,
+            1 => s.include_audio = true,
+            2 => s.scale = 0.5,
+            3 => s.sdr = true,
+            4 => s.alpha = true,
+            5 => s.burn_captions = true,
+            6 => s.h264_intra_only = true,
+            7 => s.h264_level = Some(40),
+            8 => s.caption_sidecar = Some("srt".into()),
+            9 => s.effects.timecode_overlay.enabled = true,
+            10 => s.multiplexer = Multiplexer::Mov,
+            _ => s.sink = Some(OutputSink(Arc::new(|_, _| Ok(())))),
+        }
+        let code = if matches!(case, 0 | 1 | 10) {
+            "format"
+        } else if case == 11 {
+            "destination"
+        } else {
+            "conversion"
+        };
+        assert!(matches!(s.validate(), Err(ExportError::CopyIneligible { code: got, .. }) if got == code), "case {case}");
+    }
+}
+
+#[test]
+fn each_media_identity_requires_native_approval_even_with_the_same_stored_path() {
+    let root = Scratch::new();
+    let (mut p, seq, _) = fixture(&root, FrameRate::FPS_24);
+    let allowed = p.sequence(seq).unwrap().video_tracks[0].items[0].item;
+    let kind = p.items.get(&allowed).unwrap().kind.clone();
+    let denied = p.add_item("denied", Label::Iris, kind, None);
+    p.sequence_mut(seq).unwrap().video_tracks[0].items[1].item = denied;
+    let mut sources = metadata_sources(&p);
+    sources.paths.remove(&denied);
+    let settings = settings(&root);
+    assert!(matches!(export(&Arc::new(p), seq, &settings, &sources, &Progress::default()), Err(ExportError::CopyIneligible { code: "media", .. })));
     assert!(!Path::new(&settings.path).exists());
 }

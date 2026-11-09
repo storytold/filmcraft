@@ -152,6 +152,7 @@ pub struct Report {
     /// Compressed source pictures copied without rendering or encoding.
     pub copied_video_frames: u64,
     pub path: String,
+    /// Total output pictures; `copied_video_frames` is the copied subset.
     pub frames: u64,
     pub seconds: f64,
     pub bytes: u64,

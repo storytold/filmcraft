@@ -131,6 +131,13 @@ pub trait Services: Send + Sync {
     fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
         None
     }
+    /// Native file access explicitly authorized for compressed export. Unlike a
+    /// decoded source, an offline slate must never satisfy this capability.
+    /// Hosts without native access deny it by default.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file(&self, _path: &str, _max_bytes: u64) -> Option<std::io::Result<std::fs::File>> {
+        None
+    }
     /// File names in a directory (image sequence detection). `None`: the host cannot list
     /// directories; sequences are then found by probing consecutive frame numbers.
     fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
@@ -204,6 +211,22 @@ impl Services for FsServices {
     #[cfg(any(unix, windows))]
     fn reader(&self, path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
         Some(filmcraft_media::reader::FileReader::open(std::path::Path::new(path)).map(|r| std::sync::Arc::new(r) as filmcraft_media::SharedReader))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file(&self, path: &str, max_bytes: u64) -> Option<std::io::Result<std::fs::File>> {
+        Some((|| {
+            let check = |m: std::fs::Metadata| {
+                if !m.is_file() || m.len() > max_bytes {
+                    Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "copy source must be a regular file within the size budget"))
+                } else {
+                    Ok(())
+                }
+            };
+            check(std::fs::metadata(path)?)?;
+            let file = std::fs::File::open(path)?;
+            check(file.metadata()?)?;
+            Ok(file)
+        })())
     }
     fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<media_browser::DirEntry>>> {
         Some(media_browser::std_list_entries(dir))

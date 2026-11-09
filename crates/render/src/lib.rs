@@ -49,6 +49,14 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+    /// An explicitly approved, full-resolution native file for compressed copying.
+    /// Resolve stored paths through host policy; never substitute an offline slate.
+    /// The default denies native access. Reject non-regular or oversized files before
+    /// opening them; `max_bytes` is the exporter's per-source resource limit.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file(&self, _item: ItemId, _max_bytes: u64) -> Option<std::io::Result<std::fs::File>> {
+        None
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {

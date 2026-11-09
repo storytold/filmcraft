@@ -231,3 +231,47 @@ fn a_document_given_by_a_relative_path_links_its_relative_media() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Copy exports use the host-approved file, not a relative CWD path or an offline slate.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn compressed_copy_resolves_stored_paths_and_requires_host_permission() {
+    use filmcraft_render::SourceProvider;
+    let root = tmp_dir("stored-copy");
+    let clip = root.join("clip.mov");
+    make_movie(&clip, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&clip]);
+    let id = items[0];
+    Arc::make_mut(&mut s.project).item_mut(id).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: "clip.mov".into() };
+    let doc = root.join("edit.fcproj").to_string_lossy().into_owned();
+    s.media.add_stored_paths(["clip.mov".into()], Some(&doc));
+    let provider = s.media.full_res_provider(s.project.clone(), Arc::new(FsServices));
+    let file = provider.copy_file(id, 1 << 30).unwrap().unwrap();
+    assert_eq!(file.metadata().unwrap().len(), std::fs::metadata(&clip).unwrap().len());
+    // Decoded sources do not grant an otherwise restricted host native access.
+    let denied = s.media.full_res_provider(s.project.clone(), Arc::new(Recording::default()));
+    assert!(denied.copy_file(id, 1 << 30).is_none());
+    Arc::make_mut(&mut s.project).item_mut(id).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: "file://192.0.2.1/share/clip.mov".into() };
+    s.media.add_stored_paths(["file://192.0.2.1/share/clip.mov".into()], Some(&doc));
+    let refused = s.media.full_res_provider(s.project.clone(), Arc::new(FsServices));
+    assert!(refused.copy_file(id, 1 << 30).is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Native copy access refuses special files and oversized files before opening them.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn compressed_copy_file_budget_and_regular_file_check() {
+    let root = tmp_dir("copy-budget");
+    assert!(FsServices.copy_file(root.to_str().unwrap(), 1024).unwrap().is_err());
+    let path = root.join("large.bin");
+    std::fs::write(&path, b"too large").unwrap();
+    assert!(FsServices.copy_file(path.to_str().unwrap(), 2).unwrap().is_err());
+    #[cfg(unix)]
+    {
+        let socket = root.join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(FsServices.copy_file(socket.to_str().unwrap(), 1024).unwrap().is_err());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

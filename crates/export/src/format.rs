@@ -518,12 +518,16 @@ impl ExportSettings {
         Ok(())
     }
 
-    /// Reject settings the encoders cannot honour.
+    /// Reject settings the encoders cannot honour. Copy-required mode also checks
+    /// settings-only eligibility; source/sequence checks happen during export.
     pub fn validate(&self) -> Result<()> {
         // The engine writes sidecars before starting the export worker; reject
         // here so strict copying cannot leave a sidecar for an ineligible job.
         if self.video_mode == super::VideoMode::CopyRequired && self.caption_sidecar.is_some() {
             return Err(super::packet_copy::rejected("conversion", "caption sidecars are unsupported in strict copy mode"));
+        }
+        if self.video_mode == super::VideoMode::CopyRequired {
+            super::packet_copy::validate_settings(self)?;
         }
         if let Some(range) = self.range {
             validate_range(range)?;

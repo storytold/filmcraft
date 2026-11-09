@@ -2,8 +2,35 @@
 //! complete before reserving a new destination. No third-party codec process is used.
 use crate::{ExportError, ExportSettings, ItemId, Progress, Project, Report, Result};
 
+/// Build a stable typed rejection without selecting a render fallback.
 pub(crate) fn rejected(code: &'static str, detail: &str) -> ExportError {
     ExportError::CopyIneligible { code, detail: detail.into() }
+}
+
+/// Settings-only eligibility; sequence/source compatibility is checked during export.
+pub(crate) fn validate_settings(settings: &ExportSettings) -> Result<()> {
+    if settings.format != crate::Format::H264 || settings.multiplexer != crate::Multiplexer::Mp4 || settings.include_audio {
+        return Err(rejected("format", "copyRequired needs H.264 MP4 with includeAudio=false"));
+    }
+    if settings.sink.is_some() || settings.output_file.is_some() {
+        return Err(rejected("destination", "a new native output path is required"));
+    }
+    for (field, changed) in [
+        ("scale", settings.scale != 1.0),
+        ("sdr", settings.sdr),
+        ("alpha", settings.alpha),
+        ("effects", settings.effects.any_video()),
+        ("burnCaptions", settings.burn_captions),
+        ("captionSidecar", settings.caption_sidecar.is_some()),
+        ("fieldOrder", settings.field_order != crate::FieldOrder::Progressive),
+        ("h264IntraOnly", settings.h264_intra_only),
+        ("h264Level", settings.h264_level.is_some()),
+    ] {
+        if changed {
+            return Err(rejected("conversion", &format!("{field} requires rendering or conversion")));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -14,21 +41,34 @@ pub(crate) fn export(_: &Project, _: ItemId, _: &ExportSettings, _: &dyn filmcra
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{ExportError, ExportSettings, ItemId, Progress, Project, Report, Result, rejected};
-    use crate::{Format, Multiplexer, Ordering, Out, Tick, export_range};
+    use crate::{Ordering, Out, Tick, export_range};
     use filmcraft_isobmff::{AvcConfig, Brand, CodecConfig, ColorInfo, Mp4File, Mp4Writer, SampleEntry, TrackConfig, TrackKind, WriteSample, WriterOptions};
     use filmcraft_project::{ItemKind, MediaRef, TrackItem};
     use std::{collections::BTreeMap, fs::File, sync::Arc};
 
     const MAX_SAMPLE_BYTES: u32 = 64 * 1024 * 1024;
     const MAX_FILES: usize = 128;
+    const MAX_SOURCE_BYTES: u64 = 1 << 30;
     const MAX_SAMPLES: usize = 1_000_000;
 
+    /// One retained host-approved source, locked shared until the export drops it.
     struct Source {
         file: File,
         movie: Mp4File,
         track: usize,
+        metadata: std::fs::Metadata,
     }
 
+    /// Detect ordinary in-place edits while retaining the same approved open handle.
+    fn unchanged(input: &Source) -> Result<()> {
+        let now = input.file.metadata().map_err(|e| ExportError::Io(e.to_string()))?;
+        if now.len() != input.metadata.len() || now.modified().ok() != input.metadata.modified().ok() {
+            return Err(rejected("media", "source changed during packet copying"));
+        }
+        Ok(())
+    }
+
+    /// Check access-unit structure, parameter sets and IDR flags without decoding.
     fn packet(data: &[u8], config: &AvcConfig, sync: bool) -> Result<()> {
         let size = usize::from(config.length_size);
         if !matches!(size, 1 | 2 | 4) {
@@ -74,6 +114,7 @@ mod native {
         Ok(())
     }
 
+    /// Only untouched whole-source clips can preserve compressed samples.
     fn plain(item: &TrackItem) -> Result<()> {
         if !item.enabled
             || item.speed != 1.0
@@ -94,6 +135,7 @@ mod native {
         Ok(())
     }
 
+    /// Preflight all clips, then remux from the same approved open file handles.
     pub(crate) fn run(
         project: &Project,
         seq: ItemId,
@@ -104,28 +146,17 @@ mod native {
         let started = web_time::Instant::now();
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         let range = export_range(project, seq, settings)?;
-        if settings.format != Format::H264 || settings.multiplexer != Multiplexer::Mp4 || settings.include_audio {
-            return Err(rejected("format", "initial support is video-only H.264 MP4"));
-        }
-        if settings.sink.is_some() || settings.output_file.is_some() {
-            return Err(rejected("destination", "a new native output path is required"));
-        }
-        if settings.scale != 1.0
-            || settings.frame_size.is_some_and(|s| s != (q.settings.width, q.settings.height))
-            || settings.frame_rate.is_some_and(|r| r != q.settings.frame_rate)
-            || settings.pixel_aspect.is_some_and(|p| p != q.settings.par)
-            || settings.sdr
-            || settings.alpha
-            || settings.effects.any_video()
-            || settings.burn_captions
-            || settings.caption_sidecar.is_some()
-            || q.settings.color != filmcraft_color::ColorPipeline::REC709
-            || q.settings.par != (1, 1)
-            || settings.field_order != crate::FieldOrder::Progressive
-            || settings.h264_intra_only
-            || settings.h264_level.is_some()
-        {
-            return Err(rejected("conversion", "output geometry, color, captions and overlays must remain untouched"));
+        super::validate_settings(settings)?;
+        for (field, changed) in [
+            ("frameSize", settings.frame_size.is_some_and(|s| s != (q.settings.width, q.settings.height))),
+            ("frameRate", settings.frame_rate.is_some_and(|r| r != q.settings.frame_rate)),
+            ("pixelAspect", settings.pixel_aspect.is_some_and(|p| p != q.settings.par)),
+            ("sequenceColor", q.settings.color != filmcraft_color::ColorPipeline::REC709),
+            ("sequencePixelAspect", q.settings.par != (1, 1)),
+        ] {
+            if changed {
+                return Err(rejected("conversion", &format!("{field} differs from the source-preserving sequence")));
+            }
         }
         if range.start != Tick::ZERO || range.duration != q.duration() {
             return Err(rejected("range", "only the complete sequence is supported"));
@@ -169,19 +200,24 @@ mod native {
             {
                 return Err(rejected("transform", "clip motion must be the identity transform"));
             }
-            let MediaRef::File { path } = &media.media else {
+            let MediaRef::File { .. } = &media.media else {
                 return Err(rejected("media", "native MP4 files are required"));
             };
-            // Respect the host's source-resolution/offline policy before direct
-            // native file access. This requests no decoded video/audio frames.
-            if sources.source(clip.item).is_none() {
-                return Err(rejected("media", "source is unavailable to the host"));
-            }
-            if !inputs.contains_key(path) {
+            if !inputs.contains_key(&clip.item) {
                 if inputs.len() >= MAX_FILES {
                     return Err(rejected("budget", "too many distinct source files"));
                 }
-                let file = File::open(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
+                // Native access is an explicit host capability, not inferred from
+                // source(), which can legitimately return an offline slate.
+                let file = sources
+                    .copy_file(clip.item, MAX_SOURCE_BYTES)
+                    .ok_or_else(|| rejected("media", "host did not approve a native copy source"))?
+                    .map_err(|e| rejected("media", &e.to_string()))?;
+                let metadata = file.metadata().map_err(|e| ExportError::Io(e.to_string()))?;
+                if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
+                    return Err(rejected("budget", "copy source must be a regular file of at most 1 GiB"));
+                }
+                file.try_lock_shared().map_err(|e| rejected("media", &format!("source shared lock: {e}")))?;
                 let movie = filmcraft_isobmff::open(&file).map_err(|e| rejected("container", &e.to_string()))?;
                 if movie.timescale == 0 || movie.fragmented {
                     return Err(rejected("container", "fragmented MP4 is unsupported"));
@@ -274,9 +310,9 @@ mod native {
                     return Err(rejected("codec", "source codec configuration, timescale or presentation origin differs"));
                 }
                 reference = Some((compatible, t.timescale, origin));
-                inputs.insert(path.clone(), Arc::new(Source { file, movie, track }));
+                inputs.insert(clip.item, Arc::new(Source { file, movie, track, metadata }));
             }
-            let input = inputs.get(path).ok_or_else(|| rejected("media", "source was not prepared"))?.clone();
+            let input = inputs.get(&clip.item).ok_or_else(|| rejected("media", "source was not prepared"))?.clone();
             let t = input.movie.tracks.get(input.track).ok_or_else(|| rejected("tracks", "missing source track"))?;
             let count = i64::try_from(t.samples.len()).map_err(|_| rejected("timing", "sample count overflow"))?;
             if clip.duration != q.settings.frame_rate.tick_of(count) {
@@ -293,14 +329,18 @@ mod native {
             return Err(rejected("timeline", "sequence duration mismatch"));
         }
         let (entry, timescale, origin) = reference.ok_or_else(|| rejected("codec", "no prepared AVC description"))?;
+        for input in &segments {
+            unchanged(input)?;
+        }
         // create_new also refuses aliases/hardlinks of any source: no existing
         // destination is truncated, including when preflight fails.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&settings.path)
-            .map_err(|e| ExportError::Io(format!("{}: {e}", settings.path)))?;
+        let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&settings.path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                rejected("destination", "copy destination already exists")
+            } else {
+                ExportError::Io(format!("{}: {e}", settings.path))
+            }
+        })?;
         let mut output = settings.clone();
         output.output_file = Some(Arc::new(file));
         let mut options = WriterOptions::new(Brand::Mp4);
@@ -309,9 +349,12 @@ mod native {
         let mut config = TrackConfig::new(entry, timescale);
         config.media_start = (origin > 0).then_some(origin);
         let track = writer.add_track(config).map_err(|e| ExportError::Io(e.to_string()))?;
-        progress.total.store(frames, Ordering::Relaxed);
-        progress.set_status(format!("Copying {frames} compressed video frames (no render/encode)"));
+        if !settings.part_of_batch {
+            progress.total.store(frames, Ordering::Relaxed);
+            progress.set_status(format!("Copying {frames} compressed video frames (no render/encode)"));
+        }
         for input in segments {
+            unchanged(&input)?;
             let t = input.movie.tracks.get(input.track).ok_or_else(|| rejected("tracks", "missing prepared track"))?;
             let CodecConfig::Avc(config) = &t.entries.first().ok_or_else(|| rejected("codec", "missing prepared description"))?.codec else {
                 return Err(rejected("codec", "missing prepared AVC config"));
@@ -336,12 +379,15 @@ mod native {
                     .map_err(|e| ExportError::Io(e.to_string()))?;
                 progress.done.fetch_add(1, Ordering::Relaxed);
             }
+            unchanged(&input)?;
         }
         let out = writer.finish_faststart().map_err(|e| ExportError::Io(e.to_string()))?;
         let bytes = out.finish(&output)?;
         let seconds = started.elapsed().as_secs_f64();
-        progress.set_status(format!("Copied {frames} video frames; 0 rendered"));
-        progress.finished.store(true, Ordering::Relaxed);
+        if !settings.part_of_batch {
+            progress.set_status(format!("Copied {frames} video frames; 0 rendered"));
+            progress.finished.store(true, Ordering::Relaxed);
+        }
         Ok(Report {
             copied_video_frames: frames,
             path: settings.path.clone(),
@@ -355,6 +401,26 @@ mod native {
     #[cfg(test)]
     mod parser_tests {
         use super::*;
+        /// Exercise semantic rejection independently of the mutation/panic check.
+        #[test]
+        fn access_unit_parameter_sets_and_sync_flags_are_checked() {
+            let config = AvcConfig::new(vec![vec![0x67, 100, 0, 40]], vec![vec![0x68, 0]], 4);
+            let pack = |nals: &[&[u8]]| -> Vec<u8> { nals.iter().flat_map(|n| (n.len() as u32).to_be_bytes().into_iter().chain(n.iter().copied())).collect() };
+            assert!(packet(&pack(&[&config.sps[0], &config.pps[0], &[6, 0], &[0x65, 0]]), &config, true).is_ok());
+            for (nals, sync, code) in [
+                (vec![vec![0x67, 0], vec![0x65, 0]], true, "nal"),
+                (vec![vec![0x68, 1], vec![0x65, 0]], true, "nal"),
+                (vec![vec![0x65, 0], vec![0x41, 0]], true, "nal"),
+                (vec![vec![0x41, 0], vec![0x65, 0]], true, "nal"),
+                (vec![vec![0x74, 0]], true, "nal"),
+                (vec![vec![0xe5, 0]], true, "nal"),
+                (vec![vec![6, 0]], true, "random-access"),
+                (vec![vec![0x65, 0]], false, "random-access"),
+            ] {
+                let refs: Vec<&[u8]> = nals.iter().map(Vec::as_slice).collect();
+                assert!(matches!(packet(&pack(&refs), &config, sync), Err(ExportError::CopyIneligible { code: got, .. }) if got == code));
+            }
+        }
         #[test]
         fn malformed_avc_lengths_and_random_mutations_never_panic() {
             let config = AvcConfig::new(vec![vec![0x67, 100, 0, 40]], vec![vec![0x68, 0]], 4);

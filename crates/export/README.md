@@ -104,3 +104,43 @@ distinct compatible sources, own/optional FFmpeg decoded pictures, preserved inp
 files/hardlinks, and strict rejection/cancellation. Malformed AVC length/header
 mutations run under `catch_unwind`; no media fixtures or external runtime codec
 dependency are added. Run `cargo test -p filmcraft-export packet_copy`.
+
+### Native host, progress and API contracts
+
+`SourceProvider::copy_file(item, max_bytes)` is a separate, explicit native-access
+capability; its default denies access. A decoded source or offline slate does not
+approve a file. The engine resolves stored paths through the document/media-pool
+policy, then asks `Services::copy_file` (also denied by default). `FsServices`
+checks for a regular file within the supplied size budget before opening it.
+Custom native hosts must opt in through these hooks; normal rendered exports do
+not use them. Approval is cached per media identity, never inferred from a matching
+stored path belonging to another item.
+
+Copy sources are limited to 1 GiB each and 128 open media identities. Those checks
+precede parsing. The shared ISO BMFF parser additionally has its own bounded header
+and sample-table limits; the copy path's one-million-sample limit applies after
+parsing and is not a claim about that parser's allocation budget. Sources retain
+shared advisory file locks and their open handles; length/mtime changes reject
+before output creation and around each copied segment. This detects ordinary
+in-place changes, not malicious timestamp forgery by an uncooperative writer;
+callers must still keep source bytes immutable during export.
+
+Batch exports increment `progress.done` but leave the caller's total, status and
+finished flag unchanged. Standalone exports own those fields. `Report.frames` is
+the total number of output pictures; `copied_video_frames` is its copied subset,
+zero on normal rendered exports. The serde report includes both fields.
+
+`ExportSettings::validate` checks settings-only copy eligibility, including format,
+audio, destinations, conversion flags and overlays. Source/sequence-dependent
+compatibility remains an export-time check. An occupied destination returns the
+stable `destination` ineligibility code. Details intentionally retain useful local
+I/O diagnostics; CLI/engine errors follow the existing textual error protocol,
+while Rust callers can match `CopyIneligible { code, detail }` directly.
+
+This change adds Rust source API surface (`Report.copied_video_frames`, the error
+variant and video-mode enum): downstream struct literals/exhaustive matches may
+need updating. Defaulting old serialized settings to rendered mode preserves
+preset compatibility; it does not claim Rust source compatibility. Adding a
+builder or `non_exhaustive` retroactively would not preserve existing literals.
+The native blocking-only capability and owned-partial-file retention policy above
+are deliberate MVP boundaries, not silent fallback or automatic retry behavior.
