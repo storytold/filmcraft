@@ -57,7 +57,7 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
-const OP_FRAME_MIX: u32 = 37;
+const OP_FRAME_MIX: u32 = 38;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
