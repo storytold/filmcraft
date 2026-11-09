@@ -387,6 +387,15 @@ fn per_line_p(p: &Value, cmd: &str) -> Result<usize> {
     }
 }
 
+/// The `destaqueSozinho` of a send: a yes or no, no by default.
+fn solo_p(p: &Value, cmd: &str) -> Result<bool> {
+    match p.get("destaqueSozinho") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(bad(cmd, "`destaqueSozinho` must be true or false")),
+    }
+}
+
 /// The `cores` of a send: an object from [`COLOR_KEYS`] to `#rrggbb`, only for the colours the user
 /// changed (the template's own colour stands for the others). Returns them normalised to lower case;
 /// anything else (an unknown key, a name, `#fff`, an alpha channel) is an error.
@@ -419,6 +428,12 @@ pub fn phrases(words: &[FxWord]) -> Vec<Vec<usize>> {
 /// [`phrases`] with `max_words` words per line (the letter limit grows with it, so a longer line is
 /// not cut early by the letters).
 pub fn phrases_with(words: &[FxWord], max_words: usize) -> Vec<Vec<usize>> {
+    phrases_opts(words, max_words, false)
+}
+
+/// [`phrases_with`]; with `solo_heroes` a highlight word is a line of its own, so it is alone on the
+/// screen while it is spoken.
+pub fn phrases_opts(words: &[FxWord], max_words: usize, solo_heroes: bool) -> Vec<Vec<usize>> {
     let max_words = max_words.clamp(1, MAX_WORDS_PER_LINE);
     let max_letters = MAX_PHRASE_LETTERS + max_words.saturating_sub(MAX_PHRASE_WORDS) * 8;
     let letters = |t: &str| t.chars().filter(|c| c.is_alphanumeric()).count();
@@ -431,7 +446,8 @@ pub fn phrases_with(words: &[FxWord], max_words: usize) -> Vec<Vec<usize>> {
             let p = &words[prev];
             let pause = w.start - p.end;
             let ends = p.text.trim_end().ends_with(['.', '!', '?', '…', ';', ':']);
-            if ends || pause > PAUSE_BREAK || cur.len() >= max_words || cur_letters + n > max_letters {
+            let solo = solo_heroes && (w.hero || p.hero);
+            if solo || ends || pause > PAUSE_BREAK || cur.len() >= max_words || cur_letters + n > max_letters {
                 out.push(std::mem::take(&mut cur));
                 cur_letters = 0;
             }
@@ -452,9 +468,14 @@ pub fn words_json(sp: &Span) -> Value {
 
 /// [`words_json`] with `max_words` words per line.
 pub fn words_json_with(sp: &Span, max_words: usize) -> Value {
+    words_json_opts(sp, max_words, false)
+}
+
+/// [`words_json_with`] and, with `solo_heroes`, every highlight word on a line of its own.
+pub fn words_json_opts(sp: &Span, max_words: usize, solo_heroes: bool) -> Value {
     let mut prev_end: Option<f64> = None;
     let mut phrases_json = Vec::new();
-    for group in phrases_with(&sp.words, max_words) {
+    for group in phrases_opts(&sp.words, max_words, solo_heroes) {
         let mut ws = Vec::new();
         for &i in &group {
             let Some(w) = sp.words.get(i) else { continue };
@@ -526,6 +547,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     mark_heroes(&mut sp.words, &heroes_p(p, ID)?, ID)?;
     let cores = cores_p(p, ID)?;
     let per_line = per_line_p(p, ID)?;
+    let solo = solo_p(p, ID)?;
     let dir = match p.get("out").and_then(Value::as_str) {
         Some(o) if o.contains('\0') || o.is_empty() => return Err(bad(ID, "invalid `out`")),
         Some(o) => o.to_string(),
@@ -539,7 +561,7 @@ fn send(s: &mut Session, p: &Value) -> Result<Value> {
     let words_path = join(&dir, "words.json");
     let order_path = join(&dir, "pedido.json");
     let out = join(&dir, "lettering.mov");
-    let words = serde_json::to_vec_pretty(&words_json_with(&sp, per_line)).map_err(|e| EngineError::Other(e.to_string()))?;
+    let words = serde_json::to_vec_pretty(&words_json_opts(&sp, per_line, solo)).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut order_json = json!({"template": template, "palavras": words_path, "saida": out});
     if !cores.is_empty() {
         order_json["opcoes"] = json!({"cores": cores});
@@ -660,7 +682,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Send Lettering Order",
             menu: &[],
             shortcut: None,
-            params: r##"{"template":id,"heroes":[index]?,"palavrasPorLinha":1-12?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
+            params: r##"{"template":id,"heroes":[index]?,"palavrasPorLinha":1-12?,"destaqueSozinho":bool?,"cores":{"texto"|"contorno"|"falada"|"destaque":"#rrggbb"}?,"bank":path?,"out":folder? (default next to the project)} writes words.json and pedido.json and starts the animation app in the background -> {job,words,order,out}"##,
             enabled: enabled_captions,
             run: send,
             journal: false,

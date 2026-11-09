@@ -15,7 +15,7 @@
 //! goes to `lettering.fx.send` as `cores`.
 //!
 //! Automation ids: `letteringFx.word.<index>`, `letteringFx.template.<id>`, `letteringFx.send`,
-//! `letteringFx.perLine`, `letteringFx.color.<key>` (+ `.reset`),
+//! `letteringFx.perLine`, `letteringFx.solo`, `letteringFx.color.<key>` (+ `.reset`),
 //! `letteringFx.cancel` (closes, or cancels the running order), `letteringFx.close`.
 
 use crate::widgets::CenteredDialog as _;
@@ -63,6 +63,8 @@ struct Draft {
     heroes: Vec<bool>,
     /// Words per line (1 to 12; the default is 4).
     per_line: u8,
+    /// Each highlight word alone on the screen while it is spoken.
+    solo: bool,
     /// The colours the user changed, in [`COLORS`] order (`None`: the style's own).
     colors: [Option<[u8; 3]>; 4],
     templates: Vec<Template>,
@@ -127,6 +129,7 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String
                 words,
                 heroes: vec![false; n],
                 per_line: DEFAULT_PER_LINE,
+                solo: false,
                 colors: [None; 4],
                 templates,
                 template,
@@ -231,6 +234,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let r = ui.add(egui::DragValue::new(&mut d.per_line).range(1..=12));
             elems.push(("letteringFx.perLine".into(), r.rect, "Words per line".into()));
         });
+        let solo = ui.checkbox(&mut d.solo, tl!("Highlight words appear alone"));
+        elems.push(("letteringFx.solo".into(), solo.rect, "Highlight words appear alone".into()));
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tl!("Colors (the style's own unless changed)")).strong());
         for (i, (key, start)) in COLORS.iter().enumerate() {
@@ -292,7 +297,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let cores = cores_json(&d.colors);
         match app.session.execute(
             "lettering.fx.send",
-            json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores, "palavrasPorLinha": d.per_line}),
+            json!({"template": template, "heroes": heroes, "captions": d.captions, "cores": cores, "palavrasPorLinha": d.per_line, "destaqueSozinho": d.solo}),
         ) {
             Ok(v) => {
                 d.problem = None;

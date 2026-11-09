@@ -464,3 +464,40 @@ fn send_writes_the_chosen_words_per_line_and_refuses_bad_values() {
     assert!(!std::path::Path::new(&bad_out).exists(), "nothing was written");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_solo_highlight_is_a_line_of_its_own() {
+    let mut ws: Vec<FxWord> = (0..6).map(|i| w("ab", i as f64 * 0.1, i as f64 * 0.1 + 0.1)).collect();
+    ws[2].hero = true;
+    assert_eq!(phrases_opts(&ws, 4, false), vec![vec![0, 1, 2, 3], vec![4, 5]], "off: nothing changes");
+    assert_eq!(phrases_opts(&ws, 4, true), vec![vec![0, 1], vec![2], vec![3, 4, 5]]);
+    ws[0].hero = true;
+    ws[5].hero = true;
+    assert_eq!(phrases_opts(&ws, 4, true), vec![vec![0], vec![1], vec![2], vec![3, 4], vec![5]], "heroes at the edges and side by side");
+    assert!(phrases_opts(&[], 4, true).is_empty());
+}
+
+#[test]
+fn send_can_put_the_highlight_alone_and_refuses_a_bad_flag() {
+    let root = tmp("solo");
+    let b = bank(&root);
+    let fake = Arc::new(Fake { seen: Mutex::new(Vec::new()), outcome: Ok(0), write_mov: true });
+    let mut s = session_with_caption(Some(fake), &b);
+    let out = root.join("s").to_string_lossy().into_owned();
+    let job = s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": out, "heroes": [2], "destaqueSozinho": true})).unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    wait(&s, job);
+    let words: Value = serde_json::from_slice(&std::fs::read(format!("{out}/words.json")).unwrap()).unwrap();
+    let alone = words["phrases"].as_array().unwrap().iter().any(|p| {
+        let ws = p["words"].as_array().unwrap();
+        ws.len() == 1 && ws[0]["hero"] == true
+    });
+    assert!(alone, "the highlight word is a phrase by itself");
+    let bad_out = root.join("bad").to_string_lossy().into_owned();
+    for v in [json!("sim"), json!(1), json!([true])] {
+        assert!(s.execute("lettering.fx.send", json!({"template": "pop-amarelo", "out": bad_out, "destaqueSozinho": v})).is_err(), "{v}");
+    }
+    assert!(!std::path::Path::new(&bad_out).exists());
+    let _ = std::fs::remove_dir_all(root);
+}
