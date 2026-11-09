@@ -186,6 +186,10 @@ impl FilmcraftApp {
             }
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
+        } else if self.timeline_view_last.is_none() {
+            // The first layout fit is a display default, not a user edit that needs saving.
+            self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_last = Some(shown);
         } else if self.timeline_view_last != Some(shown) {
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);

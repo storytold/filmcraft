@@ -276,6 +276,29 @@ fn zooming_out_stops_where_the_whole_timeline_is_in_view() {
     assert!(d.view().1 > pps * 1.1);
 }
 
+#[test]
+fn applying_a_new_maximum_zoom_preserves_the_view_center() {
+    let mut d = Driver::demo();
+    let width = d.app().tl.layout.as_ref().expect("Timeline layout").content.width() as f64;
+    let requested_pps = 10_000.0;
+    let requested_scroll = 4.0;
+    let original_center = requested_scroll + width * 0.5 / requested_pps;
+    {
+        let app = d.app();
+        app.session.prefs.appearance.animations = false;
+        app.session.state.timeline_ui.max_zoom_seconds = 0.75;
+        app.ui.timeline.pps = requested_pps;
+        app.ui.timeline.target_pps = requested_pps;
+        app.ui.timeline.scroll = requested_scroll;
+        app.ui.timeline.target_scroll = requested_scroll;
+    }
+    d.frames(2);
+    let (scroll, pps, ..) = d.view();
+    let new_center = scroll + width * 0.5 / pps;
+    assert!(pps < requested_pps, "the configured maximum clamps zoom in: {pps}");
+    assert!((new_center - original_center).abs() < 1e-6, "center moved from {original_center} to {new_center}");
+}
+
 /// A sequence longer than twenty view widths in seconds (the view is about a thousand points here) still zooms out until all of it is in view.
 #[test]
 fn a_twelve_hour_sequence_zooms_out_until_it_is_all_in_view() {
@@ -315,7 +338,10 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
-    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
+    assert!(
+        (thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && track[2] - thumb[2] > 300.0,
+        "{thumb:?} in {track:?}"
+    );
     // dragged by its middle it moves with the pointer, and the view with it
     let y = thumb[1] + thumb[3] / 2.0;
     let grab = thumb[0] + thumb[2] / 2.0;
@@ -351,12 +377,15 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.frames(3);
     let jumped = d.rect("timeline.zoomBar");
     assert!((jumped[0] + jumped[2] / 2.0 - target).abs() < 2.0, "{jumped:?}");
-    // the handles at its ends still zoom: the right one out, the left edge of the view staying
-    let at = d.view().0;
+    // the handles at its ends still zoom about the view's center
+    let (at_scroll, at_pps, ..) = d.view();
+    let view_width = d.app().tl.layout.as_ref().expect("Timeline layout").content.width() as f64;
+    let center_before = at_scroll + view_width * 0.5 / at_pps;
     d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    let center_after = scroll + view_width * 0.5 / pps;
+    assert!(pps < 50.0 && (center_after - center_before).abs() < 1e-6, "{pps} {scroll}");
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the

@@ -748,7 +748,20 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         // extent and zooming in stops at the Maximum Zoom Level setting
         let floor = min_pps(seq.duration().seconds(), content.width());
         let ceiling = max_pps(content.width(), min_zoom_view);
-        v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
+        let requested_target_pps = v.target_pps;
+        let clamped_target_pps = requested_target_pps.clamp(floor.min(ceiling), ceiling);
+        if requested_target_pps.is_finite()
+            && requested_target_pps > 0.0
+            && clamped_target_pps.is_finite()
+            && clamped_target_pps > 0.0
+            && clamped_target_pps < requested_target_pps
+            && app.tl.zoom_anchor.is_none()
+        {
+            // Enforcing a newly lowered zoom ceiling should not make the visible Timeline jump.
+            let center_time = v.target_scroll + content.width() as f64 * 0.5 / requested_target_pps;
+            v.target_scroll = (center_time - content.width() as f64 * 0.5 / clamped_target_pps).max(0.0);
+        }
+        v.target_pps = clamped_target_pps;
         v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
         let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
