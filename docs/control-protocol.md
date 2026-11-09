@@ -92,9 +92,6 @@ Fields with the wrong type, non-finite numbers, or numbers outside their listed 
 leaving the current value unchanged. Invalid colour strings are ignored the same way. Colour values
 that are accepted are normalized to lowercase six-digit hex before they appear in readback.
 
-`timelineSettings` also reads back the four Controls bindings (`control_center_on_playhead`,
-`control_explode_slider`, `control_alternate_drag_speed`, `control_settings`). Configure them in the
-Timeline Slider Controls flyout; `ui.set` does not write those bindings.
 
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
