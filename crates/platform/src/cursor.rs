@@ -26,12 +26,12 @@ pub fn cursor_screen_position() -> Option<(i32, i32)> {
 /// Quartz/CoreGraphics global points (`CGEventGetLocation`), not AppKit's bottom-left coordinates.
 pub const CURSOR_IN_POINTS: bool = cfg!(target_os = "macos");
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 /// macOS: winit's AppKit backend reports no pointer position while files are dragged in from Finder (#4296),
 /// so read it from Quartz: global points, origin at the main display's top-left, as winit's window positions use.
 /// `None` when CoreGraphics returns a null event or a non-finite location; otherwise rounded to whole points
 /// (negative on displays left of or above the main one), see [`quartz_point_to_px`].
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 pub fn cursor_screen_position() -> Option<(i32, i32)> {
     use std::ffi::c_void;
     /// CoreGraphics `CGPoint`: a location in global display points.
