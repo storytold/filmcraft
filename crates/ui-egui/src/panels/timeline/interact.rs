@@ -997,16 +997,21 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         }
     }
     // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
-    if let Some(template) = crate::panels::dragged_template(ui)
+    if let Some((template, dur)) = crate::panels::dragged_template(ui)
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
         let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
         let row = layout.row_at(p.y).cloned().filter(|r| r.kind == TrackKind::Video);
+        let dur = if dur.0 > 0 { dur } else { Tick(5 * filmcraft_time::TICKS_PER_SECOND) };
         if let Some(row) = &row {
-            let r = Rect::from_min_max(pos2(layout.x_of(t), row.rect.min.y + 1.0), pos2(layout.x_of(t) + 60.0, row.rect.max.y - 1.0));
+            let x0 = layout.x_of(t);
+            let x1 = layout.x_of(t + dur).max(x0 + 4.0);
+            let r = Rect::from_min_max(pos2(x0, row.rect.min.y + 1.0), pos2(x1, row.rect.max.y - 1.0));
+            ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+            app.auto.add("timeline.templateDropPreview", r, "tracks");
         }
         if ctx.input(|i| i.pointer.any_released()) {
             let mut q = json!({"template": template, "time": t.0});
@@ -1239,6 +1244,21 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         if let Err(e) = app.session.execute("sequence.revealNested", json!({})) {
             app.ui.status = e.to_string();
         }
+    }
+
+    // ---- double-click a graphic clip: select it and switch Essential Graphics to Edit tab
+    if resp.double_clicked()
+        && tool == Tool::Selection
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, edge: None, .. } = hit(seq, layout, p)
+        && seq
+            .find_item(clip)
+            .and_then(|(_, it)| app.session.project.item(it.item))
+            .is_some_and(|i| matches!(i.kind, filmcraft_project::ItemKind::Graphic { .. }))
+    {
+        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
+        app.ui.gfx_templates.tab = "edit".into();
+        ui.ctx().request_repaint();
     }
 
     // ---- double-click any other clip (not on its edge): open its media in the Source monitor at
