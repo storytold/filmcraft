@@ -24,10 +24,11 @@
 //!
 //! The first piece starts at the beginning of the source and the last ends at its end (intro and
 //! outro are kept). The plan length is always within one beat of the target. A joint prefers to
-//! jump over an even number of beats ([`ODD_JUMP_PENALTY`]): that keeps the position in the bar
-//! (kick on 1 and 3, snare on 2 and 4), and it keeps the music on its own beat when the analysis
-//! reads slow music at double tempo, as it can: the grid is then the eighth notes, and an odd jump
-//! over them moves the music by half a beat. The price is that the length lands up to one beat
+//! jump over an even number of beats ([`ODD_JUMP_PENALTY`]): in 4/4 and other even meters that
+//! keeps the position in the bar (kick on 1 and 3, snare on 2 and 4; in 3/4 an even jump does not
+//! keep it, and the penalty is a preference that similarity can outweigh), and it keeps the music
+//! on its own beat when the analysis reads slow music at double tempo, as it can: the grid is then
+//! the eighth notes, and an odd jump over them moves the music by half a beat. The price is that the length lands up to one beat
 //! (not half a beat) from the target. Everything is deterministic: the same audio, target and
 //! parameters give the same plan.
 //!
@@ -600,9 +601,10 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
                         continue;
                     }
                 }
-                // Jumps of an even number of pulses keep the position in the bar (kick on 1 and 3,
-                // snare on 2 and 4), and they stay on a beat when the grid is the eighth notes of
-                // slow music (tempo read at double). The last joint also lands close to the target.
+                // Jumps of an even number of pulses keep the position in the bar in 4/4 and other
+                // even meters (kick on 1 and 3, snare on 2 and 4; not in 3/4, hence a penalty and
+                // not a rule), and they stay on a beat when the grid is the eighth notes of slow
+                // music (tempo read at double). The last joint also lands close to the target.
                 let pulses = ((b[j] - b[i]) as f64 / a.period).round() as i64;
                 let mut score = a.jump_score(i, j) - if pulses % 2 != 0 { ODD_JUMP_PENALTY } else { 0.0 };
                 if last {
@@ -780,7 +782,7 @@ mod tests {
         (m, truth, a)
     }
 
-    /// Joints of plans to 7 targets from 0.45x to 2x the source, 5 Segments settings each, that move
+    /// Joints of plans to 6 targets from 0.45x to 2x the source, 5 Segments settings each, that move
     /// the music by about half a true beat (`bpm` is the real tempo), out of all of them.
     fn half_beat_joints(bpm: f64, sr: u32) -> (usize, usize, f64) {
         let (m, _) = test_music(sr, bpm, 24, 7);
