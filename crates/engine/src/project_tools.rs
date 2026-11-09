@@ -45,7 +45,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 fn query(
@@ -57,7 +57,7 @@ fn query(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 const FIND_PARAMS: &str = r#"{"scope":"project|timeline"?,"column":str?,"operator":"contains|matches|beginsWith|endsWith|doesNotContain"?,"text":str?,"rows":[{"column":str,"operator":str,"text":str}]?,"matchAll":bool=true,"caseSensitive":bool=false,"in":"all|clips|markers"?}"#;
@@ -789,6 +789,8 @@ pub fn project_subset(p: &Project, keep: &BTreeSet<ItemId>) -> Project {
     prune(&mut out.root, keep);
     out.transcripts.retain(|id, _| keep.contains(id));
     out.narrations.retain(|id, _| keep.contains(id));
+    // a source graphic holds its item's text and metadata: it leaves with that item only
+    out.source_graphics.retain(|id, _| keep.contains(id));
     out.search_bins.clear();
     out
 }
