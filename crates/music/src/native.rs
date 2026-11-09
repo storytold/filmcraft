@@ -194,7 +194,7 @@ impl Local {
                 }
             }
             Err(_) => return Err(MusicError::Inference("loading the model crashed".into())),
-        }
+        };
         let mut info = catalog::stable_audio_local_info(Some(dir));
         info.installed = true;
         Ok(Local { graphs, max_samples: manifest.max_samples, info })
