@@ -318,8 +318,10 @@ impl MediaPool {
     fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let it = p.item(item)?;
+        // a proxy of camera raw footage has the Source Settings of the day it was made baked in
         if proxies
             && !m.offline
+            && !filmcraft_media::still::dng::is_camera_raw(&m.info)
             && let Some(MediaRef::File { path }) = &m.proxy
             && let Some(s) = self.proxy_source(item, path, m, services)
         {
@@ -350,15 +352,7 @@ impl MediaPool {
             }) {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
-                    // Clip ▸ Source Settings… of camera raw footage
-                    let s = match &m.interpret.raw {
-                        Some(r) => s.with_raw_settings(r).unwrap_or_else(|| {
-                            log::warn!("{path}: camera raw settings not applied (not camera raw, or it no longer develops)");
-                            s
-                        }),
-                        None => s,
-                    };
-                    self.unsupported_as_slate(item, path, s)
+                    self.unsupported_as_slate(item, path, with_item_raw_settings(s, m, path))
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
                     // the host is still fetching the file's bytes: show the slate for now, retry later
@@ -392,7 +386,7 @@ impl MediaPool {
         let reader = services.reader(&file)?.ok()?;
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         let src = filmcraft_media::reader::open_reader_within(&file_name(&file), reader, &filmcraft_codecs::reader_openers(), &openers, 0).ok()?;
-        Some(self.unsupported_as_slate(item, path, src))
+        Some(self.unsupported_as_slate(item, path, with_item_raw_settings(src, m, path)))
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
@@ -440,6 +434,17 @@ impl MediaPool {
     /// A provider that always reads full-resolution media (export).
     pub fn full_res_provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
         PoolProvider { pool: self.clone(), project, services, full_res: true, used: None, own: None }
+    }
+}
+
+/// Clip ▸ Source Settings… of camera raw footage: `s` developed with the item's raw settings.
+fn with_item_raw_settings(s: SharedSource, m: &MediaClip, path: &str) -> SharedSource {
+    match &m.interpret.raw {
+        Some(r) => s.with_raw_settings(r).unwrap_or_else(|| {
+            log::warn!("{path}: camera raw settings not applied (not camera raw, or it no longer develops)");
+            s
+        }),
+        None => s,
     }
 }
 

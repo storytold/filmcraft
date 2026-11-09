@@ -348,3 +348,92 @@ fn only_camera_raw_footage_has_source_settings() {
     s.execute("clip.sourceSettings", json!({"exposure": 0.5})).unwrap();
     assert_eq!(raw_of(&s, id).unwrap().exposure, 0.5);
 }
+
+/// A three-frame CinemaDNG MXF whose frame `i` is a grey of `level(i) + lift`.
+fn write_mxf(path: &Path, seed: &str, lift: f64) {
+    let rate = filmcraft_mxf::Rational::new(24, 1);
+    let mut cfg = filmcraft_mxf::WriterConfig::new(filmcraft_mxf::Pattern::Op1a, rate, filmcraft_mxf::PackageIds::from_seed("raw", seed));
+    cfg.picture = Some(filmcraft_mxf::PictureDesc::new(filmcraft_mxf::PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32));
+    let mut w = filmcraft_mxf::MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
+    for i in 0..3 {
+        w.push_picture(&frame(level(i) + lift), filmcraft_mxf::FrameInfo::intra()).unwrap();
+    }
+    std::fs::write(path, w.finish().unwrap().into_inner()).unwrap();
+}
+
+fn centre(src: &filmcraft_media::SharedSource, i: i64) -> [f32; 3] {
+    let f = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
+    let filmcraft_frame::PixelData::RgbaF32(px) = &f.data else { panic!("linear float frames") };
+    let at = ((H / 2) * f.width as usize + W / 2) * 4;
+    [px[at], px[at + 1], px[at + 2]]
+}
+
+/// The frame as export and Render Previews read it: through a full-resolution provider with
+/// sources of its own.
+fn owned_rgb(s: &Session, item: ItemId, i: i64) -> [f32; 3] {
+    use filmcraft_render::SourceProvider;
+    let job = s.media.full_res_provider(s.project.clone(), s.services.clone()).own_sources();
+    let own = job.source(item).unwrap();
+    let shared = s.media.full_res_source(&s.project, item, &*s.services).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&own, &shared), "the job reads a copy of its own");
+    centre(&own, i)
+}
+
+fn full_res_rgb(s: &Session, item: ItemId, i: i64) -> [f32; 3] {
+    centre(&s.media.full_res_source(&s.project, item, &*s.services).unwrap(), i)
+}
+
+fn same(a: [f32; 3], b: [f32; 3], what: &str) {
+    for k in 0..3 {
+        assert!((a[k] - b[k]).abs() < 1e-6, "{what}: channel {k}: {a:?} vs {b:?}");
+    }
+}
+
+#[test]
+fn export_and_previews_develop_the_mxf_with_its_source_settings() {
+    let dir = tmp_dir("raw-owned");
+    let mut s = demo();
+    let mxf = dir.join("A001_C005.mxf");
+    write_mxf(&mxf, "A001_C005", 0.0);
+    let id = item_of(&s.execute("file.import", json!({"paths": [mxf.to_string_lossy()]})).unwrap());
+    let base = full_res_rgb(&s, id, 2);
+    same(owned_rgb(&s, id, 2), base, "as shot");
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    let bright = full_res_rgb(&s, id, 2);
+    assert!((bright[1] - 2.0 * base[1]).abs() < 3e-3, "{bright:?} vs {base:?}");
+    same(owned_rgb(&s, id, 2), bright, "exposure +1");
+    s.execute("edit.undo", json!({})).unwrap();
+    same(owned_rgb(&s, id, 2), base, "undo");
+    s.execute("edit.redo", json!({})).unwrap();
+    same(owned_rgb(&s, id, 2), bright, "redo");
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "reset": true})).unwrap();
+    same(owned_rgb(&s, id, 2), base, "reset");
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "whiteBalance": "custom", "temperature": 3200})).unwrap();
+    let warm = owned_rgb(&s, id, 1);
+    assert!(warm[2] > 1.3 * warm[0], "3200 K on D65 footage: {warm:?}");
+    same(warm, full_res_rgb(&s, id, 1), "custom white balance");
+}
+
+#[test]
+fn a_proxy_does_not_stand_in_for_camera_raw_footage() {
+    let dir = tmp_dir("raw-proxy");
+    let mut s = demo();
+    let mxf = dir.join("A001_C006.mxf");
+    write_mxf(&mxf, "A001_C006", 0.0);
+    let proxy = dir.join("A001_C006_proxy.mxf");
+    write_mxf(&proxy, "A001_C006_proxy", 0.4);
+    let id = item_of(&s.execute("file.import", json!({"paths": [mxf.to_string_lossy()]})).unwrap());
+    let base = rgb(&s, id, 2);
+    crate::proxies::attach(&mut s, &[(id, proxy.to_string_lossy().to_string())], true).unwrap();
+    s.media.set_use_proxies(true);
+    same(rgb(&s, id, 2), base, "proxies on");
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    let bright = rgb(&s, id, 2);
+    assert!((bright[1] - 2.0 * base[1]).abs() < 3e-3, "{bright:?} vs {base:?}");
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "whiteBalance": "custom", "temperature": 3200})).unwrap();
+    let warm = rgb(&s, id, 2);
+    assert!(warm[2] > 1.3 * warm[0], "3200 K on D65 footage: {warm:?}");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    same(rgb(&s, id, 2), base, "undo");
+}
