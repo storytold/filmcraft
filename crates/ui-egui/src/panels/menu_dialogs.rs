@@ -232,7 +232,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.session.execute(&id, p).map_err(|e| e.to_string())
             }));
         }
-        // Lumetri Color panel menu ▸ Export .cube…: ask where to save the grade, then export it
+        // Color Grading panel menu ▸ Export .cube…: ask where to save the grade, then export it
         "lumetri.exportCube" if params.get("path").is_none() => {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
@@ -246,9 +246,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 Some(c) => has_lumetri(&filmcraft_project::ClipId(c)),
                 None => app.session.state.selection.iter().find_map(has_lumetri),
             };
-            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Lumetri Color".into())) };
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Color Grading".into())) };
             let stem: String =
-                stem.unwrap_or_else(|| "Lumetri".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+                stem.unwrap_or_else(|| "Color Grading".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
             let mut p = params.as_object().cloned().unwrap_or_default();
             p.entry("clip").or_insert(json!(clip));
             let id = id.to_string();
