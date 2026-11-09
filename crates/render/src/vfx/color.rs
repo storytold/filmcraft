@@ -154,7 +154,7 @@ pub fn logo_cutout(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// Chroma Key: a colour-difference keyer working in Y′CbCr against the key colour's chroma, with
+/// Ultra Key: a colour-difference keyer working in Y′CbCr against the key colour's chroma, with
 /// Premiere's matte generation, cleanup, spill suppression and colour correction stages.
 pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let kc = cv(e, "key_color", cx);

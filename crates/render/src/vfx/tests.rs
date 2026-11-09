@@ -518,7 +518,7 @@ fn four_color_gradient_points_default_to_the_old_positions_and_move() {
 
 #[test]
 fn keyers_known_values() {
-    // Chroma Key: pure green screen → transparent, grey foreground → opaque
+    // Ultra Key: pure green screen → transparent, grey foreground → opaque
     let mut img = solid(8, 2, [0.0, 0.8, 0.2]);
     let grey = dec([0.5, 0.45, 0.42]);
     for x in 4..8 {

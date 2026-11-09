@@ -265,7 +265,7 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
 
 #[test]
 fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
-    // the GPU compositor can only cross-fade layers: a Optical Flow Dissolve frame is planned whole on the
+    // the GPU compositor can only cross-fade layers: a Morph Cut frame is planned whole on the
     // CPU, so preview and export show the optical-flow morph, not a dissolve
     let (mut p, red, ocean, seq, map) = setup();
     let a = place(&mut p, seq, 0, red, 0, 24);

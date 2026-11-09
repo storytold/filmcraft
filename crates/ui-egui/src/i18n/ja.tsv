@@ -2092,7 +2092,7 @@
 	Monoscopic	モノスコピック
 	Monospace only	等幅フォントのみ
 	More colour in the less saturated areas	彩度の低い部分の色を強調
-	Optical Flow Dissolve	オプティカルフローディゾルブ
+	Morph Cut	モーフカット
 	Mosaic	モザイク
 	Mosaic (Legacy)	モザイク (従来版)
 	Motion Blur	モーションぼかし
@@ -2595,7 +2595,7 @@
 	Twist	ねじり
 	Twist Smoother	ねじり (より滑らか)
 	Typewriter	タイプライター
-	Chroma Key	クロマキー
+	Ultra Key	ウルトラキー
 	Uniform Scale	縦横比を固定
 	Uniform Spacing	等間隔
 	Unsharp Mask	アンシャープマスク
@@ -2677,7 +2677,7 @@
 	Warm print stock with gentle roll-off	なだらかなロールオフを持つ、暖かみのあるプリントフィルム調
 	Warm, soft late-afternoon light	夕方の暖かく柔らかな光
 	Warning	警告
-	Motion Stabilizer	モーションスタビライザー
+	Warp Stabilizer	ワープスタビライザー
 	Wave	ウェーブ
 	Wave Height	波の高さ
 	Wave Speed	波の速度

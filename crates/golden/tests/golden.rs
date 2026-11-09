@@ -544,7 +544,7 @@ fn vfx_distort() -> Scene {
     b.at(12)
 }
 
-/// M5.11 Keying: Chroma Key removing the bars' green over a demo background, with spill suppression.
+/// M5.11 Keying: Ultra Key removing the bars' green over a demo background, with spill suppression.
 fn vfx_ultra_key() -> Scene {
     let mut b = Builder::new(2);
     let bg = b.demo(DemoScene::OceanSunset);
@@ -633,7 +633,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("mask_inverted", "Masks: Mosaic outside an inverted ellipse mask at 80% opacity", mask_inverted),
         ("mask_opacity", "Masks: feathered ellipse opacity mask on a rotated top layer", mask_opacity),
         ("vfx_distort", "Corner Pin over Turbulent Displace", vfx_distort),
-        ("vfx_ultra_key", "Chroma Key on colour bars over footage", vfx_ultra_key),
+        ("vfx_ultra_key", "Ultra Key on colour bars over footage", vfx_ultra_key),
         ("vfx_glows", "Wonder Glow and Glint", vfx_glows),
         ("vfx_spacer_stroke_shadow", "Spacer, Stroke and Long Shadow over a Gradient", vfx_spacer_stroke_shadow),
         ("vfx_vr_rotate", "VR Rotate Sphere", vfx_vr_rotate),

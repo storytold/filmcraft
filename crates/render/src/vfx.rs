@@ -1,13 +1,13 @@
 //! CPU implementations of the Premiere 26 video-effect catalogue added in M5.11 (see
 //! `filmcraft_project::effect::vfx` for the definitions), plus the rebuilt versions of a few core
-//! effects (Chroma Key, Lens Flare, Noise, Mosaic, Simple Text, Track Matte Key).
+//! effects (Ultra Key, Lens Flare, Noise, Mosaic, Simple Text, Track Matte Key).
 //!
 //! Conventions match [`crate::effects`]: images are premultiplied linear f32; spatial parameters
 //! are full-resolution clip pixels scaled by `FxCtx::px_scale`; colour maths that artists expect
 //! in display space (keys, limiters, CDL) runs on sRGB-encoded straight colour.
 //!
 //! Effects that need more than the current frame — Posterize Time and Echo (other frames), Track
-//! Matte Key / Compound Blur / Gradient Wipe (another track), Auto Reframe and Motion Stabilizer
+//! Matte Key / Compound Blur / Gradient Wipe (another track), Auto Reframe and Warp Stabilizer
 //! (frames for analysis, sequence geometry) — read it through [`FxEnv`]; without an environment
 //! (isolated tests, adjustment layers) they leave the image unchanged.
 

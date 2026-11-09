@@ -2090,7 +2090,7 @@
 	Monoscopic	Monoscopique
 	Monospace only	Chasse fixe uniquement
 	More colour in the less saturated areas	Plus de couleur dans les zones moins saturées
-	Optical Flow Dissolve	Fondu par flux optique
+	Morph Cut	Fondu morphologique
 	Mosaic	Mosaïque
 	Mosaic (Legacy)	Mosaïque (ancien)
 	Motion Blur	Flou de mouvement
@@ -2593,7 +2593,7 @@
 	Twist	Torsion
 	Twist Smoother	Torsion plus lisse
 	Typewriter	Machine à écrire
-	Chroma Key	Incrustation chromatique
+	Ultra Key	Ultra Key
 	Uniform Scale	Échelle uniforme
 	Uniform Spacing	Espacement uniforme
 	Unsharp Mask	Masque flou
@@ -2675,7 +2675,7 @@
 	Warm print stock with gentle roll-off	Pellicule de tirage chaude avec une atténuation douce
 	Warm, soft late-afternoon light	Lumière chaude et douce de fin d'après-midi
 	Warning	Avertissement
-	Motion Stabilizer	Stabilisation du mouvement
+	Warp Stabilizer	Stabilisateur de déformation
 	Wave	Vague
 	Wave Height	Hauteur de la vague
 	Wave Speed	Vitesse de la vague

@@ -709,7 +709,7 @@ fn build_effects() -> Vec<EffectDef> {
         ),
         video(
             "ultra_key",
-            "Chroma Key",
+            "Ultra Key",
             KEYING,
             vec![
                 col("key_color", "Key Color", [0.0, 0.8, 0.2, 1.0]),
@@ -898,12 +898,29 @@ pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
     // Old human-readable names are import/automation aliases, never display labels.
     let legacy_id = match n.as_str() {
         "lumetri" | "lumetri color" | "color grade" => Some("lumetri"),
-        "ultra key" => Some("ultra_key"),
-        "warp stabilizer" => Some("warp_stabilizer"),
-        "morph cut" => Some("morph_cut"),
         _ => None,
     };
     legacy_id.and_then(find_effect).or_else(|| effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
+}
+
+/// Names a user may still type into the Effects panel search for an effect whose display label
+/// changed (`"Lumetri"` → Color Grading). Search terms only: never display labels, never written
+/// to a project or an interchange file.
+pub fn search_aliases(def: &EffectDef) -> &'static [&'static str] {
+    match def.id {
+        "lumetri" => &["Lumetri", "Lumetri Color", "Color Grade"],
+        _ => &[],
+    }
+}
+
+/// The name an interchange file (FCP7 XML, FCPXML, EDL) writes for an effect: the name it had
+/// before the UI rename, so a rename never changes an export. Display labels come from
+/// [`EffectDef::name`]; this is the stable name other applications read back.
+pub fn interchange_name(def: &EffectDef) -> &'static str {
+    match def.id {
+        "lumetri" => "Lumetri Color",
+        _ => def.name,
+    }
 }
 
 /// Intrinsic video effects every video track item carries (Motion, Opacity, Time Remapping).
@@ -937,9 +954,9 @@ mod tests {
         for (id, old, label) in [
             ("lumetri", "Lumetri Color", "Color Grading"),
             ("lumetri", "Color Grade", "Color Grading"),
-            ("ultra_key", "Ultra Key", "Chroma Key"),
-            ("warp_stabilizer", "Warp Stabilizer", "Motion Stabilizer"),
-            ("morph_cut", "Morph Cut", "Optical Flow Dissolve"),
+            ("ultra_key", "Ultra Key", "Ultra Key"),
+            ("warp_stabilizer", "Warp Stabilizer", "Warp Stabilizer"),
+            ("morph_cut", "Morph Cut", "Morph Cut"),
         ] {
             let def = find_effect(id).unwrap();
             assert_eq!(def.name, label);
@@ -951,5 +968,20 @@ mod tests {
             let loaded: EffectInstance = serde_json::from_value(saved).unwrap();
             assert_eq!(loaded, def.instance());
         }
+    }
+
+    #[test]
+    fn interchange_names_keep_exports_stable_across_the_rename() {
+        // FCP7 XML, FCPXML and EDL write the name other applications read back, so renaming a
+        // display label must not change a byte of an export.
+        let lumetri = find_effect("lumetri").unwrap();
+        assert_eq!(lumetri.name, "Color Grading");
+        assert_eq!(interchange_name(lumetri), "Lumetri Color");
+        for id in ["gaussian_blur", "cross_dissolve", "ultra_key", "warp_stabilizer"] {
+            let def = find_effect(id).unwrap();
+            assert_eq!(interchange_name(def), def.name, "{id}");
+        }
+        // and a file naming the old label still imports as the same effect
+        assert_eq!(find_effect_by_name(interchange_name(lumetri)).unwrap().id, "lumetri");
     }
 }

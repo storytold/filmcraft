@@ -18,7 +18,7 @@
 //!
 //! Immersive (VR) transitions are flat approximations on the equirectangular frame: sampling wraps
 //! horizontally and the iris uses great-circle distance, but there is no sphere re-projection.
-//! Optical Flow Dissolve morphs with dense optical flow ([`crate::flow`]) but has no face tracking, and the
+//! Morph Cut morphs with dense optical flow ([`crate::flow`]) but has no face tracking, and the
 //! Smart Tools / Text transitions are procedural stand-ins (no content analysis, no typed text).
 
 use filmcraft_project::{EffectInstance, ParamValue};

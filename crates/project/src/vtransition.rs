@@ -163,7 +163,7 @@ pub(crate) fn video_transition_defs() -> Vec<EffectDef> {
             m,
             vec![ch("source", "Luma Source", &["Outgoing", "Incoming"], 0), num("softness", "Softness", 20.0, 100.0, "%"), b("invert", "Invert", false)],
         ),
-        tr("morph_cut", "Optical Flow Dissolve", DISSOLVE, m, vec![]),
+        tr("morph_cut", "Morph Cut", DISSOLVE, m, vec![]),
         tr(
             "mosaic_transition",
             "Mosaic",

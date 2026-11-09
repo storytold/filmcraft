@@ -1,6 +1,6 @@
-//! Effects that look at other frames: Posterize Time, Echo, Auto Reframe and Motion Stabilizer.
+//! Effects that look at other frames: Posterize Time, Echo, Auto Reframe and Warp Stabilizer.
 //!
-//! Motion Stabilizer is a 2-D (similarity / translation) stabilizer: on first use it analyses the
+//! Warp Stabilizer is a 2-D (similarity / translation) stabilizer: on first use it analyses the
 //! clip — every frame decoded small, Shi–Tomasi features tracked frame to frame with pyramidal
 //! Lucas–Kanade and a RANSAC similarity fit (the mask tracker in [`crate::track`]) — and caches
 //! the per-frame steps in memory. Rendering smooths the accumulated camera path with a Gaussian
@@ -217,7 +217,7 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     affine_warp(img, &m);
 }
 
-// ------------------------------------------------------------------ Motion Stabilizer
+// ------------------------------------------------------------------ Warp Stabilizer
 
 /// A clip's analysed camera motion: per-frame steps (frame k → k+1) in analysis pixels.
 #[derive(Clone, Debug)]
@@ -479,7 +479,7 @@ pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
     hi
 }
 
-/// Motion Stabilizer: see the module docs.
+/// Warp Stabilizer: see the module docs.
 pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let Some(env) = cx.env else { return };
     let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };

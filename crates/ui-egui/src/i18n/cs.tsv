@@ -2080,7 +2080,7 @@
 	Monoscopic	Monoskopický
 	Monospace only	Pouze neproporcionální písma
 	More colour in the less saturated areas	Více barvy v méně sytých oblastech
-	Optical Flow Dissolve	Prolnutí optickým tokem
+	Morph Cut	Morfovací střih
 	Mosaic	Mozaika
 	Mosaic (Legacy)	Mozaika (starší)
 	Motion Blur	Pohybové rozostření
@@ -2583,7 +2583,7 @@
 	Twist	Zkroucení
 	Twist Smoother	Vyhlazení zkroucení
 	Typewriter	Psací stroj
-	Chroma Key	Klíčování barvou
+	Ultra Key	Pokročilé klíčování
 	Uniform Scale	Jednotné měřítko
 	Uniform Spacing	Rovnoměrné rozestupy
 	Unsharp Mask	Doostření maskou
@@ -2665,7 +2665,7 @@
 	Warm print stock with gentle roll-off	Teplé podání filmové kopie s jemným útlumem světel
 	Warm, soft late-afternoon light	Teplé, měkké světlo pozdního odpoledne
 	Warning	Varování
-	Motion Stabilizer	Stabilizátor pohybu
+	Warp Stabilizer	Deformační stabilizátor
 	Wave	Vlna
 	Wave Height	Výška vlny
 	Wave Speed	Rychlost vlny

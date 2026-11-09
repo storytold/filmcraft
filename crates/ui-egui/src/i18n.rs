@@ -549,9 +549,9 @@ mod feature_name_tests {
                 "Color Grading Presets",
                 "Add Color Grading to clip",
                 "For color management parameters, go to the Settings tab in the Color Grading panel.",
-                "Chroma Key",
-                "Motion Stabilizer",
-                "Optical Flow Dissolve",
+                "Ultra Key",
+                "Warp Stabilizer",
+                "Morph Cut",
                 "Enable External Video Output",
             ] {
                 assert_eq!(
