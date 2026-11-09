@@ -250,6 +250,11 @@ echo '{"id":"file.newBin","params":{"name":"Selects"}}' | filmcraft-cli --projec
 filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the running app
 ```
 
+A key that a command's params doc doesn't name does nothing. `exec` and `run` say so on stderr
+(``filmcraft-cli: warning: `file.newBin` ignores unknown parameter `nme` (it takes name, parent)``) and
+still run the command. MCP `command_run` adds the same line to its result, and `command_batch` adds a
+`warning` to that step. A doc with prose or `…` in it isn't checked.
+
 `key=value` values are parsed as JSON when they can be (`3.5`, `true`, `[1,2]`), otherwise taken as
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.

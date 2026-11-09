@@ -364,7 +364,14 @@ impl FilmcraftMcp {
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn command_run(&self, Parameters(p): Parameters<RunParams>) -> Result<CallToolResult, McpError> {
-        wrap(self.run(&p.id, p.params.unwrap_or(json!({}))).await)
+        let params = p.params.unwrap_or(json!({}));
+        // a key the command doesn't take does nothing: say so beside the result (#4599)
+        let warning = filmcraft_engine::unknown_params_warning(&p.id, &params);
+        let mut r = wrap(self.run(&p.id, params).await)?;
+        if let Some(w) = warning {
+            r.content.push(Content::text(format!("warning: {w}")));
+        }
+        Ok(r)
     }
 
     #[tool(
@@ -376,18 +383,25 @@ impl FilmcraftMcp {
         let stop = p.stop_on_error.unwrap_or(true);
         let (mut completed, mut failed, mut results) = (0u32, 0u32, Vec::new());
         for st in p.steps {
-            match self.run(&st.id, st.params.unwrap_or(json!({}))).await {
+            let params = st.params.unwrap_or(json!({}));
+            let warning = filmcraft_engine::unknown_params_warning(&st.id, &params);
+            let mut step = match self.run(&st.id, params).await {
                 Ok(v) => {
                     completed += 1;
-                    results.push(json!({"ok": true, "result": v}));
+                    json!({"ok": true, "result": v})
                 }
                 Err(e) => {
                     failed += 1;
-                    results.push(json!({"ok": false, "error": e.to_string()}));
-                    if stop {
-                        break;
-                    }
+                    json!({"ok": false, "error": e.to_string()})
                 }
+            };
+            if let Some(w) = warning {
+                step["warning"] = json!(w);
+            }
+            let ok = step["ok"] == true;
+            results.push(step);
+            if !ok && stop {
+                break;
             }
         }
         let v = json!({"completed": completed, "failed": failed, "results": results});
