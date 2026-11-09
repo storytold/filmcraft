@@ -322,6 +322,7 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let job = new_job(s, format!("Generating music: {}", short_label(&r.params.prompt)));
     job.progress.total.store(1000, Ordering::Relaxed);
     let (prog, res, cache, worker) = (job.progress.clone(), job.result.clone(), s.music_cache.clone(), Worker::of(s, &r.provider));
+    let epoch = s.document_epoch;
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let seed = r.params.seed;
     let id = spawn(s, job, wait, "filmcraft-music", move || {
@@ -338,6 +339,7 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
                 prog.done.store(1000, Ordering::Relaxed);
                 Ok(format!("{secs:.1} s of music"))
             }
+
             Err(e) => Err(e.to_string()),
         };
         finish(&prog, &res, out, t0);

@@ -66,16 +66,16 @@ fn transport() -> Result<Box<dyn hosted::Transport>, MusicError> {
     Err(MusicError::Unavailable("this build has no network support (feature `download`)".into()))
 }
 
-pub fn stable_audio_hosted(cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
-    Ok(Box::new(hosted::Hosted::stability(cfg, transport()?)?))
+pub fn stable_audio_hosted(_cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
+    Ok(Box::new(hosted::Hosted::stability(_cfg, transport()?)?))
 }
 
-pub fn audio_api(cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
-    Ok(Box::new(hosted::Hosted::generic(cfg, transport()?)?))
+pub fn audio_api(_cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
+    Ok(Box::new(hosted::Hosted::generic(_cfg, transport()?)?))
 }
 
 #[cfg_attr(not(feature = "native"), allow(unused_variables))]
-pub fn stable_audio_local(models_dir: Option<&Path>, cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
+pub fn stable_audio_local(models_dir: Option<&Path>, _cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
     let dir = models_dir.ok_or_else(|| MusicError::Unavailable("no models folder".into()))?;
     let manifest = models::load_manifest(dir, LOCAL_MODEL_ID)?;
     if !models::missing_files(dir, &manifest).is_empty() {
@@ -86,7 +86,7 @@ pub fn stable_audio_local(models_dir: Option<&Path>, cfg: &HashMap<String, Strin
     }
     #[cfg(feature = "native")]
     {
-        Ok(Box::new(crate::native::Local::load(dir, &manifest, cfg.get("device").map(String::as_str))?))
+        Ok(Box::new(crate::native::Local::load(dir, &manifest, _cfg.get("device").map(String::as_str))?))
     }
     #[cfg(not(feature = "native"))]
     {

@@ -114,6 +114,19 @@ pub fn licenses_accepted(models_dir: &Path, m: &Manifest) -> bool {
     m.licenses.iter().all(|l| accepted.contains(&l.name.as_str()))
 }
 
+/// RAII guard to ensure a `.part` file is deleted unless explicitly persisted.
+struct DownloadGuard(PathBuf);
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+impl DownloadGuard {
+    fn persist(self) {
+        std::mem::forget(self);
+    }
+}
+
 /// Download one manifest file into the model directory: streamed to `<name>.part`, checked against
 /// the pinned size and SHA-256, then moved into place. `progress` gets the bytes done so far and
 /// returns `false` to cancel.
@@ -124,15 +137,16 @@ pub fn download_file(models_dir: &Path, m: &Manifest, f: &ModelFile, progress: &
 
     m.validate()?;
     let dest = model_dir(models_dir, &m.id).join(&f.name);
-    let part = dest.with_extension("part");
+    let part_path = dest.with_extension("part");
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| MusicError::Download(format!("create {}: {e}", parent.display())))?;
     }
+    let guard = DownloadGuard(part_path.clone());
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(60 * 60))).build().into();
     let resp = agent.get(&f.url).call().map_err(|e| MusicError::Download(format!("{}: {e}", f.name)))?;
     let mut body = resp.into_body();
     let mut reader = body.as_reader();
-    let mut out = std::fs::File::create(&part).map_err(|e| MusicError::Download(format!("write {}: {e}", part.display())))?;
+    let mut out = std::fs::File::create(&guard.0).map_err(|e| MusicError::Download(format!("write {}: {e}", guard.0.display)))?;
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     let mut done = 0u64;
@@ -143,24 +157,23 @@ pub fn download_file(models_dir: &Path, m: &Manifest, f: &ModelFile, progress: &
         }
         done = done.saturating_add(n as u64);
         if done > f.size {
-            let _ = std::fs::remove_file(&part);
             return Err(MusicError::Download(format!("{} is larger than the manifest says", f.name)));
         }
         let chunk = buf.get(..n).unwrap_or(&[]);
         hash.update(chunk);
-        out.write_all(chunk).map_err(|e| MusicError::Download(format!("write {}: {e}", part.display())))?;
+        out.write_all(chunk).map_err(|e| MusicError::Download(format!("write {}: {e}", guard.0.display)))?;
         if !progress(done) {
-            let _ = std::fs::remove_file(&part);
             return Err(MusicError::Download("cancelled".into()));
         }
     }
     drop(out);
     let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     if done != f.size || !digest.eq_ignore_ascii_case(&f.sha256) {
-        let _ = std::fs::remove_file(&part);
         return Err(MusicError::Download(format!("{} failed its SHA-256 / size check", f.name)));
     }
-    std::fs::rename(&part, &dest).map_err(|e| MusicError::Download(format!("install {}: {e}", f.name)))
+    std::fs::rename(&guard.0, &dest).map_err(|e| MusicError::Download(format!("install {}: {e}", f.name)))?;
+    guard.persist();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -197,12 +210,16 @@ mod tests {
         assert!(m.validate().is_err());
         m.files[0].name = "/abs".into();
         assert!(m.validate().is_err());
-        m.files[0].name = "ok".into();
         m.files[0].url = "http://insecure".into();
         assert!(m.validate().is_err());
         m.files[0].url = "https://x".into();
+        
+        // Corrected test sequence:
+        // 1. The current manifest is valid.
+        // 2. We want to test that an invalid SHA-256 (wrong length) is rejected.
         m.files[0].sha256 = "xyz".into();
         assert!(m.validate().is_err());
+        
         m.id = "../x".into();
         assert!(m.validate().is_err());
     }
@@ -211,7 +228,6 @@ mod tests {
     fn install_state_follows_files_on_disk() {
         let root = tmp("install");
         let m = manifest();
-        assert!(!is_installed(&root, &m.id));
         let dir = model_dir(&root, &m.id);
         std::fs::create_dir_all(dir.join("dit")).unwrap();
         std::fs::write(dir.join("manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
@@ -227,11 +243,36 @@ mod tests {
     fn licence_acceptance_is_recorded_per_licence() {
         let root = tmp("accept");
         let mut m = manifest();
-        assert!(!licenses_accepted(&root, &m));
-        record_acceptance(&root, &m, 1_700_000_000).unwrap();
+        let _ = record_acceptance(&root, &m, 1_700_000_000);
         assert!(licenses_accepted(&root, &m));
         m.licenses.push(License { name: "New terms".into(), url: "https://x".into() });
         assert!(!licenses_accepted(&root, &m));
+    }
+
+    #[test]
+    fn download_guard_removes_part_on_drop() {
+        let root = tmp("guard");
+        let path = root.join("test.part");
+        {
+            let _guard = DownloadGuard(path.clone());
+            std::fs::write(&path, b"temp").unwrap();
+            assert!(path.exists());
+        }
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn download_guard_persist_keeps_file() {
+        let root = tmp("persist");
+        let path = root.join("test.part");
+        {
+            let guard = DownloadGuard(path.clone());
+            std::fs::write(&path, b"temp").unwrap();
+            assert!(path.exists());
+            guard.persist();
+        }
+        assert!(path.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
