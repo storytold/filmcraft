@@ -19,6 +19,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Most pictures one `decode` call may start: a chunk is an access unit, or a few in a transport
+/// stream packet. Each picture is a full frame, and small slices make them cheap to ask for.
+const MAX_PICTURES_PER_CALL: usize = 64;
+
 /// The decoder supports at most 16 reference pictures, so constructing more
 /// inferred gap pictures cannot improve a usable reference list.
 const MAX_INFERRED_GAP_FRAMES: u32 = 16;
@@ -91,6 +95,8 @@ pub struct Decoder {
     dpb: Dpb<FrameRef>,
     poc_state: PocState,
     prev_ref_frame_num: u32,
+    /// Pictures started by the current `decode` call (see [`MAX_PICTURES_PER_CALL`]).
+    call_pictures: usize,
     pending: Option<PendingPic>,
     next_id: u32,
     active_sps: Option<Arc<Sps>>,
@@ -152,6 +158,7 @@ impl Decoder {
             dpb: Dpb::new(),
             poc_state: PocState::default(),
             prev_ref_frame_num: 0,
+            call_pictures: 0,
             pending: None,
             next_id: 1,
             active_sps: None,
@@ -253,6 +260,7 @@ impl Decoder {
             Some(n) => length_prefixed_nals(data, n)?,
             None => annexb_nals(data),
         };
+        self.call_pictures = 0;
         let mut result = Ok(());
         for nal in nals {
             if let Err(e) = self.handle_nal(nal, pts) {
@@ -431,6 +439,10 @@ impl Decoder {
     }
 
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pts: i64) -> Result<()> {
+        self.call_pictures += 1;
+        if self.call_pictures > MAX_PICTURES_PER_CALL {
+            return Err(Error::Invalid("too many pictures in one chunk".into()));
+        }
         // Activate SPS; a resolution change flushes the DPB.
         let changed = match &self.active_sps {
             None => true,
