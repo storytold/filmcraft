@@ -30,7 +30,7 @@ pub struct MaskSel {
 }
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: has_seq, run, journal: true }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: has_seq, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -74,6 +74,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: select,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "masks.list",
@@ -84,6 +85,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: list,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }
