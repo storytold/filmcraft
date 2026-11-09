@@ -312,7 +312,7 @@ pub fn parse_lacing(lacing: Lacing, data: &[u8]) -> Result<Vec<(usize, usize)>> 
         return invalid("lace sizes exceed block");
     }
     sizes.push(data.len() - pos - used);
-    if sizes.iter().any(|&size| size == 0) {
+    if sizes.contains(&0) {
         return invalid("empty laced frame");
     }
     let mut out = Vec::with_capacity(count);
