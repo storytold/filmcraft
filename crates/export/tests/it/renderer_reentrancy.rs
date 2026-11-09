@@ -32,6 +32,10 @@ impl FrameRenderer for YieldingRenderer {
         RENDERED.fetch_add(1, Ordering::Relaxed);
         Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
 }
 
 fn factory() -> Option<Box<dyn FrameRenderer>> {
