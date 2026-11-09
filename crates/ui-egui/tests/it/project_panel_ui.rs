@@ -1805,6 +1805,36 @@ fn drag_into_bin(view: &str, maximized: bool) {
     assert_eq!(parent(&mut d), Some(target), "{ctx}: the item moved into the bin");
 }
 
+/// #4462 review: an Icon view card scrolled out of the panel is registered clipped to nothing;
+/// a click or drag by its id is refused instead of landing on the panel's chrome or another panel.
+#[test]
+fn input_by_id_refuses_a_card_scrolled_out_of_view() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.exec("project.view.set", json!({"view": "icon"}));
+    for _ in 0..30 {
+        d.exec("file.newBlackVideo", json!({}));
+    }
+    d.exec("project.select", json!({"items": []}));
+    d.frames(3);
+    let v = d.ok("ui.elements", json!({"prefix": "project.item."}));
+    let hidden = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["rect"][3].as_f64().is_some_and(|h| h <= 0.0))
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .expect("a card below the panel's end");
+    let before = d.app().session.state.project_selection.clone();
+    let click = d.call("ui.click", json!({"id": hidden}));
+    assert_eq!(click["ok"], json!(false), "click on {hidden}: {click}");
+    let drag = d.call("ui.drag", json!({"from": {"id": hidden}, "to": {"id": "panel.Timeline"}}));
+    assert_eq!(drag["ok"], json!(false), "drag from {hidden}: {drag}");
+    d.frames(3);
+    assert_eq!(d.app().session.state.project_selection, before, "nothing was clicked");
+}
+
 #[test]
 fn a_dragged_item_moves_into_a_bin_in_list_view() {
     drag_into_bin("list", false);
