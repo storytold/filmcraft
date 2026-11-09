@@ -1,4 +1,4 @@
-//! Headless UI tests of colour features: the Lumetri Color panel's LUT menus and section
+//! Headless UI tests of colour features: the Color Grading panel's LUT menus and section
 //! switches, Interpret Footage ▸ Color Management and the sequence colour settings, driven by
 //! automation id through the control channel.
 //!
@@ -173,7 +173,7 @@ fn effect_controls_lut_rows_pick_a_lut() {
     let clip = select_first_clip(&mut d);
     d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
     d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
-    // maximized, so the Lumetri rows fit
+    // maximized, so the Color Grading rows fit
     d.ok("ui.set", json!({"focused": "EffectControls"}));
     d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
     d.frames(4);
@@ -394,7 +394,7 @@ fn lumetri_presets_in_the_effects_panel() {
     d.click("effects.folder.Lumetri Presets/Monochrome");
     let rows = d.ids("effects.lumetriPreset.");
     assert!(rows.iter().any(|r| r == "effects.lumetriPreset.Neutral Mono"), "{rows:?}");
-    // double-click a preset row: Lumetri Color configured as the preset on the selected clip
+    // double-click a preset row: Color Grading configured as the preset on the selected clip
     d.ok("ui.click", json!({"id": "effects.lumetriPreset.Neutral Mono", "button": "right"}));
     d.frames(3);
     d.click("effects.presetMenu.apply");
@@ -407,7 +407,7 @@ fn lumetri_presets_in_the_effects_panel() {
     assert!(!d.ids("effects.presetGrid").is_empty(), "no grid: {:?}", d.ids("effects."));
     let cells = d.ids("effects.presetGrid.");
     assert!(cells.iter().any(|c| c == "effects.presetGrid.Sepia Tone"), "{cells:?}");
-    d.click("effects.folder.Lumetri Presets/Cinematic");
+    d.click("effects.folder.Color Grading Presets/Cinematic");
     let cells = d.ids("effects.presetGrid.");
     assert!(cells.iter().any(|c| c == "effects.presetGrid.Golden Dusk"), "{cells:?}");
     d.snapshot("color-lumetri-presets-grid", None);
@@ -427,8 +427,8 @@ fn lumetri_presets_drag_onto_a_timeline_clip() {
     let selected = select_first_clip(&mut d);
     let seq = d.exec("sequence.inspect", json!({}));
     let target = seq["video"][0]["items"][1]["clip"].as_u64().unwrap_or_else(|| panic!("no second clip: {seq}"));
-    d.click("effects.folder.Lumetri Presets");
-    d.click("effects.folder.Lumetri Presets/Monochrome");
+    d.click("effects.folder.Color Grading Presets");
+    d.click("effects.folder.Color Grading Presets/Monochrome");
     d.frames(2);
     assert!(d.element(&format!("timeline.clip.{target}")).is_some(), "target clip not on screen");
     d.ok("ui.drag", json!({"from": {"id": "effects.lumetriPreset.Neutral Mono"}, "to": {"id": format!("timeline.clip.{target}")}, "steps": 8}));
@@ -499,7 +499,7 @@ fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
     assert_eq!(over(&mut d, c), json!("slog3-sgamut3cine"));
     assert_eq!(over(&mut d, a), before[0]);
 }
-/// #2682: a curve point dragged in Lumetri Color is one undo step: Cmd+Z puts the curve back, and
+/// #2682: a curve point dragged in Color Grading is one undo step: Cmd+Z puts the curve back, and
 /// Cmd+Shift+Z brings the edit back.
 #[test]
 fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
@@ -542,7 +542,7 @@ fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
     assert_eq!(curve(&mut d), edited, "one Cmd+Z undoes the second drag only");
 }
 
-/// #3431: a plain click on the Lumetri luma curve places a point where it landed; a click away
+/// #3431: a plain click on the Color Grading luma curve places a point where it landed; a click away
 /// from the curve adds nothing.
 #[test]
 fn a_click_on_the_lumetri_curve_places_a_point() {
@@ -573,7 +573,7 @@ fn a_click_on_the_lumetri_curve_places_a_point() {
 
 #[test]
 fn lumetri_panel_menu_offers_export_cube() {
-    // #4127: the Lumetri Color panel menu has Export .cube… for the selected clip's grade
+    // #4127: the Color Grading panel menu has Export .cube… for the selected clip's grade
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Color"}));
     d.frames(3);

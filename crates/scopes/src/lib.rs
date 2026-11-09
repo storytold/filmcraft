@@ -43,7 +43,7 @@ pub const SKIN_TONE_DEG: f32 = 123.0;
 
 // ------------------------------------------------------------------------------------ settings
 
-/// A scope of the Lumetri Scopes panel.
+/// A scope of the Video Scopes panel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScopeKind {
