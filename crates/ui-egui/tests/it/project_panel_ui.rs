@@ -812,6 +812,39 @@ fn new_bin_then_clear_removes_the_bin() {
     assert_eq!(d.app().session.project.items.len(), items0, "clips already in the project stay");
 }
 
+/// #4382: Ctrl/Cmd-click and Shift-click select several bins, as they do items, and Delete then
+/// removes every selected bin in one undo step (it used to remove only the bin clicked last).
+#[test]
+fn several_bins_selected_are_deleted_at_once() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let bins: Vec<u64> =
+        ["Zz cleanup 1", "Zz cleanup 2", "Zz cleanup 3"].iter().map(|n| d.exec("file.newBin", json!({"name": n}))["bin"].as_u64().unwrap()).collect();
+    let (a, b, c) = (bins[0], bins[1], bins[2]);
+    let items0 = d.app().session.project.items.len();
+    d.frames(3);
+    let y = |d: &mut Driver, bin: u64| d.rect(&format!("project.bin.{bin}"))[1];
+    assert!(y(&mut d, a) < y(&mut d, b) && y(&mut d, b) < y(&mut d, c), "rows in name order");
+    let selected = |d: &mut Driver| [a, b, c].map(|bin| d.has(&format!("project.bin.{bin}.selected")));
+    // a plain click, then Shift-click: the range of bins
+    d.click(&format!("project.bin.{a}"));
+    d.ok("ui.click", json!({"id": format!("project.bin.{c}"), "modifiers": {"shift": true}}));
+    d.frames(2);
+    assert_eq!(selected(&mut d), [true, true, true], "Shift-click selects the range");
+    // Ctrl/Cmd-click toggles one out
+    d.ok("ui.click", json!({"id": format!("project.bin.{b}"), "modifiers": {"command": true}}));
+    d.frames(2);
+    assert_eq!(selected(&mut d), [true, false, true], "Cmd-click toggles");
+    // Delete removes both selected bins, nothing else
+    d.key("Delete");
+    let find = |d: &mut Driver, bin: u64| d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).is_some();
+    assert_eq!([a, b, c].map(|bin| find(&mut d, bin)), [false, true, false], "the selected bins are gone");
+    assert_eq!(d.app().session.project.items.len(), items0);
+    // in one undo step
+    d.exec("edit.undo", json!({}));
+    assert_eq!([a, b, c].map(|bin| find(&mut d, bin)), [true, true, true], "one undo puts both back");
+}
+
 /// #2106: with nothing selected, Clear and Automate to Sequence are disabled, as in the ≡ menu: a
 /// click does nothing (it used to only put "Select items to clear" / "select an item" in the
 /// status bar). With an item selected both act.
