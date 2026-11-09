@@ -425,6 +425,36 @@ mod tests {
     }
 
     #[test]
+    fn raw_ac3_rejects_a_truncated_primary_or_sample_rate_change() {
+        let stereo_frame = |sample_rate| {
+            let mut encoder = Encoder::new(Config { codec: Codec::Ac3, sample_rate, bitrate_kbps: 192, mode: CodingMode::Stereo, lfe: false }).unwrap();
+            let pcm = [0.0; 1536];
+            encoder.push(&[pcm.as_slice(); 2]).unwrap().remove(0).data
+        };
+        let first = stereo_frame(RATE);
+        let truncated = [&first[..], &first[..first.len() - 1]].concat();
+        let changed_rate = [&first[..], &stereo_frame(32_000)].concat();
+        for (bytes, reason) in [(truncated, "truncated AC-3 syncframe"), (changed_rate, "changed programme or sample rate")] {
+            let error = filmcraft_codecs::open_bytes("bad.ac3", bytes.into()).err().expect("malformed AC-3 must fail");
+            assert!(error.to_string().contains(reason), "expected {reason}, got {error}");
+        }
+    }
+
+    #[test]
+    fn raw_eac3_rejects_a_truncated_or_orphaned_dependent_frame() {
+        let mut encoder = Encoder::new(Config { codec: Codec::Eac3, sample_rate: RATE, bitrate_kbps: 640, mode: CodingMode::Surround71, lfe: true }).unwrap();
+        let pcm = [0.0; 1536];
+        let mut unit = encoder.push(&[pcm.as_slice(); 8]).unwrap().remove(0).data;
+        let primary_end = craft_audio::ac3::parse_header(&unit).unwrap().frame_bytes;
+        let orphaned = unit[primary_end..].to_vec();
+        unit.truncate(unit.len() - 1);
+        for (bytes, reason) in [(unit, "truncated E-AC-3 dependent frame"), (orphaned, "changed programme or sample rate")] {
+            let error = filmcraft_codecs::open_bytes("bad.eac3", bytes.into()).err().expect("malformed E-AC-3 must fail");
+            assert!(error.to_string().contains(reason), "expected {reason}, got {error}");
+        }
+    }
+
+    #[test]
     fn pre_cancelled_raw_ac3_preserves_existing_destination() {
         let (project, sequence, sources) = fixture(2, true);
         let settings = settings(Format::Ac3, AudioCodec::Ac3, 2, "preserved.ac3");

@@ -691,6 +691,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             AudioCodec::Aac => "AAC",
             AudioCodec::Ac3 => "AC-3",
             AudioCodec::Eac3 => "E-AC-3",
+            AudioCodec::Mp3 => "MP3",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
@@ -737,8 +738,8 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         row(ui, t, tl!("Audio Bitrate"), |ui| {
             let rates = s.audio_bitrate_choices();
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), s.supports_audio_bitrate(*r, seq_sr))).collect();
-            if let Some(i) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0) {
-                s.audio.bitrate_kbps = rates[i];
+            if let Some(&rate) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0).and_then(|i| rates.get(i)) {
+                s.audio.bitrate_kbps = rate;
             }
         });
     } else {

@@ -180,7 +180,12 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
-`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without
+`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`,
+`lumetri.exportCube {clip?, path, size?=33}` (the clip's Lumetri grade, an Apply Match result too,
+sampled on a 2..65 lattice in the sequence's output encoding and written as a 3D `.cube`; the
+result's `leftOut` names what a LUT cannot hold: vignette, sharpen, HSL Secondary denoise and blur,
+and the clip's other effects; Rec. 709 sequences without wide gamut only; the Lumetri panel menu
+entry `panel.menu.LumetriColor.exportCube` asks for the path). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,

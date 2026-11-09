@@ -384,6 +384,30 @@ pub(crate) fn eac3_71_descriptor(payload: &[u8]) -> bool {
     channel_mode == 7 && lfe && dependents == 1 && channel_locations == 2
 }
 
+#[cfg(test)]
+mod eac3_descriptor_tests {
+    use super::eac3_71_descriptor;
+
+    #[test]
+    fn only_the_supported_dependent_rear_pair_signals_seven_one() {
+        // Annex F dec3: 640 kbps, 48 kHz, bsid 16, 3/2 + LFE and one rear-pair substream.
+        let valid = [0x14, 0, 0x20, 0x0f, 2, 2];
+        assert!(eac3_71_descriptor(&valid));
+        assert!(!eac3_71_descriptor(&valid[..5]), "missing channel location byte");
+        for (index, value, reason) in [
+            (1, 1, "two independent substreams"),
+            (3, 0x0d, "different independent channel mode"),
+            (3, 0x0e, "missing LFE"),
+            (4, 4, "two dependent substreams"),
+            (5, 4, "different dependent speaker pair"),
+        ] {
+            let mut invalid = valid;
+            invalid[index] = value;
+            assert!(!eac3_71_descriptor(&invalid), "{reason}");
+        }
+    }
+}
+
 /// The layer (1, 2 or 3) named by the MPEG-1/2 audio frame header that starts `frame`: the 12-bit
 /// sync word (11 bits for MPEG-2.5), then `ID` and the 2-bit `layer` field, 3 for layer I down to 1
 /// for layer III (ISO/IEC 11172-3 §2.4.2.3). `None` without a sync word or for the reserved layer 0.

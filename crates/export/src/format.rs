@@ -72,6 +72,10 @@ pub enum Format {
     /// Raw Enhanced AC-3 access units, including dependent substreams.
     #[serde(rename = "eac3", alias = "Eac3")]
     Eac3,
+    /// MP3: the mix alone, MPEG-1 (or, at 16-24 kHz, MPEG-2) Audio Layer III at a constant bit
+    /// rate in a plain `.mp3` stream, from our own encoder (`filmcraft-mp3enc`).
+    #[serde(rename = "mp3", alias = "Mp3")]
+    Mp3,
     /// FLAC (RFC 9639): lossless compressed audio.
     #[serde(rename = "flac", alias = "Flac")]
     Flac,
@@ -110,6 +114,7 @@ impl Format {
             "aac" | "aacaudio" | "m4a" | "adts" => Format::Aac,
             "ac3" | "dolbydigital" => Format::Ac3,
             "eac3" | "ec3" | "dolbydigitalplus" => Format::Eac3,
+            "mp3" | "mp3audio" | "mpeg3" | "mpeglayer3" => Format::Mp3,
             "flac" | "fla" => Format::Flac,
             _ => return None,
         })
@@ -137,6 +142,7 @@ impl Format {
             Format::Aac => "aac",
             Format::Ac3 => "ac3",
             Format::Eac3 => "eac3",
+            Format::Mp3 => "mp3",
             Format::Flac => "flac",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
@@ -159,6 +165,7 @@ impl Format {
             Format::Aac => "m4a",
             Format::Ac3 => "ac3",
             Format::Eac3 => "eac3",
+            Format::Mp3 => "mp3",
             Format::Flac => "flac",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
@@ -185,6 +192,7 @@ impl Format {
             Format::Aac => "AAC Audio",
             Format::Ac3 => "AC-3 Audio",
             Format::Eac3 => "E-AC-3 Audio",
+            Format::Mp3 => "MP3",
             Format::Flac => "FLAC",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
@@ -212,9 +220,9 @@ impl Format {
     pub fn has_builtin_encoder(self) -> bool {
         !matches!(self, Format::Hevc | Format::Av1)
     }
-    /// Sound without picture: Waveform Audio, AIFF, AAC Audio and FLAC.
+    /// Sound without picture, with no video encoder or frame sequence.
     pub fn is_audio_only(self) -> bool {
-        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Ac3 | Format::Eac3 | Format::Flac)
+        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Ac3 | Format::Eac3 | Format::Mp3 | Format::Flac)
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
@@ -228,7 +236,7 @@ impl Format {
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
-    pub const ALL: [Format; 23] = [
+    pub const ALL: [Format; 24] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -249,6 +257,7 @@ impl Format {
         Format::Aac,
         Format::Ac3,
         Format::Eac3,
+        Format::Mp3,
         Format::Flac,
         Format::MxfOp1a,
         Format::MxfOpAtom,
@@ -507,6 +516,7 @@ impl ExportSettings {
         match self.audio_codec() {
             AudioCodec::Ac3 => &[96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640],
             AudioCodec::Eac3 => &[96, 128, 160, 192, 256, 320, 384, 448, 512, 640, 768, 1024],
+            AudioCodec::Mp3 => &[64, 96, 128, 160, 192, 256, 320],
             _ => &[128, 160, 192, 256, 320],
         }
     }
