@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn stream_number_supports_decimal_and_hex_ids() {
+    assert_eq!(Stream::number(b"10dc"), Some(10));
+    assert_eq!(Stream::number(b"0adc"), Some(10));
+    assert_eq!(Stream::number(b"00dc"), Some(0));
+    assert_eq!(Stream::number(b"09wb"), Some(9));
+    assert_eq!(Stream::number(b"0Fdc"), Some(15));
+    // `from_str_radix` would take a sign; a chunk id never has one
+    assert_eq!(Stream::number(b"+1dc"), None);
+    assert_eq!(Stream::number(b"ixdc"), None);
+}
+
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut v = id.to_vec();
     v.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -351,4 +363,73 @@ fn opendml_repeated_index_offsets_are_read_once() {
     assert!(read_odml(&file, &mut streams));
     assert_eq!(streams[0].chunks.len(), 3);
     assert_eq!(streams[1].chunks.len(), 2);
+}
+
+/// Tiny `AVIX` forms whose `movi` lists claim the rest of the file: each list is held to its
+/// form, so the chunks after them are neither recorded once per list nor recorded at all.
+#[test]
+fn lists_do_not_reach_past_their_container() {
+    let mut file = avi(false, false, false);
+    let forms = 64;
+    for _ in 0..forms {
+        let mut riff = b"RIFF".to_vec();
+        riff.extend_from_slice(&16u32.to_le_bytes());
+        riff.extend_from_slice(b"AVIX");
+        riff.extend_from_slice(b"LIST");
+        riff.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        riff.extend_from_slice(b"movi");
+        file.extend(riff);
+    }
+    for _ in 0..32 {
+        file.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let f = open(&file).unwrap();
+    assert_eq!(f.index, IndexSource::Scan);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true)]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+
+    // `rec ` lists inside one `movi` that each claim the rest of it
+    let mut body = Vec::new();
+    for _ in 0..64 {
+        // LIST(16) rec  { LIST(huge) rec  … }
+        body.extend_from_slice(b"LIST");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(b"rec LIST");
+        body.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        body.extend_from_slice(b"rec ");
+    }
+    for _ in 0..32 {
+        body.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let mut streams = open(&avi(false, false, false)).unwrap().streams;
+    clear(&mut streams);
+    let movi = list(b"movi", &body);
+    scan(&movi, &mut streams, &|_| true, 12, movi.len() as u64, 0);
+    assert_eq!(streams[0].chunks.len(), 32);
+}
+
+#[test]
+fn read_chunk_range_reads_only_the_range_and_refuses_one_outside_the_chunk() {
+    let data: Vec<u8> = (0..100).collect();
+    let stream = Stream {
+        kind: StreamKind::Audio,
+        handler: [0; 4],
+        scale: 1,
+        rate: 1,
+        start: 0,
+        length: 0,
+        sample_size: 0,
+        video: None,
+        audio: None,
+        name: None,
+        chunks: vec![Chunk { offset: 10, size: 50, key: true }],
+        keyframes_known: false,
+        super_index: Vec::new(),
+    };
+    let file = AviFile { header: MainHeader::default(), streams: vec![stream], index: IndexSource::Scan };
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 5, 3).unwrap(), [15, 16, 17]);
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 0, 50).unwrap().len(), 50);
+    assert!(file.read_chunk_range(&data, 0, 0, 48, 3).is_err(), "past the chunk's size");
+    assert!(file.read_chunk_range(&data, 0, 0, usize::MAX, 2).is_err());
+    assert!(file.read_chunk_range(&data, 0, 1, 0, 1).is_err());
 }
