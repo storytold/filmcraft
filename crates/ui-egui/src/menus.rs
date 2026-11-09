@@ -268,12 +268,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             }
             "edit.clear" => {
                 app.ui.project_panel.rename = None;
-                let project_params = crate::panels::project_views::clear_params(
+                let Some(project_params) = crate::panels::project_views::clear_params(
                     &app.session.state.project_selection,
                     app.ui.project_panel.selected_bin,
                     &app.ui.project_panel.selected_bins,
-                )
-                .ok_or("select an item or bin in the Project panel")?;
+                ) else {
+                    return report_project_command(app, Err("select an item or bin in the Project panel".into()));
+                };
                 let result = app.session.execute("project.delete", project_params).map_err(|e| e.to_string());
                 if result.is_ok() {
                     app.ui.project_panel.selected_bin = None;
@@ -1684,6 +1685,25 @@ mod tests {
         invoke(&mut app, &ctx, "edit.clear", json!({})).unwrap();
         assert!(app.session.project.item(pasted).is_none());
         assert!(app.session.project.item(source).is_some());
+    }
+
+    /// Clear with nothing selected in the Project panel says so in the status bar, like the other
+    /// Edit commands, instead of failing silently.
+    #[test]
+    fn project_clear_with_nothing_selected_reports_in_the_status_bar() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.state.project_selection.clear();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Project;
+        app.ui.project_panel.selected_bin = None;
+        app.ui.project_panel.selected_bins.clear();
+        app.ui.status.clear();
+        let items = app.session.project.items.len();
+
+        assert!(invoke(&mut app, &egui::Context::default(), "edit.clear", json!({})).is_err());
+        assert_eq!(app.ui.status, "select an item or bin in the Project panel");
+        assert_eq!(app.session.project.items.len(), items, "nothing is deleted");
     }
 
     #[test]
