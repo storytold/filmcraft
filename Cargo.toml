@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.16.0"
+version = "0.17.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -36,6 +36,7 @@ filmcraft-apv = { path = "crates/apv" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-mp3enc = { path = "crates/mp3enc" }
 filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
@@ -83,6 +84,8 @@ craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs",
 # feature. FilmCraft paints ✔ ✓ ✖ ⚡ ⚠ ⚙ ♪ ☑ in panel chrome, so both features are part of the
 # production font policy (system_fonts stays off).
 egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
+# Resizable table columns (About ▸ Contributors / Models); no image loaders.
+egui_extras = { version = "0.37", default-features = false }
 eframe = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
@@ -137,6 +140,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-mp3enc]
 opt-level = 3
 
 [profile.dev.package.filmcraft-flac]
