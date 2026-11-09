@@ -548,6 +548,22 @@ pub struct JournalMeta {
     pub dirty: bool,
 }
 
+fn write_journal_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let meta_bytes = serde_json::to_vec_pretty(meta).unwrap_or_default();
+    let meta_path = dir.join(META);
+    let snapshot_path = dir.join(SNAPSHOT);
+    if meta.dirty {
+        // On a clean-to-dirty transition, publish dirty metadata first. If replacing the
+        // snapshot is interrupted, recovery must keep the previous snapshot rather than delete it.
+        write(&meta_path, &meta_bytes)?;
+        write(&snapshot_path, snapshot)
+    } else {
+        // For a clean snapshot, leave dirty metadata in place until the new snapshot is durable.
+        write(&snapshot_path, snapshot)?;
+        write(&meta_path, &meta_bytes)
+    }
+}
+
 fn journal_dirty_by_default() -> bool {
     true
 }
@@ -1094,9 +1110,7 @@ impl Worker {
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
         meta.dirty = s.content_dirty;
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        let r = write_journal_pair(&self.session_dir, &bytes, &meta, filmcraft_format::atomic_write);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
@@ -1221,6 +1235,34 @@ mod durability_tests {
 mod worker_failure_tests {
     use super::*;
     use crate::{Event, Session};
+
+    #[test]
+    fn dirty_metadata_precedes_a_snapshot_replacement() {
+        let dir = std::env::temp_dir().join(format!("fc-dirty-journal-order-{}-{}", std::process::id(), unix_now()));
+        fs::create_dir_all(&dir).unwrap();
+        let snapshot_path = dir.join(SNAPSHOT);
+        let meta_path = dir.join(META);
+        let old_snapshot = b"last clean view-only snapshot";
+        fs::write(&snapshot_path, old_snapshot).unwrap();
+        fs::write(&meta_path, serde_json::to_vec(&JournalMeta { dirty: false, revision: 1, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        let mut snapshot_write_attempted = false;
+        let result = write_journal_pair(&dir, b"new dirty snapshot", &JournalMeta { dirty: true, revision: 2, ..JournalMeta::default() }, |path, bytes| {
+            if path == snapshot_path {
+                snapshot_write_attempted = true;
+                return Err(io::Error::other("interrupted snapshot replacement"));
+            }
+            fs::write(path, bytes)
+        });
+
+        assert!(result.is_err());
+        assert!(snapshot_write_attempted);
+        assert_eq!(fs::read(snapshot_path).unwrap(), old_snapshot);
+        let meta: JournalMeta = serde_json::from_slice(&fs::read(meta_path).unwrap()).unwrap();
+        assert!(meta.dirty, "recovery must retain the old snapshot after a failed dirty update");
+        assert_eq!(meta.revision, 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn session(tag: &str, offset: fn(i64) -> i32) -> (Session, PathBuf) {
         let dir = std::env::temp_dir().join(format!("fc-worker-{tag}-{}", std::process::id()));
