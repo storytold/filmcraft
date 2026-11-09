@@ -435,6 +435,7 @@ fn unreadable_overlay_keeps_lower_tracks_visible() {
     }
 }
 
+/// Bound tiny and long-name badges while preserving premultiplied pixels and opaque offline slates.
 #[test]
 fn unreadable_badge_is_confined_and_premultiplied() {
     use crate::offline::{OfflineReason, slate, slate_rgba8};
