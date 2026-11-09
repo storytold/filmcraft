@@ -73,7 +73,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            let mut items: Vec<_> = defs.iter().filter(|d| d.category.first() == Some(&top)).filter(|d| crate::i18n::matches_query(d.name, filter)).collect();
+            let mut items: Vec<_> = defs.iter().filter(|d| d.category.first() == Some(&top)).filter(|d| matches_effect(d, filter)).collect();
             // Premiere lists effect folders and effects alphabetically (obsolete ones last)
             if top == "Video Effects" || top == "Legacy" {
                 items.sort_by_key(|d| (d.category.get(1) == Some(&"Obsolete"), d.category.get(1).copied().unwrap_or(""), d.name.to_ascii_lowercase()));
@@ -217,6 +217,12 @@ fn presets_folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, dept
         open = !filter.is_empty() || app.ui.expanded_fx.iter().any(|k| k == key);
     }
     open
+}
+
+/// Whether the Effects panel's search shows `d` for `filter`: its label in the interface language,
+/// or a name the effect used to have (`"Lumetri"` still finds Color Grading).
+fn matches_effect(d: &filmcraft_project::EffectDef, filter: &str) -> bool {
+    crate::i18n::matches_query(d.name, filter) || filmcraft_project::search_aliases(d).iter().any(|alias| crate::i18n::matches_query(alias, filter))
 }
 
 fn folder_key_matches(saved: &str, key: &str) -> bool {
@@ -428,6 +434,30 @@ mod tests {
             assert!(app.auto.find("effects.item.light_leaks").is_some(), "query `{query}` through effects search caller must find `light_leaks`",);
         }
         crate::i18n::set_current(crate::i18n::Language::En);
+    }
+
+    /// #1868: the search still finds Color Grading by the names it used to have, so someone who
+    /// types "Lumetri" is not left with an empty panel.
+    #[test]
+    fn effects_search_finds_grading_by_its_old_names() {
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
+        let shows = |app: &mut FilmcraftApp, query: &str| {
+            app.ui.effects_search = query.to_string();
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(app, ui, rect);
+            });
+            out.textures_delta.clear();
+            app.auto.find("effects.item.lumetri").is_some()
+        };
+        for query in ["Lumetri", "lumetri color", "LUMETRI", "Color Grade", "Color Grading"] {
+            assert!(shows(&mut app, query), "query `{query}` must find Color Grading");
+        }
+        for query in ["Gaussian", "Ultra", "Scopes"] {
+            assert!(!shows(&mut app, query), "query `{query}` must not show Color Grading");
+        }
     }
 }
 
