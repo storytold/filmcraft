@@ -353,32 +353,45 @@ fn ducking_says_how_many_volume_keyframes_it_replaced() {
     // #4026: ducking replaces the Volume level keyframes (a fade written before it is lost), and the
     // result says how many it replaced on each clip
     let dlg = speech(10.0, 0.4, |t| (2.0..4.0).contains(&t));
-    let (mut s, c) = session_with(&[(dlg, 0.0), (tone(10.0, 220.0, 0.2), 0.0), (tone(10.0, 330.0, 0.2), 0.0)]);
-    let (faded, plain) = (c[1], c[2]);
+    let music = |hz| (tone(10.0, hz, 0.2), 0.0);
+    let (mut s, c) = session_with(&[(dlg, 0.0), music(220.0), music(330.0), music(440.0)]);
+    let (faded, plain, bare) = (c[1], c[2], c[3]);
     s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
-    s.execute("essentialSound.setType", json!({"clips": [faded.0, plain.0], "type": "music"})).unwrap();
-    s.execute("essentialSound.set", json!({"clips": [faded.0, plain.0], "values": {"ducking.enabled": true}})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips": [faded.0, plain.0, bare.0], "type": "music"})).unwrap();
+    s.execute("essentialSound.set", json!({"clips": [faded.0, plain.0, bare.0], "values": {"ducking.enabled": true}})).unwrap();
+    // a clip without a Volume effect (as a hand-edited project file can have) has none to replace
+    let seq_id = s.state.active_sequence.unwrap();
+    s.edit("drop volume", |pr, _| {
+        let (_, it) = pr.sequence_mut(seq_id).unwrap().find_item_mut(bare).unwrap();
+        it.effects.retain(|e| e.effect != "volume");
+        Ok(())
+    })
+    .unwrap();
+    assert!(item(&s, bare).effect("volume").is_none());
     let level = |s: &Session, c: ClipId| item(s, c).effect("volume").unwrap().param("level").unwrap().clone();
-    let replaced = |r: &Value, c: ClipId| {
-        let clip = r["clips"].as_array().unwrap().iter().find(|x| x["clip"] == c.0).unwrap();
-        clip["replacedKeyframes"].as_u64().unwrap()
-    };
+    let clip_of = |r: &Value, c: ClipId| r["clips"].as_array().unwrap().iter().find(|x| x["clip"] == c.0).unwrap().clone();
+    let replaced = |r: &Value, c: ClipId| clip_of(r, c)["replacedKeyframes"].as_u64().unwrap();
     // a fade-out at 8 to 9 s on one music clip only
     for (t, v) in [(8.0, 0.0), (9.0, -60.0)] {
         let t = Tick::from_seconds_f64(t).0;
         s.execute("effects.setParam", json!({"clip": faded.0, "effect": "volume", "param": "level", "value": v, "keyframe": true, "time": t})).unwrap();
     }
-    assert_eq!(level(&s, faded).keyframes.len(), 2);
+    let fade: Vec<Tick> = level(&s, faded).keyframes.iter().map(|k| k.time).collect();
+    assert_eq!(fade.len(), 2);
     assert!(level(&s, plain).keyframes.is_empty());
-    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0]})).unwrap();
-    assert_eq!((replaced(&r, faded), replaced(&r, plain)), (2, 0), "counted per clip: {r}");
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0, bare.0]})).unwrap();
+    assert_eq!((replaced(&r, faded), replaced(&r, plain), replaced(&r, bare)), (2, 0, 0), "counted per clip: {r}");
+    // the fade is gone: the level holds exactly the ducking keyframes the result lists
     let lvl = level(&s, faded);
-    assert!(!lvl.keyframes.is_empty());
-    assert!(lvl.keyframes.iter().all(|k| k.value.as_f64() != Some(-60.0)), "the fade is replaced, not kept: {lvl:?}");
+    let want: Vec<f64> = clip_of(&r, faded)["keyframes"].as_array().unwrap().iter().map(|k| k["levelDb"].as_f64().unwrap()).collect();
+    let got: Vec<f64> = lvl.keyframes.iter().map(|k| k.value.as_f64().unwrap()).collect();
+    assert!(!want.is_empty());
+    assert_eq!(got, want, "only the ducking keyframes: {lvl:?}");
+    assert!(lvl.keyframes.iter().all(|k| !fade.contains(&k.time)), "no fade keyframe is kept: {lvl:?}");
     // regenerating replaces the ducking keyframes themselves
-    let (n_faded, n_plain) = (level(&s, faded).keyframes.len() as u64, level(&s, plain).keyframes.len() as u64);
-    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0]})).unwrap();
-    assert_eq!((replaced(&r, faded), replaced(&r, plain)), (n_faded, n_plain), "{r}");
+    let (n_faded, n_plain) = (lvl.keyframes.len() as u64, level(&s, plain).keyframes.len() as u64);
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [faded.0, plain.0, bare.0]})).unwrap();
+    assert_eq!((replaced(&r, faded), replaced(&r, plain), replaced(&r, bare)), (n_faded, n_plain, 0), "{r}");
 }
 
 /// Run `sig` through one Dialogue repair setting and return (input, output) over 1…len−0.5 s.
