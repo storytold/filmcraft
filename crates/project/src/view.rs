@@ -218,6 +218,14 @@ impl TimelineUiSettings {
         self.video_indicator_color = normalize_hex_color(&self.video_indicator_color).unwrap_or_else(|| "#64b5f6".to_string());
         self.audio_indicator_color = normalize_hex_color(&self.audio_indicator_color).unwrap_or_else(|| "#2e7d32".to_string());
         self.offline_indicator_color = normalize_hex_color(&self.offline_indicator_color).unwrap_or_else(|| "#d32f2f".to_string());
+        for binding in
+            [&mut self.control_center_on_playhead, &mut self.control_explode_slider, &mut self.control_alternate_drag_speed, &mut self.control_settings]
+        {
+            // Bindings are display text from project files; keep them within UI layout bounds.
+            if binding.len() > 48 || binding.chars().any(char::is_control) {
+                binding.clear();
+            }
+        }
         self
     }
 
@@ -307,6 +315,10 @@ mod tests {
             video_indicator_color: "x".repeat(64),
             audio_indicator_color: "#2e7d32".to_string(),
             offline_indicator_color: "z".repeat(200),
+            control_center_on_playhead: "x".repeat(49),
+            control_explode_slider: "x\n".to_string(),
+            control_alternate_drag_speed: "y".repeat(49),
+            control_settings: "z".repeat(49),
             ..TimelineUiSettings::default()
         }
         .checked();
@@ -322,6 +334,10 @@ mod tests {
         assert_eq!(s.video_indicator_color, "#64b5f6");
         assert_eq!(s.audio_indicator_color, "#2e7d32");
         assert_eq!(s.offline_indicator_color, "#d32f2f");
+        assert!(s.control_center_on_playhead.is_empty());
+        assert!(s.control_explode_slider.is_empty());
+        assert!(s.control_alternate_drag_speed.is_empty());
+        assert!(s.control_settings.is_empty());
         assert_eq!(s.max_zoom_secs(), 3.0);
     }
 
