@@ -865,3 +865,24 @@ fn clicking_a_controls_box_takes_the_next_key_and_that_key_does_the_action() {
     d.frames(2);
     assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "Reset restores the default gesture");
 }
+#[test]
+fn control_channel_sets_and_reads_back_timeline_slider_preferences() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"invertedControls": true, "maxZoomLevel": 0.3, "trackSliderHidden": true}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["inverted_controls"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(0.3));
+    assert_eq!(settings["track_slider_hidden"], json!(true));
+
+    let rejected_color = d.call("ui.set", json!({"timeline": {
+        "maxZoomLevel": 0.5,
+        "positionIndicatorColor": "#GGGGGG"
+    }}));
+    assert_eq!(rejected_color["ok"], json!(false), "invalid indicator colors reject the whole request");
+    assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
+
+    let rejected = d.call("ui.set", json!({"timeline": {"maxZoomLevel": 3.1}}));
+    assert_eq!(rejected["ok"], json!(false));
+    assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
+}
+

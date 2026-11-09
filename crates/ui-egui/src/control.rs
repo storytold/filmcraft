@@ -255,6 +255,24 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
 #[allow(clippy::cognitive_complexity)]
 fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
+    for (key, min, max) in
+        [("playheadSideSeconds", 0.1, 3600.0), ("shiftDragSpeed", 0.1, 50.0), ("maxZoomLevel", 0.05, 3.0), ("trackSliderShiftDragSpeed", 0.1, 10.0)]
+    {
+        if let Some(value) = tl.get(key) {
+            let valid = value.as_f64().is_some_and(|v| v.is_finite() && (min..=max).contains(&v));
+            if !valid {
+                return Err(format!("timeline.{key} must be a finite number between {min} and {max}"));
+            }
+        }
+    }
+    for key in ["positionIndicatorColor", "videoIndicatorColor", "audioIndicatorColor", "offlineIndicatorColor"] {
+        if let Some(value) = tl.get(key) {
+            let valid = value.as_str().and_then(filmcraft_project::normalize_hex_color).is_some();
+            if !valid {
+                return Err(format!("timeline.{key} must be a valid #rgb or #rrggbb color"));
+            }
+        }
+    }
     let mut view_settings_changed = false;
     // hostile control parameters: NaN or infinite zoom/scroll would poison every rect in the
     // Timeline, so only finite, positive values are accepted. The zoom ceiling is applied by
@@ -779,6 +797,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,
+        "timelineSettings": serde_json::to_value(&app.session.state.timeline_ui).unwrap_or_default(),
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
         "elements": app.auto.all().len(),
