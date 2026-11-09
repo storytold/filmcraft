@@ -296,6 +296,7 @@ fn click_selection(
     (items, bins)
 }
 
+/// Scrolls the Project panel so the selected entry's rectangle is visible.
 fn scroll_selected_into_view(app: &mut FilmcraftApp, ui: &egui::Ui, entry: Entry, rect: Rect) {
     let pending = match entry {
         Entry::Item(id) => app.ui.project_panel.scroll_to_item == Some(id.0),
@@ -313,10 +314,12 @@ fn scroll_selected_into_view(app: &mut FilmcraftApp, ui: &egui::Ui, entry: Entry
     }
 }
 
+/// Returns the entry that Shift-click and Shift-arrow ranges start from.
 fn selection_anchor(app: &FilmcraftApp) -> Option<Entry> {
     app.ui.project_panel.anchor.map(|id| if app.ui.project_panel.anchor_bin { Entry::Bin(BinId(id)) } else { Entry::Item(ItemId(id)) })
 }
 
+/// Applies a click on an entry to the Project panel selection.
 fn apply_click_selection(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, clicked: Entry, actions: &mut Actions) {
     let mods = click_modifiers(ui);
     let order = if mods.shift { entries_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };

@@ -580,6 +580,7 @@ fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
     select_project_entries(app, &new_sel)
 }
 
+/// Selects the given Project panel entries (bins and items) through the session command.
 fn select_project_entries(app: &mut FilmcraftApp, entries: &[crate::panels::project_views::Entry]) -> Result<Value, String> {
     use crate::panels::project_views::Entry;
 
