@@ -197,7 +197,8 @@ pub fn parse(text: &str) -> Result<AleDoc, String> {
 /// Start and end (exclusive) of a data row, in ticks at the heading's rate.
 pub fn row_range(doc: &AleDoc, row: usize) -> Option<(Tick, Tick)> {
     let rate = doc.rate()?;
-    // a label with `;` counts drop-frame, as `export_items` writes a drop-frame clip's
+    // a label with `;` counts drop-frame: `export_items` writes a drop-frame clip's Start and End that
+    // way, so a range it wrote reads back as the same frames
     let frame = |label: &str| parse_timecode(label, rate, label.contains(';'), 0).ok();
     let a = frame(doc.get(row, "Start")?)?;
     let b = frame(doc.get(row, "End")?)?;
