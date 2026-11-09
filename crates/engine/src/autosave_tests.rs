@@ -377,6 +377,24 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
 }
 
 #[test]
+fn auto_save_now_skips_a_view_only_snapshot() {
+    let d = temp_dir("auto-save-view-only");
+    let proj = d.join("view-only.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    start(&mut s, &d);
+    s.execute("file.saveAs", json!({"path": proj})).unwrap();
+    s.view_changed();
+    s.sync_persistence();
+
+    let result = s.execute("file.autoSaveNow", json!({})).unwrap();
+    assert!(result["path"].is_null(), "view-only state must not create an auto-save version: {result}");
+    assert!(s.execute("file.listAutoSaves", json!({})).unwrap()["files"].as_array().unwrap().is_empty());
+
+    s.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     // #894: a stale session with a snapshot must not be deleted because session.json is missing
     // or corrupt — the recovered project would vanish from the list and the file would be gone.
