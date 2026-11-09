@@ -194,7 +194,7 @@ const BUILTIN_LABEL_PRESETS: [(&str, [(&str, &str); 16]); 2] = [
             ("Voice-Over", "#5fd1b5"),
             ("Captions", "#c8b48a"),
             ("Ambience", "#a8754f"),
-            ("Color Grading", "#d64545"),
+            ("Color Grade", "#d64545"),
             ("Stock", "#b5d454"),
         ],
     ),
