@@ -135,24 +135,26 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Zoom about a time (keeps it under the same screen x); returns that x from the view's left edge.
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) -> f32 {
-    let old = v.target_pps;
-    let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
-    let x = ((anchor_secs - v.target_scroll) * old) as f32;
-    let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
+/// Zoom about a time, keeping it where it is drawn now (mid-animation included) and returning that
+/// x from the view's left edge; a time off screen gets `None` and the view eases to centre it.
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) -> Option<f32> {
+    let new = (v.target_pps * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
+    // the drawn view, not the targets: a wheel zoom or scroll still easing has not reached them
+    let x = ((anchor_secs - v.scroll) * v.pps) as f32;
+    let shown = (0.0..=width).contains(&x);
+    let x = if shown { x } else { width / 2.0 };
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
-    x
+    shown.then_some(x)
 }
 
-/// View ▸ Zoom In and Zoom Out (`=` and `-`): zoom about the playhead and hold it at that screen
-/// x on every frame of the eased zoom, not only once it settles, replacing any wheel anchor (#4383).
+/// View ▸ Zoom In and Zoom Out (`=` and `-`): zoom about the playhead and hold a visible one at
+/// its screen x on every frame of the eased zoom, replacing any wheel anchor (#4383).
 pub(crate) fn zoom_playhead(app: &mut FilmcraftApp, factor: f64) {
     let ph = app.session.playhead().seconds();
     let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
     let v = &mut app.ui.timeline;
     // the x before the zoom, so a view held at 0 eases the playhead over instead of jumping it
     let x = zoom_about(v, factor, ph, app.last_timeline_width, seconds);
-    app.tl.zoom_anchor = app.tl.layout.as_ref().map(|l| (ph, l.content.min.x + x));
+    app.tl.zoom_anchor = x.zip(app.tl.layout.as_ref()).map(|(x, l)| (ph, l.content.min.x + x));
 }
