@@ -135,7 +135,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     // Browse… through the async dialog: a synchronous picker here ran the panel modally inside
     // the UI pass, and a Finder drag onto it re-entered the event handler and aborted (#2018).
     if browse && !busy {
-        app.pick_ui(FileDialog::save_as(format, &[ext], &app.ui.export.quick_path), |app, paths| {
+        // named: `quick_file` swaps another format's extension itself
+        app.pick_ui(FileDialog::save_as_named(format, &[ext], &app.ui.export.quick_path), |app, paths| {
             if let Some(p) = paths.first() {
                 app.ui.export.quick_path = p.clone();
             }
