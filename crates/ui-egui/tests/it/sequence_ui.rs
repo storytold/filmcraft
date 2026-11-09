@@ -326,6 +326,8 @@ fn marker_editor_wide_form_and_small_window_keep_actions_accessible() {
     assert!(d.app().ui.marker_properties.is_none());
 }
 
+/// A double-click on a marker flag over the work area bar opens Marker Properties and leaves the
+/// bar, the project and the history alone; a double-click on the bar itself still fits it.
 #[test]
 fn review_marker_double_click_over_work_area_preserves_project_and_history() {
     let mut d = Driver::demo();
@@ -349,7 +351,10 @@ fn review_marker_double_click_over_work_area_preserves_project_and_history() {
             (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() - 0.5) as f32,
         );
         let hit = d.ok("ui.timeline.hit", json!({"x":pos.x,"y":pos.y}));
-        assert_eq!(hit["hit"], "workArea", "the regression must exercise the overlapping hit rectangles");
+        // the point is in both hit rectangles: a start flag wins over the bar since #4491 (a drag
+        // there moves the marker), a range's end flag still overlaps the bar's hit
+        let owner = if id.starts_with("timeline.markerEnd.") { "workArea" } else { "ruler" };
+        assert_eq!(hit["hit"], owner, "the regression must exercise the overlapping hit rectangles");
         d.double_click_at(pos);
         assert_eq!(d.app().ui.marker_properties.as_ref().unwrap().marker, marker);
         assert_eq!(d.app().session.active_sequence().unwrap().work_area, area, "opening marker properties must not change the work area");
