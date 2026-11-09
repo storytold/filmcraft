@@ -11,8 +11,8 @@
 //!    PHAT weighting whitens the spectra, so the peak is sharp and independent of the microphones'
 //!    gains and frequency responses; β < 1 keeps noise-only bins from dominating.
 //! 2. **Refine.** Around the coarse peak, the same correlation is computed at the full sample rate
-//!    on the loudest common window (≤ 2.7 s at 48 kHz), and the peak is refined by parabolic
-//!    interpolation to a fraction of a sample.
+//!    on the loudest common window (≤ 2.7 s at 48 kHz). Its highest peak, of either sign, gives the
+//!    lag and the polarity, and is refined by parabolic interpolation to a fraction of a sample.
 //!
 //! Two figures say how much to trust the result: `confidence`, the coarse peak's height over the
 //! RMS of the correlation, and `distinct`, its height over the highest peak more than 50 ms away
@@ -288,18 +288,21 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     normalise(&mut bw);
     let n2 = (aw.len() + bw.len()).next_power_of_two();
     let r2 = gcc(&aw, &bw, n2, opts.phat_beta, (20.0 / sr as f32, 0.5));
-    // r2[L'] = Σ aw[i + L']·bw[i]; L' = margin + δ
-    let sign = if inverted { -1.0 } else { 1.0 };
+    // r2[L'] = Σ aw[i + L']·bw[i]; L' = margin + δ. The highest peak of either sign sets the lag
+    // and the polarity: when one recording's phase is turned (a band-limited scratch track), the
+    // coarse peak and the opposite-signed lobe beside it can come out nearly equal.
     let mut bl = 0i64;
-    let mut bv = f32::MIN;
+    let mut bv = 0.0f32;
     for l in 0..=2 * margin {
-        let v = corr_at(&r2, l) * sign;
-        if v > bv {
+        let v = corr_at(&r2, l);
+        if v.abs() > bv.abs() {
             bv = v;
             bl = l;
         }
     }
-    let (y0, y1, y2) = (corr_at(&r2, bl - 1) * sign, bv, corr_at(&r2, bl + 1) * sign);
+    let inverted = if bv == 0.0 { inverted } else { bv < 0.0 };
+    let sign = if inverted { -1.0 } else { 1.0 };
+    let (y0, y1, y2) = (corr_at(&r2, bl - 1) * sign, bv * sign, corr_at(&r2, bl + 1) * sign);
     let den = y0 - 2.0 * y1 + y2;
     let frac = if den.abs() > 1e-20 { (0.5 * (y0 - y2) / den).clamp(-0.5, 0.5) } else { 0.0 };
     let delta = bl - margin;
@@ -512,5 +515,43 @@ mod tests {
         assert_eq!(r.lag, 48_000);
         let r = find_offset(&s, &b, sr, &SyncOptions { max_lag: Some(10_000), ..Default::default() }).unwrap();
         assert!(!r.reliable() || r.lag != 48_000);
+    }
+
+    /// A camera's scratch track: `x` through a 400 Hz high-pass and a 2.5 kHz low-pass, with
+    /// echoes 60 and 110 ms later, much quieter, plus noise. The filters turn the phase, so
+    /// next to the correlation peak with the clean recording sits a negative lobe almost as high.
+    fn scratch_track(x: &[f32], sr: u32, seed: u64) -> Vec<f32> {
+        use crate::biquad::{Biquad, Coeffs, FilterType};
+        let q = std::f64::consts::FRAC_1_SQRT_2;
+        let mut y = x.to_vec();
+        Biquad::new().process(&Coeffs::design(FilterType::HighPass, sr as f64, 400.0, q, 0.0), &mut y);
+        Biquad::new().process(&Coeffs::design(FilterType::LowPass, sr as f64, 2500.0, q, 0.0), &mut y);
+        let (d1, d2) = ((0.060 * sr as f64) as usize, (0.110 * sr as f64) as usize);
+        let at = |n: usize, d: usize| if n >= d { y[n - d] } else { 0.0 };
+        let mut rng = Rng::new(seed);
+        (0..y.len()).map(|n| (0.8 * y[n] + 0.5 * at(n, d1) + 0.4 * at(n, d2)) * 0.14 + 0.01 * rng.uniform()).collect()
+    }
+
+    /// At the coarse rate the scratch track's peak and the negative lobe beside it came out nearly
+    /// equal, and the lobe won. The refine then looked only for a negative peak: the result said
+    /// `inverted` and landed about 20 samples early. The full-rate peak now sets both; an inverted
+    /// scratch track is still found inverted.
+    #[test]
+    fn a_band_limited_scratch_track_keeps_its_polarity() {
+        let sr = 48_000u32;
+        let delay = 112_560i64;
+        for seed in [1, 3, 7] {
+            let src = speechy(sr as f64, 24.0, seed);
+            let scratch = scratch_track(&src, sr, 100 + seed);
+            for sign in [1.0f32, -1.0] {
+                // b[n] = scratch[n + delay]
+                let b: Vec<f32> = (0..16 * sr as i64).map(|n| sign * scratch.get((n + delay) as usize).copied().unwrap_or(0.0)).collect();
+                let r = find_offset(&src, &b, sr, &SyncOptions::default()).unwrap();
+                assert_eq!(r.inverted, sign < 0.0, "seed {seed}, sign {sign}: {r:?}");
+                // the filters delay the scratch track by a few samples
+                assert!((r.lag - delay).abs() <= 4, "seed {seed}, sign {sign}: {r:?}");
+                assert!(r.reliable(), "{r:?}");
+            }
+        }
     }
 }
