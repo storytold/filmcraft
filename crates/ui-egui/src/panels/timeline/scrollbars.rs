@@ -1387,14 +1387,7 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 }
 
 /// Extend a short edge run to the semicircle tangent instead of flattening its cap.
-fn minimap_indicator_bounds(
-    mut xa: f32,
-    mut xb: f32,
-    left_tangent: f32,
-    right_tangent: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> (f32, f32) {
+fn minimap_indicator_bounds(mut xa: f32, mut xb: f32, left_tangent: f32, right_tangent: f32, hug_left: bool, hug_right: bool) -> (f32, f32) {
     if hug_left {
         xb = xb.max(left_tangent);
     }
@@ -1410,13 +1403,7 @@ fn minimap_indicator_hugs_edges(index: usize, run_count: usize, left_gap: f32, r
 }
 
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
-fn minimap_indicator_filled(
-    fill_clips: bool,
-    width: f32,
-    min_outline_width: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> bool {
+fn minimap_indicator_filled(fill_clips: bool, width: f32, min_outline_width: f32, hug_left: bool, hug_right: bool) -> bool {
     fill_clips || (width < min_outline_width && !hug_left && !hug_right)
 }
 
@@ -1716,14 +1703,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
             let cap_rr = (bot - top) / 2.0;
-            (xa, xb) = minimap_indicator_bounds(
-                xa,
-                xb,
-                bar.min.x + ins + sh + cap_r,
-                bar.max.x - ins - sh - cap_rr,
-                hug_left,
-                hug_right,
-            );
+            (xa, xb) = minimap_indicator_bounds(xa, xb, bar.min.x + ins + sh + cap_r, bar.max.x - ins - sh - cap_rr, hug_left, hug_right);
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1767,13 +1747,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // "very near the beginning" / "very near the end": within the pill's cap zones
             let (hug_left, hug_right) = minimap_indicator_hugs_edges(index, runs.len(), x0 - bar.min.x, bar.max.x - x1, rad);
             let col = color_for(k);
-            if minimap_indicator_filled(
-                fill,
-                x1 - x0,
-                5.0 * px,
-                hug_left,
-                hug_right,
-            ) {
+            if minimap_indicator_filled(fill, x1 - x0, 5.0 * px, hug_left, hug_right) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
