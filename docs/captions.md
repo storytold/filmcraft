@@ -30,7 +30,9 @@ version 2; version 1 projects open with no caption tracks).
 new caption track to the open sequence (a sequence is created when none is open). Cue times are
 snapped to the sequence's frames. `File ▸ Export ▸ Captions…` (and **Export captions…** in the Text
 panel) opens Caption Export Settings: pick the File Format (SRT, WebVTT, SCC, MCC, EBU STL, TTML or
-DFXP; the last choice is offered next time), then the file name in a save panel that offers only
+DFXP; the last choice is offered next time) and, when the sequence has more than one caption track,
+the Caption Track to write (the Text panel's button offers the track shown there; the menu starts on
+the first track), then the file name in a save panel that offers only
 that format. A name typed with another caption format's extension (`subs.srt` with WebVTT chosen)
 is written in that format, since that is the file the save panel asked about; any other name gets
 the chosen format's extension (`subs` becomes `subs.vtt`). If a file with that new name already
@@ -38,7 +40,9 @@ exists, nothing is exported, because the save panel only asked about replacing t
 For example, with WebVTT chosen, typing `keep` when `keep.vtt` already exists leaves `keep.vtt`
 untouched and the status line says so; choosing `keep.vtt` itself in the save panel, which then asks
 before replacing it, replaces it. Given a `path` (agents, the CLI), `captions.export` takes the
-format from `format` or from the file extension.
+format from `format` or from the file extension. Its result's `warnings` names each character the file
+cannot carry: SCC and MCC drop the ones CEA-608 has no code for (such as …) or send a close one
+(’ as '), and the CEA-708 service in MCC sends `?` for the ones it has no code for (such as —).
 
 Details of each format and the SCC encoder are in [`crates/captions/README.md`](../crates/captions/README.md).
 
@@ -63,7 +67,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `font`, `fontStyle`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
 | `captions.deleteTrack` | | `track` |
-| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`, `format`, `track`, `dropFrame` |
+| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`; import: `name`, `language` (default: the file's TTML `xml:lang`, else `en`); export: `format`, `track`, `dropFrame`. TTML and DFXP exports write the track's language as `xml:lang` |
 | `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
 
 Tracks are addressed by id or `"C1"`, `"C2"`… (top first). Edits are limited by neighbouring

@@ -72,6 +72,23 @@ pub(crate) fn matrix() -> &'static [[f32; 32]; 64] {
     })
 }
 
+/// The 33 distinct rows of [`matrix`] (0..=16 and 48..64), transposed to `[k][row]` and padded
+/// with zeros to 36.
+pub(crate) fn matrix_t() -> &'static [[f32; 36]; 32] {
+    static NT: OnceLock<[[f32; 36]; 32]> = OnceLock::new();
+    NT.get_or_init(|| {
+        let n = matrix();
+        let mut t = [[0f32; 36]; 32];
+        for (k, col) in t.iter_mut().enumerate() {
+            for (r, c) in col.iter_mut().take(33).enumerate() {
+                let i = if r <= 16 { r } else { 48 + r - 17 };
+                *c = n.get(i).and_then(|row| row.get(k)).copied().unwrap_or(0.0);
+            }
+        }
+        t
+    })
+}
+
 /// Scalefactors (Table 3-B.1): `2^(1 - index / 3)`. Index 63 is not used by encoders; it continues
 /// the progression rather than failing the frame.
 pub(crate) fn scalefactor(index: u32) -> f32 {
