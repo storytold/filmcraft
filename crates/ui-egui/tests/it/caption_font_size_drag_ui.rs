@@ -4,6 +4,7 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::{By, NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
@@ -63,8 +64,9 @@ impl Driver {
     }
 
     /// Press on `id`, move by each of `moves` (px) on its own frame, optionally press Escape on move
-    /// `escape_at`, hold still for a few frames, release.
-    fn drag(&mut self, id: &str, moves: &[f32], escape_at: Option<usize>) {
+    /// `escape_at` (0-based), hold still for a few frames, release. Returns what the field showed on
+    /// each hold-still frame.
+    fn drag(&mut self, id: &str, moves: &[f32], escape_at: Option<usize>) -> Vec<f64> {
         let elements = self.ok("ui.elements", json!({"prefix": id}));
         let e = elements.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}"));
         let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
@@ -82,9 +84,24 @@ impl Driver {
             }
             self.frames(1);
         }
-        self.frames(3);
+        let mut shown = Vec::new();
+        for _ in 0..3 {
+            self.frames(1);
+            shown.push(self.shown_at(p));
+        }
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(3);
+        shown
+    }
+
+    /// The number shown by the field the drag at `p` started on: the drag moves the pointer but not
+    /// the field, so it is the field at `p`'s height.
+    fn shown_at(&self, p: egui::Pos2) -> f64 {
+        let y = f64::from(p.y);
+        let mut fields =
+            self.harness.query_all(By::new().predicate(move |n| n.numeric_value().is_some() && n.bounding_box().is_some_and(|b| b.y0 <= y && y <= b.y1)));
+        let field = fields.next().unwrap_or_else(|| panic!("no number field at y {y}"));
+        field.accesskit_node().numeric_value().unwrap()
     }
 
     /// Click `id` to edit it, type `text`, press Return.
@@ -119,11 +136,13 @@ fn dragging_the_size_field_saves_the_new_size() {
     d.type_into(SIZE, "60");
     assert_eq!(size(&mut d), 60.0, "typing sets it");
     let undo = undo_steps(&d);
-    d.drag(SIZE, &GROW_BY_15, None);
+    let shown = d.drag(SIZE, &GROW_BY_15, None);
+    assert_eq!(shown, [75.0; 3], "the field keeps showing the dragged value while the pointer holds still");
     assert_eq!(size(&mut d), 75.0, "the value of the drag's last move, not an earlier one");
     assert_eq!(undo_steps(&d), undo + 1, "one undo step for the drag");
     d.drag(SIZE, &GROW_BY_15, Some(2));
     assert_eq!(size(&mut d), 75.0, "Escape cancels the drag");
+    assert_eq!(undo_steps(&d), undo + 1, "and adds no undo step");
 }
 
 #[test]
