@@ -188,8 +188,8 @@
 	Link Media…	Poveži medije…
 	Linked Selection	Povezani odabir
 	Lock Guides	Zaključaj vodilice
-	Lumetri Color	Lumetri boja
-	Lumetri Scopes	Lumetri skopovi
+	Color Grading	Gradacija boja
+	Video Scopes	Video skopovi
 	Magnification	Uvećanje
 	Make Offline…	Učini nedostupnim…
 	Make Subclip…	Napravi podklip…
@@ -908,7 +908,7 @@
 	Clip Volume	Jačina klipa
 	(no clip selected)	(nije odabran klip)
 	Master · {name}	Glavno · {name}
-	Add Lumetri Color to clip	Dodaj Lumetri boju na klip
+	Add Color Grading to clip	Dodaj gradaciju boja isječku
 	Input LUT	Ulazni LUT
 	Temperature	Temperatura
 	Tint	Preliv
@@ -1683,7 +1683,7 @@
 	Elliptical	Eliptično
 	Emboss	Reljef
 	Enable HSL Secondary	Omogući HSL sekundarno
-	Enable Mercury Transmit	Omogući Mercury Transmit
+	Enable External Video Output	Omogući vanjski video izlaz
 	Enable ProRes hardware accelerated encoding, if available	Omogući hardverski ubrzano ProRes kodiranje, ako je dostupno
 	Enable clip and XMP metadata linking	Omogući povezivanje metapodataka klipa i XMP-a
 	Enable developer mode	Omogući razvojni način
@@ -1751,7 +1751,7 @@
 	Focus Size	Veličina fokusa
 	Fold Motion	Pokret preklapanja
 	Foldback	Povratni monitoring
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Za parametre upravljanja bojama idite na karticu Postavke u panelu Lumetri boja.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Za parametre upravljanja bojama otvorite karticu Postavke na panelu Gradacija boja.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Četiri skopa (RGB, 8-bitno)
 	Four Scopes (YUV, float, no clamp)	Četiri skopa (YUV, pokretni zarez, bez ograničenja)
@@ -2019,7 +2019,7 @@
 	Luma Key	Luma ključ
 	Luma Source	Izvor lume
 	Luma and Chroma	Luma i hroma
-	Lumetri Presets	Lumetri predlošci
+	Color Grading Presets	Predlošci gradacije boja
 	Luminance	Luminansa
 	Luminance Threshold	Prag luminanse
 	Luminosity	Osvijetljenost
@@ -3125,7 +3125,6 @@
 	Left align text	Poravnaj tekst lijevo
 	Looping GIF, 640×360 at 15 fps	GIF u petlji, 640×360 pri 15 fps
 	Lower First	Prvo donje
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3626,3 +3625,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; 10-bitni master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
+	List Color Grading Presets	Prikaži predloške gradacije boja
+	Apply Color Grading Preset	Primijeni predložak gradacije boja
+	Color Grading Preset Thumbnails	Sličice predložaka gradacije boja
+	Toggle Color Grading Section	Uključi/isključi odjeljak gradacije boja
+	Color Grading Section	Odjeljak gradacije boja
+	Read Video Scopes	Očitaj video skopove
