@@ -31,7 +31,7 @@ impl FilmcraftApp {
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
         let ime_document_epoch = session.document_epoch;
         let ime_active_sequence = session.state.active_sequence;
-        Self {
+        let mut app = Self {
             session,
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
@@ -127,7 +127,9 @@ impl FilmcraftApp {
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
-        }
+        };
+        app.ui.tts = crate::panels::tts::TtsDraft::from_prefs(&app.session.prefs.tts);
+        app
     }
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {

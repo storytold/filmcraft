@@ -16,6 +16,7 @@
 //! engine already keeps for undo) — a pointer copy and a channel send. Serialization and all file
 //! I/O happen on the worker thread, so neither ever stalls the UI.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use filmcraft_format::autosave as names;
-use filmcraft_project::Project;
+use filmcraft_project::{Project, VocalPitch};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
@@ -182,6 +183,8 @@ pub struct Preferences {
     pub project_panel: crate::project_panel::ProjectPanelPrefs,
     /// Media Browser: Favorites, recent directories, file types, view, columns.
     pub media_browser: crate::media_browser::MediaBrowserPrefs,
+    /// Text to Speech: last language, advanced panel state, per-language voice and speech settings.
+    pub tts: TtsPrefs,
 }
 
 impl Default for Preferences {
@@ -209,6 +212,7 @@ impl Default for Preferences {
             voice_over: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            tts: Default::default(),
         }
     }
 }
@@ -265,6 +269,8 @@ pub struct MediaPrefs {
     pub growing_refresh_seconds: u32,
     pub hardware_decoding: bool,
     pub prores_hardware_encoding: bool,
+    /// Last folder used when importing files via the file dialog ("" = system/home default).
+    pub last_import_dir: String,
 }
 
 impl Default for MediaPrefs {
@@ -289,6 +295,7 @@ impl Default for MediaPrefs {
             growing_refresh_seconds: 60,
             hardware_decoding: true,
             prores_hardware_encoding: true,
+            last_import_dir: String::new(),
         }
     }
 }
@@ -371,6 +378,36 @@ impl Default for AudioPrefs {
     }
 }
 
+/// Text to Speech preferences (persisted in `preferences.json`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TtsPrefs {
+    pub last_language: String,
+    pub advanced_open: bool,
+    pub languages: BTreeMap<String, TtsLanguagePrefs>,
+}
+
+impl Default for TtsPrefs {
+    fn default() -> Self {
+        Self { last_language: "en-US".into(), advanced_open: true, languages: BTreeMap::new() }
+    }
+}
+
+/// Saved voice settings for one language in Text to Speech.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TtsLanguagePrefs {
+    pub voice: String,
+    pub pitch: VocalPitch,
+    pub pace: f64,
+}
+
+impl Default for TtsLanguagePrefs {
+    fn default() -> Self {
+        Self { voice: String::new(), pitch: VocalPitch::Default, pace: 1.0 }
+    }
+}
+
 impl AudioPrefs {
     /// Auto-Match target for an audio type.
     pub fn loudness_target(&self, t: filmcraft_project::AudioType) -> f64 {
@@ -404,6 +441,10 @@ impl Preferences {
         self.playback.preroll_seconds = secs(self.playback.preroll_seconds);
         self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
+        for lang in self.tts.languages.values_mut() {
+            lang.pace =
+                if lang.pace.is_finite() { lang.pace.clamp(filmcraft_project::narration::MIN_PACE, filmcraft_project::narration::MAX_PACE) } else { 1.0 };
+        }
         self.labels.sanitize_labels();
         self.appearance.sync_color_theme();
         self.version = settings::PREFS_VERSION;
