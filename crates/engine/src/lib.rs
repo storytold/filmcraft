@@ -807,9 +807,19 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// Whether the project-scoped Timeline view has changed since its last project save.
+    pub fn is_view_dirty(&self) -> bool {
+        self.view_epoch != self.saved_view_epoch
+    }
+
+    /// Whether closing or replacing this session would discard unsaved content or view state.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty() || self.is_view_dirty()
+    }
+
     /// Mark a project-file view setting as changed and journal its current project view.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_changed();
         self.sync_persistence();
     }
 

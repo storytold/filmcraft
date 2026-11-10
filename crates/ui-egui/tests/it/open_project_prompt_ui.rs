@@ -148,6 +148,23 @@ fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
 }
 
 #[test]
+fn opening_a_project_prompts_for_unsaved_timeline_view_changes() {
+    let mut d = Driver::new();
+    let (dir, current, other) = projects(&mut d, "viewOnly");
+    let pps = d.app().ui.timeline.pps * 1.25;
+    d.ok("ui.set", json!({"timeline": {"pps": pps}}));
+    d.frames(4);
+    assert!(!d.app().session.is_dirty(), "Timeline zoom does not dirty project content");
+    assert!(d.app().session.is_view_dirty(), "Timeline zoom is unsaved project view state");
+    d.open_project(&other);
+    assert!(d.has("openProject.save"), "opening another project asks before discarding the Timeline view");
+    d.click("openProject.cancel");
+    assert_eq!(d.path(), Some(current));
+    assert!(d.app().session.is_view_dirty(), "Cancel leaves the unsaved view in place");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn open_project_failed_save_keeps_the_prompt_and_chosen_project() {
     let mut d = Driver::new();
     let (dir, _, other) = projects(&mut d, "failedSave");

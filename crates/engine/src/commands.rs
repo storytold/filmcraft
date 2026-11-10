@@ -5371,6 +5371,8 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     }
     s.path = path;
     s.revision += 1;
+    s.view_epoch = 0;
+    s.saved_view_epoch = 0;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
@@ -5384,8 +5386,8 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
-    if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
-        s.restore_project_view(view);
+    if let Some(view) = loaded.view {
+        restore_loaded_view(s, view);
     }
     // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {
@@ -5411,6 +5413,9 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(view) = loaded.view {
+        restore_loaded_view(s, view);
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
@@ -5434,6 +5439,16 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     per.candidates.remove(idx);
     s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
     Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
+}
+
+/// Restore project-scoped Timeline settings even when the user has disabled restoring sequence
+/// tabs. That preference controls only which sequences open, not the other saved view settings.
+fn restore_loaded_view(s: &mut Session, view: filmcraft_project::ProjectView) {
+    if s.prefs.timeline.restore_open_sequences {
+        s.restore_project_view(view);
+    } else {
+        s.state.timeline_ui = view.timeline_ui.checked();
+    }
 }
 
 /// Where auto-saves of the current project go.
