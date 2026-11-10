@@ -6,7 +6,7 @@
 //! Every number comes from the file: sizes, strip offsets and counts are checked before use, the
 //! picture is capped at [`MAX_PIXELS`], and PackBits output stops at the bytes the image needs.
 
-use filmcraft_dng::tiff::{Tiff, tags};
+use filmcraft_dng::tiff::{Tiff, Type, tags};
 use image::metadata::Orientation;
 
 use super::Raster;
@@ -146,9 +146,11 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         }
     }
     // TIFF 6.0 Orientation, as the image crate applies it to the other TIFFs: turn the picture
-    // upright. A missing, unreadable or out-of-range value leaves it as stored.
+    // upright. A missing, unreadable or out-of-range value leaves it as stored, and so does an
+    // entry that is not the one SHORT the tag is (its declared values are never read).
     let orientation = ifd
         .get(ORIENTATION)
+        .filter(|e| e.ty == Type::Short && e.count == 1)
         .and_then(|e| t.uint(e).ok())
         .and_then(|v| u8::try_from(v).ok())
         .and_then(Orientation::from_exif)
