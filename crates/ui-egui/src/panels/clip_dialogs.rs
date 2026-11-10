@@ -614,7 +614,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
                 // Check if duration field has focus to preserve editing buffer
                 let duration_id = egui::Id::unique(format!("{pre}.duration"));
-                let has_focus = ui.memory(|mem| mem.focused().map_or(false, |id| id == duration_id));
+                let has_focus = ui.memory(|mem| mem.focused() == Some(duration_id));
 
                 // Refresh duration only when speed changes and field doesn't have focus
                 let refresh_duration = !has_focus && (p["duration"].is_null() || d.info["durationSpeed"] != p["speed"]);
