@@ -158,3 +158,71 @@ pub(crate) fn zoom_playhead(app: &mut FilmcraftApp, factor: f64) {
     let x = zoom_about(v, factor, ph, app.last_timeline_width, seconds);
     app.tl.zoom_anchor = x.zip(app.tl.layout.as_ref()).map(|(x, l)| (ph, l.content.min.x + x));
 }
+
+#[cfg(test)]
+mod zoom_about_tests {
+    use super::{TimelineView, min_pps, zoom_about};
+
+    /// A settled view at `pps` points a second with `scroll` seconds at its left edge.
+    fn view(pps: f64, scroll: f64) -> TimelineView {
+        TimelineView { pps, target_pps: pps, scroll, target_scroll: scroll, ..TimelineView::default() }
+    }
+
+    /// A time on screen keeps its x: the zoom returns it, and the target puts the time back there.
+    #[test]
+    fn a_time_on_screen_keeps_its_x() {
+        let mut v = view(50.0, 4.0);
+        assert_eq!(zoom_about(&mut v, 1.6, 10.0, 1000.0, 30.0), Some(300.0), "6 s from the left edge at 50 points a second");
+        let pps = 50.0 * 1.6;
+        assert_eq!((v.target_pps, v.target_scroll), (pps, 10.0 - 300.0 / pps));
+        // the right edge itself is still on screen
+        let mut v = view(50.0, 4.0);
+        assert_eq!(zoom_about(&mut v, 1.6, 24.0, 1000.0, 30.0), Some(1000.0));
+        assert_eq!(v.target_scroll, 24.0 - 1000.0 / pps);
+    }
+
+    /// A time off screen, either side, gets `None`, and the target centres it (not before 0).
+    #[test]
+    fn a_time_off_screen_is_centred() {
+        let mut v = view(50.0, 4.0);
+        assert_eq!(zoom_about(&mut v, 1.6, 60.0, 1000.0, 30.0), None, "56 s right of the left edge is 2800 points: past 1000");
+        let pps = 50.0 * 1.6;
+        assert_eq!((v.target_pps, v.target_scroll), (pps, 60.0 - 500.0 / pps));
+        let mut v = view(50.0, 40.0);
+        assert_eq!(zoom_about(&mut v, 1.6, 30.0, 1000.0, 30.0), None, "left of the view");
+        assert_eq!(v.target_scroll, 30.0 - 500.0 / pps);
+        // centring a time near the start would put the left edge before 0
+        let mut v = view(50.0, 40.0);
+        assert_eq!(zoom_about(&mut v, 1.6, 1.0, 1000.0, 30.0), None);
+        assert_eq!(v.target_scroll, 0.0);
+    }
+
+    /// Mid-animation the x is where the time is drawn now (the current zoom and scroll), not where
+    /// the targets will put it; the new zoom compounds the target one.
+    #[test]
+    fn the_x_comes_from_the_drawn_view_not_the_targets() {
+        let mut v = TimelineView { pps: 50.0, target_pps: 75.0, scroll: 4.0, target_scroll: 7.0, ..TimelineView::default() };
+        // the targets would draw 10 s at (10 - 7) * 75 = 225 points
+        assert_eq!(zoom_about(&mut v, 1.6, 10.0, 1000.0, 30.0), Some(300.0));
+        let pps = 75.0 * 1.6;
+        assert_eq!((v.target_pps, v.target_scroll), (pps, 10.0 - 300.0 / pps));
+        // drawn off screen while the targets would show it: centred
+        let mut v = TimelineView { pps: 50.0, target_pps: 50.0, scroll: 40.0, target_scroll: 4.0, ..TimelineView::default() };
+        assert_eq!(zoom_about(&mut v, 1.6, 10.0, 1000.0, 30.0), None);
+        assert_eq!(v.target_scroll, 10.0 - 500.0 / (50.0 * 1.6), "centred, though the targets would show it at 300");
+    }
+
+    /// The zoom stops at the whole extent and at 24 000 points a second; the time still keeps its x.
+    #[test]
+    fn the_zoom_is_clamped_at_both_ends() {
+        let floor = min_pps(30.0, 1000.0);
+        let mut v = view(floor * 1.2, 0.0);
+        let x = (10.0 * (floor * 1.2)) as f32;
+        assert_eq!(zoom_about(&mut v, 1.0 / 1.6, 10.0, 1000.0, 30.0), Some(x));
+        assert_eq!((v.target_pps, v.target_scroll), (floor, 0.0), "out no farther than the extent, and not before 0");
+        let mut v = view(20_000.0, 10.0 - 200.0 / 20_000.0);
+        let x = ((10.0 - v.scroll) * 20_000.0) as f32;
+        assert_eq!(zoom_about(&mut v, 1.6, 10.0, 1000.0, 30.0), Some(x));
+        assert_eq!((v.target_pps, v.target_scroll), (24_000.0, 10.0 - f64::from(x) / 24_000.0));
+    }
+}

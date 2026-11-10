@@ -52,6 +52,8 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         && let Some(pos) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
     {
         jump(&mut app.ui.timeline, pos.x);
+        // the view goes where the bar puts it, not back under a zoom's anchor
+        app.tl.zoom_anchor = None;
     }
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
@@ -61,6 +63,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let part = ZoomThumbPart::at(thumb, pos);
         if part == ZoomThumbPart::Beside {
             jump(&mut app.ui.timeline, pos.x);
+            app.tl.zoom_anchor = None;
         }
         let mode = match part {
             ZoomThumbPart::Left => 1,
@@ -89,6 +92,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                 if let Some(pos) = resp.interact_pointer_pos() {
                     v.target_scroll = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
                     v.scroll = v.target_scroll;
+                    app.tl.zoom_anchor = None;
                 }
             }
             // a handle: zoom, the other end of the view staying where it is

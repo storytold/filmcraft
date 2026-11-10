@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{max_scroll, min_pps, timeline_extent};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -529,101 +529,350 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     assert!(animation_time(&mut d) > 0.0);
 }
 
-/// #4383: View ▸ Zoom In and Zoom Out (`=` and `-`) keep a visible playhead where it is on every
-/// frame of the eased zoom, as in Premiere Pro.
+// ---- #4383: View ▸ Zoom In and Zoom Out (`=` and `-`) zoom about the playhead and keep a visible
+// one where it is drawn on every frame of the eased zoom, as in Premiere Pro.
+
+/// Ticks in a second (`filmcraft_time::Tick`).
+const SECOND: i64 = 254_016_000_000;
+
+/// How far a held playhead `x` points from the left edge may drift on one frame: the view snaps its
+/// zoom to the target within 0.05 % (which moves that x by as much) and its scroll within 0.05
+/// points.
+fn still(x: f64) -> f64 {
+    x.abs() * 0.0005 + 0.05
+}
+
+/// Where `t` seconds is drawn now, in points from the view's left edge.
+fn drawn_x(d: &mut Driver, t: f64) -> f64 {
+    let v = &d.app().ui.timeline;
+    (t - v.scroll) * v.pps
+}
+
+/// Step frames until the zoom and scroll reach their targets, calling `each` on every frame before
+/// that; returns the settled (scroll, zoom).
+fn settle(d: &mut Driver, mut each: impl FnMut(&mut Driver, usize)) -> (f64, f64) {
+    for frame in 0..600 {
+        let v = &d.app().ui.timeline;
+        if v.pps == v.target_pps && v.scroll == v.target_scroll {
+            return (v.scroll, v.pps);
+        }
+        each(d, frame);
+        d.frames(1);
+    }
+    panic!("the view never settled");
+}
+
+/// Settle, checking on every frame that `t` seconds stays `x0` points from the left edge.
+fn settle_holding(d: &mut Driver, t: f64, x0: f64, what: &str) -> (f64, f64) {
+    settle(d, |d, frame| {
+        let x = drawn_x(d, t);
+        assert!((x - x0).abs() < still(x0), "{what}, frame {frame}: {t} s moved from {x0} to {x}");
+    })
+}
+
+/// The tall demo with the playhead at `seconds` and `prepare` done (it may take frames, so it goes
+/// before the zoom), then View ▸ Zoom In pressed and still easing. Returns (driver, playhead, its x
+/// before the zoom).
+fn keyboard_zooming_in(seconds: i64, prepare: impl FnOnce(&mut Driver)) -> (Driver, f64, f64) {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": seconds * SECOND}));
+    d.frames(3);
+    prepare(&mut d);
+    let ph = d.app().session.playhead().seconds();
+    let x0 = drawn_x(&mut d, ph);
+    d.exec("view.zoomIn", json!({}));
+    let v = &d.app().ui.timeline;
+    assert_eq!(v.target_pps, 50.0 * 1.6);
+    assert!(v.pps != v.target_pps, "the zoom is still easing: {} to {}", v.pps, v.target_pps);
+    (d, ph, x0)
+}
+
+/// In, out and out again: the playhead does not move on any frame, and each zoom gets to its own
+/// level with the playhead where it started.
 #[test]
 fn keyboard_zoom_keeps_the_playhead_still_on_screen() {
     let mut d = Driver::tall();
-    d.exec("playhead.set", json!({"time": 10 * 254_016_000_000_i64}));
+    d.exec("playhead.set", json!({"time": 10 * SECOND}));
     d.frames(3);
     let ph = d.app().session.playhead().seconds();
-    let x = |d: &mut Driver| {
-        let v = &d.app().ui.timeline;
-        (ph - v.scroll) * v.pps
-    };
-    let x0 = x(&mut d);
-    assert!((290.0..310.0).contains(&x0), "about 10 s at 50 points a second from 4 s: {x0}");
-    for (step, command) in ["view.zoomIn", "view.zoomOut", "view.zoomOut"].into_iter().enumerate() {
+    let width = f64::from(d.app().last_timeline_width);
+    let x0 = drawn_x(&mut d, ph);
+    assert_eq!(x0, (ph - 4.0) * 50.0, "the tall view starts at 4 s, at 50 points a second");
+    assert!((0.0..=width).contains(&x0), "on screen: {x0} of {width}");
+    let mut pps = 50.0;
+    for command in ["view.zoomIn", "view.zoomOut", "view.zoomOut"] {
         d.exec(command, json!({}));
-        for frame in 0..12 {
-            assert!((x(&mut d) - x0).abs() < 0.5, "{command} (step {step}), frame {frame}: the playhead moved to {}", x(&mut d));
-            d.frames(1);
-        }
+        pps *= if command == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
+        assert_eq!(d.app().ui.timeline.target_pps, pps, "{command}");
+        let (scroll, settled) = settle_holding(&mut d, ph, x0, command);
+        assert_eq!(settled, pps, "{command} zoomed to its level");
+        let x = (ph - scroll) * settled;
+        assert!((x - x0).abs() < still(x0), "{command} left the playhead at {x}, not {x0}");
     }
-    // at the start of the Timeline the view cannot scroll before 0: zooming out keeps the start at
-    // the left edge, so the playhead eases in with the zoom instead of jumping on the first frame
-    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
-    d.exec("playhead.set", json!({"time": 5 * 254_016_000_000_i64}));
-    d.frames(3);
-    assert_eq!(d.view().0, 0.0);
-    d.exec("view.zoomOut", json!({}));
-    for frame in 0..12 {
-        assert_eq!(d.app().ui.timeline.scroll, 0.0, "zoom out from the start, frame {frame}");
-        d.frames(1);
-    }
-    let (scroll, pps, ..) = d.view();
-    assert_eq!((scroll, pps), (0.0, 62.5));
 }
 
-/// #4383: `=` pressed while an Option + wheel zoom is still easing keeps the playhead where it is
-/// drawn now, not where the wheel zoom's targets would have put it.
+/// At the start of the Timeline the view cannot scroll before 0: zooming out keeps the start at the
+/// left edge, so the playhead eases in with the zoom instead of jumping on the first frame.
+#[test]
+fn keyboard_zoom_out_at_the_start_eases_the_playhead_in() {
+    let mut d = Driver::tall();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.exec("playhead.set", json!({"time": 5 * SECOND}));
+    d.frames(3);
+    assert_eq!(d.view().0, 0.0);
+    let ph = d.app().session.playhead().seconds();
+    let pps = 100.0 * (1.0 / 1.6);
+    let (from, to) = (drawn_x(&mut d, ph), ph * pps);
+    d.exec("view.zoomOut", json!({}));
+    let mut last = from;
+    let mut between = 0;
+    let (scroll, settled) = settle(&mut d, |d, frame| {
+        assert_eq!(d.app().ui.timeline.scroll, 0.0, "frame {frame}: the start stays at the left edge");
+        let x = drawn_x(d, ph);
+        assert!(x <= last && x >= to - still(to), "frame {frame}: the playhead goes from {from} to {to} one way, at {x}");
+        between += usize::from(x < from && x > to + still(to));
+        last = x;
+    });
+    assert!(between >= 2, "the playhead eased over {between} frames: it jumped");
+    assert_eq!((scroll, settled), (0.0, pps));
+}
+
+/// A playhead off screen is not held: the view eases over (no jump) until it is in the middle.
+#[test]
+fn keyboard_zoom_eases_an_off_screen_playhead_to_the_middle() {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": 10 * SECOND}));
+    d.frames(3);
+    d.ok("ui.set", json!({"timeline": {"scroll": 40.0}}));
+    assert_eq!(d.view().0, 40.0);
+    let ph = d.app().session.playhead().seconds();
+    let width = d.app().last_timeline_width;
+    assert!(drawn_x(&mut d, ph) < 0.0, "left of the view");
+    d.exec("view.zoomIn", json!({}));
+    let pps = 50.0 * 1.6;
+    let target = ph - f64::from(width / 2.0) / pps;
+    assert!(target > 0.0, "the middle is reachable without scrolling before 0");
+    assert_eq!((d.app().ui.timeline.target_scroll, d.app().ui.timeline.target_pps), (target, pps));
+    let mut last = 40.0;
+    let mut between = 0;
+    let (scroll, settled) = settle(&mut d, |d, frame| {
+        let s = d.app().ui.timeline.scroll;
+        assert!(s <= last && s >= target, "frame {frame}: the view goes from 40 s to {target} s one way, at {s}");
+        between += usize::from(s < 40.0 && s > target);
+        last = s;
+    });
+    assert!(between >= 2, "the view eased over {between} frames: it jumped");
+    assert_eq!((scroll, settled), (target, pps));
+    let x = drawn_x(&mut d, ph);
+    assert!((x - f64::from(width) / 2.0).abs() < still(x), "in the middle: {x} of {width}");
+}
+
+/// A playhead at the very right edge of the view is on screen: it stays at that edge.
+#[test]
+fn keyboard_zoom_holds_a_playhead_at_the_right_edge() {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": 16 * SECOND}));
+    d.frames(3);
+    let ph = d.app().session.playhead().seconds();
+    let width = f64::from(d.app().last_timeline_width);
+    // a power-of-two zoom so the right edge lands on the playhead exactly
+    d.ok("ui.set", json!({"timeline": {"pps": 128.0, "scroll": ph - width / 128.0}}));
+    assert_eq!(d.view().1, 128.0);
+    assert_eq!(drawn_x(&mut d, ph), width);
+    d.exec("view.zoomIn", json!({}));
+    let (scroll, settled) = settle_holding(&mut d, ph, width, "zoom in");
+    assert_eq!(settled, 128.0 * 1.6);
+    assert!(((ph - scroll) * settled - width).abs() < still(width));
+}
+
+/// Zooming in stops at 24 000 points a second, with the playhead held; another Zoom In does nothing.
+#[test]
+fn keyboard_zoom_in_stops_at_the_closest_zoom() {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": 10 * SECOND}));
+    d.frames(3);
+    let ph = d.app().session.playhead().seconds();
+    d.ok("ui.set", json!({"timeline": {"pps": 20_000.0, "scroll": ph - 200.0 / 20_000.0}}));
+    assert_eq!(d.view().1, 20_000.0);
+    let x0 = drawn_x(&mut d, ph);
+    d.exec("view.zoomIn", json!({}));
+    assert_eq!(d.app().ui.timeline.target_pps, 24_000.0, "20 000 × 1.6 is past the closest zoom");
+    let settled = settle_holding(&mut d, ph, x0, "zoom in to the limit");
+    assert_eq!(settled.1, 24_000.0);
+    d.exec("view.zoomIn", json!({}));
+    d.frames(3);
+    assert_eq!(d.view().0, settled.0, "at the limit Zoom In leaves the view where it is");
+    assert_eq!(d.view().1, 24_000.0);
+}
+
+/// Zooming out stops where the whole Timeline is in view; the start stays at the left edge.
+#[test]
+fn keyboard_zoom_out_stops_at_the_whole_timeline() {
+    let mut d = Driver::tall();
+    d.exec("playhead.set", json!({"time": 10 * SECOND}));
+    d.frames(3);
+    let floor = min_pps(d.seconds(), d.app().last_timeline_width);
+    d.ok("ui.set", json!({"timeline": {"pps": floor * 1.2, "scroll": 0.0}}));
+    assert_eq!(d.view(), (0.0, floor * 1.2, 0.0, 0.0));
+    d.exec("view.zoomOut", json!({}));
+    assert_eq!(d.app().ui.timeline.target_pps, floor, "1.2 / 1.6 of the floor is past it");
+    let (scroll, pps) = settle(&mut d, |d, frame| assert_eq!(d.app().ui.timeline.scroll, 0.0, "frame {frame}"));
+    assert_eq!((scroll, pps), (0.0, floor));
+}
+
+/// `=` pressed while an Option + wheel zoom is still easing keeps the playhead where it is drawn
+/// now, not where the wheel zoom's targets would have put it; the two zooms compound.
 #[test]
 fn keyboard_zoom_during_a_wheel_zoom_keeps_the_playhead_still() {
     let mut d = Driver::tall();
-    d.exec("playhead.set", json!({"time": 10 * 254_016_000_000_i64}));
+    d.exec("playhead.set", json!({"time": 10 * SECOND}));
     d.frames(3);
     let ph = d.app().session.playhead().seconds();
-    let x = |d: &mut Driver| {
-        let v = &d.app().ui.timeline;
-        (ph - v.scroll) * v.pps
-    };
     // zoom in about the pointer, in the middle of the tracks, well right of the playhead
     d.ok("ui.scroll", json!({"id": "timeline.tracks", "fx": 0.5, "fy": 0.2, "dx": 0.0, "dy": 50.0, "modifiers": {"alt": true}}));
     d.frames(1);
     let v = &d.app().ui.timeline;
-    assert!(v.pps < v.target_pps * 0.99, "the wheel zoom is still easing: {} to {}", v.pps, v.target_pps);
-    let x0 = x(&mut d);
+    assert!(v.pps != v.target_pps, "the wheel zoom is still easing: {} to {}", v.pps, v.target_pps);
+    let x0 = drawn_x(&mut d, ph);
     assert!((0.0..f64::from(d.app().last_timeline_width)).contains(&x0), "the playhead is on screen: {x0}");
     d.exec("view.zoomIn", json!({}));
-    for frame in 0..12 {
-        assert!((x(&mut d) - x0).abs() < 0.5, "frame {frame}: the playhead moved from {x0} to {}", x(&mut d));
-        d.frames(1);
-    }
-    assert!((d.view().1 - 50.0 * 1.5 * 1.6).abs() < 1e-9, "the wheel's zoom and the key's, compounded");
+    let (scroll, pps) = settle_holding(&mut d, ph, x0, "zoom in during a wheel zoom");
+    assert_eq!(pps, 50.0 * 1.5 * 1.6, "the wheel's zoom and the key's, compounded");
+    assert!(((ph - scroll) * pps - x0).abs() < still(x0));
 }
 
-/// #4383: a keyboard zoom holds the playhead only while it is on screen, and only until something
-/// else places the view: an off-screen playhead eases the view over instead of jumping it, and
-/// View ▸ Zoom to Sequence or a playhead jump during the zoom still take effect.
+/// View ▸ Zoom to Sequence pressed while the keyboard zoom eases: the whole sequence, from its
+/// start, on every frame, though the playhead's time held under its x would keep the view off 0.
 #[test]
-fn keyboard_zoom_gives_way_to_an_off_screen_playhead_a_fit_and_a_jump() {
-    let mut d = Driver::tall();
-    let width = f64::from(d.app().last_timeline_width);
-    // the playhead at 1 s, left of a view browsed to 10 s
-    d.exec("playhead.set", json!({"time": 254_016_000_000_i64}));
-    d.frames(3);
-    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 10.0}}));
-    d.frames(3);
-    assert_eq!(d.view().0, 10.0);
-    d.exec("view.zoomIn", json!({}));
-    let first = d.app().ui.timeline.scroll;
-    assert!(first > 1.0, "the view eases toward the playhead, it does not jump: {first}");
-    assert_eq!(d.view().0, 0.0, "1 s in the middle of the view would put its left edge before 0");
-    // Zoom to Sequence pressed while the keyboard zoom eases: the whole sequence, from its start
-    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
-    d.exec("playhead.set", json!({"time": 10 * 254_016_000_000_i64}));
-    d.frames(3);
-    d.exec("view.zoomIn", json!({}));
+fn zoom_to_sequence_during_a_keyboard_zoom_fits_from_the_start() {
+    let (mut d, ph, x0) = keyboard_zooming_in(5, |_| {});
+    let width = d.app().last_timeline_width;
+    let seconds = d.seconds();
+    let fit = (f64::from(width) * 0.94 / seconds.max(1.0)).clamp(min_pps(seconds, width), 24_000.0);
+    assert!(ph - x0 / fit > 0.0, "held at {x0}, the playhead would put the left edge at {} s", ph - x0 / fit);
     d.exec("view.zoomToSequence", json!({}));
-    assert_eq!(d.view().0, 0.0, "Zoom to Sequence starts the view at 0");
-    // the playhead jumps to the end while the keyboard zoom eases: the view reveals it
-    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
-    d.frames(3);
-    d.exec("view.zoomIn", json!({}));
-    d.exec("playhead.end", json!({}));
-    let end = d.app().session.playhead().seconds();
-    let (scroll, pps, ..) = d.view();
-    assert!(end > 4.0 + width / 80.0, "the end is past the zoomed view: {end}");
-    let x = (end - scroll) * pps;
-    assert!((0.0..=width).contains(&x), "the end is in view: {x} of {width}");
+    let (scroll, pps) = settle(&mut d, |d, frame| {
+        let v = &d.app().ui.timeline;
+        assert_eq!((v.target_scroll, v.target_pps), (0.0, fit), "frame {frame}");
+    });
+    assert_eq!((scroll, pps), (0.0, fit));
+}
+
+/// The playhead jumps (by `jump`) while the keyboard zoom eases: the view reveals it on every
+/// frame and the zoom still gets to its level.
+fn a_jump_during_a_keyboard_zoom_reveals_the_playhead(jump: impl FnOnce(&mut Driver)) {
+    let (mut d, ph, x0) = keyboard_zooming_in(10, |_| {});
+    let width = f64::from(d.app().last_timeline_width);
+    let pps = 50.0 * 1.6;
+    let heading = ph - x0 / pps;
+    jump(&mut d);
+    let to = d.app().session.playhead().seconds();
+    assert!(!(heading..=heading + width / pps).contains(&to), "{to} s is outside the view the zoom is heading for");
+    let reveal = (to - width * 0.05 / pps).max(0.0);
+    let (scroll, settled) = settle(&mut d, |d, frame| {
+        assert_eq!(d.app().ui.timeline.target_scroll, reveal, "frame {frame}");
+        let x = drawn_x(d, to);
+        assert!((0.0..=width).contains(&x), "frame {frame}: the playhead is in view: {x} of {width}");
+    });
+    assert_eq!((scroll, settled), (reveal, pps));
+}
+
+/// End during a keyboard zoom (an explicit reveal).
+#[test]
+fn end_during_a_keyboard_zoom_reveals_the_playhead() {
+    a_jump_during_a_keyboard_zoom_reveals_the_playhead(|d| {
+        d.exec("playhead.end", json!({}));
+    });
+}
+
+/// A playhead set to the start during a keyboard zoom, as an edit point or marker jump does (the
+/// view's own jump check).
+#[test]
+fn a_playhead_jump_during_a_keyboard_zoom_reveals_it() {
+    a_jump_during_a_keyboard_zoom_reveals_the_playhead(|d| {
+        d.exec("playhead.set", json!({"time": 0}));
+    });
+}
+
+/// Cmd + wheel while the keyboard zoom eases: the view goes where the wheel puts it and stays there,
+/// rather than back under the playhead.
+#[test]
+fn the_wheel_during_a_keyboard_zoom_scrolls_the_view() {
+    let (mut d, ph, x0) = keyboard_zooming_in(10, |_| {});
+    let pps = 50.0 * 1.6;
+    let held = ph - x0 / pps;
+    d.ok("ui.scroll", json!({"id": "timeline.tracks", "fx": 0.5, "fy": 0.2, "dx": 0.0, "dy": -100.0, "modifiers": {"command": true}}));
+    let (scroll, settled) = settle(&mut d, |_, _| {});
+    assert_eq!(settled, pps, "the keyboard zoom still gets to its level");
+    // 100 points of wheel at a zoom between 50 and 80 points a second
+    let moved = scroll - held;
+    assert!((100.0 / pps - 1e-6..=100.0 / 50.0 + 1e-6).contains(&moved), "the wheel moved the view {moved} s");
+}
+
+/// Option + wheel while the keyboard zoom eases: the wheel's zoom takes over, about the pointer.
+#[test]
+fn a_wheel_zoom_during_a_keyboard_zoom_zooms_about_the_pointer() {
+    let (mut d, ph, x0) = keyboard_zooming_in(10, |_| {});
+    let half = f64::from(d.rect("timeline.tracks")[2]) * 0.5;
+    d.ok("ui.scroll", json!({"id": "timeline.tracks", "fx": 0.5, "fy": 0.2, "dx": 0.0, "dy": 50.0, "modifiers": {"alt": true}}));
+    let v = &d.app().ui.timeline;
+    let under = v.scroll + half / v.pps;
+    let (scroll, pps) = settle(&mut d, |d, frame| {
+        let x = drawn_x(d, under);
+        assert!((x - half).abs() < still(half), "frame {frame}: {under} s under the pointer moved to {x}");
+    });
+    assert_eq!(pps, 50.0 * 1.6 * 1.5, "the key's zoom and the wheel's, compounded");
+    assert!(((under - scroll) * pps - half).abs() < still(half));
+    let x = (ph - scroll) * pps;
+    assert!((x - x0).abs() > still(x0), "the playhead is no longer held at {x0}: {x}");
+}
+
+/// The Hand tool dragged while the keyboard zoom eases: the view follows the hand.
+#[test]
+fn the_hand_tool_during_a_keyboard_zoom_pans_the_view() {
+    // the drag is under way (pressed, and moved one step) before the zoom starts: the zoom eases
+    // for fewer frames than a press and a first move take
+    let (mut x, mut y) = (0.0, 0.0);
+    let (mut d, ph, x0) = keyboard_zooming_in(10, |d| {
+        d.exec("tool.hand", json!({}));
+        let tracks = d.rect("timeline.tracks");
+        (x, y) = (tracks[0] + tracks[2] * 0.5, tracks[1] + tracks[3] * 0.2);
+        d.press(x, y);
+        d.move_to(x - 20.0, y);
+    });
+    let pps = 50.0 * 1.6;
+    let held = ph - x0 / pps;
+    d.move_to(x - 60.0, y);
+    let v = &d.app().ui.timeline;
+    assert!(v.pps != v.target_pps, "the pan was done before the zoom: {} to {}", v.pps, v.target_pps);
+    d.release(x - 60.0, y);
+    let (scroll, settled) = settle(&mut d, |_, _| {});
+    assert_eq!(settled, pps);
+    // 40 points of drag during the zoom, at no closer than 80 points a second
+    let moved = scroll - held;
+    assert!(moved >= 40.0 / pps, "40 points to the left moved the view {moved} s");
+}
+
+/// A click on the scroll bar beside the thumb while the keyboard zoom eases: the view goes there.
+#[test]
+fn the_scroll_bar_during_a_keyboard_zoom_scrolls_the_view() {
+    // pressed before the zoom starts, released (the click) while it eases
+    let (mut track, mut at) = ([0.0; 4], egui::Pos2::ZERO);
+    let (mut d, ..) = keyboard_zooming_in(10, |d| {
+        let thumb = d.rect("timeline.zoomBar");
+        track = d.rect("timeline.zoomBar.track");
+        at = egui::pos2(track[0] + track[2] * 0.6, track[1] + track[3] / 2.0);
+        assert!(at.x > thumb[0] + thumb[2], "beside the thumb");
+        d.press(at.x, at.y);
+    });
+    let seconds = d.seconds();
+    d.release(at.x, at.y);
+    let v = &d.app().ui.timeline;
+    assert!(v.pps != v.target_pps, "the click was done before the zoom: {} to {}", v.pps, v.target_pps);
+    let (scroll, settled) = settle(&mut d, |_, _| {});
+    assert_eq!(settled, 50.0 * 1.6);
+    // the thumb's middle at 60 % of the bar puts its left edge past half its travel, and at 50
+    // points a second or closer the scroll range is at least the extent less a bar's width of it
+    let half = (timeline_extent(seconds) - f64::from(track[2]) / 50.0) * 0.5;
+    assert!(scroll > half, "the view is at {scroll} s, short of {half} s");
 }
