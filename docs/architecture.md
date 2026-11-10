@@ -586,8 +586,8 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
   reference white).
-- **HDR grading (Lumetri).** `FxCtx::working` carries the sequence's working space. In a PQ or HLG
-  sequence Lumetri grades the working space's own signal normalised to **HDR White** (cd/m²,
+- **HDR grading (Color Grading).** `FxCtx::working` carries the sequence's working space. In a PQ or HLG
+  sequence Color Grading grades the working space's own signal normalised to **HDR White** (cd/m²,
   Basic Correction; the curves, wheels, looks and HSL Secondary use the Curves section's **HDR
   Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
@@ -612,7 +612,7 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
   values above SDR white are never sent to the display. The scopes of an HDR sequence show the
   working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
-- **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
+- **LUTs.** Color Grading Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
   parity.
@@ -757,7 +757,7 @@ All of these dispatch the same command ids.
   settings) is in `crates/ui-egui/src/state.rs` as serde structs, so `ui.inspect` and `ui.set` can
   read and write it.
 
-- **Panels with engine data** (M8.9 / M12.6): Lumetri Scopes (`scopes.read` returns the same
+- **Panels with engine data** (M8.9 / M12.6): Video Scopes (`scopes.read` returns the same
   scopes as numbers), Metadata (`metadata.get` / `metadata.set`, one undo step per edit, stored in
   `ProjectItem::metadata`), Events (`events.list` / `events.clear`), Progress (`jobs.list` /
   `jobs.cancel`), Project Notes (`project.notes` / `project.setNotes`, plain text in
