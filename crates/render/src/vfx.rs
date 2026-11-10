@@ -49,6 +49,10 @@ pub trait FxEnv: Sync {
     fn track(&self, index: usize) -> Option<Image>;
     /// Maps working-layer pixels to output pixels (Motion included).
     fn layer_to_output(&self) -> Affine;
+    /// Output pixels per sequence pixel: playback at ½ size = 0.5, a full render = 1.0.
+    fn render_scale(&self) -> f32 {
+        1.0
+    }
     /// Clip duration on the timeline, in seconds.
     fn clip_seconds(&self) -> f64;
     /// Seconds from the clip's start to now.
@@ -118,6 +122,7 @@ impl FxEnv for ItemEnv<'_> {
             env: None,
             frame_rate: self.seq.settings.frame_rate.as_f64(),
             working: self.seq.settings.color.working,
+            seq_size: Some((self.seq.settings.width, self.seq.settings.height)),
         };
         for e in &self.item.effects {
             if std::ptr::eq(e, upto) {
@@ -142,6 +147,9 @@ impl FxEnv for ItemEnv<'_> {
     }
     fn layer_to_output(&self) -> Affine {
         self.layer_to_output
+    }
+    fn render_scale(&self) -> f32 {
+        self.opts.scale
     }
     fn clip_seconds(&self) -> f64 {
         self.item.duration.seconds()

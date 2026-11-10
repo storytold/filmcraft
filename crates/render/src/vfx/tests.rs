@@ -20,6 +20,7 @@ fn cx() -> FxCtx<'static> {
         env: None,
         frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
+        seq_size: None,
     }
 }
 
@@ -89,6 +90,7 @@ const NEW_IDS: &[&str] = &[
     "vr_glow",
     "vr_plane_to_sphere",
     "vr_projection",
+    "vr_insta360_reframe",
     "vr_rotate_sphere",
     "vr_sharpen",
     "alpha_adjust",
@@ -879,6 +881,172 @@ fn clone_auto_align_and_rounded_crop() {
     let o = run("rounded_crop", &inst("rounded_crop"), &picture(100, 100), &cx());
     assert_eq!(o.get(0, 0)[3], 0.0);
     assert_eq!(o.get(50, 50)[3], 1.0);
+}
+
+#[test]
+fn insta360_reframe_cuts_views_from_the_sphere() {
+    let img = picture(64, 32); // hostile-parameter checks render against a plain equirect
+    // A 90° pan turn centres the view on lon −90° (source column 16), like VR Rotate Sphere pan 90.
+    // (The 64x36 test frame matches the default 1080P 16:9 resolution, so it fills it.)
+    let eq = picture(64, 36);
+    let eqc = |o: &Image, x: usize, y: usize| {
+        let d = |i: usize| (0..3).map(|k| (o.get(x, y)[k] - eq.get(i, y)[k]).abs()).fold(0.0f32, f32::max);
+        (0..64).min_by(|a, b| d(*a).partial_cmp(&d(*b)).unwrap()).unwrap_or(usize::MAX)
+    };
+    let mut e = inst("vr_insta360_reframe");
+    setf(&mut e, "pan", 90.0);
+    let a = run("vr_insta360_reframe", &e, &eq, &cx());
+    let mut rot = inst("vr_rotate_sphere");
+    setf(&mut rot, "pan", 90.0);
+    let b = run("vr", &rot, &eq, &cx());
+    for o in [&a, &b] {
+        let c = eqc(o, 32, 18);
+        assert!((15..=17).contains(&c), "pan 90 centre shows column {c}");
+    }
+    // Insta360: FOV Control sizes the view (the default 16 : 9 resolution fills the 64x36 frame).
+    let mut i = inst("vr_insta360_reframe");
+    setf(&mut i, "fov", 180.0);
+    let o = run("vr_insta360_reframe", &i, &eq, &cx());
+    assert!((15..=17).contains(&eqc(&o, 0, 18)), "Insta360 180° FOV: {}", eqc(&o, 0, 18));
+    // Distortion Control bends the mapping inside the same edge angle: the frame edge keeps
+    // showing lon −90° at any setting, but a quarter-frame pixel moves. It works in both
+    // Projection modes, and the two meet: No Distortion at 1 equals Distortion at 0.
+    let mut d0 = inst("vr_insta360_reframe");
+    setf(&mut d0, "fov", 180.0);
+    setf(&mut d0, "distortion", 0.0);
+    let mut d1 = inst("vr_insta360_reframe");
+    setf(&mut d1, "fov", 180.0);
+    setf(&mut d1, "distortion", 1.0);
+    let (o0, o1) = (run("vr_insta360_reframe", &d0, &eq, &cx()), run("vr_insta360_reframe", &d1, &eq, &cx()));
+    assert!((15..=17).contains(&eqc(&o1, 0, 18)), "distorted edge still lon −90: {}", eqc(&o1, 0, 18));
+    assert_ne!(eqc(&o0, 16, 18), eqc(&o1, 16, 18), "No Distortion bends with the control");
+    let mut e0 = inst("vr_insta360_reframe");
+    setf(&mut e0, "fov", 180.0);
+    setf(&mut e0, "distortion", 0.0);
+    set(&mut e0, "projection", ParamValue::Choice(1));
+    let mut e1 = inst("vr_insta360_reframe");
+    setf(&mut e1, "fov", 180.0);
+    setf(&mut e1, "distortion", 1.0);
+    set(&mut e1, "projection", ParamValue::Choice(1));
+    let (p0, p1) = (run("vr_insta360_reframe", &e0, &eq, &cx()), run("vr_insta360_reframe", &e1, &eq, &cx()));
+    assert_ne!(eqc(&p0, 16, 18), eqc(&p1, 16, 18), "Distortion bends with the control");
+    assert_eq!(eqc(&o1, 16, 18), eqc(&p0, 16, 18), "the modes meet at the same bend");
+    // The Resolution choices name a real pixel window: the default 1080P 16:9 renders as a
+    // centred 1920x1080 rect in a bigger frame (64/60 px bars black), not a full-frame fill.
+    let big = picture(2000, 1200);
+    let o = run("vr_insta360_reframe", &inst("vr_insta360_reframe"), &big, &cx());
+    assert_eq!(o.get(10, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "left of the 1080P window is barred");
+    assert_eq!(o.get(1000, 10), [0.0, 0.0, 0.0, 1.0].as_slice(), "above the 1080P window is barred");
+    assert_ne!(o.get(1000, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "the window shows the view");
+    assert_ne!(o.get(1955, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "right of centre, inside the window");
+    assert_eq!(o.get(1990, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "the window ends at its width");
+    // Hostile parameters stay finite.
+    let mut h = inst("vr_insta360_reframe");
+    for k in ["fov", "distortion", "frame_range"] {
+        setf(&mut h, k, f64::NAN);
+    }
+    setf(&mut h, "roll", f64::MAX);
+    let o = run("vr_insta360_reframe", &h, &img, &cx());
+    assert!(o.px.iter().all(|v| v.is_finite()));
+}
+
+/// A sequence-geometry environment: the clip's layer maps to the output through a fixed scale.
+struct SeqEnv {
+    m: Affine,
+    seq: (u32, u32),
+    scale: f32,
+}
+
+impl FxEnv for SeqEnv {
+    fn frame(&self, _: f64, _: &EffectInstance) -> Option<Image> {
+        None
+    }
+    fn source_frame(&self, _: f64, _: f32) -> Option<Image> {
+        None
+    }
+    fn track(&self, _: usize) -> Option<Image> {
+        None
+    }
+    fn layer_to_output(&self) -> Affine {
+        self.m
+    }
+    fn render_scale(&self) -> f32 {
+        self.scale
+    }
+    fn clip_seconds(&self) -> f64 {
+        5.0
+    }
+    fn clip_offset(&self) -> f64 {
+        0.0
+    }
+    fn frame_rate(&self) -> f64 {
+        24.0
+    }
+    fn media_timecode(&self) -> String {
+        String::new()
+    }
+    fn file_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.seq
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.seq
+    }
+    fn clip_key(&self) -> u64 {
+        1
+    }
+}
+
+#[test]
+fn insta360_resolution_measures_the_window_in_sequence_pixels() {
+    // The 1080P choices must cut their window in the SEQUENCE's pixels, not the working layer's:
+    // a choice that fits the sequence stays that size however the clip's layer maps to the frame.
+    // (1) A sphere laid at 1.6x into a 1000x1000 sequence: 1920x1080 does not fit, so it becomes
+    // a 1000x562 band centred vertically — in layer pixels the top 136 rows bar, though the
+    // layer's own aspect-fit letterbox would bar only its outermost 9.
+    let env = SeqEnv { m: Affine::scale(1.6, 1.6), seq: (1000, 1000), scale: 1.0 };
+    let c = FxCtx { env: Some(&env), ..cx() };
+    let o = run("vr_insta360_reframe", &inst("vr_insta360_reframe"), &picture(500, 300), &c);
+    assert_eq!(o.get(250, 50), [0.0, 0.0, 0.0, 1.0].as_slice(), "layer rows mapped above the sequence's band are barred");
+    assert_ne!(o.get(250, 150), [0.0, 0.0, 0.0, 1.0].as_slice(), "the sequence's window band shows the view");
+    // The same layer half-resolution for playback (output = 500x500 at scale 0.5): the window is
+    // the same in sequence pixels — the render scale cancels out of the mapping.
+    let env2 = SeqEnv { m: Affine::scale(0.8, 0.8), seq: (1000, 1000), scale: 0.5 };
+    let c2 = FxCtx { env: Some(&env2), ..cx() };
+    let o = run("vr_insta360_reframe", &inst("vr_insta360_reframe"), &picture(500, 300), &c2);
+    assert_ne!(o.get(250, 150), [0.0, 0.0, 0.0, 1.0].as_slice(), "a preview scale keeps the same sequence-space window");
+    // (2) A 2000x1200 sphere (a stitched 5.7K lens frame) fitted to 0.75x in a 2000x1200 sequence
+    // with its letterbox band centred: the 1920x1080 choice is a full-size window, so every
+    // layer pixel maps inside it. Measuring on the layer instead, the window would render as
+    // 1440x810 in the frame — 75 % — with black where the sequence should show the view.
+    let env3 = SeqEnv { m: Affine::translate(250.0, 150.0).then_apply(&Affine::scale(0.75, 0.75)), seq: (2000, 1200), scale: 1.0 };
+    let c3 = FxCtx { env: Some(&env3), ..cx() };
+    let o = run("vr_insta360_reframe", &inst("vr_insta360_reframe"), &picture(2000, 1200), &c3);
+    assert_ne!(o.get(10, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "the layer's left edge maps inside the 1080P window");
+    assert_ne!(o.get(1990, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "and its right edge too");
+    assert_ne!(o.get(1000, 20), [0.0, 0.0, 0.0, 1.0].as_slice(), "and up to the band's top row");
+}
+
+/// The Resolution window is measured in sequence pixels even when the caller has
+/// no `env` - temporal re-evaluation through `ItemEnv::frame`, which renders
+/// preceding effects over the clip's (smaller) working layer. A bug here shrinks
+/// the window to that layer and draws bars where the sequence has none.
+#[test]
+fn insta360_resolution_window_survives_frame_reevaluation() {
+    let img = picture(2000, 1200);
+    let e = inst("vr_insta360_reframe");
+    let full = run("vr_insta360_reframe", &e, &img, &cx());
+    let c = FxCtx { seq_size: Some((4000, 2400)), ..cx() };
+    let o = run("vr_insta360_reframe", &e, &img, &c);
+    assert_ne!(full.get(99, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "the layer shows the view");
+    assert_eq!(o.get(99, 600), [0.0, 0.0, 0.0, 1.0].as_slice(), "the doubled sequence bars this column");
+    assert_eq!(o.get(250, 150), [0.0, 0.0, 0.0, 1.0].as_slice(), "and the row above the window's band");
+    assert_ne!(o.get(1500, 900), [0.0, 0.0, 0.0, 1.0].as_slice(), "inside the band the view shows");
 }
 
 #[test]

@@ -410,6 +410,61 @@ fn media_time_counts_frames_at_the_source_rate() {
     assert_eq!(env.sequence_time(TimeDisplay::Frames).as_deref(), Some("24"));
 }
 
+/// An adjustment layer's "media" is the timeline picture, so a Media-source
+/// burn-in with a film format (Frames, Feet + Frames) must still honour that
+/// format now that the layer carries an environment: media time is sequence
+/// time, formatted as asked, exactly as the layer showed before any
+/// environment existed.
+#[test]
+fn burnin_media_time_on_an_adjustment_layer_honours_the_format() {
+    let render_burnin = |source: u32, format: u32| {
+        let mut s = scene(2);
+        let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+        place(&mut s.p, s.seq, 0, red);
+        let adj = adjustment(&mut s.p, s.seq, 1);
+        fx(&mut s, adj, "metadata_burnin");
+        clip(&mut s, adj).effect_mut("metadata_burnin").unwrap().params.get_mut("source").unwrap().value = ParamValue::Choice(source);
+        clip(&mut s, adj).effect_mut("metadata_burnin").unwrap().params.get_mut("time_format").unwrap().value = ParamValue::Choice(format);
+        render(&s).px
+    };
+    let (media_frames, media_tc) = (render_burnin(1, 3), render_burnin(1, 0));
+    assert_ne!(media_frames, media_tc, "Frames-formatted media time shows the frame count, not a timecode");
+    assert_eq!(media_frames, render_burnin(0, 3), "for the timeline picture the two sources are the same time");
+    assert_ne!(render_burnin(1, 1), media_tc, "and Feet + Frames is neither");
+}
+
+/// Sphere Reframe's Resolution choices name pixels of the SEQUENCE, so the
+/// letterbox an adjustment layer cuts must be the same shape at preview scale as
+/// at export: an earlier version measured the frame against the scaled canvas,
+/// and the half-size preview silently reframed the shot.
+#[test]
+fn reframe_on_an_adjustment_layer_frames_in_sequence_pixels() {
+    let mut s = scene(2);
+    let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    place(&mut s.p, s.seq, 0, red);
+    let a = s.p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width: 2560, height: 1440, rate: R, duration: R.tick_of(48) }, None);
+    let adj = place(&mut s.p, s.seq, 1, a);
+    fx(&mut s, adj, "vr_insta360_reframe");
+    // The 2538x1080 choice: 11 sequence pixels of pillarbox at each side of a
+    // 2560-wide sequence.
+    clip(&mut s, adj).effect_mut("vr_insta360_reframe").unwrap().params.get_mut("resolution").unwrap().value = ParamValue::Choice(3);
+    s.p.sequence_mut(s.seq).unwrap().settings.width = 2560;
+    s.p.sequence_mut(s.seq).unwrap().settings.height = 1440;
+    let t = R.tick_of(12);
+    let full = render_sequence(&s.p, s.seq, t, RenderOptions { scale: 1.0, ..Default::default() }, &s.map);
+    let half = render_sequence(&s.p, s.seq, t, RenderOptions { scale: 0.5, ..Default::default() }, &s.map);
+    let is_red = |img: &Image, x: usize, y: usize| img.get(x, y)[0] > 0.5;
+    // Inside the view both renders show the red picture; in the pillarbox strip
+    // (the first 5 canvas pixels at half size) both show black.
+    assert!(
+        !is_red(&full, 2, 720) && !is_red(&half, 2, 360),
+        "the strip beside the 2538-px view stays letterboxed at every scale: full {:?} half {:?}",
+        full.get(2, 720),
+        half.get(2, 360)
+    );
+    assert!(is_red(&full, 1280, 720) && is_red(&half, 640, 360), "the letterbox centre carries the picture at every scale");
+}
+
 fn set(s: &mut Scene, c: ClipId, effect: &str, param: &str, v: ParamValue) {
     clip(s, c).effect_mut(effect).unwrap().params.get_mut(param).unwrap().value = v;
 }

@@ -53,7 +53,9 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
 - **Effects (measured by tests).** `premiere_26_video_effects_catalogue`,
   `premiere_audio_set_is_complete_and_foldered` and `premiere_26_transition_tree` check the
   catalogue against Premiere's Effects panel: video effects 93/93 (+Legacy, Obsolete), audio
-  effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3. `cargo xtask
+  effects 53/53, video transitions 84/84 (+21 Legacy), audio transitions 3/3. Beyond Premiere we
+  ship a 360 re-cut (Immersive Video ▸ Sphere Reframe), recreated from the vendor
+  plugin's parameter surface. `cargo xtask
   parity --area effects|transitions` measures the shipped catalogue against a reference list too
   (presence and folder placement, [G7](gaps.md#g7-no-measured-parity-tool-in-ci)).
 - **The installed app (file names and listings only, per [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md); nothing

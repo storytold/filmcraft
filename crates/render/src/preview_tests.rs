@@ -237,6 +237,7 @@ fn effect_costs() {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
         apply(&mut img, &e, &cx);
         let t0 = std::time::Instant::now();

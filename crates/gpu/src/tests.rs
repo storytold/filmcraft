@@ -597,6 +597,7 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         env: None,
         frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
+        seq_size: None,
     };
     let chain = [
         effect("proc_amp", &[("brightness", 20.0)]),

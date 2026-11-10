@@ -339,6 +339,7 @@ mod tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
         let mut img = Image::filled(8, 8, [1.0, 1.0, 1.0, 1.0]);
         apply_effect(&mut img, &e, &cx);

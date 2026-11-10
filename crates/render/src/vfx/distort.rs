@@ -252,6 +252,7 @@ pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             env: cx.env,
             frame_rate: cx.frame_rate,
             working: cx.working,
+            seq_size: None,
         };
         let anchor = crate::effects::point(e, "anchor", &cx2, im);
         let pos = crate::effects::point(e, "position", &cx2, im);

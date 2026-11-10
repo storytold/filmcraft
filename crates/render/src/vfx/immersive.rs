@@ -10,9 +10,23 @@ use std::f64::consts::{PI, TAU};
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::{FxCtx, Image, add_light, blend_simple, bv, chv, cv, fbm, fv, hash01, highlights, lerp3, lin, luma, smoothstep};
+use super::{Affine, FxCtx, Image, Vec2, add_light, blend_simple, bv, chv, cv, fbm, fv, hash01, highlights, lerp3, lin, luma, smoothstep};
 
 type V3 = [f64; 3];
+
+/// The Sphere Reframe Resolution choices as (width, height) shapes.
+const INSTA360_SHAPES: &[Option<(u32, u32)>] = &[
+    Some((1920, 1080)),
+    Some((1080, 1920)),
+    Some((1080, 1080)),
+    Some((2538, 1080)),
+    Some((1440, 1080)),
+    Some((1080, 1440)),
+    Some((3840, 2160)),
+    Some((2160, 3840)),
+    Some((2160, 2160)),
+    Some((3840, 1634)),
+];
 
 #[inline]
 fn dir(lon: f64, lat: f64) -> V3 {
@@ -87,7 +101,12 @@ fn sample_dir(img: &Image, d: V3) -> [f32; 4] {
 }
 
 /// Run `f` on each view of the frame layout.
-fn per_view(img: &mut Image, layout: u32, f: impl Fn(&mut Image)) {
+fn per_view(img: &mut Image, layout: u32, mut f: impl FnMut(&mut Image)) {
+    per_view_at(img, layout, |v, _, _| f(v));
+}
+
+/// [`per_view`], also telling `f` where each view sits in the frame's pixels.
+fn per_view_at(img: &mut Image, layout: u32, mut f: impl FnMut(&mut Image, usize, usize)) {
     let (w, h) = (img.w, img.h);
     let views: Vec<(usize, usize, usize, usize)> = match layout {
         1 if h >= 2 => vec![(0, 0, w, h / 2), (0, h / 2, w, h - h / 2)],
@@ -95,7 +114,8 @@ fn per_view(img: &mut Image, layout: u32, f: impl Fn(&mut Image)) {
         _ => vec![(0, 0, w, h)],
     };
     if views.len() == 1 {
-        f(img);
+        let (x0, y0, _, _) = views[0];
+        f(img, x0, y0);
         return;
     }
     for (x0, y0, vw, vh) in views {
@@ -104,7 +124,7 @@ fn per_view(img: &mut Image, layout: u32, f: impl Fn(&mut Image)) {
             let s = ((y0 + y) * w + x0) * 4;
             v.px[y * vw * 4..(y + 1) * vw * 4].copy_from_slice(&img.px[s..s + vw * 4]);
         }
-        f(&mut v);
+        f(&mut v, x0, y0);
         for y in 0..vh {
             let s = ((y0 + y) * w + x0) * 4;
             img.px[s..s + vw * 4].copy_from_slice(&v.px[y * vw * 4..(y + 1) * vw * 4]);
@@ -431,6 +451,95 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 });
             });
         }
+        "vr_insta360_reframe" => {
+            // The vendor reframe cuts a view out of the stitched sphere and letterboxes it to a
+            // chosen frame shape. The Insta360 plugin takes the angle from FOV Control (which
+            // Frame Range and the Fov Preset write in the engine) and bends it with Distortion
+            // Control, in either of its Projection modes; it aims with Pan/Tilt and Roll.
+            let deg = fix(fv(e, "fov", cx) as f64, 88.0).clamp(1.0, 179.0);
+            let (yaw, pitch, roll) = (
+                fix(fv(e, "pan", cx) as f64, 0.0).clamp(-360.0, 360.0),
+                fix(fv(e, "tilt", cx) as f64, 0.0).clamp(-90.0, 90.0),
+                fix(fv(e, "roll", cx) as f64, 0.0),
+            );
+            // Same convention as VR Projection: the view direction is the transpose of the
+            // rotation, so a positive Pan reveals content at negative longitude and a positive
+            // Tilt looks up (toward positive latitude), matching the plugins.
+            let r = transpose(rotation(pitch, yaw, roll));
+            // The radial blend weight between rectilinear (0) and fisheye/equidistant (1):
+            // The vendor plugin's Distortion Control sweeps its Projection mode's range, No Distortion
+            // rectilinear→half and Distortion half→full, so it works in both.
+            let d = fix(fv(e, "distortion", cx) as f64, 0.95).clamp(0.0, 1.0);
+            let b = if chv(e, "projection") == 1 { 0.5 + 0.5 * d } else { 0.5 * d };
+            // The chosen frame shape as (width, height) pixels; None (an unknown index) fills the
+            // frame. The Resolution choices name a real size in SEQUENCE pixels, not only an
+            // aspect and not in the clip's working pixels: a 1080P choice cuts a 1920x1080 view
+            // centred in a 4K sequence whatever scale the clip's layer or its Motion transform
+            // runs at (the same view measured on the layer would shrink or stretch with it), and
+            // a shape larger than the sequence scales to the same aspect inside it rather than
+            // cropping.
+            let shape = INSTA360_SHAPES.get(chv(e, "resolution") as usize).copied().flatten();
+            let (sw, sh) = match cx.env.map(|env| env.sequence_size()).or(cx.seq_size) {
+                Some((a, b)) => (a.max(1) as f64, b.max(1) as f64),
+                None => (img.w.max(1) as f64, img.h.max(1) as f64),
+            };
+            let (bw, bh) = match shape {
+                Some((aw, ah)) if aw > 0 && ah > 0 && (aw as f64) <= sw && (ah as f64) <= sh => (aw as f64, ah as f64),
+                Some((aw, ah)) if aw > 0 && ah > 0 => {
+                    let (af, bf) = (aw as f64, ah as f64);
+                    if af * sh >= bf * sw { (sw, sw * bf / af) } else { (sh * af / bf, sh) }
+                }
+                _ => (sw, sh),
+            };
+            let (bx, by) = ((sw - bw) / 2.0, (sh - bh) / 2.0);
+            let ar = bh / bw.max(1.0);
+            // Working-pixel → sequence-pixel mapping of one frame pixel: the clip's placement
+            // transform (layer → output, Motion and playback scale folded in) divided back by the
+            // render scale. Without a surrounding picture (isolated tests, adjustment layers) the
+            // frame is the output: identity, with sw x sh the image's own size as before.
+            let to_seq = match cx.env {
+                Some(env) => {
+                    let s = fix(env.render_scale() as f64, 1.0).max(f64::EPSILON);
+                    Affine::scale(1.0 / s, 1.0 / s).then_apply(&env.layer_to_output())
+                }
+                None => Affine::IDENTITY,
+            };
+            let half = (deg / 2.0).to_radians();
+            let th = half.tan();
+            per_view_at(img, layout, |v, vx, vy| {
+                let src = v.clone();
+                let w = v.w.max(1);
+                v.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w {
+                        let q = to_seq.apply(Vec2::new((x + vx) as f64 + 0.5, (y + vy) as f64 + 0.5));
+                        let (fx, fy) = (q.x - bx, q.y - by);
+                        let o = if fx < 0.0 || fx >= bw || fy < 0.0 || fy >= bh {
+                            [0.0, 0.0, 0.0, 1.0]
+                        } else {
+                            let (px, py) = ((fx / bw - 0.5) * 2.0 * th, (0.5 - fy / bh) * 2.0 * th * ar);
+                            let rho = (px * px + py * py).sqrt();
+                            let d = if rho < 1e-9 {
+                                [0.0, 0.0, 1.0]
+                            } else {
+                                // Every mapping sends the frame edge (rho = th) to the half-angle,
+                                // so the view size is the same however the lens bends it.
+                                let alt = rho * half / th;
+                                let t = (1.0 - b) * rho.atan() + b * alt;
+                                let (st, ct) = t.sin_cos();
+                                [st * px / rho, st * py / rho, ct]
+                            };
+                            sample_dir(&src, mvec(&r, d))
+                        };
+                        row[x * 4..x * 4 + 4].copy_from_slice(&o);
+                    }
+                });
+            });
+        }
         _ => {}
     }
+}
+
+/// A parameter value that must survive NaN/inf from hostile project files.
+fn fix(v: f64, fallback: f64) -> f64 {
+    if v.is_finite() { v } else { fallback }
 }

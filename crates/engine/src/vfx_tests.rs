@@ -62,12 +62,13 @@ fn effects_list_reports_folders_and_badges() {
     assert_eq!(wsz["folder"], "Distort");
     assert_eq!(wsz["category"], json!(["Video Effects", "Distort"]));
     assert_eq!(find("vr_rotate_sphere")["folder"], "Immersive Video");
+    assert_eq!(find("vr_insta360_reframe")["folder"], "Immersive Video");
     assert_eq!(find("crop")["category"], json!(["Legacy", "Video Effects"]));
     assert_eq!(find("luma_key")["badges"], json!({"accelerated": true, "float32": true, "yuv": true}));
     assert_eq!(find("lens_flare")["folder"], "Lights & Glows");
     let n =
         arr.iter().filter(|e| e["kind"] == "Video" && e["category"][0] == "Video Effects" && e["folder"] != "Obsolete" && e["folder"] != Value::Null).count();
-    assert_eq!(n, 93, "Premiere 26's current Video Effects");
+    assert_eq!(n, 94, "Premiere 26's Video Effects plus the sphere re-cut");
 }
 
 #[test]
@@ -162,6 +163,254 @@ fn ultra_key_setting_writes_aggressive_parameters() {
     assert_eq!(e.param("pedestal").unwrap().value.as_f64(), Some(50.0));
     assert_eq!(e.param("choke").unwrap().value.as_f64(), Some(10.0));
     assert_eq!(e.param("contrast").unwrap().value.as_f64(), Some(10.0));
+}
+
+/// Sphere Reframe's Fov Preset and Frame Range drive FOV Control and Distortion Control one way.
+#[test]
+fn insta360_frame_range_syncs_fov_and_distortion() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    let get = |s: &Session, p: &str| {
+        s.active_sequence()
+            .unwrap()
+            .find_item(filmcraft_project::ClipId(clip))
+            .unwrap()
+            .1
+            .effect("vr_insta360_reframe")
+            .unwrap()
+            .param(p)
+            .unwrap()
+            .value
+            .clone()
+    };
+    // The Fov Preset writes all three (UltraWide: 73 / 79° / 0.95).
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset", "value": "UltraWide"})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert_eq!(e.param("frame_range").unwrap().value.as_f64(), Some(73.0));
+    assert_eq!(e.param("fov").unwrap().value.as_f64(), Some(79.0));
+    assert_eq!(e.param("distortion").unwrap().value.as_f64(), Some(0.95));
+    // Dragging Frame Range re-derives FOV Control and Distortion Control linearly (50 → 85° / 0.475).
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "value": 50.0})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert_eq!(e.param("fov").unwrap().value.as_f64(), Some(85.0));
+    assert_eq!(e.param("distortion").unwrap().value.as_f64(), Some(0.475));
+    // Editing the two derived parameters one way never moves Frame Range back.
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov", "value": 120.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "distortion", "value": 0.2})).unwrap();
+    assert_eq!(get(&s, "frame_range").as_f64(), Some(50.0), "frame_range is not pulled back");
+    assert_eq!(get(&s, "fov").as_f64(), Some(120.0));
+    assert_eq!(get(&s, "distortion").as_f64(), Some(0.2));
+}
+
+/// The one-way sync must never destroy animation the user put on the derived
+/// controls, and Frame Range - whose keyframes the renderer never reads - is not
+/// keyframable at all.
+#[test]
+fn insta360_sync_keeps_keyframed_targets() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    let prm = |s: &Session, p: &str| {
+        s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().param(p).unwrap().clone()
+    };
+    let tick = filmcraft_time::Tick;
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov", "value": 100.0, "keyframe": true, "time": tick(0).0}))
+        .unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov", "value": 140.0, "keyframe": true, "time": tick(1).0}))
+        .unwrap();
+    // Moving Frame Range now re-derives the static Distortion Control but leaves
+    // the animated FOV Control alone - it used to wipe its keyframes.
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "value": 50.0})).unwrap();
+    let fov = prm(&s, "fov");
+    assert_eq!(fov.keyframes.len(), 2, "the sync cleared keyframes the user animated");
+    assert_eq!(fov.keyframes[1].value.as_f64(), Some(140.0));
+    assert_eq!(prm(&s, "distortion").value.as_f64(), Some(0.475), "static targets still sync");
+    // Frame Range drives the other two and is never read at render time, so the
+    // stopwatch is refused on it.
+    let r = s.execute(
+        "effects.setParam",
+        json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "value": 60.0, "keyframe": true, "time": tick(0).0}),
+    );
+    assert!(r.is_err(), "frame_range must not invite keyframes the renderer never reads");
+}
+
+/// #5195: the stopwatch cannot turn on animation for a parameter whose definition
+/// marks it non-animatable - Frame Range's keyframes are never read by the renderer,
+/// so toggling it on offered motion it would not show. Toggling *off* stays
+/// available: projects saved before the rule may carry its keyframes.
+#[test]
+fn insta360_frame_range_stopwatch_is_refused() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    let r = s.execute("effects.toggleAnimation", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range"}));
+    assert!(r.is_err(), "the stopwatch must refuse a non-animatable parameter");
+    let get = |s: &Session, p: &str| {
+        s.active_sequence()
+            .unwrap()
+            .find_item(filmcraft_project::ClipId(clip))
+            .unwrap()
+            .1
+            .effect(p)
+            .map(|e| e.params.get("frame_range").unwrap().keyframes.clone())
+    };
+    assert!(get(&s, "vr_insta360_reframe").unwrap().is_empty(), "the refusal left no keyframe");
+    // A derived control the renderer does evaluate still toggles both ways.
+    s.execute("effects.toggleAnimation", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov"})).unwrap();
+    // An older project that carries a Frame Range keyframe can still clear it.
+    let sid = s.state.active_sequence.unwrap();
+    {
+        let (_, it) = std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().find_item_mut(filmcraft_project::ClipId(clip)).unwrap();
+        it.effects
+            .iter_mut()
+            .find(|e| e.effect == "vr_insta360_reframe")
+            .unwrap()
+            .params
+            .get_mut("frame_range")
+            .unwrap()
+            .keyframes
+            .push(filmcraft_project::Keyframe::new(filmcraft_time::Tick(0), filmcraft_project::ParamValue::Float(50.0)));
+    }
+    s.execute("effects.toggleAnimation", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range"})).unwrap();
+    assert!(
+        s.active_sequence()
+            .unwrap()
+            .find_item(filmcraft_project::ClipId(clip))
+            .unwrap()
+            .1
+            .effect("vr_insta360_reframe")
+            .unwrap()
+            .params
+            .get("frame_range")
+            .unwrap()
+            .keyframes
+            .is_empty(),
+        "the stale stopwatch turned off"
+    );
+}
+
+/// #5195: resetting a driving parameter must re-derive its companions, the same
+/// one-way rule `effects.setParam` applies - a reset that restores Frame Range
+/// while leaving FOV Control on the dragged value shows a window that is neither
+/// the default nor what the slider implies.
+#[test]
+fn insta360_reset_param_rederives_companions() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    let at = |s: &Session, p: &str| {
+        s.active_sequence()
+            .unwrap()
+            .find_item(filmcraft_project::ClipId(clip))
+            .unwrap()
+            .1
+            .effect("vr_insta360_reframe")
+            .unwrap()
+            .param(p)
+            .unwrap()
+            .value
+            .as_f64()
+    };
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "value": 50.0})).unwrap();
+    assert_eq!(at(&s, "fov"), Some(85.0), "the drag synced first");
+    // Resetting Frame Range restores its default AND re-derives the static targets
+    // from it - here the derivation, not the (untouched) definitions' own defaults.
+    s.execute("effects.resetParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range"})).unwrap();
+    let (fov, distortion) = filmcraft_project::effect::insta360_frame_range(76.0);
+    assert_eq!(at(&s, "frame_range"), Some(76.0));
+    assert_eq!(at(&s, "fov"), Some(fov), "reset left a stale FOV Control");
+    assert_eq!(at(&s, "distortion"), Some(distortion), "reset left a stale Distortion Control");
+    // Resetting the preset re-derives all three from the preset row (MegaView).
+    s.execute("effects.resetParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset"})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert_eq!(e.param("fov").unwrap().value.as_f64(), Some(88.0), "the preset reset must write its own row");
+    assert_eq!(e.param("distortion").unwrap().value.as_f64(), Some(0.95));
+    // A target the user animated keeps its own story through either reset.
+    s.execute(
+        "effects.setParam",
+        json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov", "value": 100.0, "keyframe": true, "time": filmcraft_time::Tick(0).0}),
+    )
+    .unwrap();
+    s.execute("effects.resetParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range"})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert_eq!(e.param("fov").unwrap().keyframes.len(), 1, "a reset cleared animated FOV Control");
+}
+
+/// #5195: the driver of a reset may be ANIMATED (Fov Preset is a stepped choice
+/// the timeline diamond does keyframe): resetParam lands the default in the
+/// keyframe at the reset time and leaves the parameter's static value on the old
+/// preset, so the companion sync must derive from the value at that time, not
+/// from the stale static one.
+#[test]
+fn insta360_reset_of_an_animated_driver_syncs_its_keyframed_value() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset", "value": "UltraWide"})).unwrap();
+    // A keyframe at the playhead (stepped choice: allowed), then a setParam moves
+    // that keyframe's value without touching the old static one.
+    s.execute("effects.addKeyframe", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset", "value": "Dewarp"})).unwrap();
+    // Reset writes the DEFAULT through the keyframe: the companions must follow
+    // MegaView (76 / 88 / 0.95), not the static UltraWide (73 / 79) or Dewarp (52 / 100).
+    s.execute("effects.resetParam", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov_preset"})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert_eq!(e.param("fov_preset").unwrap().keyframes.len(), 1, "the animated preset stayed animated");
+    assert_eq!(e.param("fov").unwrap().value.as_f64(), Some(88.0), "the companions derived from the stale static preset");
+    assert_eq!(e.param("frame_range").unwrap().value.as_f64(), Some(76.0));
+    assert_eq!(e.param("distortion").unwrap().value.as_f64(), Some(0.95));
+}
+
+/// #5195: the timeline keyframe diamond obeys the same `animatable` rule as the
+/// stopwatch and `effects.setParam` - Frame Range never gains keyframes the
+/// renderer will not read - while removing one a legacy project carries stays
+/// possible.
+#[test]
+fn insta360_add_keyframe_respects_non_animatable() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "vr_insta360_reframe"})).unwrap();
+    let r = s.execute("effects.addKeyframe", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "time": filmcraft_time::Tick(1).0}));
+    assert!(r.is_err(), "a keyframe must not be added to a non-animatable parameter");
+    let e_kf = s
+        .active_sequence()
+        .unwrap()
+        .find_item(filmcraft_project::ClipId(clip))
+        .unwrap()
+        .1
+        .effect("vr_insta360_reframe")
+        .unwrap()
+        .params
+        .get("frame_range")
+        .unwrap()
+        .keyframes
+        .clone();
+    assert!(e_kf.is_empty(), "the refusal left a keyframe behind");
+    // an animatable control gains one the same way (remove at the same time is its toggle)
+    s.execute("effects.addKeyframe", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "fov", "time": filmcraft_time::Tick(1).0})).unwrap();
+    // a stale Frame Range keyframe from before the rule can still be removed
+    // here; the command keys on the clip's effect time, not the raw tick
+    let sid = s.state.active_sequence.unwrap();
+    let mt0 = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect_time_at(filmcraft_time::Tick(0));
+    {
+        let (_, it) = std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().find_item_mut(filmcraft_project::ClipId(clip)).unwrap();
+        it.effects
+            .iter_mut()
+            .find(|e| e.effect == "vr_insta360_reframe")
+            .unwrap()
+            .params
+            .get_mut("frame_range")
+            .unwrap()
+            .keyframes
+            .push(filmcraft_project::Keyframe::new(mt0, filmcraft_project::ParamValue::Float(50.0)));
+    }
+    let r = s
+        .execute("effects.addKeyframe", json!({"clip": clip, "effect": "vr_insta360_reframe", "param": "frame_range", "time": filmcraft_time::Tick(0).0}))
+        .unwrap();
+    assert_eq!(r["added"], false, "the diamond toggled off, not added");
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("vr_insta360_reframe").unwrap().clone();
+    assert!(e.params.get("frame_range").unwrap().keyframes.is_empty(), "the legacy keyframe survived");
 }
 
 /// #2679: a value outside a parameter's range (the `min`/`max` `effects.list` publishes) is

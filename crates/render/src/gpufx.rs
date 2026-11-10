@@ -1237,6 +1237,7 @@ mod tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
         // Both sides of each cutoff, including samples inside the former artificial fade.
         let lo = 90.0 / 255.0;
@@ -1287,6 +1288,7 @@ mod tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
         let on_gpu = |e: &EffectInstance| FxOp::eval(e, &cx, 64, 36).is_some_and(|op| op.gpu_ok());
         let mut e = find_effect("transform").unwrap().instance();
