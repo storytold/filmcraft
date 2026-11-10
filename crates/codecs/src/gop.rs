@@ -300,6 +300,45 @@ impl State {
         self.parked = Some(other);
     }
 
+    /// Evict frames, the farthest from the request(s) first, until the cache holds at most
+    /// `budget` bytes or only the frames to keep are left; `keep` (the frame just stored, or the
+    /// one asked for) is never evicted.
+    fn evict_over(&mut self, budget: usize, keep: i64) {
+        // Evict frames far from the request (pin), not the newest decode. A frame-threaded
+        // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
+        // wanted picture and walk the GOP again.
+        let pivot = if self.pin != i64::MIN { self.pin } else { keep };
+        // with a second run parked, frames near its request are kept too
+        let pivot2 = if self.parked.is_some() { self.pin2 } else { i64::MIN };
+        let dist = |x: i64| x.abs_diff(pivot).min(if pivot2 == i64::MIN { u64::MAX } else { x.abs_diff(pivot2) });
+        let kept = |x: i64| x == pivot || x == pivot2 || x == keep;
+        while self.bytes > budget && self.frames.len() > 2 {
+            let (Some(&first), Some(&last)) = (self.frames.keys().next(), self.frames.keys().next_back()) else { break };
+            let mut victim = if dist(first) > dist(last) { first } else { last };
+            if pivot2 != i64::MIN {
+                // two windows: the frame farthest from both, which may lie between them (the
+                // pictures a run walked through on its way to its window)
+                if let Some(far) = self.frames.keys().copied().filter(|&k| !kept(k)).max_by_key(|&k| dist(k)) {
+                    victim = far;
+                }
+            }
+            if kept(victim) {
+                victim = if victim == first { last } else { first };
+                if kept(victim) {
+                    break;
+                }
+            }
+            if let Some(v) = self.frames.remove(&victim) {
+                self.drafts.remove(&victim);
+                self.raw.remove(&victim);
+                self.bytes -= v.byte_size();
+                EVICTED.fetch_add(1, Ordering::Relaxed);
+                // its planes serve the next decoded pictures instead of going back to the allocator
+                filmcraft_frame::pool::recycle(v);
+            }
+        }
+    }
+
     /// Evict frames, earliest first, while `more` says so.
     fn release_frames(&mut self, pool: &Pool, more: impl Fn() -> bool) {
         while more() {
@@ -788,39 +827,7 @@ impl GopCache {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
-        // Evict frames far from the request (pin), not the newest decode. A frame-threaded
-        // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
-        // wanted picture and walk the GOP again.
-        let pivot = if st.pin != i64::MIN { st.pin } else { pts };
-        // with a second run parked, frames near its request are kept too
-        let pivot2 = if st.parked.is_some() { st.pin2 } else { i64::MIN };
-        let dist = |x: i64| x.abs_diff(pivot).min(if pivot2 == i64::MIN { u64::MAX } else { x.abs_diff(pivot2) });
-        let kept = |x: i64| x == pivot || x == pivot2 || x == pts;
-        while st.bytes > budget && st.frames.len() > 2 {
-            let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let mut victim = if dist(first) > dist(last) { first } else { last };
-            if pivot2 != i64::MIN {
-                // two windows: the frame farthest from both, which may lie between them (the
-                // pictures a run walked through on its way to its window)
-                if let Some(far) = st.frames.keys().copied().filter(|&k| !kept(k)).max_by_key(|&k| dist(k)) {
-                    victim = far;
-                }
-            }
-            if kept(victim) {
-                victim = if victim == first { last } else { first };
-                if kept(victim) {
-                    break;
-                }
-            }
-            if let Some(v) = st.frames.remove(&victim) {
-                st.drafts.remove(&victim);
-                st.raw.remove(&victim);
-                st.bytes -= v.byte_size();
-                EVICTED.fetch_add(1, Ordering::Relaxed);
-                // its planes serve the next decoded pictures instead of going back to the allocator
-                filmcraft_frame::pool::recycle(v);
-            }
-        }
+        st.evict_over(budget, pts);
         let pool = &self.shared.pool;
         if st.bytes >= before {
             pool.bytes.fetch_add(st.bytes - before, Ordering::Relaxed);
@@ -828,6 +835,16 @@ impl GopCache {
             pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
         }
         pool.trim_frames(&self.shared);
+    }
+
+    /// Give back the frames the released second run's window held: the cache goes back to its
+    /// single-run budget now, not at the next frame it stores (a cache hit may be all that
+    /// follows). The frame asked for stays, and the pool's count follows.
+    fn trim_released(&self, st: &mut State) {
+        let Some(frame_bytes) = st.frames.values().next().map(|f| f.byte_size()) else { return };
+        let before = st.bytes;
+        st.evict_over(self.cache_budget(frame_bytes), st.pin);
+        self.shared.pool.bytes.fetch_sub(before.saturating_sub(st.bytes), Ordering::Relaxed);
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
@@ -914,6 +931,7 @@ impl GopCache {
         st.pin = want_pts;
         if st.parked.as_ref().is_some_and(|p| p.at.elapsed() >= IDLE) {
             released.extend(st.release_parked(&self.shared.pool));
+            self.trim_released(&mut st);
         }
         let background = filmcraft_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {

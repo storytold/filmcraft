@@ -390,6 +390,35 @@ fn a_dissolve_carries_on_after_its_parked_run_expires() {
     assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
 }
 
+/// Releasing an expired parked run on a cache hit gives back the frames its window held: the
+/// cache is within its single-run budget at once (not at the next frame it stores), still holds
+/// the frame asked for, and the pool's byte count follows.
+#[test]
+fn an_expired_parked_run_gives_back_its_frames_at_once() {
+    let pool = Arc::new(Pool::new(4, IDLE, 1 << 30));
+    let mut c = GopCache::in_pool(None, pool.clone());
+    // one-pixel frames of 4 bytes: a single run keeps 75 of them, two runs 150
+    c.budget = 300;
+    let s = samples(4000, 1000, 0, false);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    {
+        let mut st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.bytes > 300, "the two runs hold {} bytes, over one run's budget", st.bytes);
+        let parked = st.parked.as_mut().expect("the first place's run is parked");
+        parked.at = Instant::now().checked_sub(IDLE + Duration::from_secs(1)).expect("a clock that has run for IDLE");
+    }
+    // a cache hit releases the expired run
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    let st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(st.parked.is_none());
+    assert!(st.bytes <= 300, "{} bytes held after the release", st.bytes);
+    assert!(st.frames.contains_key(&1_150_000), "the frame asked for stays");
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), st.bytes, "the pool's count follows");
+}
+
 #[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
