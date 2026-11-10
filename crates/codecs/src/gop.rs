@@ -181,6 +181,34 @@ fn decode_start(s: &dyn VideoSamples, i: usize) -> usize {
     key
 }
 
+/// A decode run: the decoder and where it is (see the fields of [`State`] of the same names).
+struct Lane {
+    decoder: Option<Box<dyn VideoDecoder>>,
+    next: usize,
+    start: usize,
+    out_max: i64,
+    at: Instant,
+}
+
+impl Lane {
+    fn empty() -> Self {
+        Self { decoder: None, next: usize::MAX, start: 0, out_max: i64::MIN, at: Instant::now() }
+    }
+}
+
+/// Whether a run at (`next`, `start`, `out_max`) carries on to sample `i` (sync sample `key`,
+/// `n` samples) instead of restarting: it has passed the sync sample and either has not reached
+/// the sample yet or has been fed it without outputting it yet (a frame-threaded decoder holds
+/// many pictures in flight), or sits a short way before the next GOP.
+fn lane_continues(lane: (usize, usize, i64), n: usize, key: usize, i: usize, want_pts: i64) -> bool {
+    let (next, start, out_max) = lane;
+    let running = next != usize::MAX && next <= n && start <= key;
+    // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
+    // playback wants those frames anyway.
+    let near = next <= key && key - next <= CONTINUE_THROUGH;
+    running && (next > key || near) && (i >= next || (start <= i && want_pts > out_max))
+}
+
 struct State {
     decoder: Option<Box<dyn VideoDecoder>>,
     /// The decoder only produces intra pictures: frames decode independently and in parallel.
@@ -206,6 +234,19 @@ struct State {
     /// (not around the newest decoded picture). Walking a long GOP dumps pictures in decode
     /// order; a window around those would throw away the playhead frame and force another walk.
     pin: i64,
+    /// Sample index of the request `pin` belongs to.
+    pin_i: usize,
+    /// The frame the request before the last one in another part of the stream wanted (a
+    /// distance over [`CONTINUE_THROUGH`] samples), protected from eviction like `pin` while a
+    /// second decode run is parked. `i64::MIN` without one.
+    pin2: i64,
+    /// A second decode run: its decoder and position, parked while another part of the stream is
+    /// decoded. A dissolve between two clips cut from one file asks for two places in it on every
+    /// frame; with a single run each request restarted at a sync sample and decoded a whole GOP
+    /// again (a dissolve exported at a tenth of the speed of the footage around it).
+    parked: Option<Lane>,
+    /// When the active run last decoded.
+    lane_at: Instant,
     /// Only background requests (thumbnails, [`filmcraft_media::cancel::with_background`]) have
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
@@ -222,7 +263,27 @@ impl State {
             out.push(d);
         }
         self.next = usize::MAX;
+        out.extend(self.release_parked(pool));
         out
+    }
+
+    /// Give up the parked run's decoder.
+    fn release_parked(&mut self, pool: &Pool) -> Option<Box<dyn VideoDecoder>> {
+        self.pin2 = i64::MIN;
+        let d = self.parked.take()?.decoder?;
+        pool.decoders.fetch_sub(1, Ordering::Relaxed);
+        Some(d)
+    }
+
+    /// Swap the active run with the parked one (an empty one when none is parked).
+    fn swap_lane(&mut self) {
+        let mut other = self.parked.take().unwrap_or_else(Lane::empty);
+        std::mem::swap(&mut self.decoder, &mut other.decoder);
+        std::mem::swap(&mut self.next, &mut other.next);
+        std::mem::swap(&mut self.start, &mut other.start);
+        std::mem::swap(&mut self.out_max, &mut other.out_max);
+        std::mem::swap(&mut self.lane_at, &mut other.at);
+        self.parked = Some(other);
     }
 
     /// Evict frames, earliest first, while `more` says so.
@@ -605,6 +666,10 @@ impl GopCache {
                 bytes: 0,
                 last_used: Instant::now(),
                 pin: i64::MIN,
+                pin_i: usize::MAX,
+                pin2: i64::MIN,
+                parked: None,
+                lane_at: Instant::now(),
                 background: false,
             }),
             pool: pool.clone(),
@@ -693,7 +758,8 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.cache_budget(f.byte_size());
+        // a second run parked: each run keeps its own window of frames
+        let budget = self.cache_budget(f.byte_size()).saturating_mul(if st.parked.is_some() { 2 } else { 1 });
         let before = st.bytes;
         st.bytes += f.byte_size();
         st.raw.remove(&pts);
@@ -705,12 +771,23 @@ impl GopCache {
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
         // wanted picture and walk the GOP again.
         let pivot = if st.pin != i64::MIN { st.pin } else { pts };
+        // with a second run parked, frames near its request are kept too
+        let pivot2 = if st.parked.is_some() { st.pin2 } else { i64::MIN };
+        let dist = |x: i64| x.abs_diff(pivot).min(if pivot2 == i64::MIN { u64::MAX } else { x.abs_diff(pivot2) });
+        let kept = |x: i64| x == pivot || x == pivot2 || x == pts;
         while st.bytes > budget && st.frames.len() > 2 {
             let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let mut victim = if pivot - first > last - pivot { first } else { last };
-            if victim == pivot || victim == pts {
+            let mut victim = if dist(first) > dist(last) { first } else { last };
+            if pivot2 != i64::MIN {
+                // two windows: the frame farthest from both, which may lie between them (the
+                // pictures a run walked through on its way to its window)
+                if let Some(far) = st.frames.keys().copied().filter(|&k| !kept(k)).max_by_key(|&k| dist(k)) {
+                    victim = far;
+                }
+            }
+            if kept(victim) {
                 victim = if victim == first { last } else { first };
-                if victim == pivot || victim == pts {
+                if kept(victim) {
                     break;
                 }
             }
@@ -805,7 +882,14 @@ impl GopCache {
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
+        if i.abs_diff(st.pin_i) > CONTINUE_THROUGH {
+            st.pin2 = st.pin;
+        }
+        st.pin_i = i;
         st.pin = want_pts;
+        if st.parked.as_ref().is_some_and(|p| p.at.elapsed() >= IDLE) {
+            released.extend(st.release_parked(&self.shared.pool));
+        }
         let background = filmcraft_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
@@ -853,11 +937,33 @@ impl GopCache {
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
         // evicted or lies in another GOP: restart at the sync sample. A run that started after
         // `key` (at the random-access picture of a wanted leading picture) left the picture out.
-        let running = st.next != usize::MAX && st.next <= n && st.start <= key;
-        // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
-        // playback wants those frames anyway.
-        let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
-        let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
+        let mut continuing = lane_continues((st.next, st.start, st.out_max), n, key, i, want_pts);
+        if !continuing {
+            // Another part of the stream is being decoded in step with this one (the two sides
+            // of a dissolve): resume that run, or park the running one and start a second,
+            // instead of restarting a single run at a sync sample on every frame.
+            let parked_continues = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && lane_continues((p.next, p.start, p.out_max), n, key, i, want_pts));
+            if parked_continues {
+                st.swap_lane();
+                continuing = true;
+            } else if st.next == usize::MAX || st.start != key {
+                // Neither run is in this sample's GOP (a request a few pictures behind a run is
+                // restarted in its own run, never moved to the other one). Reuse the run used
+                // least recently; the active one is parked for a second run only if it just
+                // decoded, so that scrubbing around a clip keeps one decoder.
+                let parked_here = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.start == key && p.next != usize::MAX);
+                let parked_older = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.at <= st.lane_at);
+                let recent = st.decoder.is_some() && st.next != usize::MAX && st.lane_at.elapsed() < IDLE;
+                if parked_here || parked_older || (recent && st.parked.is_none()) {
+                    st.swap_lane();
+                    if st.decoder.is_none() {
+                        st.decoder = Some(s.make_decoder()?);
+                        self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        st.lane_at = Instant::now();
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
             // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks

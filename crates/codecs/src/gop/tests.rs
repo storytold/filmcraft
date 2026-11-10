@@ -269,6 +269,27 @@ fn running_decoder_continues_through_a_nearby_sync_sample() {
 }
 
 #[test]
+fn two_places_in_one_gop_run_side_by_side_without_restarting() {
+    // The two sides of a dissolve between clips cut from one long-GOP file: every output frame
+    // asks for a frame near 100 and one near 1100, slightly out of order like frame workers do.
+    // One decode run restarted at a sync sample on nearly every request.
+    let s = samples(2000, 1000, 2, false);
+    let c = GopCache::new(None);
+    for f in 0..100usize {
+        let order = if f % 2 == 0 { [f, f + 1] } else { [f, f - 1] };
+        for a in order {
+            for place in [150 + a, 1150 + a] {
+                assert_eq!(index_of(&c.frame(&s, place as i64 * 1000).expect("frame")), place);
+            }
+        }
+    }
+    // two runs start (one per GOP) and a request a few pictures behind a run restarts that run
+    // at most now and then: nothing like one restart per request
+    assert!(s.resets.load(Ordering::Relaxed) <= 8, "{} restarts", s.resets.load(Ordering::Relaxed));
+    assert!(s.decodes.load(Ordering::Relaxed) < 2000, "{} samples decoded", s.decodes.load(Ordering::Relaxed));
+}
+
+#[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
     let c = Arc::new(GopCache::new(None));
