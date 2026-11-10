@@ -688,6 +688,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let fixed = audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Mp3 => "MP3",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             AudioCodec::Opus => "Opus",
             AudioCodec::Vorbis => "Vorbis",
@@ -745,9 +746,14 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
             ui.label(egui::RichText::new(tl!("-1 smallest, 10 best")).size(12.0));
         });
-    } else if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Opus) {
+    } else if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus) {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
-            let rates: &[u32] = if opus { &[32, 64, 96, 128, 160, 192, 256, 320, 510] } else { &[128, 160, 192, 256, 320] };
+            // MP3 bit rates are Layer III's (16-24 kHz streams stop at 160 kbps)
+            let rates: &[u32] = match s.audio_codec() {
+                AudioCodec::Opus => &[32, 64, 96, 128, 160, 192, 256, 320, 510],
+                AudioCodec::Mp3 => &[64, 96, 128, 160, 192, 256, 320],
+                _ => &[128, 160, 192, 256, 320],
+            };
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
             if let Some(&r) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0).and_then(|i| rates.get(i)) {
                 s.audio.bitrate_kbps = r;
