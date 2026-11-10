@@ -326,11 +326,9 @@ fn marker_editor_wide_form_and_small_window_keep_actions_accessible() {
     assert!(d.app().ui.marker_properties.is_none());
 }
 
-/// A double-click on a marker flag over the work area bar opens Marker Properties and leaves the
-/// bar, the project and the history alone; a double-click on the bar itself still fits it.
-#[test]
-fn review_marker_double_click_over_work_area_preserves_project_and_history() {
-    let mut d = Driver::demo();
+/// A point marker, a range marker and the work area bar under both flags of each, zoomed to the
+/// sequence: the setup of the double-click regressions below. Returns (point, range).
+fn markers_over_work_area(d: &mut Driver) -> (u64, u64) {
     d.exec("markers.clearAll", json!({}));
     let point = d.exec("markers.add", json!({"frame":36}))["marker"].as_u64().unwrap();
     let range = d.exec("markers.addRange", json!({"frame":48,"durationFrames":24}))["marker"].as_u64().unwrap();
@@ -338,32 +336,75 @@ fn review_marker_double_click_over_work_area_preserves_project_and_history() {
     d.exec("sequence.setWorkArea", json!({"start":rate.tick_of(24).0,"end":rate.tick_of(120).0}));
     d.ok("ui.menu.invoke", json!({"id":"view.zoomToSequence"}));
     d.frames(60);
+    (point, range)
+}
+
+/// Double-clicks the flag `flag` names, of marker `marker`, where it overlaps the work area bar:
+/// the flag wins (#4491), Marker Properties opens on that marker, and the bar, the project and the
+/// history are left alone, also by Cancel.
+fn double_click_flag_over_work_area(d: &mut Driver, flag: &str, marker: u64) {
     let before = d.app().session.project.to_json();
     let area = d.app().session.active_sequence().unwrap().work_area;
     let history = d.app().session.history.undo.len();
-    for (id, marker) in
-        [(format!("timeline.marker.{point}"), point), (format!("timeline.marker.{range}"), range), (format!("timeline.markerEnd.{range}"), range)]
-    {
-        let elements = d.ok("ui.elements", json!({"prefix":id}));
-        let rect = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"].as_array().unwrap();
-        let pos = egui::pos2(
-            (rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() / 2.0) as f32,
-            (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() - 0.5) as f32,
-        );
-        let hit = d.ok("ui.timeline.hit", json!({"x":pos.x,"y":pos.y}));
-        // the point is in both hit rectangles: a start flag wins over the bar since #4491 (a drag
-        // there moves the marker), a range's end flag still overlaps the bar's hit
-        let owner = if id.starts_with("timeline.markerEnd.") { "workArea" } else { "ruler" };
-        assert_eq!(hit["hit"], owner, "the regression must exercise the overlapping hit rectangles");
-        d.double_click_at(pos);
-        assert_eq!(d.app().ui.marker_properties.as_ref().unwrap().marker, marker);
-        assert_eq!(d.app().session.active_sequence().unwrap().work_area, area, "opening marker properties must not change the work area");
-        assert_eq!(d.app().session.history.undo.len(), history);
-        d.snapshot("marker-work-area-overlap", "markerProperties.");
-        d.click("markerProperties.cancel");
-        assert_eq!(d.app().session.project.to_json(), before);
-        assert_eq!(d.app().session.history.undo.len(), history);
-    }
+    let elements = d.ok("ui.elements", json!({"prefix":flag}));
+    let rect = elements.as_array().unwrap().iter().find(|e| e["id"] == flag).unwrap()["rect"].as_array().unwrap();
+    let pos =
+        egui::pos2((rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() / 2.0) as f32, (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() - 0.5) as f32);
+    // the point is in both hit rectangles: the bar's (its drawn rect, 1 px taller each way) and the flag's
+    let bar = d.ok("ui.elements", json!({"prefix":"timeline.workArea"}));
+    let bar: Vec<f32> = bar.as_array().unwrap().iter().find(|e| e["id"] == "timeline.workArea").unwrap()["rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect();
+    let bar = egui::Rect::from_min_size(egui::pos2(bar[0], bar[1]), egui::vec2(bar[2], bar[3])).expand2(egui::vec2(0.0, 1.0));
+    assert!(bar.contains(pos), "the regression must exercise the overlapping hit rectangles");
+    assert_eq!(d.ok("ui.timeline.hit", json!({"x":pos.x,"y":pos.y}))["hit"], "ruler", "the flag wins over the bar");
+    d.double_click_at(pos);
+    assert_eq!(d.app().ui.marker_properties.as_ref().unwrap().marker, marker);
+    assert_eq!(d.app().session.active_sequence().unwrap().work_area, area, "opening marker properties must not change the work area");
+    assert_eq!(d.app().session.history.undo.len(), history);
+    d.snapshot("marker-work-area-overlap", "markerProperties.");
+    d.click("markerProperties.cancel");
+    assert_eq!(d.app().session.project.to_json(), before);
+    assert_eq!(d.app().session.history.undo.len(), history);
+}
+
+/// A double-click on a point marker's flag over the work area bar opens Marker Properties.
+#[test]
+fn review_marker_double_click_over_work_area_point_flag() {
+    let mut d = Driver::demo();
+    let (point, _) = markers_over_work_area(&mut d);
+    double_click_flag_over_work_area(&mut d, &format!("timeline.marker.{point}"), point);
+}
+
+/// A double-click on a range marker's start flag over the work area bar opens Marker Properties.
+#[test]
+fn review_marker_double_click_over_work_area_range_start_flag() {
+    let mut d = Driver::demo();
+    let (_, range) = markers_over_work_area(&mut d);
+    double_click_flag_over_work_area(&mut d, &format!("timeline.marker.{range}"), range);
+}
+
+/// A double-click on a range marker's end flag over the work area bar opens Marker Properties, as
+/// on its start flag.
+#[test]
+fn review_marker_double_click_over_work_area_range_end_flag() {
+    let mut d = Driver::demo();
+    let (_, range) = markers_over_work_area(&mut d);
+    double_click_flag_over_work_area(&mut d, &format!("timeline.markerEnd.{range}"), range);
+}
+
+/// With the markers there, a double-click on the work area bar itself still fits it, in one undo
+/// step, and opens no Marker Properties.
+#[test]
+fn review_work_area_double_click_beside_markers_still_fits_it() {
+    let mut d = Driver::demo();
+    markers_over_work_area(&mut d);
+    let before = d.app().session.project.to_json();
+    let area = d.app().session.active_sequence().unwrap().work_area;
+    let history = d.app().session.history.undo.len();
     let elements = d.ok("ui.elements", json!({"prefix":"timeline.workArea"}));
     let rect = elements.as_array().unwrap().iter().find(|e| e["id"] == "timeline.workArea").unwrap()["rect"].as_array().unwrap();
     let pos =

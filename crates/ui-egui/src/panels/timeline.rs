@@ -82,7 +82,8 @@ const DUPLICATE_FRAME_COLORS: [Color32; filmcraft_engine::sequence_tools::DUPLIC
     Color32::from_rgb(0x9a, 0xcd, 0x32),
     Color32::from_rgb(0xf5, 0xf5, 0xf5),
 ];
-const SNAP_PX: f32 = 9.0;
+/// How near, in points, a Timeline drag must come to an edit, marker or the playhead to snap to it.
+pub const SNAP_PX: f32 = 9.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
 pub type PeakKey = (ItemId, usize);
