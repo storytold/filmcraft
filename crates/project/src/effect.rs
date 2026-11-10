@@ -258,6 +258,8 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+/// The built-in effect and transition registry: every effect's id, menu path and parameters with
+/// their defaults and ranges. Built once by [`effect_defs`].
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
