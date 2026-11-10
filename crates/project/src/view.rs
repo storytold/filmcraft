@@ -152,6 +152,10 @@ pub struct TimelineUiSettings {
     pub track_slider_shift_drag_last_custom: f64,
 }
 
+fn checked_zoom_seconds(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 { value.clamp(0.05, 3.0) } else { 0.4 }
+}
+
 fn default_playhead_custom() -> f64 {
     15.0
 }
@@ -217,9 +221,8 @@ impl TimelineUiSettings {
         self.shift_drag_last_custom = if self.shift_drag_last_custom.is_finite() { self.shift_drag_last_custom.clamp(0.1, 50.0) } else { 1.0 };
         // a non-positive Maximum Zoom Level is "unset": the documented 0.4 s default, never the
         // clamp floor (0.05), or the fallback could no longer apply
-        self.max_zoom_seconds = if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
-        self.max_zoom_last_custom =
-            if self.max_zoom_last_custom.is_finite() && self.max_zoom_last_custom > 0.0 { self.max_zoom_last_custom.clamp(0.05, 3.0) } else { 0.4 };
+        self.max_zoom_seconds = checked_zoom_seconds(self.max_zoom_seconds);
+        self.max_zoom_last_custom = checked_zoom_seconds(self.max_zoom_last_custom);
         self.track_slider_shift_drag_speed =
             if self.track_slider_shift_drag_speed.is_finite() { self.track_slider_shift_drag_speed.clamp(0.1, 10.0) } else { 1.0 };
         // the value Custom restores must be bounded like the active one
@@ -235,7 +238,7 @@ impl TimelineUiSettings {
     /// The Maximum Zoom Level in seconds: the smallest number of seconds the view may show,
     /// sanely clamped to 0.05-3 (hostile or unset values give the 0.4 s default).
     pub fn max_zoom_secs(&self) -> f64 {
-        if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 }
+        checked_zoom_seconds(self.max_zoom_seconds)
     }
 }
 
