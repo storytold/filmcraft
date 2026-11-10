@@ -340,6 +340,7 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
+    paint_alternate_position_focus_ring(app, &ctx);
     // the Hide Slider window: a dialog of its own, shown even after the bar itself is gone
     scrollbars::zoombar_hide_dialog(app, &ctx);
     // and the sliders' settings, reachable from the Timeline's own menu while they are hidden
@@ -681,6 +682,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         super::timeline_captions::interact(app, ui, seq, caption_area, &layout);
     }
     let _ = TICKS_PER_SECOND;
+}
+
+fn paint_alternate_position_focus_ring(app: &FilmcraftApp, ctx: &egui::Context) {
+    let undocked = ctx.input(|input| input.viewport().parent.is_some());
+    if !undocked
+        || !app.session.state.timeline_ui.track_slider_alternate_position
+        || app.session.state.timeline_ui.zoom_bar_hidden
+    {
+        return;
+    }
+    let rect = ctx.content_rect();
+    if !rect.is_positive() {
+        return;
+    }
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("timeline.alternateSliderPosition.focusRing")));
+    painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(2.0, Color32::from_rgb(0x74, 0xb0, 0xff)), egui::StrokeKind::Inside);
 }
 
 /// Smooth Animations for the track sliders: ease the heights and scrolls toward the targets a
