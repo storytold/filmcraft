@@ -97,6 +97,77 @@ fn ripple_delete_of_a_straight_cut_clip_is_unchanged() {
     assert_eq!((range(&s, picture3), range(&s, sound3)), ((f48, f96), (f48, f96)));
 }
 
+/// Review the cut immediately, regardless of where playback was parked before the delete.
+#[test]
+fn ripple_delete_moves_playhead_to_the_resulting_cut() {
+    for (index, playhead, explicit) in [(0, 24, false), (1, 12, false), (1, 72, false), (1, 168, true), (3, 168, true)] {
+        let mut s = Session::default();
+        let clips = four_clips(&mut s);
+        s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": true})).unwrap();
+        let rate = s.sequence_rate();
+        let (picture, sound) = clips[index];
+        s.execute("timeline.select", json!({"clips": [picture.0, sound.0]})).unwrap();
+        s.set_playhead(rate.tick_of(playhead));
+        let before = s.project.clone();
+        let params = if explicit { json!({"clips": [picture.0]}) } else { json!({}) };
+        s.execute("edit.rippleDelete", params).unwrap();
+        let cut = rate.tick_of(index as i64 * 48);
+        assert_eq!(s.playhead(), cut, "clip {index}, previous playhead {playhead}");
+        if let Some((next_picture, next_sound)) = clips.get(index + 1) {
+            assert_eq!((range(&s, *next_picture).0, range(&s, *next_sound).0), (cut, cut));
+        }
+        let after = s.project.clone();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, *before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(*s.project, *after);
+    }
+}
+
+#[test]
+fn ripple_delete_moves_playhead_to_first_cut_for_disjoint_selection() {
+    let mut s = Session::default();
+    let [_, (second, _), (third, _), (fourth, _)] = four_clips(&mut s);
+    s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": true})).unwrap();
+    let rate = s.sequence_rate();
+    s.set_playhead(rate.tick_of(168));
+    // Deliberately supply the later clip first: selection order must not choose the cut.
+    s.execute("edit.rippleDelete", json!({"clips": [fourth.0, second.0]})).unwrap();
+    assert_eq!(s.playhead(), rate.tick_of(48));
+    assert_eq!(range(&s, third).0, s.playhead());
+}
+
+#[test]
+fn refused_ripple_delete_keeps_playhead_and_project() {
+    let mut s = Session::default();
+    let [_, (second, _), _, _] = four_clips(&mut s);
+    s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": true})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    let playhead = s.sequence_rate().tick_of(72);
+    s.set_playhead(playhead);
+    let before = s.project.clone();
+    assert!(s.execute("edit.rippleDelete", json!({"clips": [second.0]})).is_err());
+    assert_eq!(s.playhead(), playhead);
+    assert_eq!(*s.project, *before);
+}
+
+#[test]
+fn ripple_delete_keeps_playhead_when_preference_is_off() {
+    let mut s = Session::default();
+    let [_, (second, _), _, _] = four_clips(&mut s);
+    assert!(!s.prefs.timeline.move_playhead_after_ripple_delete, "existing installations retain their behavior");
+    let playhead = s.sequence_rate().tick_of(72);
+    s.set_playhead(playhead);
+    s.execute("edit.rippleDelete", json!({"clips": [second.0]})).unwrap();
+    assert_eq!(s.playhead(), playhead);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": true})).unwrap();
+    s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": false})).unwrap();
+    s.execute("edit.rippleDelete", json!({"clips": [second.0]})).unwrap();
+    assert_eq!(s.playhead(), playhead, "turning the checkbox back off takes effect immediately");
+}
+
 /// Two neighbours deleted together, with a split edit between them (the first one's sound runs 12
 /// frames under the second picture): one gap closes, the size of both clips.
 #[test]

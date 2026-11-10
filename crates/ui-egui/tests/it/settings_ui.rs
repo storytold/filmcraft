@@ -209,6 +209,23 @@ fn checkbox_edits_apply_on_ok_and_not_on_cancel() {
     assert_eq!(d.pref("timeline.snapPlayhead"), false, "on by default (as in Premiere), the click turns it off");
 }
 
+#[test]
+fn ripple_delete_playhead_checkbox_can_be_enabled_and_disabled() {
+    let mut d = Driver::demo();
+    let key = "timeline.movePlayheadAfterRippleDelete";
+    assert_eq!(d.pref(key), false);
+    d.menu("app.settings.timeline");
+    d.click("settings.timeline.movePlayheadAfterRippleDelete");
+    d.click("settings.cancel");
+    assert_eq!(d.pref(key), false);
+    for expected in [true, false] {
+        d.menu("app.settings.timeline");
+        d.click("settings.timeline.movePlayheadAfterRippleDelete");
+        d.click("settings.ok");
+        assert_eq!(d.pref(key), expected);
+    }
+}
+
 /// #580: Escape while dragging a number in Settings puts it back and keeps the dialog open (the
 /// modal's own Escape close included); Escape with no drag still cancels the dialog.
 #[test]

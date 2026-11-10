@@ -65,6 +65,27 @@ fn ripple_delete_closes_a_selected_gap_too() {
 }
 
 #[test]
+fn deleting_a_selected_gap_moves_playhead_to_the_join() {
+    for command in ["edit.rippleDelete", "edit.clear"] {
+        for (playhead, enabled) in [(12, true), (72, true), (120, true), (72, false)] {
+            let mut s = Session::default();
+            let [_, (picture, sound)] = two_clips(&mut s, [0, 96]);
+            s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": enabled})).unwrap();
+            let rate = s.sequence_rate();
+            s.execute("timeline.selectGap", json!({"track": "V1", "frame": 60})).unwrap();
+            s.set_playhead(rate.tick_of(playhead));
+            let before = s.project.clone();
+            s.execute(command, json!({})).unwrap();
+            let cut = rate.tick_of(48);
+            assert_eq!(s.playhead(), if enabled { cut } else { rate.tick_of(playhead) }, "{command}, previous playhead {playhead}, enabled {enabled}");
+            assert_eq!((range(&s, picture).0, range(&s, sound).0), (cut, cut));
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(*s.project, *before);
+        }
+    }
+}
+
+#[test]
 fn the_empty_time_before_the_first_clip_is_a_gap() {
     let mut s = Session::default();
     let [(picture1, _), (picture2, _)] = two_clips(&mut s, [24, 72]);
@@ -120,10 +141,13 @@ fn a_stale_gap_is_refused() {
     let rate = s.sequence_rate();
     let f = |n: i64| rate.tick_of(n);
     let track = s.active_sequence().unwrap().video_tracks[0].id;
+    s.execute("prefs.set", json!({"key": "timeline.movePlayheadAfterRippleDelete", "value": true})).unwrap();
+    s.set_playhead(f(72));
     s.state.gap_selection = Some(GapSelection { track, range: filmcraft_time::TimeRange::from_bounds(f(10), f(20)) });
     assert!(s.execute("edit.clear", json!({})).is_err());
     assert!(s.state.gap_selection.is_none());
     assert_eq!(range(&s, picture2).0, f(96));
+    assert_eq!(s.playhead(), f(72), "a refused gap delete must not seek");
 }
 
 #[test]
