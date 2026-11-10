@@ -1476,6 +1476,15 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
     };
     let (contrast, sharpen) = (unit_param("hsl_contrast"), unit_param("hsl_sharpen"));
+    // contrast: Basic Correction's S-curve around mid grey. Values Temperature or Tint lifted
+    // above 1 keep their detail: they continue from the curve's end at 1 with slope 1 (unchanged
+    // when the curve ends at 1, i.e. positive contrast)
+    let contrast_k = 1.0 + contrast;
+    let contrast_curve = |q: f32| {
+        let s = q * q * (3.0 - 2.0 * q);
+        if contrast_k >= 1.0 { q + (s - q) * (contrast_k - 1.0) } else { 0.5 + (q - 0.5) * contrast_k }
+    };
+    let contrast_top = contrast_curve(1.0);
     let (w, h) = (img.w, img.h);
     let unit = |c: [f32; 3]| {
         let v = gs.encode(c);
@@ -1524,17 +1533,8 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 c2[0] *= 1.0 + 0.25 * htemp;
                 c2[2] *= 1.0 - 0.25 * htemp;
                 c2[1] *= 1.0 - 0.2 * htint;
-                // contrast: Basic Correction's S-curve around mid grey. Values Temperature or Tint
-                // lifted above 1 keep their detail: they continue from the curve's end at 1 with
-                // slope 1 (unchanged when the curve ends at 1, i.e. positive contrast)
                 if contrast.abs() > 1e-4 {
-                    let k = 1.0 + contrast;
-                    let curve = |q: f32| {
-                        let s = q * q * (3.0 - 2.0 * q);
-                        if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
-                    };
-                    let top = curve(1.0);
-                    c2 = c2.map(|q| if q > 1.0 { top + (q - 1.0) } else { curve(q.max(0.0)) });
+                    c2 = c2.map(|q| if q > 1.0 { contrast_top + (q - 1.0) } else { contrast_curve(q.max(0.0)) });
                 }
                 [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
             }
@@ -1545,55 +1545,74 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
     // Sharpen: Creative ▸ Sharpen's unsharp mask (σ 1.2 px at full resolution), mixed in by the
     // key. It works on straight colour, so a soft alpha edge of one colour gets no halo, and blurs
-    // with sampled weights, which stay effective at the small σ of quarter-resolution playback
+    // with sampled weights, which stay effective at the small σ of quarter-resolution playback. The
+    // vertical pass runs only inside the key, straight into the mix (no second full-frame buffer).
     if show_mask == 0 && sharpen.abs() > 1e-3 && mask.par_iter().any(|&m| m > 0.0) {
-        let blurred = sampled_gaussian(img, 1.2 * cx.px_scale.max(0.35));
-        img.px.par_chunks_mut(4).zip(blurred.px.par_chunks(4)).zip(mask.par_iter()).for_each(|((p, b), &m)| {
-            // transparent pixels stay empty (a blurred key can reach them)
-            let a = p[3];
-            if a.is_nan() || a <= 0.0 {
-                return;
-            }
-            for k in 0..3 {
-                let v = p[k] / a;
-                let around = if b[3] > 1e-6 { b[k] / b[3] } else { v };
-                let sharp = (v + (v - around) * sharpen).max(0.0) * a;
-                if sharp.is_finite() {
-                    p[k] += (sharp - p[k]) * m;
+        let Some((k, r)) = gaussian_kernel(1.2 * cx.px_scale.max(0.35)) else { return };
+        let Some(rows) = gaussian_rows(img, &k, r) else { return };
+        img.px.par_chunks_mut(w * 4).zip(mask.par_chunks(w)).enumerate().for_each(|(y, (row, mrow))| {
+            for (x, (p, &m)) in row.as_chunks_mut::<4>().0.iter_mut().zip(mrow).enumerate() {
+                // outside the key nothing changes; transparent pixels stay empty (a blurred key
+                // can reach them)
+                let a = p[3];
+                if m.is_nan() || m <= 0.0 || a.is_nan() || a <= 0.0 {
+                    continue;
+                }
+                let mut b = [0f32; 4];
+                for (i, kv) in k.iter().enumerate() {
+                    let src = ((y + i).saturating_sub(r).min(h - 1) * w + x) * 4;
+                    if let Some(s) = rows.get(src..src + 4) {
+                        b.iter_mut().zip(s).for_each(|(acc, sv)| *acc += kv * sv);
+                    }
+                }
+                for c in 0..3 {
+                    let v = p[c] / a;
+                    let around = if b[3] > 1e-6 { b[c] / b[3] } else { v };
+                    let sharp = (v + (v - around) * sharpen).max(0.0) * a;
+                    if sharp.is_finite() {
+                        p[c] += (sharp - p[c]) * m;
+                    }
                 }
             }
         });
     }
 }
 
-/// A separable Gaussian of `sigma` px (all four channels, edges repeated) from sampled weights,
-/// for blurs too small for [`gaussian`]'s box passes, which round σ below about 0.6 px to nothing.
-fn sampled_gaussian(img: &Image, sigma: f32) -> Image {
-    let (w, h) = (img.w, img.h);
-    if w == 0 || h == 0 || img.px.len() != w * h * 4 || sigma.is_nan() || sigma <= 0.0 {
-        return img.clone();
+/// Normalised Gaussian weights of `sigma` px from sampled values, and their radius, for blurs too
+/// small for [`gaussian`]'s box passes, which round σ below about 0.6 px to nothing.
+fn gaussian_kernel(sigma: f32) -> Option<(Vec<f32>, usize)> {
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return None;
     }
     let r = ((3.0 * sigma).ceil() as usize).clamp(1, 32);
     let mut k: Vec<f32> = (0..=2 * r).map(|i| (-(i as f32 - r as f32).powi(2) / (2.0 * sigma * sigma)).exp()).collect();
     let sum: f32 = k.iter().sum();
+    if sum.is_nan() || sum <= 0.0 {
+        return None;
+    }
     k.iter_mut().for_each(|v| *v /= sum);
+    Some((k, r))
+}
+
+/// The horizontal pass of a separable blur by `k` of radius `r` (all four channels, edges
+/// repeated). `None` for an empty or inconsistent image.
+fn gaussian_rows(img: &Image, k: &[f32], r: usize) -> Option<Vec<f32>> {
+    let w = img.w;
+    if w == 0 || img.h == 0 || img.px.len() != w * img.h * 4 {
+        return None;
+    }
     let mut rows = vec![0f32; img.px.len()];
     rows.par_chunks_mut(w * 4).zip(img.px.par_chunks(w * 4)).for_each(|(o, row)| {
-        for x in 0..w {
-            for c in 0..4 {
-                o[x * 4 + c] = k.iter().enumerate().map(|(i, kv)| kv * row[(x + i).saturating_sub(r).min(w - 1) * 4 + c]).sum();
+        for (x, acc) in o.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            for (i, kv) in k.iter().enumerate() {
+                let src = (x + i).saturating_sub(r).min(w - 1) * 4;
+                if let Some(s) = row.get(src..src + 4) {
+                    acc.iter_mut().zip(s).for_each(|(a, sv)| *a += kv * sv);
+                }
             }
         }
     });
-    let mut out = Image::new(w, h);
-    out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, o)| {
-        for x in 0..w {
-            for c in 0..4 {
-                o[x * 4 + c] = k.iter().enumerate().map(|(i, kv)| kv * rows[((y + i).saturating_sub(r).min(h - 1) * w + x) * 4 + c]).sum();
-            }
-        }
-    });
-    out
+    Some(rows)
 }
 
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges

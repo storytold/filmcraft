@@ -238,8 +238,9 @@ fn hsl_contrast_and_sharpen_act_inside_the_key() {
         } else {
             assert!(s < base * 0.8, "{params:?}: keyed texture {base} -> {s}");
         }
-        // blue is outside the key: untouched (Sharpen's blur reaches 2 px past the key's edge)
-        let blue = (24..40)
+        // blue is outside the key: untouched, right up to the key's edge (the hard key is 0 there,
+        // so Sharpen's blur of the red next to it is mixed in by nothing)
+        let blue = (20..40)
             .flat_map(|x| (0..20).map(move |y| (x, y)))
             .map(|(x, y)| (0..3).map(|k| (img.get(x, y)[k] - src.get(x, y)[k]).abs()).fold(0.0, f32::max))
             .fold(0.0, f32::max);
@@ -260,13 +261,17 @@ fn hsl_contrast_and_sharpen_act_inside_the_key() {
     assert!(shown.get(5, 5)[1] > 0.9 && shown.get(30, 5)[1] < 0.01);
 }
 
-/// Hostile Contrast and Sharpen values: no panic, finite output.
+/// Hostile Contrast and Sharpen values: no panic, finite output; a value that is not a number
+/// is neutral (0) and an out-of-range one is clamped to ±100.
 #[test]
 fn hsl_contrast_and_sharpen_survive_hostile_values() {
-    for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e30, -1e30] {
-        for k in ["hsl_contrast", "hsl_sharpen"] {
+    let neutral = hsl_correct(&[]);
+    for k in ["hsl_contrast", "hsl_sharpen"] {
+        for (v, want) in [(f64::NAN, None), (f64::INFINITY, None), (f64::NEG_INFINITY, None), (1e30, Some(100.0)), (-1e30, Some(-100.0))] {
             let img = hsl_correct(&[(k, v)]);
             assert!(img.px.iter().all(|q| q.is_finite()), "{k}={v}");
+            let want = want.map_or_else(|| neutral.clone(), |w| hsl_correct(&[(k, w)]));
+            assert_eq!(img.px, want.px, "{k}={v}");
         }
     }
 }
@@ -336,22 +341,57 @@ fn hsl_negative_contrast_is_continuous_across_one() {
     }
 }
 
-/// Sharpen leaves fully transparent pixels empty, even where Refine Blur spreads the key onto them.
+/// Contrast and Sharpen leave fully transparent pixels empty, even where Refine Blur spreads the
+/// key onto them (negative Contrast would otherwise turn their black into mid grey).
 #[test]
 fn hsl_sharpen_leaves_transparent_pixels_empty() {
-    let mut img = textured_red_blue();
-    for y in 0..20 {
-        for x in 8..12 {
-            img.px[(y * 40 + x) * 4..][..4].copy_from_slice(&[0.0; 4]);
+    for (k, v) in [("hsl_sharpen", -100.0), ("hsl_sharpen", 100.0), ("hsl_contrast", -100.0), ("hsl_contrast", 100.0)] {
+        let mut img = textured_red_blue();
+        for y in 0..20 {
+            for x in 8..12 {
+                img.px[(y * 40 + x) * 4..][..4].copy_from_slice(&[0.0; 4]);
+            }
+        }
+        let e = lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_blur", F(100.0)), (k, F(v))]);
+        apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+        for y in 0..20 {
+            for x in 8..12 {
+                assert_eq!(img.get(x, y), [0.0; 4], "{k} {v} at {x},{y}");
+            }
         }
     }
-    let e = lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_blur", F(100.0)), ("hsl_sharpen", F(-100.0))]);
-    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
-    for y in 0..20 {
-        for x in 8..12 {
-            assert_eq!(img.get(x, y), [0.0; 4], "{x},{y}");
+}
+
+/// A soft key mixes Sharpen in by its value: where Refine Blur leaves the key partial (near the
+/// red half's edge) a pixel changes by that fraction of what a full key changes it by.
+#[test]
+fn hsl_sharpen_mixes_by_a_partial_key() {
+    let base = [("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_soft", F(0.0))];
+    let run = |extra: &[(&str, ParamValue)]| {
+        let mut img = textured_red_blue();
+        let mut p = base.to_vec();
+        p.extend_from_slice(extra);
+        apply(&mut img, &lumetri(&p), &cx(WorkingSpace::Rec709));
+        img
+    };
+    let src = run(&[]);
+    let hard = run(&[("hsl_sharpen", F(100.0))]);
+    // the blurred key, read through Show Mask ▸ Mask (an sRGB grey of the key's value)
+    let key = run(&[("hsl_blur", F(10.0)), ("hsl_show_mask", ParamValue::Choice(3))]);
+    let soft_plain = run(&[("hsl_blur", F(10.0))]);
+    let soft = run(&[("hsl_blur", F(10.0)), ("hsl_sharpen", F(100.0))]);
+    let mut partial = 0;
+    for y in 2..18 {
+        for x in 12..20 {
+            let m = filmcraft_color::linear_to_srgb(key.get(x, y)[1]);
+            let (full, got) = (hard.get(x, y)[1] - src.get(x, y)[1], soft.get(x, y)[1] - soft_plain.get(x, y)[1]);
+            if m > 0.05 && m < 0.95 && full.abs() > 1e-3 {
+                partial += 1;
+                assert!((got - m * full).abs() <= 1e-3 + full.abs() * 0.02, "{x},{y}: key {m}, full change {full}, got {got}");
+            }
         }
     }
+    assert!(partial > 8, "the blurred key is partial near the edge ({partial} pixels)");
 }
 
 /// Sharpen works on straight colour: a keyed red of one colour whose alpha ramps down (a soft edge)
