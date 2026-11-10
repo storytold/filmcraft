@@ -4,7 +4,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use filmcraft_project::{Bin, BinEntry, ItemKind, MediaRef, ParamValue, TrackKind, TransitionAlign};
+use filmcraft_project::{Bin, BinEntry, ItemKind, MediaRef, ParamValue, Project, Sequence, TrackItem, TransitionAlign};
 use filmcraft_time::{FrameRate, Tick};
 
 use super::blob::{build, params as P};
@@ -211,70 +211,88 @@ fn imports_a_timeline() {
         assert_eq!(seq.start_timecode, 108_000);
         seq.check().unwrap();
 
-        let r = FrameRate::FPS_30;
-        // V1: two clips, a centred dissolve on the cut, the Fusion clip left as a gap
-        assert_eq!(seq.video_tracks.len(), 2);
-        assert_eq!(seq.video_tracks[1].name, "Titles");
-        assert_eq!(seq.audio_tracks[0].name, "Dialogue");
-        let v1 = &seq.video_tracks[0];
-        assert_eq!(v1.items.len(), 2);
-        let (a, b) = (&v1.items[0], &v1.items[1]);
-        assert_eq!((a.start, a.duration), (Tick::ZERO, r.tick_of(120)));
-        assert_eq!(a.source_in, r.tick_of(64) + Tick((r.frame_duration().0 as f64 * 0.064).round() as i64));
-        assert_eq!((b.start, b.duration, b.source_in), (r.tick_of(120), r.tick_of(90), r.tick_of(30)));
-        assert!(a.scale_to_frame);
-        let tr = &v1.transitions[0];
-        assert_eq!((tr.start, tr.duration, tr.align), (r.tick_of(108), r.tick_of(24), TransitionAlign::CenterAtCut));
-        assert_eq!((tr.from, tr.to), (Some(a.id), Some(b.id)));
-        assert_eq!(tr.effect.effect, "cross_dissolve");
-        // fade out on the last clip
-        let fade = v1.transitions.iter().find(|t| t.to.is_none()).unwrap();
-        assert_eq!((fade.from, fade.start, fade.duration, fade.align), (Some(b.id), r.tick_of(195), r.tick_of(15), TransitionAlign::EndAtCut));
-
-        // transform → Motion
-        let m = a.effect("motion").unwrap();
-        assert_eq!(m.param("scale").unwrap().value, ParamValue::Float(150.0));
-        assert_eq!(m.param("rotation").unwrap().value, ParamValue::Float(-2.0));
-        match m.param("position").unwrap().value {
-            ParamValue::Vec2(v) => assert!((v.x - 2880.0).abs() < 1e-6 && (v.y - 864.0).abs() < 1e-6, "{v:?}"),
-            ref other => panic!("{other:?}"),
-        }
-
-        // media: one item per file, the media pool clip (and the unused one, in its bin) kept
-        match &p.item(a.item).unwrap().kind {
-            ItemKind::Media(mc) => assert_eq!(mc.media, MediaRef::File { path: "/Media/Day 1/A001.mov".into() }),
-            other => panic!("{other:?}"),
-        }
-        let unused = p.items.values().find(|i| i.name == "Unused.mp4").unwrap();
-        let selects = find_bin(&p.root, "Selects").unwrap();
-        assert!(selects.children.iter().any(|e| matches!(e, BinEntry::Item(i) if *i == unused.id)));
-        assert!(find_bin(&p.root, "Nordschleife Cut").is_some());
-
-        // title → text graphic
-        let t = &seq.video_tracks[1].items[0];
-        assert_eq!((t.start, t.duration), (r.tick_of(30), r.tick_of(60)));
-        assert!(matches!(p.item(t.item).unwrap().kind, ItemKind::Graphic { width: 3840, height: 2160, .. }));
-        let layer = t.effects.iter().find(|e| e.effect == filmcraft_project::graphic::TEXT_LAYER).unwrap();
-        assert_eq!(layer.param("text").unwrap().value, ParamValue::Text("Nürburgring 2026".into()));
-        assert_eq!(layer.param("font").unwrap().value, ParamValue::Text("Bebas Neue".into()));
-        assert_eq!(layer.param("fill_color").unwrap().value, ParamValue::Color([0.0, 1.0, 1.0, 1.0]));
-
-        // audio: volume, fade in, linked to the video of the same take
-        let a1 = &seq.audio_tracks[0];
-        assert_eq!(a1.items.len(), 2);
-        assert_eq!(a1.items[0].effect("volume").unwrap().param("level").unwrap().value, ParamValue::Float(-6.0));
-        assert!(a1.items[0].link.is_some() && a1.items[0].link == a.link);
-        assert!(a1.items[1].link.is_some() && a1.items[1].link == b.link);
-        assert_ne!(a.link, b.link);
-        let afade = a1.transitions.iter().find(|t| t.from.is_none()).unwrap();
-        assert_eq!((afade.to, afade.start, afade.duration), (Some(a1.items[0].id), Tick::ZERO, r.tick_of(10)));
-        assert_eq!(afade.effect.effect, "constant_power");
+        check_cuts(seq);
+        check_motion(&seq.video_tracks[0].items[0]);
+        check_media(p, &seq.video_tracks[0].items[0]);
+        check_title(p, seq);
+        check_audio(seq);
 
         // what was not imported is reported
         assert!(report.mentions("colour grades are not imported (1 graded clip)"), "{report}");
         assert!(report.mentions("Fusion"), "{report}");
-        let _ = TrackKind::Video;
     }
+}
+
+/// V1: two clips, a centred dissolve on the cut, the Fusion clip left as a gap.
+fn check_cuts(seq: &Sequence) {
+    let r = FrameRate::FPS_30;
+    assert_eq!(seq.video_tracks.len(), 2);
+    assert_eq!(seq.video_tracks[1].name, "Titles");
+    assert_eq!(seq.audio_tracks[0].name, "Dialogue");
+    let v1 = &seq.video_tracks[0];
+    assert_eq!(v1.items.len(), 2);
+    let (a, b) = (&v1.items[0], &v1.items[1]);
+    assert_eq!((a.start, a.duration), (Tick::ZERO, r.tick_of(120)));
+    assert_eq!(a.source_in, r.tick_of(64) + Tick((r.frame_duration().0 as f64 * 0.064).round() as i64));
+    assert_eq!((b.start, b.duration, b.source_in), (r.tick_of(120), r.tick_of(90), r.tick_of(30)));
+    assert!(a.scale_to_frame);
+    let tr = &v1.transitions[0];
+    assert_eq!((tr.start, tr.duration, tr.align), (r.tick_of(108), r.tick_of(24), TransitionAlign::CenterAtCut));
+    assert_eq!((tr.from, tr.to), (Some(a.id), Some(b.id)));
+    assert_eq!(tr.effect.effect, "cross_dissolve");
+    // fade out on the last clip
+    let fade = v1.transitions.iter().find(|t| t.to.is_none()).unwrap();
+    assert_eq!((fade.from, fade.start, fade.duration, fade.align), (Some(b.id), r.tick_of(195), r.tick_of(15), TransitionAlign::EndAtCut));
+}
+
+/// Transform → Motion.
+fn check_motion(a: &TrackItem) {
+    let m = a.effect("motion").unwrap();
+    assert_eq!(m.param("scale").unwrap().value, ParamValue::Float(150.0));
+    assert_eq!(m.param("rotation").unwrap().value, ParamValue::Float(-2.0));
+    match m.param("position").unwrap().value {
+        ParamValue::Vec2(v) => assert!((v.x - 2880.0).abs() < 1e-6 && (v.y - 864.0).abs() < 1e-6, "{v:?}"),
+        ref other => panic!("{other:?}"),
+    }
+}
+
+/// One item per file, the media pool clip (and the unused one, in its bin) kept.
+fn check_media(p: &Project, a: &TrackItem) {
+    match &p.item(a.item).unwrap().kind {
+        ItemKind::Media(mc) => assert_eq!(mc.media, MediaRef::File { path: "/Media/Day 1/A001.mov".into() }),
+        other => panic!("{other:?}"),
+    }
+    let unused = p.items.values().find(|i| i.name == "Unused.mp4").unwrap();
+    let selects = find_bin(&p.root, "Selects").unwrap();
+    assert!(selects.children.iter().any(|e| matches!(e, BinEntry::Item(i) if *i == unused.id)));
+    assert!(find_bin(&p.root, "Nordschleife Cut").is_some());
+}
+
+/// Title → text graphic.
+fn check_title(p: &Project, seq: &Sequence) {
+    let r = FrameRate::FPS_30;
+    let t = &seq.video_tracks[1].items[0];
+    assert_eq!((t.start, t.duration), (r.tick_of(30), r.tick_of(60)));
+    assert!(matches!(p.item(t.item).unwrap().kind, ItemKind::Graphic { width: 3840, height: 2160, .. }));
+    let layer = t.effects.iter().find(|e| e.effect == filmcraft_project::graphic::TEXT_LAYER).unwrap();
+    assert_eq!(layer.param("text").unwrap().value, ParamValue::Text("Nürburgring 2026".into()));
+    assert_eq!(layer.param("font").unwrap().value, ParamValue::Text("Bebas Neue".into()));
+    assert_eq!(layer.param("fill_color").unwrap().value, ParamValue::Color([0.0, 1.0, 1.0, 1.0]));
+}
+
+/// Audio: volume, fade in, linked to the video of the same take.
+fn check_audio(seq: &Sequence) {
+    let r = FrameRate::FPS_30;
+    let (a, b) = (&seq.video_tracks[0].items[0], &seq.video_tracks[0].items[1]);
+    let a1 = &seq.audio_tracks[0];
+    assert_eq!(a1.items.len(), 2);
+    assert_eq!(a1.items[0].effect("volume").unwrap().param("level").unwrap().value, ParamValue::Float(-6.0));
+    assert!(a1.items[0].link.is_some() && a1.items[0].link == a.link);
+    assert!(a1.items[1].link.is_some() && a1.items[1].link == b.link);
+    assert_ne!(a.link, b.link);
+    let afade = a1.transitions.iter().find(|t| t.from.is_none()).unwrap();
+    assert_eq!((afade.to, afade.start, afade.duration), (Some(a1.items[0].id), Tick::ZERO, r.tick_of(10)));
+    assert_eq!(afade.effect.effect, "constant_power");
 }
 
 #[test]
