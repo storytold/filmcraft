@@ -172,6 +172,11 @@ mod tests {
 
     /// A 6 × 4 LinearRaw RGB DNG, black except a white top-left pixel, with Orientation `o` in IFD 0.
     fn corner_dng(o: u16) -> Vec<u8> {
+        corner_dng_with(Value::Short(vec![o]))
+    }
+
+    /// [`corner_dng`] with `orientation` as the Orientation entry's value.
+    fn corner_dng_with(orientation: Value) -> Vec<u8> {
         let (w, h) = (6, 4);
         let mut px = vec![0u16; w * h * 3];
         px[..3].fill(65_535);
@@ -181,7 +186,7 @@ mod tests {
             samples_per_pixel: 3,
             cfa: None,
             raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![65_535; 3]))],
-            main_tags: vec![(tags::ORIENTATION, Value::Short(vec![o]))],
+            main_tags: vec![(tags::ORIENTATION, orientation)],
             ..Default::default()
         };
         write(&px, &o)
@@ -218,12 +223,17 @@ mod tests {
         }
     }
 
-    /// A missing or out-of-range Orientation leaves the DNG as stored; it never fails the import.
+    /// A missing, out-of-range or malformed Orientation leaves the DNG as stored; it never fails the import.
     #[test]
     fn dng_without_a_valid_orientation_is_left_as_stored() {
         for o in [0, 9, 65_535] {
             let f = decode("x.dng", &corner_dng(o)).unwrap().frame;
             assert_eq!(lit_pixel(&f), (6, 4, vec![(0, 0)]), "orientation {o}");
+        }
+        // not the one SHORT the tag is: damaged, ignored
+        for (what, v) in [("two values", Value::Short(vec![6, 6])), ("a LONG", Value::Long(vec![6]))] {
+            let f = decode("x.dng", &corner_dng_with(v)).unwrap().frame;
+            assert_eq!(lit_pixel(&f), (6, 4, vec![(0, 0)]), "orientation as {what}");
         }
         let f = decode("x.dng", &grey_dng(0.5, vec![])).unwrap().frame;
         assert_eq!((f.width, f.height), (16, 12), "no Orientation tag");

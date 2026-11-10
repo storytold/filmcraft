@@ -105,7 +105,7 @@ pub struct Info {
     pub camera: Option<String>,
     /// CinemaDNG ReelName.
     pub reel: Option<String>,
-    /// TIFF/EP Orientation, 1–8 as in EXIF (1, stored upright, when absent or out of range). The
+    /// TIFF/EP Orientation, 1–8 as in EXIF (1, stored upright, when absent, out of range or not one SHORT). The
     /// developed picture and `width` / `height` are as stored: the caller turns it upright.
     pub orientation: u8,
 }
@@ -352,6 +352,8 @@ impl<'a> Dng<'a> {
             reel: self.text(tags::REEL_NAME),
             orientation: self
                 .main_tag(tags::ORIENTATION)
+                // one SHORT (TIFF 6.0); any other entry is damaged and left unread
+                .filter(|e| e.ty == tiff::Type::Short && e.count == 1)
                 .and_then(|e| self.tiff.uint(e).ok())
                 .and_then(|v| u8::try_from(v).ok())
                 .filter(|v| (1..=8).contains(v))
