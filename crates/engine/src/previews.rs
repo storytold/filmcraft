@@ -793,7 +793,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             };
             // its own part file: two jobs rendering one segment must not share (or remove) each other's
             static PART: AtomicU64 = AtomicU64::new(0);
-            let part = dir.join(format!("{}.wav.{}.part", g.hash, PART.fetch_add(1, Ordering::Relaxed)));
+            let part = dir.join(format!("{}.wav.{}-{}.part", g.hash, std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
             let fin = dir.join(audio_name(&g.hash));
             let written = (|| -> std::io::Result<Option<u64>> {
                 use std::io::Write;
