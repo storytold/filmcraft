@@ -266,17 +266,38 @@ pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Rang
 }
 
 /// Timeline ranges removing the filler words `hits`: each word range snapped to the nearest frames
-/// (never into the neighbouring words' frames).
+/// (never into the neighbouring words' frames). A filler that spans no frame once snapped (a
+/// zero-length word, as speech recognition often gives one, or one shorter than half a frame)
+/// takes the time from the frame it starts in up to the next word's start in the same clip, as a
+/// filler with real length takes its own span; with no later word in its clip, one frame (#4622).
+/// One the word before it ends inside the frame of, or whose next word starts in that frame, has
+/// no time of its own and is left.
 pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: FrameRate) -> Vec<TimeRange> {
     let mut out = Vec::new();
     for h in hits {
         let (a, b) = (h.start, h.end - 1);
         let mut s = rate.snap_nearest(words[a].start);
         let mut e = rate.snap_nearest(words[b].end);
+        let next = words.get(b + 1);
+        // Spanning no frame: from the frame it starts in, so the cut holds its moment.
+        let no_frame = e <= s;
+        if no_frame {
+            s = rate.snap(words[a].start);
+        }
         if a > 0 && s < words[a - 1].end {
             s = rate.snap(words[a - 1].end) + rate.frame_duration();
         }
-        if let Some(n) = words.get(b + 1)
+        if no_frame {
+            // Its moment has to be in the cut; past it, only the word before's frame holds it.
+            if s > words[a].start {
+                continue;
+            }
+            e = match next {
+                Some(n) if n.clip == words[b].clip => rate.snap(n.start),
+                _ => s + rate.frame_duration(),
+            };
+        }
+        if let Some(n) = next
             && e > n.start
         {
             e = rate.snap(n.start);
