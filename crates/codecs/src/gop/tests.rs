@@ -871,3 +871,16 @@ fn eviction_reaches_interior_frames_when_both_ends_are_protected() {
     assert!(st.bytes <= budget, "{} bytes cached over a {budget}-byte budget", st.bytes);
     assert!(st.frames.contains_key(&0) && st.frames.contains_key(&499_000));
 }
+
+#[test]
+fn two_frames_over_the_ceiling_keep_only_the_requested_one() {
+    // two ~200 MiB RGBA frames (zeroed, never touched) are over the 384 MiB ceiling together
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let big = || VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]);
+    c.store_finished(&mut st, 0, big(), false);
+    c.store_finished(&mut st, 1000, big(), false);
+    assert!(st.bytes <= FRAME_CACHE_CEILING, "{} bytes cached over the ceiling", st.bytes);
+    assert!(st.frames.contains_key(&0), "the requested frame is kept");
+}
