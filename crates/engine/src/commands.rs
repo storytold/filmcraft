@@ -5367,6 +5367,8 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.project = std::sync::Arc::new(proj);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
+    s.view_epoch = s.view_epoch.wrapping_add(1);
+    s.saved_view_epoch = if clean { s.view_epoch } else { 0 };
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;

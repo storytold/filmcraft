@@ -998,7 +998,7 @@ impl Worker {
 
     fn journal_due(&self) -> Option<Instant> {
         let s = self.latest.as_ref()?;
-        if !self.prefs.recovery_journal || (s.revision == self.journaled && s.view_epoch == self.journaled_view) {
+        if !s.content_dirty || !self.prefs.recovery_journal || (s.revision == self.journaled && s.view_epoch == self.journaled_view) {
             return None;
         }
         let max = self.first_pending.unwrap_or(self.last_change) + Duration::from_secs(self.prefs.recovery_interval_seconds as u64);
@@ -1043,13 +1043,14 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|s| s.content_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
                     let result = match self.latest.as_ref() {
                         None => Ok(None),
                         Some(_) if !self.prefs.recovery_journal => Err("recovery journal is disabled".to_string()),
+                        Some(s) if !s.content_dirty => Ok(None),
                         Some(s) if s.revision == self.journaled && s.view_epoch == self.journaled_view => Ok(Some(self.journaled)),
                         Some(_) => self.write_journal().map(Some),
                     };
@@ -1190,6 +1191,7 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+    use crate::Session;
     #[test]
     fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
         let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
@@ -1204,6 +1206,24 @@ mod durability_tests {
         });
         assert!(result.is_err());
         assert_eq!(scan_candidates(&dir, None).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clean_view_changes_do_not_create_recovery_or_autosave_files() {
+        let dir = std::env::temp_dir().join(format!("fc-clean-view-no-recovery-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        assert!(!session.is_dirty());
+        session.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        session.view_changed();
+        session.sync_persistence();
+        assert_eq!(session.persistence.as_ref().unwrap().flush().unwrap(), None);
+        let session_dir = session.persistence.as_ref().unwrap().session_dir.clone();
+        assert!(!session_dir.join(SNAPSHOT).exists());
+        assert_eq!(session.persistence.as_ref().unwrap().auto_save_now().unwrap(), None);
+        session.shutdown();
         fs::remove_dir_all(&dir).unwrap();
     }
 

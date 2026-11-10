@@ -206,10 +206,6 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
-#[test]
-
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let mut d = Driver::tall();
