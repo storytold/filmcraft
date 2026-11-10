@@ -273,20 +273,32 @@ fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     for (what, o) in [("TIFF orientation 0", 0), ("TIFF orientation 9", 9), ("TIFF orientation 255", 255)] {
         assert_oriented(&decode_raster("scan.tiff", &rgb_tiff(o)).unwrap(), 1, 1, 0, what);
     }
+    for (what, o) in [("YCbCr TIFF orientation 0", 0), ("YCbCr TIFF orientation 9", 9), ("YCbCr TIFF orientation 65535", 65_535)] {
+        assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff(o)).unwrap(), 1, 1, 3, what);
+    }
 }
 
-/// YCbCr TIFFs go through our own decoder, which does not read Orientation yet: the tag is
-/// ignored, as before.
+/// The stored picture as an uncompressed 4:4:4 YCbCr TIFF (ITU-R BT.601 coefficients and full
+/// range, the TIFF 6.0 defaults) with Orientation `o`: our own decoder reads these, not the image
+/// crate.
+fn ycbcr_tiff(o: u16) -> Vec<u8> {
+    let data: Vec<u8> = picture(1)
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let [r, g, b] = p.map(f64::from);
+            let y = 0.299 * r + 0.587 * g + 0.114 * b;
+            [y, 128.0 + (b - y) / 1.772, 128.0 + (r - y) / 1.402].map(|v| v.round().clamp(0.0, 255.0) as u8)
+        })
+        .collect();
+    tiff(W, H, 6, &data, &[(274, vec![o]), (530, vec![1, 1])])
+}
+
 #[test]
-fn ycbcr_tiff_orientation_is_not_applied_yet() {
-    // 4:4:4 grey levels (Cb = Cr = 128), one per pixel, full range
-    let levels = [10u8, 50, 90, 130, 170, 210];
-    let data: Vec<u8> = levels.iter().flat_map(|&y| [y, 128, 128]).collect();
-    let r = decode_raster("frame.tiff", &tiff(W, H, 6, &data, &[(274, vec![6]), (530, vec![1, 1])])).unwrap();
-    assert_eq!((r.width, r.height), (W, H));
-    for (i, &y) in levels.iter().enumerate() {
-        let got = &r.rgba[i * 4..i * 4 + 3];
-        assert!(got.iter().all(|c| c.abs_diff(y) <= 2), "pixel {i}: {got:?}, want grey {y}");
+fn ycbcr_tiff_orientation_tag_is_applied() {
+    for o in 1..=8 {
+        assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff(o)).unwrap(), o, 1, 3, &format!("YCbCr TIFF orientation {o}"));
     }
 }
 
@@ -294,7 +306,7 @@ fn ycbcr_tiff_orientation_is_not_applied_yet() {
 fn damaged_oriented_files_fail_without_panicking() {
     let good_jpeg = jpeg(Some(orientation_exif(6)));
     let mut cases: Vec<Vec<u8>> = Vec::new();
-    for good in [&good_jpeg, &png(6), &webp(6), &rgb_tiff(6)] {
+    for good in [&good_jpeg, &png(6), &webp(6), &rgb_tiff(6), &ycbcr_tiff(6)] {
         cases.extend((0..good.len()).map(|n| good[..n].to_vec()));
         for i in 0..good.len() {
             for bit in [0, 3, 7] {
