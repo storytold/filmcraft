@@ -516,6 +516,25 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
 
+/// Locate the writer's 64-bit decode times without looking inside sample data.
+fn tfdt_time_offsets(bytes: &[u8]) -> Vec<usize> {
+    use filmcraft_isobmff::boxes::BoxIter;
+
+    let children = |range, kind| BoxIter::within(bytes, range).map(|b| b.expect("valid fixture box")).filter(move |b| b.kind == FourCc(kind));
+    let mut offsets = Vec::new();
+    for moof in children(0..bytes.len(), *b"moof") {
+        for traf in children(moof.payload_range(), *b"traf") {
+            let mut boxes = children(traf.payload_range(), *b"tfdt");
+            let tfdt = boxes.next().expect("one tfdt per generated traf");
+            assert!(boxes.next().is_none(), "duplicate tfdt in generated traf");
+            assert_eq!(tfdt.payload.len(), 12, "v1 tfdt contains a full-box header and a u64");
+            assert_eq!(&tfdt.payload[..4], &[1, 0, 0, 0], "expected v1 tfdt with zero flags");
+            offsets.push(tfdt.payload_range().start + 4);
+        }
+    }
+    offsets
+}
+
 /// Four distinguishable ProRes pictures and eight AAC packets, in four fragments.
 /// Patch only the generated tfdt boxes: the encoded media is independent of its origin.
 fn fragmented(video_start: u64, audio_start: u64, gaps: [u64; 2]) -> Arc<[u8]> {
@@ -538,13 +557,12 @@ fn fragmented(video_start: u64, audio_start: u64, gaps: [u64; 2]) -> Arc<[u8]> {
     }
     let mut bytes = mux.finish().unwrap();
     // Our writer emits one v1 tfdt per track per fragment, in track order.
-    let offsets: Vec<usize> = bytes.windows(4).enumerate().filter_map(|(i, b)| (b == b"tfdt").then_some(i + 4)).collect();
+    let offsets = tfdt_time_offsets(&bytes);
     assert_eq!(offsets.len(), 8);
     for (i, p) in offsets.into_iter().enumerate() {
-        assert_eq!(bytes[p], 1);
-        let old = u64::from_be_bytes(bytes[p + 4..p + 12].try_into().unwrap());
+        let old = u64::from_be_bytes(bytes[p..p + 8].try_into().unwrap());
         let shift = if i % 2 == 0 { video_start } else { audio_start } + if i >= 4 { gaps[i % 2] } else { 0 };
-        bytes[p + 4..p + 12].copy_from_slice(&(old + shift).to_be_bytes());
+        bytes[p..p + 8].copy_from_slice(&(old + shift).to_be_bytes());
     }
     bytes.into()
 }
@@ -631,8 +649,10 @@ fn audio_only_fragment_origin_keeps_the_first_packet_and_tail() {
             mux.flush_fragment().unwrap();
         }
     }
-    let bytes = mux.finish().unwrap();
-    let offsets: Vec<usize> = bytes.windows(4).enumerate().filter_map(|(i, b)| (b == b"tfdt").then_some(i + 8)).collect();
+    let mut bytes = mux.finish().unwrap();
+    // A complete tfdt lookalike inside mdat is sample data, not a third timestamp.
+    bytes.extend_from_slice(b"\0\0\0\x1cmdat\0\0\0\x14tfdt\x01\0\0\0\0\0\0\0\0\0\0\0");
+    let offsets = tfdt_time_offsets(&bytes);
     assert_eq!(offsets.len(), 2);
     let mut sources = Vec::new();
     for origin in [0, 143_808u64] {
