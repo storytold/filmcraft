@@ -401,6 +401,40 @@ fn timeline_zoom_settings_default_off_and_set_custom_playhead_range() {
     assert!(!d.app().session.state.timeline_ui.alternate_slider_position);
 }
 
+#[test]
+fn open_zoom_settings_do_not_clamp_to_a_stale_timeline_width() {
+    let mut d = Driver::demo();
+    d.frames(2);
+    let actual_width = d.app().last_timeline_width;
+    assert!(actual_width > 300.0);
+    let bar = d.rect("timeline.zoomBar");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    assert!(d.has("timeline.zoomBar.settings.maxZoomLevel"));
+
+    d.app().ui.timeline.pps = 800.0;
+    d.app().ui.timeline.target_pps = 800.0;
+    d.app().last_timeline_width = 100.0;
+    d.frames(2);
+
+    assert!(d.app().last_timeline_width > 300.0);
+    assert!(d.app().ui.timeline.target_pps > 250.0, "the new layout should determine the zoom ceiling");
+}
+
+#[test]
+fn invalid_timeline_number_settings_return_field_errors() {
+    let mut d = Driver::demo();
+    for (field, value, range) in [
+        ("playheadSideSeconds", json!(3601.0), "0.1 to 3600"),
+        ("shiftDragSpeed", json!("fast"), "0.1 to 50"),
+        ("maxZoomLevel", Value::Null, "0.05 to 3"),
+    ] {
+        let response = d.call("ui.set", json!({"timeline": {field: value}}));
+        assert_eq!(response["ok"], json!(false), "{field} should reject its invalid value");
+        let error = response["error"].as_str().unwrap_or_default();
+        assert!(error.contains(field) && error.contains(range), "unexpected error for {field}: {error}");
+    }
+}
+
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
 /// thumb (x, y, width, height), the track, and the y of the bar's middle.
 fn zoom_bar_at_start(d: &mut Driver) -> ([f32; 4], [f32; 4], f32) {

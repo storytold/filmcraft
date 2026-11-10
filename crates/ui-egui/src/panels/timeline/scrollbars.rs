@@ -289,13 +289,6 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             changed = true;
         }
     });
-    // a zoom established under the old ceiling must obey the new one at once: the same cap the
-    // control channel applies when `maxZoomLevel` changes
-    {
-        let cap = max_pps(app.last_timeline_width, settings.max_zoom_secs());
-        app.ui.timeline.target_pps = app.ui.timeline.target_pps.min(cap);
-        app.ui.timeline.pps = app.ui.timeline.pps.min(cap);
-    }
     ui.separator();
     // Alternate Drag Speed first
     // the gesture is part of the heading only while it is still the way to do it: a Controls

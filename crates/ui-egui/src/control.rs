@@ -274,7 +274,7 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
         view_settings_changed |= app.session.state.timeline_ui.inverted_controls != v;
         app.session.state.timeline_ui.inverted_controls = v;
     }
-    if let Some(v) = tl.get("playheadSideSeconds").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.1..=3600.0).contains(v)) {
+    if let Some(v) = checked_timeline_number(tl, "playheadSideSeconds", 0.1, 3600.0)? {
         view_settings_changed |= app.session.state.timeline_ui.playhead_side_seconds != v;
         app.session.state.timeline_ui.playhead_side_seconds = v;
         let custom = ![3.0, 5.0, 10.0, 30.0].contains(&v);
@@ -283,7 +283,7 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
         }
         app.session.state.timeline_ui.playhead_side_custom = custom;
     }
-    if let Some(v) = tl.get("shiftDragSpeed").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.1..=50.0).contains(v)) {
+    if let Some(v) = checked_timeline_number(tl, "shiftDragSpeed", 0.1, 50.0)? {
         view_settings_changed |= app.session.state.timeline_ui.shift_drag_speed != v;
         app.session.state.timeline_ui.shift_drag_speed = v;
         let custom = ![0.25, 0.5, 1.0, 2.0].contains(&v);
@@ -299,7 +299,7 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
             app.tl.playhead_captured = false;
         }
     }
-    if let Some(v) = tl.get("maxZoomLevel").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.05..=3.0).contains(v)) {
+    if let Some(v) = checked_timeline_number(tl, "maxZoomLevel", 0.05, 3.0)? {
         view_settings_changed |= app.session.state.timeline_ui.max_zoom_seconds != v;
         app.session.state.timeline_ui.max_zoom_seconds = v;
         // the zoom established under the old ceiling is clamped to the new one by animate_view
@@ -392,6 +392,15 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
         }
     }
     Ok(())
+}
+
+fn checked_timeline_number(timeline: &Value, field: &str, min: f64, max: f64) -> Result<Option<f64>, String> {
+    let Some(raw) = timeline.get(field) else { return Ok(None) };
+    let value = raw
+        .as_f64()
+        .filter(|value| value.is_finite() && (min..=max).contains(value))
+        .ok_or_else(|| format!("`{field}` must be a finite number from {min} to {max}"))?;
+    Ok(Some(value))
 }
 
 /// The `gfxEdit` part of a `ui.set` payload: which layer the Type tool edits. Resolves that
