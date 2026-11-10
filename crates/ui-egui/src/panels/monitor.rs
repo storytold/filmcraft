@@ -899,6 +899,9 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
 }
 
+/// A monitor's time ruler and scrub bar over `origin`..`end` (zoomed by the monitor's zoom bar),
+/// with ticks, the In / Out range and the playhead at `time`. Clicking or dragging it moves that
+/// monitor's playhead; on the Source monitor it also stops Source playback.
 #[allow(clippy::too_many_arguments)]
 fn mini_timeline(
     app: &mut FilmcraftApp,
