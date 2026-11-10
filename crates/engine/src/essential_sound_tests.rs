@@ -348,27 +348,54 @@ fn ducking_generates_volume_keyframes_under_dialogue() {
     assert!(s.execute("essentialSound.generateDucking", json!({"clips": [c[0].0]})).is_err(), "dialogue does not duck");
 }
 
+/// Write a fade-out over 8-9 s on the clip's Volume level.
+fn fade_out(s: &mut Session, c: ClipId) {
+    for (seconds, db) in [(8.0, 0.0), (9.0, -60.0)] {
+        s.execute("clipMixer.set", json!({"clip": c.0, "effect": "volume", "param": "level", "value": db, "keyframe": true, "seconds": seconds})).unwrap();
+    }
+}
+
+/// The clip's Volume level keyframes, as `replacedKeyframes` lists them.
+fn level_keys(s: &Session, c: ClipId) -> Vec<Value> {
+    let lvl = item(s, c).effect("volume").and_then(|e| e.param("level")).cloned();
+    lvl.map(|p| p.keyframes.iter().map(|k| json!({"mediaTime": k.time.0, "levelDb": k.value.as_f64()})).collect()).unwrap_or_default()
+}
+
 /// Generate Ducking replaces the clip's Volume level keyframes, as Premiere's Generate Keyframes
-/// does, so a fade written before it is gone. The result says how many keyframes it replaced.
+/// does, so a fade written before it is gone. The result lists the keyframes it replaced.
 #[test]
 fn ducking_reports_the_volume_keyframes_it_replaces() {
     let dlg = speech(10.0, 0.4, |t| (2.0..4.0).contains(&t));
     let (mut s, c) = session_with(&[(dlg, 0.0), (tone(10.0, 220.0, 0.2), 0.0)]);
     s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
     s.execute("essentialSound.setType", json!({"clips": [c[1].0], "type": "music"})).unwrap();
-    // a fade-out over 8-9 s
-    for (seconds, db) in [(8.0, 0.0), (9.0, -60.0)] {
-        s.execute("clipMixer.set", json!({"clip": c[1].0, "effect": "volume", "param": "level", "value": db, "keyframe": true, "seconds": seconds})).unwrap();
-    }
+    fade_out(&mut s, c[1]);
+    let fade = level_keys(&s, c[1]);
+    assert_eq!(fade.iter().map(|k| k["levelDb"].clone()).collect::<Vec<_>>(), [json!(0.0), json!(-60.0)]);
     let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0]})).unwrap();
-    assert_eq!(r["clips"][0]["replacedKeyframes"], json!(2), "{r}");
-    let lvl = item(&s, c[1]).effect("volume").unwrap().param("level").unwrap().clone();
-    let generated = r["clips"][0]["keyframes"].as_array().unwrap().len();
-    assert_eq!(lvl.keyframes.len(), generated, "only the ducking keyframes are left");
-    assert!(lvl.keyframes.iter().all(|k| k.value.as_f64() != Some(-60.0)), "the fade is replaced");
-    // generating again replaces the ducking keyframes
-    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0]})).unwrap();
-    assert_eq!(r["clips"][0]["replacedKeyframes"], json!(generated), "{r}");
+    assert_eq!(r["clips"][0]["replacedKeyframes"], json!(fade), "{r}");
+    let ducked = level_keys(&s, c[1]);
+    assert_eq!(ducked.len(), r["clips"][0]["keyframes"].as_array().unwrap().len(), "only the ducking keyframes are left");
+    assert!(ducked.iter().all(|k| fade.iter().all(|f| f["mediaTime"] != k["mediaTime"])), "the fade is replaced");
+    // generating again replaces the ducking keyframes; a repeated id is one clip
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0, c[1].0]})).unwrap();
+    assert_eq!(r["clips"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["clips"][0]["replacedKeyframes"], json!(ducked), "{r}");
+}
+
+/// A Music clip with nothing to duck under keeps its Volume level keyframes: Generate Ducking has
+/// no keyframes to write there, so it replaces none.
+#[test]
+fn ducking_keeps_the_volume_keyframes_of_a_clip_with_nothing_to_duck_under() {
+    let (mut s, c) = session_with(&[(tone(10.0, 220.0, 0.2), 0.0)]);
+    s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "music"})).unwrap();
+    fade_out(&mut s, c[0]);
+    let fade = level_keys(&s, c[0]);
+    assert_eq!(fade.len(), 2);
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[0].0]})).unwrap();
+    assert_eq!(level_keys(&s, c[0]), fade, "the fade is kept: {r}");
+    assert_eq!(r["clips"][0]["keyframes"], json!([]), "{r}");
+    assert_eq!(r["clips"][0]["replacedKeyframes"], json!([]), "{r}");
 }
 
 /// Run `sig` through one Dialogue repair setting and return (input, output) over 1…len−0.5 s.

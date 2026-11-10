@@ -13,7 +13,7 @@
 //! | `essentialSound.set` | one setting by dotted key (`repair.noise.amount`), or several (`values`) |
 //! | `essentialSound.applyPreset` / `savePreset` / `deletePreset` | built-in and user presets |
 //! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770, mono clips as one channel) and set the match gain to the target |
-//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types, replacing the clip's earlier ones (`replacedKeyframes` counts them) |
+//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types, replacing the clip's earlier ones (`replacedKeyframes` lists them; a clip with nothing to duck under keeps its own) |
 
 use serde_json::{Value, json};
 
@@ -415,13 +415,18 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let kfs = filmcraft_audio_dsp::ducking::duck_keyframes(&abs, start_s, end_s, base, d.reduce_db, d.fade_s);
         let ticks: Vec<(Tick, f64)> = kfs.iter().map(|(t, v)| (Tick::from_seconds_f64(*t).clamp(it.start, it.end()), *v)).collect();
+        // the edit below replaces the clip's earlier level keyframes, as Premiere does, so list them
+        // (at their media time, as `effects.setKeyframe` takes it); with nothing to write it keeps them
+        let replaced: Vec<Value> = match lvl {
+            Some(p) if !ticks.is_empty() => p.keyframes.iter().map(|k| json!({"mediaTime": k.time.0, "levelDb": k.value.as_f64()})).collect(),
+            _ => Vec::new(),
+        };
         report.push(json!({
             "clip": it.id.0,
             "triggers": triggers.iter().map(|t| t.id.0).collect::<Vec<_>>(),
             "regions": abs.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
             "keyframes": ticks.iter().map(|(t, v)| json!({"time": t.0, "seconds": t.seconds(), "levelDb": v})).collect::<Vec<_>>(),
-            // the edit below replaces the clip's earlier level keyframes, as Premiere does: say how many
-            "replacedKeyframes": lvl.map_or(0, |p| p.keyframes.len()),
+            "replacedKeyframes": replaced,
         }));
         plans.push((it.id, ticks, base));
     }
@@ -435,6 +440,10 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
             let Some((_, it)) = seq.find_item_mut(*c) else { continue };
             if let Some(e) = it.essential.as_mut() {
                 e.ducking.enabled = true;
+            }
+            if ticks.is_empty() {
+                // nothing over the clip to duck under: keep its level keyframes (a fade, say)
+                continue;
             }
             let at: Vec<(Tick, f64)> = ticks.iter().map(|(t, v)| (mt_of(it, *t), *v)).collect();
             let Some(par) = it.effect_mut("volume").and_then(|e| e.param_mut("level")) else { continue };
