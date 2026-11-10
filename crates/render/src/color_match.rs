@@ -1,4 +1,4 @@
-//! Lumetri ▸ Color Wheels & Match ▸ **Apply Match**: grade the current clip so its colour matches
+//! Color Grading ▸ Color Wheels & Match ▸ **Apply Match**: grade the current clip so its colour matches
 //! a reference frame. A documented, non-ML method:
 //!
 //! 1. Both frames are downsampled (≤ 96 px wide) and converted to **Oklab** (Björn Ottosson, 2020),
@@ -10,9 +10,9 @@
 //!    20°–75°, chroma 0.02–0.2, L 0.25–0.92) are down-weighted (×0.2) in the colour statistics, so
 //!    faces do not drive the cast; afterwards the solved cast is scaled down until the mean hue of
 //!    the current frame's skin pixels moves by at most 8°.
-//! 4. The match is solved **in Lumetri's own parameters** — the three colour wheels (x, y), their
+//! 4. The match is solved **in Color Grading's own parameters** — the three colour wheels (x, y), their
 //!    lightness sliders and Basic saturation (10 unknowns) — by damped Gauss–Newton
-//!    (Levenberg–Marquardt) with numerical derivatives through the real Lumetri implementation
+//!    (Levenberg–Marquardt) with numerical derivatives through the real Color Grading implementation
 //!    ([`crate::effects::apply`]), so the result is an ordinary, editable grade. A small penalty
 //!    on the parameters keeps the grade minimal when the statistics are already close.
 
@@ -200,7 +200,7 @@ fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect:
 }
 
 /// Solve the grade that matches `current` (the clip before its wheels) to `reference`. `base` is
-/// the clip's Lumetri instance (its other settings are kept; wheels and saturation are solved).
+/// the clip's Color Grading instance (its other settings are kept; wheels and saturation are solved).
 pub fn solve(current: &Image, reference: &Image, base: &EffectInstance, skin_protect: bool) -> Match {
     let cur = shrink(current, 96);
     let refs = stats(&shrink(reference, 96), skin_protect);

@@ -668,6 +668,7 @@ fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
         "file.exportSelectionProject",
         "file.exportAle",
         "file.mediaPropertiesFile",
+        "lumetri.exportCube",
         "media.createProxies",
         "media.linkMedia",
         "media.makeOffline",
