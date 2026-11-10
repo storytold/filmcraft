@@ -84,6 +84,7 @@ fn hardware_export_matches_the_software_export() {
     let soft_report = export(&p, seq, &settings(soft_path.clone(), HardwareEncoding::Off), &m, &Progress::default()).unwrap();
     assert_eq!(hw_encode_stats(), before_soft, "Off: no hardware encoder attempt");
     assert_eq!(soft_report.encoder, "software H.264", "the software encoder wrote the file");
+    assert_eq!(soft_report.encoder_id, "software", "the stable identifier");
 
     let hw_path = tmp("hw.mp4");
     let before = hw_encode_stats();
@@ -102,6 +103,7 @@ fn hardware_export_matches_the_software_export() {
     // the result names the encoder that wrote the file, so a hardware-written file is not
     // mistaken for a software-written one (#4339)
     assert_eq!(report.encoder, "NVENC H.264");
+    assert_eq!(report.encoder_id, "nvenc", "the stable identifier");
     assert_eq!(report.declined, None, "nothing declined the hardware encoder");
 
     let (soft, hard) = (decode(&soft_path), decode(&hw_path));

@@ -555,6 +555,7 @@ impl Exporter {
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
             encoder: format!("{} {}", self.venc.name(), self.settings.video_format().label()),
+            encoder_id: self.venc.id().to_string(),
             declined: self.declined.clone(),
         }))
     }

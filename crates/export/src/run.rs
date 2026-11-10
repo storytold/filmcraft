@@ -257,6 +257,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
         // a GIF is a stream written by the image crate's encoder; an image sequence writes
         // stills, so no encoder wrote it
         encoder: if settings.format == Format::Gif { "software GIF".to_string() } else { String::new() },
+        encoder_id: if settings.format == Format::Gif { "software".to_string() } else { String::new() },
         declined: None,
     })
 }

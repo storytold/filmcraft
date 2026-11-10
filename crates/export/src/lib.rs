@@ -158,6 +158,12 @@ pub struct Report {
     /// this says so - the same bytes under a different name are not the same file.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub encoder: String,
+    /// A stable identifier of the encoder that wrote the stream: "software", "nvenc",
+    /// "videotoolbox", "media_foundation". A consumer compares this; `encoder` is the
+    /// readable text. An image sequence, and every report that is not an export, leaves it
+    /// empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoder_id: String,
     /// Why the hardware encoder declined, when one did and the software encoder took over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declined: Option<String>,

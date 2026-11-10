@@ -168,6 +168,7 @@ fn events_report_background_jobs() {
         render_fps: 10.0,
         extra_files: Vec::new(),
         encoder: String::new(),
+        encoder_id: String::new(),
         declined: None,
     }));
     *b.result.lock().unwrap() = Some(Err("disk full".into()));

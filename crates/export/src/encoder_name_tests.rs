@@ -149,6 +149,21 @@ fn a_two_pass_export_reports_the_final_encoder() {
 fn a_software_encoder_reports_the_software_default() {
     let enc = crate::encoders::mjpeg_factory(Format::Mjpeg, 16, 16, FrameRate::FPS_24, &ExportSettings::default()).unwrap().unwrap();
     assert_eq!(enc.name(), "software");
+    assert_eq!(enc.id(), "software", "and the stable identifier");
+}
+
+/// The result carries the stable identifier beside the readable name, so a consumer compares
+/// `encoder_id` and a person reads `encoder` (#4339).
+#[test]
+fn the_result_carries_the_stable_encoder_id() {
+    let (p, seq, m) = crate::tests::project();
+    let r = export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("encoder-id.mp4"), ..Default::default() }, &m, &Progress::default()).unwrap();
+    assert_eq!(r.encoder, "software H.264", "the readable text");
+    assert_eq!(r.encoder_id, "software", "the stable identifier");
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["encoder_id"], "software");
+    let back: Report = serde_json::from_value(v).unwrap();
+    assert_eq!(back.encoder_id, "software");
 }
 
 /// The result the CLI and MCP read: the new fields are there when they are set, and back again
@@ -163,15 +178,18 @@ fn the_report_serializes_the_encoder_and_the_decline() {
         render_fps: 24.0,
         extra_files: Vec::new(),
         encoder: "NVENC H.264".into(),
+        encoder_id: "nvenc".into(),
         declined: Some("no hardware session".into()),
     };
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["encoder"], "NVENC H.264");
+    assert_eq!(v["encoder_id"], "nvenc");
     assert_eq!(v["declined"], "no hardware session");
     let back: Report = serde_json::from_value(v).unwrap();
     assert_eq!(back.path, r.path);
     assert_eq!(back.frames, r.frames);
     assert_eq!(back.encoder, r.encoder);
+    assert_eq!(back.encoder_id, r.encoder_id);
     assert_eq!(back.declined, r.declined);
     assert_eq!(back.extra_files, r.extra_files);
 }
@@ -180,10 +198,20 @@ fn the_report_serializes_the_encoder_and_the_decline() {
 /// reads says nothing it does not know (#4339).
 #[test]
 fn an_empty_encoder_and_decline_are_left_out() {
-    let r =
-        Report { path: "a.mp4".into(), frames: 0, seconds: 0.0, bytes: 0, render_fps: 0.0, extra_files: Vec::new(), encoder: String::new(), declined: None };
+    let r = Report {
+        path: "a.mp4".into(),
+        frames: 0,
+        seconds: 0.0,
+        bytes: 0,
+        render_fps: 0.0,
+        extra_files: Vec::new(),
+        encoder: String::new(),
+        encoder_id: String::new(),
+        declined: None,
+    };
     let v = serde_json::to_value(&r).unwrap();
     assert!(v.get("encoder").is_none(), "{v}");
+    assert!(v.get("encoder_id").is_none(), "{v}");
     assert!(v.get("declined").is_none(), "{v}");
     assert!(v.get("extra_files").is_none(), "{v}");
 }
@@ -194,6 +222,7 @@ fn a_report_written_before_the_encoder_field_still_reads() {
     let legacy = serde_json::json!({"path": "a.mp4", "frames": 24, "seconds": 1.0, "bytes": 1024, "render_fps": 24.0});
     let r: Report = serde_json::from_value(legacy).unwrap();
     assert_eq!(r.encoder, "");
+    assert_eq!(r.encoder_id, "");
     assert_eq!(r.declined, None);
     assert!(r.extra_files.is_empty());
 }

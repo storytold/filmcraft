@@ -409,6 +409,7 @@ fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Re
                 render_fps: 0.0,
                 extra_files: Vec::new(),
                 encoder: String::new(),
+                encoder_id: String::new(),
                 declined: None,
             })
         }

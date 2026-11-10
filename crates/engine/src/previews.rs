@@ -734,6 +734,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             render_fps: done_frames as f64 / secs.max(1e-6),
             extra_files: Vec::new(),
             encoder: String::new(),
+            encoder_id: String::new(),
             declined: None,
         });
         if let Err(e) = &r {
@@ -823,6 +824,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             render_fps: 0.0,
             extra_files: Vec::new(),
             encoder: String::new(),
+            encoder_id: String::new(),
             declined: None,
         });
         if let Err(e) = &r {

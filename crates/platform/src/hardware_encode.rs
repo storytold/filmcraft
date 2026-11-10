@@ -246,6 +246,10 @@ impl VideoEncoder for HardwareEncoder {
         "VideoToolbox"
     }
 
+    fn id(&self) -> &'static str {
+        "videotoolbox"
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let c = self.vt.config();
         let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);
@@ -363,7 +367,10 @@ mod tests {
     #[test]
     fn the_encoder_names_itself_videotoolbox() {
         match HardwareEncoder::open(config()) {
-            Ok(enc) => assert_eq!(enc.name(), "VideoToolbox"),
+            Ok(enc) => {
+                assert_eq!(enc.name(), "VideoToolbox");
+                assert_eq!(enc.id(), "videotoolbox", "the stable identifier");
+            }
             Err(why) => eprintln!("SKIPPED: no VideoToolbox hardware encoder ({why})"),
         }
     }

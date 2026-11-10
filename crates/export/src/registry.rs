@@ -37,6 +37,17 @@ pub trait VideoEncoder: Send {
     fn name(&self) -> &'static str {
         "software"
     }
+    /// A stable identifier of the encoder that writes the stream: "software", "nvenc",
+    /// "videotoolbox", "media_foundation". The export result carries it, so a consumer can
+    /// compare it across versions of the app: [`name`](Self::name) is the readable text and
+    /// may be reworded, this is the machine-readable one.
+    ///
+    /// It defaults to "software", the same as [`name`](Self::name), so an encoder that does
+    /// not override either is a software encoder. **An encoder that overrides `name` must
+    /// override this too**, or its hardware export would report the id of a software one.
+    fn id(&self) -> &'static str {
+        "software"
+    }
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
     fn timescale(&self) -> u32;

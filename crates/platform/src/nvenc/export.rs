@@ -86,6 +86,10 @@ impl VideoEncoder for NvencEncoder {
         "NVENC"
     }
 
+    fn id(&self) -> &'static str {
+        "nvenc"
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let (sps, pps) = self.enc.parameter_sets();
         // `config` declines sizes above u16::MAX

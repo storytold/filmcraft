@@ -234,6 +234,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             render_fps: 0.0,
             extra_files: Vec::new(),
             encoder: String::new(),
+            encoder_id: String::new(),
             declined: None,
         });
         if let Err(e) = &r {

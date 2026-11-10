@@ -330,6 +330,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
                 render_fps: frames as f64 / secs.max(1e-6),
                 extra_files: Vec::new(),
                 encoder: String::new(),
+                encoder_id: String::new(),
                 declined: None,
             }),
         };

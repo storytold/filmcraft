@@ -332,6 +332,7 @@ fn a_non_stream_report_has_no_encoder() {
     let result = &r["status"]["result"];
     assert!(result.is_object(), "the job reports its result: {r}");
     assert!(result.get("encoder").is_none(), "a report with no stream names no encoder: {result}");
+    assert!(result.get("encoder_id").is_none(), "{result}");
     assert!(result.get("declined").is_none(), "{result}");
     // and the report itself keeps the empty name
     let id = r["job"].as_u64().unwrap();
@@ -339,6 +340,7 @@ fn a_non_stream_report_has_no_encoder() {
     let res = job.result.lock().unwrap_or_else(|e| e.into_inner());
     let report = res.as_ref().unwrap().as_ref().unwrap();
     assert_eq!(report.encoder, "", "a job that writes no stream names no encoder");
+    assert_eq!(report.encoder_id, "");
     assert_eq!(report.declined, None);
 }
 

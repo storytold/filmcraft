@@ -85,6 +85,7 @@ fn the_report_names_the_encoder_that_wrote_the_file() {
     let r = export(&p, seq, &ExportSettings { format: Format::Mjpeg, path, ..Default::default() }, &m, &prog).unwrap();
     // no hardware encoder is registered in this crate's tests, so the software one wrote it
     assert_eq!(r.encoder, "software QuickTime (Motion JPEG)", "{}", r.encoder);
+    assert_eq!(r.encoder_id, "software", "the stable identifier");
     assert_eq!(r.declined, None, "nothing declined it");
     // the status says it too, so the app shows which encoder ran without reading the result
     let status = prog.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,6 +102,7 @@ fn gif_names_its_encoder_and_image_sequences_do_not() {
         export(&p, seq, &ExportSettings { format: Format::Gif, path: tmp("named.gif"), range: Some(range), ..Default::default() }, &m, &Progress::default())
             .unwrap();
     assert_eq!(gif.encoder, "software GIF");
+    assert_eq!(gif.encoder_id, "software");
     let stills = export(
         &p,
         seq,
@@ -110,6 +112,7 @@ fn gif_names_its_encoder_and_image_sequences_do_not() {
     )
     .unwrap();
     assert_eq!(stills.encoder, "", "an image sequence has no encoder");
+    assert_eq!(stills.encoder_id, "", "nor a stable identifier");
 }
 
 #[test]
