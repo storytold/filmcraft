@@ -225,7 +225,13 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    Ok(match TimelineUiSettings::deserialize(d) {
+        Ok(settings) => settings.checked(),
+        Err(error) => {
+            log::warn!("invalid Timeline UI settings; using defaults: {error}");
+            TimelineUiSettings::default()
+        }
+    })
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
