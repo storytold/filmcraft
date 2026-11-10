@@ -332,6 +332,25 @@ fn a_far_request_after_playback_parks_the_running_decoder_at_once() {
 }
 
 #[test]
+fn a_released_decoder_leaves_no_place_to_return_to() {
+    // 25 -> 1500 -> 2500 leaves the GOP of 1500 as the place last left; after the decoder is
+    // given up, a one-way seek 3500 -> 1600 (an uncached frame of that GOP) is not a return and
+    // must not park a second run
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for frame in [25usize, 1500, 2500] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    let released = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).release_decoder(&c.shared.pool);
+    drop(released);
+    for frame in [3500usize, 1600] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
     let c = Arc::new(GopCache::new(None));

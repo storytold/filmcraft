@@ -273,6 +273,9 @@ impl State {
             out.push(d);
         }
         self.next = usize::MAX;
+        // a place left before the release says nothing about the next run
+        self.left_key = usize::MAX;
+        self.left_run = 0;
         out.extend(self.release_parked(pool));
         out
     }
