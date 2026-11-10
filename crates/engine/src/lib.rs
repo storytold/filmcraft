@@ -464,6 +464,9 @@ pub struct Session {
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
     /// unsaved content.
     pub saved_view_epoch: u64,
+    /// The most recent view-only snapshot sent to the autosave worker. Timeline drags update each
+    /// frame; spacing these snapshots bounds project-view cloning and queued channel work.
+    last_view_snapshot_sent: Option<web_time::Instant>,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -589,6 +592,7 @@ impl Session {
             saved_revision: 1,
             view_epoch: 0,
             saved_view_epoch: 0,
+            last_view_snapshot_sent: None,
             path: None,
             state: EditorState {
                 snapping: true,
@@ -684,7 +688,7 @@ impl Session {
     /// Clean shutdown: flush and stop the worker. Unsaved changes stay in the journal (offered on
     /// the next launch); otherwise the session's journal directory is removed.
     pub fn shutdown(&mut self) {
-        self.sync_persistence();
+        self.sync_persistence_inner(true);
         if let Some(p) = self.persistence.take() {
             p.close();
         }
@@ -697,6 +701,10 @@ impl Session {
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
+        self.sync_persistence_inner(false);
+    }
+
+    fn sync_persistence_inner(&mut self, force_view_snapshot: bool) {
         // the worker check and the revision check come first: the project view is a walk over
         // every sequence and it must not repeat on every command while nothing changed (or when
         // there is no worker to send it to at all)
@@ -711,7 +719,17 @@ impl Session {
             view_epoch: self.view_epoch,
             saved_view_epoch: self.saved_view_epoch,
         };
-        if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
+        let previous = self.persistence.as_ref().and_then(|p| p.last_sent.clone());
+        if previous.as_ref() == Some(&cur) {
+            return;
+        }
+        let view_only_change = previous.as_ref().is_some_and(|sent| {
+            sent.revision == cur.revision && sent.saved_revision == cur.saved_revision && sent.path == cur.path && sent.view_epoch != cur.view_epoch
+        });
+        if view_only_change
+            && !force_view_snapshot
+            && self.last_view_snapshot_sent.is_some_and(|sent| sent.elapsed() < std::time::Duration::from_millis(250))
+        {
             return;
         }
         // the view reaches the journal whenever it is newer than what the project file holds
@@ -721,6 +739,7 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
             p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
+            self.last_view_snapshot_sent = Some(web_time::Instant::now());
         } else {
             p.send_clean();
         }

@@ -60,6 +60,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
     uic!("view.zoomToSequence", "Zoom to Sequence", ["View"], Some("\\")),
+    uic!("view.unhideTimelineSlider", "Unhide Timeline Slider", ["View"], None),
+    uic!("view.unhideTrackSlider", "Unhide Track Slider", ["View"], None),
     uic!("view.resetInterfaceZoom", "Reset Interface Zoom", ["View"], None),
     uic!("view.playbackRes.full", "Full", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
@@ -485,6 +487,14 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         "view.zoomToSequence" => {
             app.ui.timeline.fit_pending = true;
+            return Ok(Value::Null);
+        }
+        "view.unhideTimelineSlider" => {
+            crate::panels::timeline::set_zoombar_hidden(app, ctx, false);
+            return Ok(Value::Null);
+        }
+        "view.unhideTrackSlider" => {
+            crate::panels::timeline::set_track_slider_hidden(app, ctx, false);
             return Ok(Value::Null);
         }
         // the whole interface back to Settings ▸ Appearance ▸ UI Scale, after Ctrl+Plus or a mouse
@@ -1040,6 +1050,11 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         if c.menu.is_empty() {
             continue;
         }
+        if (c.id == "view.unhideTimelineSlider" && !session.state.timeline_ui.zoom_bar_hidden)
+            || (c.id == "view.unhideTrackSlider" && !session.state.timeline_ui.track_slider_hidden)
+        {
+            continue;
+        }
         out.push(MenuItem {
             id: c.id.into(),
             label: c.label.into(),
@@ -1574,6 +1589,18 @@ mod tests {
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
         assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
+    }
+
+    #[test]
+    fn hidden_timeline_sliders_can_be_restored_from_the_view_menu() {
+        let mut session = filmcraft_engine::Session::default();
+        assert!(!menu_items_for(&session).iter().any(|it| it.id.starts_with("view.unhide")));
+
+        session.state.timeline_ui.zoom_bar_hidden = true;
+        session.state.timeline_ui.track_slider_hidden = true;
+        let items = menu_items_for(&session);
+        assert!(items.iter().any(|it| it.id == "view.unhideTimelineSlider" && it.path == ["View"]));
+        assert!(items.iter().any(|it| it.id == "view.unhideTrackSlider" && it.path == ["View"]));
     }
 
     /// #1500: like a native menu bar, while one menu is open hovering another title opens it.

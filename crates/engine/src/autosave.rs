@@ -687,6 +687,22 @@ enum Msg {
     Stop,
 }
 
+/// Collapse a run of queued snapshots to the newest state before doing worker I/O. Other message
+/// types are barriers: their order relative to snapshots (in particular Clean and Flush) matters.
+fn coalesce_pending_dirty(rx: &Receiver<Msg>, mut latest: Box<Snapshot>, deferred: &mut Option<Msg>) -> Box<Snapshot> {
+    loop {
+        match rx.try_recv() {
+            Ok(Msg::Dirty(snapshot)) => latest = snapshot,
+            Ok(other) => {
+                *deferred = Some(other);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    latest
+}
+
 /// Worker → session notifications.
 #[derive(Clone, Debug)]
 pub enum WorkerEvent {
@@ -1006,18 +1022,27 @@ impl Worker {
     }
 
     fn run(mut self, rx: Receiver<Msg>) {
+        let mut deferred = None;
         loop {
             let due = [self.journal_due(), self.prefs.enabled.then_some(self.next_autosave)].into_iter().flatten().min();
-            let msg = match due {
-                Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
-                    Ok(m) => Some(m),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                },
-                None => match rx.recv() {
-                    Ok(m) => Some(m),
-                    Err(_) => return,
-                },
+            let msg = if deferred.is_some() {
+                deferred.take()
+            } else {
+                match due {
+                    Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
+                        Ok(m) => Some(m),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    },
+                    None => match rx.recv() {
+                        Ok(m) => Some(m),
+                        Err(_) => return,
+                    },
+                }
+            };
+            let msg = match msg {
+                Some(Msg::Dirty(snapshot)) => Some(Msg::Dirty(coalesce_pending_dirty(&rx, snapshot, &mut deferred))),
+                other => other,
             };
             match msg {
                 Some(Msg::Dirty(s)) => {
@@ -1186,6 +1211,32 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+
+    #[test]
+    fn worker_coalesces_queued_snapshots_without_reordering_control_messages() {
+        let (tx, rx) = channel();
+        let snapshot = |revision| {
+            Box::new(Snapshot {
+                project: Arc::new(Project::default()),
+                view: filmcraft_project::ProjectView::default(),
+                revision,
+                view_epoch: revision,
+                content_dirty: true,
+                path: None,
+            })
+        };
+        tx.send(Msg::Dirty(snapshot(1))).unwrap();
+        tx.send(Msg::Dirty(snapshot(2))).unwrap();
+        tx.send(Msg::Dirty(snapshot(3))).unwrap();
+        tx.send(Msg::Clean).unwrap();
+
+        let Some(Msg::Dirty(first)) = rx.recv().ok() else { panic!("first message should be a snapshot") };
+        let mut deferred = None;
+        let latest = coalesce_pending_dirty(&rx, first, &mut deferred);
+        assert_eq!((latest.revision, latest.view_epoch), (3, 3));
+        assert!(matches!(deferred, Some(Msg::Clean)), "Clean remains ordered after the latest snapshot");
+    }
+
     #[test]
     fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
         let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
