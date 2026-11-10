@@ -10,8 +10,8 @@
 //!
 //! When a source's bytes are not available yet (asynchronous web reads mark
 //! [`filmcraft_media::pending`]), the video batch is rendered again on the next call: nothing is encoded
-//! from frames with missing media. Known, pre-existing web issue (TODO, separate fix): the audio pull
-//! has already advanced its position when it hits a pending source, so a retried group loses its audio.
+//! from frames with missing media. The audio pull has already advanced its position by then, so it is
+//! rewound to repeat the same groups (not possible with the loudness limiter, whose history is kept).
 //!
 //! The file does not depend on how many frames a step renders (one per core natively, one on the
 //! web): packets go to the muxer in fixed groups of [`INTERLEAVE`] output frames, each followed by
@@ -40,8 +40,8 @@
 //!   flag after every frame, on whatever thread drew it, and a batch that saw it is discarded:
 //!   a prefetched batch that hit pending is dropped and rendered again by the next step, and
 //!   nothing is ever encoded from it. The audio pull checks the flag on the encoding thread right
-//!   after pulling, before a frame is encoded (the batch is then not encoded; its audio is not
-//!   recovered, see the known issue above) and the prefetched batch is dropped too, because the step
+//!   after pulling, before a frame is encoded (the batch is then not encoded; the audio position is
+//!   rewound, see above) and the prefetched batch is dropped too, because the step
 //!   did not advance `next`.
 //! * **Cancellation** is checked at the start of every step, which drops the prefetched frames;
 //!   the prefetch is not started once it is set.
@@ -620,9 +620,10 @@ impl Exporter {
         }
         let end = f.saturating_add(i64::try_from(frames.len()).unwrap_or(0));
         // the audio of every interleave group that ends in this batch, mixed before encoding so a
-        // pending source stops the step before any frame of the batch is encoded (the audio position has
-        // already moved though: known web issue, see the module docs)
+        // pending source stops the step before any frame of the batch is encoded; the audio position is
+        // rewound then so the retried batch mixes the same groups again
         let cuts: Vec<i64> = (f + 1..=end).filter(|&g| (g - self.f0) % INTERLEAVE == 0).collect();
+        let checkpoint = self.audio.as_ref().and_then(AudioOut::checkpoint);
         let mut mixed = Vec::with_capacity(cuts.len());
         if let Some(sr) = self.audio.as_ref().map(|a| a.sr) {
             let t = web_time::Instant::now();
@@ -634,6 +635,9 @@ impl Exporter {
         }
         // taken right here, on the thread that pulled, before other work can touch the flag
         if filmcraft_media::pending::take() {
+            if let (Some(audio), Some(checkpoint)) = (self.audio.as_mut(), checkpoint) {
+                audio.restore(checkpoint);
+            }
             return Ok(Encoded::Pending);
         }
         let mut mixed = mixed.into_iter();

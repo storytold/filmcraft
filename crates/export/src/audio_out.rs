@@ -197,6 +197,18 @@ impl AudioOut {
         Some(buf)
     }
 
+    /// The cursors to rewind to when a pull has to be repeated. Without a limiter the mix is a pure
+    /// function of the position, so restoring them repeats the same samples; with one, its history
+    /// cannot be restored, so there is no checkpoint.
+    pub fn checkpoint(&self) -> Option<(i64, i64)> {
+        self.limiter.is_none().then_some((self.next_in, self.out))
+    }
+
+    pub fn restore(&mut self, (next_in, out): (i64, i64)) {
+        self.next_in = next_in;
+        self.out = out;
+    }
+
     /// Output samples still to come (per channel).
     pub fn remaining(&self) -> u64 {
         u64::try_from(self.end.saturating_sub(self.out)).unwrap_or(0)

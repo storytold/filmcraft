@@ -430,7 +430,8 @@ Wall time is about `max(render, encode + audio + mux)` instead of the sum. What 
   brings it under the old peak (table below). `Exporter::set_overlap(false)` gives the old behaviour.
 - **Known web issue, not changed here.** `AudioOut::pull` moves its position before the pending check, so
   when a web export retries a batch after a pending audio source, that group of audio is lost. It is
-  independent of the overlap (the web never overlaps); TODO: fix separately.
+  independent of the overlap (the web never overlaps). Fixed separately: the position is now rewound
+  before the retry, except with Loudness Normalization on (the limiter's history cannot be rewound).
 
 `perf.stats` `export.stages`: `renderMs` and `encodeMs` (and audio / mux) now run at the same time, so
 their sum can exceed the export's wall time. `waitMs` is the time the encoding side spent waiting for the
