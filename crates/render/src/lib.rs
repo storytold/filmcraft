@@ -20,6 +20,7 @@ pub mod gpufx;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
+pub mod lumetri_cube;
 pub mod lumetri_presets;
 pub mod luts;
 pub mod mask;
@@ -353,8 +354,17 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
         frame_rate: seq.settings.frame_rate.as_f64(),
         working: seq.settings.color.working,
     };
+    let ss = &seq.settings;
     for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
-        mask::apply_effect(&mut adj, e, &cx);
+        // no `env` here: a burn-in's Feet + Frames / Frames format comes as the sequence time in
+        // the `timecode` string
+        match vfx::film_time_format(e) {
+            Some(display) => {
+                let own = format_time(t, ss.frame_rate, ss.drop_frame, display, ss.sample_rate as i64);
+                mask::apply_effect(&mut adj, e, &effects::FxCtx { timecode: &own, ..cx });
+            }
+            None => mask::apply_effect(&mut adj, e, &cx),
+        }
     }
     let (op, bl) = opacity_blend(item, mt);
     // Adjustment layer opacity (and opacity masks, in sequence pixels) weigh adjusted against original.

@@ -1344,7 +1344,7 @@ fn spec(
     journal: bool,
 ) -> CommandSpec {
     let menu: &'static [&'static str] = if id == "comfyui.generate" { &["Clip"] } else { &[] };
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 /// The `comfyui.*` commands.
