@@ -246,6 +246,8 @@ fn sequence_frames_with_different_orientations_each_decode_upright() {
     }
 }
 
+/// No EXIF, Orientation 1, out-of-range values and damaged EXIF or Orientation entries leave the
+/// picture as stored, and never fail the decode.
 #[test]
 fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     let six = orientation_exif(6);
@@ -276,12 +278,19 @@ fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     for (what, o) in [("YCbCr TIFF orientation 0", 0), ("YCbCr TIFF orientation 9", 9), ("YCbCr TIFF orientation 65535", 65_535)] {
         assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff(o)).unwrap(), 1, 1, 3, what);
     }
+    // TIFF Orientation is one SHORT: an entry with more values is damaged and ignored
+    assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff_with(vec![6, 6])).unwrap(), 1, 1, 3, "YCbCr TIFF two orientation values");
 }
 
 /// The stored picture as an uncompressed 4:4:4 YCbCr TIFF (ITU-R BT.601 coefficients and full
 /// range, the TIFF 6.0 defaults) with Orientation `o`: our own decoder reads these, not the image
 /// crate.
 fn ycbcr_tiff(o: u16) -> Vec<u8> {
+    ycbcr_tiff_with(vec![o])
+}
+
+/// [`ycbcr_tiff`] with an Orientation entry holding all of `orientation` (a valid one holds one).
+fn ycbcr_tiff_with(orientation: Vec<u16>) -> Vec<u8> {
     let data: Vec<u8> = picture(1)
         .as_chunks::<3>()
         .0
@@ -292,9 +301,10 @@ fn ycbcr_tiff(o: u16) -> Vec<u8> {
             [y, 128.0 + (b - y) / 1.772, 128.0 + (r - y) / 1.402].map(|v| v.round().clamp(0.0, 255.0) as u8)
         })
         .collect();
-    tiff(W, H, 6, &data, &[(274, vec![o]), (530, vec![1, 1])])
+    tiff(W, H, 6, &data, &[(274, orientation), (530, vec![1, 1])])
 }
 
+/// An uncompressed YCbCr TIFF's Orientation 1–8 turns the picture upright.
 #[test]
 fn ycbcr_tiff_orientation_tag_is_applied() {
     for o in 1..=8 {
@@ -302,6 +312,7 @@ fn ycbcr_tiff_orientation_tag_is_applied() {
     }
 }
 
+/// Truncated and bit-flipped oriented files of every format decode or fail with an error, never a panic.
 #[test]
 fn damaged_oriented_files_fail_without_panicking() {
     let good_jpeg = jpeg(Some(orientation_exif(6)));
