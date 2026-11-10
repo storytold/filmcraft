@@ -481,6 +481,27 @@ fn a_caption_click_drops_the_keyframe_selection() {
     assert_eq!((st.caption_clipboard.len(), st.keyframe_clipboard.len()), (1, 0), "Cmd+C copied the caption");
 }
 
+/// Dragging a caption that was already selected drops the keyframe selection too, so Cmd+C
+/// copies the caption (#3562 review).
+#[test]
+fn dragging_a_selected_caption_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.exec("captions.add", json!({"text": "hi", "durationSeconds": 1.0}));
+    let caption = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].captions[0].id.0;
+    d.click(&format!("{id}.kf.0"));
+    d.exec("captions.select", json!({"captions": [caption]}));
+    d.frames(2);
+    let st = d.harness.state();
+    assert_eq!((st.ui.keyframe_selection.len(), st.session.state.caption_selection.len()), (1, 1), "a keyframe and the caption are selected");
+    let r = d.rect(&format!("timeline.caption.{caption}"));
+    d.drag_frames(centre(r), (r[2] / 4.0, 0.0), 6, |_, _| {});
+    assert!(d.harness.state().ui.keyframe_selection.is_empty(), "the caption drag drops the keyframe");
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert_eq!((st.caption_clipboard.len(), st.keyframe_clipboard.len()), (1, 0), "Cmd+C copied the caption");
+}
+
 /// A click on a clip drops the keyframe selection too, so Cmd+C copies the clip.
 #[test]
 fn a_clip_click_drops_the_keyframe_selection() {
