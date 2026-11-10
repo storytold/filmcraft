@@ -12,11 +12,27 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::media_test_util::{make_movie, session_with, tmp_dir};
 
+/// A temporary folder, removed when the test ends (also when an assertion fails).
+struct TmpDir(PathBuf);
+
+impl std::ops::Deref for TmpDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Two 64×36 24 fps movies, `a.mp4` (12 frames) then `b.mp4` (6 frames), in turn on V1/A1 of a
 /// sequence then made 128×72 at 30 fps with Motion scaled, so each clip shows at 200 %. Returns the
 /// session, the folder of the movies, and the video and audio clips in timeline order.
-fn two_clips(name: &str) -> (Session, PathBuf, Vec<ClipId>, Vec<ClipId>) {
-    let dir = tmp_dir(name);
+fn two_clips(name: &str) -> (Session, TmpDir, Vec<ClipId>, Vec<ClipId>) {
+    let dir = TmpDir(tmp_dir(name));
     let (a, b) = (dir.join("a.mp4"), dir.join("b.mp4"));
     make_movie(&a, DemoScene::Dunes, 64, 36, 12);
     make_movie(&b, DemoScene::Forest, 64, 36, 6);
@@ -156,4 +172,80 @@ fn a_clip_ending_past_the_time_range_is_refused() {
     assert!(r.is_ok_and(|r| r.is_err()));
     // clips that are not in the sequence give an error too
     assert!(crate::export_tools::clip_snapshot(&s.project, seq, &[ClipId(u64::MAX)]).is_err());
+}
+
+#[test]
+fn a_clip_named_by_id_brings_its_linked_partner_and_the_suggestion_matches() {
+    let (mut s, dir, v, a) = two_clips("clip-export-linked");
+    s.state.selection.clear();
+    // link a.mp4's picture and sound (the fixture places them unlinked)
+    let seq = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    for c in [v[0], a[0]] {
+        p.sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1.link = Some(7);
+    }
+    s.project = std::sync::Arc::new(p);
+    // the audio clip alone is named, but its linked video comes along: an MP4, not a WAV
+    let p = json!({"clip": a[0].0});
+    let (format, name) = crate::export_tools::clip_export_suggestion(&s, &p).unwrap();
+    assert_eq!((format.extension(), name.as_str()), ("mp4", "a.mp4"));
+    let r = s.execute("clip.export", json!({"clip": a[0].0, "path": folder(&dir.join("out")), "wait": true})).unwrap();
+    assert_eq!(r["clips"], json!([a[0].0, v[0].0]), "{r}");
+    assert!(r["path"].as_str().unwrap().ends_with("a.mp4"), "{r}");
+    // a chosen format is what the dialog suggests
+    let (format, name) = crate::export_tools::clip_export_suggestion(&s, &json!({"clip": a[0].0, "format": "flac"})).unwrap();
+    assert_eq!((format.extension(), name.as_str()), ("flac", "a.flac"));
+}
+
+#[test]
+fn sound_alone_stays_wav_when_other_settings_are_given() {
+    let (mut s, dir, _, a) = two_clips("clip-export-sound-settings");
+    s.state.selection = vec![a[0]];
+    let out = folder(&dir.join("out"));
+    for p in [json!({"settings": {"quality": 80}, "path": out, "wait": true}), json!({"preset": null, "format": null, "path": out, "wait": true})] {
+        let r = s.execute("clip.export", p.clone()).unwrap();
+        assert!(r["path"].as_str().unwrap().ends_with(".wav"), "{p} → {r}");
+    }
+}
+
+#[test]
+fn unused_path_never_hands_back_a_taken_name() {
+    let dir = TmpDir(tmp_dir("clip-export-unused"));
+    let path = dir.join("a.mp4").to_string_lossy().to_string();
+    std::fs::write(&path, b"x").unwrap();
+    for n in 2..=999 {
+        std::fs::write(dir.join(format!("a_{n}.mp4")), b"x").unwrap();
+    }
+    assert!(crate::export_tools::unused_path(&path).is_err(), "every name is taken");
+    std::fs::remove_file(dir.join("a_500.mp4")).unwrap();
+    assert!(crate::export_tools::unused_path(&path).unwrap().ends_with("a_500.mp4"));
+    // a broken symbolic link is taken too: writing through it would create its target
+    #[cfg(unix)]
+    {
+        let link = dir.join("b.mp4");
+        std::os::unix::fs::symlink(dir.join("missing.mp4"), &link).unwrap();
+        assert!(crate::export_tools::unused_path(&link.to_string_lossy()).unwrap().ends_with("b_2.mp4"));
+    }
+}
+
+#[test]
+fn a_nested_clip_never_overwrites_the_media_inside_it() {
+    let (mut s, dir, v, a) = two_clips("clip-export-nested");
+    let source = dir.join("a.mp4");
+    let original = std::fs::read(&source).unwrap();
+    s.state.selection = vec![v[0], a[0]];
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    let e = s.execute("clip.export", json!({"clip": nest.0, "path": source.to_string_lossy(), "wait": true})).unwrap_err();
+    assert!(e.to_string().contains("own media"), "{e}");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn an_image_sequence_may_not_number_over_the_source() {
+    assert!(crate::export_tools::sequence_may_write("/m/shot.png", "/m/shot000.png"));
+    assert!(crate::export_tools::sequence_may_write("/m/shot.PNG", "/m/shot0042.png"));
+    assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/other/shot000.png"));
+    assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/m/take000.png"));
+    assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/m/shot.mp4"));
 }

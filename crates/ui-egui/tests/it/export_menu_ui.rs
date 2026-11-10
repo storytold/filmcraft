@@ -239,4 +239,12 @@ fn export_clip_from_the_timeline_clip_menu_asks_where_and_exports() {
     assert_eq!(d.ok("ui.menu.invoke", json!({"id": "clip.export"})), Value::Null);
     assert_eq!(asked.lock().unwrap().len(), 1);
     assert!(d.harness.state().session.jobs.iter().all(|j| !j.label.starts_with("Export Clip ")));
+
+    // sound alone (Alt-click: without its linked picture) is suggested as a WAV
+    let sound = d.harness.state().session.active_sequence().unwrap().audio_tracks[0].items[0].id.0;
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [sound], "linked": false}}));
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "clip.export"})), Value::Null);
+    let (_, exts, suggested) = asked.lock().unwrap().last().cloned().expect("asked where to save the sound");
+    assert_eq!(exts, ["wav"]);
+    assert!(suggested.ends_with(".wav"), "{suggested}");
 }

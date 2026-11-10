@@ -84,31 +84,21 @@ impl FilmcraftApp {
     }
 
     /// The Timeline's clip menu ▸ Export Clip…: ask where to save the selected clips, suggesting
-    /// the clip's name (an MP4 in its source's quality, or a WAV when only sound is selected), then
-    /// export them in the background. Without a save dialog (the web app) the file goes to the
-    /// default export folder.
+    /// what `clip.export` would write by default (the clip's name, an MP4 in its source's quality
+    /// or a WAV when only sound is selected, or the chosen preset's or format's file), then export
+    /// them in the background. Without a save dialog (the web app) the file goes to the default
+    /// export folder.
     fn export_clip_dialog(&mut self, params: &Value) -> Result<Value, String> {
         filmcraft_engine::find_command("clip.export").map_or(Ok(()), |c| (c.enabled)(&self.session))?;
-        let seq = self.session.active_sequence().ok_or("no sequence is open")?;
-        // the clips named in `clip` / `clips` (an agent's call), else the selection
-        let named: Vec<filmcraft_project::ClipId> = match (params.get("clip"), params.get("clips")) {
-            (Some(c), _) => c.as_u64().map(filmcraft_project::ClipId).into_iter().collect(),
-            (None, Some(Value::Array(a))) => a.iter().filter_map(Value::as_u64).map(filmcraft_project::ClipId).collect(),
-            _ => self.session.state.selection.clone(),
-        };
-        let picked: Vec<(bool, String)> =
-            named.iter().filter_map(|c| seq.find_item(*c)).map(|(track, it)| (seq.video_tracks.iter().any(|t| t.id == track), it.name.clone())).collect();
-        if picked.is_empty() {
+        // the engine resolves the clips (and their linked partners), the format and the name, so
+        // the suggestion is the file the export writes; bad parameters are refused before asking
+        if self.session.state.selection.is_empty() && params.get("clip").is_none() && params.get("clips").is_none() {
             return Err(tl!("Select a clip to export").into());
         }
-        let video = picked.iter().any(|(v, _)| *v);
-        let name = picked.iter().find(|(v, _)| *v == video).map(|(_, n)| n.clone()).unwrap_or_default();
-        let (filter, ext) = if video { ("MPEG-4 video", "mp4") } else { ("WAV audio", "wav") };
-        let stem = std::path::Path::new(&name).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let stem: String = stem.chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
-        let stem = if stem.trim().is_empty() { "Clip".to_string() } else { stem };
+        let (format, name) = filmcraft_engine::export_tools::clip_export_suggestion(&self.session, params).map_err(|e| e.to_string())?;
+        let ext = format.extension();
         let mut p = params.as_object().cloned().unwrap_or_default();
-        let dialog = FileDialog::save_as(filter, &[ext], &format!("{stem}.{ext}"));
+        let dialog = FileDialog::save_as(format.label(), &[ext], &name);
         if !dialog.available(&self.hooks) {
             return export_clip_now(self, Value::Object(p));
         }
