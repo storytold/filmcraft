@@ -1,6 +1,8 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-08 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -37,7 +39,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G1. Nothing compares our output with Premiere's
 
-- **Missing:** a fidelity harness. Every effect, transition, Lumetri control, blend mode, keyframe
+- **Missing:** a fidelity harness. Every effect, transition, Color Grading control, blend mode, keyframe
   interpolation and audio effect counts once it exists; nothing renders the same project in
   Premiere and FilmCraft and compares frames or samples. Effects described as approximations
   count the same as exact ones.
@@ -60,7 +62,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Approach:** `.prproj` is gzip-compressed XML. Clean-room from projects we author ourselves in
   Premiere (the owner has `plan/premiere/fixtures/filmcraft_ref.prproj`): sequences, tracks, clips,
   in/out, speed, transitions, markers, bins, labels, then the common effect parameters (Motion,
-  Opacity, Lumetri basic, Volume). Report what was not imported. Export later. **60–120 h.**
+  Opacity, Color Grading basic, Volume). Report what was not imported. Export later. **60–120 h.**
   Doc: [file-format-parity.md](file-format-parity.md).
 
 ## G3. 10-bit and 4:2:2 camera media needs hardware
@@ -82,10 +84,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
-  (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
-  the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
-  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
-  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  (Windows) or the integrated GPU (Linux, #2553), then a software adapter (WARP, lavapipe,
+  llvmpipe) with CPU compositing, and keeps the mode that works; a start-up error wgpu reports
+  moves on in the same process, and a wgpu panic before the app exists saves the next mode and
+  starts FilmCraft again in it, once. A fallback mode shows a notice with Use Default Graphics;
+  `--graphics default|dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND`
+  stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
   instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.
@@ -105,13 +109,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
+  (Windows); GPU compositing, blend modes, 34 effect ids incl. Color Grading basic / creative / vignette,
   GPU export rendering (#421).
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
   VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode; ~48 of Premiere's
-  ~82 accelerated effects (keys, masks, Lumetri curves / wheels / HSL, distortions, transitions);
+  ~82 accelerated effects (keys, masks, Color Grading curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
   a CPU fallback adapter renders everything on the CPU (#632).
 - **Estimate:** 120–200 h (hardware we don't own needs a human). Doc:
@@ -233,6 +237,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G13. Delivery formats
 
 - **Missing:** AV1 export (software or hardware), MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 MXF,
+  AS-10 / AS-11, XDCAM HD MXF, P2, compressed (ZIP / PIZ / DWA) OpenEXR, interlaced encoding,
+  smart render, HEVC software encoder (HEVC exists only where a hardware encoder does); MP3
+  beyond CBR long blocks (block switching, VBR, Xing / LAME gapless tag, ID3 metadata).
+- **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
+  sequences (half float, linear, uncompressed; #806); AAC Audio (audio-only `.m4a`, or ADTS
+  `.aac`; #814); MP3 (`.mp3`, our own Layer III encoder, CBR 32-320 kbit/s, 16-48 kHz, mono /
+  joint stereo; #977); ProRes 4444 / 4444 XQ in the export UI (#342).
   AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, MP3 audio,
   interlaced encoding, smart render, HEVC software encoder (HEVC exists only where a hardware
   encoder does).
@@ -315,7 +326,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G18. Effects depth: approximations and missing behaviour
 
 - **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
-  (and occlusion edges are soft), Lumetri HDR-aware maths,
+  (and occlusion edges are soft), Color Grading HDR-aware maths,
   redesigned 26.0 mask tools (a stored, re-editable
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
 - **Have:** multicam sources with more than 16 angles are paged 4 × 4 in the Multi-Camera view;

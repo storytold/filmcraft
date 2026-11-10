@@ -1,5 +1,5 @@
-//! Lumetri Presets (Effects panel ▸ Lumetri Presets): built-in Lumetri Color looks, and their
-//! thumbnails rendered by our own Lumetri on a generated preview picture.
+//! Color Grading Presets (Effects panel ▸ Color Grading Presets): built-in Color Grading looks, and their
+//! thumbnails rendered by our own Color Grading on a generated preview picture.
 //!
 //! The presets are original work: parameter values chosen by FilmCraft contributors, named
 //! descriptively (no third-party look names, LUTs or preview images). The preview picture
@@ -15,10 +15,10 @@ use filmcraft_time::Tick;
 use crate::Image;
 use crate::effects::{FxCtx, apply};
 
-/// One preset: a Lumetri Color instance with these parameters (the rest at their defaults).
+/// One preset: a Color Grading instance with these parameters (the rest at their defaults).
 #[derive(Clone, Debug)]
 pub struct LumetriPreset {
-    /// Sub-folder of Lumetri Presets.
+    /// Sub-folder of Color Grading Presets.
     pub folder: &'static str,
     pub name: &'static str,
     pub description: &'static str,
@@ -26,7 +26,7 @@ pub struct LumetriPreset {
 }
 
 impl LumetriPreset {
-    /// A Lumetri Color effect instance configured as the preset.
+    /// A Color Grading effect instance configured as the preset.
     pub fn instance(&self) -> EffectInstance {
         let mut e = match find_effect("lumetri") {
             Some(def) => def.instance(),
@@ -236,7 +236,7 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
 }
 
 /// A grid of thumbnails (`cols` columns of `w`×`h` cells, 4 px gaps over a dark background), in
-/// the order given: the Effects panel's thumbnail view of a Lumetri Presets folder.
+/// the order given: the Effects panel's thumbnail view of a Color Grading Presets folder.
 pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> Image {
     const GAP: usize = 4;
     let cols = cols.max(1);
