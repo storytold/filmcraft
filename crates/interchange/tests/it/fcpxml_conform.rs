@@ -120,3 +120,23 @@ fn a_conform_on_the_clip_overrides_the_inner_video() {
     let s = imp.project.sequence(only_seq(&imp)).unwrap();
     assert!(s.tracks(TrackKind::Video)[0].items[0].scale_to_frame);
 }
+
+#[test]
+fn an_inner_fill_is_reported_and_fitted_unless_the_clip_overrides_it() {
+    let wrap = |outer: &str| {
+        let d = doc("").replace(
+            r#"<asset-clip ref="a1" name="UHD" offset="0s" duration="2s"><adjust-transform scale="1.5 1.5"/></asset-clip>"#,
+            &format!(
+                r#"<clip name="UHD" offset="0s" duration="2s">{outer}<video ref="a1" offset="0s" duration="2s"><adjust-conform type="fill"/></video></clip>"#
+            ),
+        );
+        assert!(d.contains("<clip "), "fixture replace did not apply");
+        let (imp, rep) = import(d.as_bytes(), Format::Fcpxml, None).unwrap();
+        let s = imp.project.sequence(only_seq(&imp)).unwrap();
+        (s.tracks(TrackKind::Video)[0].items[0].scale_to_frame, rep)
+    };
+    let (fit, rep) = wrap("");
+    assert!(fit && warned(&rep), "{rep}");
+    let (fit, rep) = wrap(r#"<adjust-conform type="none"/>"#);
+    assert!(!fit && !warned(&rep), "{rep}");
+}

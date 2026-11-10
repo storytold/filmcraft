@@ -567,7 +567,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             && let Some(inner) = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "asset-clip") && c.attribute("ref").is_some())
             && let Some(a) = elements(inner).find(|a| a.has_tag_name("adjust-conform"))
         {
-            conform = a.attribute("type").unwrap_or("fit") != "none";
+            let ty = a.attribute("type").unwrap_or("fit");
+            conform = ty != "none";
+            // the clip's own adjust-conform overrides this and reports for itself
+            if ty == "fill" && !elements(el).any(|c| c.has_tag_name("adjust-conform")) {
+                self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+            }
         }
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
