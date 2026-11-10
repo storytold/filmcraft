@@ -50,6 +50,7 @@ fn rewrap(path: &std::path::Path, codec: &str) -> Vec<u8> {
     mux.finish().unwrap().into_inner()
 }
 
+/// Check channel layout against FFmpeg and compare a fresh seek with continuous decoding.
 #[test]
 fn ac3_and_eac3_mp4_report_and_decode_all_six_channels() {
     let ff = filmcraft_testkit::require_ffmpeg!();
@@ -63,6 +64,11 @@ fn ac3_and_eac3_mp4_report_and_decode_all_six_channels() {
         let want = ffmpeg_audio_f32(&ff, &path, &[]);
         let ours = source.audio(0, want.len() / 6, RATE).unwrap().channels;
         assert_eq!(ours.len(), 6, "{codec} decoded channels");
+        // Seek on a fresh decoder so the full read above cannot mask a wrong packet window.
+        let seek = filmcraft_codecs::open_bytes("seek.mp4", data).unwrap().audio(16_000, 128, RATE).unwrap();
+        for (channel, reference) in seek.channels.iter().zip(&ours) {
+            assert_eq!(channel, &reference[16_000..16_128], "{codec} seek");
+        }
         // Skip decoder warm-up, then require a strong oracle match in every channel (including
         // centre/dialogue, LFE and both surrounds).
         for (c, channel) in ours.iter().enumerate() {

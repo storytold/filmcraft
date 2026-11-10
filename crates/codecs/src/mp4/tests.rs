@@ -576,7 +576,9 @@ fn common_fragment_shift_preserves_sync_gaps_and_the_final_picture() {
     let video = [120, 360, 1200, 1440];
     let audio = [0, 2048, 8896, 10944];
     let control = fragment_clip(Some(video), audio);
-    let shifted = fragment_clip(Some(video.map(|t| t + 500 * 6000)), audio.map(|t| t + 500 * 48000));
+    // A source clock can exceed the project Tick range even for a subsecond clip.
+    let origin = 50_000_000u64;
+    let shifted = fragment_clip(Some(video.map(|t| t + origin * 6000)), audio.map(|t| t + origin * 48000));
     let picture = |src: &Mp4Source, ms| src.video_frame(FrameRequest::full(Tick::from_units(ms, 1000))).unwrap().luma8();
     assert_eq!(shifted.info().duration, Tick::from_units(280, 1000));
     for ms in [20, 60, 150, 200, 279] {
