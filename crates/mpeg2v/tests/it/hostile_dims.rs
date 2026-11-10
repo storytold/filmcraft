@@ -115,6 +115,18 @@ fn an_access_unit_of_many_pictures_stops_early() {
 }
 
 #[test]
+fn a_dimension_change_does_not_hide_an_overflow() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..20 {
+        data.extend(picture());
+    }
+    data.extend(sequence(128, 64, 1));
+    data.extend(picture());
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err(), "the reset for the new dimensions must not clear the overflow");
+}
+
+#[test]
 fn a_refused_access_unit_leaves_no_stale_references() {
     let mut data = sequence(64, 64, 1);
     for _ in 0..200 {
