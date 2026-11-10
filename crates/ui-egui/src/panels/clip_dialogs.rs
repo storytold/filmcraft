@@ -611,32 +611,33 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
                 let rate = filmcraft_time::FrameRate::from_f64(if fps.is_finite() && fps > 0.0 { fps } else { 24.0 });
                 let now = p["speed"].as_f64().unwrap_or(100.0) / 100.0;
-                
+
                 // Check if duration field has focus to preserve editing buffer
                 let duration_id = egui::Id::unique(format!("{pre}.duration"));
                 let has_focus = ui.memory(|mem| mem.focused().map_or(false, |id| id == duration_id));
-                
+
                 // Refresh duration only when speed changes and field doesn't have focus
                 let refresh_duration = !has_focus && (p["duration"].is_null() || d.info["durationSpeed"] != p["speed"]);
                 if refresh_duration {
-                    let ticks =
-                        if now.is_finite() && now > 0.0 { filmcraft_time::Tick((dur_ticks as f64 * was / now).round() as i64) } else { filmcraft_time::Tick::ZERO };
+                    let ticks = if now.is_finite() && now > 0.0 {
+                        filmcraft_time::Tick((dur_ticks as f64 * was / now).round() as i64)
+                    } else {
+                        filmcraft_time::Tick::ZERO
+                    };
                     // Match the speed command's minimum applied duration of one frame.
                     let frames = rate.frame_at(ticks).max(1);
                     p["duration"] = json!(filmcraft_time::format_timecode_frames(frames, rate, false));
                 }
-                
+
                 // Use a persistent buffer for the duration field to avoid losing cursor position
                 let buffer_id = egui::Id::unique(format!("{pre}.duration_buffer"));
-                let mut duration_text = ui.data(|d| d.get_temp::<String>(buffer_id)).unwrap_or_else(|| {
-                    p["duration"].as_str().unwrap_or_default().to_string()
-                });
-                
+                let mut duration_text = ui.data(|d| d.get_temp::<String>(buffer_id)).unwrap_or_else(|| p["duration"].as_str().unwrap_or_default().to_string());
+
                 ui.horizontal(|ui| {
                     ui.label(tl!("Duration:"));
                     let r = ui.add(egui::TextEdit::singleline(&mut duration_text).desired_width(120.0).id(duration_id));
                     push(&mut elems, format!("{pre}.duration"), &r, tl!("Duration:"));
-                    
+
                     if r.changed() {
                         // Store in buffer while editing
                         ui.data_mut(|d| d.insert_temp(buffer_id, duration_text.clone()));
@@ -646,13 +647,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         ui.data_mut(|d| d.remove::<String>(buffer_id));
                     }
                 });
-                
+
                 // Parse duration and update speed if valid
                 let duration_str = p["duration"].as_str().unwrap_or_default();
                 let frames = filmcraft_time::parse_timecode(duration_str, rate, false, 0);
                 let mut invalid_input = false;
                 let mut error_message = String::new();
-                
+
                 let speed = match frames {
                     Ok(f) if f > 0 => {
                         let new_ticks = rate.tick_of(f);
@@ -683,29 +684,25 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         None
                     }
                 };
-                
+
                 // Update speed if user edited duration and it's valid
                 if let Some(speed_val) = speed {
-                    let before = if refresh_duration { 
-                        p["duration"].clone() 
-                    } else { 
-                        d.info["durationText"].clone() 
-                    };
+                    let before = if refresh_duration { p["duration"].clone() } else { d.info["durationText"].clone() };
                     if before != p["duration"] {
                         p["speed"] = json!(speed_val);
                     }
                 }
-                
+
                 valid = speed.is_some();
                 d.info["durationSpeed"] = p["speed"].clone();
                 d.info["durationText"] = p["duration"].clone();
-                
+
                 if invalid_input {
                     ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), error_message);
                 } else if !valid {
                     ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), tl!("Enter a positive duration within the supported speed range."));
                 }
-                
+
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
                 ui.label(RichText::new(tl!("Time Interpolation")).strong());
