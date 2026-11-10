@@ -145,6 +145,9 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
             }
         }
     }
+    // the data units are converted: free them before turning the picture, which copies it, so the
+    // peak is the two RGBA buffers the other stills need too
+    drop(units);
     // TIFF 6.0 Orientation, as the image crate applies it to the other TIFFs: turn the picture
     // upright. A missing, unreadable or out-of-range value leaves it as stored, and so does an
     // entry that is not the one SHORT the tag is (its declared values are never read).
