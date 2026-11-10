@@ -185,6 +185,18 @@ impl Session {
             }
         }
 
+        // CBR with the HRD model enforced, as AMD's rate-control developers recommend (#880). A
+        // runtime without the property keeps the encoder rather than failing the export.
+        if cfg.cbr {
+            let hrd = match codec {
+                Codec::H264 => windows::core::w!("EnforceHRD"),
+                Codec::Hevc => windows::core::w!("HevcEnforceHRD"),
+                Codec::Av1 => windows::core::w!("Av1EnforceHRD"),
+            };
+            // SAFETY: setting property on live AMFComponent before Init.
+            let _ = unsafe { ((*(*component).vtbl).set_property)(component, hrd.as_ptr(), AmfVariant::bool_val(true)) };
+        }
+
         if prop_res != AMF_OK {
             // SAFETY: terminating and releasing component and context on property configuration failure.
             unsafe {
