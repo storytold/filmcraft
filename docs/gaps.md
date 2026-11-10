@@ -204,7 +204,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   EXIF Orientation on uncompressed / PackBits YCbCr TIFF stills and on the export image
   overlay (`load_overlay` in `crates/export/src/pipeline.rs`); JPEG, PNG, WebP and other TIFF stills
   apply it since #1583, except a WebP or PNG whose EXIF chunk starts with an `Exif\0\0` prefix
-  (decoded unturned). Projects saved before #1583 keep the stored size of a portrait still: one
+  (decoded unturned). Projects saved before #1583 (for a DNG, before #4611) keep the stored size of a portrait still: one
   already placed in a sequence shows upright but scaled up by the photo's aspect ratio (4/3 for a
   4:3 shot) and off-centre (turned twice if it was rotated by hand); reset the clip's Motion or
   place it again.
