@@ -24,14 +24,31 @@ Options:
                      `--graphics default` undoes an automatic fallback
   --version          print the version and exit
   -h, --help         print this help and exit
+
+Internal updater helper (started by FilmCraft only):
+  --update-apply --pid <pid> --staged <dir> --target <path> [-- <launch arguments...>]
 ";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
 pub enum Cli {
     Run(Launch),
+    /// The short-lived process that replaces an already staged update after its parent exits.
+    UpdateApply(UpdateApply),
     Help,
     Version,
+}
+
+/// Arguments required by `--update-apply`. All paths stay as `OsString`-backed `PathBuf`s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateApply {
+    pub pid: u32,
+    pub staged: PathBuf,
+    pub target: PathBuf,
+    /// The command line the editor itself was started with, verbatim (everything after `--`). The
+    /// restart hands it back to the new build, so `--data-dir`, `--empty`, `--control`, project and
+    /// media paths survive the update. It is never interpreted here.
+    pub launch_args: Vec<OsString>,
 }
 
 /// Options of a normal start.
@@ -62,6 +79,10 @@ pub struct Launch {
 /// in Latin-1), and `std::env::args` panics on one. A file name that is not is passed on lossily
 /// (its import then reports it missing); `--data-dir` keeps the folder exactly.
 pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if update_apply_requested(&args) {
+        return parse_update_apply(args);
+    }
     let mut l = Launch {
         control_port: None,
         control_input_only: false,
@@ -117,6 +138,83 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = Os
         return Err("--control-input-only requires --control or FILMCRAFT_CONTROL_PORT".into());
     }
     Ok(Cli::Run(l))
+}
+
+/// `--` protects a media file named `--update-apply`, just as it protects every other option.
+fn update_apply_requested(args: &[OsString]) -> bool {
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            return false;
+        }
+        if arg == "--update-apply" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse the updater's intentionally narrow helper protocol. It refuses extra arguments so a
+/// malformed command can never accidentally fall through to normal GUI startup. The one open part
+/// is the optional `-- <launch arguments...>` tail, which is carried through untouched.
+fn parse_update_apply(args: Vec<OsString>) -> Result<Cli, String> {
+    let mut update_apply = false;
+    let mut pid = None;
+    let mut staged = None;
+    let mut target = None;
+    let mut launch_args = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.to_string_lossy().as_ref() {
+            // Everything after `--` is the editor's own command line, kept exactly as given (it may
+            // hold `--update-apply` or a non-Unicode file name) and handed to the restarted build.
+            "--" => launch_args = args.by_ref().collect(),
+            "--update-apply" if !update_apply => update_apply = true,
+            "--update-apply" => return Err("--update-apply was passed more than once".into()),
+            "--pid" => {
+                if pid.is_some() {
+                    return Err("--pid was passed more than once".into());
+                }
+                let value = args.next().ok_or("--pid needs a process id")?;
+                let value = value.to_string_lossy();
+                let parsed: u32 = value.parse().map_err(|_| format!("--pid needs a positive process id, got `{value}`"))?;
+                if parsed == 0 {
+                    return Err("--pid needs a positive process id".into());
+                }
+                pid = Some(parsed);
+            }
+            "--staged" => {
+                if staged.is_some() {
+                    return Err("--staged was passed more than once".into());
+                }
+                let value = args.next().ok_or("--staged needs a folder")?;
+                if value.is_empty() {
+                    return Err("--staged needs a folder".into());
+                }
+                staged = Some(PathBuf::from(value));
+            }
+            "--target" => {
+                if target.is_some() {
+                    return Err("--target was passed more than once".into());
+                }
+                let value = args.next().ok_or("--target needs an executable path")?;
+                if value.is_empty() {
+                    return Err("--target needs an executable path".into());
+                }
+                target = Some(PathBuf::from(value));
+            }
+            other => return Err(format!("unknown updater helper option `{other}`")),
+        }
+    }
+    if !update_apply {
+        return Err("missing --update-apply".into());
+    }
+    Ok(Cli::UpdateApply(UpdateApply {
+        pid: pid.ok_or("--update-apply needs --pid")?,
+        staged: staged.ok_or("--update-apply needs --staged")?,
+        target: target.ok_or("--update-apply needs --target")?,
+        launch_args,
+    }))
 }
 
 /// Whether a launch file is a FilmCraft project. The extension's case does not matter: Windows file
@@ -183,6 +281,83 @@ mod tests {
         for flag in ["--control", "--demo", "--empty", "--recover", "--no-recover", "--data-dir", "--version", "--help"] {
             assert!(USAGE.contains(flag), "usage lists {flag}");
         }
+    }
+
+    #[test]
+    fn update_apply_requires_the_complete_helper_protocol() {
+        let parsed = parse_args(&["--update-apply", "--pid", "42", "--staged", "/tmp/staged", "--target", "/opt/filmcraft/bin/filmcraft"]);
+        assert_eq!(
+            parsed,
+            Ok(Cli::UpdateApply(UpdateApply {
+                pid: 42,
+                staged: PathBuf::from("/tmp/staged"),
+                target: PathBuf::from("/opt/filmcraft/bin/filmcraft"),
+                launch_args: Vec::new(),
+            }))
+        );
+        for args in [
+            vec!["--update-apply"],
+            vec!["--update-apply", "--pid", "0", "--staged", "/tmp/a", "--target", "/tmp/b"],
+            vec!["--update-apply", "--pid", "1", "--staged", "/tmp/a", "--target", "/tmp/b", "clip.mov"],
+        ] {
+            assert!(parse_args(&args).is_err(), "{args:?}");
+        }
+    }
+
+    fn helper_line(launch: &[&str]) -> Vec<String> {
+        let mut line: Vec<String> =
+            ["--update-apply", "--pid", "42", "--staged", "/tmp/staged", "--target", "/opt/filmcraft/bin/filmcraft", "--"].map(String::from).to_vec();
+        line.extend(launch.iter().map(|a| a.to_string()));
+        line
+    }
+
+    fn helper(line: &[String]) -> UpdateApply {
+        let line: Vec<&str> = line.iter().map(String::as_str).collect();
+        match parse_args(&line) {
+            Ok(Cli::UpdateApply(apply)) => apply,
+            other => panic!("{line:?} should be the updater helper, got {other:?}"),
+        }
+    }
+
+    /// The restart after an update must reopen the editor the way it was started: a custom
+    /// `--data-dir` (its recovery journal was just flushed there), `--empty`, project and media paths.
+    #[test]
+    fn update_apply_hands_the_launch_arguments_to_the_restart() {
+        let launch = ["--data-dir", "/custom/path", "--empty", "--control", "7777", "cut.fcproj", "clip.mov"];
+        let apply = helper(&helper_line(&launch));
+        assert_eq!(apply.launch_args, launch.iter().map(OsString::from).collect::<Vec<_>>());
+
+        // The restarted editor parses them again and gets the same launch.
+        let Ok(Cli::Run(l)) = parse(None, apply.launch_args) else { panic!("the launch arguments should start the app") };
+        assert_eq!(l.data_dir, Some(PathBuf::from("/custom/path")));
+        assert_eq!((l.demo, l.startup_flag), (false, true), "--empty");
+        assert_eq!(l.control_port, Some(7777));
+        assert_eq!(l.files, vec!["cut.fcproj".to_string(), "clip.mov".to_string()]);
+    }
+
+    /// Nothing after `--` is read as a helper option: a media file may even be called `--update-apply`.
+    #[test]
+    fn update_apply_launch_arguments_are_not_interpreted() {
+        let launch = ["--", "--update-apply", "--pid", "1", "--bogus"];
+        let apply = helper(&helper_line(&launch));
+        assert_eq!(apply.pid, 42);
+        assert_eq!(apply.launch_args, launch.iter().map(OsString::from).collect::<Vec<_>>());
+        // and without a tail the helper still restarts with no arguments
+        assert!(helper(&helper_line(&[])).launch_args.is_empty());
+    }
+
+    /// A Linux file name need not be Unicode; the restart must pass it on byte for byte.
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_keeps_a_non_unicode_launch_argument_exactly() {
+        use std::os::unix::ffi::OsStringExt;
+        let latin1 = OsString::from_vec(b"caf\xe9.mov".to_vec());
+        let mut line: Vec<OsString> = ["--update-apply", "--pid", "42", "--staged", "/s", "--target", "/t", "--", "--data-dir"].map(OsString::from).to_vec();
+        line.push(OsString::from_vec(b"/data/\xe9t\xe9".to_vec()));
+        line.push(latin1.clone());
+        let Ok(Cli::UpdateApply(apply)) = parse(None, line) else { panic!("should be the updater helper") };
+        assert_eq!(apply.launch_args[2], latin1);
+        assert_eq!(apply.launch_args[1], OsString::from_vec(b"/data/\xe9t\xe9".to_vec()));
     }
 
     #[test]
