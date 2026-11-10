@@ -261,7 +261,11 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
     // `animate_view` every frame (with the measured Timeline width -- this early in a session
     // the width is still a placeholder, and clamping against it would shrink a valid request)
     if let Some(v) = tl.get("pps").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0) {
-        app.ui.timeline.target_pps = v;
+        let width = app.last_timeline_width.max(1.0);
+        let sequence_seconds = app.session.active_sequence().map_or(0.0, |seq| seq.duration().seconds());
+        let ceiling = crate::panels::timeline::max_pps(width, app.session.state.timeline_ui.max_zoom_secs());
+        let floor = crate::panels::timeline::min_pps(sequence_seconds, width).min(ceiling);
+        app.ui.timeline.target_pps = v.clamp(floor, ceiling);
     }
     if let Some(v) = tl.get("scroll").and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0) {
         app.ui.timeline.target_scroll = v;
@@ -302,6 +306,9 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
     if let Some(v) = tl.get("maxZoomLevel").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.05..=3.0).contains(v)) {
         view_settings_changed |= app.session.state.timeline_ui.max_zoom_seconds != v;
         app.session.state.timeline_ui.max_zoom_seconds = v;
+        let cap = crate::panels::timeline::max_pps(app.last_timeline_width.max(1.0), v);
+        app.ui.timeline.target_pps = app.ui.timeline.target_pps.min(cap);
+        app.ui.timeline.pps = app.ui.timeline.pps.min(cap);
         // the zoom established under the old ceiling is clamped to the new one by animate_view
         let custom = ![0.1, 0.2, 0.4, 0.8].contains(&v);
         if custom {

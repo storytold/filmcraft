@@ -216,7 +216,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
-    if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
+    if s.has_unsaved_changes() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
     s.project = std::sync::Arc::new(Project::new("Untitled"));

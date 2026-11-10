@@ -464,6 +464,10 @@ pub struct Session {
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
     /// unsaved content.
     pub saved_view_epoch: u64,
+    /// Epoch for project-scoped Timeline settings that need automatic save and recovery. It is
+    /// separate from `revision` so changing UI settings does not invalidate content caches.
+    pub settings_epoch: u64,
+    pub saved_settings_epoch: u64,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -589,6 +593,8 @@ impl Session {
             saved_revision: 1,
             view_epoch: 0,
             saved_view_epoch: 0,
+            settings_epoch: 0,
+            saved_settings_epoch: 0,
             path: None,
             state: EditorState {
                 snapping: true,
@@ -703,24 +709,37 @@ impl Session {
         if self.persistence.is_none() {
             return;
         }
-        let dirty = self.is_dirty();
+        let content_dirty = self.is_dirty();
+        let settings_dirty = self.settings_epoch != self.saved_settings_epoch;
+        let dirty = content_dirty || settings_dirty;
         let cur = autosave::Sent {
             revision: self.revision,
             saved_revision: self.saved_revision,
             path: self.path.clone(),
             view_epoch: self.view_epoch,
             saved_view_epoch: self.saved_view_epoch,
+            settings_epoch: self.settings_epoch,
+            saved_settings_epoch: self.saved_settings_epoch,
         };
         if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
-        // the view reaches the journal whenever it is newer than what the project file holds
-        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
-        // once a save catches up -- no matter what order the two arrive in
-        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        // Content and project-scoped settings need recovery. Ordinary zoom, scroll and tab-view
+        // changes stay in the explicit save prompt, not in recovery or auto-save snapshots.
+        let view = dirty.then(|| self.project_view());
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
-            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
+            p.send_dirty(
+                self.project.clone(),
+                view,
+                self.revision,
+                self.view_epoch,
+                self.settings_epoch,
+                dirty,
+                content_dirty,
+                settings_dirty,
+                self.path.clone(),
+            );
         } else {
             p.send_clean();
         }
@@ -738,11 +757,14 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
-                autosave::WorkerEvent::SavedProject { path, revision, view_epoch }
-                    if self.path.as_deref() == Some(path.as_str()) && revision > self.saved_revision && revision <= self.revision =>
+                autosave::WorkerEvent::SavedProject { path, revision, view_epoch, settings_epoch }
+                    if self.path.as_deref() == Some(path.as_str())
+                        && revision <= self.revision
+                        && (revision > self.saved_revision || settings_epoch > self.saved_settings_epoch) =>
                 {
-                    self.saved_revision = revision;
+                    self.saved_revision = self.saved_revision.max(revision);
                     self.saved_view_epoch = self.saved_view_epoch.max(view_epoch);
+                    self.saved_settings_epoch = self.saved_settings_epoch.max(settings_epoch);
                 }
                 autosave::WorkerEvent::Error(m) => {
                     self.log.push(panels::Level::Error, "autosave", m.clone());
@@ -798,7 +820,8 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. The epoch keeps unsaved view state visible to save prompts;
+    /// clean view-only changes are not sent to recovery.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }
@@ -807,9 +830,20 @@ impl Session {
         self.revision != self.saved_revision
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Whether project-scoped Timeline settings differ from the last saved project file.
+    pub fn is_view_dirty(&self) -> bool {
+        self.view_epoch != self.saved_view_epoch
+    }
+
+    /// Whether closing would discard unsaved content or project-scoped view settings.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty() || self.is_view_dirty()
+    }
+
+    /// Mark a project-file Timeline setting as changed without dirtying content revision.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_epoch = self.view_epoch.wrapping_add(1);
+        self.settings_epoch = self.settings_epoch.wrapping_add(1);
         self.sync_persistence();
     }
 

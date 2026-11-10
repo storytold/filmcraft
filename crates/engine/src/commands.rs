@@ -2656,8 +2656,9 @@ fn build() -> Vec<CommandSpec> {
             }
             s.state.selection.clear();
             s.events.push(crate::Event::OpenSequence(id));
-            // the open tabs are part of the saved view
-            s.view_changed();
+            // Open tabs are persistent project view settings: save and recover them without
+            // dirtying the content revision.
+            s.project_view_changed();
             Ok(Value::Null)
         }),
         cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
@@ -2666,7 +2667,7 @@ fn build() -> Vec<CommandSpec> {
             if s.state.active_sequence == Some(id) {
                 s.state.active_sequence = s.state.open_sequences.last().copied();
             }
-            s.view_changed();
+            s.project_view_changed();
             Ok(Value::Null)
         }),
         cmd!("sequence.closeOthers", "Close Other Timeline Panels", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
@@ -2681,7 +2682,7 @@ fn build() -> Vec<CommandSpec> {
                 s.state.selection.clear();
                 s.events.push(crate::Event::OpenSequence(id));
             }
-            s.view_changed();
+            s.project_view_changed();
             Ok(json!({"closed": closed}))
         }),
         cmd!("sequence.moveTab", "Move Sequence Tab", [], None, r#"{"item":id?,"index":int}"#, has_seq, |s, p| {
@@ -2692,9 +2693,9 @@ fn build() -> Vec<CommandSpec> {
             let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
             let tab = s.state.open_sequences.remove(from);
             s.state.open_sequences.insert(to, tab);
-            // the tab order is part of the saved view: it must reach the autosave journal even
-            // on a clean project (view-only change: no cache invalidation, project stays clean)
-            s.view_changed();
+            // Tab order is a persistent project view setting: save and recover it without
+            // invalidating content caches.
+            s.project_view_changed();
             Ok(json!({"index": to}))
         }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
@@ -5346,6 +5347,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.saved_revision = s.revision;
         // the file now holds this view: a later zoom or scroll is new unsaved state again
         s.saved_view_epoch = s.view_epoch;
+        s.saved_settings_epoch = s.settings_epoch;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
@@ -5381,6 +5383,10 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.revision += 1;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
+    s.view_epoch = s.view_epoch.wrapping_add(1);
+    s.saved_view_epoch = if clean { s.view_epoch } else { 0 };
+    s.settings_epoch = s.settings_epoch.wrapping_add(1);
+    s.saved_settings_epoch = if clean { s.settings_epoch } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);

@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{max_pps, max_scroll, min_pps, timeline_extent};
 use serde_json::{Value, json};
 #[test]
 fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
@@ -42,6 +42,23 @@ fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
     assert_eq!(settings.track_slider_shift_drag_speed, 2.5, "out-of-range speed is ignored");
     assert!(settings.track_slider_smooth, "wrongly typed settings are ignored");
     assert_eq!(d.app().session.view_epoch, view_epoch, "ignored settings do not change the project view");
+}
+
+#[test]
+fn control_zoom_and_maximum_zoom_setting_stay_inside_the_zoom_range() {
+    let mut d = Driver::tall();
+    let width = d.rect("timeline.tracks")[2].max(1.0);
+    let duration = d.seconds();
+    d.ok("ui.set", json!({"timeline": {"maxZoomLevel": 0.05, "pps": 1e300}}));
+    let view = &d.app().ui.timeline;
+    let cap = max_pps(width, 0.05);
+    let floor = min_pps(duration, width).min(cap);
+    assert!(view.target_pps.is_finite() && (floor..=cap).contains(&view.target_pps), "{} not in {floor}..={cap}", view.target_pps);
+
+    d.ok("ui.set", json!({"timeline": {"maxZoomLevel": 3.0}}));
+    let view = &d.app().ui.timeline;
+    let cap = max_pps(width, 3.0);
+    assert!(view.target_pps <= cap && view.pps <= cap, "current zoom exceeds the new ceiling {cap}");
 }
 
 struct Driver {
@@ -237,8 +254,6 @@ fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let mut d = Driver::tall();

@@ -224,7 +224,10 @@ impl ProjectView {
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
-    Ok(TimelineUiSettings::deserialize(d).map(|s| s.checked()).unwrap_or_default())
+    // Buffer the whole nested value before typed decoding. A malformed setting can then fall
+    // back to defaults without leaving the enclosing ProjectView map half-consumed.
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<TimelineUiSettings>(value).map(|s| s.checked()).unwrap_or_default())
 }
 
 /// A colour string from a project file or the control channel, normalised to the canonical
@@ -332,5 +335,17 @@ mod tests {
         assert_eq!(s.max_zoom_secs(), 0.4);
         let s = TimelineUiSettings { max_zoom_seconds: f64::NAN, ..TimelineUiSettings::default() };
         assert_eq!(s.max_zoom_secs(), 0.4);
+    }
+
+    #[test]
+    fn malformed_timeline_settings_do_not_consume_sibling_project_view_fields() {
+        let view: ProjectView = serde_json::from_str(
+            r#"{"open_sequences":[1],"active_sequence":1,"playheads":{"1":2400},"timeline_ui":{"smooth_animations":"bad","playhead_side_seconds":30}}"#,
+        )
+        .unwrap();
+        assert_eq!(view.open_sequences, [ItemId(1)]);
+        assert_eq!(view.active_sequence, Some(ItemId(1)));
+        assert_eq!(view.playheads.get(&ItemId(1)), Some(&Tick(2400)));
+        assert_eq!(view.timeline_ui.playhead_side_seconds, TimelineUiSettings::default().playhead_side_seconds);
     }
 }
