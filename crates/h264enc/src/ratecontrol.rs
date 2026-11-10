@@ -11,6 +11,18 @@ pub fn qscale2qp(q: f64) -> f64 {
 
 const QCOMP: f64 = 0.6;
 
+/// How far, in QP, the second pass may plan an I or P frame from the quantiser the first pass coded it with, and how
+/// much finer than that quantiser it may code any frame. Its size model, bits ∝ 1/qscale from the first pass, only
+/// holds near that quantiser. Much finer, a picture the first pass coded almost all as skips (a few kbit of headers)
+/// codes its references' quantisation error instead: on slow moves over a detailed still, ten times its predicted
+/// size and more.
+const PASS1_QP_RANGE: f64 = 6.0;
+
+/// How far, in QP, the second pass's correction may fall from one frame to the next. Near the end of a clip the
+/// leftover budget is shared by a few frames, and a correction that drops at once codes B frames far finer than the
+/// P frame they reference, at many times their predicted size. Rising stays free: coarser frames only get cheaper.
+const CORRECTION_QP_FALL: f64 = 2.0;
+
 fn type_idx(t: SliceType) -> usize {
     match t {
         SliceType::I => 0,
@@ -81,7 +93,7 @@ pub enum RcKind {
     Qp(u8),
     Crf(f32),
     Abr { kbps: u32 },
-    TwoPass { kbps: u32, plan: Vec<f64>, planned_bits: Vec<f64>, planned_total: f64, remaining_bits: Vec<f64> },
+    TwoPass { kbps: u32, plan: Vec<f64>, planned_bits: Vec<f64>, target_total: f64, remaining_bits: Vec<f64>, finest: Vec<f64> },
 }
 
 pub struct RateControl {
@@ -108,6 +120,8 @@ pub struct RateControl {
     inter_n: u64,
     /// Lowest QPY constant quality may reach: 0, or -QpBdOffset above 8 bits.
     pub qp_min: f64,
+    /// The second pass's correction of the plan for the previous frame (0 before the first).
+    last_correction: f64,
 }
 
 impl RateControl {
@@ -133,6 +147,7 @@ impl RateControl {
             inter_s: 0.0,
             inter_n: 0,
             qp_min: 0.0,
+            last_correction: 0.0,
         }
     }
 
@@ -141,8 +156,29 @@ impl RateControl {
         let n = stats.frames.len().max(1);
         let target = kbps as f64 * 1000.0 * n as f64 / stats.fps;
         let c: Vec<f64> = stats.frames.iter().map(|f| (f.bits as f64 * f.qscale).max(1.0)).collect();
+        let range = 2f64.powf(PASS1_QP_RANGE / 6.0);
         let qs = |rf: f64| -> Vec<f64> {
-            stats.frames.iter().zip(&c).map(|(f, &ci)| (rf * ci.powf(1.0 - QCOMP) * type_factor(f.slice_type)).clamp(qp2qscale(0.0), qp2qscale(51.0))).collect()
+            // A B frame takes the quantiser of the I or P frame coded just before it, one of its references, with the
+            // B offset, as constant quality does. Planned from its own first-pass size, often all skips against a finer
+            // reference, it lands finer than that reference once the reference gets coarser, and codes the
+            // reference's quantisation error.
+            let mut anchor = None;
+            stats
+                .frames
+                .iter()
+                .zip(&c)
+                .map(|(f, &ci)| {
+                    let q = match (f.slice_type, anchor) {
+                        (SliceType::B, Some(a)) => a * type_factor(SliceType::B),
+                        // max/min rather than clamp: statistics read from text may hold a NaN or negative qscale
+                        (t, _) => (rf * ci.powf(1.0 - QCOMP) * type_factor(t)).max(f.qscale / range).min(f.qscale * range),
+                    };
+                    if f.slice_type != SliceType::B {
+                        anchor = Some(q / type_factor(f.slice_type));
+                    }
+                    q.clamp(qp2qscale(0.0), qp2qscale(51.0))
+                })
+                .collect()
         };
         let bits_for = |q: &[f64]| -> f64 { stats.frames.iter().zip(q).map(|(f, &qi)| f.bits as f64 * f.qscale / qi).sum() };
         // bisection on log(rf)
@@ -157,14 +193,16 @@ impl RateControl {
         }
         let plan = qs((0.5 * (lo + hi)).exp());
         let planned_bits: Vec<f64> = stats.frames.iter().zip(&plan).map(|(f, &q)| f.bits as f64 * f.qscale / q).collect();
-        let planned_total = planned_bits.iter().sum();
         // `remaining_bits[i]` is the inclusive suffix for frame `i`; retain an
         // empty suffix so callers can index it without a special case.
         let mut remaining_bits = vec![0.0; planned_bits.len() + 1];
         for i in (0..planned_bits.len()).rev() {
             remaining_bits[i] = remaining_bits[i + 1] + planned_bits[i];
         }
-        RcKind::TwoPass { kbps, plan, planned_bits, planned_total, remaining_bits }
+        // the finest qscale each frame may get
+        let finest = stats.frames.iter().map(|f| f.qscale / range).collect();
+        // the range can keep the plan from reaching the target, so the second pass aims at the target itself
+        RcKind::TwoPass { kbps, plan, planned_bits, target_total: target, remaining_bits, finest }
     }
 
     /// Choose the frame QP (fractional) for frame `index` (display order) of `t` with lookahead complexity `cplx`.
@@ -212,20 +250,24 @@ impl RateControl {
                 let q = rf * cplx.powf(1.0 - QCOMP) * type_factor(t);
                 qscale2qp(q)
             }
-            RcKind::TwoPass { kbps, plan, planned_bits, planned_total, remaining_bits } => {
+            RcKind::TwoPass { kbps, plan, planned_bits, target_total, remaining_bits, finest } => {
                 // Closed-loop second pass: `m` measures how far real frame sizes deviate from the first-pass model
                 // (bits ∝ 1/qscale) at the qscales actually used; the remaining plan is rescaled so its predicted
                 // size fits the remaining budget.
                 let i = index_in_coding_order.min(plan.len().saturating_sub(1));
                 let bpf = *kbps as f64 * 1000.0 / self.fps;
-                let target_total = *planned_total;
+                let target_total = *target_total;
                 let smooth = 0.5 * bpf * self.fps.max(1.0);
                 let m = ((self.total_bits + smooth) / (self.model_done + smooth)).clamp(0.3, 3.0);
                 let inflight: f64 = self.inflight.iter().sum();
                 let remaining_plan = remaining_bits[i];
                 let remaining_budget = (target_total - self.total_bits - m * inflight).max(0.05 * remaining_plan.max(1.0));
-                let f = (m * remaining_plan / remaining_budget).clamp(0.25, 4.0);
-                let q = plan[i] * f;
+                let mut f = (m * remaining_plan / remaining_budget).clamp(0.25, 4.0);
+                if self.last_correction > 0.0 {
+                    f = f.max(self.last_correction / 2f64.powf(CORRECTION_QP_FALL / 6.0));
+                }
+                self.last_correction = f;
+                let q = (plan[i] * f).max(finest.get(i).copied().unwrap_or(0.0));
                 self.inflight.push_back(planned_bits[i] * plan[i] / q);
                 qscale2qp(q)
             }
@@ -301,15 +343,70 @@ mod tests {
             ],
         };
 
-        let RcKind::TwoPass { planned_bits, planned_total, remaining_bits, .. } = RateControl::plan_two_pass(&stats, 1_000) else {
+        let RcKind::TwoPass { planned_bits, target_total, remaining_bits, .. } = RateControl::plan_two_pass(&stats, 1_000) else {
             panic!("two-pass planning must return a two-pass rate-control plan");
         };
 
         assert_eq!(remaining_bits.len(), planned_bits.len() + 1);
-        assert!((planned_total - planned_bits.iter().sum::<f64>()).abs() < f64::EPSILON);
+        // 1000 kbit/s over three frames at 24 fps
+        assert!((target_total - 125_000.0).abs() < 1e-6);
         for i in 0..planned_bits.len() {
             assert!((remaining_bits[i] - planned_bits[i..].iter().sum::<f64>()).abs() < f64::EPSILON);
         }
         assert_eq!(remaining_bits[planned_bits.len()], 0.0);
+    }
+
+    /// First-pass statistics of `n` P frames coded at QP 30 with 10 kbit each, at 24 fps (240 kbit/s).
+    fn flat_stats(n: usize) -> PassStats {
+        PassStats { fps: 24.0, frames: vec![FrameStat { slice_type: SliceType::P, qscale: qp2qscale(30.0), bits: 10_000, cplx: 100.0 }; n] }
+    }
+
+    #[test]
+    fn second_pass_keeps_frames_near_their_first_pass_quantiser() {
+        // ten times the first pass's rate, and frames that cost what the first pass measured: without a limit the
+        // plan and the loop take every frame down to about QP 10, where the size model no longer holds
+        let mut rc = RateControl::new(RateControl::plan_two_pass(&flat_stats(48), 2_400), 24.0, None, None);
+        for i in 0..48 {
+            let qp = rc.frame_qp(SliceType::P, 100.0, i);
+            assert!(qp >= 30.0 - PASS1_QP_RANGE - 1e-9, "frame {i}: QP {qp:.2}, first pass 30");
+            rc.update(SliceType::P, qp, 100.0, 10_000);
+        }
+    }
+
+    #[test]
+    fn second_pass_correction_falls_by_at_most_two_qp_a_frame() {
+        // the first half costs three times its prediction and the rest almost nothing: the surplus that turns up
+        // late is shared by fewer and fewer frames, and the correction drops by several QP at once
+        let mut rc = RateControl::new(RateControl::plan_two_pass(&flat_stats(24), 240), 24.0, None, None);
+        let mut last: Option<f64> = None;
+        for i in 0..24 {
+            let qp = rc.frame_qp(SliceType::P, 100.0, i);
+            if let Some(prev) = last {
+                assert!(qp >= prev - CORRECTION_QP_FALL - 1e-9, "frame {i}: QP {prev:.2} -> {qp:.2}");
+            }
+            last = Some(qp);
+            let predicted = 10_000.0 * qp2qscale(30.0) / qp2qscale(qp);
+            rc.update(SliceType::P, qp, 100.0, (predicted * if i < 12 { 3.0 } else { 0.02 }) as u64);
+        }
+    }
+
+    #[test]
+    fn two_pass_plan_codes_b_frames_coarser_than_their_anchor() {
+        // B frames the first pass coded almost all as skips, 10 QP above their P frames: planned from their own size
+        // they would land about 5 QP finer than the P frames
+        let p = FrameStat { slice_type: SliceType::P, qscale: qp2qscale(30.0), bits: 50_000, cplx: 100.0 };
+        let b = FrameStat { slice_type: SliceType::B, qscale: qp2qscale(40.0), bits: 2_000, cplx: 100.0 };
+        let mut frames = vec![FrameStat { slice_type: SliceType::I, ..p }];
+        for _ in 0..8 {
+            frames.extend([p, b, b]);
+        }
+        let stats = PassStats { fps: 24.0, frames };
+        let RcKind::TwoPass { plan, .. } = RateControl::plan_two_pass(&stats, 1_000) else {
+            panic!("two-pass planning must return a two-pass rate-control plan");
+        };
+        for i in (0..stats.frames.len()).filter(|&i| stats.frames[i].slice_type == SliceType::B) {
+            let anchor = (0..i).rev().find(|&k| stats.frames[k].slice_type != SliceType::B).unwrap();
+            assert!(plan[i] >= plan[anchor], "frame {i}: QP {:.2} under its anchor's {:.2}", qscale2qp(plan[i]), qscale2qp(plan[anchor]));
+        }
     }
 }
