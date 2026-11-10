@@ -36,7 +36,10 @@ fn mb(b: u64) -> String {
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     super::avid_import::show(app, ctx);
     if app.session.offline.prompt && app.ui.link_media.is_none() {
-        app.ui.link_media = Some(LinkMediaDraft::default());
+        // Asked on open: list only the newly missing files, not the ones already made offline.
+        let s = &app.session;
+        let skipped = s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
+        app.ui.link_media = Some(LinkMediaDraft { skipped, ..LinkMediaDraft::default() });
     }
     if app.ui.link_media.is_some() {
         link_media(app, ctx);
@@ -592,6 +595,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if row.component.is_some() {
                 d.skipped_components.push(row.key());
             } else {
+                let _ = app.session.execute("media.makeOffline", json!({"items": [item]}));
                 d.skipped.push(item);
             }
             cancel_component_search(app, &mut d);
@@ -599,9 +603,15 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             d.candidates.clear();
             d.candidate = None;
         }
-        Some("offlineAll") | Some("cancel") => {
+        Some("offlineAll") => {
             cancel_component_search(app, &mut d);
             let _ = app.session.execute("media.offlineAll", json!({}));
+            keep = false;
+        }
+        // Cancel leaves the files missing for this session only; the next open asks again.
+        Some("cancel") => {
+            cancel_component_search(app, &mut d);
+            app.session.offline.prompt = false;
             keep = false;
         }
         _ => {}

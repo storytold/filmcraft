@@ -103,5 +103,6 @@ pub fn picture(d: &Value, r: &Value, evidence: &Value, track: u32) -> Result<Vid
         has_alpha: false,
         bitrate: None,
         hdr: None,
+        color_assumed: Some(filmcraft_color::ColorAssumed::ALL),
     })
 }

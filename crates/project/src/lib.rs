@@ -17,6 +17,10 @@ pub mod graphic;
 pub mod graphic_design;
 pub mod gtemplate;
 pub mod keyframe;
+mod marker_color;
+pub use marker_color::HexColor;
+mod marker_url;
+pub use marker_url::marker_web_url;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
@@ -32,7 +36,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
-pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
+pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, interchange_name, search_aliases};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
 pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
@@ -82,12 +86,17 @@ id_type!(MarkerId);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
+    /// Custom marker/clip swatches saved only with this project (schema v16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_colors: Vec<HexColor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_color_names: BTreeMap<HexColor, String>,
     pub settings: ProjectSettings,
     pub root: Bin,
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// The project's LUT library (Lumetri Input LUT / Creative Look "Browse…"). LUT files are
+    /// The project's LUT library (Color Grading Input LUT / Creative Look "Browse…"). LUT files are
     /// embedded, so projects render without the original files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub luts: Vec<ProjectLut>,
@@ -128,6 +137,8 @@ impl Project {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
+            custom_colors: Vec::new(),
+            custom_color_names: BTreeMap::new(),
             settings: ProjectSettings::default(),
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
@@ -217,7 +228,10 @@ impl Project {
     pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
         let id = ItemId(self.alloc_id());
         let created = id.0;
-        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() });
+        self.items.insert(
+            id,
+            ProjectItem { id, name: name.into(), label, custom_label_color: None, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() },
+        );
         if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
             b.children.push(BinEntry::Item(id));
         } else {
@@ -454,6 +468,7 @@ impl Project {
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
+            custom_label_color: self.item(item).and_then(|i| i.custom_label_color),
             id,
             item,
             name,
@@ -474,6 +489,7 @@ impl Project {
             essential: None,
             multicam,
             time_interpolation: TimeInterpolation::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels,

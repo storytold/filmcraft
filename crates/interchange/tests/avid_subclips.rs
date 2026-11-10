@@ -71,6 +71,7 @@ fn simple_avid_flip_wrappers_map_to_native_video_effects() {
                     has_alpha: false,
                     bitrate: None,
                     hdr: None,
+                    color_assumed: None,
                 });
                 m.info.audio_streams.clear();
                 m.media = MediaRef::Components {
@@ -143,6 +144,7 @@ fn a_static_avid_warp_maps_2d_controls_without_flattening_unknown_3d_controls() 
                 has_alpha: false,
                 bitrate: None,
                 hdr: None,
+                color_assumed: None,
             });
             m.info.audio_streams.clear();
             m.media = MediaRef::Components {

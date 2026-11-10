@@ -66,3 +66,44 @@ fn decode_1080p_fps() {
         println!("{name:<32} {:>8} bytes: {mt:7.1} fps threaded, {st:6.1} fps single-threaded", s.len());
     }
 }
+
+/// A run of similar 3840×2160 frames (busy content drifting by a pixel per frame), as a preview
+/// render or export of footage hands them to one encoder in order.
+fn busy_2160p_run(frames: usize) -> Vec<Frame> {
+    let one = busy_1080p(ChromaFormat::Yuv422);
+    (0..frames)
+        .map(|k| {
+            let mut f = Frame::new(3840, 2160, ChromaFormat::Yuv422, 10, false);
+            let (cw, scw) = (f.chroma_width() as usize, one.chroma_width() as usize);
+            for y in 0..2160usize {
+                for x in 0..3840usize {
+                    f.y[y * 3840 + x] = one.y[(y % 1080) * 1920 + (x + k) % 1920];
+                }
+                for x in 0..cw {
+                    f.cb[y * cw + x] = one.cb[(y % 1080) * scw + (x + k) % scw];
+                    f.cr[y * cw + x] = one.cr[(y % 1080) * scw + (x + k) % scw];
+                }
+            }
+            f
+        })
+        .collect()
+}
+
+#[test]
+#[ignore]
+fn encode_2160p_run_fps() {
+    let run = busy_2160p_run(12);
+    for p in [Profile::Standard, Profile::Hq] {
+        let mut enc = Encoder::new(p, 3840, 2160);
+        let t = Instant::now();
+        let bytes: usize = run.iter().map(|f| enc.encode(f).unwrap().len()).sum();
+        let s = t.elapsed().as_secs_f64();
+        println!(
+            "encode {p:?} 2160p run of {}: {:.1} ms/frame ({:.1} fps), {:.1}% of the target",
+            run.len(),
+            s * 1e3 / run.len() as f64,
+            run.len() as f64 / s,
+            bytes as f64 * 100.0 / (enc.target_frame_bytes() * run.len()) as f64
+        );
+    }
+}

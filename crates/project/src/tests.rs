@@ -417,3 +417,18 @@ fn sampled_source_positions_select_repeated_and_skipped_frames() {
     clip.effect_mut("time_remap").unwrap().enabled = false;
     assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1)), rate.tick_of(49));
 }
+
+#[test]
+fn sequence_display_format_round_trips_and_old_files_load_as_timecode() {
+    use filmcraft_time::TimeDisplay;
+    for d in [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames] {
+        let st = SequenceSettings { display: d, ..Default::default() };
+        let back: SequenceSettings = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
+        assert_eq!(back.display, d);
+    }
+    // a file saved before the setting existed has no `display` key
+    let mut v = serde_json::to_value(SequenceSettings::default()).unwrap();
+    assert!(v.as_object_mut().unwrap().remove("display").is_some());
+    let old: SequenceSettings = serde_json::from_value(v).unwrap();
+    assert_eq!(old.display, TimeDisplay::Timecode);
+}

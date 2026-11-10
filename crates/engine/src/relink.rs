@@ -373,8 +373,9 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             if let Some(info) = &p.cand.info {
                 let new_tc = info.start_timecode;
                 if align_timecode && let (Some(a), Some(b)) = (old_tc, new_tc) {
-                    // what was at old timecode a + t sits at new media time t + (a - b)
-                    shift = rate.tick_of(b - a);
+                    // what was at old timecode a + t sits at new media time t + (a - b), each
+                    // timecode in its own file's frames (an EDL item's are at the list's rate)
+                    shift = info.frame_rate().tick_of(b) - rate.tick_of(a);
                 }
                 m.info = info.clone();
             }
@@ -564,7 +565,11 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
                 continue;
             }
             for f in paths {
-                if let Ok(c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                if let Ok(mut c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                    // results are listed, not played: holding every candidate's decoder (and a
+                    // decoded still for each alias of one image) kept them all in memory;
+                    // relinking reopens the chosen file
+                    c.source = None;
                     cands.push(c);
                 }
             }
@@ -573,6 +578,20 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
         out.push(json!({"item": id.0, "candidates": cands}));
     }
     Ok(json!({"results": out}))
+}
+
+/// Whether Make Offline ▸ delete may remove `path` for item `id`: a regular file (not a link or
+/// a folder) with a media extension, whose size and fingerprint equal the ones recorded when the
+/// item was imported or linked. An item with no recorded identity (a New Offline File placeholder,
+/// or a project from an older build) has no evidence it was ever linked to this file, so it goes
+/// offline and its file is left alone; relinking it records an identity.
+fn deletable_media(s: &Session, id: ItemId, path: &str) -> bool {
+    let p = Path::new(path);
+    if !filmcraft_media::is_importable(p) || !std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let recorded = s.project.item(id).and_then(|i| i.as_media()).and_then(|m| m.identity);
+    recorded.is_some_and(|want| identity_of(&*s.services, path).is_ok_and(|have| have == want))
 }
 
 /// `media.makeOffline {items?, deleteFiles?}`.
@@ -605,10 +624,12 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     let mut deleted = Vec::new();
     if delete {
-        for (_, path) in &files {
+        for (id, path) in &files {
             // Stored paths in an opened document are not authority to delete arbitrary files.
-            // Delete only the resolved path that the media pool permits opening.
+            // Delete only the resolved path that the media pool permits opening, and only when
+            // it is a regular media file that is still the one the item was linked to.
             if let Ok(path) = s.media.follow(path)
+                && deletable_media(s, *id, &path)
                 && std::fs::remove_file(&path).is_ok()
             {
                 deleted.push(path.clone());
@@ -680,6 +701,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.status",
@@ -696,6 +718,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(Value::Array(ids.into_iter().filter_map(|i| status_json(s, i)).collect()))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.linkMedia",
@@ -710,6 +733,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.relink",
@@ -720,6 +744,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: relink,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.refreshChanged",
@@ -730,6 +755,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: crate::media_watch::refresh_changed,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.replaceFootage",
@@ -745,6 +771,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 relink(s, &q)
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.autoRelink",
@@ -755,6 +782,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: auto_relink,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.search",
@@ -765,6 +793,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |s, p| search(s, p),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.makeOffline",
@@ -782,21 +811,38 @@ pub fn commands() -> Vec<CommandSpec> {
             },
             run: make_offline,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.offlineAll",
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (leave every missing file offline and close the Link Media dialog)",
+            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
-            run: |s, _| {
-                s.offline.prompt = false;
-                Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
-            },
-            journal: false,
+            run: offline_all,
+            journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
+}
+
+/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
+fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+    if !ids.is_empty() {
+        s.edit("Offline All", |proj, _| {
+            for i in &ids {
+                if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {
+                    m.offline = true;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    s.offline.prompt = false;
+    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.
@@ -808,9 +854,11 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    s.offline.prompt = !s.offline.missing.is_empty();
-    if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
+    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
+    let missing = list.iter().filter(|m| m.status == "missing").count();
+    s.offline.prompt = missing > 0;
+    if missing > 0 {
+        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
     }
     list.len()
 }

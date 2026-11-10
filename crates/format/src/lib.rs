@@ -39,9 +39,10 @@
 //!   would drop them when saving.
 //! - **v15**: project notes (`Project::notes`, Window ▸ Project Notes). No-op step; older builds
 //!   would drop them when saving.
-//! - **v16**: independently identified MXF audio components with stable logical channel slots.
-//! - **v18**: offline picture bindings retain pending decoder-format verification.
-//! - **v17**: picture plus audio component references (reads v16 audio-only references).
+//! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
+//! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: independently identified MXF audio and picture components, stable logical channel
+//!   slots, and pending verification for offline picture bindings. Reads earlier audio-only references.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -397,19 +398,19 @@ fn v14_to_v15(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
-/// v17 → v18: Offline picture geometry can await format verification on relink.
-// The new flag defaults to false: existing picture bindings were decoder-verified.
-fn v17_to_v18(doc: Value) -> Result<Value, String> {
+/// v15 → v16: existing colors remain presets; authors and the named custom palette default empty.
+fn v15_to_v16(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
-/// v16 → v17: Components also reads the former AudioComponents variant via a serde alias.
+/// v16 → v17: marker URLs default empty. Older builds must not silently drop saved URLs.
 fn v16_to_v17(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
-/// v15 → v16: multi-file audio references; old references are unchanged.
-fn v15_to_v16(doc: Value) -> Result<Value, String> {
+/// v17 → v18: Component references retain their audio-only alias, and the new picture
+/// verification flag defaults to false for existing bindings.
+fn v17_to_v18(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 

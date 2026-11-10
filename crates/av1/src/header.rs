@@ -5,9 +5,9 @@ use crate::spec_tables::{
     AFFINE, ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GM_ABS_ALPHA_BITS, GM_ABS_TRANS_BITS, GM_ABS_TRANS_ONLY_BITS, GM_ALPHA_PREC_BITS,
     GM_TRANS_ONLY_PREC_BITS, GM_TRANS_PREC_BITS, GOLDEN_FRAME, IDENTITY, INTER_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME, MAX_SEGMENTS, MAX_TILE_AREA,
     MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, NUM_REF_FRAMES, ONLY_4X4, PRIMARY_REF_NONE, REF_FRAME_LIST, REFS_PER_FRAME, RESTORATION_TILESIZE_MAX,
-    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER, ROTZOOM, SEG_LVL_ALT_Q, SEG_LVL_MAX, SEG_LVL_REF_FRAME, SELECT_INTEGER_MV,
-    SELECT_SCREEN_CONTENT_TOOLS, SUPERRES_DENOM_BITS, SUPERRES_DENOM_MIN, SUPERRES_NUM, SWITCH_FRAME, TOTAL_REFS_PER_FRAME, TRANSLATION, TX_MODE_LARGEST,
-    TX_MODE_SELECT, WARPEDMODEL_PREC_BITS,
+    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER, ROTZOOM, SEG_LVL_ALT_Q, SEG_LVL_MAX, SEG_LVL_REF_FRAME, SEGMENTATION_FEATURE_BITS,
+    SEGMENTATION_FEATURE_MAX, SEGMENTATION_FEATURE_SIGNED, SELECT_INTEGER_MV, SELECT_SCREEN_CONTENT_TOOLS, SUPERRES_DENOM_BITS, SUPERRES_DENOM_MIN,
+    SUPERRES_NUM, SWITCH_FRAME, TOTAL_REFS_PER_FRAME, TRANSLATION, TX_MODE_LARGEST, TX_MODE_SELECT, WARPEDMODEL_PREC_BITS,
 };
 use crate::{Error, Result};
 
@@ -424,16 +424,9 @@ pub struct FrameHeader {
     pub gm_params: [[i32; 6]; 8],
     pub prev_gm_params: [[i32; 6]; 8],
     pub film_grain: FilmGrainParams,
-    /// Temporal / spatial id of the OBU carrying the header.
-    pub temporal_id: u32,
-    pub spatial_id: u32,
 }
 
 impl FrameHeader {
-    pub fn get_relative_dist(&self, seq: &SequenceHeader, a: u32, b: u32) -> i32 {
-        relative_dist(seq, a, b)
-    }
-
     /// get_qindex( ignoreDeltaQ, segmentId ) with CurrentQIndex.
     pub fn get_qindex(&self, ignore_delta_q: bool, segment_id: usize, current_q_index: i32) -> i32 {
         let base = self.quant.base_q_idx as i32;
@@ -487,7 +480,7 @@ impl FrameHeader {
     /// uncompressed_header( ). `st` holds the cross-frame state.
     pub(crate) fn parse(r: &mut BitReader, st: &mut HeaderState, temporal_id: u32, spatial_id: u32) -> Result<FrameHeader> {
         let seq = st.seq;
-        let mut h = FrameHeader { temporal_id, spatial_id, ..Default::default() };
+        let mut h = FrameHeader::default();
         let id_len = if seq.frame_id_numbers_present { seq.additional_frame_id_length_minus_1 + seq.delta_frame_id_length_minus_2 + 3 } else { 0 };
         if seq.reduced_still_picture_header {
             h.frame_type = KEY_FRAME as u8;
@@ -514,7 +507,7 @@ impl FrameHeader {
         };
         h.order_hint = r.f(seq.order_hint_bits)?;
         h.primary_ref_frame = if h.frame_is_intra || h.error_resilient_mode { PRIMARY_REF_NONE } else { r.f(3)? as usize };
-        h.skip_buffer_removal_times(r, seq)?;
+        h.skip_buffer_removal_times(r, seq, temporal_id, spatial_id)?;
         h.refresh_frame_flags = if h.frame_type == SWITCH_FRAME as u8 || (h.frame_type == KEY_FRAME as u8 && h.show_frame) { ALL_FRAMES } else { r.f(8)? };
         h.read_ref_order_hints(r, st)?;
         if h.frame_is_intra {
@@ -641,13 +634,13 @@ impl FrameHeader {
     }
 
     /// Reads and discards the buffer_removal_time of every operating point that applies to this layer.
-    fn skip_buffer_removal_times(&self, r: &mut BitReader, seq: &SequenceHeader) -> Result<()> {
+    fn skip_buffer_removal_times(&self, r: &mut BitReader, seq: &SequenceHeader, temporal_id: u32, spatial_id: u32) -> Result<()> {
         if seq.decoder_model_info_present && r.flag()? {
             for op in 0..=seq.operating_points_cnt_minus_1 {
                 if seq.decoder_model_present_for_this_op[op] {
                     let idc = seq.operating_point_idc[op];
-                    let in_t = (idc >> self.temporal_id) & 1;
-                    let in_s = (idc >> (self.spatial_id + 8)) & 1;
+                    let in_t = (idc >> temporal_id) & 1;
+                    let in_s = (idc >> (spatial_id + 8)) & 1;
                     if idc == 0 || (in_t == 1 && in_s == 1) {
                         r.f(seq.buffer_removal_time_length_minus_1 + 1)?;
                     }
@@ -1049,9 +1042,6 @@ impl FrameHeader {
     }
 
     fn segmentation_params(&mut self, r: &mut BitReader, st: &mut HeaderState) -> Result<()> {
-        const BITS: [u32; SEG_LVL_MAX] = [8, 6, 6, 6, 6, 3, 0, 0];
-        const SIGNED: [bool; SEG_LVL_MAX] = [true, true, true, true, true, false, false, false];
-        const MAX: [i32; SEG_LVL_MAX] = [255, 63, 63, 63, 63, 7, 0, 0];
         let s = &mut self.seg;
         s.enabled = r.flag()?;
         if s.enabled {
@@ -1073,9 +1063,9 @@ impl FrameHeader {
                         st.seg_features.enabled[i][j] = en;
                         let mut v = 0;
                         if en {
-                            let bits = BITS[j];
-                            let limit = MAX[j];
-                            if SIGNED[j] {
+                            let bits = SEGMENTATION_FEATURE_BITS[j] as u32;
+                            let limit = SEGMENTATION_FEATURE_MAX[j] as i32;
+                            if SEGMENTATION_FEATURE_SIGNED[j] != 0 {
                                 v = r.su(1 + bits)?.clamp(-limit, limit);
                             } else {
                                 v = (r.f(bits)? as i32).clamp(0, limit);

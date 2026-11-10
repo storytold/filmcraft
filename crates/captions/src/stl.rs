@@ -266,8 +266,16 @@ fn ascii_field(b: &[u8]) -> String {
     String::from_utf8_lossy(b).trim().to_string()
 }
 
-fn tc_frames(b: &[u8], rate: FrameRate) -> i64 {
-    fields_to_frames(b[0] as i64, b[1] as i64, b[2] as i64, b[3] as i64, rate, false)
+fn tc_frames(b: &[u8], rate: FrameRate) -> Option<i64> {
+    let [hours, minutes, seconds, frames] = b else { return None };
+    if rate.num <= 0 || rate.den <= 0 {
+        return None;
+    }
+    let max_frames = rate.num / rate.den + i64::from(rate.num % rate.den != 0);
+    if *minutes >= 60 || *seconds >= 60 || i64::from(*frames) >= max_frames {
+        return None;
+    }
+    Some(fields_to_frames(*hours as i64, *minutes as i64, *seconds as i64, *frames as i64, rate, false))
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Document> {
@@ -287,9 +295,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document> {
         0
     };
     let mut doc = Document::default();
-    let mut cur: Option<(u16, i64, i64, String, bool, bool)> = None;
-    let finish = |c: Option<(u16, i64, i64, String, bool, bool)>, doc: &mut Document| {
-        if let Some((_, tin, tout, mut text, italic, underline)) = c {
+    let mut cur: Option<(u16, Option<(i64, i64)>, String, bool, bool)> = None;
+    let finish = |c: Option<(u16, Option<(i64, i64)>, String, bool, bool)>, doc: &mut Document| {
+        if let Some((_, times, mut text, italic, underline)) = c {
             if italic {
                 text.push_str("</i>");
             }
@@ -297,8 +305,12 @@ pub fn parse(bytes: &[u8]) -> Result<Document> {
                 text.push_str("</u>");
             }
             let text = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
-            if tout > tin && !text.is_empty() {
-                doc.cues.push(Cue { start: rate.tick_of((tin - start).max(0)), end: rate.tick_of((tout - start).max(0)), text, ..Default::default() });
+            if let Some((tin, tout)) = times {
+                if tout > tin && !text.is_empty() {
+                    doc.cues.push(Cue { start: rate.tick_of((tin - start).max(0)), end: rate.tick_of((tout - start).max(0)), text, ..Default::default() });
+                }
+            } else {
+                doc.warnings.push("skipped EBU STL cue with invalid timecode".into());
             }
         }
     };
@@ -309,18 +321,17 @@ pub fn parse(bytes: &[u8]) -> Result<Document> {
         if ebn == 0xfe || cf != 0 {
             continue; // user data / comment
         }
-        let tin = tc_frames(&blk[5..9], rate);
-        let tout = tc_frames(&blk[9..13], rate);
         let same = cur.as_ref().is_some_and(|c| c.0 == sn);
         if !same {
             finish(cur.take(), &mut doc);
-            cur = Some((sn, tin, tout, String::new(), false, false));
+            let times = tc_frames(&blk[5..9], rate).zip(tc_frames(&blk[9..13], rate));
+            cur = Some((sn, times, String::new(), false, false));
         }
         if let Some(c) = cur.as_mut() {
-            let (mut it, mut ul) = (c.4, c.5);
-            decode_tf(&blk[16..16 + TF], &mut c.3, &mut it, &mut ul);
-            c.4 = it;
-            c.5 = ul;
+            let (mut it, mut ul) = (c.3, c.4);
+            decode_tf(&blk[16..16 + TF], &mut c.2, &mut it, &mut ul);
+            c.3 = it;
+            c.4 = ul;
         }
         if ebn == 0xff {
             finish(cur.take(), &mut doc);
@@ -472,6 +483,38 @@ mod tests {
         assert_eq!(back.cues[1].text, long);
         assert_eq!(back.cues[1].start, FrameRate::FPS_25.tick_of(100));
         assert!(parse(&b[..500]).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_stl_timecodes() {
+        let doc = Document {
+            cues: vec![Cue { start: FrameRate::FPS_25.tick_of(25), end: FrameRate::FPS_25.tick_of(75), text: "A".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let mut bytes = write(&doc, None);
+        bytes[GSI + 6] = 60;
+        let parsed = parse(&bytes).expect("invalid cue timecodes do not fail the file");
+        assert!(parsed.cues.is_empty());
+        assert_eq!(parsed.warnings, ["skipped EBU STL cue with invalid timecode"]);
+        assert_eq!(tc_frames(&[0, 0, 0, 24], FrameRate::FPS_24), None);
+
+        let mut continuation = write(
+            &Document {
+                cues: vec![Cue { start: FrameRate::FPS_25.tick_of(25), end: FrameRate::FPS_25.tick_of(75), text: "x".repeat(150), ..Default::default() }],
+                ..Default::default()
+            },
+            None,
+        );
+        continuation[GSI + TTI + 5..GSI + TTI + 13].fill(60);
+        let parsed = parse(&continuation).expect("continuation timecodes are ignored");
+        assert_eq!(parsed.cues.len(), 1);
+        assert!(parsed.warnings.is_empty());
+
+        let mut long_hours = write(&doc, None);
+        long_hours[GSI + 5] = 25;
+        long_hours[GSI + 9] = 26;
+        let parsed = parse(&long_hours).expect("hours beyond 23 are valid");
+        assert_eq!(parsed.cues.len(), 1);
     }
 
     #[test]

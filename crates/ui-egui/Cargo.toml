@@ -21,12 +21,14 @@ filmcraft-tts = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-text = { workspace = true }
+filmcraft-captions = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
 egui = { workspace = true }
+egui_extras = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -48,6 +50,7 @@ cpu-time = "1"
 [dev-dependencies]
 filmcraft-mxf = { workspace = true }
 pollster = "1"
+filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)

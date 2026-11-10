@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
-    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, export_params, format_bytes, json, output_path,
-    pos2, vec2,
+    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params, format_bytes,
+    is_export_busy, json, output_path, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -42,6 +42,9 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         ui.painter().text(pic.center(), Align2::CENTER_CENTER, tl!("Audio only"), Tokens::ui(13.0), t.text_dim);
     }
     reg.add("export.preview", pic, "Preview");
+    let busy = is_export_busy(app);
+    let active_job = active_export_job(app);
+    let queue_active = app.session.export_queue.is_active();
     // range + scaling
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -50,30 +53,52 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     );
     let ex = &mut app.ui.export;
     let has_work_area = q.work_area.is_some();
-    child.horizontal(|ui| {
-        ui.label(egui::RichText::new(tl!("Range")).color(t.text_dim));
-        let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
-        let labels: Vec<(String, bool)> = RANGES.iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
-        if let Some(i) = combo(ui, &mut reg, "export.range", cur, &labels, 140.0) {
-            ex.range = RANGES[i].0.into();
+    child.add_enabled_ui(!busy, |child| {
+        child.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(tl!("Range")).color(t.text_dim));
+            let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
+            let labels: Vec<(String, bool)> = RANGES.iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
+            if let Some(i) = combo(ui, &mut reg, "export.range", cur, &labels, 140.0) {
+                ex.range = RANGES[i].0.into();
+            }
+            if ex.range == "custom" {
+                drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
+                drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
+            }
+            let (start, end) = range_ticks(ex, &q);
+            let span = filmcraft_time::TimeRange::from_bounds(start, end);
+            let frames = rate.frame_at(end - Tick(1)).saturating_add(1).saturating_sub(rate.frame_at(start)).max(0);
+            let seconds = format!("{:.3}", span.duration.seconds());
+            let label = if frames == 1 {
+                tlf!("1 frame ({seconds} s)", seconds = seconds)
+            } else {
+                tlf!("{frames} frames ({seconds} s)", frames = frames, seconds = seconds)
+            };
+            let resp = ui.label(egui::RichText::new(&label).color(t.text_dim));
+            reg.add("export.range.duration", resp.rect, label);
+        });
+        let (start, end) = range_ticks(ex, &q);
+        if ex.range == "inOut" && filmcraft_engine::export_tools::single_frame_in_out(&q, filmcraft_time::TimeRange::from_bounds(start, end)) {
+            let warning = tl!("Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.");
+            let resp = child.add(egui::Label::new(egui::RichText::new(warning).color(t.danger)).wrap());
+            reg.add("export.range.warning", resp.rect, warning);
         }
-        if ex.range == "custom" {
-            drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
-            drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
+        if ex.settings.has_video() {
+            child.horizontal(|ui| {
+                ui.label(egui::RichText::new(tl!("Scaling")).color(t.text_dim));
+                let o = [
+                    (Scaling::ScaleToFit, tl!("Scale To Fit")),
+                    (Scaling::ScaleToFill, tl!("Scale To Fill")),
+                    (Scaling::StretchToFill, tl!("Stretch To Fill")),
+                ];
+                let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map_or(o[0].1, |x| x.1);
+                let labels: Vec<(String, bool)> = o.iter().map(|(_, l)| (l.to_string(), true)).collect();
+                if let Some(i) = combo(ui, &mut reg, "export.scaling", cur, &labels, 140.0) {
+                    ex.settings.scaling = o[i].0;
+                }
+            });
         }
     });
-    if ex.settings.has_video() {
-        child.horizontal(|ui| {
-            ui.label(egui::RichText::new(tl!("Scaling")).color(t.text_dim));
-            let o =
-                [(Scaling::ScaleToFit, tl!("Scale To Fit")), (Scaling::ScaleToFill, tl!("Scale To Fill")), (Scaling::StretchToFill, tl!("Stretch To Fill"))];
-            let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map_or(o[0].1, |x| x.1);
-            let labels: Vec<(String, bool)> = o.iter().map(|(_, l)| (l.to_string(), true)).collect();
-            if let Some(i) = combo(ui, &mut reg, "export.scaling", cur, &labels, 140.0) {
-                ex.settings.scaling = o[i].0;
-            }
-        });
-    }
     // summary
     let range = range_ticks(ex, &q);
     let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, q.settings.sample_rate, range.1 - range.0);
@@ -125,23 +150,54 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click());
-    ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
+    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if busy { Sense::hover() } else { Sense::click() });
+    let stroke_color = if busy {
+        t.text_faint
+    } else if qresp.hovered() {
+        t.text
+    } else {
+        t.text_dim
+    };
+    let text_color = if busy { t.text_faint } else { t.text };
+    ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), text_color);
     reg.add("export.sendToQueue", queue, "Send to Queue");
-    let resp = ui.interact(go, egui::Id::unique("export-go"), Sense::click());
-    ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
-    reg.add("export.button", go, "Export");
+
+    let button_label = if queue_active {
+        tl!("Exporting")
+    } else if active_job.is_some() {
+        tl!("Cancel")
+    } else {
+        tl!("Export")
+    };
+    let go_enabled = !queue_active;
+    let resp = ui.interact(go, egui::Id::unique("export-go"), if go_enabled { Sense::click() } else { Sense::hover() });
+    let fill_color = if !go_enabled {
+        t.field_bg
+    } else if active_job.is_some() {
+        t.danger
+    } else if resp.hovered() {
+        t.accent_hover
+    } else {
+        t.accent
+    };
+    ui.painter().rect_filled(go, 15.0, fill_color);
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, button_label, Tokens::semibold(13.0), if go_enabled { Color32::WHITE } else { t.text_faint });
+    reg.add("export.button", go, button_label);
     reg.flush(app);
-    if resp.clicked() {
-        let r = app.session.execute("file.exportMedia", export_params(app));
-        match r {
-            Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
-            Err(e) => app.ui.status = e.to_string(),
+
+    if resp.clicked() && go_enabled {
+        if let Some(job) = active_job {
+            job.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            let r = app.session.execute("file.exportMedia", export_params(app));
+            match r {
+                Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
+                Err(e) => app.ui.status = e.to_string(),
+            }
         }
     }
-    if qresp.clicked() {
+    if qresp.clicked() && !busy {
         let mut p = export_params(app);
         if app.ui.export.preset != CUSTOM {
             // the queue shows which preset an item came from
