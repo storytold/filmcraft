@@ -180,6 +180,8 @@ mod tests {
             residuals(&x, &mut ce, bits, 9, &mut r);
             assert!(r.iter().all(|&v| sign_extend(v, bits) == v), "residuals fit {bits} bits");
             assert_eq!(reconstruct(&r, &mut cd, bits, 9), x, "bits {bits}");
+            // and both end on the same coefficients, which start the next frame
+            assert_eq!(ce, cd, "coefficients, bits {bits}");
         }
         let mut c: Vec<i16> = Vec::new();
         let mut r = Vec::new();

@@ -128,7 +128,7 @@ fn round_trip(planar: &[Vec<i32>], cfg: EncoderConfig) -> usize {
 fn every_signal_depth_and_layout_round_trips() {
     for bits in [16u8, 20, 24] {
         for kind in ["music", "noise", "clicks", "square", "silence"] {
-            for ch in [1u8, 2, 6] {
+            for ch in 1u8..=8 {
                 let planar: Vec<Vec<i32>> = (0..ch).map(|c| signal(kind, 10_000, bits, u64::from(c) * 31 + u64::from(bits))).collect();
                 round_trip(&planar, EncoderConfig::new(48_000, ch, bits));
             }
@@ -204,4 +204,28 @@ fn bad_input_is_an_error_not_a_panic() {
     let mut enc = Encoder::new(EncoderConfig::new(48_000, 1, 24)).unwrap();
     assert!(enc.encode_frames(&[&[-(1 << 23), (1 << 23) - 1]]).is_ok());
     assert_eq!(enc.encode_frames(&[&[1 << 23]]), Err(Error::SampleRange(1 << 23)));
+}
+
+#[test]
+fn chunking_does_not_change_the_frames() {
+    let planar: Vec<Vec<i32>> = (0..2).map(|c| signal("music", 30_000, 16, c + 3)).collect();
+    let cfg = EncoderConfig { frame_length: 1152, ..EncoderConfig::new(48_000, 2, 16) };
+    let encode = |chunk: usize| {
+        let mut enc = Encoder::new(cfg).unwrap();
+        let mut frames = Vec::new();
+        let mut at = 0;
+        while at < 30_000 {
+            let end = (at + chunk).min(30_000);
+            let parts: Vec<&[i32]> = planar.iter().map(|c| &c[at..end]).collect();
+            frames.extend(enc.encode_frames(&parts).unwrap());
+            at = end;
+        }
+        frames.extend(enc.finish());
+        frames
+    };
+    let whole = encode(30_000);
+    assert_eq!(whole.len(), 30_000usize.div_ceil(1152));
+    for chunk in [1, 999, 1152, 4800, 7000] {
+        assert!(encode(chunk) == whole, "chunks of {chunk}");
+    }
 }

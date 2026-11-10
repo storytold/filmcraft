@@ -193,9 +193,16 @@ impl Encoder {
         }
         let fl = self.cfg.frame_length as usize;
         let mut out = Vec::new();
-        while self.pending.first().is_some_and(|p| p.len() >= fl) {
-            let block: Vec<Vec<i32>> = self.pending.iter_mut().map(|p| p.drain(..fl).collect()).collect();
+        // whole frames from the front, then one drain: draining each frame would move the rest
+        // of a long chunk once per frame
+        let mut at = 0;
+        while self.pending.first().is_some_and(|p| p.len() >= at + fl) {
+            let block: Vec<Vec<i32>> = self.pending.iter().map(|p| p.get(at..at + fl).map(<[i32]>::to_vec).unwrap_or_default()).collect();
             out.push(self.frame(&block));
+            at += fl;
+        }
+        for p in &mut self.pending {
+            p.drain(..at.min(p.len()));
         }
         Ok(out)
     }
