@@ -95,14 +95,16 @@ impl FilmcraftApp {
 
     pub fn thumbnail(&mut self, ctx: &egui::Context, item: filmcraft_project::ItemId, t: Tick, width: u32) -> Option<(egui::TextureId, egui::Vec2)> {
         let pi = self.session.project.item(item)?;
-        let src_w = match &pi.kind {
-            filmcraft_project::ItemKind::Media(m) => m.info.video.as_ref()?.width,
-            filmcraft_project::ItemKind::Sequence(s) => s.settings.width,
+        let (src_w, follows_edits) = match &pi.kind {
+            filmcraft_project::ItemKind::Media(m) => (m.info.video.as_ref()?.width, false),
+            filmcraft_project::ItemKind::Sequence(s) => (s.settings.width, true),
             _ => return None,
         };
         let rate = pi.frame_rate();
         let frame = rate.frame_at(t);
         let rev = self.item_revision(item);
+        // (checked on every call, a cached thumbnail too, so it sees the edit that comes next)
+        let settled = !follows_edits || self.edits_settled(ctx);
         let key = FrameKey { target: Target::Item(item), frame, size: width, revision: rev, draft: false };
         let name = format!("thumb-{}-{}-{}", item.0, frame, width);
         if let Some(img) = self.frames.get(&key) {
@@ -110,14 +112,46 @@ impl FilmcraftApp {
             self.thumb_touched(ctx, &name);
             return Some((id, egui::vec2(img.w as f32, img.h as f32)));
         }
+        let shown = self.texture_existing(&name);
+        // A sequence thumbnail decodes the same sources as the Program monitor, usually far from
+        // the playhead: rendered on every step of a drag, its seeks and the monitor's took turns
+        // on one decoder and the monitor fell seconds behind. Its old picture stays up until the
+        // edits stop.
+        if !settled && shown.is_some() {
+            self.thumb_touched(ctx, &name);
+            return shown;
+        }
         let scale = width as f32 / src_w.max(1) as f32;
         let project = self.session.project.clone();
         self.frames.request(key, rate.tick_of(frame), scale, &project, 50);
-        let shown = self.texture_existing(&name);
         if shown.is_some() {
             self.thumb_touched(ctx, &name);
         }
         shown
+    }
+
+    /// Whether no button is held and the project has not changed for [`THUMB_SETTLE_S`]. While
+    /// waiting for that, a repaint is asked for when the time is up.
+    fn edits_settled(&self, ctx: &egui::Context) -> bool {
+        let id = egui::Id::unique("thumbnail-edit-settle");
+        let (now, down) = ctx.input(|i| (i.time, i.pointer.any_down()));
+        let rev = self.session.revision;
+        let since = match ctx.data(|d| d.get_temp::<(u64, f64)>(id)) {
+            Some((seen, since)) if seen == rev => since,
+            Some(_) => {
+                ctx.data_mut(|d| d.insert_temp(id, (rev, now)));
+                now
+            }
+            None => {
+                ctx.data_mut(|d| d.insert_temp(id, (rev, f64::NEG_INFINITY)));
+                f64::NEG_INFINITY
+            }
+        };
+        let left = THUMB_SETTLE_S - (now - since);
+        if left > 0.0 && !down {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+        }
+        !down && left <= 0.0
     }
 
     /// Note that thumbnail texture `name` is used in this pass, and free the least recently used

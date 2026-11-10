@@ -355,3 +355,30 @@ fn playback_at_a_newer_revision_keeps_the_frame_being_rendered() {
     d.ready(key(frame, 9001));
     d.ready(key(frame, 9002));
 }
+
+/// A sequence's thumbnail is not rendered again while its edits go on: rendered on every step of
+/// a drag, its seeks shared one decoder with the Program monitor's and the monitor fell seconds
+/// behind the handle. The old picture stays up, and the new one comes once the edits stop.
+#[test]
+fn sequence_thumbnails_wait_for_edits_to_stop() {
+    let mut d = Driver::demo();
+    let ctx = d.harness.ctx.clone();
+    let seq = d.harness.state().session.state.active_sequence.expect("an open sequence");
+    let clip = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let thumb = |d: &mut Driver| d.harness.state_mut().thumbnail(&ctx, seq, filmcraft_time::Tick::ZERO, 64);
+    wait_for("the sequence thumbnail", Duration::from_millis(5), || {
+        d.frames(1);
+        thumb(&mut d).is_some()
+    });
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 60.0}));
+    let misses = d.harness.state().frames.stats().request_misses;
+    assert!(thumb(&mut d).is_some(), "the old thumbnail stays up");
+    assert_eq!(d.harness.state().frames.stats().request_misses, misses, "no thumbnail job right after an edit");
+    let rev = d.harness.state().session.revision;
+    let key = FrameKey { target: Target::Item(seq), frame: 0, size: 64, revision: rev, draft: false };
+    wait_for("the thumbnail of the edited sequence", Duration::from_millis(20), || {
+        d.frames(1);
+        thumb(&mut d);
+        d.harness.state().frames.is_ready(&key)
+    });
+}
