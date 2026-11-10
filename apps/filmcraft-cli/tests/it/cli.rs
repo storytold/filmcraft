@@ -1,6 +1,6 @@
 //! End-to-end tests of the CLI binary (headless backend).
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
@@ -347,6 +347,60 @@ fn single_frame_in_out_export_warns_in_json_and_stderr() {
         assert!(path.exists());
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A stand-in for the desktop app's control channel: every request gets `reply` as its result.
+fn fake_app(reply: Value) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let reply = reply.clone();
+            std::thread::spawn(move || {
+                let mut w = conn.try_clone().unwrap();
+                for line in std::io::BufReader::new(conn).lines().map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    if writeln!(w, "{}", json!({"id": req["id"], "ok": true, "result": reply})).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// `export --queue` judges only the items it queued. `export.queue.add` answers with the whole queue,
+/// and with `--bridge` the app's queue can hold items queued earlier: one that failed, drew offline
+/// media or wrote another file is not this export's, while the new item's own failure still counts.
+#[test]
+fn a_queued_export_reads_only_the_items_it_added() {
+    let offline = json!([{"item": 8, "name": "a.mp4", "path": "/m/a.mp4", "status": "missing", "error": ""}]);
+    let item = |id: u64, status: &str, path: &str, offline: &Value| json!({"id": id, "status": status, "path": path, "offlineMedia": offline});
+    let new = item(2, "done", "new.wav", &json!([]));
+    let cases = [
+        ("an older item failed", item(1, "failed", "earlier-item.wav", &json!([])), new.clone(), true, "exported new.wav in "),
+        ("an older item drew offline media", item(1, "done", "earlier-item.wav", &offline), new.clone(), true, "exported new.wav in "),
+        ("an older item wrote its file", item(1, "done", "earlier-item.wav", &json!([])), new.clone(), true, "exported new.wav in "),
+        ("the new item failed", item(1, "done", "earlier-item.wav", &json!([])), item(2, "failed", "new.wav", &json!([])), false, "queue: "),
+        (
+            "the new item drew offline media",
+            item(1, "done", "earlier-item.wav", &json!([])),
+            item(2, "done", "new.wav", &offline),
+            false,
+            "1 offline media item(s)",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, older, new, ok, says) in cases {
+        let addr = fake_app(json!({"added": [2], "items": [older, new], "warnings": []}));
+        let o = cli(&["--bridge", &addr, "--compact", "export", "new.wav", "--format", "wav", "--queue"]);
+        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+        if o.status.success() != ok || !stderr.contains(says) || stderr.contains("earlier-item") {
+            wrong.push(format!("{name}: exit {:?}, stderr {stderr:?}", o.status.code()));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 #[test]
