@@ -65,10 +65,102 @@ struct Mp4Audio {
     state: Mutex<AudioState>,
     /// Packet start positions in source sample frames (see [`audio_starts`]).
     starts: Vec<i64>,
+    windows: PacketWindows,
+    ordered: bool,
     /// Presentation offset of the track in its timescale (edit list, or Opus pre-skip).
     offset: i64,
     /// Decoder pre-roll after a seek, in source sample frames (0: prime with one packet).
     preroll: i64,
+}
+
+/// Upper bounds for the number of decoded source frames. MPEG audio and AC-3 packets
+/// can contain multiple frames: a single frame's duration is not a packet bound.
+#[derive(Clone, Copy)]
+enum DecodedSpan {
+    Fixed(u32),
+    Pcm(u32),
+    Packed { min_bytes: u32, max_frames: u32 },
+}
+
+impl DecodedSpan {
+    fn for_codec(codec: Option<&CodecConfig>) -> Self {
+        match codec {
+            Some(CodecConfig::Pcm(p)) => Self::Pcm(u32::from(p.bits).div_ceil(8).saturating_mul(p.channels.max(1))),
+            Some(CodecConfig::Aac(_)) => Self::Fixed(2048), // one 1024-frame block, possibly doubled for SBR
+            Some(CodecConfig::Opus(_)) => Self::Fixed(5760),
+            // Smallest supported MPEG audio frame: Layer III, 8 kb/s at 24 kHz (72 * 8000 / 24000).
+            Some(CodecConfig::Mp3) => Self::Packed { min_bytes: 24, max_frames: 1152 },
+            Some(CodecConfig::Ac3 { .. } | CodecConfig::Eac3 { .. }) => Self::Packed { min_bytes: 4, max_frames: 1536 },
+            Some(CodecConfig::Flac(_)) => Self::Fixed(65536),
+            Some(CodecConfig::Alac { cookie }) => Self::Fixed(cookie.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes).unwrap_or(u32::MAX)),
+            _ => Self::Fixed(0), // unsupported sample descriptions have no decoded frames
+        }
+    }
+
+    fn frames(self, size: u32) -> u64 {
+        match self {
+            Self::Fixed(n) => u64::from(n),
+            Self::Pcm(stride) => u64::from(size.checked_div(stride).unwrap_or(0)),
+            Self::Packed { min_bytes, max_frames } => u64::from(size / min_bytes) * u64::from(max_frames),
+        }
+    }
+}
+
+/// Subtract the two presentation endpoints on the source-frame grid used by audio_starts.
+fn duration_frames(sample: &Sample, rate: u32, timescale: u32) -> u64 {
+    let ts = i128::from(timescale.max(1));
+    let phase = (i128::from(sample.pts) * i128::from(rate)).rem_euclid(ts);
+    ((phase + i128::from(sample.duration) * i128::from(rate)) / ts) as u64
+}
+
+/// Index groups of consecutive packets, not individual decoded buffers. A large packet
+/// extends its own group's search range without pulling in all intervening packets.
+const WINDOW_GROUP: usize = 64;
+struct PacketWindows {
+    groups: Vec<(i64, i64)>, // minimum start and maximum inclusive end per group
+    run_ends: Vec<usize>,    // both bounds are monotone within each run of groups
+    decoded: DecodedSpan,
+    rate: u32,
+    timescale: u32,
+}
+
+impl PacketWindows {
+    fn last(&self, start: i64, sample: &Sample) -> i128 {
+        let n = self.decoded.frames(sample.size).max(duration_frames(sample, self.rate, self.timescale));
+        i128::from(start) + i128::from(n) - 1
+    }
+
+    fn new(starts: &[i64], samples: &[Sample], decoded: DecodedSpan, rate: u32, timescale: u32) -> Self {
+        let mut index = Self { groups: Vec::new(), run_ends: Vec::new(), decoded, rate, timescale };
+        for (times, packets) in starts.chunks(WINDOW_GROUP).zip(samples.chunks(WINDOW_GROUP)) {
+            let first = times.iter().copied().min().unwrap_or(i64::MAX);
+            let last = times.iter().zip(packets).map(|(&t, p)| index.last(t, p)).max().unwrap_or(i128::from(i64::MIN));
+            let last = last.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+            if index.groups.last().is_some_and(|&(a, b)| first < a || last < b) {
+                index.run_ends.push(index.groups.len());
+            }
+            index.groups.push((first, last));
+        }
+        index
+    }
+
+    fn window<'a>(&'a self, starts: &'a [i64], samples: &'a [Sample], start: i64, len: i64) -> impl Iterator<Item = usize> + 'a {
+        let end = i128::from(start) + i128::from(len);
+        let mut base = 0;
+        self.run_ends
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.groups.len()))
+            .flat_map(move |limit| {
+                let i = base;
+                base = limit;
+                let groups = &self.groups[i..limit]; // boundaries were recorded from this vector
+                let lo = groups.partition_point(|&(_, last)| last < start);
+                let hi = groups.partition_point(|&(first, _)| i128::from(first) < end);
+                (i + lo).saturating_mul(WINDOW_GROUP)..(i + hi).saturating_mul(WINDOW_GROUP).min(starts.len())
+            })
+            .filter(move |&i| starts.get(i).zip(samples.get(i)).is_some_and(|(&t, p)| i128::from(t) < end && self.last(t, p) >= i128::from(start)))
+    }
 }
 
 pub struct Mp4Source {
@@ -123,14 +215,13 @@ fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec
 }
 
 /// Return source-rate buffer indices overlapped by a failed packet's concealment span.
-/// Packet positions are audio frames, but duration is raw track-timescale ticks
-/// treated as a frame count here; the span is clipped to the request.
-fn failed_audio_span(packet_start: i64, request_start: i64, duration: u32, request_len: usize) -> std::ops::Range<usize> {
+/// Positions and duration are all in source frames; the span is clipped to the request.
+fn failed_audio_span(packet_start: i64, request_start: i64, duration: u64, request_len: usize) -> std::ops::Range<usize> {
     let begin = usize::try_from(packet_start.saturating_sub(request_start).max(0)).unwrap_or(usize::MAX).min(request_len);
     let end = if duration == 0 {
         begin
     } else {
-        let last = packet_start.saturating_add(i64::from(duration) - 1).saturating_sub(request_start);
+        let last = i64::try_from(i128::from(packet_start) + i128::from(duration) - 1).unwrap_or(i64::MAX).saturating_sub(request_start);
         usize::try_from((i128::from(last) + 1).max(0)).unwrap_or(usize::MAX).min(request_len)
     };
     begin..end
@@ -375,6 +466,9 @@ impl Mp4Source {
             .filter_map(|(&i, ainfo)| {
                 let t = file.tracks.get(i)?;
                 let starts = audio_starts(&file, &bytes, i, ainfo.sample_rate);
+                let ordered = starts.is_sorted();
+                let decoded = DecodedSpan::for_codec(t.codec());
+                let windows = PacketWindows::new(&starts, &t.samples, decoded, ainfo.sample_rate, t.timescale);
                 let ts = t.timescale.max(1) as i64;
                 let (offset, preroll) = match t.entries.first().map(|e| &e.codec) {
                     Some(CodecConfig::Opus(o)) => {
@@ -385,12 +479,17 @@ impl Mp4Source {
                     _ => (t.edit_offset, 0),
                 };
                 let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
-                Some(Mp4Audio { track: i, state, starts, offset, preroll })
+                Some(Mp4Audio { track: i, state, starts, windows, ordered, offset, preroll })
             })
             .collect();
-        rebase_unedited_media(&mut file, vtrack, &mut audios);
+        rebase_unedited_media(&mut file, vtrack, &mut audios, &info.audio_streams);
         // Measure the end on the same timeline as frame lookup, before the optional jitter snap.
-        info.duration = vtrack.or(atracks.first().copied()).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
+        info.duration = if let Some(video) = vtrack {
+            file.tracks.get(video).map(|t| presentation_duration(&file, t))
+        } else {
+            atracks.iter().filter_map(|&i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).max()
+        }
+        .unwrap_or_default();
         snap_to_frame_grid(&mut file, vtrack);
         let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
             let t = &file.tracks[i];
@@ -434,7 +533,11 @@ impl Mp4Source {
                 if st.last_decoded.is_none_or(|l| l + 1 != i) {
                     let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
                     d.reset();
-                    let from = if a.preroll > 0 {
+                    let from = if a.preroll > 0 && !a.ordered {
+                        // Opus packets contain at least 120 frames (2.5 ms at 48 kHz). Prime
+                        // in decode order even when presentation timestamps go backwards.
+                        i.saturating_sub(crate::audio::OPUS_PRE_ROLL.div_ceil(120) as usize)
+                    } else if a.preroll > 0 {
                         a.starts.partition_point(|&x| x <= pk_start.saturating_sub(a.preroll)).saturating_sub(1)
                     } else {
                         i.saturating_sub(1)
@@ -525,22 +628,17 @@ impl MediaSource for Mp4Source {
         let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
         let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
-        let first = a.starts.partition_point(|&x| x <= s0.max(0)).saturating_sub(1);
-        let mut i = first;
-        while let Some(sample) = track.samples.get(i) {
+        for i in a.windows.window(&a.starts, &track.samples, s0, need_i64) {
+            let Some(sample) = track.samples.get(i) else { break };
             let Some(&pk_start) = a.starts.get(i) else { break };
-            if pk_start >= s0.saturating_add(need_i64) {
-                break;
-            }
             let pk = self.audio_packet(a, ainfo, &mut st, i)?;
             if pk.failed {
-                let range = failed_audio_span(pk_start, s0, sample.duration, src.first().map_or(0, Vec::len));
+                let range = failed_audio_span(pk_start, s0, duration_frames(sample, src_rate, track.timescale), src.first().map_or(0, Vec::len));
                 for dst in &mut src {
                     if let Some(span) = dst.get_mut(range.clone()) {
                         span.fill(0.0);
                     }
                 }
-                i += 1;
                 continue;
             }
             for (c, dst) in src.iter_mut().enumerate() {
@@ -552,7 +650,6 @@ impl MediaSource for Mp4Source {
                     }
                 }
             }
-            i += 1;
         }
         drop(st);
         if src_rate == sample_rate {
@@ -884,7 +981,7 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
 /// Every track moves back by the earliest start among them, video and audio alike, so the streams
 /// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
 /// rebased on its own. An unedited audio-only file starts at its earliest packet origin.
-fn rebase_unedited_media(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
+fn rebase_unedited_media(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio], streams: &[AudioStreamInfo]) {
     let Some(primary) = vtrack.or_else(|| audios.first().map(|a| a.track)) else { return };
     let Some(t) = file.tracks.get(primary).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
     // An audio-only file has no video clock. Normalize its common packet origin too, but do not
@@ -892,16 +989,19 @@ fn rebase_unedited_media(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
     if vtrack.is_none() && audios.iter().any(|a| file.tracks.get(a.track).is_some_and(|t| !t.edits.is_empty())) {
         return;
     }
-    let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
     let vts = i64::from(t.timescale);
-    let primary_start = Tick::from_rational(first, 1, vts);
-    let audio_ts = |a: &Mp4Audio| file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
-    // The edit/pre-skip offset is relative to the first packet's PTS, not necessarily zero:
-    // fragmented audio carries its own tfdt origin. Negative presentation time hides priming.
-    let shift = audios.iter().fold(primary_start, |m, a| {
-        let first = file.tracks.get(a.track).and_then(|t| t.samples.first()).map_or(0, |s| s.pts);
+    let first = t.samples.iter().map(|s| s.pts).min().unwrap_or(0).saturating_add(t.edit_offset);
+    let video_start = vtrack.map(|_| Tick::from_rational(first, 1, vts));
+    // Packet starts are already smoothed and expressed in source frames; offsets use track units.
+    // For audio-only Opus leave the pre-skip in place at the common packet origin.
+    let shift = audios.iter().zip(streams).fold(video_start.unwrap_or(Tick(i64::MAX)), |m, (a, stream)| {
+        let earliest = if !a.ordered { a.starts.iter().min() } else { a.starts.first() }.copied().unwrap_or(0);
+        let ts = file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
         let offset = if vtrack.is_some() { a.offset } else { a.offset.max(0) };
-        m.min(Tick::from_rational(first.saturating_add(offset).max(0), 1, audio_ts(a)))
+        let rate = i64::from(stream.sample_rate);
+        let frames = i128::from(earliest) + i128::from(offset) * i128::from(rate) / i128::from(ts);
+        let start = Tick::from_rational(i64::try_from(frames.max(0)).unwrap_or(i64::MAX), 1, rate);
+        m.min(start)
     });
     if shift <= Tick::ZERO {
         return;
@@ -914,7 +1014,7 @@ fn rebase_unedited_media(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
             t.edit_offset = t.edit_offset.saturating_sub(d);
         }
     }
-    let v = if shift == primary_start { first } else { shift.to_rational_round(1, vts) };
+    let v = if Some(shift) == video_start { first } else { shift.to_rational_round(1, vts) };
     if let Some(t) = vtrack.and_then(|vi| file.tracks.get_mut(vi)) {
         t.edit_offset = t.edit_offset.saturating_sub(v);
     }
@@ -992,15 +1092,16 @@ mod multi_audio_tests {
     #[test]
     fn every_audio_track_is_inspected_and_decoded_independently() {
         let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-        for (rate, value) in [(48_000u32, 8192i16), (24_000, -16384)] {
+        for (rate, value, frames) in [(48_000u32, 8192i16, 4800), (24_000, -16384, 4800)] {
             let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
             let track = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
-            let data: Vec<u8> = (0..rate / 10).flat_map(|_| value.to_le_bytes()).collect();
-            mux.write_sample(track, WriteSample { data: &data, duration: rate / 10, composition_offset: 0, is_sync: true }).unwrap();
+            let data: Vec<u8> = (0..frames).flat_map(|_| value.to_le_bytes()).collect();
+            mux.write_sample(track, WriteSample { data: &data, duration: frames, composition_offset: 0, is_sync: true }).unwrap();
         }
         let bytes = mux.finish().unwrap().into_inner();
         let source = super::Mp4Source::open("two.mov", bytes.into()).unwrap();
         assert_eq!(source.info().audio_streams.iter().map(|a| a.sample_rate).collect::<Vec<_>>(), vec![48_000, 24_000]);
+        assert_eq!(source.info().duration, filmcraft_time::Tick::from_units(4800, 24000));
         let primary = source.audio(0, 100, 48_000).unwrap();
         let secondary = source.audio_stream(1, 0, 100, 48_000).unwrap();
         assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
@@ -1083,20 +1184,20 @@ mod corrupt_audio_tests {
         let max = i64::MAX;
         for start in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
             for request in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
-                for duration in [0, 1, 2, 5, 128] {
+                for duration in [0u32, 1, 2, 5, 128] {
                     let old: Vec<_> = (0..duration)
                         .map(|k| start.saturating_add(i64::from(k)).saturating_sub(request))
                         .filter(|&position| (0..8).contains(&position))
                         .map(|position| position as usize)
                         .collect();
-                    let range = super::failed_audio_span(start, request, duration, 8);
+                    let range = super::failed_audio_span(start, request, u64::from(duration), 8);
                     let actual: Vec<_> = (0..8).filter(|position| range.contains(position)).collect();
                     let expected: Vec<_> = old.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                     assert_eq!(actual, expected, "start={start}, request={request}, duration={duration}");
                 }
             }
         }
-        assert_eq!(super::failed_audio_span(0, 0, u32::MAX, 128), 0..128);
+        assert_eq!(super::failed_audio_span(0, 0, u64::MAX, 128), 0..128);
     }
 
     #[test]
@@ -1129,23 +1230,17 @@ mod corrupt_audio_tests {
         units.extend(encoder.flush());
         assert!(units.len() >= 2);
         let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
-        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(vec![0x11, 0x88], 1, rate), rate)).unwrap();
-        mux.write_sample(track, WriteSample { data: &units[0], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
-        mux.write_sample(track, WriteSample { data: &units[1], duration: 400, composition_offset: 0, is_sync: true }).unwrap();
-        mux.write_sample(track, WriteSample { data: &[], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(vec![0x11, 0x88], 1, rate), 1000)).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[0], duration: 21, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[1], duration: 8, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &[], duration: 3, composition_offset: 0, is_sync: true }).unwrap();
         let source = super::Mp4Source::open("overlap.m4a", mux.finish().unwrap().into_inner().into()).unwrap();
-        // The failed packet starts at 1024 + 400 = 1424, after 124 frames of the crossing read.
-        let crossing = source.audio(1300, 256, rate).unwrap();
-        let isolated = source.audio(1424, 132, rate).unwrap();
-        let prior_packet_len = {
-            let audio = &source.audios[0];
-            let info = &source.info.audio_streams[0];
-            let mut state = audio.state.lock().unwrap();
-            source.audio_packet(audio, info, &mut state, 1).unwrap().samples.first().map_or(0, Vec::len)
-        };
-        assert!(prior_packet_len > 400, "valid packet must overlap the failed packet");
-        assert!(crossing.channels[0][..124].iter().any(|v| v.abs() > 0.001));
-        assert!(isolated.channels[0].iter().all(|&v| v == 0.0));
-        assert_eq!(&crossing.channels[0][124..], &isolated.channels[0]);
+        // On a millisecond clock, the failed packet covers [1392, 1536) at 48 kHz.
+        let crossing = source.audio(1300, 400, rate).unwrap();
+        assert!(crossing.channels[0][..92].iter().any(|v| v.abs() > 0.001));
+        assert!(crossing.channels[0][92..236].iter().all(|&v| v == 0.0));
+        assert!(crossing.channels[0][236..].iter().any(|v| v.abs() > 0.001));
+        assert_eq!(&crossing.channels[0][92..], &source.audio(1392, 308, rate).unwrap().channels[0]);
+        assert_eq!(&crossing.channels[0][236..], &source.audio(1536, 164, rate).unwrap().channels[0]);
     }
 }

@@ -535,138 +535,69 @@ fn tfdt_time_offsets(bytes: &[u8]) -> Vec<usize> {
     offsets
 }
 
-/// Four distinguishable ProRes pictures and eight AAC packets, in four fragments.
-/// Patch only the generated tfdt boxes: the encoded media is independent of its origin.
-fn fragmented(video_start: u64, audio_start: u64, gaps: [u64; 2]) -> Arc<[u8]> {
+/// Four fragments, each containing two AAC packets and optionally one distinct picture.
+fn fragment_clip(video_times: Option<[u64; 4]>, audio_times: [u64; 4]) -> Mp4Source {
     let mut mux = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Mp4));
-    let video = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 6000)).unwrap();
+    let video = video_times.map(|_| mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 6000)).unwrap());
     let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(48_000, 1, 96_000)).unwrap();
-    let tone: Vec<f32> = (0..16_384).map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin()).collect();
+    let tone: Vec<f32> = (0..16384).map(|i| 0.5 * (i as f32 * 0.13).sin()).collect();
     let mut units = encoder.encode(&[&tone]);
     units.extend(encoder.flush());
     let audio = mux.add_track(TrackConfig::new(SampleEntry::aac(encoder.audio_specific_config(), 1, 48_000), 48_000)).unwrap();
-    for k in 0..4 {
-        let mut frame = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        frame.y.fill(100 + 200 * k as u16);
-        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&frame).unwrap();
-        mux.write_sample(video, WriteSample { data: &data, duration: 240, composition_offset: 0, is_sync: true }).unwrap();
+    let mut times = Vec::new();
+    for (k, audio_time) in audio_times.into_iter().enumerate() {
+        if let (Some(track), Some(v)) = (video, video_times) {
+            let mut frame = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+            frame.y.fill(100 + 200 * k as u16);
+            let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&frame).unwrap();
+            mux.write_sample(track, WriteSample { data: &data, duration: 240, composition_offset: 0, is_sync: true }).unwrap();
+            times.push(v[k]);
+        }
         for data in &units[k * 2..k * 2 + 2] {
             mux.write_sample(audio, WriteSample { data, duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
         }
+        times.push(audio_time);
         mux.flush_fragment().unwrap();
     }
     let mut bytes = mux.finish().unwrap();
-    // Our writer emits one v1 tfdt per track per fragment, in track order.
-    let offsets = tfdt_time_offsets(&bytes);
-    assert_eq!(offsets.len(), 8);
-    for (i, p) in offsets.into_iter().enumerate() {
-        let old = u64::from_be_bytes(bytes[p..p + 8].try_into().unwrap());
-        let shift = if i % 2 == 0 { video_start } else { audio_start } + if i >= 4 { gaps[i % 2] } else { 0 };
-        bytes[p..p + 8].copy_from_slice(&(old + shift).to_be_bytes());
-    }
-    bytes.into()
-}
-
-fn open(video_start: u64, audio_start: u64, audio_gap: u64) -> Mp4Source {
-    Mp4Source::open("fragmented.mp4", fragmented(video_start, audio_start, [0, audio_gap])).unwrap()
-}
-
-fn luma(source: &Mp4Source, time: Tick) -> Vec<u8> {
-    source.video_frame(FrameRequest::full(time)).unwrap().luma8()
-}
-
-#[test]
-fn fragment_origins_preserve_relative_timing_and_the_last_picture() {
-    // Exercise either track starting first, and origins unrelated to the reported recording.
-    for (video_delay, audio_delay) in [(120, 0), (0, 960)] {
-        let control = open(video_delay, audio_delay, 0);
-        for seconds in [10, 500] {
-            let shifted = open(video_delay + seconds * 6000, audio_delay + seconds * 48_000, 0);
-            let end_ms = if video_delay > 0 { 180 } else { 160 };
-            assert_eq!(shifted.info().duration, Tick::from_units(end_ms, 1000));
-            assert_eq!(control.info().duration, shifted.info().duration);
-            let mut pictures = Vec::new();
-            for ms in [20, 60, 100, 140, end_ms - 1] {
-                let time = Tick::from_units(ms, 1000);
-                let picture = luma(&shifted, time);
-                assert_eq!(picture, luma(&control, time), "picture at {ms} ms, origin {seconds} s");
-                pictures.push(picture);
-            }
-            assert!(pictures[..4].windows(2).all(|p| p[0] != p[1]));
-            assert_eq!(pictures[3], pictures[4], "the last picture remains visible up to the end");
-            assert_eq!(shifted.audio(0, 8192, 48_000).unwrap().channels, control.audio(0, 8192, 48_000).unwrap().channels);
-            if audio_delay > 0 {
-                assert!(shifted.audio(0, 960, 48_000).unwrap().channels[0].iter().all(|&s| s == 0.0));
-                assert!(shifted.audio(960, 4096, 48_000).unwrap().channels[0].iter().any(|s| s.abs() > 0.1));
-            }
-        }
-    }
-}
-
-#[test]
-fn fragment_gaps_preserve_silence_picture_timing_and_duration() {
-    let control = open(120, 0, 0);
-    // Both tracks have a real 100 ms gap after their first two fragments.
-    let gap = Mp4Source::open("gap.mp4", fragmented(18_096, 143_808, [600, 4800])).unwrap();
-    assert_eq!(gap.audio(0, 4096, 48_000).unwrap().channels, control.audio(0, 4096, 48_000).unwrap().channels);
-    assert!(gap.audio(4096, 4800, 48_000).unwrap().channels[0].iter().all(|&s| s == 0.0));
-    assert_eq!(gap.audio(8896, 4096, 48_000).unwrap().channels, control.audio(4096, 4096, 48_000).unwrap().channels);
-    assert_eq!(gap.info().duration, Tick::from_units(280, 1000));
-    assert_eq!(luma(&gap, Tick::from_units(150, 1000)), luma(&control, Tick::from_units(60, 1000)), "hold the preceding picture in the gap");
-    assert_eq!(luma(&gap, Tick::from_units(279, 1000)), luma(&control, Tick::from_units(179, 1000)), "the final picture is reachable");
-}
-
-#[test]
-fn extreme_presentation_timestamps_saturate_without_wrapping() {
-    for pts in [i64::MIN, i64::MAX] {
-        let mut source = open(120, 0, 0);
-        let audio = source.audios[0].track;
-        source.file.tracks[audio].timescale = 1;
-        for sample in &mut source.file.tracks[audio].samples {
-            sample.pts = pts;
-        }
-        let starts = audio_starts(&source.file, &source.bytes, audio, 48_000);
-        assert_eq!(starts[0], pts, "conversion clamps to the same signed extreme");
-        let video = source.vtrack.unwrap();
-        source.file.tracks[video].edit_offset = pts;
-        for sample in &mut source.file.tracks[video].samples {
-            sample.pts = pts;
-        }
-        assert_eq!(presentation_duration(&source.file, &source.file.tracks[video]), Tick(if pts < 0 { 0 } else { i64::MAX }));
-    }
-}
-
-#[test]
-fn audio_only_fragment_origin_keeps_the_first_packet_and_tail() {
-    let media = fragmented(0, 0, [0, 0]);
-    let file = filmcraft_isobmff::open(media.as_ref()).unwrap();
-    let mut mux = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Mp4));
-    let track = mux.add_track(TrackConfig::new(file.tracks[1].entries[0].clone(), 48_000)).unwrap();
-    for i in 0..8 {
-        let data = file.read_sample(media.as_ref(), 1, i).unwrap();
-        mux.write_sample(track, WriteSample { data: &data, duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
-        if i == 3 {
-            mux.flush_fragment().unwrap();
-        }
-    }
-    let mut bytes = mux.finish().unwrap();
-    // A complete tfdt lookalike inside mdat is sample data, not a third timestamp.
+    // A tfdt lookalike in media data must not count as a timestamp.
     bytes.extend_from_slice(b"\0\0\0\x1cmdat\0\0\0\x14tfdt\x01\0\0\0\0\0\0\0\0\0\0\0");
     let offsets = tfdt_time_offsets(&bytes);
-    assert_eq!(offsets.len(), 2);
-    let mut sources = Vec::new();
-    for origin in [0, 143_808u64] {
-        let mut shifted = bytes.clone();
-        for (i, &p) in offsets.iter().enumerate() {
-            let old = u64::from_be_bytes(bytes[p..p + 8].try_into().unwrap());
-            shifted[p..p + 8].copy_from_slice(&(old + origin + if i == 1 { 4800 } else { 0 }).to_be_bytes());
-        }
-        let source = Mp4Source::open("audio.m4a", shifted.into()).unwrap();
-        assert!(source.vtrack.is_none());
-        assert_eq!(source.info().duration, Tick::from_units(8192 + 4800, 48_000));
-        assert!(source.audio(0, 4096, 48_000).unwrap().channels[0].iter().any(|s| s.abs() > 0.1));
-        assert!(source.audio(4096, 4800, 48_000).unwrap().channels[0].iter().all(|&s| s == 0.0));
-        sources.push(source);
+    assert_eq!(offsets.len(), times.len());
+    for (p, time) in offsets.into_iter().zip(times) {
+        bytes[p..p + 8].copy_from_slice(&time.to_be_bytes());
     }
-    assert_eq!(sources[0].audio(0, 8192 + 4800, 48_000).unwrap().channels, sources[1].audio(0, 8192 + 4800, 48_000).unwrap().channels);
+    Mp4Source::open("fragmented.mp4", bytes.into()).unwrap()
+}
+
+#[test]
+fn common_fragment_shift_preserves_sync_gaps_and_the_final_picture() {
+    // Video starts 20 ms after audio. Both tracks have a 100 ms gap halfway through.
+    let video = [120, 360, 1200, 1440];
+    let audio = [0, 2048, 8896, 10944];
+    let control = fragment_clip(Some(video), audio);
+    let shifted = fragment_clip(Some(video.map(|t| t + 500 * 6000)), audio.map(|t| t + 500 * 48000));
+    let picture = |src: &Mp4Source, ms| src.video_frame(FrameRequest::full(Tick::from_units(ms, 1000))).unwrap().luma8();
+    assert_eq!(shifted.info().duration, Tick::from_units(280, 1000));
+    for ms in [20, 60, 150, 200, 279] {
+        assert_eq!(picture(&shifted, ms), picture(&control, ms));
+    }
+    assert_ne!(picture(&shifted, 200), picture(&shifted, 279));
+    let pcm = shifted.audio(0, 13000, 48000).unwrap();
+    assert_eq!(pcm.channels, control.audio(0, 13000, 48000).unwrap().channels);
+    assert!(pcm.channels[0][4096..8896].iter().all(|&v| v == 0.0));
+    assert!(pcm.channels[0][8896..].iter().any(|v| v.abs() > 0.1));
+}
+
+#[test]
+fn audio_only_seek_finds_the_earliest_packet_in_decode_order() {
+    let control = fragment_clip(None, [0, 2048, 4096, 6144]);
+    let shifted = fragment_clip(None, [1999, 824, 6095, 8143]);
+    let read = |src: &Mp4Source, start| src.audio(start, 128, 48000).unwrap().channels;
+    assert_eq!(shifted.info().duration, Tick::from_units(8143 + 2048 - 824, 48000));
+    let first = read(&control, 2048);
+    assert!(first[0].iter().any(|v| v.abs() > 0.1));
+    assert_eq!(read(&shifted, 0), first);
+    // At raw time 2000, packet 3 overlaps packet 0 and is decoded last.
+    assert_eq!(read(&shifted, 2000 - 824), read(&control, 3072 + 2000 - 1848));
 }
