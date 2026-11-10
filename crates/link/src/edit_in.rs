@@ -1231,9 +1231,9 @@ mod tests {
         let (outer, inner, active, nest) = outer_and_inner(&session, &reply);
         assert_eq!(effect_ids(&session, active, outer).last().map(String::as_str), Some("lumetri"), "the outer clip must carry the effect");
         assert_eq!(effect_ids(&session, nest, inner), ["motion"], "the inner clip keeps what EffectCraft imports");
-        assert_eq!(reply["lifted_effects"], json!(["Lumetri Color"]));
+        assert_eq!(reply["lifted_effects"], json!(["Color Grading"]));
         let details = LinkNotice::from_reply(&reply).expect("a notice").details().join(" ");
-        assert_eq!(details, "Unimportable FilmCraft effects: Lumetri Color");
+        assert_eq!(details, "Unimportable FilmCraft effects: Color Grading");
         let payload = peer.calls[0]["payload"]["data"].as_str().unwrap();
         assert!(!payload.contains("Lumetri") && !payload.contains("lumetri"), "the payload still names the effect");
         assert!(payload.contains("Motion") || payload.contains("motion"), "the effect EffectCraft imports left the payload");
@@ -1314,7 +1314,7 @@ mod tests {
         let before = project_json(&session);
         let mut peer = Recording::ok();
         let reply = run(&mut session, &mut peer).expect("edit in");
-        assert_eq!(reply["lifted_effects"], json!(["Lumetri Color"]));
+        assert_eq!(reply["lifted_effects"], json!(["Color Grading"]));
         let media = ItemId(reply["item"].as_u64().unwrap());
         let active = session.state.active_sequence.unwrap();
         let outer = session.project.sequence(active).unwrap().video_tracks[0].items.iter().find(|c| c.item == media).unwrap().id;
@@ -1386,7 +1386,7 @@ mod tests {
         let reply = run(&mut session, &mut peer).expect("nest first");
         let pending = LinkNotice::from_reply(&reply).expect("a notice");
         assert!(pending.details().iter().any(|line| line.contains("shot.mov")), "{:?}", pending.details());
-        assert!(pending.details().iter().any(|line| line == "Unimportable FilmCraft effects: Lumetri Color"), "{:?}", pending.details());
+        assert!(pending.details().iter().any(|line| line == "Unimportable FilmCraft effects: Color Grading"), "{:?}", pending.details());
     }
 
     #[test]
