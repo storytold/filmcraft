@@ -5,9 +5,9 @@ use crate::spec_tables::{
     AFFINE, ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GM_ABS_ALPHA_BITS, GM_ABS_TRANS_BITS, GM_ABS_TRANS_ONLY_BITS, GM_ALPHA_PREC_BITS,
     GM_TRANS_ONLY_PREC_BITS, GM_TRANS_PREC_BITS, GOLDEN_FRAME, IDENTITY, INTER_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME, MAX_SEGMENTS, MAX_TILE_AREA,
     MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, NUM_REF_FRAMES, ONLY_4X4, PRIMARY_REF_NONE, REF_FRAME_LIST, REFS_PER_FRAME, RESTORATION_TILESIZE_MAX,
-    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER, ROTZOOM, SEG_LVL_ALT_Q, SEG_LVL_MAX, SEG_LVL_REF_FRAME, SELECT_INTEGER_MV,
-    SELECT_SCREEN_CONTENT_TOOLS, SUPERRES_DENOM_BITS, SUPERRES_DENOM_MIN, SUPERRES_NUM, SWITCH_FRAME, TOTAL_REFS_PER_FRAME, TRANSLATION, TX_MODE_LARGEST,
-    TX_MODE_SELECT, WARPEDMODEL_PREC_BITS,
+    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER, ROTZOOM, SEG_LVL_ALT_Q, SEG_LVL_MAX, SEG_LVL_REF_FRAME, SEGMENTATION_FEATURE_BITS,
+    SEGMENTATION_FEATURE_MAX, SEGMENTATION_FEATURE_SIGNED, SELECT_INTEGER_MV, SELECT_SCREEN_CONTENT_TOOLS, SUPERRES_DENOM_BITS, SUPERRES_DENOM_MIN,
+    SUPERRES_NUM, SWITCH_FRAME, TOTAL_REFS_PER_FRAME, TRANSLATION, TX_MODE_LARGEST, TX_MODE_SELECT, WARPEDMODEL_PREC_BITS,
 };
 use crate::{Error, Result};
 
@@ -1042,9 +1042,6 @@ impl FrameHeader {
     }
 
     fn segmentation_params(&mut self, r: &mut BitReader, st: &mut HeaderState) -> Result<()> {
-        const BITS: [u32; SEG_LVL_MAX] = [8, 6, 6, 6, 6, 3, 0, 0];
-        const SIGNED: [bool; SEG_LVL_MAX] = [true, true, true, true, true, false, false, false];
-        const MAX: [i32; SEG_LVL_MAX] = [255, 63, 63, 63, 63, 7, 0, 0];
         let s = &mut self.seg;
         s.enabled = r.flag()?;
         if s.enabled {
@@ -1066,9 +1063,9 @@ impl FrameHeader {
                         st.seg_features.enabled[i][j] = en;
                         let mut v = 0;
                         if en {
-                            let bits = BITS[j];
-                            let limit = MAX[j];
-                            if SIGNED[j] {
+                            let bits = SEGMENTATION_FEATURE_BITS[j] as u32;
+                            let limit = SEGMENTATION_FEATURE_MAX[j] as i32;
+                            if SEGMENTATION_FEATURE_SIGNED[j] != 0 {
                                 v = r.su(1 + bits)?.clamp(-limit, limit);
                             } else {
                                 v = (r.f(bits)? as i32).clamp(0, limit);
