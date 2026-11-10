@@ -109,14 +109,16 @@ impl PageWriter {
     fn add(&mut self, data: &[u8], granule: i64) -> Vec<u8> {
         let mut out = Vec::new();
         let mut rest = data;
+        let mut started = false;
         loop {
             if self.lacing.len() == 255 {
-                // The packet continues on the next page.
+                // A full page: the next one continues this packet, unless it has not begun yet.
                 self.emit(&mut out, false);
-                self.continued = true;
+                self.continued = started;
             }
             let n = rest.len().min(255);
             self.lacing.push(n as u8);
+            started = true;
             self.body.extend_from_slice(&rest[..n]);
             rest = &rest[n..];
             if n < 255 {

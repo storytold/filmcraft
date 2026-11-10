@@ -41,9 +41,22 @@ Channels are in Vorbis order (§4.3.9; 5.1 is L, C, R, Ls, Rs, LFE).
 Quality sets where the floor sits against the envelope, from each region's spectral flatness:
 tonal regions 4 dB (−1) to 30.4 dB (10) below it, noise-like regions 14 dB (−1) to 4.1 dB (10)
 above it, so noise is coded coarsely and tones finely; a dead zone (0.8 to 0.53 of a step) drops
-isolated noise peaks. The bit rate follows the material: on music-like test signals about 45, 55,
-105–130, 190–215 and 265–295 kbit/s for stereo at qualities −1, 0, 3, 6 and 10 (the export's size
-estimate assumes 190 kbit/s at 6).
+isolated noise peaks. The bit rate follows the material (the export's size estimate assumes
+190 kbit/s at quality 6).
+
+Measured on the test signals of `tests.rs` (3 s, stereo 48 kHz; SNR of the left channel as ffmpeg
+decodes it; waveform SNR understates a perceptual codec, so it is a regression guard, not a rating):
+
+| Quality | `music` (chord, steady −40 dB noise) | `chords` (harmonic chords, decaying noise bursts) |
+|---|---|---|
+| −1 | 10.0 dB, 26 kbit/s | 8.5 dB, 44 kbit/s |
+| 0 | 12.8 dB, 35 kbit/s | 9.9 dB, 55 kbit/s |
+| 3 | 18.9 dB, 102 kbit/s | 13.9 dB, 128 kbit/s |
+| 6 | 24.4 dB, 188 kbit/s | 17.9 dB, 214 kbit/s |
+| 10 | 32.1 dB, 264 kbit/s | 23.3 dB, 293 kbit/s |
+
+Speed: 60 s of stereo 48 kHz `chords` encodes in 0.23 s at quality −1, 0.43 s at 6 and 0.52 s at
+10 (one thread, release build), 115–260× real time.
 
 Not yet: short blocks (transients pre-echo), channel coupling, a psychoacoustic model beyond the
 smoothed envelope, bit-rate targets.

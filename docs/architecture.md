@@ -689,7 +689,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `filmcraft-aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
-| `vorbis` | `filmcraft-vorbis` (`audio.vorbisQuality` −1 to 10, the settings' sample rate, up to 5.1 in Vorbis channel order) | audio only: Ogg Vorbis `.ogg` (`filmcraft-ogg`; the last granule position trims the padding) |
+| `vorbis` | `filmcraft-vorbis` (`audio.vorbis_quality` −1 to 10, or the flat `vorbisQuality` parameter; the settings' sample rate, up to 5.1 in Vorbis channel order) | audio only: Ogg Vorbis `.ogg` (`filmcraft-ogg`; the last granule position trims the padding) |
 | `opus` | `filmcraft-opus` (CELT, the audio settings' bitrate, always 48 kHz, mono or stereo) | audio only: Ogg Opus `.opus` (`filmcraft-ogg` page writer; pre-skip in `OpusHead`, end trimming by the last granule position). `audio.codec: opus` also puts it in MP4 / MOV (`Opus` + `dOps`, pre-skip in an edit list) |
 | `mp3` | `filmcraft-mp3enc` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |

@@ -247,7 +247,10 @@ pub struct AudioSettings {
     pub float: bool,
     /// FLAC compression level, 0 (fastest) to 8 (smallest). Every level is lossless.
     pub flac_level: u8,
-    /// Vorbis quality, -1 (smallest) to 10 (best); the bit rate follows the material.
+    /// Vorbis quality, -1 (smallest) to 10 (best); the bit rate follows the material. Read as
+    /// `vorbis_quality` like the other audio keys, and as `vorbisQuality`, the `file.exportMedia`
+    /// parameter's spelling.
+    #[serde(alias = "vorbisQuality")]
     pub vorbis_quality: f32,
 }
 

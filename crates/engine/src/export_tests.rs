@@ -1162,3 +1162,24 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+/// `file.exportMedia` takes the Opus and Vorbis settings flat (`audioCodec`, `vorbisQuality`) and
+/// nested (`settings.audio.vorbis_quality`, or `vorbisQuality`), and refuses a codec the format
+/// cannot carry (review of #4481).
+#[test]
+fn export_parameters_take_opus_and_vorbis_settings() {
+    let s = Session::default();
+    let q = |p: serde_json::Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st);
+    let v = q(json!({"path": "a.ogg", "format": "vorbis", "vorbisQuality": 3.5})).unwrap();
+    assert_eq!((v.format, v.vorbis_quality()), (filmcraft_export::Format::Vorbis, 3.5));
+    for key in ["vorbis_quality", "vorbisQuality"] {
+        let v = q(json!({"path": "a.ogg", "format": "vorbis", "settings": {"audio": {key: 2.0}}})).unwrap();
+        assert_eq!(v.vorbis_quality(), 2.0, "{key}");
+    }
+    let o = q(json!({"path": "a.mp4", "format": "h264", "audioCodec": "opus"})).unwrap();
+    assert_eq!(o.audio_codec(), filmcraft_export::AudioCodec::Opus);
+    let e = q(json!({"path": "a.wav", "format": "wav", "audioCodec": "opus"})).unwrap_err().to_string();
+    assert!(e.contains("cannot carry"), "{e}");
+    let e = q(json!({"path": "a.wav", "format": "wav", "audioCodec": "speex"})).unwrap_err().to_string();
+    assert!(e.contains("opus | vorbis"), "{e}");
+}

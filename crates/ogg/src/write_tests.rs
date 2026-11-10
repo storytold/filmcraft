@@ -156,3 +156,33 @@ fn lacing_boundaries_read_back() {
         assert_eq!(ogg.read_packet(&f, 0, k).unwrap(), *p, "packet {k} of {} bytes", p.len());
     }
 }
+
+/// A page exactly full of lacing values when a packet starts: the packet begins on the next page,
+/// which must not be flagged as continuing one (the reader would drop its first packet). Review
+/// of #4481; reachable with page targets larger than the defaults.
+#[test]
+fn a_packet_after_an_exactly_full_page_is_not_a_continuation() {
+    let mut w = PageWriter::new(5).with_page_target(1 << 20, 1000);
+    let mut f = w.header(&opus_head(0));
+    f.extend(w.header(&opus_tags("v", &[])));
+    let packets: Vec<Vec<u8>> = (0..300).map(|i| opus_packet(i, 1)).collect();
+    for (i, p) in packets.iter().enumerate() {
+        f.extend(w.packet(p, (i as i64 + 1) * 960));
+    }
+    f.extend(w.finish(None));
+    let ogg = open(&f).unwrap();
+    assert!(ogg.warnings.is_empty(), "{:?}", ogg.warnings);
+    assert_eq!(ogg.streams[0].packets.len(), 300, "every packet is read back");
+    for (k, p) in packets.iter().enumerate() {
+        assert_eq!(&ogg.read_packet(&f, 0, k).unwrap(), p, "packet {k}");
+    }
+    // the second audio page starts with packet 255 and is not a continuation
+    let mut pos = 0;
+    let mut flags = Vec::new();
+    while pos + 27 <= f.len() {
+        let nseg = f[pos + 26] as usize;
+        flags.push(f[pos + 5]);
+        pos += 27 + nseg + f[pos + 27..pos + 27 + nseg].iter().map(|&l| l as usize).sum::<usize>();
+    }
+    assert!(flags.iter().all(|&fl| fl & 0x01 == 0), "no page continues a packet: {flags:?}");
+}

@@ -449,11 +449,16 @@ impl RangeEncoder {
         if self.out.len() > tail {
             return Err(overflow());
         }
+        // The last few raw bits go in the byte before the raw bytes. When that byte is the range
+        // coder's last one, they may use only its free low bits (`-l` after the flush): more would
+        // corrupt the range data (RFC 6716 §5.1.5), which happens when the caller coded past the
+        // frame's bit budget.
+        if used > 0 && self.out.len() == tail && used > (-l).max(0) {
+            return Err(overflow());
+        }
         let mut buf = self.out;
         buf.resize(tail, 0);
         buf.extend(self.end.iter().rev());
-        // The last few raw bits share a byte with the range coder's output: its unused low bits
-        // are zero, and the bit budget the frame was coded to keeps the two apart.
         if used > 0 {
             let at = tail.checked_sub(1).ok_or_else(overflow)?;
             if let Some(b) = buf.get_mut(at) {
@@ -613,6 +618,55 @@ mod tests {
             }
             assert!(!d.error);
         }
+    }
+
+    /// Frames packed to their exact size: whenever `done` accepts one, the decoder reads every
+    /// symbol and raw bit back (review of #4481: raw bits OR-ed into a range byte they collide
+    /// with were returned as a valid frame).
+    #[test]
+    fn a_frame_done_accepts_decodes_exactly() {
+        let mut rng = Lcg(7);
+        let (mut accepted, mut refused) = (0, 0);
+        for trial in 0..20_000 {
+            let size = 2 + (rng.next() % 6) as usize;
+            // within budget, or a few bits over it (a caller's bug that must not pass as a frame)
+            let budget = (size * 8) as i32 + if trial % 2 == 0 { 0 } else { (rng.next() % 8) as i32 };
+            let mut e = RangeEncoder::new(size);
+            let mut ops = Vec::new();
+            // add symbols and raw bits up to the exact bit budget, as CELT does
+            for _ in 0..200 {
+                let mut next = e.clone();
+                let op = if rng.next().is_multiple_of(2) {
+                    let logp = 1 + rng.next() % 4;
+                    let v = rng.next().is_multiple_of(3);
+                    next.bit_logp(v, logp);
+                    (0u8, v as u32, logp)
+                } else {
+                    let bits = 1 + rng.next() % 3;
+                    let v = rng.next() & ((1 << bits) - 1);
+                    next.bits(v, bits);
+                    (1, v, bits)
+                };
+                if next.tell() > budget {
+                    break;
+                }
+                e = next;
+                ops.push(op);
+            }
+            match e.done() {
+                Ok(buf) => {
+                    accepted += 1;
+                    assert_eq!(buf.len(), size);
+                    let mut d = RangeDecoder::new(&buf);
+                    for (i, &(k, v, p)) in ops.iter().enumerate() {
+                        let got = if k == 0 { d.bit_logp(p) as u32 } else { d.bits(p) };
+                        assert_eq!(got, v, "trial {trial} op {i}: a frame done() accepted decodes wrongly");
+                    }
+                }
+                Err(_) => refused += 1,
+            }
+        }
+        assert!(accepted > 10_000 && refused > 0, "accepted {accepted}, refused {refused}");
     }
 
     #[test]
