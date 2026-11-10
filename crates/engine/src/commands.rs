@@ -5385,6 +5385,14 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
+fn restore_loaded_view(s: &mut Session, view: filmcraft_project::ProjectView) {
+    if s.prefs.timeline.restore_open_sequences {
+        s.restore_project_view(view);
+    } else {
+        s.state.timeline_ui = view.timeline_ui.checked();
+    }
+}
+
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -5392,11 +5400,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
     if let Some(view) = loaded.view {
-        if s.prefs.timeline.restore_open_sequences {
-            s.restore_project_view(view);
-        } else {
-            s.state.timeline_ui = view.timeline_ui.checked();
-        }
+        restore_loaded_view(s, view);
     }
     // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {
@@ -5423,11 +5427,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
     if let Some(view) = loaded.view {
-        if s.prefs.timeline.restore_open_sequences {
-            s.restore_project_view(view);
-        } else {
-            s.state.timeline_ui = view.timeline_ui.checked();
-        }
+        restore_loaded_view(s, view);
     }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));

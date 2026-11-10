@@ -17,7 +17,7 @@
 //! I/O happen on the worker thread, so neither ever stalls the UI.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -546,6 +546,9 @@ pub struct JournalMeta {
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
+    /// Fingerprint of the paired snapshot. Older journals without one remain readable.
+    #[serde(default)]
+    pub snapshot_fingerprint: Option<u64>,
 }
 
 fn journal_dirty_by_default() -> bool {
@@ -607,6 +610,13 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             dirty: true,
             ..JournalMeta::default()
         });
+        if let Some(expected) = meta.snapshot_fingerprint
+            && read_snapshot_fingerprint(&snap).ok() != Some(expected)
+        {
+            // A dirty metadata update can reach disk before its replacement snapshot. Do not
+            // offer the previous clean snapshot as if it contained unsaved work.
+            continue;
+        }
         if !meta.dirty {
             // a clean project's view-only journal is not unsaved work: never offered as
             // recovery, and not left behind either
@@ -1170,15 +1180,48 @@ impl Worker {
 /// Write the snapshot and its metadata in an order that cannot hide a completed dirty snapshot.
 /// Dirty metadata is published first; clean metadata is published only after its snapshot.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let mut meta = meta.clone();
+    let previous_meta = fs::read(dir.join(META)).ok().and_then(|bytes| serde_json::from_slice::<JournalMeta>(&bytes).ok());
+    let previous_dirty = previous_meta.as_ref().map_or_else(|| dir.join(SNAPSHOT).is_file(), |previous| previous.dirty);
+    meta.snapshot_fingerprint = Some(snapshot_fingerprint(snapshot));
     let snapshot_path = dir.join(SNAPSHOT);
     let meta_path = dir.join(META);
-    let meta_bytes = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
-    if meta.dirty {
+    let meta_bytes = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
+    if meta.dirty && previous_dirty {
+        // Keep the last good dirty snapshot eligible until its replacement is durable.
+        let mut pending = previous_meta.unwrap_or_else(|| meta.clone());
+        pending.dirty = true;
+        pending.snapshot_fingerprint = None;
+        let pending_bytes = serde_json::to_vec_pretty(&pending).map_err(io::Error::other)?;
+        write(&meta_path, &pending_bytes)?;
+        write(&snapshot_path, snapshot)?;
+        let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
+        write(&meta_path, &metadata)
+    } else if meta.dirty {
         write(&meta_path, &meta_bytes)?;
         write(&snapshot_path, snapshot)
     } else {
         write(&snapshot_path, snapshot)?;
         write(&meta_path, &meta_bytes)
+    }
+}
+
+fn snapshot_fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3))
+}
+
+fn read_snapshot_fingerprint(path: &Path) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0_u8; 8192];
+    let mut hash = 0xcbf29ce484222325;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(hash);
+        }
+        for byte in &buffer[..count] {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
     }
 }
 
@@ -1208,7 +1251,7 @@ mod durability_tests {
     }
 
     #[test]
-    fn interrupted_clean_to_dirty_journal_write_keeps_the_snapshot_recoverable() {
+    fn failed_clean_to_dirty_pair_does_not_offer_a_stale_snapshot() {
         let d = std::env::temp_dir().join(format!("fc-recovery-dirty-transition-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let session = recovery_root(&d).join("1-1");
@@ -1227,9 +1270,34 @@ mod durability_tests {
         });
         assert!(result.is_err());
         let candidates = scan_candidates(&d, None);
-        assert_eq!(candidates.len(), 1, "dirty metadata must not let the scan delete the snapshot");
-        assert!(candidates[0].meta.dirty);
+        assert!(candidates.is_empty(), "metadata for a different snapshot must not advertise stale content as recovery");
         assert_eq!(filmcraft_format::decode(&fs::read(session.join(SNAPSHOT)).unwrap()).unwrap().project.name, "Saved");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn interrupted_dirty_to_dirty_update_keeps_previous_snapshot_recoverable() {
+        let d = std::env::temp_dir().join(format!("fc-recovery-dirty-update-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let session = recovery_root(&d).join("1-2");
+        fs::create_dir_all(&session).unwrap();
+        let old_project = Project::new("Previous unsaved work");
+        let old_snapshot = filmcraft_format::encode(&old_project, false);
+        write_recovery_pair(&session, &old_snapshot, &JournalMeta { dirty: true, revision: 1, ..JournalMeta::default() }, filmcraft_format::atomic_write)
+            .unwrap();
+        let next_snapshot = filmcraft_format::encode(&Project::new("Next unsaved work"), false);
+        let result = write_recovery_pair(&session, &next_snapshot, &JournalMeta { dirty: true, revision: 2, ..JournalMeta::default() }, |path, bytes| {
+            if path.ends_with(META) {
+                filmcraft_format::atomic_write(path, bytes)?;
+                return Err(io::Error::other("interrupted after pending metadata"));
+            }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), old_snapshot);
+        let candidates = scan_candidates(&d, None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(filmcraft_format::decode(&fs::read(&candidates[0].dir.join(SNAPSHOT)).unwrap()).unwrap().project, old_project);
         fs::remove_dir_all(&d).unwrap();
     }
 }
