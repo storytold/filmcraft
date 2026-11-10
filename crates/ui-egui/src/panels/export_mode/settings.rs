@@ -330,6 +330,9 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                             frame_rate: keep.frame_rate,
                             effects: keep.effects,
                             metadata: keep.metadata,
+                            // #1216: the CPU Threads cap is machine-wide, not per format: a switch
+                            // must not reset a picked cap (or an inherited default) to "All cores"
+                            max_threads: keep.max_threads,
                             ..Default::default()
                         };
                     }

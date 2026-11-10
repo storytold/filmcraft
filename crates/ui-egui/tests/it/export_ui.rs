@@ -707,3 +707,38 @@ fn an_explicit_preset_cap_equal_to_the_default_is_not_reseeded() {
     d.frames(4);
     assert_eq!(d.app().ui.export.settings.max_threads, 2, "the preset's own cap wins over a later default");
 }
+
+/// #1216: the CPU Threads cap is machine-wide, so switching the export format keeps it: a picked
+/// cap (and an inherited default) must not fall back to "All cores" on a format switch.
+#[test]
+fn a_format_switch_keeps_the_thread_cap() {
+    use filmcraft_engine::export::Format;
+
+    let mut d = Driver::new("export-threads-format-switch");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 2}}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    let pick = |d: &mut Driver, format: Format| {
+        let i = Format::ALL.iter().position(|f| *f == format).expect("in Format::ALL");
+        d.click("export.format");
+        d.click(&format!("export.format.option.{i}"));
+        d.frames(3);
+    };
+    // a picked cap survives a switch to another format and back
+    let from = d.app().ui.export.settings.format;
+    let other = Format::ALL.iter().copied().find(|f| *f != from && filmcraft_engine::export::available(*f)).expect("a second available format");
+    pick(&mut d, other);
+    assert_eq!(d.app().ui.export.settings.format, other, "the switch took");
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "a picked cap survives a format switch");
+    pick(&mut d, from);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "and back");
+    // an inherited default does too
+    d.app().ui.export.export_threads_inherited = true;
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3);
+    pick(&mut d, other);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3, "an inherited cap survives a format switch");
+}
