@@ -154,7 +154,77 @@ fn unlinked_roll_moves_only_this_cut() {
     assert_eq!(range(&s, v1), (f(36), f(96)));
     assert_eq!(range(&s, a0), (f(0), f(48)), "the linked sound cut stays");
     assert_eq!(range(&s, a1), (f(48), f(96)));
+    assert_eq!(source_in(&s, v1), f(36), "the right picture clip starts 12 frames earlier in its media");
+    assert_eq!(source_in(&s, a1), f(48), "the right sound clip's media is untouched");
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(range(&s, v0), (f(0), f(48)));
     assert_eq!(range(&s, v1), (f(48), f(96)));
+    assert_eq!(source_in(&s, v1), f(48));
+}
+
+/// Two linked clips whose left sound clip is cut down to 8 frames (40..48), so the linked sound
+/// cut can roll at most 7 frames left while the picture cut alone can roll 12.
+fn short_left_sound(s: &mut Session) -> [(ClipId, ClipId); 2] {
+    let clips = two_clips(s);
+    s.execute("timeline.trim", json!({"clip": clips[0].1.0, "edge": "in", "mode": "regular", "deltaFrames": 40, "linked": false})).unwrap();
+    clips
+}
+
+/// #4287: when the linked sound cut limits the roll and the picture cut alone does not, the
+/// Alt-roll preview (`roll_delta_linked(.., false)`) shows the picture's larger delta, and
+/// `timeline.roll` with `followLinks: false` applies exactly that delta; the plain roll stops
+/// where the sound clip keeps one frame.
+#[test]
+fn unlinked_roll_is_not_limited_by_the_linked_sound_cut() {
+    let mut s = Session::default();
+    let [(v0, a0), (v1, a1)] = short_left_sound(&mut s);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    assert_eq!(range(&s, a0), (f(40), f(48)));
+    assert_eq!(crate::commands::roll_delta_linked(&s, v0, v1, -f(12), true).unwrap(), -f(7), "linked: the sound clip keeps a frame");
+    let shown = crate::commands::roll_delta_linked(&s, v0, v1, -f(12), false).unwrap();
+    assert_eq!(shown, -f(12), "unlinked: only the picture pair limits the roll");
+    let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "deltaFrames": -12, "followLinks": false})).unwrap();
+    assert_eq!(r["delta"], json!(shown.0), "the preview and the roll agree: {r}");
+    assert_eq!(range(&s, v0), (f(0), f(36)));
+    assert_eq!(range(&s, v1), (f(36), f(96)));
+    assert_eq!(range(&s, a0), (f(40), f(48)), "the linked sound cut stays");
+    assert_eq!(range(&s, a1), (f(48), f(96)));
+}
+
+/// The plain roll of the same cut, linked cuts followed, stops at the sound clip's last frame.
+#[test]
+fn linked_roll_is_limited_by_the_linked_sound_cut() {
+    let mut s = Session::default();
+    let [(v0, a0), (v1, a1)] = short_left_sound(&mut s);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "deltaFrames": -12})).unwrap();
+    assert_eq!(r["delta"], json!((-f(7)).0), "{r}");
+    assert_eq!(r["pairs"], json!(2), "{r}");
+    assert_eq!(range(&s, v0), (f(0), f(41)));
+    assert_eq!(range(&s, a0), (f(40), f(41)));
+    assert_eq!(range(&s, v1), (f(41), f(96)));
+    assert_eq!(range(&s, a1), (f(41), f(96)));
+}
+
+/// With linked selection off, a plain roll does not follow links whatever `followLinks` says:
+/// the preview delta and the applied roll are the picture pair's alone.
+#[test]
+fn roll_without_linked_selection_ignores_follow_links() {
+    for follow in [true, false] {
+        let mut s = Session::default();
+        let [(v0, a0), (v1, a1)] = short_left_sound(&mut s);
+        s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+        let rate = s.sequence_rate();
+        let f = |n: i64| rate.tick_of(n);
+        assert_eq!(crate::commands::roll_delta_linked(&s, v0, v1, -f(12), follow).unwrap(), -f(12), "followLinks={follow}");
+        let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "deltaFrames": -12, "followLinks": follow})).unwrap();
+        assert_eq!(r["pairs"], json!(1), "followLinks={follow}: {r}");
+        assert_eq!(r["delta"], json!((-f(12)).0), "followLinks={follow}: {r}");
+        assert_eq!(range(&s, v0), (f(0), f(36)), "followLinks={follow}");
+        assert_eq!(range(&s, v1), (f(36), f(96)), "followLinks={follow}");
+        assert_eq!(range(&s, a0), (f(40), f(48)), "followLinks={follow}: the sound cut stays");
+        assert_eq!(range(&s, a1), (f(48), f(96)), "followLinks={follow}");
+    }
 }

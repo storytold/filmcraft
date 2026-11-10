@@ -985,6 +985,36 @@ mod trim_preview_tests {
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));
     }
+
+    /// #4287: the Rolling Edit preview moves the linked sound cut with the picture cut only when
+    /// the drag follows links (`linked`, no Alt) and linked selection is on; otherwise the sound
+    /// clips are not in the preview at all, so they stay drawn where they are.
+    #[test]
+    fn roll_preview_moves_the_linked_sound_cut_only_when_following_links() {
+        for (linked_selection, linked) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (mut app, seq) = demo();
+            app.session.execute("sequence.linkedSelection", serde_json::json!({"on": linked_selection})).unwrap();
+            let (left, right) = seq.video_tracks[0].items.windows(2).find(|w| w[0].end() == w[1].start).map(|w| (w[0].clone(), w[1].clone())).unwrap();
+            let sound = filmcraft_engine::commands::linked_roll_pairs(&seq, left.id, right.id, true);
+            assert_eq!(sound.len(), 2, "the demo's picture cut has a linked sound cut at the same time");
+            let (sound_l, sound_r) = sound[1];
+            let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 2);
+            app.tl.drag = Some(Drag::Roll { left: left.id, right: right.id, delta, from: Tick::ZERO, linked });
+            let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+            preview_drag(&app, &seq, &mut out, &mut edited);
+            let case = format!("linked_selection={linked_selection} linked={linked}");
+            assert_eq!(out.get(&left.id).map(|v| v.1), Some(left.duration + delta), "{case}: the picture cut rolls");
+            assert_eq!(out.get(&right.id).map(|v| v.0), Some(right.start + delta), "{case}");
+            if linked_selection && linked {
+                let (l, r) = (seq.find_item(sound_l).unwrap().1, seq.find_item(sound_r).unwrap().1);
+                assert_eq!(out.get(&sound_l).map(|v| v.1), Some(l.duration + delta), "{case}: the sound cut rolls along");
+                assert_eq!(out.get(&sound_r).map(|v| v.0), Some(r.start + delta), "{case}");
+            } else {
+                assert!(!out.contains_key(&sound_l) && !out.contains_key(&sound_r), "{case}: the sound cut stays: {out:?}");
+                assert!(!edited.contains_key(&sound_l) && !edited.contains_key(&sound_r), "{case}");
+            }
+        }
+    }
 }
 
 /// #1424: dragging a clip edge must not squeeze the waveform into the new clip width. The render
