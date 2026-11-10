@@ -117,7 +117,7 @@
 	Essential Graphics	ძირითადი გრაფიკა
 	Essential Sound	ძირითადი ხმა
 	Events	მოვლენები
-	Export	ექსპორტი
+	Export	ექსპორტირება
 	Export As Motion Graphics Template…	ექსპორტი მოძრავი გრაფიკის შაბლონად…
 	Extract	ამოღება
 	Extract Audio	აუდიოს ამოღება
@@ -190,8 +190,6 @@
 	Refresh Changed Media	შეცვლილი მედიის განახლება
 	Linked Selection	დაკავშირებული მონიშვნა
 	Lock Guides	დამხმარე ხაზების ჩაკეტვა
-	Lumetri Color	Lumetri Color
-	Lumetri Scopes	Lumetri Scopes
 	Magnification	გადიდების ხარისხი
 	Make Offline…	ოფლაინად გადაყვანა…
 	Make Subclip…	ქვეკლიპის შექმნა…
@@ -893,7 +891,6 @@
 	Clip Volume	კლიპის ხმის დონე
 	(no clip selected)	(კლიპი არ არის მონიშნული)
 	Master · {name}	მასტერი · {name}
-	Add Lumetri Color to clip	Lumetri Color-ის დამატება კლიპზე
 	Input LUT	შემავალი LUT
 	Color	ფერი
 	Temperature	ტემპერატურა
@@ -1672,7 +1669,6 @@
 	Elliptical	ელიფსური
 	Emboss	რელიეფი
 	Enable HSL Secondary	HSL მეორადის ჩართვა
-	Enable Mercury Transmit	Mercury Transmit-ის ჩართვა
 	Enable ProRes hardware accelerated encoding, if available	ProRes-ის აპარატურულად დაჩქარებული კოდირების ჩართვა, თუ ხელმისაწვდომია
 	Enable clip and XMP metadata linking	კლიპისა და XMP მეტამონაცემების დაკავშირების ჩართვა
 	Enable developer mode	დეველოპერის რეჟიმის ჩართვა
@@ -1691,7 +1687,7 @@
 	Exponential Fade	ექსპონენციალური მიქრობა
 	Extended Dynamic Range Monitoring	გაფართოებული დინამიკური დიაპაზონის მონიტორინგი
 	FFT Filter	FFT ფილტრი
-	Fade	მიქრობა
+	Fade	მილევა
 	Fade Out	ჩაქრობა
 	Faded Matte	გაცრეცილი მატი
 	Falloff	მილევა
@@ -1740,7 +1736,6 @@
 	Focus Size	ფოკუსის ზომა
 	Fold Motion	დაკეცვის მოძრაობა
 	Foldback	უკუდაკეცვა
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	ფერთა მართვის პარამეტრებისთვის გადადით Lumetri Color პანელის პარამეტრების ჩანართზე.
 	Format	ფორმატი
 	Four Scopes (RGB, 8 bit)	ოთხი სკოპი (RGB, 8 ბიტი)
 	Four Scopes (YUV, float, no clamp)	ოთხი სკოპი (YUV, მცურავი წერტილი, შეზღუდვის გარეშე)
@@ -2011,7 +2006,6 @@
 	Luma Key	სიკაშკაშის გასაღები
 	Luma Source	სიკაშკაშის წყარო
 	Luma and Chroma	სიკაშკაშე და ქრომა
-	Lumetri Presets	Lumetri-ის პრესეტები
 	Luminance	სიკაშკაშე
 	Luminance Threshold	სიკაშკაშის ზღვარი
 	Luminosity	ნათება
@@ -2851,7 +2845,7 @@
 	Loaded “{name}”	ჩატვირთულია „{name}“
 	My Shortcuts	ჩემი მალსახმობები
 	Deleted preset “{active}”	წაიშალა პრესეტი „{active}“
-	Export…	ექსპორტი…
+	Export…	ექსპორტირება…
 	Exported to {path}	ექსპორტირებულია: {path}
 	Export: no file chosen (agents: shortcuts.export {path})	ექსპორტი: ფაილი არ არის არჩეული (აგენტებისთვის: shortcuts.export {path})
 	Imported “{name}”	იმპორტირებულია „{name}“
@@ -3124,7 +3118,6 @@
 	Left align text	ტექსტის მარცხნივ სწორება
 	Looping GIF, 640×360 at 15 fps	ციკლური GIF, 640×360, 15 fps
 	Lower First	ჯერ ქვედა
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3772,3 +3765,27 @@
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) სეკვენციის ზომით, მუდმივი ხარისხი CRF 16, AAC 320 kbps; 10-ბიტიანი მასტერი
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, ყოველი კადრი საკვანძოა), CRF 12, AAC 320 kbps; მონტაჟისთვის მოსახერხებელი შუალედური ფორმატი
 	Full Screen Program Monitor	პროგრამის მონიტორი სრულ ეკრანზე
+
+# Strings added upstream (sync 2026-11-08)
+	Caption Track	სუბტიტრების ტრეკი
+	Color Grading	ფერის გრეიდინგი
+	Video Scopes	ვიდეოს სკოპები
+	Add Color Grading to clip	კლიპზე ფერის გრეიდინგის დამატება
+	Enable External Video Output	გარე ვიდეოგამოსავლის ჩართვა
+	For color management parameters, go to the Settings tab in the Color Grading panel.	ფერების მართვის პარამეტრებისთვის გადადით ფერის გრეიდინგის პანელის ჩანართზე „პარამეტრები“.
+	Color Grading Presets	ფერის გრეიდინგის პრესეტები
+	integrated GPU	ინტეგრირებული GPU
+	List Color Grading Presets	ფერის გრეიდინგის პრესეტების ჩამოთვლა
+	Apply Color Grading Preset	ფერის გრეიდინგის პრესეტის გამოყენება
+	Color Grading Preset Thumbnails	ფერის გრეიდინგის პრესეტების ესკიზები
+	Toggle Color Grading Section	ფერის გრეიდინგის განყოფილების გადართვა
+	Color Grading Section	ფერის გრეიდინგის განყოფილება
+	Read Video Scopes	ვიდეოს სკოპების წაკითხვა
+	Cube LUT	Cube LUT
+	Export .cube…	.cube-ის ექსპორტი…
+	Exported {path}; not in the LUT: {effects}	ექსპორტირებულია: {path}; LUT-ში არ შევიდა: {effects}
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG აუდიო (.mp3), ერთობლივი სტერეო 48 kHz, 320 kbps
+	This preference is not available yet.	ეს პარამეტრი ჯერ მიუწვდომელია.
+	Time Format	დროის ფორმატი
