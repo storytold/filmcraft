@@ -194,6 +194,17 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     }
 }
 
+/// Paste Insert is enabled when clips or captions are on the clipboard: copied keyframes paste with
+/// Paste only (there is nothing to ripple for them).
+fn has_insert_clipboard(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    match (s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty(), s.state.keyframe_clipboard.is_empty()) {
+        (false, _) => Ok(()),
+        (true, false) => Err("copied keyframes paste with Paste, not Paste Insert".into()),
+        (true, true) => Err("clipboard is empty".into()),
+    }
+}
+
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
 fn named_ids(spec: &CommandSpec, p: &Value, many: (&str, NamedKeys), one: (&str, NamedKeys)) -> Option<Vec<u64>> {
@@ -2133,7 +2144,7 @@ fn build() -> Vec<CommandSpec> {
             "Copy Keyframes",
             [],
             None,
-            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}|{"strip":id,"lane":str,"time":ticks}]}"#,
+            r#"{"keyframes":[{"clip":clipId,"effect":effectIndex (position in the clip's effect list),"param":str,"mask":maskIndex?,"time":mediaTicks (the key's time in the clip's media, as Effect Controls names it)}|{"strip":trackId,"lane":str ("volume", "pan", "send.0.level", "fx.0.<param>"…),"time":sequenceTicks}]} (the explicit copy; Edit ▸ Copy in the UI sends the keyframes selected in the Timeline or Effect Controls here, while edit.copy itself always copies clips or captions)"#,
             has_seq,
             crate::keyframe_clipboard::copy
         ),
@@ -2142,7 +2153,7 @@ fn build() -> Vec<CommandSpec> {
             "Paste",
             ["Edit"],
             Some("Cmd+V"),
-            r#"{"time":ticks?,"clip":id?,"strip":id?} (copied keyframes only; clips and captions take none)"#,
+            r#"{"time":sequenceTicks? (default: the playhead; or "frame", "seconds", "timecode"),"clip":clipId? (default: the first selected clip with the copied parameter, else the clip copied from),"strip":trackId|"A1"|"Mix"? (or "track"; default: the track copied from)} (copied keyframes only: the first key goes at `time`, keys outside the target clip are skipped; clips and captions take no parameters and refuse these)"#,
             has_clipboard,
             |s, p| paste(s, p, false)
         ),
@@ -2151,8 +2162,8 @@ fn build() -> Vec<CommandSpec> {
             "Paste Insert",
             ["Edit"],
             Some("Cmd+Shift+V"),
-            r#"{"time":ticks?,"clip":id?,"strip":id?} (copied keyframes only; clips and captions take none)"#,
-            has_clipboard,
+            "{} (clips and captions; disabled while keyframes are on the clipboard)",
+            has_insert_clipboard,
             |s, p| paste(s, p, true)
         ),
         cmd!(
@@ -4582,10 +4593,16 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
 
 /// Paste the clipboard at the playhead (`insert` ripples later clips right instead of
 /// overwriting). Caption clipboards go to the caption track. Pasted clips get fresh ids, links
-/// and groups of their own, are selected, and the playhead moves to their end.
+/// and groups of their own, are selected, and the playhead moves to their end. Copied keyframes go
+/// through [`crate::keyframe_clipboard::paste`] instead (Paste only: Paste Insert is disabled for
+/// them), which takes `time`, `clip` and `strip` and leaves the playhead; clips and captions refuse
+/// those parameters.
 fn paste(s: &mut Session, p: &Value, insert: bool) -> Result<Value> {
     if !s.state.keyframe_clipboard.is_empty() {
         return crate::keyframe_clipboard::paste(s, p);
+    }
+    if let Some(k) = crate::keyframe_clipboard::PASTE_KEYS.into_iter().find(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
+        return Err(bad(if insert { "edit.pasteInsert" } else { "edit.paste" }, format!("`{k}` applies to copied keyframes only")));
     }
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);

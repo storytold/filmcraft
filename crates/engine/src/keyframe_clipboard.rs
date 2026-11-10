@@ -55,7 +55,17 @@ enum KeyRef {
     },
 }
 
-/// The parameter behind a clip lane on `it`, if the clip has it.
+/// The parameter behind a clip lane on `it`, if the clip has it (the check paste picks a selected
+/// clip by, so it never picks one it then cannot paste on).
+fn clip_param<'a>(it: &'a filmcraft_project::TrackItem, effect: &str, nth: usize, mask: Option<usize>, param: &str) -> Option<&'a Param> {
+    let e = it.effects.iter().filter(|e| e.effect == effect).nth(nth)?;
+    match mask {
+        Some(m) => e.masks.get(m)?.param(param),
+        None => e.params.get(param),
+    }
+}
+
+/// [`clip_param`], to write to.
 fn clip_param_mut<'a>(it: &'a mut filmcraft_project::TrackItem, effect: &str, nth: usize, mask: Option<usize>, param: &str) -> Option<&'a mut Param> {
     let e = it.effects.iter_mut().filter(|e| e.effect == effect).nth(nth)?;
     match mask {
@@ -124,61 +134,97 @@ pub(crate) fn copy(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"copied": n}))
 }
 
-/// Paste the keyframe clipboard: the first key at `time` (default: the playhead), the others at
-/// their copied distance from it, each on the same parameter. Clip parameters go to `clip`, else
-/// the first selected clip that has the parameter, else the clip they came from; track lanes go to
-/// `strip`, else the track they came from. One undo step; returns how many keys were pasted.
+/// The parameters only a keyframe paste takes: clip and caption pastes refuse them.
+pub(crate) const PASTE_KEYS: [&str; 7] = ["time", "frame", "seconds", "timecode", "clip", "strip", "track"];
+
+/// Paste the keyframe clipboard: the first key at `time` (default: the playhead; `frame`,
+/// `seconds` or `timecode` also work), the others at their copied distance from it, each on the
+/// same parameter. Clip parameters go to `clip`, else the first selected clip that has the
+/// parameter, else the clip they came from; keys that would fall outside that clip are skipped.
+/// Track lanes go to `strip` (or `track`), else the track they came from. A parameter given but
+/// malformed, or naming no clip or strip, is refused rather than replaced by its default. Keys
+/// already at a pasted time are replaced. One undo step; returns how many keys were pasted.
 pub(crate) fn paste(s: &mut Session, p: &Value) -> Result<Value> {
-    let at = crate::commands::time_p(s, p, "").unwrap_or(s.playhead());
-    let clip = crate::commands::u64_p(p, "clip");
-    let strip = if p.get("strip").is_some() { Some(crate::mixer::strip_p(s, p, PASTE)?) } else { None };
+    let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    let at = match crate::commands::time_p(s, p, "") {
+        Some(t) if t >= Tick::ZERO => t,
+        Some(_) => return Err(bad(PASTE, "`time` must not be before the sequence start")),
+        None if ["time", "frame", "seconds", "timecode"].into_iter().any(given) => {
+            return Err(bad(PASTE, "`time` must be ticks (or `frame` a frame number, `seconds`, `timecode`)"));
+        }
+        None => s.playhead(),
+    };
+    let clip = match p.get("clip").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => {
+            let id = v.as_u64().map(ClipId).ok_or_else(|| bad(PASTE, "`clip` must be a clip id"))?;
+            let q = s.active_sequence().ok_or(crate::EngineError::NoSequence)?;
+            if q.find_item(id).is_none() {
+                return Err(bad(PASTE, format!("no clip {}", id.0)));
+            }
+            Some(id)
+        }
+    };
+    let strip = if given("strip") || given("track") { Some(crate::mixer::strip_p(s, p, PASTE)?) } else { None };
     let selection = s.state.selection.clone();
     let lanes = s.state.keyframe_clipboard.clone();
     let n = s.edit_sequence("Paste Keyframes", |q, _, _| {
-        let mut n = 0;
+        let (mut n, mut outside) = (0, false);
         for c in &lanes {
             let place = |k: &Keyframe| Tick(at.0.saturating_add(k.time.0));
             match &c.lane {
                 KeyframeLane::Clip { effect, nth, mask, param } => {
-                    let has = |q: &filmcraft_project::Sequence, id: ClipId| {
-                        q.find_item(id).is_some_and(|(_, it)| it.effects.iter().filter(|e| &e.effect == effect).nth(*nth).is_some())
-                    };
                     let target = match clip {
-                        Some(id) => ClipId(id),
-                        None => selection.iter().copied().find(|id| has(&*q, *id)).unwrap_or(ClipId(c.source)),
+                        Some(id) => id,
+                        None => selection
+                            .iter()
+                            .copied()
+                            .find(|id| q.find_item(*id).is_some_and(|(_, it)| clip_param(it, effect, *nth, *mask, param).is_some()))
+                            .unwrap_or(ClipId(c.source)),
                     };
                     let Some((_, it)) = q.find_item_mut(target) else { continue };
-                    let times: Vec<Tick> = c.keys.iter().map(|k| it.moving_source_time_at(place(k))).collect();
+                    // a key past the clip's ends has no media of the clip to sit on
+                    let (start, end) = (it.start, it.end());
+                    let keys: Vec<Keyframe> = c
+                        .keys
+                        .iter()
+                        .filter_map(|k| {
+                            let t = place(k);
+                            (t >= start && t < end).then(|| Keyframe { time: it.moving_source_time_at(t), ..k.clone() })
+                        })
+                        .collect();
+                    outside |= keys.len() < c.keys.len();
                     let Some(par) = clip_param_mut(it, effect, *nth, *mask, param) else { continue };
-                    n += put(par, &c.keys, &times);
+                    n += put(par, keys);
                 }
                 KeyframeLane::Track { lane } => {
-                    let times: Vec<Tick> = c.keys.iter().map(place).collect();
+                    let keys: Vec<Keyframe> = c.keys.iter().map(|k| Keyframe { time: place(k), ..k.clone() }).collect();
                     n += q
                         .with_strip_mut(strip.unwrap_or(TrackId(c.source)), |tr| {
                             // the same lanes the mixer commands accept, so pasted keys stay editable
                             if crate::mixer::lane_refusal(tr, lane).is_some() {
                                 return 0;
                             }
-                            tr.lane_mut(lane).map_or(0, |par| put(par, &c.keys, &times))
+                            tr.lane_mut(lane).map_or(0, |par| put(par, keys))
                         })
                         .unwrap_or(0);
                 }
             }
         }
         if n == 0 {
-            return Err(bad(PASTE, "the target has none of the copied keyframes' parameters"));
+            let why = if outside { "the copied keyframes fall outside the target clip" } else { "the target has none of the copied keyframes' parameters" };
+            return Err(bad(PASTE, why));
         }
         Ok(n)
     })?;
     Ok(json!({"pasted": n}))
 }
 
-/// Add `keys` to `par` at `times` (replacing keys already there); returns how many were added.
-fn put(par: &mut Param, keys: &[Keyframe], times: &[Tick]) -> usize {
-    for (k, &t) in keys.iter().zip(times) {
-        let k = Keyframe { time: t, ..k.clone() };
-        match par.keyframes.binary_search_by_key(&t, |x| x.time) {
+/// Add `keys` to `par` (replacing keys already at their times); returns how many were added.
+fn put(par: &mut Param, keys: Vec<Keyframe>) -> usize {
+    let n = keys.len();
+    for k in keys {
+        match par.keyframes.binary_search_by_key(&k.time, |x| x.time) {
             Ok(i) => {
                 if let Some(slot) = par.keyframes.get_mut(i) {
                     *slot = k;
@@ -187,5 +233,5 @@ fn put(par: &mut Param, keys: &[Keyframe], times: &[Tick]) -> usize {
             Err(i) => par.keyframes.insert(i, k),
         }
     }
-    keys.len().min(times.len())
+    n
 }

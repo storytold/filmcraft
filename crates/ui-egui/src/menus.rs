@@ -991,16 +991,8 @@ fn selected_keyframes(app: &FilmcraftApp) -> Option<Value> {
         return None;
     }
     let q = app.session.active_sequence()?;
-    let clip = app
-        .ui
-        .keyframe_selection
-        .iter()
-        .filter(|k| q.find_item(filmcraft_project::ClipId(k.clip)).is_some_and(|(_, it)| crate::panels::effect_controls::keyframe_exists(it, k)));
-    let track = app
-        .ui
-        .track_keyframe_selection
-        .iter()
-        .filter(|k| q.strip(filmcraft_project::TrackId(k.strip)).is_some_and(|t| t.lane_keyframes(&k.lane).iter().any(|x| x.time == k.time)));
+    let clip = app.ui.keyframe_selection.iter().filter(|k| crate::panels::timeline_volume::clip_key_exists(q, k));
+    let track = app.ui.track_keyframe_selection.iter().filter(|k| crate::panels::timeline_volume::track_key_exists(q, k));
     let clip = clip.filter_map(|k| serde_json::to_value(k).ok());
     let track = track.filter_map(|k| serde_json::to_value(k).ok());
     let keys: Vec<Value> = clip.chain(track).collect();

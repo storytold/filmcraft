@@ -471,6 +471,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     );
 
     // ---- interaction
+    // selected keyframes a delete or an Undo removed are no longer selected
+    super::timeline_volume::prune_keyframe_selections(app, seq);
     interact(app, ui, seq, &layout, rect);
     super::timeline_volume::interact(app, ui, seq, &layout, aclip);
     // track keyframes (drawn and edited on top of the clips)

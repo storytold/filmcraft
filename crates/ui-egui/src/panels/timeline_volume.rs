@@ -11,7 +11,7 @@
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::mixer::{FADER_MAX_DB, FADER_MIN_DB};
-use filmcraft_project::{ClipId, Param, Sequence, TrackItem, TrackKind};
+use filmcraft_project::{ClipId, Param, Sequence, TrackId, TrackItem, TrackKind};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -20,7 +20,7 @@ use super::timeline::{Layout, Row};
 use super::timeline_hit::EDGE_PX;
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::{KeyframeRef, Tool};
+use crate::state::{KeyframeRef, Tool, TrackKeyframeRef};
 use crate::theme::Tokens;
 
 const KEY_COL: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8);
@@ -186,12 +186,54 @@ pub(crate) fn pick<T: PartialEq>(selection: &mut Vec<T>, key: T, add: bool) {
     }
 }
 
-fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) {
-    for (id, p) in acts {
-        if let Err(e) = app.session.execute(id, p) {
-            app.ui.status = e.to_string();
-        }
+/// Whether the selected clip keyframe `k` still exists in `q` (a delete or an Undo removes it).
+pub(crate) fn clip_key_exists(q: &Sequence, k: &KeyframeRef) -> bool {
+    q.find_item(ClipId(k.clip)).is_some_and(|(_, it)| crate::panels::effect_controls::keyframe_exists(it, k))
+}
+
+/// Whether the selected track keyframe `k` still exists in `q`.
+pub(crate) fn track_key_exists(q: &Sequence, k: &TrackKeyframeRef) -> bool {
+    q.strip(TrackId(k.strip)).is_some_and(|t| t.lane_keyframes(&k.lane).iter().any(|x| x.time == k.time))
+}
+
+/// Drop the selected keyframes `q` no longer has, so a key added later at the same place is not
+/// drawn selected (#3562).
+pub(crate) fn prune_keyframe_selections(app: &mut FilmcraftApp, q: &Sequence) {
+    app.ui.keyframe_selection.retain(|k| clip_key_exists(q, k));
+    app.ui.track_keyframe_selection.retain(|k| track_key_exists(q, k));
+}
+
+/// The outline around a selected keyframe centred at `c`, so selection reads apart from hover
+/// without relying on colour.
+pub(crate) fn selected_outline(p: &egui::Painter, c: Pos2) {
+    let r = 7.0;
+    p.add(egui::Shape::closed_line(vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)], Stroke::new(1.0, Color32::WHITE)));
+}
+
+/// The selection ref of the Volume keyframe at media time `time` on `it`.
+fn volume_ref(it: &TrackItem, time: Tick) -> KeyframeRef {
+    let effect = it.effects.iter().position(|e| e.effect == "volume").unwrap_or(0);
+    KeyframeRef { clip: it.id.0, effect, param: "level".into(), mask: None, time }
+}
+
+/// Point the selected keyframe `from` at media time `to`, where a move put it.
+fn follow(selection: &mut [KeyframeRef], from: &KeyframeRef, to: Tick) {
+    if let Some(k) = selection.iter_mut().find(|k| *k == from) {
+        k.time = to;
     }
+}
+
+/// Run `acts` in order; returns which succeeded (a failure goes to the status bar).
+fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) -> Vec<bool> {
+    acts.into_iter()
+        .map(|(id, p)| match app.session.execute(id, p) {
+            Ok(_) => true,
+            Err(e) => {
+                app.ui.status = e.to_string();
+                false
+            }
+        })
+        .collect()
 }
 
 /// The level next to the pointer while dragging: one line, always as wide, so it does not jump.
@@ -224,7 +266,14 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         if let Some(h) = held
             && h.begun
         {
-            let _ = app.session.execute("edit.undo", json!({}));
+            let from = seq.find_item(h.clip).and_then(|(_, it)| Some(volume_ref(it, level(it)?.keyframes.get(h.index)?.time)));
+            // the selection goes back with the key
+            if app.session.execute("edit.undo", json!({})).is_ok()
+                && let Some(from) = from
+                && let Some(back) = app.session.active_sequence().and_then(|q| level(q.find_item(h.clip)?.1)?.keyframes.get(h.index).map(|k| k.time))
+            {
+                follow(&mut app.ui.keyframe_selection, &from, back);
+            }
         }
         ui.data_mut(|d| d.remove::<KeyDrag>(key_drag_id()));
         return;
@@ -237,6 +286,8 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     let rate = seq.settings.frame_rate;
     let mut next = held;
     let mut acts: Vec<(&str, Value)> = Vec::new();
+    // the dragged key's move (its index in `acts`), and its selection ref and new time
+    let mut moved: Option<(usize, KeyframeRef, Tick)> = None;
     for r in layout.rows.iter().filter(|r| r.kind == TrackKind::Audio && !r.lane) {
         let Some(tr) = seq.track(r.track).filter(|t| !t.locked) else { continue };
         let row = r.rect.intersect(area);
@@ -258,7 +309,6 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 app.auto.add(&format!("timeline.clip.{}.volume", it.id.0), Rect::from_center_size(c, vec2(12.0, 8.0)), "Volume");
             }
             let ks = keys(it, body);
-            let volume = it.effects.iter().position(|e| e.effect == "volume").unwrap_or(0);
             for (i, &(time, c)) in ks.iter().enumerate() {
                 if !vis.expand2(vec2(5.0, 0.0)).contains(c) {
                     continue;
@@ -267,10 +317,13 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 let resp = ui.interact(kr, egui::Id::unique(("tl-volume-kf", it.id.0, i)), Sense::click_and_drag());
                 app.auto.add(&format!("timeline.clip.{}.volume.kf.{i}", it.id.0), kr, "Volume keyframe");
                 let mine = held.filter(|h| h.clip == it.id && h.index == i);
-                let key = KeyframeRef { clip: it.id.0, effect: volume, param: "level".into(), mask: None, time };
+                let key = volume_ref(it, time);
                 let selected = app.ui.keyframe_selection.contains(&key);
                 if resp.hovered() || mine.is_some() || selected {
                     icons::paint(&ui.painter().with_clip_rect(area), Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, Color32::WHITE);
+                }
+                if selected {
+                    selected_outline(&ui.painter().with_clip_rect(area), c);
                 }
                 if resp.hovered() || mine.is_some() {
                     ui.ctx().set_cursor_icon(CursorIcon::Move);
@@ -278,7 +331,10 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 let shift = ui.input(|i| i.modifiers.shift);
                 if resp.clicked() || (resp.drag_started_by(egui::PointerButton::Primary) && !selected) {
                     pick(&mut app.ui.keyframe_selection, key.clone(), shift);
-                    app.ui.track_keyframe_selection.clear();
+                    // Shift adds to the keys selected on track lanes too
+                    if !shift {
+                        app.ui.track_keyframe_selection.clear();
+                    }
                 }
                 if resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(p) = pointer
@@ -308,11 +364,8 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     if resp.drag_delta() != egui::Vec2::ZERO {
                         let to = it.moving_source_time_at(t);
                         let p = json!({"clip": h.clip.0, "effect": "volume", "param": "level", "mediaTime": time.0, "to": to.0, "value": db, "merge": true, "begin": !h.begun});
+                        moved = Some((acts.len(), key.clone(), to));
                         acts.push(("effects.moveKeyframe", p));
-                        // the selection follows the dragged key, so Copy still finds it
-                        if let Some(k) = app.ui.keyframe_selection.iter_mut().find(|k| **k == key) {
-                            k.time = to;
-                        }
                         next = Some(KeyDrag { begun: true, ..h });
                     }
                     tip(ui, db);
@@ -337,7 +390,13 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         }),
         None => ui.data_mut(|d| d.remove::<KeyDrag>(key_drag_id())),
     }
-    run(app, acts);
+    let done = run(app, acts);
+    // the selection follows the dragged key once the move went through, so Copy still finds it
+    if let Some((i, from, to)) = moved
+        && done.get(i) == Some(&true)
+    {
+        follow(&mut app.ui.keyframe_selection, &from, to);
+    }
 }
 
 #[cfg(test)]
