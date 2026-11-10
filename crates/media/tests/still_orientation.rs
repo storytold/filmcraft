@@ -95,6 +95,7 @@ fn png(o: u16) -> Vec<u8> {
     png_with_exif(orientation_exif(o))
 }
 
+/// A PNG of the stored picture whose eXIf chunk holds `exif` byte for byte.
 fn png_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::png::PngEncoder::new(&mut out);
@@ -107,6 +108,7 @@ fn webp(o: u16) -> Vec<u8> {
     webp_with_exif(orientation_exif(o))
 }
 
+/// A lossless WebP of the stored picture whose EXIF chunk holds `exif` byte for byte.
 fn webp_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
