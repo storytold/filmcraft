@@ -94,19 +94,63 @@ pub fn sniff(head: &[u8]) -> bool {
 
 /// CRC-32 of RFC 3533 §6: polynomial 0x04C11DB7, initial value 0, no reflection, no final XOR.
 pub fn crc32(data: &[u8]) -> u32 {
-    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| {
-        let mut t = [0u32; 256];
-        for (i, e) in t.iter_mut().enumerate() {
-            let mut r = (i as u32) << 24;
-            for _ in 0..8 {
-                r = if r & 0x8000_0000 != 0 { (r << 1) ^ 0x04C1_1DB7 } else { r << 1 };
-            }
-            *e = r;
+    crc32_update(0, data)
+}
+
+/// `CRC_TABLES[k][b]`: the CRC register after feeding byte `b` followed by `k` zero bytes
+/// (slice-by-16: sixteen independent lookups per 16 input bytes instead of a serial chain of 16).
+static CRC_TABLES: [[u32; 256]; 16] = crc_tables();
+
+const fn crc_tables() -> [[u32; 256]; 16] {
+    let mut t = [[0u32; 256]; 16];
+    let mut i = 0;
+    while i < 256 {
+        let mut r = (i as u32) << 24;
+        let mut b = 0;
+        while b < 8 {
+            r = if r & 0x8000_0000 != 0 { (r << 1) ^ 0x04C1_1DB7 } else { r << 1 };
+            b += 1;
         }
-        t
-    });
-    data.iter().fold(0u32, |c, &b| (c << 8) ^ t[((c >> 24) as u8 ^ b) as usize])
+        t[0][i] = r;
+        i += 1;
+    }
+    let mut k = 1;
+    while k < 16 {
+        let mut i = 0;
+        while i < 256 {
+            let p = t[k - 1][i];
+            t[k][i] = (p << 8) ^ t[0][(p >> 24) as usize];
+            i += 1;
+        }
+        k += 1;
+    }
+    t
+}
+
+/// Continue an RFC 3533 CRC-32 over `data` from register `crc`.
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    let t = &CRC_TABLES;
+    let (chunks, rest) = data.as_chunks::<16>();
+    for c in chunks {
+        let w = crc ^ u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        crc = t[15][(w >> 24) as usize]
+            ^ t[14][((w >> 16) & 0xFF) as usize]
+            ^ t[13][((w >> 8) & 0xFF) as usize]
+            ^ t[12][(w & 0xFF) as usize]
+            ^ t[11][c[4] as usize]
+            ^ t[10][c[5] as usize]
+            ^ t[9][c[6] as usize]
+            ^ t[8][c[7] as usize]
+            ^ t[7][c[8] as usize]
+            ^ t[6][c[9] as usize]
+            ^ t[5][c[10] as usize]
+            ^ t[4][c[11] as usize]
+            ^ t[3][c[12] as usize]
+            ^ t[2][c[13] as usize]
+            ^ t[1][c[14] as usize]
+            ^ t[0][c[15] as usize];
+    }
+    rest.iter().fold(crc, |c, &b| (c << 8) ^ t[0][((c >> 24) as u8 ^ b) as usize])
 }
 
 /// The codec of a logical bitstream (from its first packet).
@@ -251,7 +295,12 @@ fn open_with_packet_budget(src: &(impl ByteSource + ?Sized), packet_budget: usiz
                     pos = p;
                     continue;
                 }
-                None => break,
+                None => {
+                    if recovery_budget == 0 {
+                        warnings.push(format!("gave up resynchronising after byte {pos}"));
+                    }
+                    break;
+                }
             }
         }
         let nseg = hdr[26] as usize;
@@ -375,9 +424,13 @@ fn open_with_packet_budget(src: &(impl ByteSource + ?Sized), packet_budget: usiz
 
 fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
+    // the next page is usually close: start with a small window and grow it, so one resync reads (and
+    // is charged) about the distance to the next capture pattern instead of a fixed 1 MiB
+    let mut window = 4096usize;
+    let mut buf = Vec::new();
     while at + 4 <= len && *budget > 0 {
-        let n = ((len - at) as usize).min(1 << 20).min(*budget);
-        let mut buf = vec![0u8; n];
+        let n = ((len - at) as usize).min(window).min(*budget);
+        buf.resize(n, 0);
         src.read_at(at, &mut buf)?;
         *budget = budget.saturating_sub(n);
         if let Some(i) = buf.windows(4).position(|w| w == b"OggS") {
@@ -387,6 +440,7 @@ fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &
             break;
         }
         at += (n - 3) as u64;
+        window = (window * 2).min(1 << 20);
     }
     Ok(None)
 }
@@ -452,8 +506,16 @@ pub struct OpusTiming {
     pub total: i64,
 }
 
+/// Largest granule position [`OpusTiming::of`] trusts: 2^62 samples at 48 kHz is about 3 million years.
+pub const MAX_OPUS_GRANULE: i64 = 1 << 62;
+
 impl OpusTiming {
     /// Timing of the Opus stream `s` (`pre_skip` from its `OpusHead`).
+    ///
+    /// A granule position outside `0..=MAX_OPUS_GRANULE` (a negative value other than -1, or an
+    /// absurdly large one) is treated like a missing granule: the page's packets continue from the
+    /// previous position instead of jumping to a nonsense one. All arithmetic saturates, so no
+    /// file can overflow it. Files with sane granules get the same timing as before.
     pub fn of(stream: &Stream, pre_skip: u32) -> OpusTiming {
         let durations: Vec<u32> = stream.packets.iter().map(|p| opus_packet_samples(p.prefix, p.size).unwrap_or(0)).collect();
         let n = durations.len();
@@ -461,24 +523,25 @@ impl OpusTiming {
         let mut i = 0;
         let mut cursor: Option<i64> = None;
         let mut trimmed_end: Option<i64> = None;
+        let granule_of = |k: usize| stream.packets.get(k).and_then(|p| p.granule).filter(|g| (0..=MAX_OPUS_GRANULE).contains(g));
         while i < n {
             // packets completing on the same page: i..j, the last carries the page granule
             let mut j = i;
-            while j < n && stream.packets[j].granule.is_none() {
+            while j < n && granule_of(j).is_none() {
                 j += 1;
             }
             if j == n {
                 // trailing packets without a granule (truncated file): continue from the cursor
                 let mut c = cursor.unwrap_or(0);
                 for k in i..n {
-                    c += durations[k] as i64;
+                    c = c.saturating_add(durations[k] as i64);
                     ends[k] = Some(c);
                 }
                 break;
             }
-            let Some(g) = stream.packets[j].granule else { break };
-            let sum: i64 = durations[i..=j].iter().map(|&d| d as i64).sum();
-            let forward = cursor.map(|c| c + sum);
+            let Some(g) = granule_of(j) else { break };
+            let sum: i64 = durations[i..=j].iter().fold(0i64, |a, &d| a.saturating_add(d as i64));
+            let forward = cursor.map(|c| c.saturating_add(sum));
             let end = match forward {
                 // end trimming on the last page (RFC 7845 §4.5): keep the forward positions
                 Some(f) if stream.packets[j].eos && g < f => {
@@ -492,17 +555,17 @@ impl OpusTiming {
             let mut e = end;
             for k in (i..=j).rev() {
                 ends[k] = Some(e);
-                e -= durations[k] as i64;
+                e = e.saturating_sub(durations[k] as i64);
             }
             cursor = Some(end);
             i = j + 1;
         }
-        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0) - d as i64).collect();
+        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0).saturating_sub(d as i64)).collect();
         let base = raw_starts.first().copied().unwrap_or(0).max(0);
-        let shift = base + pre_skip as i64;
-        let starts: Vec<i64> = raw_starts.iter().map(|s| s - shift).collect();
+        let shift = base.saturating_add(pre_skip as i64);
+        let starts: Vec<i64> = raw_starts.iter().map(|s| s.saturating_sub(shift)).collect();
         let end_all = trimmed_end.or(cursor).unwrap_or(0);
-        let total = (end_all - shift).max(0);
+        let total = end_all.saturating_sub(shift).max(0);
         OpusTiming { pre_skip, starts, durations, total }
     }
 }
