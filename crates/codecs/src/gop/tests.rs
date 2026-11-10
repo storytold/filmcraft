@@ -314,6 +314,24 @@ fn seeks_that_never_come_back_keep_one_decoder() {
 }
 
 #[test]
+fn a_far_request_after_playback_parks_the_running_decoder_at_once() {
+    // playing along, then the other place of a dissolve is asked for: the running decoder keeps
+    // its place, so coming back to it does not restart it
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
+    let resets = s.resets.load(Ordering::Relaxed);
+    assert_eq!(index_of(&c.frame(&s, 200_000).expect("frame")), 200);
+    assert_eq!(index_of(&c.frame(&s, 1_151_000).expect("frame")), 1151);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "both places carry on without restarting");
+}
+
+#[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
     let c = Arc::new(GopCache::new(None));

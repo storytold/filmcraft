@@ -252,6 +252,11 @@ struct State {
     /// that never comes back leaves one decoder, as before.
     left_key: usize,
     left_at: Instant,
+    /// Requests in a row that stayed within [`CONTINUE_THROUGH`] samples of the one before (the
+    /// current place), and the same count for the place the last far request left: a long run
+    /// there is playback, which is what a dissolve starts from.
+    run: u32,
+    left_run: u32,
     /// Only background requests (thumbnails, [`filmcraft_media::cancel::with_background`]) have
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
@@ -593,6 +598,9 @@ const MIN_FRAMES: usize = 64;
 /// reserve above into an unbounded number of full-resolution copies.
 const FRAME_CACHE_CEILING: usize = 384 << 20;
 
+/// Requests in a row near each other after which a place counts as playing, not seeked to.
+const PLAYBACK_RUN: u32 = 30;
+
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
@@ -677,6 +685,8 @@ impl GopCache {
                 lane_at: Instant::now(),
                 left_key: usize::MAX,
                 left_at: Instant::now(),
+                run: 0,
+                left_run: 0,
                 background: false,
             }),
             pool: pool.clone(),
@@ -891,6 +901,10 @@ impl GopCache {
         st.last_used = Instant::now();
         if i.abs_diff(st.pin_i) > CONTINUE_THROUGH {
             st.pin2 = st.pin;
+            st.left_run = st.run;
+            st.run = 0;
+        } else {
+            st.run = st.run.saturating_add(1);
         }
         st.pin_i = i;
         st.pin = want_pts;
@@ -957,14 +971,20 @@ impl GopCache {
             } else if st.next == usize::MAX || st.start != key {
                 // Neither run is in this sample's GOP (a request a few pictures behind a run is
                 // restarted in its own run, never moved to the other one). Reuse the run used
-                // least recently. A second run is only made when the request goes back to the
-                // GOP the last restart left, within [`IDLE`] (cached frames let a run go quiet
-                // for a while): a seek that goes one way keeps one decoder (a 4K software
-                // decoder holds hundreds of MB), and the second run is released after [`IDLE`].
+                // least recently. A second run is made when the request goes back to the GOP the
+                // last restart left, within [`IDLE`] (cached frames let a run go quiet for a
+                // while), or when the run left was playing: a seek that goes one way from a
+                // place that was not playing keeps one decoder (a 4K software decoder holds
+                // hundreds of MB), and the second run is released after [`IDLE`].
                 let parked_here = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.start == key && p.next != usize::MAX);
                 let parked_older = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.at <= st.lane_at);
-                let alternating = st.decoder.is_some() && st.next != usize::MAX && st.left_key == key && st.left_at.elapsed() < IDLE;
-                if parked_here || parked_older || (alternating && st.parked.is_none()) {
+                let running = st.decoder.is_some() && st.next != usize::MAX;
+                let alternating = running && st.left_key == key && st.left_at.elapsed() < IDLE;
+                // the run just left was playback (not seeks): the far request is the other side
+                // of a dissolve, or a cut within the file; park it now rather than lose its
+                // place and restart it when the request comes back
+                let from_playback = running && st.left_run >= PLAYBACK_RUN && st.lane_at.elapsed() < IDLE;
+                if parked_here || parked_older || ((alternating || from_playback) && st.parked.is_none()) {
                     st.swap_lane();
                     swapped = true;
                     if st.decoder.is_none() {
