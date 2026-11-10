@@ -154,7 +154,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// asked first, as for Close Project (#3843), and the project opens once the answer lets it.
 /// None when there is nothing unsaved, so the caller opens it now.
 pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Value, String>> {
-    if !app.session.is_dirty() {
+    if !app.session.has_unsaved_changes() {
         return None;
     }
     app.ui.clip_dialog =

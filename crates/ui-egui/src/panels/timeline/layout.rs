@@ -148,6 +148,12 @@ pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
     width.max(1.0) as f64 / min_view
 }
 
+/// Zoom bounds that fit the whole Timeline at the wide end and respect the configured zoom cap.
+pub fn zoom_range(sequence_seconds: f64, width: f32, min_view_secs: f64) -> (f64, f64) {
+    let ceiling = max_pps(width, min_view_secs);
+    (min_pps(sequence_seconds, width).min(ceiling), ceiling)
+}
+
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;

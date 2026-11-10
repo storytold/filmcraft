@@ -1,5 +1,5 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_pps, max_scroll, min_pps, new_track_at};
+use super::layout::{Layout, max_scroll, new_track_at, zoom_range};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead, snap_transition};
 use super::{
@@ -284,10 +284,8 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(
-                min_pps(seq.duration().seconds(), layout.content.width()).min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())),
-                max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()),
-            );
+            let (floor, ceiling) = zoom_range(seq.duration().seconds(), layout.content.width(), app.session.state.timeline_ui.max_zoom_secs());
+            v.target_pps = (v.target_pps * f).clamp(floor, ceiling);
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
             // A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
@@ -465,11 +463,8 @@ fn start_drag(
         (Tool::Zoom, _) => {
             if resp.clicked() {
                 let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(
-                    min_pps(seq.duration().seconds(), layout.content.width())
-                        .min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())),
-                    max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()),
-                );
+                let (floor, ceiling) = zoom_range(seq.duration().seconds(), layout.content.width(), app.session.state.timeline_ui.max_zoom_secs());
+                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(floor, ceiling);
                 app.tl.zoom_anchor = Some((t.seconds(), p.x));
             }
             None

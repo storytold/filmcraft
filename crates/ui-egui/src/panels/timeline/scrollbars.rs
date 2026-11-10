@@ -1918,25 +1918,26 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // built-in gestures still work). A chord with Ctrl/Alt fires even while a text field has
     // focus (it is a shortcut, not typing); a plain key only when nothing else wants the keyboard.
     let chord = input_text(ui);
-    let chord_text = chord.clone().unwrap_or_default();
+    let chord_text = chord.as_deref();
     // while a Controls box is naming a new shortcut, no binding may fire on that key. A chord
     // with Ctrl/Alt fires even in a text field (it is a shortcut, not typing); a plain key only
     // when no text field has focus (`egui_wants_keyboard_input` is not enough: any clicked widget
     // counts there, including the box itself).
-    let chord_ok = !controls_listening(ui.ctx()) && (chord_text.contains("Ctrl") || chord_text.contains("Alt") || !ui.ctx().text_edit_focused());
-    let binds = {
+    let chord_ok = !controls_listening(ui.ctx())
+        && chord_text.is_some_and(|c| c.contains("Ctrl") || c.contains("Alt") || !ui.ctx().text_edit_focused());
+    let pointer_in_bar = ui.input(|i| i.pointer.interact_pos().is_some_and(|p| bar.contains(p)));
+    let (center_bound, explode_bound, alternate_speed_down, settings_bound) = {
         let s = &app.session.state.timeline_ui;
-        [s.control_center_on_playhead.clone(), s.control_explode_slider.clone(), s.control_alternate_drag_speed.clone(), s.control_settings.clone()]
+        let bound = |binding: &str| chord_ok && !binding.is_empty() && chord_text == Some(binding) && (!binding.ends_with("Click") || pointer_in_bar);
+        (
+            bound(&s.control_center_on_playhead),
+            bound(&s.control_explode_slider),
+            control_binding_down(ui, &s.control_alternate_drag_speed),
+            bound(&s.control_settings) && ui.rect_contains_pointer(bar),
+        )
     };
-    let bound = |slot: usize| -> bool {
-        let pointer_in_bar = ui.input(|i| i.pointer.interact_pos().is_some_and(|p| bar.contains(p)));
-        chord_ok && !binds[slot].is_empty() && chord.as_deref() == Some(binds[slot].as_str()) && (!binds[slot].ends_with("Click") || pointer_in_bar)
-    };
-    let center_bound = bound(0);
-    let explode_bound = bound(1);
     // the Settings binding opens the bar's own menu, so it only fires over the bar
-    let settings_bound = bound(3) && ui.rect_contains_pointer(bar);
-    let alternate_speed_down = control_binding_down(ui, &binds[2]);
+    // Compare the chord with the stored bindings in place; the zoom bar runs every frame.
     let right_click = ui.input(|input| {
         input.pointer.button_clicked(egui::PointerButton::Secondary).then(|| input.pointer.interact_pos()).flatten().filter(|pos| bar.contains(*pos))
     });
