@@ -584,8 +584,8 @@ fn lock_is_stale(dir: &Path) -> bool {
     }
 }
 
-/// Find snapshots of sessions that are no longer running. Stale session directories without a
-/// snapshot (nothing unsaved) are removed. `skip` is the caller's own session directory.
+/// Find snapshots of sessions that are no longer running. This read-only listing never deletes
+/// session data; `skip` is the caller's own session directory.
 pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCandidate> {
     let Ok(rd) = fs::read_dir(recovery_root(data_dir)) else { return Vec::new() };
     let mut out = Vec::new();
@@ -596,8 +596,7 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         }
         let snap = dir.join(SNAPSHOT);
         if !snap.is_file() {
-            // Empty leftover dirs (clean exit, or a crash before the first snapshot).
-            let _ = fs::remove_dir_all(&dir);
+            // It may be an in-progress session that has not written its first snapshot yet.
             continue;
         }
         // Keep the snapshot even when session.json is missing or unreadable: the project
@@ -608,9 +607,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             ..JournalMeta::default()
         });
         if !meta.dirty {
-            // a clean project's view-only journal is not unsaved work: never offered as
-            // recovery, and not left behind either
-            let _ = fs::remove_dir_all(&dir);
+            // A clean project's view-only journal is not unsaved work. Cleanup is separate from
+            // this listing so a scan cannot race with an active worker.
             continue;
         }
         out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
@@ -1183,23 +1181,85 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
     }
 }
 #[cfg(test)]
+struct TestDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
 mod durability_tests {
     use super::*;
+
     #[test]
-    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
-        let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let session = recovery_root(&dir).join("1-1");
+    fn scan_leaves_an_empty_session_without_a_stale_lock_alone() {
+        let dir = TestDir::new("empty-session");
+        let session = recovery_root(&dir).join("1-empty");
+        fs::create_dir_all(&session).unwrap();
+
+        assert!(scan_candidates(&dir, None).is_empty());
+        assert!(session.is_dir(), "a scan must not remove a directory without proving its worker stopped");
+    }
+
+    #[test]
+    fn scan_skips_clean_journals_without_deleting_their_data() {
+        let dir = TestDir::new("clean-session");
+        let session = recovery_root(&dir).join("1-clean");
         fs::create_dir_all(&session).unwrap();
         let snapshot = filmcraft_format::encode(&Project::default(), false);
-        write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        fs::write(session.join(SNAPSHOT), &snapshot).unwrap();
+        fs::write(session.join(META), serde_json::to_vec(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        assert!(scan_candidates(&dir, None).is_empty());
+        assert!(session.join(SNAPSHOT).is_file(), "a read-only scan leaves the snapshot untouched");
+        assert!(session.join(META).is_file(), "a read-only scan leaves its metadata untouched");
+    }
+
+    #[test]
+    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
+        let dir = TestDir::new("journal-order");
+        let session = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let clean_snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &clean_snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let unsaved = Project::new("Unsaved snapshot after interruption");
+        let snapshot = filmcraft_format::encode(&unsaved, false);
         let result = write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
             filmcraft_format::atomic_write(path, bytes)?;
             if path.ends_with(SNAPSHOT) { Err(io::Error::other("interrupted")) } else { Ok(()) }
         });
         assert!(result.is_err());
-        assert_eq!(scan_candidates(&dir, None).len(), 1);
-        fs::remove_dir_all(&dir).unwrap();
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].meta.dirty, "the surviving journal remains dirty");
+        assert_eq!(load_candidate(&candidates[0]).unwrap().project, unsaved, "the candidate is the interrupted snapshot");
     }
 
     #[test]
@@ -1239,7 +1299,7 @@ mod worker_failure_tests {
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.saved_revision = s.revision;
         s.saved_view_epoch = s.view_epoch;
-        let mut cfg = AutosaveConfig::new(&dir);
+        let mut cfg = AutosaveConfig::new(&*dir);
         cfg.local_offset = offset;
         s.start_autosave(cfg).unwrap();
         s.execute("sequence.addEdit", json!({"seconds": 0.5})).unwrap();
@@ -1248,14 +1308,12 @@ mod worker_failure_tests {
 
     #[test]
     fn auto_save_now_does_not_save_a_view_only_change() {
-        let dir = std::env::temp_dir().join(format!("fc-auto-save-view-only-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("auto-save-view-only");
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.saved_revision = s.revision;
         s.saved_view_epoch = s.view_epoch;
-        let mut cfg = AutosaveConfig::new(&dir);
+        let mut cfg = AutosaveConfig::new(&*dir);
         cfg.local_offset = |_| 0;
         s.start_autosave(cfg).unwrap();
         s.project_view_changed();
@@ -1267,7 +1325,6 @@ mod worker_failure_tests {
         assert!(result["path"].is_null(), "view-only changes do not produce an Auto-Save copy");
         assert!(!dir.join(names::AUTO_SAVE_DIR).exists());
         s.shutdown();
-        fs::remove_dir_all(dir).unwrap();
     }
 
     fn failure_toasts(s: &mut Session) -> usize {
