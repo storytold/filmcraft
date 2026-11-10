@@ -62,27 +62,31 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8], reusable: &std::col
         _ => (name, ""),
     };
     let candidate_name = |number| if number == 1 { name.to_owned() } else { format!("{stem} ({number}){extension}") };
-    const MAX_LISTED_ENTRIES: usize = 10_000;
-    const MAX_LISTED_BYTES: usize = 1_000_000;
-    let dir = if folder.is_empty() { "." } else { folder };
-    let occupied = match s.services.list_dir_bounded(dir, MAX_LISTED_ENTRIES, MAX_LISTED_BYTES) {
-        Some(Ok(names)) if name.is_ascii() && names.iter().all(|name| name.is_ascii()) => {
-            Some(names.into_iter().map(|name| name.to_ascii_lowercase()).collect::<std::collections::HashSet<_>>())
-        }
-        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Some(std::collections::HashSet::new()),
-        _ => None,
-    };
-    // Two passes: eligible numbered names are checked for an identical file before any file is
-    // created, so a free earlier slot does not win over a match at a later one (one loop that
-    // creates at the first free name would write a duplicate there).
-    for number in 1..=1_000 {
-        let name = candidate_name(number);
-        if occupied.as_ref().is_some_and(|names| !names.contains(&name.to_ascii_lowercase())) {
-            continue;
-        }
-        let candidate = format!("{folder}{name}");
-        if audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key)) && s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
-            return Ok(candidate);
+    // No candidate can match without an eligible reference. Avoid listing and path resolution;
+    // exclusive creation below still handles occupied names without adopting foreign files.
+    if !reusable.is_empty() {
+        const MAX_LISTED_ENTRIES: usize = 10_000;
+        const MAX_LISTED_BYTES: usize = 1_000_000;
+        let dir = if folder.is_empty() { "." } else { folder };
+        let occupied = match s.services.list_dir_bounded(dir, MAX_LISTED_ENTRIES, MAX_LISTED_BYTES) {
+            Some(Ok(names)) if name.is_ascii() && names.iter().all(|name| name.is_ascii()) => {
+                Some(names.into_iter().map(|name| name.to_ascii_lowercase()).collect::<std::collections::HashSet<_>>())
+            }
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Some(std::collections::HashSet::new()),
+            _ => None,
+        };
+        // Two passes: eligible numbered names are checked for an identical file before any file is
+        // created, so a free earlier slot does not win over a match at a later one (one loop that
+        // creates at the first free name would write a duplicate there).
+        for number in 1..=1_000 {
+            let name = candidate_name(number);
+            if occupied.as_ref().is_some_and(|names| !names.contains(&name.to_ascii_lowercase())) {
+                continue;
+            }
+            let candidate = format!("{folder}{name}");
+            if audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key)) && s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
+                return Ok(candidate);
+            }
         }
     }
     for number in 1..=1_000 {
@@ -92,7 +96,8 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8], reusable: &std::col
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // An occupied name is compared again rather than taken as a mismatch: another
                 // import may have written these same bytes there since the search pass.
-                if audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key))
+                if !reusable.is_empty()
+                    && audio_path_key(s, &candidate).is_some_and(|key| reusable.contains(&key))
                     && s.services.existing_file_matches(&candidate, wav).unwrap_or(false)
                 {
                     return Ok(candidate);
@@ -273,7 +278,7 @@ mod embedded_audio_tests {
     }
 
     #[derive(Default)]
-    struct VirtualFiles(Mutex<HashMap<String, Vec<u8>>>, AtomicUsize, AtomicBool);
+    struct VirtualFiles(Mutex<HashMap<String, Vec<u8>>>, AtomicUsize, AtomicBool, AtomicUsize);
 
     impl VirtualFiles {
         fn key(&self, path: &str) -> String {
@@ -307,6 +312,7 @@ mod embedded_audio_tests {
         }
 
         fn list_dir_bounded(&self, dir: &str, max_entries: usize, max_bytes: usize) -> Option<io::Result<Vec<String>>> {
+            self.3.fetch_add(1, Ordering::Relaxed);
             Some((|| {
                 let prefix = if dir == "." {
                     String::new()
@@ -328,6 +334,22 @@ mod embedded_audio_tests {
                 Ok(names)
             })())
         }
+    }
+
+    #[test]
+    fn no_reusable_audio_skips_the_search_pass_and_preserves_foreign_files() {
+        let files = Arc::new(VirtualFiles::default());
+        files.0.lock().unwrap().insert("/files/café.wav".into(), b"unrelated".to_vec());
+        files.0.lock().unwrap().insert("/files/cut Audio.wav".into(), b"new audio".to_vec());
+        let session = Session::new(files.clone());
+        let path = super::write_embedded_audio(&session, "/files/cut Audio.wav", b"new audio", &Default::default()).unwrap();
+        assert_eq!(path, "/files/cut Audio (2).wav", "unreferenced identical bytes are not adopted");
+        assert_eq!(files.3.load(Ordering::Relaxed), 0, "no eligible references means no search listing");
+        assert_eq!(files.1.load(Ordering::Relaxed), 0, "no comparisons with foreign files");
+        let stored = files.0.lock().unwrap();
+        assert_eq!(stored["/files/cut Audio.wav"], b"new audio");
+        assert_eq!(stored["/files/cut Audio (2).wav"], b"new audio");
+        assert_eq!(stored["/files/café.wav"], b"unrelated");
     }
 
     #[test]

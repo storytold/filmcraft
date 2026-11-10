@@ -122,6 +122,30 @@ fn separate_projects_do_not_share_embedded_audio_extractions() {
     }
 }
 
+fn assert_shared_audio_delete_refused(s: &mut Session, item: ItemId, path: &str) {
+    let project = s.project.clone();
+    let history = (s.history.undo.clone(), s.history.redo.clone());
+    let revisions = (s.revision, s.saved_revision, s.document_epoch);
+    let journal = s.journal.clone();
+    let bytes = std::fs::read(path).unwrap();
+    let error = s.execute("media.makeOffline", json!({"items": [item.0], "deleteFiles": true})).unwrap_err();
+    assert!(error.to_string().contains("referenced"), "{error}");
+    assert!(Arc::ptr_eq(&s.project, &project));
+    // Project snapshots contain NaNs (for example automatic motion anchors), so deep
+    // PartialEq is not reflexive. Check the exact retained snapshots and entry metadata.
+    for (actual, expected) in [(&s.history.undo, &history.0), (&s.history.redo, &history.1)] {
+        assert_eq!(actual.len(), expected.len());
+        for ((label, snapshot, origin), (old_label, old_snapshot, old_origin)) in actual.iter().zip(expected) {
+            assert_eq!(label, old_label);
+            assert!(Arc::ptr_eq(snapshot, old_snapshot));
+            assert_eq!(origin, old_origin);
+        }
+    }
+    assert_eq!((s.revision, s.saved_revision, s.document_epoch), revisions);
+    assert_eq!(s.journal, journal);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
 #[test]
 fn malformed_serialized_item_ids_cannot_hide_shared_audio_references() {
     let (mut s, _, seq, dir) = setup("malformed-shared-ids");
@@ -137,13 +161,7 @@ fn malformed_serialized_item_ids_cannot_hide_shared_audio_references() {
     let loaded = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
     s.project = Arc::new(loaded.project);
     assert_eq!(s.project.item(newer).unwrap().id, older);
-    let project = s.project.clone();
-    let bytes = std::fs::read(&shared).unwrap();
-    let history = (s.history.undo.len(), s.history.redo.len());
-    assert!(s.execute("media.makeOffline", json!({"items": [older.0], "deleteFiles": true})).is_err());
-    assert!(Arc::ptr_eq(&s.project, &project));
-    assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
-    assert_eq!(std::fs::read(&shared).unwrap(), bytes);
+    assert_shared_audio_delete_refused(&mut s, older, &shared);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -160,29 +178,20 @@ fn reused_embedded_audio_cannot_be_deleted_while_another_item_needs_it() {
         let newer = s.project.sequence(imported_seq(&second)).unwrap().audio_tracks[0].items[0].item;
         let shared = path_of(&s, older);
         assert_eq!(shared, path_of(&s, newer));
-        let bytes = std::fs::read(&shared).unwrap();
-        let project = s.project.clone();
-        let history = (s.history.undo.len(), s.history.redo.len());
-        let revision = s.revision;
-        let error = s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).unwrap_err();
-        assert!(error.to_string().contains("referenced"), "{error}");
-        assert_eq!(std::fs::read(&shared).unwrap(), bytes);
-        assert!(Arc::ptr_eq(&s.project, &project));
-        assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
-        assert_eq!(s.revision, revision);
+        assert_shared_audio_delete_refused(&mut s, newer, &shared);
         let shared_path = std::path::Path::new(&shared);
         let alias = shared_path.parent().unwrap().join(".").join(shared_path.file_name().unwrap()).to_string_lossy().into_owned();
         Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: alias };
-        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "path aliases still refer to the same file");
+        assert_shared_audio_delete_refused(&mut s, newer, &shared);
         let media = Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap();
         media.media = MediaRef::File { path: dir.join("a.mov").to_string_lossy().into_owned() };
         media.proxy = Some(MediaRef::File { path: shared.clone() });
-        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "an unselected proxy still needs the file");
+        assert_shared_audio_delete_refused(&mut s, newer, &shared);
         let media = Arc::make_mut(&mut s.project).item_mut(older).unwrap().as_media_mut().unwrap();
         media.media = MediaRef::File { path: shared.clone() };
         media.proxy = None;
         s.execute("media.makeOffline", json!({"items": [older.0]})).unwrap();
-        assert!(s.execute("media.makeOffline", json!({"items": [newer.0], "deleteFiles": true})).is_err(), "offline references still need their backing file");
+        assert_shared_audio_delete_refused(&mut s, newer, &shared);
         let result = s.execute("media.makeOffline", json!({"items": [older.0, newer.0], "deleteFiles": true})).unwrap();
         assert_eq!(result["deleted"], json!([shared]));
         assert!(!std::path::Path::new(&shared).exists());
