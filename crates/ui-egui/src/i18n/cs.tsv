@@ -3812,3 +3812,8 @@
 	Cube LUT	LUT Cube
 	Export .cube…	Exportovat .cube…
 	Time Format	Formát času
+
+# Czech catch-up: strings `cargo xtask i18n-report` lists after merging main on 2026-11-10
+# (Color Grading .cube export summary, unavailable Settings options).
+	Exported {path}; not in the LUT: {effects}	Exportováno do {path}; v LUT chybí: {effects}
+	This preference is not available yet.	Tato předvolba zatím není k dispozici.
