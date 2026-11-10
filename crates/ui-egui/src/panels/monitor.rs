@@ -108,13 +108,17 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         format!("monitor-{prefix}")
     };
     let (shown, on_screen) = if use_gpu {
+        // (while playing, a frame standing in for the one due is never older than the picture
+        // on screen: see `steps_back`)
+        let before = app.gpu.as_ref().and_then(|g| g.last_key);
+        let goes_on = |k: &FrameKey| !steps_back(*k, key, before, dir);
         let found = app
             .frames
             .get_plan(&key)
             .map(|p| (key, p))
-            .or_else(|| app.frames.nearest_plan(key, crate::frames::PLAYING_LOOK_BACK))
+            .or_else(|| app.frames.nearest_plan(key, crate::frames::PLAYING_LOOK_BACK).filter(|(k, _)| goes_on(k)))
             .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
-            .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
+            .or_else(|| playing_recent(app, key, dir).filter(goes_on).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
             Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
             None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
@@ -611,6 +615,19 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
 /// 1 when playing forward, -1 backward.
 fn play_direction(speed: f64) -> i64 {
     if speed < 0.0 { -1 } else { 1 }
+}
+
+/// Whether showing `stand_in` in place of the frame `due` would take a playing monitor's picture
+/// back: `stand_in` lies behind the picture on screen (`shown`) in the direction of play (`dir`;
+/// `None` when stopped) while the frame due does not. The monitor then keeps the picture it has.
+/// A frame that is not ready is stood in for by the nearest ready one before it, and that one
+/// can be older than the picture on screen once the plan of that picture has left the cache: a
+/// frame from a few frames earlier then flashed up for one refresh in the middle of a shot. A
+/// play that goes back itself (a loop, a seek) shows what it finds.
+fn steps_back(stand_in: FrameKey, due: FrameKey, shown: Option<FrameKey>, dir: Option<i64>) -> bool {
+    let (Some(dir), Some(shown)) = (dir, shown) else { return false };
+    let after_shown = |k: FrameKey| k.frame.saturating_sub(shown.frame).saturating_mul(dir);
+    stand_in != due && shown.target == due.target && after_shown(due) >= 0 && after_shown(stand_in) < 0
 }
 
 /// While playing, a frame to show when the one due is not ready at the project's revision: the
@@ -1405,6 +1422,35 @@ mod tests {
         assert!(transport_is_lit("media.toggleProxies", true, false));
 
         assert!(!transport_is_lit("playback.toggle", true, true));
+    }
+
+    /// Playing 50 fps on a 60 Hz display, frame 345 is due for a second refresh and its plan has
+    /// left the cache; the nearest plan before it is frame 341. The monitor used to show that one:
+    /// the picture went four frames back for one refresh.
+    #[test]
+    fn a_playing_monitor_never_stands_in_a_frame_older_than_its_picture() {
+        let at = |frame: i64| FrameKey { target: Target::Sequence(filmcraft_project::ItemId(1)), frame, size: 1000, revision: 0, draft: false };
+        let forward = Some(1);
+        assert!(steps_back(at(341), at(345), Some(at(345)), forward), "341 for 345 with 345 on screen");
+        assert!(steps_back(at(341), at(346), Some(at(345)), forward), "341 for a late 346 with 345 on screen");
+        // the picture on screen again, or a later frame that came late, moves nothing back
+        assert!(!steps_back(at(345), at(346), Some(at(345)), forward));
+        assert!(!steps_back(at(346), at(348), Some(at(345)), forward));
+        // the frame due is always shown
+        assert!(!steps_back(at(345), at(345), Some(at(345)), forward));
+        // a loop or a seek goes back itself: the nearest frame to where it went is shown
+        assert!(!steps_back(at(8), at(10), Some(at(345)), forward));
+        // nothing on screen yet, another sequence on screen, or stopped (scrubbing back)
+        assert!(!steps_back(at(341), at(345), None, forward));
+        let other = FrameKey { target: Target::Sequence(filmcraft_project::ItemId(2)), ..at(345) };
+        assert!(!steps_back(at(341), at(345), Some(other), forward));
+        assert!(!steps_back(at(341), at(345), Some(at(345)), None));
+        // in reverse the frames already played are the higher ones
+        assert!(steps_back(at(349), at(345), Some(at(345)), Some(-1)));
+        assert!(!steps_back(at(341), at(345), Some(at(345)), Some(-1)));
+        // hostile frame numbers do not overflow
+        assert!(steps_back(at(i64::MIN), at(i64::MAX), Some(at(i64::MAX)), forward));
+        assert!(steps_back(at(i64::MAX), at(i64::MIN), Some(at(i64::MIN)), Some(-1)));
     }
 
     #[test]
