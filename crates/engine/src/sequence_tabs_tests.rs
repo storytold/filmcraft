@@ -60,9 +60,9 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step and not an edit: the revision may move (it is a view change, and that is
-    // what carries the new tab order into the autosave journal) but a clean project stays clean
-    let _ = revision;
+    // not an undo step and not an edit: a tab move advances `view_epoch` but leaves `revision`
+    // alone, so revision-keyed caches stay valid.
+    assert_eq!(s.revision, revision, "a tab move must not invalidate revision-keyed caches");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
