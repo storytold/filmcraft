@@ -13,7 +13,7 @@
 //!   Effects panel lists, from the engine's effect definitions
 //!   (`crates/project/examples/effect_catalog.rs`); paths are Effects-panel folders
 //!   (`Video Effects > Blur & Sharpen > Gaussian Blur`). A reference entry may also be a bare name,
-//!   which has no folder and so is matched by name alone. Presets and Lumetri Presets are out of
+//!   which has no folder and so is matched by name alone. Presets and Color Grading Presets are out of
 //!   scope, and so are the other area's items (a folder named `… Transitions`), so one reference
 //!   of the whole Effects panel serves both areas.
 //!
@@ -38,6 +38,8 @@ use serde_json::Value;
 const MAX_DEPTH: usize = 16;
 /// Most menu items accepted from a reference file.
 const MAX_ITEMS: usize = 20_000;
+/// Most UTF-8 bytes retained in one expanded leaf path.
+const MAX_PATH_BYTES: usize = 4 * 1024;
 /// Keys holding a node's label, and its children.
 const LABEL_KEYS: [&str; 3] = ["name", "title", "label"];
 const CHILD_KEYS: [&str; 6] = ["children", "items", "submenu", "menu", "menuItems", "menu_items"];
@@ -303,6 +305,10 @@ fn push_leaf(prefix: &[String], label: &str, min: usize, out: &mut Vec<Vec<Strin
     if out.len() >= MAX_ITEMS {
         return Err(format!("reference has more than {MAX_ITEMS} items"));
     }
+    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
+    if bytes > MAX_PATH_BYTES {
+        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+    }
     let mut path = prefix.to_vec();
     path.push(label.trim().to_string());
     if path.len() >= min.max(1) {
@@ -391,7 +397,7 @@ fn out_of_scope(area: Area, path: &[String]) -> Option<&'static str> {
         Area::Menus => menu_out_of_scope(path),
         Area::Effects | Area::Transitions => {
             let top = norm(path.first()?);
-            if path.len() >= 2 && (top == "presets" || top == "lumetri presets") {
+            if path.len() >= 2 && (top == "presets" || top == "lumetri presets" || top == "color grade presets" || top == "color grading presets") {
                 return Some("presets");
             }
             let folders = path.get(..path.len().saturating_sub(1)).unwrap_or_default();
@@ -622,6 +628,8 @@ mod tests {
             assert!(reference_paths(&json!(many), area).unwrap_err().contains("more than"));
             let bare: Vec<String> = (0..MAX_ITEMS + 1).map(|i| format!("Effect {i}")).collect();
             assert!(area == Area::Menus || reference_paths(&json!(bare), area).unwrap_err().contains("more than"));
+            let long = format!("File > {}", "x".repeat(MAX_PATH_BYTES));
+            assert!(reference_paths(&json!([long]), area).unwrap_err().contains("bytes"));
         }
         // odd values are skipped, not trusted
         assert_eq!(reference_paths(&json!([1, null, true, {"name": 5}, ["File"]]), Area::Menus).unwrap(), Vec::<Vec<String>>::new());
@@ -742,5 +750,12 @@ mod tests {
         assert_eq!(tr.counts(), (2, 0, 1), "{}", tr.summary());
         assert_eq!(tr.out_of_scope.get("effects (--area effects)"), Some(&3));
         assert!(tr.markdown("effects.json", 3).contains("- [ ] Video Transitions ▸ Dissolve ▸ Film Dissolve"));
+    }
+
+    #[test]
+    fn renamed_color_preset_folders_remain_out_of_effect_parity() {
+        for name in ["Lumetri Presets", "Color Grade Presets", "Color Grading Presets"] {
+            assert_eq!(out_of_scope(Area::Effects, &[name.into(), "Cinematic".into()]), Some("presets"));
+        }
     }
 }

@@ -2,14 +2,27 @@
 
 use filmcraft_project::EffectInstance;
 use filmcraft_text::{Align, ParagraphStyle, TextStyle, layout, render};
+use filmcraft_time::TimeDisplay;
 
-use super::*;
+use super::{FxCtx, Image, Vec2, chv, cv, fv, pv, tv};
 use crate::graphics::paint_mask;
+
+/// Where and how [`draw_text`] sets its text: font family, anchor, pixel size, alignment code
+/// (0 left, 1 centre, 2 right), colour and opacity of the black box behind it.
+#[derive(Clone, Copy)]
+pub(crate) struct TextLook<'a> {
+    pub family: &'a str,
+    pub pos: Vec2,
+    pub px: f32,
+    pub align: u32,
+    pub color: [f32; 4],
+    pub box_alpha: f32,
+}
 
 /// Draw `text` with its first baseline's cap height centred on `pos` (layer pixels), aligned
 /// left/centre/right on `pos.x`, over an optional black box.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, align: u32, color: [f32; 4], box_alpha: f32) {
+pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
+    let TextLook { family, pos, px, align, color, box_alpha } = look;
     if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() {
         return;
     }
@@ -50,13 +63,29 @@ pub fn simple_text(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let family = ["Inter", "JetBrains Mono"][chv(e, "font").min(1) as usize];
     let color = cv(e, "color", cx);
     let bg = fv(e, "bg_opacity", cx) / 100.0;
-    draw_text(img, &text, family, pos, size, chv(e, "alignment"), color, bg);
+    draw_text(img, &text, TextLook { family, pos, px: size, align: chv(e, "alignment"), color, box_alpha: bg });
+}
+
+/// The burn-in's Time Format choices, in the order of the effect's `time_format` list.
+const TIME_FORMATS: [TimeDisplay; 4] = [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames];
+
+/// The film time format (not Timecode) of a burn-in's timecode sources, which the host formats.
+pub(crate) fn film_time_format(e: &EffectInstance) -> Option<TimeDisplay> {
+    let display = TIME_FORMATS[(chv(e, "time_format") as usize).min(TIME_FORMATS.len() - 1)];
+    (e.effect == "metadata_burnin" && display != TimeDisplay::Timecode && matches!(chv(e, "source"), 0 | 1)).then_some(display)
 }
 
 /// The text a Metadata & Timecode Burn-in shows.
 pub(crate) fn burnin_text(e: &EffectInstance, cx: &FxCtx) -> String {
+    // Time Format applies to the two timecode sources; Timecode keeps the precomputed string
+    // (drop-frame aware), the film formats are formatted by the host
+    let display = TIME_FORMATS[(chv(e, "time_format") as usize).min(TIME_FORMATS.len() - 1)];
     let body = match chv(e, "source") {
+        0 if display != TimeDisplay::Timecode => cx.env.and_then(|env| env.sequence_time(display)).unwrap_or_else(|| cx.timecode.to_string()),
         0 => cx.timecode.to_string(),
+        1 if display != TimeDisplay::Timecode => {
+            cx.env.and_then(|env| env.media_time(display)).unwrap_or_else(|| cx.env.map_or_else(|| cx.timecode.to_string(), |env| env.media_timecode()))
+        }
         1 => cx.env.map_or_else(|| cx.timecode.to_string(), |env| env.media_timecode()),
         2 => cx.clip_name.to_string(),
         3 => cx.env.map_or_else(|| cx.clip_name.to_string(), |env| env.file_name()),
@@ -86,5 +115,5 @@ pub fn metadata_burnin(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         _ => (pv(e, "position", cx, img), 1),
     };
     let family = if matches!(chv(e, "source"), 0 | 1 | 4) { "JetBrains Mono" } else { "Inter" };
-    draw_text(img, &text, family, pos, size, align, cv(e, "color", cx), fv(e, "opacity", cx) / 100.0);
+    draw_text(img, &text, TextLook { family, pos, px: size, align, color: cv(e, "color", cx), box_alpha: fv(e, "opacity", cx) / 100.0 });
 }

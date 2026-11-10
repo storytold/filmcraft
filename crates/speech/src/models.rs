@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use sha2::Digest;
 
 /// One file of a model.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -195,16 +196,36 @@ pub fn model_dir(models_dir: &Path, m: &ModelInfo) -> PathBuf {
     models_dir.join(m.id)
 }
 
-/// All files present with their catalogue sizes (contents were verified when downloaded).
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['/', '\\'])
+        && !matches!(name, "." | "..")
+        && Path::new(name).components().count() == 1
+        && Path::new(name).file_name().is_some_and(|part| part == name)
+}
+
+fn valid_file(path: &Path, file: &ModelFile) -> bool {
+    if !valid_name(file.name) || !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() == file.size) {
+        return false;
+    }
+    let Ok(mut input) = std::fs::File::open(path) else { return false };
+    let mut hasher = sha2::Sha256::new();
+    if std::io::copy(&mut input, &mut hasher).is_err() {
+        return false;
+    }
+    format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(file.sha256)
+}
+
+/// All files present and matching their pinned size and SHA-256.
 pub fn installed(models_dir: &Path, m: &ModelInfo) -> bool {
     let d = model_dir(models_dir, m);
-    m.files.iter().all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|md| md.len() == f.size))
+    m.files.iter().all(|f| valid_file(&d.join(f.name), f))
 }
 
 /// Bytes still to download for `m` (files already present are skipped).
 pub fn missing_bytes(models_dir: &Path, m: &ModelInfo) -> u64 {
     let d = model_dir(models_dir, m);
-    m.files.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|md| md.len() == f.size)).map(|f| f.size).sum()
+    m.files.iter().filter(|f| !valid_file(&d.join(f.name), f)).map(|f| f.size).sum()
 }
 
 /// The tokenizer shared by the multilingual models has one checksum.
@@ -231,15 +252,17 @@ pub fn download(models_dir: &Path, m: &ModelInfo, progress: DownloadProgress) ->
 #[cfg(feature = "download")]
 pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgress) -> Result<(), crate::SpeechError> {
     use crate::SpeechError;
-    use sha2::Digest;
     use std::io::{Read, Write};
+    if let Some(file) = files.iter().find(|file| !valid_name(file.name)) {
+        return Err(SpeechError::Download(format!("invalid model artifact name: {:?}", file.name)));
+    }
     std::fs::create_dir_all(dir)?;
-    let total: u64 = files.iter().filter(|f| !std::fs::metadata(dir.join(f.name)).is_ok_and(|md| md.len() == f.size)).map(|f| f.size).sum();
+    let total: u64 = files.iter().filter(|f| !valid_file(&dir.join(f.name), f)).map(|f| f.size).sum();
     let agent = agent();
     let mut done = 0u64;
     for f in files {
         let dest = dir.join(f.name);
-        if std::fs::metadata(&dest).is_ok_and(|md| md.len() == f.size) {
+        if valid_file(&dest, f) {
             continue;
         }
         let part = dir.join(format!("{}.part", f.name));
@@ -321,5 +344,42 @@ mod tests {
         assert!(!installed(&dir, m));
         assert_eq!(missing_bytes(&dir, m), m.size());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn artifact_names_stay_inside_the_model_directory() {
+        for name in ["../escape", "/tmp/escape", r"..\escape", r"C:\escape", "", ".", ".."] {
+            assert!(!valid_name(name), "accepted {name:?}");
+        }
+        assert!(valid_name("model.safetensors"));
+    }
+
+    #[test]
+    fn same_length_corruption_is_not_installed() {
+        static FILES: &[ModelFile] = &[ModelFile {
+            name: "tiny.bin",
+            url: "https://example.invalid/tiny.bin",
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            size: 3,
+        }];
+        let model = ModelInfo {
+            id: "integrity-test",
+            name: "integrity test",
+            multilingual: false,
+            description: "",
+            license: "",
+            license_url: "",
+            author: "",
+            source: "",
+            files: FILES,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let directory = model_dir(root.path(), &model);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("tiny.bin"), b"bad").unwrap();
+        assert!(!installed(root.path(), &model));
+        assert_eq!(missing_bytes(root.path(), &model), 3);
+        std::fs::write(directory.join("tiny.bin"), b"abc").unwrap();
+        assert!(installed(root.path(), &model));
     }
 }

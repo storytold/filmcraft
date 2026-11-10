@@ -3,8 +3,6 @@
 //!
 //! See the crate README for the conformance status of each decoding stage.
 
-// Items used only by stages still being written (inter prediction, post filters).
-#![allow(dead_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod bits;
@@ -13,7 +11,7 @@ mod cdf;
 mod decoder;
 mod frame;
 mod grain;
-pub mod header;
+mod header;
 mod inter;
 mod inter_info;
 mod intra;
@@ -29,7 +27,7 @@ mod tile;
 mod transform;
 
 pub use decoder::Decoder;
-pub use header::{ColorConfig, FrameHeader, SequenceHeader};
+pub use header::{ColorConfig, SequenceHeader};
 pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.

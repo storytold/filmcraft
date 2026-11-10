@@ -3,7 +3,7 @@
 
 use filmcraft_cfb::{Version, Writer};
 
-use super::store::{self, SF_WEAK_SET, SF_WEAK_VECTOR, Value, utf16z};
+use super::store::{self, SF_STRONG_VECTOR, SF_WEAK_SET, SF_WEAK_VECTOR, Value, utf16z};
 
 const PID: u16 = 0x0007;
 
@@ -66,4 +66,29 @@ fn weak_collections_within_the_index_are_read() {
         assert_eq!(read_keys(sf, index(0, 0, &[])).unwrap(), Vec::<Vec<u8>>::new());
         assert_eq!(read_keys(sf, index(2, 4, &[1, 2, 3, 4, 5, 6, 7, 8])).unwrap(), [vec![1, 2, 3, 4], vec![5, 6, 7, 8]]);
     }
+}
+
+/// A strong vector whose entries all name the same child storage would rebuild that subtree once
+/// per entry; a storage has one owner, so the repeat is an error.
+#[test]
+fn a_storage_owned_twice_is_an_error() {
+    let name = utf16z("Items");
+    let mut props = vec![0x4C, 0x20];
+    for x in [1, PID, SF_STRONG_VECTOR, name.len() as u16] {
+        props.extend_from_slice(&x.to_le_bytes());
+    }
+    props.extend_from_slice(&name);
+    // count, next free key, last key, then the entry keys
+    let mut idx = 3u32.to_le_bytes().to_vec();
+    idx.extend_from_slice(&[0; 8]);
+    for _ in 0..3 {
+        idx.extend_from_slice(&1u32.to_le_bytes());
+    }
+    let mut w = Writer::new(Version::V3);
+    w.stream(Writer::ROOT, "properties", props).unwrap();
+    w.stream(Writer::ROOT, "Items index", idx).unwrap();
+    let child = w.storage(Writer::ROOT, "Items{1}", [0; 16]).unwrap();
+    w.stream(child, "properties", vec![0x4C, 0x20, 0, 0]).unwrap();
+    let e = store::read(&w.finish()).unwrap_err();
+    assert!(e.contains("more than one reference"), "{e}");
 }
