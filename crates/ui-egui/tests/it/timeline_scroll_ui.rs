@@ -38,7 +38,10 @@ fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
     assert_eq!(d.app().session.view_epoch, view_epoch.wrapping_add(1), "changed view settings are persisted");
 
     let view_epoch = d.app().session.view_epoch;
-    d.ok("ui.set", json!({"timeline": {"trackSliderShiftDragSpeed": 10.1, "trackSliderSmoothAnimations": "yes"}}));
+    let rejected = d.call("ui.set", json!({"timeline": {"trackSliderShiftDragSpeed": 10.1}}));
+    assert_eq!(rejected["ok"], json!(false), "out-of-range speed must be rejected");
+    assert!(rejected["error"].as_str().is_some_and(|message| message.contains("trackSliderShiftDragSpeed")));
+    d.ok("ui.set", json!({"timeline": {"trackSliderSmoothAnimations": "yes"}}));
     let settings = &d.app().session.state.timeline_ui;
     assert_eq!(settings.track_slider_shift_drag_speed, 2.5, "out-of-range speed is ignored");
     assert!(settings.track_slider_smooth, "wrongly typed settings are ignored");
@@ -650,6 +653,7 @@ fn hiding_the_slider_frees_its_space_and_only_then_offers_unhide() {
     assert!(!d.has("timeline.zoomBar.track"), "the hidden bar draws nothing at all");
     assert!(!d.has("timeline.zoomBar.settings.smoothAnimations"), "the settings popup is gone at once");
     assert!(d.has("timeline.zoomBar.hideDialog.ok"), "the window explaining how to bring it back");
+    assert!(d.has("timeline.zoomBar.hideDialog.restore"), "the dialog has a keyboard-focusable restore button");
     d.ok("ui.click", json!({"id": "timeline.zoomBar.hideDialog.ok"}));
     d.frames(2);
     assert!(!d.has("timeline.zoomBar.hideDialog.ok"), "OK only closes that window");
@@ -674,6 +678,16 @@ fn hiding_the_slider_frees_its_space_and_only_then_offers_unhide() {
     assert!(d.has("timeline.zoomBar.track"), "the bar is back");
     let back = d.rect("timeline.tracks");
     assert!((back[1] + back[3] - tracks[1] - tracks[3]).abs() < 1.0, "the tracks make room again: {back:?}");
+    // The hide dialog also offers a direct, keyboard-focusable restore button.
+    let bar_mid = centre(bar);
+    d.click_at(bar_mid.0, bar_mid.1, "right");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.hideSlider"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.zoom_bar_hidden);
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.hideDialog.restore"}));
+    d.frames(2);
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden);
+    assert!(d.has("timeline.zoomBar.track"), "the restore button brings the bar back");
     d.click_at(mid.0, mid.1, "right");
     assert!(!d.has("timeline.unhideZoomBar"), "gone again while the bar shows");
 }
@@ -874,10 +888,13 @@ fn control_channel_sets_and_reads_back_timeline_slider_preferences() {
     assert_eq!(settings["max_zoom_seconds"], json!(0.3));
     assert_eq!(settings["track_slider_hidden"], json!(true));
 
-    let rejected_color = d.call("ui.set", json!({"timeline": {
-        "maxZoomLevel": 0.5,
-        "positionIndicatorColor": "#GGGGGG"
-    }}));
+    let rejected_color = d.call(
+        "ui.set",
+        json!({"timeline": {
+            "maxZoomLevel": 0.5,
+            "positionIndicatorColor": "#GGGGGG"
+        }}),
+    );
     assert_eq!(rejected_color["ok"], json!(false), "invalid indicator colors reject the whole request");
     assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
 

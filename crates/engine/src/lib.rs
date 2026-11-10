@@ -1273,7 +1273,12 @@ impl Session {
     pub fn set_playhead(&mut self, t: Tick) {
         if let Some(s) = self.state.active_sequence {
             let rate = self.active_sequence().map(|s| s.settings.frame_rate).unwrap_or_default();
-            self.state.playheads.insert(s, rate.snap(t.max(Tick::ZERO)));
+            let playhead = rate.snap(t.max(Tick::ZERO));
+            let changed = self.state.playheads.get(&s).copied() != Some(playhead);
+            self.state.playheads.insert(s, playhead);
+            if changed {
+                self.view_changed();
+            }
             if self.state.selection_follows_playhead {
                 sequence_tools::select_under_playhead(self);
             }

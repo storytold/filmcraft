@@ -269,14 +269,26 @@ fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     d.ok("ui.set", json!({"timeline": {"pps": 15.0, "scroll": 0.5}}));
     d.frames(3);
     d.exec("sequence.moveTab", json!({"item": other, "index": 0}));
+    assert_eq!(d.open(), vec![other, main], "both tabs are open before saving");
+    assert!(d.app().session.project.sequence(filmcraft_project::ItemId(other)).is_some(), "second sequence exists before save");
     d.exec("file.saveAs", json!({"path": path}));
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["view"]["open_sequences"], json!([other, main]), "both tabs are stored in the project view");
+    let saved_item_ids = saved["project"]["items"].as_object().map(|items| items.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    assert!(saved["project"]["items"][other.to_string()].is_object(), "the saved project contains the second sequence item; ids: {saved_item_ids:?}");
+    let decoded_project: filmcraft_project::Project = serde_json::from_value(saved["project"].clone()).unwrap();
+    assert!(decoded_project.sequence(filmcraft_project::ItemId(other)).is_some(), "the serialized project decodes with the second sequence");
+    let decoded_view: filmcraft_project::ProjectView = serde_json::from_value(saved["view"].clone()).unwrap();
+    assert_eq!(decoded_view.open_sequences, [filmcraft_project::ItemId(other), filmcraft_project::ItemId(main)]);
 
     // another window of the app opens the file
     let mut e = Driver::new();
-    e.ok("ui.set", json!({"timeline": {"pps": 77.0, "scroll": 9.0}}));
+    assert!(e.app().session.prefs.timeline.restore_open_sequences, "the test expects tab restoration to be enabled");
+    let opened = e.exec("file.open", json!({"path": path}));
+    assert_eq!(opened["path"], json!(path));
+    assert!(e.app().session.project.sequence(filmcraft_project::ItemId(other)).is_some(), "the second sequence is present immediately after open");
     e.frames(3);
-    e.exec("file.open", json!({"path": path}));
-    e.frames(3);
+    assert!(e.app().session.project.sequence(filmcraft_project::ItemId(other)).is_some(), "the saved project contains the second sequence");
     assert_eq!((e.open(), e.active()), (vec![other, main], other));
     assert_eq!(e.view(), (15.0, 0.5, 60.0));
     e.click(&format!("timeline.tab.{main}"));

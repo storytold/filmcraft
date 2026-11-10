@@ -45,7 +45,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not inspect staged files.' }
 if ($staged.Count -eq 0) {
     throw 'There are no staged changes. Stage the Timeline files first; this script will not stage files automatically.'
 }
-$stagedInstructions = @($staged | Where-Object { $_ -match '(^|/)AGENTS\.md$' })
+$stagedPaths = @($staged | ForEach-Object { $_.Trim().Trim('"') })
+$stagedInstructions = @($stagedPaths | Where-Object { $_ -match '(?i)(^|/)AGENTS\.md$' })
 if ($stagedInstructions.Count -gt 0) {
     throw 'AGENTS.md is staged. Unstage it before publishing; this script will not commit it.'
 }

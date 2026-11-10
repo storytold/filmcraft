@@ -889,6 +889,7 @@ fn file_dialog_import_uses_shown_bin_unless_explicit() {
         let bin = app.session.project.root.find_bin(filmcraft_project::BinId(expected)).unwrap();
         assert!(bin.children.contains(&BinEntry::Item(item)), "shown={shown:?}, tab={tab:?}, params={params}: expected bin {expected}");
     }
+    app.session.media.clear();
     drop(app);
     std::fs::remove_dir_all(&dir).unwrap();
 }

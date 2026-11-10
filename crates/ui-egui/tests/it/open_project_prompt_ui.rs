@@ -148,6 +148,23 @@ fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
 }
 
 #[test]
+fn opening_a_project_prompts_for_unsaved_timeline_view_changes() {
+    let mut d = Driver::new();
+    let (dir, current, other) = projects(&mut d, "viewOnly");
+    d.app().session.state.timeline_ui.zoom_bar_hidden = true;
+    d.app().session.project_view_changed();
+    assert!(!d.app().session.is_dirty());
+    assert!(d.app().session.is_view_dirty());
+
+    d.open_project(&other);
+    assert!(d.has("openProject.save") && d.has("openProject.dontSave") && d.has("openProject.cancel"));
+    d.click("openProject.cancel");
+    assert_eq!(d.path(), Some(current));
+    assert!(d.app().session.is_view_dirty(), "Cancel preserves the unsaved Timeline settings");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn open_project_failed_save_keeps_the_prompt_and_chosen_project() {
     let mut d = Driver::new();
     let (dir, _, other) = projects(&mut d, "failedSave");

@@ -529,12 +529,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         if native_track_slider_outline(*panel, viewport, self.app.session.state.timeline_ui.track_slider_alternate_position)
             && let Some(window) = ui.ctx().input(|i| i.viewport().inner_rect)
         {
-            ui.ctx().layer_painter(ui.layer_id()).rect_stroke(
-                window,
-                0.0,
-                Stroke::new(2.0, egui::Color32::from_rgb(0x74, 0xb0, 0xff)),
-                StrokeKind::Inside,
-            );
+            ui.ctx().layer_painter(ui.layer_id()).rect_stroke(window, 0.0, Stroke::new(2.0, egui::Color32::from_rgb(0x74, 0xb0, 0xff)), StrokeKind::Inside);
         }
     }
 

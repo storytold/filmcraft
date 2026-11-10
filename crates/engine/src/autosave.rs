@@ -589,8 +589,9 @@ fn stale_session_lock(dir: &Path) -> (Option<File>, bool) {
     }
 }
 
-/// Find snapshots of sessions that are no longer running. Stale session directories without a
-/// snapshot (nothing unsaved) are removed. `skip` is the caller's own session directory.
+/// Find snapshots of sessions that are no longer running without deleting session data.
+/// `skip` is the caller's own session directory; stale empty and clean sessions are cleaned at
+/// persistence startup instead.
 pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCandidate> {
     let Ok(rd) = fs::read_dir(recovery_root(data_dir)) else { return Vec::new() };
     let mut out = Vec::new();
@@ -599,14 +600,13 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         if !dir.is_dir() || Some(dir.as_path()) == skip {
             continue;
         }
-        let (stale_lock, active) = stale_session_lock(&dir);
+        let (_, active) = stale_session_lock(&dir);
         if active {
             continue;
         }
         let snap = dir.join(SNAPSHOT);
         if !snap.is_file() {
-            // Empty leftover dirs (clean exit, or a crash before the first snapshot).
-            let _ = fs::remove_dir_all(&dir);
+            // A listing is read-only for a live or not-yet-locked session.
             continue;
         }
         // Keep the snapshot even when session.json is missing or unreadable: the project
@@ -619,22 +619,46 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         if let Some(expected) = meta.snapshot_fingerprint
             && read_snapshot_fingerprint(&snap).ok() != Some(expected)
         {
-            // A crash may have left one half of a new journal pair beside the other half of the
-            // previous revision. Keep it for diagnosis, but never offer a mismatched pair.
+            // A crash can leave metadata for a different generation beside the snapshot.
+            // A missing fingerprint is the intentional in-progress marker for a dirty write.
             continue;
         }
         if !meta.dirty {
-            // a clean project's view-only journal is not unsaved work: never offered as
-            // recovery, and not left behind either
-            if stale_lock.is_some() {
-                let _ = fs::remove_dir_all(&dir);
-            }
+            // A clean project's view-only journal is not unsaved work. Its cleanup is a separate
+            // startup step, not a side effect of listing recovery candidates.
             continue;
         }
         out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
     }
     out.sort_by(|a, b| b.meta.saved_unix.cmp(&a.meta.saved_unix).then(b.id.cmp(&a.id)));
     out
+}
+
+/// Remove stale empty and clean journals during persistence startup, before starting this
+/// session's worker. The acquired lock stays alive until removal completes; active, unlocked, or
+/// unreadable sessions are preserved.
+fn cleanup_stale_sessions(data_dir: &Path) {
+    let Ok(rd) = fs::read_dir(recovery_root(data_dir)) else { return };
+    for entry in rd.filter_map(Result::ok) {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let (stale_lock, active) = stale_session_lock(&dir);
+        let Some(_stale_lock) = stale_lock else { continue };
+        if active {
+            continue;
+        }
+        let snapshot = dir.join(SNAPSHOT);
+        let should_remove = if !snapshot.is_file() {
+            true
+        } else {
+            fs::read(dir.join(META)).ok().and_then(|bytes| serde_json::from_slice::<JournalMeta>(&bytes).ok()).is_some_and(|meta| !meta.dirty)
+        };
+        if should_remove {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
 }
 
 /// Load a candidate's snapshot.
@@ -789,6 +813,7 @@ impl Persistence {
     pub fn start(cfg: &AutosaveConfig, prefs: AutoSavePrefs) -> io::Result<Self> {
         let root = recovery_root(&cfg.data_dir);
         fs::create_dir_all(&root)?;
+        cleanup_stale_sessions(&cfg.data_dir);
         let started = unix_now();
         let pid = std::process::id();
         // Unique even for several sessions in one process within a second (tests, future multi-window).
@@ -1189,14 +1214,29 @@ impl Worker {
 /// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
     let mut meta = meta.clone();
+    let previous_meta = fs::read(dir.join(META)).ok().and_then(|bytes| serde_json::from_slice::<JournalMeta>(&bytes).ok());
+    let previous_dirty = previous_meta.as_ref().map_or_else(|| dir.join(SNAPSHOT).is_file(), |previous| previous.dirty);
     meta.snapshot_fingerprint = Some(snapshot_fingerprint(snapshot));
-    let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
     let meta_path = dir.join(META);
     let snapshot_path = dir.join(SNAPSHOT);
-    if meta.dirty {
+    if meta.dirty && previous_dirty {
+        // Keep the old snapshot eligible until the replacement is durable.
+        let mut pending = previous_meta.unwrap_or_else(|| meta.clone());
+        pending.dirty = true;
+        pending.snapshot_fingerprint = None;
+        let pending_bytes = serde_json::to_vec_pretty(&pending).map_err(io::Error::other)?;
+        write(&meta_path, &pending_bytes)?;
+        write(&snapshot_path, snapshot)?;
+        let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
+        write(&meta_path, &metadata)
+    } else if meta.dirty {
+        // Clean-to-dirty keeps its established order so a failed snapshot write cannot offer
+        // an old clean snapshot as unsaved work.
+        let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
         write(&meta_path, &metadata)?;
         write(&snapshot_path, snapshot)
     } else {
+        let metadata = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
         write(&snapshot_path, snapshot)?;
         write(&meta_path, &metadata)
     }
@@ -1223,27 +1263,118 @@ fn read_snapshot_fingerprint(path: &Path) -> io::Result<u64> {
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+
+    static NEXT_TEST_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let serial = NEXT_TEST_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TestDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
-        let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let session = recovery_root(&dir).join("1-1");
+    fn scan_leaves_an_empty_session_without_a_stale_lock_alone() {
+        let dir = TestDir::new("empty-session");
+        let session = recovery_root(&dir).join("1-empty");
+        fs::create_dir_all(&session).unwrap();
+
+        assert!(scan_candidates(&dir, None).is_empty());
+        assert!(session.is_dir(), "a scan must not remove a directory without proving its worker stopped");
+    }
+
+    #[test]
+    fn scan_skips_clean_journals_without_deleting_their_data() {
+        let dir = TestDir::new("clean-session");
+        let session = recovery_root(&dir).join("1-clean");
         fs::create_dir_all(&session).unwrap();
         let snapshot = filmcraft_format::encode(&Project::default(), false);
-        write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        fs::write(session.join(SNAPSHOT), &snapshot).unwrap();
+        fs::write(session.join(META), serde_json::to_vec(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        assert!(scan_candidates(&dir, None).is_empty());
+        assert!(session.join(SNAPSHOT).is_file(), "a scan without a stale lock leaves the snapshot untouched");
+        assert!(session.join(META).is_file(), "a scan without a stale lock leaves its metadata untouched");
+    }
+
+    #[test]
+    fn startup_cleanup_removes_only_empty_or_clean_sessions_with_confirmed_stale_locks() {
+        let dir = TestDir::new("startup-cleanup");
+        let root = recovery_root(&dir);
+        let clean = root.join("1-clean");
+        let empty = root.join("2-empty");
+        let dirty = root.join("3-dirty");
+        let active = root.join("4-active");
+        for session in [&clean, &empty, &dirty, &active] {
+            fs::create_dir_all(session).unwrap();
+            File::create(session.join(LOCK)).unwrap();
+        }
+        fs::write(clean.join(SNAPSHOT), b"clean").unwrap();
+        fs::write(clean.join(META), serde_json::to_vec(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap()).unwrap();
+        fs::write(dirty.join(SNAPSHOT), b"dirty").unwrap();
+        fs::write(dirty.join(META), serde_json::to_vec(&JournalMeta { dirty: true, ..JournalMeta::default() }).unwrap()).unwrap();
+        let active_lock = File::options().read(true).write(true).open(active.join(LOCK)).unwrap();
+        active_lock.try_lock().unwrap();
+
+        cleanup_stale_sessions(&dir);
+
+        assert!(!clean.exists(), "confirmed stale clean journals are cleaned at startup");
+        assert!(!empty.exists(), "confirmed stale empty sessions are cleaned at startup");
+        assert!(dirty.exists(), "dirty recovery data remains available");
+        assert!(active.exists(), "a live worker's directory is never cleaned");
+    }
+
+    #[test]
+    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
+        let dir = TestDir::new("journal-order");
+        let session = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let old_snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &old_snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let unsaved = Project::new("Unsaved snapshot after interruption");
+        let snapshot = filmcraft_format::encode(&unsaved, false);
         let result = write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
             filmcraft_format::atomic_write(path, bytes)?;
             if path.ends_with(SNAPSHOT) { Err(io::Error::other("interrupted")) } else { Ok(()) }
         });
         assert!(result.is_err());
-        assert_eq!(scan_candidates(&dir, None).len(), 1);
-        fs::remove_dir_all(&dir).unwrap();
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].meta.dirty, "the surviving journal remains dirty");
+        assert_eq!(load_candidate(&candidates[0]).unwrap().project, unsaved, "the candidate is the interrupted snapshot");
     }
 
     #[test]
     fn failed_clean_to_dirty_pair_does_not_offer_a_stale_snapshot() {
-        let dir = std::env::temp_dir().join(format!("fc-journal-stale-pair-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = TestDir::new("journal-stale-pair");
         let session = recovery_root(&dir).join("1-2");
         fs::create_dir_all(&session).unwrap();
         let old_snapshot = filmcraft_format::encode(&Project::default(), false);
@@ -1258,6 +1389,60 @@ mod durability_tests {
         assert!(result.is_err());
         assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), old_snapshot, "the previous snapshot remains untouched");
         assert!(scan_candidates(&dir, None).is_empty(), "metadata for a different snapshot must not advertise stale content as recovery");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dirty_to_dirty_write_interrupted_after_metadata_keeps_previous_snapshot_recoverable() {
+        let dir = TestDir::new("journal-dirty-metadata");
+        let session = recovery_root(&dir).join("1-3");
+        fs::create_dir_all(&session).unwrap();
+        let previous_project = Project::new("Previous unsaved work");
+        let previous_snapshot = filmcraft_format::encode(&previous_project, false);
+        let previous_meta = JournalMeta { dirty: true, revision: 1, project_name: "Previous unsaved work".into(), ..JournalMeta::default() };
+        write_recovery_pair(&session, &previous_snapshot, &previous_meta, filmcraft_format::atomic_write).unwrap();
+
+        let next_snapshot = filmcraft_format::encode(&Project::new("Next unsaved work"), false);
+        let next_meta = JournalMeta { dirty: true, revision: 2, project_name: "Next unsaved work".into(), ..JournalMeta::default() };
+        let result = write_recovery_pair(&session, &next_snapshot, &next_meta, |path, bytes| {
+            if path.ends_with(META) {
+                filmcraft_format::atomic_write(path, bytes)?;
+                return Err(io::Error::other("interrupted after metadata write"));
+            }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), previous_snapshot);
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(load_candidate(&candidates[0]).unwrap().project, previous_project);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn interrupted_dirty_write_keeps_snapshot_when_metadata_is_unreadable() {
+        let dir = TestDir::new("journal-missing-meta");
+        let session = recovery_root(&dir).join("1-4");
+        fs::create_dir_all(&session).unwrap();
+        let previous_project = Project::new("Previous recoverable work");
+        let previous_snapshot = filmcraft_format::encode(&previous_project, false);
+        fs::write(session.join(SNAPSHOT), &previous_snapshot).unwrap();
+
+        let next_snapshot = filmcraft_format::encode(&Project::new("Next unsaved work"), false);
+        let result = write_recovery_pair(&session, &next_snapshot, &JournalMeta { dirty: true, revision: 2, ..JournalMeta::default() }, |path, bytes| {
+            if path.ends_with(META) {
+                filmcraft_format::atomic_write(path, bytes)?;
+                return Err(io::Error::other("interrupted after pending metadata"));
+            }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), previous_snapshot);
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(load_candidate(&candidates[0]).unwrap().project, previous_project);
         fs::remove_dir_all(&dir).unwrap();
     }
 

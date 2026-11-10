@@ -51,35 +51,45 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
-    /// Project-scoped Timeline interaction settings, stored beside the project view.
+    /// Project-scoped Timeline settings stored beside the rest of the view. A malformed settings
+    /// block falls back to defaults without discarding tabs or playheads; values are sanitized by
+    /// [`TimelineUiSettings::checked`].
     #[serde(default, deserialize_with = "lenient_timeline_ui")]
     pub timeline_ui: TimelineUiSettings,
 }
 
+/// Project-specific Timeline interaction preferences saved with [`ProjectView`]. Missing or
+/// malformed settings default safely; [`checked`](Self::checked) bounds numeric values and
+/// normalizes minimap colours before the settings reach UI controls.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimelineUiSettings {
+    /// Smooth zoom-bar animation. Defaults to off; the application animation preference also
+    /// needs to be enabled for animation.
     pub smooth_animations: bool,
     /// Inverted controls: the wheel over the tracks scrolls the Timeline the other way in time,
     /// and the wheel while grabbing the zoom slider's middle zooms the other way.
     pub inverted_controls: bool,
+    /// Seconds of Timeline to keep before the playhead when centering it (0.1-3600; default 10).
     pub playhead_side_seconds: f64,
+    /// Whether `playhead_side_seconds` is the Custom choice rather than a preset.
     pub playhead_side_custom: bool,
     /// Shift-drag speed as a multiplier of the Auto sensitivity for the current view (0.25 = four
     /// times slower, 2 = twice as fast).
     pub shift_drag_speed: f64,
+    /// Whether `shift_drag_speed` is the Custom choice rather than a preset.
     pub shift_drag_custom: bool,
     /// Zooming via the zoom bar's edges keeps the playhead exactly in the middle of the view
     /// once a zoom out has brought it into view (gravity), and never lets it slip off while the
     /// user keeps nudging the edges. Escaped only by dragging the slider's middle manually.
     pub playhead_centering: bool,
-    /// Hide Slider: the zoom scroll bar is gone and the tracks fill its space. Brought back by
-    /// right-clicking the Timeline (Unhide Timeline Slider).
+    /// Hide Slider: the zoom scroll bar is gone and the tracks fill its space. The hide dialog's
+    /// Unhide button and the Timeline context menu can bring it back.
     pub zoom_bar_hidden: bool,
     /// Alternate Slider Position: the zoom bar sits at the top edge, just above the ruler,
     /// instead of at the bottom edge.
     pub alternate_slider_position: bool,
-    /// Slider Minimap: clip outlines drawn on the zoom scroll bar's track (draft).
+    /// Show clip indicators on the zoom scroll bar (the Slider Minimap).
     pub slider_minimap: bool,
     /// Show Whole Timeline (the minimap's own menu): the minimap is locked to the full Timeline
     /// extent (the sequence plus its ten minute tail) so the viewport marker can travel past the
@@ -93,13 +103,16 @@ pub struct TimelineUiSettings {
     /// Prioritise Audio (the minimap's own menu): where an audio clip and a video clip sit at the
     /// same place, the audio shows on top of the video. Off: the video covers the audio.
     pub prioritise_audio: bool,
-    /// Video / Audio / Media Offline indicator colours ("#rrggbb") of the minimap's clips.
+    /// Video clip indicator colour (`#rrggbb`) in the minimap.
     pub video_indicator_color: String,
+    /// Audio clip indicator colour (`#rrggbb`) in the minimap.
     pub audio_indicator_color: String,
+    /// Offline media indicator colour (`#rrggbb`) in the minimap.
     pub offline_indicator_color: String,
     /// Maximum Zoom Level: the smallest number of seconds the view may show (0.1 = Closest,
     /// 0.2 = Close, 0.4 = Default, 0.8 = Far; Custom 0.05-3).
     pub max_zoom_seconds: f64,
+    /// Whether `max_zoom_seconds` is the Custom choice rather than a preset.
     pub max_zoom_custom: bool,
     /// The last Custom values of each dialog slider, restored when Custom is chosen again.
     /// Files written before they existed start at the one-time Custom defaults.
@@ -110,14 +123,13 @@ pub struct TimelineUiSettings {
     #[serde(default = "default_max_zoom_custom")]
     pub max_zoom_last_custom: f64,
     /// Hide Slider (track sliders): the side track sliders are gone and the tracks fill their
-    /// column. Brought back by right-clicking the Timeline (Unhide Track Slider).
+    /// column. The hide dialog's Unhide button and the Timeline context menu can bring them back.
     pub track_slider_hidden: bool,
-    /// Draft rows of the Track Slider Settings menu: stored and shown, but they do not drive the
-    /// sliders yet.
+    /// Smooth animation while moving a track slider.
     pub track_slider_smooth: bool,
+    /// Place the track sliders on the opposite side of their tracks.
     pub track_slider_alternate_position: bool,
-    /// Snap to Tracks: an end-circle drag's landing snaps to the track dividing lines. Stored and
-    /// toggled, but it does not drive the sliders yet (the snap is being rebuilt).
+    /// Snap a track-slider drag to the nearest track boundary when released.
     pub track_slider_snap: bool,
     /// Decouple Edges: dragging one end circle of a track slider moves only that end -- the
     /// other end stays exactly where it is instead of mirroring about the thumb's middle.
@@ -198,7 +210,15 @@ impl Default for TimelineUiSettings {
 }
 
 impl TimelineUiSettings {
-    /// Validate settings read from a project file before they reach UI geometry or controls.
+    /// Sanitize settings read from a project file before they reach UI geometry or controls.
+    ///
+    /// Numeric limits and defaults are: playhead side 0.1-3600 seconds (10); main Shift-drag
+    /// speed 0.1-50x (1); main saved Custom speed 0.1-50x (1); Maximum Zoom Level and its saved
+    /// Custom value 0.05-3 seconds (0.4); track-slider Shift-drag speed and its saved Custom value
+    /// 0.1-10x (1). Non-finite values use the listed defaults, and a non-positive zoom value is
+    /// treated as unset (0.4 seconds). Minimap colours accept `#rgb` or `#rrggbb`, normalize to
+    /// lowercase six-digit form, and otherwise use their field defaults. Invalid control-binding
+    /// strings are cleared.
     pub fn checked(mut self) -> Self {
         self.playhead_side_seconds = if self.playhead_side_seconds.is_finite() { self.playhead_side_seconds.clamp(0.1, 3600.0) } else { 10.0 };
         self.shift_drag_speed = if self.shift_drag_speed.is_finite() { self.shift_drag_speed.clamp(0.1, 50.0) } else { 1.0 };

@@ -4,7 +4,7 @@
 
 use super::*;
 use filmcraft_project::SequenceView;
-use filmcraft_time::TICKS_PER_SECOND;
+use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
 /// The demo project with two more sequences open: tabs [main, b, c], `c` active.
@@ -68,6 +68,20 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
     assert!(s.execute("sequence.moveTab", json!({"item": b.0, "index": 0})).is_err());
     assert!(s.execute("sequence.moveTab", json!({"item": c.0})).is_err());
+}
+
+#[test]
+fn playhead_changes_advance_only_the_view_persistence_epoch() {
+    let (mut s, _) = three_tabs();
+    let (revision, epoch) = (s.revision, s.view_epoch);
+    let time = Tick(TICKS_PER_SECOND);
+    s.set_playhead(time);
+    assert_eq!(s.revision, revision, "moving the playhead does not dirty project content");
+    assert_eq!(s.view_epoch, epoch.wrapping_add(1), "the project view must persist the new playhead");
+
+    let epoch = s.view_epoch;
+    s.set_playhead(time);
+    assert_eq!(s.view_epoch, epoch, "setting the same snapped playhead does not create a redundant view update");
 }
 
 #[test]
