@@ -598,9 +598,12 @@ fn offline_media(result: &Value) -> Vec<Value> {
 
 /// What the exports in a result reported about how they ran (hardware encoding asked for, but the
 /// software encoder ran): the warnings of a direct export's report (`result`), or of each queued
-/// item's.
+/// item's. `export.queue.add` answers with the whole queue, so only the items it `added` count: one
+/// that finished earlier (in the app, with `--bridge`) is not this export's.
 fn export_warnings(result: &Value) -> Vec<&str> {
-    let reports = std::iter::once(result).chain(result.get("items").and_then(Value::as_array).into_iter().flatten()).filter_map(|r| r.get("result"));
+    let added: Vec<&Value> = result.get("added").and_then(Value::as_array).into_iter().flatten().collect();
+    let queued = result.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| i.get("id").is_some_and(|id| added.contains(&id)));
+    let reports = std::iter::once(result).chain(queued).filter_map(|r| r.get("result"));
     reports.filter_map(|r| r.get("warnings").and_then(Value::as_array)).flatten().filter_map(Value::as_str).collect()
 }
 
@@ -728,15 +731,24 @@ mod format_tests {
     fn export_warnings_from_direct_and_queued_results() {
         use serde_json::json;
         let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
-        let cases: [(&str, serde_json::Value, &[&str]); 6] = [
+        // `export.queue.add` answers with the whole queue; `added` names the items this call queued
+        let older = json!({"id": 1, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}});
+        let cases: [(&str, serde_json::Value, &[&str]); 8] = [
             ("direct", json!({"path": "a.mp4", "result": {"encoder": "software", "warnings": [fell_back]}}), &[fell_back]),
             ("direct, nothing to say", json!({"path": "a.mp4", "result": {"encoder": "NVENC"}}), &[]),
             (
                 "queued, one of two",
-                json!({"items": [{"status": "done", "result": {"warnings": [fell_back]}}, {"status": "done", "result": {"encoder": "software"}}]}),
+                json!({"added": [1, 2], "items": [{"id": 1, "status": "done", "result": {"warnings": [fell_back]}}, {"id": 2, "status": "done", "result": {"encoder": "software"}}]}),
                 &[fell_back],
             ),
-            ("queued, failed", json!({"items": [{"status": "failed", "result": null}]}), &[]),
+            ("queued, failed", json!({"added": [1], "items": [{"id": 1, "status": "failed", "result": null}]}), &[]),
+            // an item finished earlier is not this export's: NVENC ran for the new one
+            ("queued after an older fallback", json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "NVENC"}}]}), &[]),
+            (
+                "queued, falls back after an older one did",
+                json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}}]}),
+                &[fell_back],
+            ),
             // the range advisory is printed on its own, with its CLI hint
             ("range warning only", json!({"warnings": ["In/Out range is 1 frame"], "result": {}}), &[]),
             ("no result", json!({}), &[]),
