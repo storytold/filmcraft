@@ -203,7 +203,7 @@ fn lumetri_presets_list_apply_and_thumbnails() {
     assert_eq!(r["folders"], json!(["Cinematic", "Film Emulation", "Monochrome", "Technical"]));
     let mono = s.execute("lumetri.presets", json!({"folder": "monochrome"})).unwrap();
     assert!(mono["presets"].as_array().unwrap().iter().all(|p| p["folder"] == "Monochrome"));
-    // apply: one undo step adding a configured Lumetri Color at the end of the clip's effects
+    // apply: one undo step adding a configured Color Grading at the end of the clip's effects
     let before = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len();
     let r = s.execute("lumetri.applyPreset", json!({"name": "Neutral Mono"})).unwrap();
     assert_eq!(r["clips"], 1);
@@ -243,7 +243,7 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
         assert!((m1[k] / m0[k] - 2.0).abs() < 0.08, "channel {k}: {m0:?} → {m1:?}");
     }
     assert!(up.px.as_chunks::<4>().0.iter().any(|p| p[1] > 1.2), "values above reference white survive");
-    // HDR White / HDR Specular / HDR Range are ordinary Lumetri parameters
+    // HDR White / HDR Specular / HDR Range are ordinary Color Grading parameters
     s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_white", "value": 2000.0})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hdr_specular", "value": -50.0})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "curves_hdr_range", "value": 4000.0})).unwrap();
@@ -381,7 +381,7 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     let mut s = demo();
     let clip = pick_clip(&mut s);
     let path = tmp("nolumetri.cube");
-    // no Lumetri on the clip: nothing to export, and the command does not add one
+    // no Color Grading on the clip: nothing to export, and the command does not add one
     assert!(s.execute("lumetri.exportCube", json!({"path": path})).is_err());
     assert!(s.execute("lumetri.exportCube", json!({"clip": clip.0, "path": path})).is_err());
     assert!(!std::path::Path::new(&path).exists());
@@ -397,7 +397,7 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     let lut = Lut3d::parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let grey = lut.apply([0.5, 0.5, 0.5]);
     assert!((0..3).any(|k| (grey[k] - 0.5).abs() > 0.002), "the match grades: {grey:?}");
-    // a Lumetri that is switched off is not a grade to export
+    // a Color Grading that is switched off is not a grade to export
     let set_enabled = |s: &mut Session, on: bool| {
         s.edit_sequence("toggle", |q, _, _| {
             let (_, it) = q.find_item_mut(clip).unwrap();
@@ -435,7 +435,7 @@ fn export_cube_goes_through_the_host_and_refuses_a_masked_lumetri() {
     s.execute("lumetri.exportCube", json!({"path": path, "size": 9})).unwrap();
     assert!(files.read_file(path).unwrap().starts_with(b"TITLE"));
     assert!(!std::path::Path::new(path).exists());
-    // a LUT has no spatial input: a masked Lumetri is an error, not a whole-frame grade
+    // a LUT has no spatial input: a masked Color Grading is an error, not a whole-frame grade
     s.edit_sequence("mask", |q, _, _| {
         let (_, it) = q.find_item_mut(clip).unwrap();
         it.effects.iter_mut().filter(|e| e.effect == "lumetri").for_each(|e| e.masks.push(Mask::new("m", MaskPath::rect(0.0, 0.0, 100.0, 100.0))));

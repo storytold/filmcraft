@@ -37,7 +37,8 @@ use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
 pub use effect::{
-    EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, plugin_effect_defs, register_plugin_effect, unregister_plugin_effect,
+    EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect, interchange_name, plugin_effect_defs, register_plugin_effect,
+    search_aliases, unregister_plugin_effect,
 };
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
@@ -98,7 +99,7 @@ pub struct Project {
     pub items: BTreeMap<ItemId, ProjectItem>,
     /// Monotonic id source for all id types.
     pub next_id: u64,
-    /// The project's LUT library (Lumetri Input LUT / Creative Look "Browse…"). LUT files are
+    /// The project's LUT library (Color Grading Input LUT / Creative Look "Browse…"). LUT files are
     /// embedded, so projects render without the original files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub luts: Vec<ProjectLut>,

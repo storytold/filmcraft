@@ -185,7 +185,8 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
     }
 }
 
-/// A media reader as the demuxers' byte source.
+/// A media reader as the demuxers' byte source. The ISO BMFF and Matroska demuxers share one
+/// `ByteSource` trait (craft-media), so one impl serves both.
 #[derive(Clone)]
 pub(crate) struct Src(pub filmcraft_media::SharedReader);
 

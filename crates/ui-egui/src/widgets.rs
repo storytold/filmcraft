@@ -403,7 +403,7 @@ pub fn revert_drag_on_escape<T: Clone + Send + Sync + 'static>(ctx: &egui::Conte
     }
 }
 
-/// A twirl-down section header (Effect Controls / Lumetri style). Returns open state.
+/// A twirl-down section header (Effect Controls / Color Grading style). Returns open state.
 pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &Tokens, bold: bool) -> (Response, bool) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
