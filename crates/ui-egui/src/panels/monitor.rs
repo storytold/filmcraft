@@ -1054,6 +1054,9 @@ fn mini_timeline(
                 app.session.set_playhead(tk);
             }
             Which::Source => {
+                // a scrub stops Source playback as it stops the Program's (#4609): left running, it
+                // restarted its sound at every move, whatever Settings ▸ Audio says about scrubbing
+                app.stop_source();
                 let _ = app.session.execute("source.setPlayhead", json!({"time": tk.0}));
             }
         }
