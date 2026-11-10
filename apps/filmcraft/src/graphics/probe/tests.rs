@@ -205,3 +205,136 @@ fn the_display_drivers_read_without_failing() {
         assert!(drivers.is_empty());
     }
 }
+
+/// The wgpu setup the window would use for `mode` on this platform.
+fn setup_for(mode: Mode) -> WgpuSetup {
+    let mut options = eframe::NativeOptions::default();
+    super::super::apply(&mut options, mode, None);
+    options.wgpu_options.wgpu_setup
+}
+
+/// The child's own steps, run in this process: software rendering (lavapipe or llvmpipe on
+/// Linux, WARP on Windows) creates a device or reports why not; it never hangs or panics.
+#[test]
+fn the_test_start_runs_its_steps_in_software_rendering() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    let code = run_child(setup_for(Mode::Software));
+    assert!(code == 0 || code == 1, "exit code {code}");
+}
+
+/// A mode whose backend this platform lacks reports an error instead of a device.
+#[test]
+fn the_test_start_reports_a_missing_backend_as_an_error() {
+    if cfg!(windows) || cfg!(target_os = "macos") {
+        return;
+    }
+    // DirectX 12 does not exist off Windows: no adapter, an error line and exit code 1.
+    assert_eq!(run_child(setup_for(Mode::Dx12)), 1);
+}
+
+/// A counter of the modes a fake test start was asked to test.
+fn counting(outcome: impl Fn(Mode) -> Outcome) -> (std::rc::Rc<std::cell::RefCell<Vec<Mode>>>, impl Fn(&Path, Mode) -> Outcome) {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = std::rc::Rc::clone(&seen);
+    (seen, move |_: &Path, mode: Mode| {
+        log.borrow_mut().push(mode);
+        outcome(mode)
+    })
+}
+
+#[test]
+fn a_start_tests_once_then_starts_directly_until_something_changes() {
+    let dir = temp_dir("choose-once");
+    let exe = Path::new("filmcraft");
+    let mut start = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 11);
+    let (seen, test) = counting(|_| Outcome::Passed(Report::default()));
+    assert_eq!(choose_with(&mut start, false, None, exe, "GPU 1.0", test), Ok(()));
+    assert_eq!(seen.borrow().len(), 1, "nothing known yet: one test");
+    start.finish();
+    // The same version, mode and drivers, and that start ended: no test this time.
+    let mut again = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 12);
+    let (seen, test) = counting(|_| Outcome::Passed(Report::default()));
+    assert_eq!(choose_with(&mut again, false, None, exe, "GPU 1.0", test), Ok(()));
+    assert!(seen.borrow().is_empty(), "started directly");
+    again.finish();
+    // A driver update tests again.
+    let mut updated = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 13);
+    let (seen, test) = counting(|_| Outcome::Passed(Report::default()));
+    assert_eq!(choose_with(&mut updated, false, None, exe, "GPU 2.0", test), Ok(()));
+    assert_eq!(seen.borrow().len(), 1);
+    updated.finish();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_start_that_hung_in_its_window_moves_on_from_its_mode() {
+    let dir = temp_dir("choose-hung");
+    let exe = Path::new("filmcraft");
+    let mut start = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 14);
+    let first = start.mode();
+    // The last start in this mode began long ago and is still open: it never got its window.
+    let stuck = Record {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        mode: first,
+        drivers: "GPU 1.0".to_string(),
+        started: unix_now().saturating_sub(HUNG_AFTER.as_secs() * 2),
+        open: true,
+    };
+    let _ = write_atomic(&dir.join(TEST_FILE), &record_json(&stuck));
+    let (seen, test) = counting(|_| Outcome::Passed(Report::default()));
+    let result = choose_with(&mut start, false, None, exe, "GPU 1.0", test);
+    if LADDER.len() > 1 {
+        assert_eq!(result, Ok(()));
+        assert!(!seen.borrow().contains(&first), "the hung mode is not tested again: {:?}", seen.borrow());
+        assert_ne!(start.mode(), first);
+        assert!(start.failed().iter().any(|(m, e)| *m == first && e.contains("never showed its window")), "{:?}", start.failed());
+    } else {
+        assert!(result.is_err(), "nothing to move on to");
+    }
+    start.finish();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_mode_passing_or_a_chosen_mode_failing_returns_the_message() {
+    let dir = temp_dir("choose-none");
+    let exe = Path::new("filmcraft");
+    let log = PathBuf::from("/data/Logs/filmcraft.log");
+    let mut start = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 15);
+    let (seen, test) = counting(|_| Outcome::Hung(Report { stage: Some("device".to_string()), ..Report::default() }, 25));
+    let msg = choose_with(&mut start, false, Some(&log), exe, "", test).err().unwrap_or_default();
+    assert_eq!(seen.borrow().len(), LADDER.len(), "every mode tested");
+    assert!(msg.contains("no graphics mode started in a test"), "{msg}");
+    assert!(msg.contains("stopped responding while creating the graphics device"), "{msg}");
+    assert!(msg.contains(&log.display().to_string()), "{msg}");
+    start.finish();
+    // `--graphics`: only that mode, and its failure is the message.
+    let mut forced = GraphicsStart::begin_at(Some(&dir), false, Some(Mode::Default), NOW, 16);
+    let (seen, test) = counting(|_| Outcome::Failed(Report { error: Some("no adapter".to_string()), ..Report::default() }));
+    let msg = choose_with(&mut forced, true, None, exe, "", test).err().unwrap_or_default();
+    assert_eq!(*seen.borrow(), vec![Mode::Default]);
+    assert!(msg.contains("the chosen graphics mode did not start in a test") && msg.contains("no adapter"), "{msg}");
+    forced.finish();
+    // Without a data folder there is nothing to compare with: start as before.
+    let mut bare = GraphicsStart::begin_at(None, false, None, NOW, 17);
+    let (seen, test) = counting(|_| Outcome::Passed(Report::default()));
+    assert_eq!(choose_with(&mut bare, false, None, exe, "", test), Ok(()));
+    assert!(seen.borrow().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Off Windows, and with `WGPU_BACKEND`, the choice is left alone.
+#[test]
+fn the_choice_runs_only_on_windows_without_an_explicit_backend() {
+    let dir = temp_dir("choose-gate");
+    let mut start = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 18);
+    assert_eq!(choose(&mut start, false, true, None), Ok(()), "WGPU_BACKEND: the user is in charge");
+    if !cfg!(windows) {
+        assert_eq!(choose(&mut start, false, false, None), Ok(()));
+        assert!(!dir.join(TEST_FILE).exists(), "no record off Windows");
+    }
+    start.finish();
+    let _ = std::fs::remove_dir_all(&dir);
+}

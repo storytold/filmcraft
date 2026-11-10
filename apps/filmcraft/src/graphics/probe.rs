@@ -416,7 +416,6 @@ pub fn choose(start: &mut GraphicsStart, forced: bool, explicit_backend: bool, l
     if !cfg!(windows) || explicit_backend {
         return Ok(());
     }
-    let Some(dir) = start.folder().map(Path::to_path_buf) else { return Ok(()) };
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => {
@@ -424,7 +423,25 @@ pub fn choose(start: &mut GraphicsStart, forced: bool, explicit_backend: bool, l
             return Ok(());
         }
     };
-    let drivers = display_drivers();
+    choose_with(start, forced, log_file, &exe, &display_drivers(), |exe, mode| {
+        let mut cmd = Command::new(exe);
+        cmd.arg(CHILD_ARG).arg(mode.name());
+        run_test(cmd, TIMEOUT)
+    })
+}
+
+/// [`choose`] for the program `exe` with the display drivers `drivers`, testing a mode with
+/// `test`, on any platform.
+fn choose_with(
+    start: &mut GraphicsStart,
+    forced: bool,
+    log_file: Option<&Path>,
+    exe: &Path,
+    drivers: &str,
+    test: impl Fn(&Path, Mode) -> Outcome,
+) -> Result<(), String> {
+    let Some(dir) = start.folder().map(Path::to_path_buf) else { return Ok(()) };
+    let drivers = drivers.to_string();
     let record = read_small(&dir.join(TEST_FILE)).and_then(|t| parse_record(&t));
     let needed = need(record.as_ref(), start.mode(), env!("CARGO_PKG_VERSION"), &drivers, unix_now());
     if needed == Need::No {
@@ -438,11 +455,7 @@ pub fn choose(start: &mut GraphicsStart, forced: bool, explicit_backend: bool, l
         start.add_failure(start.mode(), hung);
     }
     let modes = candidates(LADDER, start.mode(), skip_current, forced);
-    let result = test_modes(&exe, start, &modes, &dir, &drivers, |exe, mode| {
-        let mut cmd = Command::new(exe);
-        cmd.arg(CHILD_ARG).arg(mode.name());
-        run_test(cmd, TIMEOUT)
-    });
+    let result = test_modes(exe, start, &modes, &dir, &drivers, test);
     result.map_err(|()| {
         let what = if forced { "the chosen graphics mode did not start in a test" } else { "no graphics mode started in a test" };
         super::failure_message(what, start.failed(), log_file)
