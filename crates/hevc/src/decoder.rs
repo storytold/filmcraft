@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 
 /// Completed pictures a failed `decode` call leaves queued for the next call (older ones are dropped).
 const MAX_QUEUED_AFTER_ERROR: usize = 32;
+/// Most pictures one `decode` call may start: a chunk is an access unit, or a few in a transport
+/// stream packet. Each picture is a full frame, and small slices make them cheap to ask for.
+const MAX_PICTURES_PER_CALL: usize = 64;
 
 /// A picture whose slices are being collected.
 struct PendingPic {
@@ -83,6 +86,8 @@ pub struct Decoder {
     /// One lazily allocated gray backing for unavailable references in the active format.
     gray_reference: Option<Frame>,
     first_picture: bool,
+    /// Pictures started by the current `decode` call (see [`MAX_PICTURES_PER_CALL`]).
+    call_pictures: usize,
     after_eos: bool,
     /// RASL pictures associated with the last IRAP are skipped (it had NoRaslOutputFlag = 1).
     skip_rasl: bool,
@@ -139,6 +144,7 @@ impl Decoder {
             active_sps: None,
             gray_reference: None,
             first_picture: true,
+            call_pictures: 0,
             after_eos: false,
             skip_rasl: false,
             layout_cache: Vec::new(),
@@ -202,6 +208,7 @@ impl Decoder {
             },
             None => annexb_nals(data),
         };
+        self.call_pictures = 0;
         let mut result = Ok(());
         for nal in nals {
             if let Err(e) = self.handle_nal(nal, pts) {
@@ -399,6 +406,8 @@ impl Decoder {
 
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pps: &Arc<Pps>, pts: i64) -> Result<()> {
         ensure!(sh.first_slice_segment_in_pic && !sh.dependent, "invalid first slice segment");
+        self.call_pictures += 1;
+        ensure!(self.call_pictures <= MAX_PICTURES_PER_CALL, "too many pictures in one chunk");
         let hdr = sh.nal;
         let changed = match &self.active_sps {
             None => true,
@@ -677,6 +686,18 @@ mod tests {
         decoder.nal_length_size = Some(4);
         assert!(decoder.decode(&[0, 0, 0, 9, 1, 2], 0).is_err());
         assert_eq!(decoder.out_queue.len(), MAX_QUEUED_AFTER_ERROR);
+    }
+
+    #[test]
+    /// A chunk may start only so many pictures, however cheap each one is to ask for.
+    fn a_chunk_with_too_many_pictures_is_refused() {
+        let one = crate::synth_tests::missing_reference_picture(0, &[]);
+        let mut decoder = Decoder::new();
+        let ok: Vec<u8> = (0..MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&ok, 0).is_ok());
+        let mut decoder = Decoder::new();
+        let too_many: Vec<u8> = (0..=MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&too_many, 0).is_err());
     }
 
     fn missing_refs(decoder: &mut Decoder, poc: u32, deltas: &[i32]) -> Vec<FrameRef> {
