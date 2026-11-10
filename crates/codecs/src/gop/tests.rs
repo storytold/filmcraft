@@ -290,6 +290,30 @@ fn two_places_in_one_gop_run_side_by_side_without_restarting() {
 }
 
 #[test]
+fn seeks_that_never_come_back_keep_one_decoder() {
+    // scrubbing or cutting between distant places must not hold a second decoder (a 4K software
+    // decoder holds hundreds of MB): only going back to the GOP just left makes a second run
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for frame in [25usize, 1500, 2500, 3500] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+    // back to the GOP the last restart left (3500 -> 2500): a second run is parked
+    assert_eq!(index_of(&c.frame(&s, 2_600_000).expect("frame")), 2600);
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 2);
+    // each run carries on in its own GOP without restarting
+    let resets = s.resets.load(Ordering::Relaxed);
+    for f in 0..20usize {
+        assert_eq!(index_of(&c.frame(&s, (2601 + f) as i64 * 1000).expect("frame")), 2601 + f);
+        assert_eq!(index_of(&c.frame(&s, (3501 + f) as i64 * 1000).expect("frame")), 3501 + f);
+    }
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "neither run restarts again");
+}
+
+#[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
     let c = Arc::new(GopCache::new(None));

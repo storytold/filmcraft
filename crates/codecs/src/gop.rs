@@ -247,6 +247,11 @@ struct State {
     parked: Option<Lane>,
     /// When the active run last decoded.
     lane_at: Instant,
+    /// The sync sample of the run a restart last left, and when: a request for that GOP again
+    /// soon after (an A, B, A pattern, as a dissolve makes) is what parks a second run. A seek
+    /// that never comes back leaves one decoder, as before.
+    left_key: usize,
+    left_at: Instant,
     /// Only background requests (thumbnails, [`filmcraft_media::cancel::with_background`]) have
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
@@ -670,6 +675,8 @@ impl GopCache {
                 pin2: i64::MIN,
                 parked: None,
                 lane_at: Instant::now(),
+                left_key: usize::MAX,
+                left_at: Instant::now(),
                 background: false,
             }),
             pool: pool.clone(),
@@ -938,6 +945,7 @@ impl GopCache {
         // evicted or lies in another GOP: restart at the sync sample. A run that started after
         // `key` (at the random-access picture of a wanted leading picture) left the picture out.
         let mut continuing = lane_continues((st.next, st.start, st.out_max), n, key, i, want_pts);
+        let mut swapped = false;
         if !continuing {
             // Another part of the stream is being decoded in step with this one (the two sides
             // of a dissolve): resume that run, or park the running one and start a second,
@@ -949,13 +957,16 @@ impl GopCache {
             } else if st.next == usize::MAX || st.start != key {
                 // Neither run is in this sample's GOP (a request a few pictures behind a run is
                 // restarted in its own run, never moved to the other one). Reuse the run used
-                // least recently; the active one is parked for a second run only if it just
-                // decoded, so that scrubbing around a clip keeps one decoder.
+                // least recently. A second run is only made when the request goes back to the
+                // GOP the last restart left, within [`IDLE`] (cached frames let a run go quiet
+                // for a while): a seek that goes one way keeps one decoder (a 4K software
+                // decoder holds hundreds of MB), and the second run is released after [`IDLE`].
                 let parked_here = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.start == key && p.next != usize::MAX);
                 let parked_older = st.parked.as_ref().is_some_and(|p| p.decoder.is_some() && p.at <= st.lane_at);
-                let recent = st.decoder.is_some() && st.next != usize::MAX && st.lane_at.elapsed() < IDLE;
-                if parked_here || parked_older || (recent && st.parked.is_none()) {
+                let alternating = st.decoder.is_some() && st.next != usize::MAX && st.left_key == key && st.left_at.elapsed() < IDLE;
+                if parked_here || parked_older || (alternating && st.parked.is_none()) {
                     st.swap_lane();
+                    swapped = true;
                     if st.decoder.is_none() {
                         st.decoder = Some(s.make_decoder()?);
                         self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
@@ -965,6 +976,13 @@ impl GopCache {
         }
         st.lane_at = Instant::now();
         if !continuing {
+            // remember the GOP this restart leaves, for the alternation check above
+            if swapped {
+                st.left_key = usize::MAX;
+            } else if st.next != usize::MAX && st.start != key {
+                st.left_key = st.start;
+                st.left_at = Instant::now();
+            }
             SEEKS.fetch_add(1, Ordering::Relaxed);
             // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
             // every sample): step back to a sample the decoder can start from.
