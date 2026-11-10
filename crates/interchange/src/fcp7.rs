@@ -342,7 +342,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let mut again = None;
         if let Some(id) = self.seq_items.get(&key) {
             let shallower = self.truncated_at.get(&key).is_some_and(|d| depth < *d) && !self.in_progress.contains(&key);
-            if !shallower || self.reimports_left == 0 {
+            if !shallower {
+                return Some(*id);
+            }
+            if self.reimports_left == 0 {
+                self.report.warn("truncated nested sequence kept incomplete after the re-import limit was reached");
                 return Some(*id);
             }
             self.reimports_left -= 1;
