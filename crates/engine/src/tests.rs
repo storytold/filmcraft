@@ -1523,5 +1523,8 @@ fn project_view_changes_do_not_dirty_project_content() {
 
     assert_eq!(session.revision, revision, "view settings must not invalidate project content");
     assert!(!session.is_dirty(), "view settings do not dirty project content");
+    let inspected = commands::inspect_project(&session);
+    assert_eq!(inspected["dirty"], true, "the host must warn about unsaved project view settings");
+    assert_eq!(inspected["contentDirty"], false, "content dirtiness remains separately available");
     assert_ne!(session.view_epoch, view_epoch, "the changed view must be journaled");
 }

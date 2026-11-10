@@ -3,11 +3,11 @@
     [ValidateNotNullOrEmpty()]
     [string]$CommitTitle,
 
-    [string]$CommitBody = ''
+    [string]$CommitBody = '',
+    [string]$ExpectedRemote = 'https://github.com/TheMiningPickaxe/filmcraft'
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedRemote = 'https://github.com/TheMiningPickaxe/filmcraft'
 if ([string]::IsNullOrWhiteSpace($CommitTitle)) {
     throw 'A commit title is required.'
 }
@@ -17,7 +17,7 @@ function ConvertTo-CanonicalRepositoryUrl([string]$Url) {
     $value = $value -replace '^git@github\.com:', 'https://github.com/'
     $value = $value -replace '^ssh://git@github\.com/', 'https://github.com/'
     $value = $value -replace '\.git$', ''
-    return $value
+    return $value.ToLowerInvariant()
 }
 
 $repo = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
@@ -30,7 +30,7 @@ if ($LASTEXITCODE -ne 0 -or $pushUrls.Count -eq 0) {
     throw 'Could not read the origin push destination.'
 }
 foreach ($url in $pushUrls) {
-    if ((ConvertTo-CanonicalRepositoryUrl $url) -ne $expectedRemote) {
+    if ((ConvertTo-CanonicalRepositoryUrl $url) -ne (ConvertTo-CanonicalRepositoryUrl $ExpectedRemote)) {
         throw "The origin push destination '$url' is not the expected FilmCraft fork. Nothing was committed or pushed."
     }
 }
@@ -68,6 +68,8 @@ if (-not [string]::IsNullOrWhiteSpace($CommitBody)) {
     Write-Host $CommitBody
 }
 Write-Host ''
+Write-Host 'Reminder: run the required FilmCraft quality gates before committing.'
+Write-Host ''
 $confirmation = Read-Host "Type YES to commit these files and push branch '$branch' to your GitHub fork"
 if ($confirmation -cne 'YES') {
     Write-Host 'Cancelled. Nothing was committed or pushed.'
@@ -91,4 +93,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Commit failed; nothing was pushed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Commit succeeded, but pushing failed. The commit is still local.' }
 
 Write-Host ''
-Write-Host "Published branch '$branch' to $expectedRemote."
+Write-Host "Published branch '$branch' to $ExpectedRemote."

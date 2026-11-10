@@ -2077,8 +2077,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // with Ctrl/Alt fires even in a text field (it is a shortcut, not typing); a plain key only
     // when no text field has focus (`egui_wants_keyboard_input` is not enough: any clicked widget
     // counts there, including the box itself).
-    let chord_ok = !controls_listening(app, ui.ctx())
-        && chord_text.is_some_and(|c| c.contains("Ctrl") || c.contains("Alt") || !ui.ctx().text_edit_focused());
+    let chord_ok = !controls_listening(app, ui.ctx()) && chord_text.is_some_and(|c| c.contains("Ctrl") || c.contains("Alt") || !ui.ctx().text_edit_focused());
     let (center_bound, explode_bound, alternate_drag_bound, settings_bound) = {
         let s = &app.session.state.timeline_ui;
         let bound = |binding: &str| chord_ok && !binding.is_empty() && chord_text == Some(binding) && chord_text.is_some_and(|c| !c.ends_with("Click"));

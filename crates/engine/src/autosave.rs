@@ -544,8 +544,8 @@ pub struct JournalMeta {
     pub snapshot_fingerprint: Option<u64>,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
-    /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
-    /// project's view-only change journals too, but must not be offered as "unsaved changes".
+    /// Whether project content was unsaved when this snapshot was written. Current senders do
+    /// not journal view-only changes on a clean project.
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
@@ -708,8 +708,7 @@ struct Snapshot {
     project: Arc<Project>,
     view: filmcraft_project::ProjectView,
     revision: u64,
-    /// The session's view counter at this snapshot: a view-only change journals again even
-    /// though `revision` is unchanged.
+    /// The session's view counter at this snapshot, so recovery of dirty content carries its view.
     view_epoch: u64,
     /// Whether the project content was unsaved when this snapshot was taken (a clean project's
     /// view-only change is journaled but never offered as recovery).
@@ -1131,8 +1130,8 @@ impl Worker {
                 let _ = self.write_journal();
             }
             if self.prefs.enabled && self.next_autosave <= now {
-                // a view-only snapshot never becomes an auto-save version: there is no unsaved
-                // work in it, and the ring would fill with copies of the saved project
+                // Defensive for any future view-only snapshot producer: it is not unsaved content
+                // and must not fill the auto-save ring with copies of the saved project.
                 if self.latest.as_ref().is_some_and(|s| s.content_dirty && s.revision != self.autosaved) {
                     let _ = self.auto_save();
                 }
@@ -1238,6 +1237,8 @@ impl Worker {
 /// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
 /// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    // The clean-metadata ordering is defensive for legacy data and future producers; current
+    // senders only journal snapshots for dirty project content.
     let mut meta = meta.clone();
     let previous_meta = fs::read(dir.join(META)).ok().and_then(|bytes| serde_json::from_slice::<JournalMeta>(&bytes).ok());
     let previous_dirty = previous_meta.as_ref().map_or_else(|| dir.join(SNAPSHOT).is_file(), |previous| previous.dirty);
@@ -1320,10 +1321,7 @@ mod durability_tests {
 
     impl TestDir {
         fn new(tag: &str) -> Self {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
             let serial = NEXT_TEST_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
             fs::create_dir(&path).unwrap();

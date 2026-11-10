@@ -5251,7 +5251,8 @@ pub fn inspect_project(s: &Session) -> Value {
     json!({
         "name": p.name,
         "path": s.path,
-        "dirty": s.is_dirty(),
+        "dirty": s.has_unsaved_changes(),
+        "contentDirty": s.is_dirty(),
         "revision": s.revision,
         "root": bin(&p.root, p),
         "activeSequence": s.state.active_sequence.map(|i| i.0),
