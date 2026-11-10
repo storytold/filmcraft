@@ -135,7 +135,7 @@ impl OggSource {
         if st.last_decoded.is_none_or(|l| l + 1 != i) {
             let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
             d.reset();
-            let from = timing.starts.partition_point(|&x| x <= timing.starts[i] - OPUS_PRE_ROLL as i64).saturating_sub(1);
+            let from = timing.starts.partition_point(|&x| x <= timing.starts[i].saturating_sub(OPUS_PRE_ROLL as i64)).saturating_sub(1);
             for j in from..i {
                 if let Ok(prev) = read(j) {
                     let _ = d.decode(&prev, 0);
