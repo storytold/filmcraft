@@ -42,7 +42,7 @@ const WAIT_STEP: Duration = Duration::from_millis(25);
 /// Where the movies go and whether to block for them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrepareOptions {
-    /// `None` uses [`default_cache_dir`].
+    /// `None` uses [`default_cache_dir`], a private per-user folder. A path given here is used as is.
     pub cache_dir: Option<PathBuf>,
     /// Block until the render ends. For callers that draw nothing.
     pub wait: bool,
@@ -209,20 +209,39 @@ pub fn content_id(bytes: &[u8]) -> String {
     format!("{hash:032x}")
 }
 
-/// `<user cache>/artcraft/link/prepared`. `CRAFT_LINK_CACHE_DIR` replaces the whole path.
-pub fn default_cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("CRAFT_LINK_CACHE_DIR").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir);
+/// The private folder for rendered movies, created `0700` on Unix: `<user cache>/artcraft/link/prepared`.
+///
+/// `CRAFT_LINK_CACHE_DIR` names the folder that holds `prepared`, so the movies go to
+/// `$CRAFT_LINK_CACHE_DIR/prepared`. It must be absolute. `craft-ipc` refuses a folder that is a
+/// symlink, has another owner or has a loose mode. There is no fallback to a shared temp folder:
+/// with no override and no home folder this is an error that says what to set.
+pub fn default_cache_dir() -> Result<PathBuf, EditInError> {
+    let env: BTreeMap<String, String> = [craft_ipc::cache::CACHE_DIR_ENV, "XDG_CACHE_HOME", "HOME", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value)))
+        .collect();
+    cache_dir_in(&env)
+}
+
+/// [`default_cache_dir`] for an explicit environment. macOS and Windows keep their native cache
+/// folder as the base. `craft-ipc` reads that base as `XDG_CACHE_HOME`.
+fn cache_dir_in(env: &BTreeMap<String, String>) -> Result<PathBuf, EditInError> {
+    let mut env = env.clone();
+    if !env.contains_key("XDG_CACHE_HOME") {
+        let native = if cfg!(target_os = "macos") {
+            env.get("HOME").map(|home| Path::new(home).join("Library/Caches"))
+        } else if cfg!(windows) {
+            env.get("LOCALAPPDATA").map(PathBuf::from)
+        } else {
+            None
+        };
+        if let Some(native) = native {
+            env.insert("XDG_CACHE_HOME".to_string(), native.to_string_lossy().into_owned());
+        }
     }
-    let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
-    let base = if cfg!(target_os = "macos") {
-        home.map(|home| home.join("Library/Caches"))
-    } else if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CACHE_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| home.map(|home| home.join(".cache")))
-    };
-    base.unwrap_or_else(std::env::temp_dir).join("artcraft").join("link").join("prepared")
+    craft_ipc::cache::cache_dir_with(&env, "prepared").map_err(|err| {
+        EditInError::PrepareFailed(format!("cannot use the private link cache folder: {err}. Set CRAFT_LINK_CACHE_DIR to an absolute folder you own"))
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -329,8 +348,13 @@ pub fn resolve(session: &mut Session, nest: ItemId, options: &PrepareOptions) ->
     if wanted.is_empty() && silent.is_empty() {
         return Ok(project);
     }
-    let dir = options.cache_dir.clone().unwrap_or_else(default_cache_dir);
-    std::fs::create_dir_all(&dir).map_err(|err| EditInError::PrepareFailed(format!("cannot create the link cache {}: {err}", dir.display())))?;
+    let dir = match &options.cache_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(|err| EditInError::PrepareFailed(format!("cannot create the link cache {}: {err}", dir.display())))?;
+            dir.clone()
+        }
+        None => default_cache_dir()?,
+    };
     let mut started = false;
     let mut seen = HashSet::new();
     for need in &wanted {
@@ -591,6 +615,40 @@ mod tests {
         assert_ne!(needs(&session.project, seq)[0].key, before, "edited text needs a new movie");
         session.project_mut().source_graphics.insert(item, text("before"));
         assert_eq!(needs(&session.project, seq)[0].key, before, "the same layers find the same movie");
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(key, value)| ((*key).to_string(), (*value).to_string())).collect()
+    }
+
+    #[test]
+    fn no_home_and_no_override_is_an_error_not_the_shared_temp_folder() {
+        let err = cache_dir_in(&BTreeMap::new()).expect_err("no cache folder to pick");
+        let EditInError::PrepareFailed(text) = err else { panic!("wrong error: {err:?}") };
+        assert!(text.contains("CRAFT_LINK_CACHE_DIR"), "the message names the variable to set: {text}");
+        // A relative override is refused too, not resolved against the working folder.
+        assert!(cache_dir_in(&env_of(&[("CRAFT_LINK_CACHE_DIR", "cache")])).is_err());
+    }
+
+    #[test]
+    fn the_cache_folder_is_private_and_follows_the_base() {
+        let scratch = crate::fixtures::ScratchDir::new("fc-link-cache");
+        let home = scratch.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let home = home.to_string_lossy().into_owned();
+        let dir = cache_dir_in(&env_of(&[("HOME", &home), ("XDG_CACHE_HOME", &format!("{home}/xdg"))])).unwrap();
+        assert_eq!(dir, Path::new(&home).join("xdg/artcraft/link/prepared"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for folder in ["xdg/artcraft", "xdg/artcraft/link", "xdg/artcraft/link/prepared"] {
+                let mode = std::fs::metadata(Path::new(&home).join(folder)).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{folder}");
+            }
+        }
+        // The override names the folder that holds `prepared`.
+        let chosen = format!("{home}/mine");
+        assert_eq!(cache_dir_in(&env_of(&[("CRAFT_LINK_CACHE_DIR", &chosen), ("HOME", "/nonexistent")])).unwrap(), Path::new(&chosen).join("prepared"));
     }
 
     #[test]
