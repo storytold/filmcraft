@@ -137,6 +137,8 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() && s.state.gap_selection.is_none() {
         Err("nothing selected".into())
+    } else if s.state.transition_selection.is_empty() {
+        gap_closable(s)
     } else {
         Ok(())
     }
@@ -157,7 +159,20 @@ fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String>
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.gap_selection.is_none() {
         Err("nothing selected".into())
     } else {
-        Ok(())
+        gap_closable(s)
+    }
+}
+/// When only a gap is selected (Clear and Ripple Delete then close it), why it won't close: a
+/// sync-locked track with a clip in the way greys the commands out instead of failing silently (#2960).
+fn gap_closable(s: &Session) -> std::result::Result<(), String> {
+    let (Some(g), true, true) = (s.state.gap_selection, s.state.selection.is_empty(), s.state.caption_selection.is_empty()) else {
+        return Ok(());
+    };
+    let q = s.active_sequence().ok_or("no sequence is open")?;
+    match edit::closable_gap(q, g.track, g.range.start) {
+        // a stale selection stays enabled: running it says the gap is gone and drops it
+        Ok(_) | Err(edit::EditError::Nothing) => Ok(()),
+        Err(e) => Err(e.to_string()),
     }
 }
 fn has_source(s: &Session) -> std::result::Result<(), String> {
