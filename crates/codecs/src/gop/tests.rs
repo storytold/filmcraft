@@ -23,6 +23,10 @@ struct Samples {
     intra: bool,
     resets: Arc<AtomicUsize>,
     decodes: Arc<AtomicUsize>,
+    /// Decoders made so far, and how many may be made (the rest fail, like a hardware decoder
+    /// at its session limit).
+    made: Arc<AtomicUsize>,
+    max_decoders: usize,
 }
 
 /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
@@ -98,6 +102,9 @@ impl VideoSamples for Samples {
         Ok(vec![i as u8])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        if self.made.fetch_add(1, Ordering::Relaxed) >= self.max_decoders {
+            return Err(CodecError::Decode("no decoder session left".into()));
+        }
         Ok(Box::new(Dec {
             delay: self.delay,
             intra: self.intra,
@@ -111,7 +118,7 @@ impl VideoSamples for Samples {
 }
 
 fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default(), made: Default::default(), max_decoders: usize::MAX }
 }
 
 fn index_of(f: &VideoFrame) -> usize {
@@ -417,6 +424,31 @@ fn an_expired_parked_run_gives_back_its_frames_at_once() {
     assert!(st.bytes <= 300, "{} bytes held after the release", st.bytes);
     assert!(st.frames.contains_key(&1_150_000), "the frame asked for stays");
     assert_eq!(pool.bytes.load(Ordering::Relaxed), st.bytes, "the pool's count follows");
+}
+
+/// A second decoder that cannot be made (a hardware decoder's session limit) leaves the running
+/// decoder working: the far request restarts it in place, as a single run always did, and later
+/// requests for both places are still answered.
+#[test]
+fn a_second_decoder_that_cannot_be_made_leaves_the_first_working() {
+    let mut s = samples(4000, 1000, 0, false);
+    s.max_decoders = 1;
+    let c = GopCache::new(None);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    // the other place of a dissolve: a second decoder is wanted and cannot be made
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    {
+        let st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.parked.is_none(), "nothing is parked");
+        assert!(st.decoder.is_some(), "the working decoder is still the active one");
+    }
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+    for f in 0..20usize {
+        assert_eq!(index_of(&c.frame(&s, (200 + f) as i64 * 1000).expect("frame")), 200 + f);
+        assert_eq!(index_of(&c.frame(&s, (1151 + f) as i64 * 1000).expect("frame")), 1151 + f);
+    }
 }
 
 #[test]

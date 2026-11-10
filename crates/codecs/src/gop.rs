@@ -1007,11 +1007,18 @@ impl GopCache {
                 // place and restart it when the request comes back
                 let from_playback = running && st.left_run >= PLAYBACK_RUN && st.lane_at.elapsed() < IDLE;
                 if parked_here || parked_older || ((alternating || from_playback) && st.parked.is_none()) {
-                    st.swap_lane();
-                    swapped = true;
-                    if st.decoder.is_none() {
-                        st.decoder = Some(s.make_decoder()?);
-                        self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
+                    // A second decoder is made before anything moves: when it cannot be (a
+                    // hardware decoder's session limit, memory), the running decoder stays the
+                    // active one and restarts in place, as a single run always did, instead of
+                    // being left parked behind an active lane with no decoder.
+                    let fresh = if st.parked.as_ref().is_some_and(|p| p.decoder.is_some()) { None } else { Some(s.make_decoder()) };
+                    if fresh.as_ref().is_none_or(Result::is_ok) {
+                        st.swap_lane();
+                        swapped = true;
+                        if let Some(Ok(d)) = fresh {
+                            st.decoder = Some(d);
+                            self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
