@@ -1,4 +1,4 @@
-use super::layout::{max_pps, timeline_extent};
+use super::layout::{max_pps, min_pps, timeline_extent};
 use super::{Align2, Color32, CursorIcon, Drag, FilmcraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::widgets::{HotNumberOptions, hot_number_numeric};
@@ -13,6 +13,28 @@ const DEFAULT_POS_COLOR: Color32 = Color32::from_rgb(0x58, 0x95, 0xec);
 const DEFAULT_VIDEO_COLOR: Color32 = Color32::from_rgb(0x64, 0xb5, 0xf6);
 const DEFAULT_AUDIO_COLOR: Color32 = Color32::from_rgb(0x2e, 0x7d, 0x32);
 const DEFAULT_OFFLINE_COLOR: Color32 = Color32::from_rgb(0xd3, 0x2f, 0x2f);
+const MINIMAP_MAX_COLUMNS: usize = 16_384;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MinimapCue {
+    None,
+    Audio,
+    Offline,
+}
+
+fn minimap_cue(class: u8, prioritise_audio: bool) -> MinimapCue {
+    if class == 3 {
+        MinimapCue::Offline
+    } else if (class == 2) != prioritise_audio {
+        MinimapCue::None
+    } else {
+        MinimapCue::Audio
+    }
+}
+
+fn minimap_column_count(width: f32) -> usize {
+    if width.is_finite() { width.ceil().clamp(1.0, MINIMAP_MAX_COLUMNS as f32) as usize } else { 1 }
+}
 
 /// The Maximum Zoom Level, sanitized: the least of the Timeline the view may show, 0.05-3 s
 /// (the setting; hostile values give the 0.4 s default).
@@ -80,6 +102,30 @@ fn zoom_about_center(v: &mut crate::state::TimelineView, view_w: f32, total: f64
     v.target_pps = new_pps;
     v.scroll = (center - new_vis / 2.0).clamp(0.0, new_range);
     v.target_scroll = v.scroll;
+}
+
+fn centered_scroll(playhead: f64, visible_seconds: f64, sequence_seconds: f64) -> f64 {
+    if !playhead.is_finite() || !visible_seconds.is_finite() || !sequence_seconds.is_finite() {
+        return 0.0;
+    }
+    let visible_seconds = visible_seconds.max(0.0);
+    let max_scroll = (timeline_extent(sequence_seconds) - visible_seconds).max(0.0);
+    (playhead - visible_seconds / 2.0).clamp(0.0, max_scroll)
+}
+
+#[cfg(test)]
+mod centered_scroll_tests {
+    use super::centered_scroll;
+
+    #[test]
+    fn centers_the_actual_visible_window_when_zoom_limits_change_its_size() {
+        assert_eq!(centered_scroll(50.0, 40.0, 100.0), 30.0);
+    }
+
+    #[test]
+    fn non_finite_playhead_starts_at_sequence_beginning() {
+        assert_eq!(centered_scroll(f64::NAN, 20.0, 100.0), 0.0);
+    }
 }
 
 /// The zoom scroll bar's settings popup content. Opened by right-clicking the bar, and by the
@@ -764,7 +810,8 @@ fn color_to_hsv(c: Color32) -> (f32, f32) {
 /// to six, shorter ones are filled out to six. Lowercase, always exactly six digits -- and never
 /// panics, not even on no digits at all (clearing the hex field once crashed here).
 fn closest_six(digits: &str) -> String {
-    let d: Vec<char> = digits.chars().collect();
+    // Only six digits can affect the resulting colour; never copy an unbounded paste.
+    let d: Vec<char> = digits.chars().take(6).collect();
     let six: String = if d.is_empty() {
         "000000".to_string()
     } else if d.len() == 3 {
@@ -987,8 +1034,21 @@ fn tick_slider(ui: &mut egui::Ui, value: &mut usize, labels: &[&str], t: &Tokens
 /// bar's thumb -- the shortest tracks fill the bar, the tallest leave the [`MIN_THUMB_W`]
 /// minimum, log-smooth in between. A bijection, so a drag can never explode or compound.
 fn track_thumb(track_h: f32, bar_h: f32) -> f32 {
-    let f = 1.0 - (track_h.clamp(22.0, 220.0) / 22.0).log10() / (220.0f32 / 22.0).log10();
-    MIN_THUMB_W + f.clamp(0.0, 1.0) * (bar_h - MIN_THUMB_W).max(1.0)
+    if !bar_h.is_finite() || bar_h <= 0.0 {
+        return 0.0;
+    }
+    let track_h = if track_h.is_finite() { track_h.clamp(22.0, 220.0) } else { 220.0 };
+    let f = 1.0 - (track_h / 22.0).log10() / (220.0f32 / 22.0).log10();
+    let min_thumb = MIN_THUMB_W.min(bar_h);
+    min_thumb + f.clamp(0.0, 1.0) * (bar_h - min_thumb)
+}
+
+fn vertical_track_thumb(track_h: f32, bar_h: f32, bar_w: f32) -> f32 {
+    if !bar_h.is_finite() || bar_h <= 0.0 {
+        return 0.0;
+    }
+    let min_thumb = if bar_w.is_finite() { (bar_w + 4.0).max(0.0) } else { bar_h };
+    track_thumb(track_h, bar_h).max(min_thumb).min(bar_h)
 }
 
 /// Its inverse: the track height a thumb `len` points long stands for.
@@ -1079,14 +1139,7 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 }
 
 /// Extend a short edge run to the semicircle tangent instead of flattening its cap.
-fn minimap_indicator_bounds(
-    mut xa: f32,
-    mut xb: f32,
-    left_tangent: f32,
-    right_tangent: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> (f32, f32) {
+fn minimap_indicator_bounds(mut xa: f32, mut xb: f32, left_tangent: f32, right_tangent: f32, hug_left: bool, hug_right: bool) -> (f32, f32) {
     if hug_left {
         xb = xb.max(left_tangent);
     }
@@ -1117,19 +1170,23 @@ fn minimap_visible_cuts(class: &[u8], starts: &[usize], ends: &[usize], crosses:
 }
 
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
-fn minimap_indicator_filled(
-    fill_clips: bool,
-    width: f32,
-    min_outline_width: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> bool {
+fn minimap_indicator_filled(fill_clips: bool, width: f32, min_outline_width: f32, hug_left: bool, hug_right: bool) -> bool {
     fill_clips || (width < min_outline_width && !hug_left && !hug_right)
 }
 
 #[cfg(test)]
 mod minimap_indicator_tests {
-    use super::{minimap_indicator_bounds, minimap_indicator_filled, minimap_indicator_hugs_edges, minimap_visible_cuts};
+    use super::{MinimapCue, minimap_cue, minimap_indicator_bounds, minimap_indicator_filled, minimap_indicator_hugs_edges, minimap_visible_cuts};
+
+    #[test]
+    fn audio_and_offline_minimap_runs_have_non_colour_cues() {
+        assert_eq!(minimap_cue(2, false), MinimapCue::None);
+        assert_eq!(minimap_cue(1, false), MinimapCue::Audio);
+        assert_eq!(minimap_cue(1, true), MinimapCue::None);
+        assert_eq!(minimap_cue(2, true), MinimapCue::Audio);
+        assert_eq!(minimap_cue(3, false), MinimapCue::Offline);
+        assert_eq!(minimap_cue(3, true), MinimapCue::Offline);
+    }
 
     #[test]
     fn edge_caps_keep_a_full_semicircle_for_short_runs() {
@@ -1258,6 +1315,30 @@ mod color_picker_tests {
         assert_eq!(closest_six("1122334455"), "#112233");
         assert_eq!(closest_six("74b0ff"), "#74b0ff");
         assert_eq!(closest_six("AB"), "#ababab");
+        assert_eq!(closest_six(&"f".repeat(1_000_000)), "#ffffff");
+    }
+}
+
+#[cfg(test)]
+mod slider_bounds_tests {
+    use super::{MINIMAP_MAX_COLUMNS, minimap_column_count, track_thumb, vertical_track_thumb};
+
+    #[test]
+    fn minimap_columns_are_bounded_for_large_or_invalid_viewports() {
+        assert_eq!(minimap_column_count(0.0), 1);
+        assert_eq!(minimap_column_count(f32::NAN), 1);
+        assert_eq!(minimap_column_count(f32::INFINITY), 1);
+        assert_eq!(minimap_column_count(f32::MAX), MINIMAP_MAX_COLUMNS);
+    }
+
+    #[test]
+    fn track_thumb_never_exceeds_a_short_bar() {
+        for height in [0.5, 1.0, 5.0, 10.0] {
+            let thumb = track_thumb(100.0, height);
+            assert!(thumb.is_finite() && (0.0..=height).contains(&thumb), "bar={height}, thumb={thumb}");
+        }
+        assert_eq!(track_thumb(100.0, 0.0), 0.0);
+        assert_eq!(vertical_track_thumb(100.0, 5.0, 30.0), 5.0);
     }
 }
 
@@ -1303,7 +1384,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // media (always on top, whatever Prioritise Audio says). The covered kind's rectangle
         // simply ends where the winner begins. Drawn after the thumb (slightly transparent), so
         // clips never disappear behind the slider.
-        let cols = bar.width().max(1.0).ceil() as usize;
+        let cols = minimap_column_count(bar.width());
         let mut class = vec![0u8; cols];
         let mut starts = vec![0usize; cols.saturating_add(1)];
         let mut ends = vec![0usize; cols.saturating_add(1)];
@@ -1407,14 +1488,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
             let cap_rr = (bot - top) / 2.0;
-            (xa, xb) = minimap_indicator_bounds(
-                xa,
-                xb,
-                bar.min.x + ins + sh + cap_r,
-                bar.max.x - ins - sh - cap_rr,
-                hug_left,
-                hug_right,
-            );
+            (xa, xb) = minimap_indicator_bounds(xa, xb, bar.min.x + ins + sh + cap_r, bar.max.x - ins - sh - cap_rr, hug_left, hug_right);
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1458,13 +1532,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // "very near the beginning" / "very near the end": within the pill's cap zones
             let (hug_left, hug_right) = minimap_indicator_hugs_edges(index, runs.len(), x0 - bar.min.x, bar.max.x - x1, rad);
             let col = color_for(k);
-            if minimap_indicator_filled(
-                fill,
-                x1 - x0,
-                5.0 * px,
-                hug_left,
-                hug_right,
-            ) {
+            if minimap_indicator_filled(fill, x1 - x0, 5.0 * px, hug_left, hug_right) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
@@ -1486,6 +1554,22 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             } else {
                 // a 2 device-pixel outline as one continuous closed stroke around the shape
                 p.add(egui::Shape::Path(egui::epaint::PathShape::closed_line(outline(x0, x1, px, hug_left, hug_right), Stroke::new(2.0 * px, col))));
+            }
+            // Keep audio and offline runs distinguishable without relying on their configured
+            // colours. These small black-outlined white marks sit inside the indicator, leaving the
+            // minimap's colours, outlines, and geometry unchanged.
+            if x1 - x0 >= 5.0 * px {
+                let mid_x = (x0 + x1) * 0.5;
+                let cue = Stroke::new(px, Color32::WHITE);
+                let points = match minimap_cue(k, pri_audio) {
+                    MinimapCue::None => None,
+                    MinimapCue::Audio => Some([pos2(mid_x, y0 + px), pos2(mid_x, y1 - px)]),
+                    MinimapCue::Offline => Some([pos2(mid_x - px, y1 - px), pos2(mid_x + px, y0 + px)]),
+                };
+                if let Some(points) = points {
+                    p.line_segment(points, Stroke::new(2.0 * px, Color32::BLACK));
+                    p.line_segment(points, cue);
+                }
             }
         }
     }
@@ -1632,9 +1716,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let v = &mut app.ui.timeline;
         // fitting the whole Timeline: the floor is the sequence-dependent one (the same value
         // the fit computes), never a fixed 0.05, or a long sequence can never fit
-        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9))
-            .min(max_pps(view_w, min_view))
-            .max(1e-6);
+        let ceiling = max_pps(view_w, min_view);
+        let floor = min_pps(seq_seconds, view_w).min(ceiling);
+        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9)).clamp(floor, ceiling);
         v.target_pps = fit_pps;
         v.target_scroll = 0.0;
         if !app.session.state.timeline_ui.smooth_animations {
@@ -1652,9 +1736,12 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let span = side * 2.0;
         // fitting the centring range: no fixed 0.05 floor (it stopped a long range from ever
         // fitting), just the Maximum Zoom Level ceiling
-        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9)).min(max_pps(view_w, min_view)).max(1e-6);
+        let ceiling = max_pps(view_w, min_view);
+        let floor = min_pps(span, view_w).min(ceiling);
+        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9)).clamp(floor, ceiling);
         let playhead = app.session.playhead().seconds();
-        let target_scroll = (playhead - side).clamp(0.0, (timeline_extent(seq_seconds) - span).max(0.0));
+        let visible_seconds = (view_w.max(1.0) as f64 / fit_pps).max(1e-6);
+        let target_scroll = centered_scroll(playhead, visible_seconds, seq_seconds);
         let v = &mut app.ui.timeline;
         v.target_pps = fit_pps;
         v.target_scroll = target_scroll;
@@ -1730,7 +1817,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // the playhead off screen must never snap to it)
         if mode != 0 && app.session.state.timeline_ui.playhead_centering {
             let ph = app.session.playhead().seconds();
-            let vis = (view_w.max(1.0) as f64 / app.ui.timeline.pps.max(0.05)).max(1e-6);
+            let sequence_floor = min_pps(seq_seconds, view_w);
+            let pps = app.ui.timeline.pps.max(sequence_floor).max(f64::MIN_POSITIVE);
+            let vis = (view_w.max(1.0) as f64 / pps).max(1e-6);
             let sc = app.ui.timeline.scroll;
             if ph.is_finite() && ph >= sc && ph <= sc + vis {
                 app.tl.playhead_captured = true;
@@ -1828,6 +1917,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                 if moved != 0.0 && app.tl.playhead_captured {
                     app.tl.playhead_captured = false;
                 }
+                let dx = if app.session.state.timeline_ui.inverted_controls { -dx } else { dx };
                 v.target_scroll = (v.target_scroll + dx * per_point).clamp(0.0, range);
                 v.scroll = v.target_scroll;
             }
@@ -1955,6 +2045,7 @@ fn hide_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, track: bool) {
     }
     let row = if track { tl!("Unhide Track Slider") } else { tl!("Unhide Timeline Slider") };
     let mut dismiss = false;
+    let mut restore = false;
     egui::Window::new(tl!("Hide Slider"))
         .id(egui::Id::unique(("timeline-zoombar-hide-dialog", track)))
         .collapsible(false)
@@ -1966,6 +2057,10 @@ fn hide_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, track: bool) {
                 ui.label(tlf!("You can bring it back anytime by right clicking the timeline and selecting \"{row}\" at the bottom of the list.", row = row));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let unhide = ui.button(row);
+                let id = if track { "timeline.trackSlider.hideDialog.restore" } else { "timeline.zoomBar.hideDialog.restore" };
+                app.auto.add(id, unhide.rect, "Restore the hidden Timeline slider");
+                restore = unhide.clicked();
                 let ok = ui.button(tl!("OK"));
                 app.auto.add("timeline.zoomBar.hideDialog.ok", ok.rect, "Close the dialog");
                 if ok.clicked() {
@@ -1973,6 +2068,14 @@ fn hide_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, track: bool) {
                 }
             });
         });
+    if restore {
+        if track {
+            set_track_slider_hidden(app, ctx, false);
+        } else {
+            set_zoombar_hidden(app, ctx, false);
+        }
+        return;
+    }
     if dismiss {
         if track {
             app.tl.track_hide_dialog_open = false;
@@ -2069,7 +2172,7 @@ pub(super) fn vertical_scrollbar(
     p.rect_filled(bar, bar.width() / 2.0, t.separator);
     // with nothing to scroll the thumb fills the track -- the slider is always there, it never
     // just disappears at the ends of the A/V divider's range
-    let h = track_thumb(*track_h, bar.height()).max(bar.width() + 4.0);
+    let h = vertical_track_thumb(*track_h, bar.height(), bar.width());
     let travel = (bar.height() - h).max(1.0);
     // with nothing to scroll the thumb sits in the MIDDLE of the track: pinned to an end it
     // could never collapse about its middle (the dragged edge then barely moved while the other
@@ -2233,17 +2336,17 @@ pub(super) fn vertical_scrollbar(
                 // with `lo == hi` every drag frame would clamp to the bar and snap the tracks
                 // to their tallest
                 if hi > lo {
-                let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
-                if (new_len - h).abs() > f32::EPSILON {
-                    let len = new_len;
-                    let new_h = height_of(len);
-                    let max_new = (slots * new_h - window_h).max(0.0);
-                    let top = top_of(len);
-                    let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
-                    let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
-                    *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
-                    *track_h = new_h;
-                }
+                    let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
+                    if (new_len - h).abs() > f32::EPSILON {
+                        let len = new_len;
+                        let new_h = height_of(len);
+                        let max_new = (slots * new_h - window_h).max(0.0);
+                        let top = top_of(len);
+                        let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
+                        let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
+                        *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
+                        *track_h = new_h;
+                    }
                 }
             }
             // the middle: 1:1 scroll, as the zoom bar's middle (Inverted controls never touches
