@@ -286,8 +286,10 @@ fn select_clicked(app: &mut FilmcraftApp, v: &View, id: ItemId, mods: egui::Modi
     let order = if mods.shift { view_order(app, v, &app.ui.project_search.to_ascii_lowercase(), true) } else { Vec::new() };
     let anchor = app.ui.project_panel.anchor.map(ItemId);
     let sel = click_selection(&panel_selection(app), &order, anchor, id, mods.shift, mods.command);
-    // a Shift-click keeps the anchor; a plain or Ctrl/Cmd click sets it
-    if !mods.shift {
+    // a Shift-click keeps the anchor; a plain or Ctrl/Cmd click sets it, and so does a Shift-click
+    // whose anchor this view does not show (Freeform, a search), as it selected like a plain click
+    let ranged = mods.shift && anchor.is_some_and(|a| order.contains(&a)) && order.contains(&id);
+    if !ranged {
         app.ui.project_panel.anchor = Some(id.0);
     }
     app.ui.project_panel.selected_bin = None;
@@ -789,10 +791,12 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(origin);
         let m = ui.input(|i| i.modifiers);
         let add = m.shift || m.command;
+        // a bin clicked alone is part of what Shift/Ctrl add to, and of what Escape restores (#4382)
+        let before: Vec<u64> = panel_selection(app).iter().map(|i| i.0).collect();
         if !add {
             app.ui.project_panel.selected_bin = None;
         }
-        ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
+        ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, before, add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
     let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
