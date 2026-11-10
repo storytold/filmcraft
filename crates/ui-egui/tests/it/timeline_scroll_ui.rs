@@ -417,9 +417,9 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
@@ -440,11 +440,11 @@ fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.move_to(handle + 40.0, y);
     let after = d.app().ui.timeline.target_pps;
     assert!(after < before, "the right handle dragged right zooms out: {before} -> {after}");
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging along the bar");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging over the tracks");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging over the tracks");
     d.release(handle + 40.0, y - 300.0);
-    assert_ne!(d.cursor(), CursorIcon::ResizeHorizontal, "button released, pointer over the tracks");
+    assert_ne!(d.cursor(), CursorIcon::PointingHand, "button released, pointer over the tracks");
 }
 
 /// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
