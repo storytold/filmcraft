@@ -42,6 +42,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -223,9 +224,14 @@ impl Services for FsServices {
     }
 }
 
-/// A point in the undo history (its top step), from [`Session::undo_mark`].
+/// A point in an opened document's undo history within the originating [`Session`].
+/// The epoch fences replacements within that Session, including empty boundaries. Callers keep
+/// the mark with its originating Session; the epoch is not a cross-Session identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UndoMark(Option<usize>);
+pub struct UndoMark {
+    document_epoch: u64,
+    top: Option<usize>,
+}
 
 /// Undo history of whole-project snapshots. Each step is its label, the project before (undo) or
 /// after (redo) it, and the id of the command that made it (None for an edit made outside
@@ -1041,14 +1047,20 @@ impl Session {
 
     /// Where the undo history stands now, for [`Session::revert_to`].
     pub fn undo_mark(&self) -> UndoMark {
-        UndoMark(self.history.undo.last().map(|u| Arc::as_ptr(&u.1) as usize))
+        UndoMark { document_epoch: self.document_epoch, top: self.history.undo.last().map(|u| Arc::as_ptr(&u.1) as usize) }
     }
 
     /// Take back every edit made since `mark` (a gesture cancelled with Escape, #580), merged or
     /// not: the project returns to how it was at `mark`, and neither undo nor redo keeps them.
-    /// Nothing happens when `mark` has left the history. Returns how many steps were taken back.
+    /// Within this Session, a mark from an earlier document or one that left the history is ignored.
+    /// Returns how many steps were taken back.
     pub fn revert_to(&mut self, mark: UndoMark) -> usize {
-        if let UndoMark(Some(p)) = mark
+        // A stale empty mark would otherwise match the new document's empty history and
+        // remove all its edits. Reject ownership before examining any history pointers.
+        if mark.document_epoch != self.document_epoch {
+            return 0;
+        }
+        if let Some(p) = mark.top
             && !self.history.undo.iter().any(|u| Arc::as_ptr(&u.1) as usize == p)
         {
             return 0;

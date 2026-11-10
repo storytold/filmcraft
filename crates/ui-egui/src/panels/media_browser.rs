@@ -21,6 +21,9 @@ use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+mod pending_import;
+use pending_import::PendingImport;
+
 /// Frontend state of the Media Browser (`UiState::media_browser`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -50,9 +53,8 @@ struct Cache {
     /// Preview items for thumbnails of files not in the project: path → id.
     preview_ids: BTreeMap<String, u64>,
     preview: Arc<Project>,
-    /// Item imported for a drag in progress (undone when it is dropped nowhere): items, history
-    /// length after the import, last pointer position.
-    drag: Option<(Vec<u64>, usize, egui::Pos2)>,
+    /// Import cleanup pending for a drag, and its last pointer position.
+    drag: Option<(PendingImport, egui::Pos2)>,
 }
 
 const PREVIEW_BASE: u64 = 1 << 44;
@@ -468,6 +470,10 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
 /// Dragging a file imports it (the selection when the file is in it) and carries its items, so
 /// the Project panel, Timeline and monitors accept them; a drop elsewhere undoes the import.
 fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
+    // A retired press must not import before the shared payload boundary rejects its drag.
+    if crate::panels::drag_cancelled(ui) {
+        return;
+    }
     let paths: Vec<String> = if app.session.browser.selection.contains(&e.path) { app.session.browser.selection.clone() } else { vec![e.path.clone()] };
     // files already in the project are dragged as they are; only the others are imported
     let known: Vec<ItemId> = paths.iter().filter_map(|p| mb::item_for_path(&app.session, p)).collect();
@@ -489,7 +495,7 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     if !items.is_empty() {
         let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
         let after = app.session.history.undo.len();
-        with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
+        with_cache(ui.ctx(), |c| c.drag = Some((PendingImport::new(&app.session, items, after.max(before)), pos)));
     }
 }
 
@@ -500,27 +506,27 @@ fn file_drag_items(known: &[ItemId], imported: &[u64]) -> Vec<ItemId> {
 
 /// After a file drag ends: keep the import when it landed on a panel that takes items.
 fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
-    let Some((items, hist, _)) = with_cache(ui.ctx(), |c| c.drag.clone()) else { return };
+    let Some((pending, _)) = with_cache(ui.ctx(), |c| c.drag.clone()) else { return };
+    if !pending.belongs_to(&app.session) {
+        with_cache(ui.ctx(), |c| c.drag = None);
+        return;
+    }
     if crate::panels::dragged_project_item(ui).is_some() {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
             with_cache(ui.ctx(), |c| {
                 if let Some(d) = c.drag.as_mut() {
-                    d.2 = p;
+                    d.1 = p;
                 }
             });
         }
         return;
     }
-    let pos = with_cache(ui.ctx(), |c| c.drag.take().map(|d| d.2)).unwrap_or_default();
+    let pos = with_cache(ui.ctx(), |c| c.drag.take().map(|d| d.1)).unwrap_or_default();
     let targets = ["panel.Project", "panel.Timeline", "panel.Source", "panel.Program"];
     // a drag cancelled with Escape (#580) landed nowhere, wherever the pointer is
     let landed = !crate::panels::drag_cancelled(ui)
         && targets.iter().any(|t| app.auto.find(t).is_some_and(|e| Rect::from_min_size(pos2(e.rect[0], e.rect[1]), vec2(e.rect[2], e.rect[3])).contains(pos)));
-    let used_elsewhere = app.session.history.undo.len() > hist;
-    if !landed && !used_elsewhere && items.iter().all(|i| app.session.project.item(ItemId(*i)).is_some()) {
-        // dropped nowhere: take the import back
-        let _ = app.session.execute("edit.undo", json!({}));
-    }
+    pending.finish(&mut app.session, landed);
 }
 
 fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], columns: &[String]) {

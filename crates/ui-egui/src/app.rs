@@ -382,6 +382,9 @@ impl FilmcraftApp {
             self.latch_escape_cancel(&ctx);
             self.handle_shortcuts(&ctx);
             self.sync_native_menu(&ctx);
+            // Shortcuts can replace the document in this pass. Retire its gestures before any
+            // panel/drop target can resolve captured IDs against the replacement.
+            self.sync_ime_target_context(&ctx);
             self.scrub_audio(&ctx);
         } else {
             // Pass 1+ redraws the same frame; drop the discarded pass's registrations so lookups

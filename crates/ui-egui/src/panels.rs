@@ -209,8 +209,14 @@ fn payload_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-payload")
 }
 
+fn start_drag(ui: &egui::Ui, payload: DragPayload) {
+    if !drag_cancelled(ui) {
+        ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(payload))));
+    }
+}
+
 pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Source(source)))));
+    start_drag(ui, DragPayload::Source(source));
 }
 pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
     match payload(ui) {
@@ -219,10 +225,10 @@ pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
     }
 }
 pub fn start_drag_items(ui: &egui::Ui, drag: ItemDrag) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Items(drag)))));
+    start_drag(ui, DragPayload::Items(drag));
 }
 pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
+    start_drag(ui, DragPayload::Bin(bin));
 }
 pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
     match payload(ui) {
@@ -231,7 +237,7 @@ pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
     }
 }
 pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
+    start_drag(ui, DragPayload::Template(id.to_string(), name.to_string()));
 }
 pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
     match payload(ui) {
@@ -240,7 +246,7 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
     }
 }
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
+    start_drag(ui, DragPayload::Effect(id.to_string()));
 }
 /// Prefix of a dragged effect payload that names a Lumetri preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
@@ -314,7 +320,65 @@ pub fn cancel_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(cancelled_id(), true));
 }
 
-/// Whether the press in progress had its drag cancelled with Escape.
+/// Each native viewport owns its primary press independently of the main window's value-drag
+/// undo state. Keep the original document until release, even before a payload is captured.
+#[derive(Clone, Copy)]
+struct DocumentPress {
+    started: f64,
+    document: u64,
+}
+
+pub(crate) fn sync_document_press(ctx: &egui::Context, document: u64) -> bool {
+    let key = egui::Id::unique(("filmcraft-document-press", ctx.viewport_id()));
+    let started = ctx.input(|i| i.pointer.press_start_time().filter(|_| i.pointer.primary_down()));
+    let prior = ctx.data(|d| d.get_temp::<DocumentPress>(key));
+    match (started, prior) {
+        (Some(started), Some(prior)) if prior.started == started => {
+            let retired = prior.document != document;
+            if retired {
+                cancel_document_drags(ctx, true);
+            }
+            retired
+        }
+        (Some(started), _) => {
+            let fresh = ctx.input(|i| i.pointer.primary_pressed());
+            ctx.data_mut(|d| {
+                d.insert_temp(key, DocumentPress { started, document });
+                // A genuinely new press cannot inherit the preceding gesture's cancellation.
+                if fresh {
+                    d.remove::<bool>(cancelled_id());
+                }
+            });
+            false
+        }
+        (None, _) => {
+            ctx.data_mut(|d| d.remove::<DocumentPress>(key));
+            false
+        }
+    }
+}
+
+/// Document-local IDs may be reused by a replacement. Retire every captured Project gesture,
+/// including Freeform moves not yet promoted to the common payload, across all panel instances.
+/// Only an existing gesture is cancelled; replacing an idle document must not block a fresh drag.
+pub(crate) fn cancel_document_drags(ctx: &egui::Context, held_old_press: bool) {
+    let captured = dragging(ctx) || ctx.data(|d| d.count::<ItemDrag>() > 0 || d.count::<project_views::FreeformMove>() > 0);
+    let active = held_old_press || (captured && !ctx.input(|i| i.pointer.primary_pressed()));
+    ctx.data_mut(|d| {
+        d.remove::<Option<DragPayloadBox>>(payload_id());
+        d.remove::<u64>(egui::Id::unique("drag-release-frame"));
+        d.remove_by_type::<ItemDrag>();
+        d.remove_by_type::<project_views::FreeformMove>();
+        if active {
+            d.insert_temp(cancelled_id(), true);
+        }
+    });
+    if active {
+        ctx.stop_dragging();
+    }
+}
+
+/// Whether the press in progress had its drag cancelled (Escape or document replacement).
 pub fn drag_cancelled(ui: &egui::Ui) -> bool {
     ui.ctx().data(|d| d.get_temp::<bool>(cancelled_id())).unwrap_or(false)
 }

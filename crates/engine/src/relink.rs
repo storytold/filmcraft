@@ -531,7 +531,11 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
                 continue;
             }
             for f in paths {
-                if let Ok(c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                if let Ok(mut c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                    // results are listed, not played: holding every candidate's decoder (and a
+                    // decoded still for each alias of one image) kept them all in memory;
+                    // relinking reopens the chosen file
+                    c.source = None;
                     cands.push(c);
                 }
             }

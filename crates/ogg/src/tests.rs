@@ -218,3 +218,135 @@ fn opus_toc_durations() {
     assert_eq!(opus_packet_samples([0xF8 | 3, 7], 10), None); // 140 ms: invalid
     assert_eq!(opus_packet_samples([0xF8, 0], 0), None);
 }
+
+/// Opus headers, then `pages` pages of 255 zero-length packets each (a 255-byte lacing table of zeros).
+fn empty_packet_file(pages: usize) -> Vec<u8> {
+    let mut f = Vec::new();
+    let head = opus_head(0);
+    let (l, b) = lace(&[&head], false);
+    page(&mut f, 0x02, 0, 9, 0, &l, &b);
+    let tags = b"OpusTags\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+    let (l, b) = lace(&[&tags], false);
+    page(&mut f, 0, 0, 9, 1, &l, &b);
+    for seq in 0..pages {
+        page(&mut f, 0, 0, 9, seq as u32 + 2, &[0u8; 255], &[]);
+    }
+    f
+}
+
+#[test]
+fn zero_length_packets_stop_at_the_packet_budget_with_a_warning() {
+    let each = std::mem::size_of::<Packet>();
+    // 40 pages = 10_200 empty packets, in a file of about 11 KB; the budget allows 600
+    let f = empty_packet_file(40);
+    assert!(f.len() < 12_000);
+    let o = open_with_packet_budget(&f, each * 600).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 600);
+    assert!(o.streams[0].packets.iter().all(|p| p.size == 0 && p.parts.is_empty()));
+    assert!(o.warnings.iter().any(|w| w.contains("packet list exceeds")), "{:?}", o.warnings);
+}
+
+#[test]
+fn a_packet_list_exactly_at_the_budget_is_kept_without_a_warning() {
+    let each = std::mem::size_of::<Packet>();
+    let f = empty_packet_file(2); // 510 packets
+    let o = open_with_packet_budget(&f, each * 510).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 510);
+    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+    // one packet less of budget drops exactly the last packet
+    let o = open_with_packet_budget(&f, each * 510 - 1).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 509);
+    assert!(o.warnings.iter().any(|w| w.contains("packet list exceeds")));
+}
+
+#[test]
+fn packets_with_data_are_charged_for_their_byte_ranges() {
+    let f = opus_file(9, 0, 0);
+    let all = open(&f).unwrap();
+    let cost: usize = all.streams[0].packets.iter().map(packet_cost).sum();
+    assert!(cost > 9 * std::mem::size_of::<Packet>());
+    assert_eq!(open_with_packet_budget(&f, cost).unwrap().streams[0].packets.len(), 9);
+    assert!(open_with_packet_budget(&f, cost - 1).unwrap().streams[0].packets.len() < 9);
+}
+
+#[test]
+fn a_normal_file_is_unaffected_by_the_default_budget() {
+    let f = opus_file(30, 312, 100);
+    let o = open(&f).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 30);
+    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+}
+
+#[test]
+fn a_budget_stop_does_not_add_a_file_ends_inside_a_packet_warning() {
+    let mut f = Vec::new();
+    let head = opus_head(0);
+    let (l, b) = lace(&[&head], false);
+    page(&mut f, 0x02, 0, 9, 0, &l, &b);
+    let tags = b"OpusTags\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+    let (l, b) = lace(&[&tags], false);
+    page(&mut f, 0, 0, 9, 1, &l, &b);
+    // two complete packets, then one that continues onto a next page that never comes
+    let (p0, p1, p2) = (pkt(0, 40), pkt(1, 40), pkt(2, 255));
+    let (l, b) = lace(&[&p0, &p1, &p2], true);
+    page(&mut f, 0, -1, 9, 2, &l, &b);
+    let full = open(&f).unwrap();
+    assert_eq!(full.streams[0].packets.len(), 2);
+    assert!(full.warnings.iter().any(|w| w == "file ends inside a packet"));
+    let one = packet_cost(&full.streams[0].packets[0]);
+    let o = open_with_packet_budget(&f, one).unwrap();
+    assert_eq!(o.streams[0].packets.len(), 1);
+    assert_eq!(o.warnings.len(), 1, "{:?}", o.warnings);
+    assert!(o.warnings[0].contains("packet list exceeds"));
+}
+
+#[test]
+fn a_packet_spanning_pages_is_charged_once_at_its_final_size() {
+    let mut f = Vec::new();
+    let head = opus_head(0);
+    let (l, b) = lace(&[&head], false);
+    page(&mut f, 0x02, 0, 9, 0, &l, &b);
+    let tags = b"OpusTags\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+    let (l, b) = lace(&[&tags], false);
+    page(&mut f, 0, 0, 9, 1, &l, &b);
+    // one 600-byte packet over three pages: parts of 255, 255, 90 bytes
+    let big = pkt(0, 600);
+    let (l, b) = lace(&[&big[..255]], true);
+    page(&mut f, 0, -1, 9, 2, &l, &b);
+    let (l, b) = lace(&[&big[255..510]], true);
+    page(&mut f, 1, -1, 9, 3, &l, &b);
+    let (l, b) = lace(&[&big[510..]], false);
+    page(&mut f, 1, 960, 9, 4, &l, &b);
+    let o = open(&f).unwrap();
+    let pk = &o.streams[0].packets;
+    assert_eq!(pk.len(), 1);
+    assert_eq!(pk[0].parts.len(), 3);
+    let cost = std::mem::size_of::<Packet>() + 3 * std::mem::size_of::<(u64, u32)>();
+    assert_eq!(packet_cost(&pk[0]), cost);
+    assert_eq!(open_with_packet_budget(&f, cost).unwrap().streams[0].packets.len(), 1);
+    assert!(open_with_packet_budget(&f, cost - 1).unwrap().streams[0].packets.is_empty());
+}
+
+#[test]
+fn the_packet_budget_is_shared_by_all_streams() {
+    let mut f = Vec::new();
+    for serial in [9u32, 10] {
+        let head = opus_head(0);
+        let (l, b) = lace(&[&head], false);
+        page(&mut f, 0x02, 0, serial, 0, &l, &b);
+        let tags = b"OpusTags\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        let (l, b) = lace(&[&tags], false);
+        page(&mut f, 0, 0, serial, 1, &l, &b);
+    }
+    for seq in 0..2u32 {
+        for serial in [9u32, 10] {
+            page(&mut f, 0, 0, serial, seq + 2, &[0u8; 255], &[]);
+        }
+    }
+    let each = std::mem::size_of::<Packet>();
+    // 4 pages of 255 packets over two streams; the budget holds 700 in total
+    let o = open_with_packet_budget(&f, each * 700).unwrap();
+    let total: usize = o.streams.iter().map(|s| s.packets.len()).sum();
+    assert_eq!(total, 700);
+    assert!(o.warnings.iter().any(|w| w.contains("packet list exceeds")));
+}

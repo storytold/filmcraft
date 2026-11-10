@@ -1,10 +1,10 @@
 # Ukrainian (uk) catalog. Columns separated by TAB: context <TAB> source <TAB> translation
-	Selection order: {position} of {total}	Порядок вибору: {position} із {total}
 # Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing ….
 # Original clean-room translations from the meaning of FilmCraft's English menu labels,
 # using Ukrainian video-editing vocabulary. No proprietary localization resources were used.
 # Core menu coverage; other interface strings fall back to English.
 
+	Selection order: {position} of {total}	Порядок вибору: {position} із {total}
 	About FilmCraft	Про FilmCraft
 	Add Audio Submix Track	Додати доріжку підміксу аудіо
 	Add Caption at Playhead	Додати субтитр у позиції курсора відтворення
@@ -322,6 +322,7 @@
 	Source	Джерело
 	Source Settings…	Налаштування джерела…
 	Speed/Duration…	Швидкість/тривалість…
+	Maintain Audio Pitch	Зберігати висоту звуку
 	Synchronize…	Синхронізувати…
 	System Compatibility Report…	Звіт про сумісність системи…
 	Tan	Світло-коричневий

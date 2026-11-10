@@ -1175,9 +1175,13 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
         let cg = ui.painter().layout_no_wrap(tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
         let cw = cg.size().x;
         ui.painter().galley(pos2(th.max.x - cw, th.max.y + 11.0 - cg.size().y / 2.0), cg, t.text_dim);
-        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, nr.width() - cw - 6.0);
-        let elided = g.elided;
-        ui.painter().galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
+        // The name gets only what is left beside the count. At the smallest icon sizes that can be
+        // narrower than one letter and "…", which the layout still emits, so the name is also
+        // clipped to its slot and never runs into the count (#2632).
+        let slot = Rect::from_min_max(nr.min, pos2((nr.max.x - cw - 6.0).max(nr.min.x), nr.max.y));
+        let g = elided_name(ui, &b.name, Tokens::ui(f - 0.5), t.text, slot.width());
+        let elided = g.elided || g.size().x > slot.width();
+        ui.painter().with_clip_rect(slot).galley(pos2(th.min.x, th.max.y + 11.0 - g.size().y / 2.0), g, t.text);
         if elided {
             resp = resp.on_hover_text(&b.name);
         }
@@ -1253,6 +1257,14 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 
 // ------------------------------------------------------------------------------------ freeform
 
+/// Typed transient move state so replacing a document can retire every panel instance without
+/// deleting unrelated `(u64, Vec2)` state elsewhere in egui's temp store.
+#[derive(Clone, Copy)]
+pub(super) struct FreeformMove {
+    item: u64,
+    offset: egui::Vec2,
+}
+
 pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let t = app.tokens;
     let opts = app.session.prefs.project_panel.freeform.clone();
@@ -1265,13 +1277,13 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     let selection_key = drag_key.with("selection");
-    // (dragged item, offset so far)
-    let dragging: Option<(u64, egui::Vec2)> = ui.ctx().data(|d| d.get_temp(drag_key));
+    // Dragged item and offset so far, scoped to this document.
+    let dragging: Option<FreeformMove> = ui.ctx().data(|d| d.get_temp(drag_key));
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     let moving = |c: &Card| -> bool {
-        dragging.is_some_and(|(d, _)| {
-            let stack_of_d = cards_stack(&cards, d);
-            c.item == d || (sel.contains(&d) && sel.contains(&c.item)) || (stack_of_d.is_some() && c.stack == stack_of_d)
+        dragging.is_some_and(|d| {
+            let stack_of_d = cards_stack(&cards, d.item);
+            c.item == d.item || (sel.contains(&d.item) && sel.contains(&c.item)) || (stack_of_d.is_some() && c.stack == stack_of_d)
         })
     };
     let extent =
@@ -1323,7 +1335,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         let mut released: Option<(u64, egui::Vec2)> = None;
         for i in order {
             let c = cards[i].clone();
-            let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
+            let off = if moving(&c) { dragging.map(|d| d.offset).unwrap_or_default() } else { egui::Vec2::ZERO };
             let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some((resp, order_badge, _)) =
@@ -1353,7 +1365,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 actions,
                 ItemInteraction { view: v, response: &resp, item: ItemId(c.item), kind: &kind, allow_drag: false, allow_menu: false },
             );
-            if resp.drag_started_by(egui::PointerButton::Primary) {
+            if resp.drag_started_by(egui::PointerButton::Primary) && !crate::panels::drag_cancelled(ui) {
                 let items = project_drag_payload(app, ItemId(c.item));
                 ui.ctx().data_mut(|d| d.insert_temp(selection_key, items));
             }
@@ -1364,13 +1376,13 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
             if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {
                 ui.ctx().data_mut(|d| {
-                    d.remove::<(u64, egui::Vec2)>(drag_key);
+                    d.remove::<FreeformMove>(drag_key);
                     d.remove::<crate::panels::ItemDrag>(selection_key);
                 });
                 crate::panels::cancel_drag(ui);
             } else if dragged {
-                let total = dragging.filter(|d| d.0 == c.item).map(|d| d.1).unwrap_or_default() + resp.drag_delta();
-                ui.ctx().data_mut(|d| d.insert_temp(drag_key, (c.item, total)));
+                let total = dragging.filter(|d| d.item == c.item).map(|d| d.offset).unwrap_or_default() + resp.drag_delta();
+                ui.ctx().data_mut(|d| d.insert_temp(drag_key, FreeformMove { item: c.item, offset: total }));
                 // leaving the panel turns the move into an item drag (to the Timeline, a monitor)
                 if let Some(p) = ui.ctx().pointer_latest_pos()
                     && !rect.contains(p)
@@ -1381,14 +1393,14 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 }
             }
             if stopped && !crate::panels::drag_cancelled(ui) {
-                released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
+                released = dragging.filter(|d| d.item == c.item).map(|d| (d.item, d.offset + resp.drag_delta()));
             }
             resp.context_menu(|ui| card_menu(app, ui, v, c.item, width, actions));
         }
         marquee(app, ui, v, &bg, canvas.min, actions);
         if let Some((item, off)) = released {
             ui.ctx().data_mut(|d| {
-                d.remove::<(u64, egui::Vec2)>(drag_key);
+                d.remove::<FreeformMove>(drag_key);
                 d.remove::<crate::panels::ItemDrag>(selection_key);
             });
             let inside = ui.ctx().pointer_latest_pos().is_some_and(|p| rect.contains(p));

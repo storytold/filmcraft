@@ -1236,6 +1236,185 @@ fn assert_selection_badges(d: &mut Driver, ordered: &[ItemId]) {
 }
 
 #[test]
+fn replacing_a_project_cancels_its_drag_before_same_id_items_can_be_dropped() {
+    for (view, inside) in [("list", false), ("icon", false), ("freeform", false), ("freeform", true)] {
+        let (mut d, files, selected) = imported_drag_driver(view);
+        d.app().session.prefs.timeline.clip_mismatch_warning = false;
+        let mut replacement = Session::default();
+        replacement.project = d.app().session.project.clone();
+        replacement.state = d.app().session.state.clone();
+        let project = std::sync::Arc::make_mut(&mut replacement.project);
+        project.name = "Replacement document".into();
+        for item in project.items.values_mut() {
+            item.name = format!("B-{}", item.name);
+        }
+        let path = files.path().join("replacement.fcproj");
+        replacement.execute("file.saveAs", json!({"path": path})).unwrap();
+        let anchor = selected[0];
+        let to = if inside {
+            let [x, y, w, h] = d.rect(&format!("project.item.{}", anchor.0));
+            let from = egui::pos2(x + w / 2.0, y + h / 2.0);
+            project_drag_pointer(&mut d, from, None);
+            project_drag_pointer(&mut d, from, Some(true));
+            project_drag_pointer(&mut d, from + egui::vec2(12.0, 0.0), None);
+            let [tx, _, _, _] = d.rect("panel.Timeline");
+            let [_, ry, _, rh] = d.rect("timeline.track.V1.target");
+            egui::pos2(tx + d.app().ui.timeline.header_w + 50.0, ry + rh / 2.0)
+        } else {
+            start_imported_drag(&mut d, anchor, false)
+        };
+        let epoch = d.app().session.document_epoch;
+        d.app().session.execute("file.open", json!({"path": path})).unwrap();
+        assert_ne!(d.app().session.document_epoch, epoch);
+        d.frames(2);
+        let before = d.app().session.project.clone();
+        assert_eq!(before.name, "replacement", "Save As uses the project filename");
+        assert!(selected.iter().all(|id| before.item(*id).is_some()), "same IDs exist in B");
+        let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+        project_drag_pointer(&mut d, to, None);
+        project_drag_pointer(&mut d, to, Some(false));
+        d.frames(3);
+        assert_eq!(d.app().session.project, before, "{view}, inside={inside}: stale gesture changed B");
+        assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+        assert!(!d.has("timeline.projectDropPreview"));
+        // Cancellation ends with the old press; a fresh B gesture still works and is undoable.
+        d.exec("project.select", json!({"items": selected.iter().map(|id| id.0).collect::<Vec<_>>()}));
+        d.frames(2);
+        drag_imported_selection(&mut d, anchor, false);
+        let placed = placed_imports(&mut d);
+        assert_eq!(placed.len(), selected.len(), "{view}: fresh B drag");
+        assert!(placed.iter().all(|clip| clip.0.starts_with("B-")));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.app().session.project, before);
+    }
+}
+
+#[test]
+fn replacing_a_project_before_drag_threshold_cancels_the_old_press() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, files, selected) = imported_drag_driver(view);
+        d.app().session.prefs.timeline.clip_mismatch_warning = false;
+        let mut replacement = Session::default();
+        replacement.project = d.app().session.project.clone();
+        replacement.state = d.app().session.state.clone();
+        for item in std::sync::Arc::make_mut(&mut replacement.project).items.values_mut() {
+            item.name = format!("B-{}", item.name);
+        }
+        let path = files.path().join("Replacement before threshold.fcproj");
+        replacement.execute("file.saveAs", json!({"path": path})).unwrap();
+        let anchor = selected[0];
+        let [x, y, w, h] = d.rect(&format!("project.item.{}", anchor.0));
+        let from = egui::pos2(x + w / 2.0, y + h / 2.0);
+        project_drag_pointer(&mut d, from, None);
+        project_drag_pointer(&mut d, from, Some(true));
+        assert!(!d.has("timeline.projectDropPreview"), "press has not crossed the drag threshold");
+        let epoch = d.app().session.document_epoch;
+        d.app().session.execute("file.open", json!({"path": path})).unwrap();
+        assert_ne!(d.app().session.document_epoch, epoch);
+        d.frames(2);
+        let before = d.app().session.project.clone();
+        assert!(before.item(anchor).unwrap().name.starts_with("B-"));
+        let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+        project_drag_pointer(&mut d, from + egui::vec2(12.0, 0.0), None);
+        let [tx, _, _, _] = d.rect("panel.Timeline");
+        let [_, ry, _, rh] = d.rect("timeline.track.V1.target");
+        let to = egui::pos2(tx + d.app().ui.timeline.header_w + 50.0, ry + rh / 2.0);
+        project_drag_pointer(&mut d, to, None);
+        project_drag_pointer(&mut d, to, Some(false));
+        d.frames(3);
+        assert_eq!(d.app().session.project, before, "{view}: pre-threshold press changed B");
+        assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+        assert!(!d.has("timeline.projectDropPreview"));
+        d.exec("project.select", json!({"items": selected.iter().map(|id| id.0).collect::<Vec<_>>()}));
+        d.frames(2);
+        drag_imported_selection(&mut d, anchor, false);
+        assert_eq!(placed_imports(&mut d).len(), selected.len(), "{view}: a fresh B press can drag");
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.app().session.project, before);
+    }
+}
+
+#[test]
+fn changing_sequences_in_the_same_document_keeps_the_project_drag() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        d.app().session.prefs.timeline.clip_mismatch_warning = false;
+        start_imported_drag(&mut d, selected[0], false);
+        let epoch = d.app().session.document_epoch;
+        d.exec("file.newSequence", json!({"name": "Another sequence", "video": 2, "audio": 2}));
+        assert_eq!(d.app().session.document_epoch, epoch);
+        d.frames(2);
+        let before = d.app().session.project.clone();
+        let [tx, _, _, _] = d.rect("panel.Timeline");
+        let [_, ry, _, rh] = d.rect("timeline.track.V1.target");
+        let to = egui::pos2(tx + d.app().ui.timeline.header_w + 50.0, ry + rh / 2.0);
+        project_drag_pointer(&mut d, to, None);
+        project_drag_pointer(&mut d, to, Some(false));
+        d.frames(3);
+        assert_eq!(placed_imports(&mut d).len(), selected.len(), "{view}: same-document sequence switch keeps the batch");
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.app().session.project, before);
+    }
+}
+
+#[test]
+fn replacing_a_project_discards_a_drag_waiting_for_clip_mismatch() {
+    let mut d = Driver::demo();
+    let (bin, items) = d.footage();
+    let movie = items.into_iter().find(|id| d.app().session.project.item(ItemId(*id)).is_some_and(|item| item.has_video() && item.has_audio())).unwrap();
+    d.exec("file.newSequence", json!({"name": "Empty mismatch target", "width": 1280, "height": 720, "fps": 25, "video": 2, "audio": 2}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.exec("project.select", json!({"items": [movie]}));
+    d.frames(2);
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("Replacement awaiting a fresh drop.fcproj");
+    let mut replacement = Session::default();
+    replacement.project = d.app().session.project.clone();
+    replacement.state = d.app().session.state.clone();
+    let project = std::sync::Arc::make_mut(&mut replacement.project);
+    project.name = "Replacement awaiting a fresh drop".into();
+    for item in project.items.values_mut() {
+        item.name = format!("B-{}", item.name);
+    }
+    replacement.execute("file.saveAs", json!({"path": path})).unwrap();
+    drag_imported_selection(&mut d, ItemId(movie), false);
+    assert_eq!(d.ok("ui.inspect", json!({}))["dialog"], json!("ClipMismatch"));
+    assert!(placed_imports(&mut d).is_empty(), "warning defers the original drag's edit");
+    let [x, y, w, h] = d.rect("clipMismatch.keep");
+    let old_answer = egui::pos2(x + w / 2.0, y + h / 2.0);
+    let epoch = d.app().session.document_epoch;
+    d.app().session.execute("file.open", json!({"path": path})).unwrap();
+    assert_ne!(d.app().session.document_epoch, epoch);
+    d.frames(2);
+    let before = d.app().session.project.clone();
+    assert_eq!(before.name, "Replacement awaiting a fresh drop");
+    assert!(before.item(ItemId(movie)).unwrap().name.starts_with("B-"));
+    let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+    // Answer at the old warning's actual position. A stale pending command must not resolve
+    // its reused item ID against B, even if the user clicks where Keep used to be.
+    project_drag_pointer(&mut d, old_answer, None);
+    project_drag_pointer(&mut d, old_answer, Some(true));
+    project_drag_pointer(&mut d, old_answer, Some(false));
+    d.frames(3);
+    assert_eq!(d.app().session.project, before, "stale mismatch acceptance changed B");
+    assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+    assert_eq!(d.ok("ui.inspect", json!({}))["dialog"], Value::Null);
+    assert!(!d.has("clipMismatch.keep") && !d.has("clipMismatch.change"));
+    // A new B drag still opens the real warning, accepts normally and makes one undoable edit.
+    d.exec("project.select", json!({"items": [movie]}));
+    d.frames(2);
+    drag_imported_selection(&mut d, ItemId(movie), false);
+    assert_eq!(d.ok("ui.inspect", json!({}))["dialog"], json!("ClipMismatch"));
+    d.click("clipMismatch.keep");
+    let placed = placed_imports(&mut d);
+    assert_eq!(placed.len(), 2, "fresh B drag places picture and sound");
+    assert!(placed.iter().all(|clip| clip.0.starts_with("B-")));
+    assert_eq!(d.app().session.history.undo.len(), history.0 + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
 fn imported_click_order_survives_sort_view_changes_and_a_nonfirst_drag_anchor() {
     for view in ["list", "icon", "freeform"] {
         for change_selection in [false, true] {
@@ -2462,4 +2641,91 @@ fn save_arrangement_refuses_an_unknown_bin() {
     // a bin that exists opens the dialog
     d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
     assert!(d.app().ui.project_panel.dialog.is_some());
+}
+
+#[test]
+fn old_press_escape_cannot_undo_a_replacement_document_edit() {
+    let mut d = Driver::demo();
+    let (bin, items) = d.footage();
+    let item = items[0];
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.exec("project.select", json!({"items": [item]}));
+    d.frames(2);
+    assert!(d.app().session.history.undo.is_empty(), "A begins at the empty undo mark");
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("B document.fcproj");
+    let mut replacement = Session::default();
+    replacement.project = d.app().session.project.clone();
+    replacement.state = d.app().session.state.clone();
+    replacement.execute("file.saveAs", json!({"path": path})).unwrap();
+    let [x, y, w, h] = d.rect(&format!("project.item.{item}"));
+    let from = egui::pos2(x + w / 2.0, y + h / 2.0);
+    project_drag_pointer(&mut d, from, None);
+    project_drag_pointer(&mut d, from, Some(true));
+    let epoch = d.app().session.document_epoch;
+    d.app().session.execute("file.open", json!({"path": path})).unwrap();
+    assert_ne!(d.app().session.document_epoch, epoch);
+    d.frames(2);
+    assert_eq!(d.app().session.project.name, "B document");
+    assert!(d.app().session.history.undo.is_empty(), "replacement reset the undo history");
+    let added = d.exec("file.newBin", json!({"name": "B edit must survive old Escape"}))["bin"].as_u64().unwrap();
+    d.frames(2);
+    let before_escape = d.app().session.project.clone();
+    assert!(before_escape.root.find_bin(filmcraft_project::BinId(added)).is_some());
+    let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+    assert_eq!(history.0, 1, "B has one independent edit while A's old press remains held");
+    d.key("Escape");
+    assert_eq!(d.app().session.project, before_escape, "old press Escape undid a replacement-document edit");
+    assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+    project_drag_pointer(&mut d, from, Some(false));
+    d.exec("edit.undo", json!({}));
+    assert!(d.app().session.project.root.find_bin(filmcraft_project::BinId(added)).is_none(), "B's preserved edit remains undoable normally");
+}
+
+#[test]
+fn a_retired_browser_press_cannot_import_into_a_replacement_on_its_first_frame() {
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("audio.wav");
+    std::fs::write(&path, filmcraft_engine::previews::write_wav_f32(&[0.0; 9600], 48_000)).unwrap();
+    let mut d = Driver::with(Session::default());
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.exec("mediaBrowser.navigate", json!({"path": files.path()}));
+    d.wait_for("mediaBrowser.entry.audio.wav");
+    let [x, y, _, h] = d.rect("mediaBrowser.entry.audio.wav");
+    let from = egui::pos2(x + 40.0, y + h / 2.0);
+    let mut replacement = Session::default();
+    replacement.project = d.app().session.project.clone();
+    replacement.state = d.app().session.state.clone();
+    let project_path = files.path().join("B first-frame browser.fcproj");
+    replacement.execute("file.saveAs", json!({"path": project_path})).unwrap();
+    assert_eq!(d.ok("ui.inspect", json!({}))["dialog"], Value::Null);
+    project_drag_pointer(&mut d, from, None);
+    project_drag_pointer(&mut d, from, Some(true));
+    let epoch = d.app().session.document_epoch;
+    d.app().session.execute("file.open", json!({"path": project_path})).unwrap();
+    assert_ne!(d.app().session.document_epoch, epoch);
+    let before = d.app().session.project.clone();
+    assert_eq!(before.name, "B first-frame browser");
+    let history = d.app().session.history.undo.len();
+    // Cross the threshold on the FIRST B frame: egui may already have marked drag_started
+    // before document reconciliation stops the old drag. Inspect before a later cleanup can
+    // undo an unwanted import and hide the side effect.
+    let to = from + egui::vec2(32.0, 0.0);
+    project_drag_pointer(&mut d, to, None);
+    assert_eq!(d.app().session.project, before, "a retired MediaBrowser press imported into B");
+    assert_eq!(d.app().session.history.undo.len(), history);
+    project_drag_pointer(&mut d, to, Some(false));
+    d.frames(3);
+    // A fresh B press still imports; releasing over the browser takes only that import back.
+    let [x, y, _, h] = d.rect("mediaBrowser.entry.audio.wav");
+    let fresh = egui::pos2(x + 40.0, y + h / 2.0);
+    project_drag_pointer(&mut d, fresh, None);
+    project_drag_pointer(&mut d, fresh, Some(true));
+    let end = fresh + egui::vec2(32.0, 0.0);
+    project_drag_pointer(&mut d, end, None);
+    assert_eq!(d.app().session.project.items.len(), before.items.len() + 1, "a fresh B drag imports normally");
+    project_drag_pointer(&mut d, end, Some(false));
+    d.frames(4);
+    assert_eq!(d.app().session.project, before, "same-document canceled import cleanup still works");
+    assert_eq!(d.app().session.history.undo.len(), history);
 }

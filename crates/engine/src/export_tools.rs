@@ -286,6 +286,12 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "h264Profile") {
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+    }
+    if let Some(v) = bool_p(p, "h264IntraOnly") {
+        settings.h264_intra_only = v;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }
@@ -1154,16 +1160,16 @@ fn presets_import(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let f = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut names = Vec::new();
+    let mut incoming = Vec::with_capacity(f.presets.len());
     for mut pr in f.presets {
         if filmcraft_export::presets::find_builtin(&pr.name).is_some() {
             pr.name = format!("{} (imported)", pr.name);
         }
         pr.builtin = false;
-        let k = preset_key(&pr.name);
-        s.export_presets.user.retain(|x| preset_key(&x.name) != k);
         names.push(pr.name.clone());
-        s.export_presets.user.push(pr);
+        incoming.push(pr);
     }
+    crate::presets::merge_by_key(&mut s.export_presets.user, incoming, |x| preset_key(&x.name));
     s.export_presets.persist().map_err(EngineError::Other)?;
     Ok(json!({"imported": names}))
 }

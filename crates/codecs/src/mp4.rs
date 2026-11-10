@@ -26,6 +26,12 @@ struct DecodedAudioPacket {
     failed: bool,
 }
 
+impl crate::audio::PacketBytes for DecodedAudioPacket {
+    fn packet_bytes(&self) -> usize {
+        self.samples.packet_bytes()
+    }
+}
+
 /// How far a track's nominal rate may sit from a standard rate and still be read as it. Timestamps
 /// rounded to a coarse unit (whole milliseconds in a 90 kHz track, as phones and messaging apps
 /// write them) move the average by less than this at every standard rate (#1700).
@@ -56,6 +62,8 @@ struct AudioState {
     packets: HashMap<usize, Arc<DecodedAudioPacket>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
+    /// Bytes of the decoded packets held in `packets`.
+    bytes: usize,
 }
 
 /// One playable audio track with its own decoder state and timing tables.
@@ -387,7 +395,7 @@ impl Mp4Source {
                     }
                     _ => (t.edit_offset, 0),
                 };
-                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
@@ -455,12 +463,7 @@ impl Mp4Source {
             }
         };
         let p = Arc::new(DecodedAudioPacket { samples, failed });
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 4096 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
@@ -500,6 +503,18 @@ impl MediaSource for Mp4Source {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let f = self.video_at(req.time.max(Tick::ZERO))?;
         Ok(f)
+    }
+
+    /// The frame as decoded, with the display matrix's rotation left to the caller (#3467). The
+    /// time lookup is `video_at`'s.
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8), MediaError> {
+        let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
+        let t = req.time.max(Tick::ZERO);
+        let ts = self.file.tracks[ti].timescale as i64;
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let at = |t: Tick| crate::gop::lookup_time(t, 1, ts, rate, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| at(t - m));
+        Ok(self.video.frame_late_unturned(&Mp4Video { src: self, track: ti }, at(t), late)?)
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {

@@ -1493,3 +1493,27 @@ fn negative_place_and_marker_times_are_refused() {
     s.execute("markers.add", json!({"frame": 0, "name": "start"})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().any(|m| m.start == Tick::ZERO && m.name == "start"));
 }
+
+#[test]
+fn undo_marks_cannot_cancel_edits_in_a_replacement_document() {
+    for old_history_has_step in [false, true] {
+        let mut s = Session::default();
+        if old_history_has_step {
+            s.execute("file.newBin", json!({"name": "A work"})).unwrap();
+        }
+        let old = s.undo_mark();
+        let epoch = s.document_epoch;
+        s.execute("file.newProject", json!({})).unwrap();
+        assert_ne!(s.document_epoch, epoch);
+        let current = s.undo_mark();
+        let empty_b = s.project.clone();
+        s.execute("file.newBin", json!({"name": "B work"})).unwrap();
+        let edited_b = s.project.clone();
+        let history = (s.history.undo.len(), s.history.redo.len());
+        assert_eq!(s.revert_to(old), 0, "an old empty or nonempty mark cannot touch B");
+        assert_eq!(s.project, edited_b);
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+        assert_eq!(s.revert_to(current), 1, "B's own empty mark still cancels its edit");
+        assert_eq!(s.project, empty_b);
+    }
+}
