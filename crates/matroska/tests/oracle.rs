@@ -8,13 +8,8 @@ use filmcraft_matroska::*;
 use serde_json::Value;
 use std::path::Path;
 
-/// Compare every packet (file order) and stream parameter against ffprobe.
-fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
-    let json = ffprobe_json(ffprobe, path);
-    let bytes = std::fs::read(path).unwrap();
-    let mut d = Demuxer::from_slice(&bytes).unwrap();
-    let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let file = d.file().clone();
+/// Compare the stream count and each track's codec, time base and dimensions with ffprobe.
+fn check_streams(name: &str, json: &Value, file: &MkvFile) {
     let streams = json["streams"].as_array().unwrap();
     assert_eq!(streams.len(), file.tracks.len(), "{name}: stream count");
     for (i, st) in streams.iter().enumerate() {
@@ -35,7 +30,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             _ => {}
         }
     }
-    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+}
+
+/// Compare every packet's track, size, keyframe flag, pts and duration with ffprobe; returns how
+/// many pts and durations were compared.
+fn check_packets(name: &str, json: &Value, file: &MkvFile, packets: &[Packet]) -> (usize, usize) {
     let ff = json["packets"].as_array().unwrap();
     assert_eq!(packets.len(), ff.len(), "{name}: packet count");
     let (mut pts_checked, mut dur_checked) = (0, 0);
@@ -71,9 +70,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             dur_checked += 1;
         }
     }
-    assert!(pts_checked > 0, "{name}: no pts compared");
-    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
-    // the sample index agrees with the packet stream
+    (pts_checked, dur_checked)
+}
+
+/// The per-track sample index agrees with the packet stream.
+fn check_sample_index(name: &str, file: &MkvFile, bytes: &[u8], packets: &[Packet]) {
     for (ti, t) in file.tracks.iter().enumerate() {
         let pk: Vec<&Packet> = packets.iter().filter(|p| p.track == ti).collect();
         assert_eq!(t.samples.len(), pk.len(), "{name}: index size track {ti}");
@@ -83,15 +84,34 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert_eq!(t.sample_size(i), Some(p.data.len() as u64));
         }
         if let Some(i) = pk.len().checked_sub(1) {
-            assert_eq!(file.read_sample(&bytes[..], ti, i).unwrap(), pk[i].data);
+            assert_eq!(file.read_sample(bytes, ti, i).unwrap(), pk[i].data);
         }
     }
-    // duration
+}
+
+/// The container duration agrees with ffprobe's.
+fn check_duration(name: &str, json: &Value, file: &MkvFile) {
     if let Some(fd) = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok())
         && let Some(ours) = file.duration_ns()
     {
         assert!((fd - ours as f64 / 1e9).abs() < 0.05, "{name}: duration {fd} vs {ours}");
     }
+}
+
+/// Compare every packet (file order) and stream parameter against ffprobe.
+fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
+    let json = ffprobe_json(ffprobe, path);
+    let bytes = std::fs::read(path).unwrap();
+    let mut d = Demuxer::from_slice(&bytes).unwrap();
+    let name = path.file_name().unwrap().to_string_lossy().to_string();
+    let file = d.file().clone();
+    check_streams(&name, &json, &file);
+    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+    let (pts_checked, dur_checked) = check_packets(&name, &json, &file, &packets);
+    assert!(pts_checked > 0, "{name}: no pts compared");
+    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
+    check_sample_index(&name, &file, &bytes, &packets);
+    check_duration(&name, &json, &file);
     (file, packets)
 }
 
@@ -266,22 +286,104 @@ fn mjpeg_ac3() {
     assert!(f.tags.iter().flat_map(|t| &t.simple).any(|s| s.name == "ENCODER"));
 }
 
+/// Compare AV1 packets and track metadata with ffprobe, including the av1C configuration record.
 #[test]
 fn av1() {
     let Some((_, f, _)) = run("av1.mkv") else { return };
     assert!(matches!(&f.tracks[0].codec, Codec::Av1 { av1c } if av1c.first() == Some(&0x81)));
 }
 
-/// Re-mux a fixture with our writer using each lacing mode; ffprobe must read the result identically
-/// to our demuxer (and to the source packets).
+/// Read the owning Block's lacing bits, not the sample's index within its lace (RFC 9559 §10.3).
+fn block_lacing_flags(bytes: &[u8], sample: &Sample) -> u8 {
+    use element_ids::{BLOCK, BLOCK_GROUP, SIMPLE_BLOCK};
+
+    let offset = usize::try_from(sample.block_offset).unwrap();
+    let element = ebml::Children::new(&bytes[offset..]).next().expect("sample's block element");
+    assert!(!element.truncated);
+    let data = match element.id {
+        SIMPLE_BLOCK => element.data,
+        BLOCK_GROUP => ebml::Children::new(element.data).find(|e| e.id == BLOCK).expect("Block in BlockGroup").data,
+        id => panic!("unexpected sample element {id:#x}"),
+    };
+    let (_, track_number_len, _) = ebml::read_vint(data).expect("block's track number");
+    // Track-number VINT, signed 16-bit relative timestamp, then the flags byte.
+    data[track_number_len + 2] & 0x06
+}
+
+/// Remux without changing packet timestamps or payloads, then check the output independently
+/// with ffprobe. Requesting a lacing mode does not guarantee a lace: the supplied duration must
+/// also reproduce the packet timestamps (RFC 9559 section 10.3.5).
+fn remux_and_compare(ffprobe: &Path, file: &MkvFile, packets: &[Packet], mode: LacingMode, label: &str, expect_laced: bool) {
+    let specs: Vec<TrackSpec> = file
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(ti, t)| {
+            let mut s = TrackSpec::new(t.kind, t.codec_id.clone());
+            s.codec_private = t.codec_private.clone();
+            // Preserve a declared duration; only supply one when the input has none.
+            s.default_duration_ns = t.default_duration_ns.or_else(|| {
+                let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
+                (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
+            });
+            s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
+            s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));
+            s.codec_delay_ns = t.codec_delay_ns;
+            s
+        })
+        .collect();
+    let opts = MuxOptions { lacing: mode, ..Default::default() };
+    let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), specs, opts).unwrap();
+    for p in packets {
+        w.write_frame(p.track, p.pts_ns, p.keyframe, &p.data, None).unwrap();
+    }
+    let out = w.finish().unwrap().into_inner();
+    let laced = {
+        let f = open(&out[..]).unwrap();
+        // The first sample visits each block once, including blocks that did not lace.
+        for sample in f.tracks.iter().flat_map(|t| &t.samples).filter(|s| s.lace == 0) {
+            let flags = block_lacing_flags(&out, sample);
+            if flags != 0 {
+                assert!(expect_laced, "{label} {mode:?}: unexpected laced block at {}", sample.block_offset);
+                let matches_mode = match mode {
+                    LacingMode::None => false,
+                    LacingMode::Xiph => flags == 0x02,
+                    LacingMode::Ebml => flags == 0x06,
+                    LacingMode::FixedOrEbml => matches!(flags, 0x04 | 0x06),
+                };
+                assert!(matches_mode, "{label} {mode:?}: wrong block lacing flags {flags:#04x} at {}", sample.block_offset);
+            }
+        }
+        f.tracks.iter().any(|t| t.samples.iter().any(|s| s.lace > 0))
+    };
+    assert_eq!(laced, expect_laced, "{label} {mode:?}: unexpected lacing");
+    let outp = fixture_dir().join(format!("remux_{mode:?}_{label}"));
+    std::fs::write(&outp, &out).unwrap();
+    let (got_file, got) = compare(ffprobe, &outp);
+    assert_eq!(got_file.tracks.len(), file.tracks.len());
+    for (a, b) in got_file.tracks.iter().zip(&file.tracks) {
+        assert_eq!((&a.codec_id, &a.codec_private, a.codec_delay_ns), (&b.codec_id, &b.codec_private, b.codec_delay_ns), "{label} {mode:?}: codec headers");
+    }
+    assert_eq!(got.len(), packets.len());
+    for (a, b) in got.iter().zip(packets) {
+        assert_eq!(a.data, b.data, "{label} {mode:?}: payload");
+        assert_eq!((a.track, a.pts, a.keyframe), (b.track, b.pts, b.keyframe), "{label} {mode:?}: timestamp/keyframe");
+        if !expect_laced {
+            assert_eq!(a.pts_ns, b.pts_ns, "{label} {mode:?}: explicit timestamp precision");
+        }
+    }
+    std::fs::remove_file(&outp).unwrap();
+}
+
+/// Exercise each lacing mode on packets that can actually share a lace. Vorbis's encoder-
+/// supplied DefaultDuration need not match its packet spacing; that fallback is checked below.
 #[test]
 fn laced_remux() {
     let Some((ffmpeg, ffprobe)) = tools() else { return };
     for (src, modes) in [
-        ("vorbis.mkv", &[LacingMode::Xiph, LacingMode::Ebml][..]),
         ("h264_aac.mkv", &[LacingMode::Ebml, LacingMode::Xiph][..]),
         ("prores_pcm.mkv", &[LacingMode::FixedOrEbml][..]),
-        ("flac.mkv", &[LacingMode::Ebml][..]),
+        ("flac.mkv", &[LacingMode::Ebml, LacingMode::Xiph][..]),
     ] {
         let Some(path) = fixture(&ffmpeg, src) else { continue };
         let bytes = std::fs::read(&path).unwrap();
@@ -289,45 +391,30 @@ fn laced_remux() {
         let file = d.file().clone();
         let packets: Vec<Packet> = d.collect::<Result<_>>().unwrap();
         for &mode in modes {
-            let specs: Vec<TrackSpec> = file
-                .tracks
-                .iter()
-                .enumerate()
-                .map(|(ti, t)| {
-                    let mut s = TrackSpec::new(t.kind, t.codec_id.clone());
-                    s.codec_private = t.codec_private.clone();
-                    // audio without a DefaultDuration gets its mean packet spacing, so it can lace
-                    s.default_duration_ns = t.default_duration_ns.or_else(|| {
-                        let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
-                        (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
-                    });
-                    s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
-                    s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));
-                    s.codec_delay_ns = t.codec_delay_ns;
-                    s
-                })
-                .collect();
-            let opts = MuxOptions { lacing: mode, ..Default::default() };
-            let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), specs, opts).unwrap();
-            for p in &packets {
-                w.write_frame(p.track, p.pts_ns, p.keyframe, &p.data, None).unwrap();
-            }
-            let out = w.finish().unwrap().into_inner();
-            let laced = {
-                let f = open(&out[..]).unwrap();
-                f.tracks.iter().any(|t| t.samples.iter().any(|s| s.lace > 0))
-            };
-            assert!(laced, "{src} {mode:?}: nothing was laced");
-            let outp = fixture_dir().join(format!("remux_{mode:?}_{src}"));
-            std::fs::write(&outp, &out).unwrap();
-            let (_, got) = compare(&ffprobe, &outp);
-            assert_eq!(got.len(), packets.len());
-            for (a, b) in got.iter().zip(&packets) {
-                assert_eq!(a.data, b.data, "{src} {mode:?}: payload");
-                assert_eq!((a.track, a.pts), (b.track, b.pts), "{src} {mode:?}: timestamp");
-            }
-            std::fs::remove_file(&outp).unwrap();
+            remux_and_compare(&ffprobe, &file, &packets, mode, src, true);
         }
+    }
+}
+
+/// A mode request must not force lacing when DefaultDuration cannot describe the existing PTS.
+/// In particular, some FFmpeg Vorbis fixtures declare a much shorter duration than their packet
+/// spacing. Make that mismatch deterministic without changing any source packet's timestamp.
+#[test]
+fn vorbis_lacing_preserves_pts_with_mismatched_duration() {
+    let Some((ffmpeg, ffprobe)) = tools() else { return };
+    let Some(path) = fixture(&ffmpeg, "vorbis.mkv") else { return };
+    let bytes = std::fs::read(path).unwrap();
+    let d = Demuxer::from_slice(&bytes).unwrap();
+    let mut file = d.file().clone();
+    let packets: Vec<Packet> = d.collect::<Result<_>>().unwrap();
+    assert_eq!(file.tracks.len(), 1);
+    assert_eq!(file.tracks[0].kind, TrackKind::Audio);
+    assert!(packets.len() > 1 && packets.windows(2).all(|w| w[1].pts > w[0].pts), "fixture must have distinct increasing timestamps");
+    // One nanosecond cannot advance a frame by even one of this file's timestamp ticks.
+    // This remains a mismatch regardless of the encoder's own DefaultDuration choice.
+    file.tracks[0].default_duration_ns = Some(1);
+    for mode in [LacingMode::Xiph, LacingMode::Ebml] {
+        remux_and_compare(&ffprobe, &file, &packets, mode, "mismatched_vorbis.mkv", false);
     }
 }
 

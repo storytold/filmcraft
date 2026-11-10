@@ -32,6 +32,10 @@ impl FrameRenderer for YieldingRenderer {
         RENDERED.fetch_add(1, Ordering::Relaxed);
         Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
 }
 
 fn factory() -> Option<Box<dyn FrameRenderer>> {
@@ -54,7 +58,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
         let id = project.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(source.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -64,7 +68,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         let item = project.make_track_item(id, kind, Tick::ZERO, TimeRange::new(Tick::ZERO, duration), rate).unwrap();

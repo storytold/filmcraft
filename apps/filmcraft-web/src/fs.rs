@@ -104,6 +104,16 @@ pub fn put(path: &str, data: Vec<u8>) {
     FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
 }
 
+/// The in-memory bytes written at `path` (saved projects and exports are held here; host mode
+/// hands them to the host at the next frame instead of downloading them). Blob entries — opened
+/// media — are never written, only registered, so a written path is always in memory.
+pub fn mem_bytes(path: &str) -> Option<Arc<[u8]>> {
+    FS.with(|fs| match fs.borrow().entries.get(path) {
+        Some(Entry::Mem(b)) => Some(b.clone()),
+        _ => None,
+    })
+}
+
 /// (path, size, kind) of every file.
 pub fn list() -> Vec<(String, u64, &'static str)> {
     FS.with(|fs| {
@@ -424,6 +434,10 @@ impl Services for WebServices {
     }
 }
 
+thread_local! {
+    static DOWNLOAD_CLOCK: web_time::Instant = web_time::Instant::now();
+}
+
 /// Offer bytes as a browser download named `name`. Downloads are clicked at least
 /// [`crate::download_pacing::GAP_MS`] apart: Chrome drops a burst of them (#378).
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
@@ -434,7 +448,8 @@ pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
-    let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(js_sys::Date::now()));
+    let now_ms = DOWNLOAD_CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0);
+    let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(now_ms));
     let name = name.to_owned();
     wasm_bindgen_futures::spawn_local(async move {
         if delay > 0.0 {

@@ -38,6 +38,12 @@ pub trait ScrubOut {
     fn play(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>);
     /// The device may be given back; the output closes when its own linger ends.
     fn stop(&mut self);
+    /// Give the device back now: playback is about to open its own stream, and a device that
+    /// takes one stream at a time (a raw ALSA `hw:` device, an exclusive-mode output) must be
+    /// free by then. May wait briefly for the stream to close.
+    fn release(&mut self) {
+        self.stop();
+    }
     /// Apply Settings ▸ Audio Hardware: the next grain opens the new device.
     fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
 }
@@ -73,13 +79,13 @@ impl ScrubAudio {
 impl FilmcraftApp {
     /// Once a frame: play a grain when the playhead moved under a held mouse button.
     pub(crate) fn scrub_audio(&mut self, ctx: &egui::Context) {
-        let (now, down) = ctx.input(|i| (i.time, i.pointer.any_down()));
+        let (now, down) = (self.now(), ctx.input(|i| i.pointer.any_down()));
         if self.scrub_tick(now, down) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(LINGER_S));
         }
     }
 
-    /// [`FilmcraftApp::scrub_audio`] with the clock and the button state given. Returns whether
+    /// `FilmcraftApp::scrub_audio` with the clock and the button state given. Returns whether
     /// the scrub stream is still open.
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();

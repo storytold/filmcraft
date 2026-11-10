@@ -56,11 +56,12 @@ enum Note {
 }
 
 impl Note {
+    /// Localized status text for a fallback device (name interpolated through `fmt`) or for no output device.
     fn text(&self) -> String {
         use filmcraft_ui_egui::i18n::{fmt, t};
         match self {
             Note::Fallback(device) => fmt(t("Audio hardware: the default output device cannot be opened; using '{device}'"), &[("device", device)]),
-            Note::NoDevice => t("No audio output device found: playing without sound (check Settings ▸ Audio Hardware)").to_string(),
+            Note::NoDevice => t("No audio output device found: playing without sound (check Settings > Audio Hardware)").to_string(),
         }
     }
 }
@@ -364,7 +365,7 @@ impl Watchdog {
         // An error that arrives with the stream still consuming samples is only a hiccup.
         self.pending_error |= errored;
         let stalled = now.saturating_sub(self.seen.1) >= STALL_RESTART;
-        if !lost && !(self.pending_error && stalled) {
+        if !(lost || (self.pending_error && stalled)) {
             return Verdict::Healthy;
         }
         self.restarts.retain(|t| now.saturating_sub(*t) < RESTART_WINDOW);
@@ -495,6 +496,11 @@ impl AudioOut for CpalOut {
 /// user stops.
 const SCRUB_KEEP: Duration = Duration::from_secs(5);
 
+/// How long [`ScrubOut::release`] waits for the scrub thread to close its stream. Dropping an open
+/// stream takes a few milliseconds (2.5-22 ms measured on WASAPI); a stream that is still opening
+/// is not waited for longer than this, and playback goes ahead.
+const RELEASE_WAIT: Duration = Duration::from_millis(250);
+
 /// The scrub grain's output, on its own thread (#2633).
 ///
 /// Opening a WASAPI output stream starts the Windows audio engine: 0.5-1 s measured on Realtek,
@@ -511,6 +517,8 @@ pub struct CpalScrubOut {
 enum ScrubCmd {
     Play(Fill),
     Stop,
+    /// Close the stream now and say so: playback opens its own next.
+    Release(Sender<()>),
     Configure(AudioHardwarePrefs, Option<u32>),
 }
 
@@ -541,6 +549,13 @@ impl ScrubOut for CpalScrubOut {
     }
     fn stop(&mut self) {
         self.send(ScrubCmd::Stop);
+    }
+    fn release(&mut self) {
+        let (ack, done) = channel();
+        self.send(ScrubCmd::Release(ack));
+        if done.recv_timeout(RELEASE_WAIT).is_err() {
+            log::warn!("the scrub audio stream did not close within {RELEASE_WAIT:?}; starting playback anyway");
+        }
     }
     fn configure(&mut self, hw: &AudioHardwarePrefs, document_rate: Option<u32>) {
         self.rate = scrub_rate(hw, document_rate);
@@ -585,6 +600,11 @@ fn run_scrub(rx: Receiver<ScrubCmd>, mut hw: AudioHardwarePrefs, mut document_ra
             },
             // the grain and the UI's linger are over; the idle timeout above closes the stream
             ScrubCmd::Stop => {}
+            ScrubCmd::Release(ack) => {
+                stream = None;
+                slot = None;
+                let _ = ack.send(());
+            }
             ScrubCmd::Configure(new_hw, new_rate) => {
                 hw = new_hw;
                 document_rate = new_rate;
@@ -686,6 +706,17 @@ mod tests {
         let took = t.elapsed();
         assert!(took < Duration::from_millis(100), "play waited {took:?} for the device");
         out.stop();
+    }
+
+    /// Giving the scrub device back for playback answers at once when nothing is open, and never
+    /// waits longer than [`RELEASE_WAIT`].
+    #[test]
+    fn releasing_the_scrub_output_answers_promptly() {
+        let mut out = CpalScrubOut::new(&AudioHardwarePrefs::default(), None);
+        let t = Instant::now();
+        out.release();
+        let took = t.elapsed();
+        assert!(took < RELEASE_WAIT + Duration::from_millis(100), "release waited {took:?}");
     }
 
     fn ms(n: u64) -> Duration {
