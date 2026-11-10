@@ -91,6 +91,7 @@ fn jpeg(exif: Option<Vec<u8>>) -> Vec<u8> {
     out
 }
 
+/// A PNG of the stored picture with Orientation `o` in a plain eXIf chunk (TIFF data only).
 fn png(o: u16) -> Vec<u8> {
     png_with_exif(orientation_exif(o))
 }
@@ -104,6 +105,7 @@ fn png_with_exif(exif: Vec<u8>) -> Vec<u8> {
     out
 }
 
+/// A lossless WebP of the stored picture with Orientation `o` in a plain EXIF chunk (TIFF data only).
 fn webp(o: u16) -> Vec<u8> {
     webp_with_exif(orientation_exif(o))
 }
@@ -206,6 +208,7 @@ fn png_exif_chunk_orientation_is_applied() {
     }
 }
 
+/// A WebP's EXIF chunk Orientation 1–8 turns the picture upright.
 #[test]
 fn webp_exif_chunk_orientation_is_applied() {
     for o in 1..=8 {
@@ -213,6 +216,8 @@ fn webp_exif_chunk_orientation_is_applied() {
     }
 }
 
+/// A PNG eXIf or WebP EXIF chunk that starts with the `Exif  ` header of a JPEG APP1 is still
+/// read: Orientation 1–8 behind the header turns the picture upright.
 #[test]
 fn png_and_webp_exif_with_an_exif_header_is_applied() {
     for o in 1..=8 {
@@ -272,6 +277,8 @@ fn sequence_frames_with_different_orientations_each_decode_upright() {
     }
 }
 
+/// No EXIF, Orientation 1, out-of-range values and damaged EXIF leave the picture as stored,
+/// and never fail the decode.
 #[test]
 fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     let six = orientation_exif(6);
