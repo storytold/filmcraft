@@ -149,9 +149,13 @@ pub struct TimelineUiSettings {
     /// Controls (the flyouts): the input the user chose for each action, as its display text
     /// ("Ctrl + K", "Right Click"). Empty means the built-in gesture (Double Click / Triple
     /// Click / Shift + Drag / Right Click).
+    /// Control-menu binding for centring the playhead; empty keeps the built-in gesture.
     pub control_center_on_playhead: String,
+    /// Control-menu binding for expanding the zoom slider; empty keeps the built-in gesture.
     pub control_explode_slider: String,
+    /// Control-menu binding for alternate drag speed; empty keeps the built-in gesture.
     pub control_alternate_drag_speed: String,
+    /// Control-menu binding for opening slider settings; empty keeps the built-in gesture.
     pub control_settings: String,
 }
 

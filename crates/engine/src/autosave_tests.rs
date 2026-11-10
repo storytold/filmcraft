@@ -80,6 +80,26 @@ fn view_only_changes_do_not_write_recovery_snapshots() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+#[test]
+fn view_only_autosave_snapshots_are_coalesced_during_drags() {
+    let d = temp_dir("view-snapshot-coalesce");
+    let mut s = Session::default();
+    start(&mut s, &d);
+    s.bump();
+    s.sync_persistence();
+    let first = s.persistence.as_ref().unwrap().last_sent.clone().unwrap();
+
+    s.project_view_changed();
+    assert_ne!(s.view_epoch, first.view_epoch);
+    assert_eq!(s.persistence.as_ref().unwrap().last_sent.as_ref(), Some(&first), "a frame during the drag is coalesced");
+
+    s.last_view_snapshot_sent = Some(web_time::Instant::now() - std::time::Duration::from_secs(1));
+    s.project_view_changed();
+    assert_eq!(s.persistence.as_ref().unwrap().last_sent.as_ref().map(|sent| sent.view_epoch), Some(s.view_epoch));
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision
