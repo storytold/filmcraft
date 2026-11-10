@@ -464,3 +464,60 @@ fn undo_drops_a_removed_volume_keyframe_from_the_selection() {
     assert_eq!(d.level(pair.audio).1.len(), 1);
     assert!(d.selected_times(pair.audio).is_empty(), "the removed key is not selected");
 }
+
+/// A click on a caption drops the keyframe selection, so Cmd+C copies the caption (#3562).
+#[test]
+fn a_caption_click_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.exec("captions.add", json!({"text": "hi", "durationSeconds": 1.0}));
+    let caption = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].captions[0].id.0;
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.harness.state().ui.keyframe_selection.len(), 1);
+    d.click(&format!("timeline.caption.{caption}"));
+    assert!(d.harness.state().ui.keyframe_selection.is_empty(), "the caption click drops the keyframe");
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert_eq!((st.caption_clipboard.len(), st.keyframe_clipboard.len()), (1, 0), "Cmd+C copied the caption");
+}
+
+/// A click on a clip drops the keyframe selection too, so Cmd+C copies the clip.
+#[test]
+fn a_clip_click_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.harness.state().ui.keyframe_selection.len(), 1);
+    d.click(&format!("timeline.clip.{}", pair.video));
+    assert!(d.harness.state().ui.keyframe_selection.is_empty());
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert!(st.keyframe_clipboard.is_empty() && st.clipboard.iter().any(|(_, _, it)| it.id.0 == pair.video), "Cmd+C copied the clip");
+}
+
+/// Drag a selected track keyframe, Undo the move, then Cmd+C: the selection no longer points at
+/// a key, so Copy copies the selected clip instead of failing on the keyframe.
+#[test]
+fn copy_after_undoing_a_track_keyframe_drag_copies_the_clip() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let t = d.a2_lane_key(pair.audio);
+    d.click("timeline.track.A2.lane.kf.0");
+    let clip = d.rect(&format!("timeline.clip.{}", pair.audio));
+    let key = centre(d.rect("timeline.track.A2.lane.kf.0"));
+    d.drag_frames(key, (clip[2] / 10.0, 0.0), 6, |_, _| {});
+    let lane =
+        |d: &Driver| d.harness.state().session.active_sequence().unwrap().audio_tracks[1].lane_keyframes("volume").iter().map(|k| k.time.0).collect::<Vec<_>>();
+    let moved = lane(&d);
+    assert!(moved.len() == 1 && moved[0] > t, "the key moved: {moved:?}");
+    let sel = |d: &Driver| d.harness.state().ui.track_keyframe_selection.iter().map(|k| k.time.0).collect::<Vec<_>>();
+    assert_eq!(sel(&d), moved, "the selection followed it");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(lane(&d), vec![t]);
+    assert!(sel(&d).is_empty(), "the moved-away ref is dropped");
+    d.exec("timeline.select", json!({"clips": [pair.video]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert!(st.keyframe_clipboard.is_empty() && st.clipboard.iter().any(|(_, _, it)| it.id.0 == pair.video), "Cmd+C copied the clip");
+}
