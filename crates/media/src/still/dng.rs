@@ -14,6 +14,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
@@ -42,7 +43,7 @@ fn error(name: &str, e: filmcraft_dng::Error) -> MediaError {
     }
 }
 
-/// Develop a DNG file.
+/// Develop a DNG file, turned upright by its Orientation tag.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Decoded> {
     let img = filmcraft_dng::decode(bytes).map_err(|e| error(name, e))?;
     let (w, h) = (u32::try_from(img.width), u32::try_from(img.height));
@@ -50,9 +51,25 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Decoded> {
     let i = &img.info;
     let kind = if i.cfa { "Bayer" } else { "linear" };
     let pixel_format = format!("{kind} {}-bit raw ({})", i.bits, i.compression);
-    let mut frame = VideoFrame::rgba_f32(w, h, img.rgba);
+    let (w, h, rgba) = upright(name, w, h, img.rgba, i.orientation)?;
+    let mut frame = VideoFrame::rgba_f32(w, h, rgba);
     frame.color = LINEAR_709;
     Ok(Decoded { frame, pixel_format, info: img.info })
+}
+
+/// Turn a developed `w` × `h` RGBA float picture upright by its TIFF/EP Orientation (1–8, as the
+/// image crate applies EXIF Orientation to the other stills). 1 or an unknown value leaves it as stored.
+fn upright(name: &str, w: u32, h: u32, rgba: Vec<f32>, orientation: u8) -> Result<(u32, u32, Vec<f32>)> {
+    let o = Orientation::from_exif(orientation).unwrap_or(Orientation::NoTransforms);
+    if o == Orientation::NoTransforms {
+        return Ok((w, h, rgba));
+    }
+    let buf = image::Rgba32FImage::from_raw(w, h, rgba).ok_or_else(|| MediaError::Decode(format!("{name}: pixel buffer does not match the picture size")))?;
+    let mut img = image::DynamicImage::ImageRgba32F(buf);
+    img.apply_orientation(o);
+    let img = img.into_rgba32f();
+    let (w, h) = img.dimensions();
+    Ok((w, h, img.into_raw()))
 }
 
 /// Open a DNG file as a still.
@@ -151,6 +168,65 @@ mod tests {
         assert!((red(&frame) - 0.5).abs() < 1e-3, "{}", red(&frame));
         assert!(crate::STILL_EXTENSIONS.contains(&"dng"));
         assert!(crate::is_importable(std::path::Path::new("/cards/A001/frame_000001.DNG")));
+    }
+
+    /// A 6 × 4 LinearRaw RGB DNG, black except a white top-left pixel, with Orientation `o` in IFD 0.
+    fn corner_dng(o: u16) -> Vec<u8> {
+        let (w, h) = (6, 4);
+        let mut px = vec![0u16; w * h * 3];
+        px[..3].fill(65_535);
+        let o = Options {
+            width: w,
+            height: h,
+            samples_per_pixel: 3,
+            cfa: None,
+            raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![65_535; 3]))],
+            main_tags: vec![(tags::ORIENTATION, Value::Short(vec![o]))],
+            ..Default::default()
+        };
+        write(&px, &o)
+    }
+
+    /// The developed size of `f` and the (x, y) of its one lit pixel.
+    fn lit_pixel(f: &VideoFrame) -> (u32, u32, Vec<(u32, u32)>) {
+        let PixelData::RgbaF32(p) = &f.data else { panic!("float frames") };
+        let lit = (0..f.height).flat_map(|y| (0..f.width).map(move |x| (x, y))).filter(|&(x, y)| p[((y * f.width + x) * 4) as usize] > 0.5).collect();
+        (f.width, f.height, lit)
+    }
+
+    /// TIFF/EP Orientation in IFD 0 turns the developed DNG upright, as Premiere and the image
+    /// crate's TIFF stills do: the stored top-left pixel lands where each of the 8 values puts it.
+    #[test]
+    fn dng_orientation_tag_is_applied() {
+        // stored 6 × 4; 5–8 swap the size to 4 × 6
+        let want = [
+            (1, 6, 4, (0, 0)),
+            (2, 6, 4, (5, 0)),
+            (3, 6, 4, (5, 3)),
+            (4, 6, 4, (0, 3)),
+            (5, 4, 6, (0, 0)),
+            (6, 4, 6, (3, 0)),
+            (7, 4, 6, (3, 5)),
+            (8, 4, 6, (0, 5)),
+        ];
+        for (o, w, h, at) in want {
+            let src = crate::open_bytes("IMG_0001.dng", corner_dng(o).into(), &[]).unwrap();
+            let v = src.info().video.clone().unwrap();
+            assert_eq!((v.width, v.height), (w, h), "orientation {o}: media info size");
+            let f = src.video_frame(FrameRequest::full(filmcraft_time::Tick(0))).unwrap();
+            assert_eq!(lit_pixel(&f), (w, h, vec![at]), "orientation {o}");
+        }
+    }
+
+    /// A missing or out-of-range Orientation leaves the DNG as stored; it never fails the import.
+    #[test]
+    fn dng_without_a_valid_orientation_is_left_as_stored() {
+        for o in [0, 9, 65_535] {
+            let f = decode("x.dng", &corner_dng(o)).unwrap().frame;
+            assert_eq!(lit_pixel(&f), (6, 4, vec![(0, 0)]), "orientation {o}");
+        }
+        let f = decode("x.dng", &grey_dng(0.5, vec![])).unwrap().frame;
+        assert_eq!((f.width, f.height), (16, 12), "no Orientation tag");
     }
 
     #[test]
