@@ -89,9 +89,27 @@ pub struct GpuCompositor {
     /// with effects are then rendered on the CPU here).
     fx: Option<fx::FxStage>,
     transition: transition::PushStage,
-    transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
+    /// The isolated canvas of every clip of the frame's transitions (two per transition step).
+    transition_inputs: Vec<Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>>,
+    /// Staging buffers that read those canvases back together (see [`Self::read_slots`]). Both
+    /// this and `transition_inputs` hold only what the frame being composited needs: a frame made
+    /// of steps with fewer transitions, or a frame that is not made of steps, frees the rest, so
+    /// the full-frame textures and buffers of a transition do not outlive it.
+    slot_readback: Vec<Option<(wgpu::Buffer, u64)>>,
+    /// After a failed read-back of transition canvases, until when frames with a transition the
+    /// GPU does not draw itself go whole to the CPU: a wedged device would otherwise make every
+    /// such frame wait for it first.
+    hybrid_off_until: Option<std::time::Instant>,
+    /// Test hook: make the next read-backs of transition canvases fail.
+    #[cfg(test)]
+    pub(crate) fail_readback: bool,
+    /// Transitions drawn by the GPU itself (Push).
     pub gpu_transitions: u64,
+    /// Transitions mixed on the CPU from clips the GPU drew (one per transition step).
     pub cpu_transitions: u64,
+    /// Frames with such a transition that went whole to the CPU instead: a clip could not be read
+    /// back, or an earlier read-back failed and the GPU is not asked again yet.
+    pub cpu_fallback_frames: u64,
     /// Adjustment layers ([`PlanStep::Adjust`]) run by the effect stage, and frames with one that
     /// were composited on the CPU here instead: a plan made for another device ([`Self::caps`]), or
     /// the effect stage declining it. Planning with this device's caps keeps the second at zero.
@@ -429,9 +447,14 @@ impl GpuCompositor {
             dummy,
             fx,
             transition: transition::PushStage::new(device),
-            transition_inputs: [None, None],
+            transition_inputs: Vec::new(),
+            slot_readback: Vec::new(),
+            hybrid_off_until: None,
+            #[cfg(test)]
+            fail_readback: false,
             gpu_transitions: 0,
             cpu_transitions: 0,
+            cpu_fallback_frames: 0,
             gpu_adjustments: 0,
             cpu_adjustments: 0,
             uploaded_bytes: 0,
@@ -730,6 +753,9 @@ impl GpuCompositor {
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
     /// result is identical; only the upload work on this thread differs).
     pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
+        if !matches!(plan, FramePlan::Composite { .. }) {
+            self.release_transition_canvases();
+        }
         self.render_plan(plan, prep, true, true)
     }
 
@@ -954,6 +980,10 @@ impl GpuCompositor {
         (if resolve { out_view } else { accum_view }, (w, h))
     }
 
+    /// Composite a plan made of steps onto the accumulator: runs of layers, Push transitions
+    /// drawn by the GPU, transitions mixed on the CPU from the GPU-drawn clips (all the clips are
+    /// drawn first and read back together), and adjustment layers. A frame the GPU cannot finish
+    /// (a failed read-back, an adjustment it cannot run) is executed whole on the CPU.
     fn composite_steps(
         &mut self,
         width: usize,
@@ -966,14 +996,17 @@ impl GpuCompositor {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             c.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None)
         };
-        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
-            self.cpu_transitions += 1;
-            return cpu(self);
-        }
         // plan_frame makes Adjust steps only for this device's caps, so the monitor and the export
         // never get here; a plan made for another device still gets the right picture
         if steps.iter().any(|s| matches!(s, PlanStep::Adjust { .. })) && !self.caps().adjusts(width, height) {
             self.cpu_adjustments += 1;
+            return cpu(self);
+        }
+        // after a failed read-back the GPU is not asked for these clips for a while
+        if self.hybrid_off_until.is_some_and(|until| std::time::Instant::now() < until)
+            && steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"))
+        {
+            self.cpu_fallback_frames += 1;
             return cpu(self);
         }
         // one frame for the effect stage's pool: the adjustment steps' working textures stay
@@ -983,27 +1016,112 @@ impl GpuCompositor {
         }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
         let (canvas, dims) = self.render_plan(&empty, None, true, false);
-        let mut children = prep.map(|p| p.children.iter());
+        // the prepared children of each step, in the order the planner made them (a run of
+        // layers: one, a transition: one per clip)
+        let step_kids: Vec<[Option<&PreparedPlan>; 2]> = {
+            let mut children = prep.map(|p| p.children.iter());
+            let mut next = || children.as_mut().and_then(Iterator::next);
+            steps
+                .iter()
+                .map(|s| match s {
+                    PlanStep::Layers(_) => [next(), None],
+                    PlanStep::Transition { .. } => [next(), next()],
+                    PlanStep::Adjust { .. } => [None, None],
+                })
+                .collect()
+        };
+        // Push is drawn by the GPU; every other transition is mixed per pixel on the CPU from the
+        // two clips' pictures, which the GPU still draws (the CPU would otherwise render both
+        // clips with their effects, far slower than a frame). All those clips are drawn first and
+        // read back together, so the frame waits for the GPU once rather than once per clip.
+        let mut slots = 0usize;
+        let slot_of: Vec<usize> = steps
+            .iter()
+            .map(|step| {
+                let first = slots;
+                if matches!(step, PlanStep::Transition { .. }) {
+                    slots += 2;
+                }
+                first
+            })
+            .collect();
+        // exactly the slots this frame needs: a frame with fewer transitions frees the rest
+        self.transition_inputs.resize_with(slots, || None);
+        let mut staged = Vec::new();
+        let mut pictures: Vec<Option<filmcraft_render::Image>> = (0..slots).map(|_| None).collect();
+        for (si, step) in steps.iter().enumerate() {
+            let PlanStep::Transition { inputs, effect, .. } = step else { continue };
+            if effect.effect == "push" {
+                continue;
+            }
+            let first = slot_of.get(si).copied().unwrap_or_default();
+            for (index, layers) in inputs.iter().enumerate() {
+                if layers.is_empty() {
+                    // no clip on this side (a fade from or to nothing): a blank picture, nothing
+                    // to draw or read back
+                    if let Some(place) = pictures.get_mut(first + index) {
+                        *place = Some(filmcraft_render::Image::new(width, height));
+                    }
+                    continue;
+                }
+                let kid = step_kids.get(si).and_then(|k| k.get(index)).copied().flatten();
+                self.render_input(first + index, width, height, layers, kid);
+                staged.push(first + index);
+            }
+        }
+        self.slot_readback.truncate(staged.len());
+        if !staged.is_empty() {
+            let Some(read) = self.read_slots(&staged) else {
+                // a clip could not be read back: the CPU draws the whole frame, and the GPU is
+                // not asked again for a while
+                if let Some(f) = self.fx.as_mut() {
+                    f.end_frame();
+                }
+                self.hybrid_off_until = Some(std::time::Instant::now() + HYBRID_BACKOFF);
+                self.cpu_fallback_frames += 1;
+                return cpu(self);
+            };
+            for (slot, img) in staged.iter().zip(read) {
+                if let Some(place) = pictures.get_mut(*slot) {
+                    *place = Some(img);
+                }
+            }
+        }
         // counted once the frame is done on the GPU: a frame that falls back to the CPU half way
         // throws away the steps drawn so far
-        let (mut transitions, mut adjustments) = (0u64, 0u64);
-        for step in steps {
+        let (mut transitions, mut adjustments, mut cpu_mixed) = (0u64, 0u64, 0u64);
+        for (si, step) in steps.iter().enumerate() {
             match step {
                 PlanStep::Layers(layers) => {
-                    let p = children.as_mut().and_then(Iterator::next);
-                    self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false);
+                    let kid = step_kids.get(si).and_then(|k| k.first()).copied().flatten();
+                    self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, kid, false, false);
                 }
-                PlanStep::Transition { inputs, effect, progress, .. } => {
-                    let mut views = [self.dummy.clone(), self.dummy.clone()];
-                    for (index, layers) in inputs.iter().enumerate() {
-                        let p = children.as_mut().and_then(Iterator::next);
-                        // Isolate each clip; queued draws keep the parent accumulator and blend order.
-                        std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        let (view, _) = self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
-                        std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        views[index] = view;
+                PlanStep::Transition { inputs, effect, progress, scale } => {
+                    let slot = slot_of.get(si).copied().unwrap_or_default();
+                    if effect.effect == "push" {
+                        let mut views = [self.dummy.clone(), self.dummy.clone()];
+                        for (index, layers) in inputs.iter().enumerate() {
+                            let kid = step_kids.get(si).and_then(|k| k.get(index)).copied().flatten();
+                            let view = self.render_input(slot + index, width, height, layers, kid);
+                            if let Some(v) = views.get_mut(index) {
+                                *v = view;
+                            }
+                        }
+                        self.transition.draw((&self.device, &self.queue), &canvas, [&views[0], &views[1]], dims, effect, *progress);
+                    } else {
+                        let a = pictures.get_mut(slot).and_then(Option::take);
+                        let b = pictures.get_mut(slot + 1).and_then(Option::take);
+                        let (Some(a), Some(b)) = (a, b) else {
+                            if let Some(f) = self.fx.as_mut() {
+                                f.end_frame();
+                            }
+                            self.cpu_fallback_frames += 1;
+                            return cpu(self);
+                        };
+                        let mixed = filmcraft_render::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
+                        self.draw_transient_image(mixed);
+                        cpu_mixed += 1;
                     }
-                    self.transition.draw((&self.device, &self.queue), &canvas, [&views[0], &views[1]], dims, effect, *progress);
                     transitions += 1;
                 }
                 PlanStep::Adjust { ops } => {
@@ -1018,13 +1136,145 @@ impl GpuCompositor {
                 }
             }
         }
-        self.gpu_transitions += transitions;
+        self.gpu_transitions += transitions - cpu_mixed;
+        self.cpu_transitions += cpu_mixed;
         self.gpu_adjustments += adjustments;
         let out = self.render_plan(&empty, None, false, resolve);
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
         }
         out
+    }
+
+    /// Draw `layers` alone on transparent black into the canvas of transition input `slot`
+    /// (queued draws keep the parent accumulator and blend order).
+    fn render_input(&mut self, slot: usize, width: usize, height: usize, layers: &[PlanLayer], prep: Option<&PreparedPlan>) -> wgpu::TextureView {
+        // (`composite_steps` sizes `transition_inputs` for every slot it asks for)
+        if self.transition_inputs.len() <= slot {
+            self.transition_inputs.resize_with(slot + 1, || None);
+        }
+        let Some(input) = self.transition_inputs.get_mut(slot) else { return self.dummy.clone() };
+        std::mem::swap(&mut self.accum, input);
+        let (view, _) = self.render_plan(&FramePlan::Layers { width, height, layers: layers.to_vec() }, prep, true, false);
+        if let Some(input) = self.transition_inputs.get_mut(slot) {
+            std::mem::swap(&mut self.accum, input);
+        }
+        view
+    }
+
+    /// The canvases of transition inputs `slots` as linear premultiplied RGBA images, read back
+    /// with one submission and one wait. None when any can't be read (the staging buffers are
+    /// dropped then: one that failed half way may still be mapped).
+    fn read_slots(&mut self, slots: &[usize]) -> Option<Vec<filmcraft_render::Image>> {
+        let out = self.read_slots_inner(slots);
+        if out.is_none() {
+            self.slot_readback.clear();
+        }
+        out
+    }
+
+    /// [`Self::read_slots`] without the cleanup: copies every canvas into its staging buffer (made
+    /// or grown here, kept for the next frame), submits once, waits once (the whole read-back
+    /// within `SLOT_READ_TIMEOUT`, not that long per canvas) and converts the half floats to f32. Each canvas is checked against the sizes it was made
+    /// with before anything is allocated or indexed.
+    fn read_slots_inner(&mut self, slots: &[usize]) -> Option<Vec<filmcraft_render::Image>> {
+        #[cfg(test)]
+        if self.fail_readback {
+            return None;
+        }
+        // one deadline for the whole read-back, however many canvases there are
+        let deadline = std::time::Instant::now() + SLOT_READ_TIMEOUT;
+        if self.slot_readback.len() < slots.len() {
+            self.slot_readback.resize_with(slots.len(), || None);
+        }
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let mut layout = Vec::with_capacity(slots.len());
+        for (k, slot) in slots.iter().enumerate() {
+            let (tex, _, (w, h)) = self.transition_inputs.get(*slot)?.as_ref()?;
+            let (w, h) = (*w, *h);
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let row = w.checked_mul(8)?.div_ceil(256).checked_mul(256)?;
+            let needed = u64::from(row) * u64::from(h);
+            if self.slot_readback.get(k)?.as_ref().is_none_or(|(_, size)| *size < needed) {
+                let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("transition-input-readback"),
+                    size: needed,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                *self.slot_readback.get_mut(k)? = Some((b, needed));
+            }
+            let (buf, _) = self.slot_readback.get(k)?.as_ref()?;
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyBufferInfo { buffer: buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            layout.push((w, h, row));
+        }
+        self.queue.submit([enc.finish()]);
+        let mut waits = Vec::with_capacity(slots.len());
+        for k in 0..slots.len() {
+            let (buf, _) = self.slot_readback.get(k)?.as_ref()?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+            waits.push(rx);
+        }
+        // one wait for all of them
+        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(SLOT_READ_TIMEOUT) }).ok()?;
+        let mut images = Vec::with_capacity(slots.len());
+        for (k, (w, h, row)) in layout.into_iter().enumerate() {
+            waits.get(k)?.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?.ok()?;
+            let (buf, _) = self.slot_readback.get(k)?.as_ref()?;
+            let (width, row) = (w as usize, row as usize);
+            let mut px = filmcraft_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
+            let data = buf.slice(..).get_mapped_range().ok()?;
+            let mut line = Vec::with_capacity(width * 8);
+            let converted = px.chunks_exact_mut(width * 4).enumerate().all(|(y, dst)| {
+                let Some(src) = data.get(y * row..y * row + width * 8) else { return false };
+                copy_mapped(src, &mut line);
+                for (d, s) in dst.iter_mut().zip(line.as_chunks::<2>().0) {
+                    *d = f16_to_f32_fast(u16::from_le_bytes(*s));
+                }
+                true
+            });
+            drop(data);
+            if !converted {
+                return None;
+            }
+            buf.unmap();
+            images.push(filmcraft_render::Image { w: width, h: h as usize, px });
+        }
+        Some(images)
+    }
+
+    /// Draw a CPU image over the accumulator and forget its upload: it is made for one frame and
+    /// never drawn again, so keeping it would only fill the upload cache with dead buffers and push
+    /// the textures of live sources out. The image is moved into the frame, not copied.
+    fn draw_transient_image(&mut self, img: filmcraft_render::Image) {
+        let (w, h) = (img.w, img.h);
+        let frame = Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, img.px));
+        let key = match &frame.data {
+            PixelData::RgbaF32(d) => Some((Arc::as_ptr(d) as *const u8 as usize, frame.width, frame.height)),
+            _ => None,
+        };
+        let layer = PlanLayer::new(frame, filmcraft_geom::Affine::IDENTITY, 1.0, Blend::Normal);
+        self.render_plan(&FramePlan::Layers { width: w, height: h, layers: vec![layer] }, None, false, false);
+        if let Some(key) = key {
+            self.uploads.remove(&key);
+        }
+    }
+
+    /// Free the canvases and staging buffers of transitions: the frame being composited has none.
+    fn release_transition_canvases(&mut self) {
+        if !self.transition_inputs.is_empty() || !self.slot_readback.is_empty() {
+            self.transition_inputs.clear();
+            self.slot_readback.clear();
+        }
     }
 
     /// What this device runs, for planning its frames ([`filmcraft_render::plan::plan_frame`]):
@@ -1097,6 +1347,9 @@ impl GpuCompositor {
     /// None on a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
         let t = std::time::Instant::now();
+        if !matches!(plan, FramePlan::Composite { .. }) {
+            self.release_transition_canvases();
+        }
         self.render_plan(plan, prep, true, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
         let size = self.copy_accumulator(&mut enc)?;
@@ -1292,6 +1545,15 @@ impl GpuCompositor {
 /// How long a GPU read-back waits, for the poll and then for the callback. Eight seconds is far
 /// longer than a healthy map.
 const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// How long reading back the canvases of a frame's transitions may take in all. The monitor
+/// composites on the UI thread, so this is shorter than [`MAP_TIMEOUT`]: a read-back that takes
+/// longer is a frame the CPU renders instead.
+const SLOT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// After a failed read-back of transition canvases, how long frames with a transition the GPU
+/// does not draw itself go whole to the CPU before the GPU is asked again.
+const HYBRID_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Wait for the last submission and take its `map_async` callback, within a bound.
 ///

@@ -244,6 +244,37 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px))
 }
 
+/// Transitions whose frames stay whole on the CPU instead of being planned as layers and a
+/// transition step, for one of two reasons.
+/// * Their picture depends on tiny differences between the clips (Morph Cut's optical flow), so a
+///   GPU export and a CPU one would show visibly different frames.
+/// * Mixing the two clips on the CPU takes longer than a frame (over 16 ms at 960x540 for the
+///   slowest progress, measured on an Apple M3: radial blur 102 ms, zoom blur 60, cross zoom 59,
+///   directional blur 58, motion camera 39, lens blur 32, whip 32, earthquake 26, split 23, ray
+///   20, slide 19, pop motion 18, block motion 18). The monitor composites on the UI thread, and
+///   a step mixed there would stall it; on the frame workers, as before, it does not.
+///
+/// Add a transition here when it is like either. The rest, with a mix in the low milliseconds
+/// (the median is 2 ms at 960x540), are planned as steps.
+pub const WHOLE_FRAME_CPU_TRANSITIONS: &[&str] = &[
+    "morph_cut",
+    "radial_blur",
+    "zoom_blur",
+    "cross_zoom",
+    "directional_blur_transition",
+    "motion_camera",
+    "lens_blur",
+    "whip",
+    "earthquake",
+    "split",
+    "ray",
+    "slide",
+    "pop_motion",
+    "block_motion",
+];
+
+/// The transitions drawn as layers (the dissolves and dips): [`push_tracks`] has one arm for each
+/// and every other transition is a step (see `every_video_transition_plans_as_its_kind`).
 fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
@@ -310,7 +341,7 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOpti
 
 /// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
 /// on the CPU, and so does a frame with an adjustment layer the device (`caps`) can't run or a
-/// complex transition anywhere at `t` (whole-frame fallback).
+/// transition into or out of an adjustment layer at `t` (whole-frame fallback).
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
     !seq.settings.color.is_plain() || !layered_at(project, seq, t, scale, caps)
 }
@@ -359,9 +390,8 @@ fn adjustment_ops(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick, sc
 }
 
 /// Whether the frame of `seq` at `t` and render `scale` can be planned as layers for a device that
-/// runs `caps`: no adjustment layer it can't run ([`adjustment_ops`]) and no transition the
-/// compositor cannot mix itself is showing (a transition into or out of an adjustment layer counts,
-/// also on the side of the cut where the other clip is).
+/// runs `caps`: no adjustment layer it can't run ([`adjustment_ops`]) and no transition into or out
+/// of an adjustment layer is showing (also on the side of the cut where the other clip is).
 pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32, caps: DeviceCaps) -> bool {
     let adjustment = |it: &TrackItem| is_adjustment(project, it);
     for tr in &seq.video_tracks {
@@ -369,7 +399,12 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32,
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
+            // (a transition the compositor cannot draw itself is still planned as a step: the
+            // two clips are drawn on the GPU and the CPU mixes them, see `PlanStep::Transition`.
+            // The ones in `WHOLE_FRAME_CPU_TRANSITIONS` keep the whole frame on the CPU: Morph
+            // Cut turns the small GPU-versus-CPU differences between clips into a different
+            // morph, and the others take too long to mix on the compositing thread.)
+            if WHOLE_FRAME_CPU_TRANSITIONS.contains(&trn.effect.effect.as_str()) {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
@@ -410,12 +445,32 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
+            // The dissolves and dips are symmetric: Reverse (play B→A backwards) renders the same
+            // frames. The others swap their inputs when reversed.
             let p = trn.progress(t) as f32;
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
-                "push" => {
+                "dip_to_black" | "dip_to_white" => {
+                    let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+                    layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
+                    let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
+                    if let Some(it) = it {
+                        push_item(sc, it, k, Some(Blend::Normal), layers);
+                    }
+                }
+                "cross_dissolve" => {
+                    // A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                    if let Some(it) = a {
+                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
+                    }
+                    if let Some(it) = b {
+                        push_item(sc, it, p, Some(Blend::Normal), layers);
+                    }
+                }
+                // Every other transition mixes the two clips' pictures: each clip is drawn on its
+                // own canvas and the compositor mixes them (Push on the GPU, the rest on the CPU).
+                _ => {
                     let mut inputs = [Vec::new(), Vec::new()];
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
@@ -435,23 +490,6 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
                         p
                     };
                     layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
-                }
-                "dip_to_black" | "dip_to_white" => {
-                    let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
-                    layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
-                    let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
-                    if let Some(it) = it {
-                        push_item(sc, it, k, Some(Blend::Normal), layers);
-                    }
-                }
-                _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
-                    if let Some(it) = a {
-                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
-                    }
-                    if let Some(it) = b {
-                        push_item(sc, it, p, Some(Blend::Normal), layers);
-                    }
                 }
             }
             continue;
@@ -475,7 +513,9 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
 /// by one over what is below gives the same picture as compositing them together first only when
 /// they all blend Normal, and the frame must be one that plans as layers in the same colour
 /// pipeline. An adjustment layer inside it would adjust the outer tracks below too, so it keeps
-/// the nested sequence on the CPU.
+/// the nested sequence on the CPU. So does a transition other than the dissolves and dips (a step
+/// of the plan cannot be isolated inside the outer plan's layers): such a nest was rendered on the
+/// CPU before transitions became steps, and still is.
 fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick, scale: f32, caps: DeviceCaps) -> bool {
     nested.settings.color == seq.settings.color
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)

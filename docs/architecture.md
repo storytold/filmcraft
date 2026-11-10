@@ -332,9 +332,19 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
-  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
-  and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
-  give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
+  blended normally) are rendered on the CPU for that layer or frame and handed to the GPU as an
+  image (a layer image keeps its clip's blend mode), so both paths give the same picture.
+  A transition is a step of the plan too. The dissolves and dips are layers with opacity and Push
+  is drawn by the GPU; for every other transition the GPU draws each of its two clips on its own
+  canvas and the compositor mixes the pair per pixel on the CPU with the function the CPU
+  renderer uses (`transitions::apply_scaled`), reading all the canvases of a frame back with one
+  submission and one wait (a failed read sends the frame whole to the CPU). That mix runs on the
+  thread that composites, the UI thread for the monitor, so `plan::WHOLE_FRAME_CPU_TRANSITIONS`
+  keeps whole on the CPU, on the frame workers, Morph Cut (optical flow turns the small
+  GPU-versus-CPU differences between clips into a visibly different morph) and the transitions
+  whose mix takes longer than a frame (the blur and zoom families, Slide, Split and a few more;
+  the list gives the measured times). `GpuCompositor::cpu_transitions` counts the mixes done
+  on the CPU, `gpu_transitions` the transitions the GPU drew. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
 - **CPU compositor shortcuts.** The CPU compositor, which is what export runs, works on
   premultiplied linear `f32` images, 33 MB at 1080p, so what it does not allocate, convert or mix

@@ -253,10 +253,9 @@ mod tests {
         (Arc::new(p), seq, m)
     }
 
-    /// GPU parity: p99 of the per-pixel max RGB difference (over black, 8-bit) ≤ 6 and mean < 1.5
-    /// — the same criterion the golden GPU-vs-CPU parity tests use.
-    fn assert_parity(cpu: &Image, gpu: &Image, what: &str) {
-        assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h), "{what}: size mismatch");
+    /// How far two renders of a frame are apart over black: the 99th percentile and the mean of
+    /// the largest 8-bit channel difference per pixel.
+    fn parity_stats(cpu: &Image, gpu: &Image) -> (u32, f64) {
         let to8 = |img: &Image| -> Vec<u8> { img.over_black_rgba8() };
         let (a, b) = (to8(cpu), to8(gpu));
         let mut d: Vec<u32> = a
@@ -269,6 +268,14 @@ mod tests {
         d.sort_unstable();
         let p99 = d[d.len() * 99 / 100];
         let mean = d.iter().sum::<u32>() as f64 / d.len() as f64;
+        (p99, mean)
+    }
+
+    /// GPU parity: p99 of the per-pixel max RGB difference (over black, 8-bit) ≤ 6 and mean < 1.5
+    /// — the same criterion the golden GPU-vs-CPU parity tests use.
+    fn assert_parity(cpu: &Image, gpu: &Image, what: &str) {
+        assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h), "{what}: size mismatch");
+        let (p99, mean) = parity_stats(cpu, gpu);
         eprintln!("{what}: GPU vs CPU over-black p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
     }
@@ -600,9 +607,252 @@ mod tests {
                 assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
             }
         }
-        // Film Dissolve has no GPU stage: the whole frame stays a CPU image
-        p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0].effect = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
-        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, rate.tick_of(24), opts, r.caps()));
+        // The others have no GPU stage: the GPU still draws the two clips and the CPU mixes them,
+        // instead of the CPU rendering the whole frame, and the picture is the CPU renderer's
+        for (id, reverse) in [("film_dissolve", false), ("wipe", false), ("wipe", true), ("iris_round", false)] {
+            let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0];
+            tr.effect = filmcraft_project::find_effect(id).unwrap().instance();
+            tr.reverse = reverse;
+            for f in [20, 24, 27] {
+                let t = rate.tick_of(f);
+                assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "{id} plans as layers");
+                let before = (r.compositor.cpu_transitions, r.compositor.gpu_transitions);
+                let gpu = r.render(&p, seq, t, opts, &m).expect("hybrid transition frame");
+                assert_eq!((r.compositor.cpu_transitions, r.compositor.gpu_transitions), (before.0 + 1, before.1), "{id}: mixed on the CPU from GPU clips");
+                assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
+            }
+        }
+    }
+
+    /// A generator clip of `name` as a project item with its source in `m`.
+    fn generated_clip(p: &mut Project, m: &mut SourceMap, name: &str, generator: Generator, rate: filmcraft_time::FrameRate) -> ItemId {
+        let g = GeneratorSource::new(generator, 320, 180, rate, Tick(4 * TICKS_PER_SECOND));
+        let media = MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: g.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        let item = p.add_item(name, Label::Iris, ItemKind::Media(Box::new(media)), None);
+        m.0.insert(item, Arc::new(g));
+        item
+    }
+
+    /// Put clips `items` back to back (1 s each) on video track `track`; returns their ids.
+    fn lay_clips(p: &mut Project, seq: ItemId, track: usize, items: &[ItemId], rate: filmcraft_time::FrameRate) -> Vec<filmcraft_project::ClipId> {
+        let mut ids = Vec::new();
+        for (k, item) in items.iter().enumerate() {
+            let it = p.make_track_item(*item, TrackKind::Video, rate.tick_of(24 * k as i64), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            ids.push(it.id);
+            p.sequence_mut(seq).unwrap().video_tracks[track].items.push(it);
+        }
+        ids
+    }
+
+    /// A transition of `effect` at frames 18..30 (24 fps) on video track `track`, between `ids`.
+    fn set_transition(p: &mut Project, seq: ItemId, track: usize, id: u64, effect: &str, ids: &[filmcraft_project::ClipId], reverse: bool) {
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        p.sequence_mut(seq).unwrap().video_tracks[track].transitions = vec![filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(id),
+            effect: filmcraft_project::find_effect(effect).unwrap().instance(),
+            start: rate.tick_of(18),
+            duration: rate.tick_of(12),
+            from: ids.first().copied(),
+            to: ids.get(1).copied(),
+            align: Default::default(),
+            reverse,
+        }];
+    }
+
+    /// Transitions the GPU does not draw itself are mixed on the CPU from the two clips of each
+    /// transition, which the GPU draws: with a transition on each of two tracks in one frame (so
+    /// two steps and four clip canvases), the frame is planned as layers, counted as two CPU-mixed
+    /// transitions and no GPU ones, and matches the CPU renderer's picture. The clips are textured
+    /// and animated, so a canvas read back from the wrong place would show.
+    #[test]
+    fn cpu_mixed_transitions_on_two_tracks_match_the_cpu_renderer() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu transition export): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let scenes = [
+            filmcraft_media::DemoScene::OceanSunset,
+            filmcraft_media::DemoScene::Forest,
+            filmcraft_media::DemoScene::CityNight,
+            filmcraft_media::DemoScene::Dunes,
+        ];
+        let items: Vec<ItemId> = scenes.iter().enumerate().map(|(i, s)| generated_clip(&mut p, &mut m, &format!("c{i}"), Generator::Demo(*s), rate)).collect();
+        let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 2, 0, None);
+        let below = lay_clips(&mut p, seq, 0, &items[..2], rate);
+        let above = lay_clips(&mut p, seq, 1, &items[2..], rate);
+        let opts = RenderOptions::default();
+        for (lower, upper) in [("film_dissolve", "wipe"), ("page_peel", "iris_round"), ("cube_spin", "additive_dissolve"), ("clock_wipe", "stretch_wipe")] {
+            for reverse in [false, true] {
+                set_transition(&mut p, seq, 0, 1, lower, &below, reverse);
+                set_transition(&mut p, seq, 1, 2, upper, &above, reverse);
+                for f in [18, 20, 24, 27, 29] {
+                    let t = rate.tick_of(f);
+                    let what = format!("{lower} / {upper} reverse={reverse} frame {f}");
+                    assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t, opts, r.caps()), "{what}: plans as layers");
+                    let before = (r.compositor.cpu_transitions, r.compositor.gpu_transitions);
+                    let gpu = r.render(&p, seq, t, opts, &m).expect("hybrid transition frame");
+                    let counted = (r.compositor.cpu_transitions - before.0, r.compositor.gpu_transitions - before.1);
+                    let gpu_drawn = [lower, upper].iter().filter(|e| **e == "push").count() as u64;
+                    assert_eq!(counted, (2 - gpu_drawn, gpu_drawn), "{what}: transitions mixed on the CPU / drawn on the GPU");
+                    assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &what);
+                }
+            }
+        }
+    }
+
+    /// A transition with no clip on one side (a fade from or to nothing) is mixed against a blank
+    /// canvas, as the CPU renderer does.
+    #[test]
+    fn cpu_mixed_transition_with_a_missing_side_matches_the_cpu_renderer() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu transition export): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let item = generated_clip(&mut p, &mut m, "c0", Generator::Demo(filmcraft_media::DemoScene::OceanSunset), rate);
+        let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let ids = lay_clips(&mut p, seq, 0, &[item], rate);
+        let opts = RenderOptions::default();
+        for (name, from_nothing) in [("wipe", false), ("wipe", true), ("film_dissolve", false), ("page_peel", true)] {
+            set_transition(&mut p, seq, 0, 1, name, &ids, false);
+            let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0];
+            (tr.from, tr.to) = if from_nothing { (None, ids.first().copied()) } else { (ids.first().copied(), None) };
+            for f in [5, 8, 11] {
+                let t = rate.tick_of(f);
+                let what = format!("{name} from_nothing={from_nothing} frame {f}");
+                let gpu = r.render(&p, seq, t, opts, &m).expect("hybrid transition frame");
+                assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &what);
+            }
+        }
+    }
+
+    /// The adapter and backend the off-screen device runs on, as `ExportRenderer::new` picks it.
+    fn adapter_description() -> String {
+        let instance = crate::adapter::native_instance();
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+        crate::adapter::pick(&adapters, None, power)
+            .map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().backend))
+            .unwrap_or_else(|_| "no adapter".into())
+    }
+
+    /// Every video transition, on the path the GPU export and the monitor take, against the CPU
+    /// renderer: on textured animated clips at five progress values (0, 0.25, 0.5, 0.75 and the
+    /// last tick) the picture matches, the frame plans as layers and is counted as drawn by the
+    /// GPU (Push), made of layers (the dissolves and dips) or mixed on the CPU (all the others);
+    /// and on flat clips the frame at progress 0 is the outgoing clip and the last tick the
+    /// incoming one, the contract of the CPU transitions. Failures are collected, so one run
+    /// lists every transition that differs; the log gives the adapter and the worst difference
+    /// of each transition (`cargo test -p filmcraft-gpu every_video_transition -- --nocapture`).
+    #[test]
+    fn every_video_transition_matches_the_cpu_renderer_and_keeps_the_progress_contract() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu transition export): no adapter");
+            return;
+        };
+        eprintln!("adapter: {}", adapter_description());
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let settings = SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() };
+        let textured: Vec<ItemId> = [filmcraft_media::DemoScene::OceanSunset, filmcraft_media::DemoScene::CityNight]
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| generated_clip(&mut p, &mut m, &format!("t{i}"), Generator::Demo(s), rate))
+            .collect();
+        let flat: Vec<ItemId> = [[0.9, 0.2, 0.1, 1.0], [0.1, 0.4, 0.95, 1.0]]
+            .into_iter()
+            .enumerate()
+            .map(|(i, color)| generated_clip(&mut p, &mut m, &format!("f{i}"), Generator::ColorMatte { color }, rate))
+            .collect();
+        let textured_seq = p.new_sequence("textured", settings.clone(), 1, 0, None);
+        let textured_ids = lay_clips(&mut p, textured_seq, 0, &textured, rate);
+        let flat_seq = p.new_sequence("flat", settings, 1, 0, None);
+        let flat_ids = lay_clips(&mut p, flat_seq, 0, &flat, rate);
+        let opts = RenderOptions::default();
+        let names: Vec<&str> =
+            filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::VideoTransition).map(|d| d.id).collect();
+        assert!(names.len() > 80, "the transition registry is listed ({} found)", names.len());
+        let (mut failures, mut cpu_mixed, mut gpu_drawn, mut layered) = (Vec::new(), 0, 0, 0);
+        let (edge_a, edge_b) = (rate.tick_of(17), rate.tick_of(30));
+        for name in names {
+            let mut worst = (0u32, 0f64);
+            let whole_on_cpu = filmcraft_render::plan::WHOLE_FRAME_CPU_TRANSITIONS.contains(&name);
+            set_transition(&mut p, textured_seq, 0, 1, name, &textured_ids, false);
+            for t in [rate.tick_of(18), rate.tick_of(21), rate.tick_of(24), rate.tick_of(27), rate.tick_of(30) - Tick(1)] {
+                // the transitions in `WHOLE_FRAME_CPU_TRANSITIONS` (Morph Cut, whose flow is too
+                // sensitive to the small differences between GPU and CPU clips, and those that
+                // take too long to mix on the compositing thread) keep the whole frame on the
+                // CPU: their frame is the CPU image
+                let cpu_frame = filmcraft_render::plan::is_cpu_frame(&p, textured_seq, t, opts, r.caps());
+                if cpu_frame != whole_on_cpu {
+                    failures.push(format!("{name} at {t:?}: planned as a CPU image = {cpu_frame}"));
+                    continue;
+                }
+                let before = (r.compositor.cpu_transitions, r.compositor.gpu_transitions);
+                let Some(gpu) = r.render(&p, textured_seq, t, opts, &m) else {
+                    failures.push(format!("{name} at {t:?}: no GPU frame"));
+                    continue;
+                };
+                let counted = (r.compositor.cpu_transitions - before.0, r.compositor.gpu_transitions - before.1);
+                let expected = match name {
+                    "push" => (0, 1),
+                    "cross_dissolve" | "dip_to_black" | "dip_to_white" => (0, 0),
+                    _ if whole_on_cpu => (0, 0),
+                    _ => (1, 0),
+                };
+                if counted != expected {
+                    failures.push(format!("{name} at {t:?}: counted (CPU-mixed, GPU) {counted:?}, expected {expected:?}"));
+                }
+                let (p99, mean) = parity_stats(&filmcraft_render::render_sequence(&p, textured_seq, t, opts, &m), &gpu);
+                worst = (worst.0.max(p99), worst.1.max(mean));
+                if p99 > 6 || mean >= 1.5 {
+                    failures.push(format!("{name} at {t:?}: GPU vs CPU p99 {p99}, mean {mean:.3}"));
+                }
+            }
+            match name {
+                "push" => gpu_drawn += 1,
+                "cross_dissolve" | "dip_to_black" | "dip_to_white" => layered += 1,
+                _ if whole_on_cpu => {}
+                _ => cpu_mixed += 1,
+            }
+            // progress 0 is the outgoing clip and progress 1 the incoming one
+            set_transition(&mut p, flat_seq, 0, 1, name, &flat_ids, false);
+            let render = |r: &mut ExportRenderer, p: &Project, t: Tick| r.render(p, flat_seq, t, opts, &m);
+            let (Some(outgoing), Some(incoming), Some(first), Some(last)) =
+                (render(&mut r, &p, edge_a), render(&mut r, &p, edge_b), render(&mut r, &p, rate.tick_of(18)), render(&mut r, &p, edge_b - Tick(1)))
+            else {
+                failures.push(format!("{name}: no GPU frame at the ends"));
+                continue;
+            };
+            for (what, expected, got) in [("progress 0 is the outgoing clip", &outgoing, &first), ("progress 1 is the incoming clip", &incoming, &last)] {
+                let (p99, mean) = parity_stats(expected, got);
+                if p99 > 6 || mean >= 1.5 {
+                    failures.push(format!("{name}: {what} (p99 {p99}, mean {mean:.3})"));
+                }
+            }
+            eprintln!("{name}: worst GPU vs CPU over-black p99 {}, mean {:.3}", worst.0, worst.1);
+        }
+        eprintln!(
+            "{cpu_mixed} transitions mixed on the CPU from GPU clips, {layered} made of GPU layers, {gpu_drawn} drawn by the GPU, {} whole on the CPU",
+            filmcraft_render::plan::WHOLE_FRAME_CPU_TRANSITIONS.len()
+        );
+        assert!(failures.is_empty(), "{} differences:\n{}", failures.len(), failures.join("\n"));
     }
 
     #[test]

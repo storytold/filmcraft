@@ -220,7 +220,9 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
     assert_eq!(c.cpu_transitions, 0);
     eprintln!("Push 72 cases: worst p99 {}, mean {}", worst.0, worst.1);
-    let fallback = FramePlan::Composite {
+    // A transition step the GPU does not draw itself (a cross dissolve built by hand as one): the
+    // GPU draws the two clips and the CPU mixes them; it counts as one CPU-mixed transition.
+    let cpu_mixed = FramePlan::Composite {
         width: w,
         height: h,
         steps: vec![PlanStep::Transition {
@@ -230,9 +232,9 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
             scale: 1.0,
         }],
     };
-    c.composite(&fallback);
-    let (_, _, got) = c.read_output().expect("fallback readback");
-    let expected = execute_cpu(&fallback).over_black_rgba8();
+    c.composite(&cpu_mixed);
+    let (_, _, got) = c.read_output().expect("CPU-mixed readback");
+    let expected = execute_cpu(&cpu_mixed).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
     assert_eq!(c.cpu_transitions, 1);
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
@@ -258,6 +260,94 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
     assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
     assert_eq!(c.cpu_transitions, 1);
+}
+
+/// A canvas that cannot be read back sends the whole frame to the CPU: the picture is still the
+/// reference one, the frame is counted as a fallback (not as transitions mixed on the CPU), and
+/// the GPU is not asked again until the backoff ends, so a wedged device cannot make every frame
+/// wait for it.
+#[test]
+fn a_failed_canvas_readback_sends_the_whole_frame_to_the_cpu_for_a_while() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let layer = |side: usize| {
+        let px = (0..w * h).flat_map(|i| if (i % w < w / 2) == (side == 0) { [0.8, 0.2, 0.1, 1.0] } else { [0.1, 0.3, 0.9, 1.0] }).collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let step = |name: &str, progress: f32| PlanStep::Transition {
+        inputs: [vec![layer(0)], vec![layer(1)]],
+        effect: filmcraft_project::find_effect(name).unwrap().instance(),
+        progress,
+        scale: 1.0,
+    };
+    let plan = FramePlan::Composite { width: w, height: h, steps: vec![step("wipe", 0.4), step("page_peel", 0.6)] };
+    let expected = execute_cpu(&plan).over_black_rgba8();
+    let agrees = |c: &mut GpuCompositor, what: &str| {
+        let got = c.read_output().expect("readback").2;
+        assert!(got.iter().zip(&expected).all(|(a, b)| a.abs_diff(*b) <= 1), "{what}: the frame matches the CPU reference");
+    };
+
+    c.composite(&plan);
+    agrees(&mut c, "hybrid");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 0), "two steps mixed on the CPU");
+
+    c.fail_readback = true;
+    c.composite(&plan);
+    agrees(&mut c, "failed read-back");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 1), "one frame sent whole to the CPU");
+
+    // the GPU works again, but is not asked until the backoff ends
+    c.fail_readback = false;
+    c.composite(&plan);
+    agrees(&mut c, "during the backoff");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 2));
+
+    c.hybrid_off_until = Some(std::time::Instant::now());
+    c.composite(&plan);
+    agrees(&mut c, "after the backoff");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (4, 2), "the GPU is asked again");
+    assert_eq!(c.gpu_transitions, 0);
+}
+
+/// The canvases and staging buffers of transitions go when a frame has none, and a transition
+/// with no clip on one side draws and reads back only the other.
+#[test]
+fn transition_canvases_are_freed_with_the_transition() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let layer = |side: usize| {
+        let px = (0..w * h).flat_map(|i| if (i % w < w / 2) == (side == 0) { [0.8, 0.2, 0.1, 1.0] } else { [0.1, 0.3, 0.9, 1.0] }).collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let wipe = |inputs: [Vec<PlanLayer>; 2]| FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Transition { inputs, effect: filmcraft_project::find_effect("wipe").unwrap().instance(), progress: 0.5, scale: 1.0 }],
+    };
+    let both = wipe([vec![layer(0)], vec![layer(1)]]);
+    c.composite(&both);
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (2, 2), "two canvases, two staging buffers");
+    // a side with no clip: one canvas drawn and read back, the other a blank picture
+    let one_side = wipe([vec![layer(0)], Vec::new()]);
+    c.composite(&one_side);
+    assert_eq!(c.slot_readback.len(), 1, "only the clip that exists is read back");
+    let expected = execute_cpu(&one_side).over_black_rgba8();
+    let got = c.read_output().expect("readback").2;
+    assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "a fade from nothing matches the CPU reference");
+    // a frame of plain layers, then one made of steps without a transition
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![layer(0)] });
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "a plain frame frees them");
+    c.composite(&both);
+    c.composite(&FramePlan::Composite { width: w, height: h, steps: vec![PlanStep::Layers(vec![layer(1)])] });
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "a frame of steps with no transition frees them");
 }
 
 #[test]
