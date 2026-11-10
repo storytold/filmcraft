@@ -197,8 +197,8 @@
 	Refresh Changed Media	Obnovit změněná média
 	Linked Selection	Propojený výběr
 	Lock Guides	Zamknout vodítka
-	Lumetri Color	Barvy Lumetri
-	Lumetri Scopes	Obrazové měřiče Lumetri
+	Color Grading	Barevné úpravy
+	Video Scopes	Videoskopy
 	Magnification	Zvětšení
 	Make Offline…	Přepnout do režimu offline…
 	Make Subclip…	Vytvořit podklip…
@@ -888,7 +888,7 @@
 	Clip Volume	Hlasitost klipu
 	(no clip selected)	(žádný vybraný klip)
 	Master · {name}	Hlavní klip · {name}
-	Add Lumetri Color to clip	Přidat barvy Lumetri do klipu
+	Add Color Grading to clip	Přidat barevné úpravy do klipu
 	Input LUT	Vstupní LUT
 	Color	Barva
 	Temperature	Teplota
@@ -1666,7 +1666,7 @@
 	Elliptical	Eliptický
 	Emboss	Reliéf
 	Enable HSL Secondary	Povolit sekundární korekci HSL
-	Enable Mercury Transmit	Povolit Mercury Transmit
+	Enable External Video Output	Povolit externí výstup videa
 	Enable ProRes hardware accelerated encoding, if available	Povolit hardwarově akcelerované kódování ProRes, je-li dostupné
 	Enable clip and XMP metadata linking	Povolit propojení metadat klipu a XMP
 	Enable developer mode	Povolit vývojářský režim
@@ -1734,7 +1734,7 @@
 	Focus Size	Velikost oblasti zaostření
 	Fold Motion	Pohyb přeložení
 	Foldback	Zpětné přeložení
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Parametry správy barev najdete na kartě Nastavení v panelu Barvy Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Parametry správy barev najdete na kartě Nastavení v panelu Barevné úpravy.
 	Format	Formát
 	Four Scopes (RGB, 8 bit)	Čtyři měřiče (RGB, 8bitové)
 	Four Scopes (YUV, float, no clamp)	Čtyři měřiče (YUV, plovoucí desetinná čárka, bez omezení)
@@ -2003,7 +2003,7 @@
 	Luma Key	Klíčování podle jasové složky
 	Luma Source	Zdroj jasové složky
 	Luma and Chroma	Jasová a barevná složka
-	Lumetri Presets	Přednastavení Lumetri
+	Color Grading Presets	Přednastavení barevných úprav
 	Luminance	Luminance
 	Luminance Threshold	Práh luminance
 	Luminosity	Světlost
@@ -3113,7 +3113,6 @@
 	Left align text	Zarovnat text vlevo
 	Looping GIF, 640×360 at 15 fps	Opakovaný GIF, 640×360 při 15 sn./s
 	Lower First	Dolní půlsnímek první
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3644,3 +3643,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10bitové 4:2:0) ve velikosti sekvence, konstantní kvalita CRF 16, AAC 320 kb/s; 10bitový master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10bitové 4:2:0, každý snímek klíčový), CRF 12, AAC 320 kb/s; mezilehlý formát vhodný pro střih
+	List Color Grading Presets	Vypsat přednastavení barevných úprav
+	Apply Color Grading Preset	Použít přednastavení barevných úprav
+	Color Grading Preset Thumbnails	Náhledy přednastavení barevných úprav
+	Toggle Color Grading Section	Přepnout sekci barevných úprav
+	Color Grading Section	Sekce barevných úprav
+	Read Video Scopes	Načíst videoskopy
