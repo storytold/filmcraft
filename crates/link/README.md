@@ -41,8 +41,10 @@ moves every other effect, with its masks and keyframes, to the outer clip. They 
 - return to the original clip when the user undoes the `link.editIn` step.
 
 `link.unlink` restores the nested sequence as the clip source. The lifted effects stay on the outer clip then.
-A nest of several video clips is ambiguous: nothing moves, the effects stay on the inner clips, and the banner
-lists them as not in the EffectCraft result.
+Several inner video clips that carry the same static, unmasked effects and never overlap in time lift too, as one
+grade on the outer clip. Any other shape is ambiguous (a different or missing effect on a clip, an animated or
+masked effect, overlapping clips): nothing moves, the effects stay on the inner clips, and the banner lists them
+as not in the EffectCraft result.
 
 ## Why `link.editIn` is a static command
 

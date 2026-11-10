@@ -15,6 +15,24 @@ proves that.
 | `surfaces` | `Surfaces`: the `SurfaceSink` that keeps live panels and effects. |
 | `ui` | `frame`: serves queued host calls, then draws the permission prompt, the manager view and panel windows. |
 
+## Install, permissions, remove
+
+The host commands take the same ids on the control channel, in the command palette and over MCP.
+
+- `plugin.app.filmcraft.install` with `{"path": "<plug-in package>"}` installs a package. A plug-in that
+  asks for permissions answers `needs-grant` with the lists `required`, `new_required` and `optional`, and
+  waits for the user. The manager window shows the same prompt.
+- `plugin.app.filmcraft.grant` with `{"id", "accept"?, "optional"?}` answers that prompt. `accept` defaults to
+  `true`. `optional` lists the optional permissions the user grants.
+- `plugin.app.filmcraft.remove` with `{"id"}` removes a plug-in.
+- `plugin.app.filmcraft.revoke` with `{"id", "permission"}` takes one permission back.
+  `enable`, `disable`, `list` and `manage` complete the set.
+
+A plug-in has no permission until the user grants it. The permissions and their prompt levels are in
+section 5 of [`crates/plugin-abi/ABI.md`](https://github.com/storytold/craft-libs/blob/main/crates/plugin-abi/ABI.md)
+in craft-libs. Build plug-ins with the craft-plugin-sdk
+([craft-libs#455](https://github.com/storytold/craft-libs/pull/455)).
+
 ## Why the session is lent
 
 `Services` methods take `&self`, and a command body gets `&mut Session` only for its own call.

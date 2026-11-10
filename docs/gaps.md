@@ -26,7 +26,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G8 | UI fidelity: monitor handles, Effect Controls, docking | UI / UX | partly | 120–200 h |
 | G9 | Windows and Linux at run time | platforms | partly | 50–90 h |
 | G10 | Container and codec gaps on import | file format, codec | partly | 120–200 h |
-| G11 | No plugin hosting | ecosystem | no | 200–400 h |
+| G11 | No native plugin hosting | ecosystem | no | 200–400 h |
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
 | G14 | Localization: 3 of the 12 key languages missing | localization | no | 150–230 h |
@@ -216,12 +216,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** AVI / OpenDML import (#598; Motion JPEG, H.264, HEVC, uncompressed video; PCM, MP3,
   MP2, AC-3 audio) and FLAC audio in MP4 / MOV (#603; the decoder gets its STREAMINFO from `dfLa`).
 
-## G11. No plugin hosting
+## G11. No native plugin hosting
 
+- **Have:** a WebAssembly plug-in host for suite plug-ins (`crates/plugins`, craft-abi 1): commands,
+  hooks, effects, panels and file formats, with user-granted permissions.
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
-- **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md §0.3). **200–400 h.**
+- **Needs:** an owner decision for the native APIs (FFI under the `unsafe` rule, AGENTS.md §0.3). **200–400 h.**
 
 ## G12. AI features
 

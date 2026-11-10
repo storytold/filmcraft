@@ -3,6 +3,12 @@
 Media sources, still-image and image-sequence import, generated media, audio streams, and decoded
 frame caching for FilmCraft.
 
+## Openers
+
+`Opener` is a shared closure (`Arc<dyn Fn(&str, Arc<[u8]>) -> Option<Result<SharedSource>> + Send + Sync>`),
+so it can hold state. `OpenerFn` keeps the plain-fn shape and `opener_of` wraps one as an `Opener`.
+Each host registers its own opener and owns its own format book. There is no process-wide list.
+
 ## Image-sequence filenames
 
 `sequence::Numbered` identifies the last run of 1–18 ASCII frame-number digits in a filename's

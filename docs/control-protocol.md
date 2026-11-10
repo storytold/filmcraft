@@ -18,6 +18,13 @@ the desktop leaves the listener closed. Every raw JSON request must include the 
 `token` string; missing or incorrect credentials get an error and close the connection before any
 request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
 
+The Craft Link socket is a separate listener, not part of `--control`. It is always on, takes no flag
+and uses no TCP port. It is a local socket (`filmcraft-<pid>` in the per-user runtime directory) that
+`craft-ipc` checks: the socket file is owner-only, the peer user id must match, and each connection
+must present the token from the instance record within two seconds. Methods the link layer does not
+answer itself, such as `link.open`, reach the same request queue as `--control` requests. See
+[craft-link.md](craft-link.md).
+
 Socket reads and writes time out after two minutes without progress, releasing the connection slot.
 Expiration closes the connection without an unsolicited reply; reconnect before the next request
 (the CLI / MCP bridge does this automatically). Waiting for a UI reply has its separate 60-second

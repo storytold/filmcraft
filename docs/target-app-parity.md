@@ -134,7 +134,7 @@ agent-hours to close the area to Premiere, sequential.
 | Performance (beyond hardware) | ~55% | 60–120 | [performance.md](performance.md) |
 | Stability | ~45% | 60–120 | [gaps.md](gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) |
 | Platforms | ~60% | 50–90 | [gaps.md](gaps.md#g9-windows-and-linux-at-run-time) |
-| Plugins and ecosystem | ~5% | 200–400 | [gaps.md](gaps.md#g11-no-plugin-hosting) |
+| Plugins and ecosystem | ~5% | 200–400 | [gaps.md](gaps.md#g11-no-native-plugin-hosting) |
 | AI features | ~25% | 150–300 | [gaps.md](gaps.md#g12-ai-features) |
 | **Total** | **~56%** | **~1,550–2,750** | |
 
