@@ -590,17 +590,21 @@ fn the_scroll_bar_leaves_the_right_end_of_a_lumetri_curve_draggable() {
         e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
     };
     let before = curve(&mut d);
-    assert!(before.is_empty() || before.contains(&[1.0, 1.0]), "the luma curve ends at the top right: {before:?}");
+    assert!(before.contains(&[1.0, 1.0]), "the luma curve ends at the top right: {before:?}");
     let r = d.element("lumetri.curve.curve_luma").expect("the luma curve has an automation element");
-    // grab the top-right end point and pull it down a quarter of the curve's height
+    // grab the top-right end point and pull it down a quarter of the curve's height, in steps small
+    // enough that the drag starts within the point's reach (larger ones add a point instead)
     let (x, y) = (r[0] + r[2] - 1.0, r[1] + 1.0);
-    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y + r[3] * 0.25}, "steps": 6}));
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y + r[3] * 0.25}, "steps": 100}));
     d.frames(3);
     let after = curve(&mut d);
     assert!(
         after.iter().any(|p| p[0] > 0.95 && p[1] < 0.9 && p[1] > 0.6),
         "the drag moved the curve's right end point down (the scroll bar must not take it): {before:?} -> {after:?}"
     );
+    // it moved the end point rather than adding one beside it
+    assert_eq!(after.len(), before.len(), "the drag must not add a point: {before:?} -> {after:?}");
+    assert!(!after.contains(&[1.0, 1.0]), "the end point itself moved: {before:?} -> {after:?}");
 }
 
 #[test]
