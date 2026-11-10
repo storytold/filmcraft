@@ -475,6 +475,15 @@ impl GraphicsStart {
         }
     }
 
+    /// This start ends before any window, because no graphics mode passed its test start: its
+    /// attempt is over, but the record of an earlier start that hung stays open, so the next
+    /// launch still moves on from that mode instead of starting it untested.
+    pub fn abandon(&self) {
+        if let Some(path) = &self.attempt {
+            remove_quietly(path);
+        }
+    }
+
     /// Start with the default mode next time (the notice's reset button). This process keeps
     /// its mode: the graphics device can't be swapped under a running window.
     pub fn reset_to_default(&self) -> Result<(), String> {

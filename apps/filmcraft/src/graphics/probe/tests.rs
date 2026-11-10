@@ -338,3 +338,32 @@ fn the_choice_runs_only_on_windows_without_an_explicit_backend() {
     start.finish();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A start that ends in the message, because no mode passed, keeps an earlier hang on record:
+/// closing it would let the next launch start the hung mode untested.
+#[test]
+fn a_start_that_ends_in_the_message_keeps_an_earlier_hang_on_record() {
+    let dir = temp_dir("choose-abandon");
+    let exe = Path::new("filmcraft");
+    let mut start = GraphicsStart::begin_at(Some(&dir), false, None, NOW, 19);
+    let first = start.mode();
+    let stuck = Record {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        mode: first,
+        drivers: "GPU 1.0".to_string(),
+        started: unix_now().saturating_sub(HUNG_AFTER.as_secs() * 2),
+        open: true,
+    };
+    let _ = write_atomic(&dir.join(TEST_FILE), &record_json(&stuck));
+    let (_, test) = counting(|_| Outcome::Hung(Report::default(), 25));
+    assert!(choose_with(&mut start, false, None, exe, "GPU 1.0", test).is_err());
+    start.abandon();
+    let kept = read_small(&dir.join(TEST_FILE)).and_then(|t| parse_record(&t));
+    assert_eq!(kept.as_ref().map(|r| (r.mode, r.open)), Some((first, true)), "still open");
+    assert_eq!(need(kept.as_ref(), first, env!("CARGO_PKG_VERSION"), "GPU 1.0", unix_now()), Need::LastHung, "the next launch moves on again");
+    // `finish` would have closed it, which is why the message path doesn't use it.
+    start.finish();
+    let closed = read_small(&dir.join(TEST_FILE)).and_then(|t| parse_record(&t));
+    assert_eq!(closed.map(|r| r.open), Some(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}

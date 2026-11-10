@@ -154,7 +154,7 @@ fn main() -> eframe::Result {
     if let Err(msg) = graphics::probe::choose(&mut graphics, launch.graphics.is_some(), backend_override.is_some(), log_file.as_deref()) {
         log::error!("{msg}");
         filmcraft_ui_egui::crash::record(&msg);
-        graphics.finish();
+        graphics.abandon();
         let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
         std::process::exit(1);
     }
