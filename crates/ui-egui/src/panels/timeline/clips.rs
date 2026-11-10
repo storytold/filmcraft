@@ -266,7 +266,10 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, fh));
+                    // Continuous tiles are laid out at the frozen scale but rendered at live
+                    // width, so derive their height from the rendered width to preserve aspect.
+                    let h = if mode == crate::state::ThumbnailMode::Continuous && frozen.is_some() { (w / aspect).min(th.height()) } else { fh };
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, h));
                     cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
             }

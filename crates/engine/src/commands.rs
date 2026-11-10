@@ -2692,8 +2692,8 @@ fn build() -> Vec<CommandSpec> {
             let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
             let tab = s.state.open_sequences.remove(from);
             s.state.open_sequences.insert(to, tab);
-            // the tab order is part of the saved view: it must reach the autosave journal even
-            // on a clean project (view-only change: no cache invalidation, project stays clean)
+            // the tab order is part of the saved view. Its epoch prompts for an explicit save
+            // without marking project content dirty or writing a clean recovery journal.
             s.view_changed();
             Ok(json!({"index": to}))
         }),
@@ -5381,6 +5381,8 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.revision += 1;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
+    s.view_epoch = s.view_epoch.wrapping_add(1);
+    s.saved_view_epoch = if clean { s.view_epoch } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);

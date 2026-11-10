@@ -457,8 +457,8 @@ pub struct Session {
     pub saved_revision: u64,
     /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
     /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
-    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
-    /// the autosave journal.
+    /// clean project must stay clean. Its difference from `saved_view_epoch` prompts the user to
+    /// save the view when closing or replacing the project; it is not unsaved project content.
     pub view_epoch: u64,
     /// The view counter as of the last successful save: what the project file on disk holds.
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
@@ -714,10 +714,9 @@ impl Session {
         if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
-        // the view reaches the journal whenever it is newer than what the project file holds
-        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
-        // once a save catches up -- no matter what order the two arrive in
-        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        // Recovery is for unsaved project content. View-only changes remain eligible for the
+        // explicit save prompt, but must not leave a recovery candidate for a clean project.
+        let view = dirty.then(|| self.project_view());
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
             p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());

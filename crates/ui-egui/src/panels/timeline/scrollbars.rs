@@ -1,4 +1,4 @@
-use super::layout::{max_pps, timeline_extent};
+use super::layout::{max_pps, min_pps, timeline_extent};
 use super::{Align2, Color32, CursorIcon, Drag, FilmcraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::widgets::{HotNumberOptions, hot_number_numeric};
@@ -80,6 +80,30 @@ fn zoom_about_center(v: &mut crate::state::TimelineView, view_w: f32, total: f64
     v.target_pps = new_pps;
     v.scroll = (center - new_vis / 2.0).clamp(0.0, new_range);
     v.target_scroll = v.scroll;
+}
+
+fn centered_scroll(playhead: f64, visible_seconds: f64, sequence_seconds: f64) -> f64 {
+    if !playhead.is_finite() || !visible_seconds.is_finite() || !sequence_seconds.is_finite() {
+        return 0.0;
+    }
+    let visible_seconds = visible_seconds.max(0.0);
+    let max_scroll = (timeline_extent(sequence_seconds) - visible_seconds).max(0.0);
+    (playhead - visible_seconds / 2.0).clamp(0.0, max_scroll)
+}
+
+#[cfg(test)]
+mod centered_scroll_tests {
+    use super::centered_scroll;
+
+    #[test]
+    fn centers_actual_visible_window() {
+        assert_eq!(centered_scroll(50.0, 40.0, 100.0), 30.0);
+    }
+
+    #[test]
+    fn non_finite_playhead_starts_at_sequence_beginning() {
+        assert_eq!(centered_scroll(f64::NAN, 20.0, 100.0), 0.0);
+    }
 }
 
 /// The zoom scroll bar's settings popup content. Opened by right-clicking the bar, and by the
@@ -1579,7 +1603,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // the fit computes), never a fixed 0.05, or a long sequence can never fit
         let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9))
             .min(max_pps(view_w, min_view))
-            .max(1e-6);
+            .max(min_pps(seq_seconds, view_w));
         v.target_pps = fit_pps;
         v.target_scroll = 0.0;
         if !app.session.state.timeline_ui.smooth_animations {
@@ -1597,9 +1621,12 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let span = side * 2.0;
         // fitting the centring range: no fixed 0.05 floor (it stopped a long range from ever
         // fitting), just the Maximum Zoom Level ceiling
-        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9)).min(max_pps(view_w, min_view)).max(1e-6);
+        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9))
+            .min(max_pps(view_w, min_view))
+            .max(min_pps(seq_seconds, view_w));
         let playhead = app.session.playhead().seconds();
-        let target_scroll = (playhead - side).clamp(0.0, (timeline_extent(seq_seconds) - span).max(0.0));
+        let visible_seconds = view_w.max(1.0) as f64 / fit_pps;
+        let target_scroll = centered_scroll(playhead, visible_seconds, seq_seconds);
         let v = &mut app.ui.timeline;
         v.target_pps = fit_pps;
         v.target_scroll = target_scroll;
