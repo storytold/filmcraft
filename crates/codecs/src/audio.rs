@@ -9,7 +9,7 @@ use filmcraft_time::Tick;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_AAC, CODEC_TYPE_ALAC, CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CodecParameters, CodecType, Decoder, DecoderOptions};
 use symphonia::core::formats::{FormatOptions, Packet};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource as SymphoniaMediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
@@ -909,7 +909,10 @@ impl AudioFileSource {
             };
             return Ok(Self { info, rate, samples });
         }
-        let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.clone())), Default::default());
+        let start = if ext == "mp3" { mp3_audio_start(&bytes) } else { 0 };
+        let source: Box<dyn SymphoniaMediaSource> =
+            if start > 0 { Box::new(OffsetSliceSource::new(bytes.clone(), start)) } else { Box::new(std::io::Cursor::new(bytes.clone())) };
+        let mss = MediaSourceStream::new(source, Default::default());
         let mut hint = Hint::new();
         hint.with_extension(&ext);
         // gapless: trim the encoder delay/padding that MP3 (LAME/Xing tag) files declare, so audio lands on the timeline where other editors put it.
@@ -970,6 +973,76 @@ fn id3v2_len(bytes: &[u8]) -> usize {
             size.saturating_add(if flags & 0x10 != 0 { 20 } else { 10 })
         }
         _ => 0,
+    }
+}
+
+const MAX_LEADING_ID3V2_TAGS: usize = 8;
+
+fn mp3_audio_start(bytes: &[u8]) -> usize {
+    let mut p = 0;
+    for _ in 0..MAX_LEADING_ID3V2_TAGS {
+        let tag_len = id3v2_len(bytes.get(p..).unwrap_or(&[]));
+        if tag_len == 0 {
+            break;
+        }
+        let next = p.saturating_add(tag_len);
+        if next >= bytes.len() {
+            return 0;
+        }
+        p = next;
+    }
+    p
+}
+
+/// A seekable, zero-copy [`symphonia::core::io::MediaSource`] over an [`Arc<[u8]>`] starting from a logical offset.
+struct OffsetSliceSource {
+    bytes: Arc<[u8]>,
+    start: usize,
+    pos: usize,
+}
+
+impl OffsetSliceSource {
+    fn new(bytes: Arc<[u8]>, start: usize) -> Self {
+        let start = start.min(bytes.len());
+        Self { bytes, start, pos: 0 }
+    }
+}
+
+impl std::io::Read for OffsetSliceSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let current = self.start.saturating_add(self.pos);
+        let available = self.bytes.get(current..).unwrap_or(&[]);
+        let n = buf.len().min(available.len());
+        if n > 0 {
+            buf[..n].copy_from_slice(&available[..n]);
+            self.pos = self.pos.saturating_add(n);
+        }
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for OffsetSliceSource {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        let len = self.bytes.len().saturating_sub(self.start) as u64;
+        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid seek position");
+        let new_pos = match from {
+            std::io::SeekFrom::Start(p) => Some(p),
+            std::io::SeekFrom::Current(p) => (self.pos as u64).checked_add_signed(p),
+            std::io::SeekFrom::End(p) => len.checked_add_signed(p),
+        };
+        let pos = new_pos.ok_or_else(invalid)?;
+        self.pos = usize::try_from(pos).map_err(|_| invalid())?;
+        Ok(pos)
+    }
+}
+
+impl SymphoniaMediaSource for OffsetSliceSource {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.bytes.len().saturating_sub(self.start) as u64)
     }
 }
 
@@ -1479,6 +1552,39 @@ mod gapless_tests {
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+    }
+
+    /// An ID3v2.3 header declaring an empty tag (size 0), as some sound-effect packs carry, failed
+    /// the import with "unsupported media: out of bounds". It, and a stack of tags, decode like the
+    /// bare file; the reported file size is still the whole file's.
+    #[test]
+    fn mp3_behind_an_empty_or_stacked_id3v2_tag_decodes() {
+        let bare = tagged_mp3();
+        let empty = [&b"ID3\x03\0\0\0\0\0\0"[..], &bare].concat();
+        let stacked = [&b"ID3\x03\0\0\0\0\0\0"[..], &b"ID3\x04\0\0\0\0\0\x03abc"[..], &bare].concat();
+        for (name, file) in [("empty.mp3", empty), ("stacked.mp3", stacked)] {
+            let len = file.len() as u64;
+            let src = AudioFileSource::decode(name, Arc::from(file)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529), "{name}: gapless trim still applies");
+            assert_eq!(src.info.file_size, Some(len), "{name}");
+        }
+    }
+
+    /// Where the frames start: past every leading tag, bounded; a tag that runs past the end (or
+    /// leaves nothing after it) changes nothing, so the decoder reports the damage itself.
+    #[test]
+    fn mp3_audio_start_skips_leading_tags_and_ignores_hostile_sizes() {
+        let frame = [0xFFu8, 0xFB, 0x90, 0xC0];
+        assert_eq!(mp3_audio_start(&frame), 0);
+        assert_eq!(mp3_audio_start(&[&b"ID3\x03\0\0\0\0\0\0"[..], &frame].concat()), 10);
+        assert_eq!(mp3_audio_start(&[&b"ID3\x04\0\x10\0\0\0\x02xy"[..], &[0; 10], &frame].concat()), 22, "footer flag");
+        assert_eq!(mp3_audio_start(b"ID3\x03\0\0\0\0\0\0"), 0, "nothing after the tag");
+        assert_eq!(mp3_audio_start(&[&b"ID3\x04\0\x10\x7F\x7F\x7F\x7F"[..], &frame].concat()), 0, "size past the end");
+        let many: Vec<u8> = std::iter::repeat_n(&b"ID3\x03\0\0\0\0\0\0"[..], 10_000).flatten().copied().chain(frame).collect();
+        assert!(mp3_audio_start(&many) <= MAX_LEADING_ID3V2_TAGS * 10, "bounded");
+        for cut in 0..14 {
+            let _ = mp3_audio_start(&[&b"ID3\x03\0\0\0\0\0\0"[..], &frame].concat()[..cut]);
+        }
     }
 }
 
