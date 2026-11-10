@@ -26,6 +26,9 @@ pub struct ProjectSettings {
     /// Project Settings ▸ Scratch Disks. Schema v11.
     #[serde(default)]
     pub scratch: ScratchDisks,
+    /// Whether files added to the project folder are automatically imported into the project.
+    #[serde(default)]
+    pub auto_sync_folder: bool,
 }
 
 fn title_safe_default() -> (f64, f64) {
@@ -95,6 +98,7 @@ impl Default for ProjectSettings {
             action_safe: action_safe_default(),
             capture_format: capture_format_default(),
             scratch: ScratchDisks::default(),
+            auto_sync_folder: false,
         }
     }
 }

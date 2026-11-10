@@ -415,3 +415,59 @@ fn new_items_land_in_the_given_bin() {
     }
     assert_eq!((s.project.items.len(), s.history.undo.len()), (items, undo));
 }
+
+#[test]
+fn project_folder_auto_sync_imports_and_marks_offline() {
+    let root = crate::media_test_util::tmp_dir("sync-folder-test");
+    let proj_file = root.join("filmcraft.fcproj");
+    std::fs::write(&proj_file, b"{}").unwrap();
+
+    let sub = root.join("Footage");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let auto_save = root.join("Auto-Save");
+    std::fs::create_dir_all(&auto_save).unwrap();
+
+    let img1 = root.join("clip1.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([200, 50, 50, 255])).save(&img1).unwrap();
+
+    let img2 = sub.join("clip2.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([50, 200, 50, 255])).save(&img2).unwrap();
+
+    let ignored_img = auto_save.join("ignored.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 0, 255])).save(&ignored_img).unwrap();
+
+    let hidden = root.join(".hidden.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 0, 255])).save(&hidden).unwrap();
+
+    let text_file = root.join("notes.txt");
+    std::fs::write(&text_file, b"some notes").unwrap();
+
+    let mut s = Session::default();
+    s.path = Some(proj_file.to_string_lossy().into_owned());
+
+    assert_eq!(s.project.items.len(), 0);
+
+    let res = s.execute("project.setAutoSyncFolder", json!({"enabled": true})).unwrap();
+    assert_eq!(res["autoSyncFolder"], true);
+    assert_eq!(res["imported"], 2);
+
+    assert_eq!(s.project.items.len(), 2);
+    let names: Vec<String> = s.project.items.values().map(|it| it.name.clone()).collect();
+    assert!(names.contains(&"clip1.png".to_string()));
+    assert!(names.contains(&"clip2.png".to_string()));
+    assert!(!names.contains(&"ignored.png".to_string()));
+    assert!(!names.contains(&".hidden.png".to_string()));
+    assert!(!names.contains(&"notes.txt".to_string()));
+
+    assert!(s.project.root.children.iter().any(|c| matches!(c, BinEntry::Bin(b) if b.name == "Footage")));
+
+    let res2 = s.execute("project.syncFolder", json!({})).unwrap();
+    assert_eq!(res2["imported"], 0);
+    assert_eq!(s.project.items.len(), 2);
+
+    std::fs::remove_file(&img1).unwrap();
+    let res3 = s.execute("project.syncFolder", json!({})).unwrap();
+    assert_eq!(res3["offline"], 1);
+    assert_eq!(s.project.items.len(), 2);
+}

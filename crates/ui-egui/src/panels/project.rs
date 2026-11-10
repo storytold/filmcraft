@@ -416,15 +416,52 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         let parent = parent_bin(&app.session.project.root, v.bin);
         navigate(app, v.inst, parent.map(|b| b.0));
     }
-    let mut crumb = format!("{}.fcproj", app.session.project.name);
+    let has_path = app.session.path.is_some();
+    let root_path = app.session.path.clone().unwrap_or_else(|| format!("{}.fcproj", app.session.project.name));
+    let mut crumb = root_path.clone();
     for b in bin_path(&app.session.project.root, v.bin) {
         crumb.push_str(" / ");
         crumb.push_str(&b);
     }
+
+    let sync_w = 120.0;
+    let sync_r = Rect::from_min_max(pos2((head.max.x - sync_w).max(head.min.x + 80.0), head.min.y), head.max);
+    let mut sync_ui = ui.new_child(egui::UiBuilder::new().max_rect(sync_r).id_salt((&pre, "sync_folder")));
+    if !has_path {
+        sync_ui.disable();
+    }
+    let sync_tip = if has_path {
+        tl!("Automatically import new files added to the project folder")
+    } else {
+        tl!("Save project to enable auto-sync folder")
+    };
+    let mut auto_sync = app.session.project.settings.auto_sync_folder;
+    let sync_cb = sync_ui.checkbox(&mut auto_sync, tl!("Auto-sync folder")).on_hover_text(sync_tip);
+    app.auto.add(&format!("{pre}.autoSyncFolder"), sync_r, "Auto-sync folder");
+    if sync_cb.changed() {
+        actions.push(("project.setAutoSyncFolder".into(), json!({"enabled": auto_sync})));
+    }
+
+    let copy_w = 46.0;
+    let copy_r = Rect::from_min_size(pos2((sync_r.min.x - copy_w - 4.0).max(up.max.x + 10.0), head.center().y - 10.0), vec2(copy_w, 20.0));
+    let copy_resp = ui.interact(copy_r, egui::Id::unique((&pre, "copy_path")), Sense::click()).on_hover_text(tlf!("Copy project path:\n{path}", path = crumb));
+    app.auto.add(&format!("{pre}.copyPath"), copy_r, "Copy Path");
+    if copy_resp.hovered() {
+        ui.painter().rect_filled(copy_r, 3.0, t.hover);
+    }
+    ui.painter().rect_stroke(copy_r, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    ui.painter().text(copy_r.center(), Align2::CENTER_CENTER, tl!("Copy"), Tokens::ui(11.0), t.text);
+
+    let text_r = Rect::from_min_max(pos2(up.max.x + 8.0, head.min.y), pos2((copy_r.min.x - 6.0).max(up.max.x + 8.0), head.max.y));
+    let crumb_resp = ui.interact(text_r, egui::Id::unique((&pre, "crumb_click")), Sense::click()).on_hover_text(tlf!("Click to copy path:\n{path}", path = crumb));
+    if copy_resp.clicked() || crumb_resp.clicked() {
+        ui.ctx().copy_text(crumb.clone());
+        app.status(tlf!("Copied path: {path}", path = crumb));
+    }
     let fs = font(app);
-    let cr = ui.painter().with_clip_rect(head);
-    cr.text(pos2(up.max.x + 8.0, head.center().y), Align2::LEFT_CENTER, &crumb, Tokens::ui(fs - 0.5), t.text_dim);
-    app.auto.add(&format!("{pre}.breadcrumb"), head, &crumb);
+    let cr = ui.painter().with_clip_rect(text_r);
+    cr.text(pos2(text_r.min.x, head.center().y), Align2::LEFT_CENTER, &crumb, Tokens::ui(fs - 0.5), if crumb_resp.hovered() { t.text } else { t.text_dim });
+    app.auto.add(&format!("{pre}.breadcrumb"), text_r, &crumb);
 
     // search row: field, Find, item count
     let row = Rect::from_min_size(pos2(rect.min.x + 8.0, head.max.y + 2.0), vec2(rect.width() - 16.0, 24.0));
@@ -779,7 +816,18 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         if item(ui, "saveProject", tl!("Save Project"), true, s_save.as_deref()) {
             actions.push(("file.save".into(), json!({})));
         }
-        item(ui, "refreshProject", tl!("Refresh Project"), false, None);
+        if item(ui, "refreshProject", tl!("Refresh Project Folder"), has_project_path, None) {
+            actions.push(("project.syncFolder".into(), json!({})));
+        }
+        let sync_title = if app.session.project.settings.auto_sync_folder {
+            tl!("Auto-sync Project Folder: On")
+        } else {
+            tl!("Auto-sync Project Folder: Off")
+        };
+        if item(ui, "toggleAutoSync", sync_title, has_project_path, None) {
+            let next = !app.session.project.settings.auto_sync_folder;
+            actions.push(("project.setAutoSyncFolder".into(), json!({"enabled": next})));
+        }
         if item(ui, "revealProject", tl!("Reveal Project in Finder…"), has_project_path, None) {
             actions.push(("projectPanel.revealProject".into(), json!({})));
         }

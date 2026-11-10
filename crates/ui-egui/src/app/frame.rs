@@ -19,12 +19,28 @@ impl FilmcraftApp {
                 Err(e) => self.status(e.to_string()),
             }
         }
-        let media = &self.session.prefs.media;
-        let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
-        let (last_key, focus_key) = (egui::Id::unique("mediaWatch.lastScan"), egui::Id::unique("mediaWatch.focused"));
         let focused = self.native_window_focused.unwrap_or(false);
+        let focus_key = egui::Id::unique("mediaWatch.focused");
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
+
+        if self.session.project.settings.auto_sync_folder && self.session.path.is_some() {
+            let sync_key = egui::Id::unique("project.autoSync.last");
+            let last_sync: f64 = ctx.data(|d| d.get_temp(sync_key)).unwrap_or(f64::NEG_INFINITY);
+            if now - last_sync >= 2.0 || (focused && !was_focused) {
+                ctx.data_mut(|d| d.insert_temp(sync_key, now));
+                if let Ok(res) = self.session.execute("project.syncFolder", serde_json::json!({}))
+                    && let Some(imported) = res.get("imported").and_then(serde_json::Value::as_u64).filter(|n| *n > 0)
+                {
+                    self.status(format!("Auto-synced {imported} new file(s) into project"));
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
+
+        let media = &self.session.prefs.media;
+        let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
+        let last_key = egui::Id::unique("mediaWatch.lastScan");
         if !on || !filmcraft_engine::media_watch::has_media_files(&self.session.project) {
             return;
         }

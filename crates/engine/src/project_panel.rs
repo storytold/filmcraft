@@ -1291,5 +1291,146 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             s.state.project_selection.clear();
             Ok(Value::Null)
         }),
+        c("project.syncFolder", "Sync Project Folder", r#"{"folder":str?}"#, always, sync_folder),
+        c("project.setAutoSyncFolder", "Set Auto-sync Project Folder", r#"{"enabled":bool}"#, always, set_auto_sync_folder),
+        q("project.folder", "Project Folder", "{}", |s, _| {
+            let path = s.path.clone();
+            let folder = path.as_ref().and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_string_lossy().to_string()));
+            Ok(json!({
+                "path": path,
+                "folder": folder,
+                "autoSync": s.project.settings.auto_sync_folder,
+            }))
+        }),
     ]
+}
+
+fn sync_folder(s: &mut Session, p: &Value) -> Result<Value> {
+    let folder_opt = str_p(p, "folder").map(std::path::PathBuf::from).or_else(|| {
+        s.path.as_ref().and_then(|proj_path| {
+            std::path::Path::new(proj_path).parent().map(std::path::Path::to_path_buf)
+        })
+    });
+    let Some(root_dir) = folder_opt else {
+        return Ok(json!({"imported": 0, "offline": 0}));
+    };
+    if !root_dir.is_dir() {
+        return Ok(json!({"imported": 0, "offline": 0}));
+    }
+
+    let mut existing_paths = std::collections::HashSet::new();
+    for it in s.project.items.values() {
+        if let ItemKind::Media(m) = &it.kind
+            && let MediaRef::File { path } = &m.media
+        {
+            if let Ok(canon) = std::fs::canonicalize(path) {
+                existing_paths.insert(canon);
+            } else {
+                existing_paths.insert(std::path::PathBuf::from(path));
+            }
+        }
+    }
+
+    let mut files_to_import: Vec<(Vec<String>, std::path::PathBuf)> = Vec::new();
+    fn walk(
+        dir: &std::path::Path,
+        sub: &[String],
+        depth: usize,
+        existing: &std::collections::HashSet<std::path::PathBuf>,
+        out: &mut Vec<(Vec<String>, std::path::PathBuf)>,
+    ) {
+        if depth > 16 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "Auto-Save" || name.ends_with(".fcproj") {
+                continue;
+            }
+            if path.is_dir() {
+                let mut next_sub = sub.to_vec();
+                next_sub.push(name);
+                walk(&path, &next_sub, depth + 1, existing, out);
+            } else if path.is_file() {
+                if !filmcraft_media::is_importable(&path) {
+                    continue;
+                }
+                let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if !existing.contains(&canon) {
+                    out.push((sub.to_vec(), path));
+                }
+            }
+        }
+    }
+
+    walk(&root_dir, &[], 0, &existing_paths, &mut files_to_import);
+
+    let mut grouped: std::collections::BTreeMap<Vec<String>, Vec<String>> = std::collections::BTreeMap::new();
+    for (sub, path) in files_to_import {
+        grouped.entry(sub).or_default().push(path.to_string_lossy().to_string());
+    }
+
+    let mut imported_count = 0;
+    for (sub, paths) in grouped {
+        let mut current_bin = s.project.root.id;
+        for folder_name in sub {
+            let mut found_bin = None;
+            if let Some(b) = s.project.root.find_bin(current_bin) {
+                for child in &b.children {
+                    if let BinEntry::Bin(child_bin) = child
+                        && child_bin.name == folder_name
+                    {
+                        found_bin = Some(child_bin.id);
+                        break;
+                    }
+                }
+            }
+            current_bin = if let Some(bid) = found_bin {
+                bid
+            } else {
+                let res = s.execute("file.newBin", json!({"name": folder_name, "parent": current_bin.0}))?;
+                let raw_id = res.get("bin").and_then(Value::as_u64).ok_or_else(|| bad("project.syncFolder", "failed to create bin"))?;
+                BinId(raw_id)
+            };
+        }
+
+        let bin_param = if current_bin == s.project.root.id {
+            Value::Null
+        } else {
+            json!(current_bin.0)
+        };
+
+        if let Ok(res) = s.execute("file.import", json!({"paths": paths, "bin": bin_param}))
+            && let Some(items) = res.get("items").and_then(Value::as_array)
+        {
+            imported_count += items.len();
+        }
+    }
+
+    let missing = crate::relink::refresh(s);
+    if imported_count > 0 {
+        s.bump_view();
+    }
+
+    Ok(json!({
+        "imported": imported_count,
+        "offline": missing.len(),
+    }))
+}
+
+fn set_auto_sync_folder(s: &mut Session, p: &Value) -> Result<Value> {
+    let enabled = bool_p(p, "enabled").ok_or_else(|| bad("project.setAutoSyncFolder", "need `enabled`"))?;
+    s.edit("Auto-sync Project Folder", |pr, _| {
+        pr.settings.auto_sync_folder = enabled;
+        Ok(())
+    })?;
+    let mut imported = 0;
+    if enabled {
+        let res = sync_folder(s, &Value::Null)?;
+        imported = res.get("imported").and_then(Value::as_u64).unwrap_or(0);
+    }
+    s.bump_view();
+    Ok(json!({"autoSyncFolder": enabled, "imported": imported}))
 }

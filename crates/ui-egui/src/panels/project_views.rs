@@ -771,6 +771,29 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
             ui.close();
         }
     }
+    let has_path = app.session.path.is_some();
+    let sync_label = if app.session.project.settings.auto_sync_folder {
+        tl!("✓ Auto-sync Project Folder")
+    } else {
+        tl!("Auto-sync Project Folder")
+    };
+    if ui.add_enabled(has_path, egui::Button::new(sync_label)).clicked() {
+        let next = !app.session.project.settings.auto_sync_folder;
+        actions.push(("project.setAutoSyncFolder".into(), json!({"enabled": next})));
+        ui.close();
+    }
+    if ui.add_enabled(has_path, egui::Button::new(tl!("Sync Project Folder Now"))).clicked() {
+        actions.push(("project.syncFolder".into(), json!({})));
+        ui.close();
+    }
+    if ui.add_enabled(has_path, egui::Button::new(tl!("Copy Project Folder Path"))).clicked() {
+        if let Some(ref p) = app.session.path {
+            let folder = std::path::Path::new(p).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_else(|| p.clone());
+            ui.ctx().copy_text(folder.clone());
+            app.status(tlf!("Copied path: {path}", path = folder));
+        }
+        ui.close();
+    }
     let new_bin = (v.bin != app.session.project.root.id).then_some(v.bin.0);
     ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, new_bin, actions));
 }
