@@ -32,6 +32,7 @@ pub mod monitor;
 pub mod monitor_view;
 pub mod motion_path;
 pub mod multicam;
+pub mod neural_enhance;
 pub mod notes;
 pub mod panel_state;
 pub mod presets;

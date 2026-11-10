@@ -473,7 +473,7 @@ impl<'a> Plan<'a> {
             s.width.hash(&mut h);
             for (side, v) in [(0u8, &s.pre), (1u8, &s.post)] {
                 for i in v.iter() {
-                    (side, i.slot, &i.effect.effect, i.map.dsp).hash(&mut h);
+                    (side, i.slot, &i.effect.effect, i.map.dsp, crate::audio_fx::variant(&i.effect, &i.map)).hash(&mut h);
                 }
             }
         }
@@ -544,9 +544,7 @@ struct GraphState {
 }
 
 fn build_state(plan: &Plan, sr: u32) -> GraphState {
-    let mk = |v: &[Insert], w: usize| -> Vec<Box<dyn AudioEffect>> {
-        v.iter().filter_map(|i| filmcraft_audio_dsp::create_effect(i.map.dsp, sr as f32, w)).collect()
-    };
+    let mk = |v: &[Insert], w: usize| -> Vec<Box<dyn AudioEffect>> { v.iter().filter_map(|i| crate::audio_fx::create(&i.effect, &i.map, sr, w)).collect() };
     let mut strips: Vec<StripState> = plan
         .strips
         .iter()

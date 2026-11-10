@@ -355,6 +355,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if crate::panels::audio_fx_editor::has_editor(&e.effect) {
                     custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
+                if e.effect == crate::panels::neural_enhance::EFFECT {
+                    crate::panels::neural_enhance::model_row(app, bui, body, clip, idx, e);
+                }
                 for pd in &def.params {
                     let mut rows = |bui: &mut egui::Ui| {
                         param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys);

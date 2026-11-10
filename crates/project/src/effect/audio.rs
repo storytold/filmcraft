@@ -426,6 +426,19 @@ pub(super) fn defs() -> Vec<EffectDef> {
             vec![f("amount", "Amount", 50.0, 0.0, 100.0, "%"), fs("rt60", "Decay Time (RT60)", 0.8, (0.1, 5.0), (0.1, 3.0), "s", 2)],
         ),
         audio("speech_enhance", "Enhance Speech", A_NOISE, vec![f("mix", "Mix", 100.0, 0.0, 100.0, "%"), ch("tone", "Voice", &["Low Tone", "High Tone"], 0)]),
+        // A neural network removes the noise (`filmcraft-enhance`). The model list is that crate's
+        // catalogue, in its order: the choice stores the index, so models are only ever appended.
+        audio(
+            "neural_enhance",
+            "Enhance Speech (Neural)",
+            A_NOISE,
+            vec![
+                ch("model", "Model", NEURAL_ENHANCE_MODELS, 0),
+                f("attenuation", "Noise Reduction", 24.0, 0.0, 100.0, "dB"),
+                b("post_filter", "Post Filter", false),
+                f("mix", "Mix", 100.0, 0.0, 100.0, "%"),
+            ],
+        ),
         // ---- Reverb ----
         audio(
             "convolution_reverb",
@@ -575,6 +588,9 @@ fn mute_param() -> ParamDef {
 }
 
 /// Ids of the effects Premiere lists in its Audio Effects bin (excluding Audio Units).
+/// Model names of the `neural_enhance` effect (the catalogue of `filmcraft-enhance`, same order).
+pub const NEURAL_ENHANCE_MODELS: &[&str] = &["DeepFilterNet 3", "DeepFilterNet 3 (low latency)"];
+
 pub const PREMIERE_AUDIO_EFFECTS: [&str; 53] = [
     "amplify",
     "channel_mixer_a",

@@ -18,6 +18,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod enhance;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -568,6 +569,7 @@ impl Default for Session {
 
 impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
+        crate::enhance::init();
         Self {
             project: Arc::new(Project::new("Untitled")),
             project_instance: Arc::new(()),
@@ -1354,6 +1356,8 @@ mod clip_mismatch_tests;
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod enhance_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]

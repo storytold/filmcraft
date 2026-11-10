@@ -17,6 +17,8 @@ whisper = ["filmcraft-speech/whisper"]
 speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
+# The Enhance Speech (Neural) audio effect: DeepFilterNet on tract (CPU) and the model download.
+neural-enhance = ["filmcraft-render/neural-enhance", "speech-download"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -38,6 +40,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-enhance = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
