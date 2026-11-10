@@ -39,23 +39,50 @@ fn yuv_code_range_uniforms() {
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
-/// #3798: a layer shrunk n× takes n taps per axis (up to 16, the CPU's largest draft decimation),
-/// so every source texel reaches the box average.
+/// Where [`GpuCompositor::uniforms`] puts the supersampling taps per axis (`p0.z` in
+/// `composite.wgsl`) and the footprint in source pixels per output pixel (`p2.w`).
+const U_TAPS: usize = 14;
+const U_FOOTPRINT: usize = 23;
+
+/// An 8-bit RGBA source of `size` for the uniform tests (its pixels are never read).
+fn rgba_src(size: (u32, u32)) -> SrcInfo {
+    SrcInfo { kind: 0, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: (1, 1), size, color: filmcraft_color::ColorInfo::REC709, input: None }
+}
+
+/// An ordinary layer takes `ceil(footprint)` taps per axis once its footprint passes 1.25, at
+/// most 4, as on main (#3798 keeps its cost): deeper downscales still skip texels there.
+/// One footprint serves both axes, from the smaller scale (per-axis counts are #2848).
 #[test]
-fn downscale_taps_cover_the_footprint() {
-    let src = SrcInfo {
-        kind: 0,
-        code_scale: 1.0,
-        code_levels: 1.0,
-        alpha: 0.0,
-        chroma: (1, 1),
-        size: (1, 1),
-        color: filmcraft_color::ColorInfo::REC709,
-        input: None,
-    };
-    for (n, taps) in [(1.0, 1.0), (2.0, 2.0), (8.0, 8.0), (16.0, 16.0), (64.0, 16.0)] {
-        let u = GpuCompositor::uniforms(&src, &Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (1, 1));
-        assert_eq!((u[14], u[23]), (taps, n as f32), "scale 1/{n}");
+fn ordinary_layer_taps_follow_the_footprint_up_to_four() {
+    #[rustfmt::skip]
+    let cases = [
+        // (x scale, y scale, taps, footprint)
+        (1.0, 1.0, 1.0, 1.0), (1.0 / 1.2, 1.0 / 1.2, 1.0, 1.2), (1.0 / 1.3, 1.0 / 1.3, 2.0, 1.3),
+        (1.0 / 3.2, 1.0 / 3.2, 4.0, 3.2), (1.0 / 4.1, 1.0 / 4.1, 4.0, 4.1),
+        (1.0 / 5.0, 1.0 / 5.0, 4.0, 5.0), (1.0 / 6.0, 1.0 / 6.0, 4.0, 6.0), (1.0 / 7.0, 1.0 / 7.0, 4.0, 7.0),
+        (1.0 / 256.0, 1.0 / 256.0, 4.0, 256.0), (1.0 / 1024.0, 1.0 / 1024.0, 4.0, 1024.0),
+        // anisotropic: both axes take the smaller scale's count
+        (1.0 / 3.0, 1.0 / 1.5, 3.0, 3.0), (1.0 / 1.5, 1.0 / 3.0, 3.0, 3.0), (1.0 / 16.0, 1.0 / 2.0, 4.0, 16.0),
+    ];
+    for (sx, sy, taps, footprint) in cases {
+        let u = GpuCompositor::uniforms(&rgba_src((64, 64)), &Affine::scale(sx, sy), 1.0, Blend::Normal, (64, 64));
+        assert_eq!(u[U_TAPS], taps, "scale {sx} x {sy}");
+        assert!((u[U_FOOTPRINT] - footprint).abs() < 1e-4, "scale {sx} x {sy}: footprint {}", u[U_FOOTPRINT]);
+    }
+}
+
+/// The effect-source draw of a layer decimated by n takes exactly n taps per axis, so every
+/// texel of the CPU's n×n box is read (#3798), at every quarter turn. Its cost is bounded by
+/// the source size; above the CPU's largest draft decimation (16) it stays at 16 taps.
+#[test]
+fn effect_source_taps_match_the_decimation() {
+    let frame = VideoFrame::rgba_f32(64, 48, vec![0.0; 64 * 48 * 4]);
+    for (n, taps) in [(1, 1.0), (2, 2.0), (5, 5.0), (6, 6.0), (7, 7.0), (8, 8.0), (16, 16.0), (256, 16.0), (1024, 16.0)] {
+        for turns in 0..4 {
+            let fx = filmcraft_render::plan::LayerFx { size: (1, 1), decimation: n, turns, ops: Vec::new() };
+            let u = GpuCompositor::fx_source_uniforms(&rgba_src((64, 48)), &frame, &fx);
+            assert_eq!((u[U_TAPS], u[U_FOOTPRINT]), (taps, n as f32), "decimation {n} turns {turns}");
+        }
     }
 }
 

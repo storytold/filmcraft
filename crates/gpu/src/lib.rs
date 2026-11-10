@@ -624,6 +624,9 @@ impl GpuCompositor {
             frame.height as f64,
         ));
         let mut su = Self::uniforms(src, &m, 1.0, Blend::Normal, (fx.size.0.max(1), fx.size.1.max(1)));
+        // n taps per axis read every texel of the CPU's n×n box, up to its largest draft
+        // decimation (16): n² taps per working pixel, so the draw costs about one read per source texel (#3798).
+        su[14] = fx.decimation.clamp(1, 16) as f32;
         // Effect sources use the working pixel center, avoiding interpolated vertex coordinates.
         su[26] = n as f32;
         su[27] = (fx.turns % 4) as f32;
@@ -648,8 +651,9 @@ impl GpuCompositor {
         let sx = (m.a * m.a + m.b * m.b).sqrt();
         let sy = (m.c * m.c + m.d * m.d).sqrt();
         let footprint = (1.0 / sx.min(sy).max(1e-6)) as f32;
-        // Up to 16 per axis, the CPU's largest draft decimation (#3798).
-        let taps = if footprint > 1.25 { footprint.ceil().min(16.0) } else { 1.0 };
+        // At most 4 per axis: deeper downscales skip texels, which bounds the cost per output
+        // pixel (effect sources take their exact decimation instead, `fx_source_uniforms`).
+        let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
         let _ = Matrix::Bt709;
         // colour management (q0..q5), stage by stage as `InputTransform::apply`
         let q = src.input.map_or([0.0; 24], |p| {

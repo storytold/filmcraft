@@ -22,6 +22,9 @@ use filmcraft_time::Tick;
 
 const EXACT: f32 = 1e-4;
 const FLIPS: f64 = 0.01;
+/// Y'CbCr effect sources, absolute: the CPU linearizes through a 12-bit table, the GPU computes
+/// the curve (measured up to 1e-4; interpolated chroma was off by 0.08 to 0.41).
+const YUV: f32 = 5e-4;
 
 fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
     FxCtx { t, px_scale, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working: filmcraft_color::WorkingSpace::Rec709 }
@@ -916,6 +919,91 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
             assert_eq!((gw as usize, gh as usize, gpu.len()), (ow, oh, cpu.len()));
             let (worst, flips) = compare(&cpu, &gpu);
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
+        }
+    }
+}
+
+/// A Y'CbCr 4:2:0 frame of hashed codes: neighbouring chroma samples differ, so any chroma
+/// interpolation shows.
+fn hashed_yuv420(w: u32, h: u32) -> VideoFrame {
+    let hash = |i: u32, k: u32| (i.wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(40_503)) >> 13) as u8;
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv8 {
+            planes: [
+                Arc::new((0..w * h).map(|i| 16 + hash(i, 1) % 220).collect()),
+                Arc::new((0..cw * ch).map(|i| 16 + hash(i, 2) % 225).collect()),
+                Arc::new((0..cw * ch).map(|i| 16 + hash(i, 3) % 225).collect()),
+            ],
+            chroma: Chroma::C420,
+            alpha: None,
+        },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    }
+}
+
+/// The largest absolute difference between two pixel buffers of the same length.
+fn max_abs(cpu: &[f32], gpu: &[f32]) -> f32 {
+    assert_eq!(cpu.len(), gpu.len());
+    cpu.iter().zip(gpu).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max)
+}
+
+/// A 4:2:0 effect source takes each pixel's chroma from column `x >> 1`, as the CPU box does,
+/// not interpolated between chroma columns before linearizing (#3798): constant luma and Cr
+/// alternating by chroma column, at every decimation of an 8×8 frame and every quarter turn.
+#[test]
+fn effect_source_yuv420_chroma_matches_cpu_box_oracle() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let cr: Vec<u8> = (0..16).map(|i| if i % 2 == 0 { 64 } else { 192 }).collect();
+    let frame = VideoFrame {
+        width: 8,
+        height: 8,
+        data: PixelData::Yuv8 { planes: [Arc::new(vec![128; 64]), Arc::new(vec![128; 16]), Arc::new(cr)], chroma: Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    };
+    for n in [1u32, 2, 4, 8] {
+        for turns in 0..4u8 {
+            let d = 8 / n;
+            let fx = LayerFx { size: (d, d), decimation: n, turns, ops: Vec::new() };
+            let cpu = filmcraft_render::plan::effect_image(&frame, &fx);
+            let (gw, gh, gpu) = c.effect_image(&frame, &fx).expect("decimated 4:2:0 source image");
+            assert_eq!((gw as usize, gh as usize, gpu.len()), (cpu.w, cpu.h, cpu.px.len()));
+            let worst = max_abs(&cpu.px, &gpu);
+            assert!(worst <= YUV, "n{n} turns{turns}: max |cpu - gpu| {worst}");
+        }
+    }
+}
+
+/// A Y'CbCr effect source decimated by 8 or 16 is the CPU's linear-light box of every n×n block
+/// (#3798: 4 taps per axis mixed texel pairs in code space at 8 and skipped texels at 16), on an
+/// even frame and on a larger odd-sized one whose last block is cut by the edge.
+#[test]
+fn effect_source_yuv_decimation_preserves_cpu_box_oracle() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h, ns) in [(96u32, 54u32, &[8u32, 16][..]), (263, 149, &[16][..])] {
+        let frame = hashed_yuv420(w, h);
+        for &n in ns {
+            let (ow, oh, cpu) = frame.to_linear_f32_decimated(n as usize);
+            let (gw, gh, gpu) = c
+                .effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, turns: 0, ops: Vec::new() })
+                .expect("decimated 4:2:0 source image");
+            assert_eq!((gw as usize, gh as usize, gpu.len()), (ow, oh, cpu.len()));
+            let worst = max_abs(&cpu, &gpu);
+            assert!(worst <= YUV, "{w}x{h} n{n}: max |cpu - gpu| {worst}");
         }
     }
 }
