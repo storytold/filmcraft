@@ -14,11 +14,18 @@
 //! dragging one moves that corner, and dragging inside the outline through them moves all four,
 //! through `effects.setParam` in the same way.
 //!
+//! Crop gets a box on its cropped edges while it is the selected effect (#1872): a corner handle
+//! moves its two edges, an edge handle its own, and dragging inside the box slides the crop over
+//! the picture without changing its size. The uncropped picture is outlined faintly, so it is
+//! clear how far an edge can go back out. With Zoom on, the cropped area fills the clip's frame,
+//! so there is no edge on the picture to drag and no box is drawn.
+//!
 //! Automation ids: `program.transform.box`, `program.transform.handle.<n>` (0–3 the corners TL,
 //! TR, BR, BL, 4–7 the middles of the top, right, bottom and left edges, as for graphic layers),
 //! `program.transform.rotate.<n>` (just outside corner `n`), `program.transform.anchor`;
 //! `program.cornerPin.box`, `program.cornerPin.handle.<n>` (0–3 Upper Left, Upper Right, Lower
-//! Right, Lower Left).
+//! Right, Lower Left); `program.crop.box`, `program.crop.handle.<n>` (numbered as the transform
+//! box's).
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_geom::{Affine, Vec2};
@@ -53,6 +60,10 @@ const MERGE: &str = "programTransform";
 const PIN_MERGE: &str = "programCornerPin";
 /// Corner Pin's corners, in the order of the box's (TL, TR, BR, BL).
 const PIN_CORNERS: [&str; 4] = ["upper_left", "upper_right", "lower_right", "lower_left"];
+/// The same for a Crop edge.
+const CROP_MERGE: &str = "programCrop";
+/// Crop's edges, in percent of the clip's width or height.
+const CROP_EDGES: [&str; 4] = ["left", "top", "right", "bottom"];
 /// How far inside the monitor's clip (which reaches 12 points past the picture area) a handle
 /// that would be off the monitor stops, so that all of it shows and can be grabbed.
 const REACH_INSET: f32 = 12.0 + CORNER;
@@ -249,6 +260,164 @@ fn selected_pins(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) 
     });
     let at = points.map(|p| sp(&to_screen, p));
     at.iter().all(|p| p.x.is_finite() && p.y.is_finite()).then_some((sel, Pins { to_screen, points, at, handles: within(at, reach) }))
+}
+
+/// Crop's cropped area on the monitor and the values it is drawn from.
+#[derive(Clone, Copy, Debug)]
+struct CropBox {
+    /// Clip pixels (where Crop cuts) → screen.
+    to_screen: Affine,
+    /// The clip's size in pixels.
+    size: (f64, f64),
+    /// Left, Top, Right and Bottom, in percent, in the order of [`CROP_EDGES`].
+    edges: [f64; 4],
+    /// The uncropped picture and the cropped area: TL, TR, BR, BL.
+    full: [Pos2; 4],
+    quad: [Pos2; 4],
+    /// Where the eight handles (see [`handle_points`]) are drawn and grabbed, kept in reach.
+    handles: [Pos2; 8],
+}
+
+/// The selected effect (its clip and index) and its cropped area, while it is Crop (with Zoom
+/// off) of a selected clip under the playhead.
+fn selected_crop(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, CropBox)> {
+    let (sel, it, e, _) = selected_effect(app).filter(|s| s.3.id == "crop")?;
+    if e.param("zoom").and_then(|p| p.value.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    let seq = app.session.active_sequence()?;
+    let project = &app.session.project;
+    let mt = it.effect_time_at(app.session.playhead());
+    let size = filmcraft_render::source_size(project, it.item).unwrap_or(frame);
+    // Crop cuts the clip's own pixels before Motion places them (`filmcraft_render::gpufx`, "crop")
+    let to_screen = frame_to_screen(pic, frame).then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), mt));
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    let edges = CROP_EDGES.map(|id| {
+        let v = e.f64_at(id, mt);
+        if v.is_finite() { v.clamp(0.0, 100.0) } else { 0.0 }
+    });
+    let [l, t, r, b] = edges.map(|v| v / 100.0);
+    // edges that overlap (Left + Right past 100 %) crop everything: the box shrinks to a line
+    let (x0, y0) = (l * w, t * h);
+    let (x1, y1) = ((w * (1.0 - r)).max(x0), (h * (1.0 - b)).max(y0));
+    let quad = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| sp(&to_screen, Vec2::new(x, y)));
+    let full = quad_of(&to_screen, size);
+    quad.iter()
+        .chain(&full)
+        .all(|p| p.x.is_finite() && p.y.is_finite())
+        .then_some((sel, CropBox { to_screen, size: (w, h), edges, full, quad, handles: within(handle_points(&quad), reach) }))
+}
+
+/// The Crop values (Left, Top, Right, Bottom, in percent) a drag of handle `n` (`None` inside the
+/// box) by `off` clip pixels gives, starting from `edges` on a `size` pixel clip. An edge stops at
+/// the clip's border and at the opposite edge; a slide keeps the cropped area's size.
+fn crop_edges(edges: [f64; 4], size: (f64, f64), n: Option<usize>, off: Vec2) -> [f64; 4] {
+    let [l, t, r, b] = edges;
+    let dx = if size.0 > 0.0 { off.x / size.0 * 100.0 } else { 0.0 };
+    let dy = if size.1 > 0.0 { off.y / size.1 * 100.0 } else { 0.0 };
+    if !(dx.is_finite() && dy.is_finite()) {
+        return edges;
+    }
+    // (the bounds never cross: every edge is within 0–100 %, so `max` stays at or below 100)
+    let edge = |v: f64, other: f64| v.clamp(0.0, (100.0 - other).max(0.0));
+    let Some(n) = n else {
+        let (sx, sy) = (dx.clamp(-l, r.max(-l)), dy.clamp(-t, b.max(-t)));
+        return [l + sx, t + sy, r - sx, b - sy];
+    };
+    // which edges handle `n` moves (see `handle_points`): left, top, right, bottom
+    let (ml, mt, mr, mb) = match n {
+        0 => (true, true, false, false),
+        1 => (false, true, true, false),
+        2 => (false, false, true, true),
+        3 => (true, false, false, true),
+        4 => (false, true, false, false),
+        5 => (false, false, true, false),
+        6 => (false, false, false, true),
+        _ => (true, false, false, false),
+    };
+    [if ml { edge(l + dx, r) } else { l }, if mt { edge(t + dy, b) } else { t }, if mr { edge(r - dx, l) } else { r }, if mb { edge(b - dy, t) } else { b }]
+}
+
+/// Crop's box on the Program monitor: the faint uncropped picture, the cropped area's outline and
+/// its eight handles. Dragging a handle moves its edges; dragging inside the box slides the crop.
+fn crop_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, sel: Target, cb: &CropBox, actions: &mut Vec<(String, Value)>) {
+    let accent = app.tokens.accent;
+    let id = egui::Id::unique("program-crop");
+    let grab = vec2(GRAB, GRAB) * 2.0;
+    ui.painter().add(egui::Shape::closed_line(cb.full.to_vec(), Stroke::new(1.0, accent.gamma_multiply(0.35))));
+    ui.painter().add(egui::Shape::closed_line(cb.quad.to_vec(), Stroke::new(1.0, accent)));
+    // the box first, so the handles (on top) take a press on them
+    let outline = Rect::from_points(&cb.quad);
+    app.auto.add("program.crop.box", outline, "Crop");
+    let body = ui.interact(outline, id.with("box"), Sense::drag());
+    let inside_at = |p: Option<Pos2>| p.is_some_and(|p| inside(&cb.quad, p));
+    crop_drag(ui, &body, sel, None, cb, inside_at(ui.input(|i| i.pointer.press_origin())), CursorIcon::Move, actions);
+    if body.hovered() && inside_at(body.hover_pos()) {
+        ui.ctx().set_cursor_icon(CursorIcon::Move);
+    }
+    let mid = centre(&cb.quad);
+    for (n, c) in cb.handles.iter().enumerate() {
+        let side = if n < 4 { CORNER } else { EDGE } * 1.4;
+        let hr = Rect::from_center_size(*c, vec2(side, side));
+        ui.painter().rect_filled(hr, 0.0, Color32::WHITE);
+        ui.painter().rect_stroke(hr, 0.0, Stroke::new(1.0, accent), StrokeKind::Middle);
+        app.auto.add(&format!("program.crop.handle.{n}"), Rect::from_center_size(*c, grab), "crop handle");
+        let resp = ui.interact(Rect::from_center_size(*c, grab), id.with(n), Sense::drag());
+        let cursor = handle_points(&cb.quad).get(n).map_or(CursorIcon::Move, |p| resize_cursor(*p - mid));
+        crop_drag(ui, &resp, sel, Some(n), cb, true, cursor, actions);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(cursor);
+        }
+    }
+}
+
+/// A drag of Crop's handle `n`, or of the whole box (`None`, a drag inside it).
+#[derive(Clone, Copy, Debug)]
+struct CropDrag {
+    sel: Target,
+    n: Option<usize>,
+    start: Pos2,
+    from: CropBox,
+}
+
+/// The left-button drag of `resp` on handle `n` (the box for `None`): the edges it moves, as
+/// `effects.setParam` actions merged into one undo step, with `cursor` shown while it lasts. A
+/// drag starts only when `grabbed`.
+#[allow(clippy::too_many_arguments)]
+fn crop_drag(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    sel: Target,
+    n: Option<usize>,
+    cb: &CropBox,
+    grabbed: bool,
+    cursor: CursorIcon,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let drag_id = egui::Id::unique("program-crop").with("drag");
+    let left = egui::PointerButton::Primary;
+    if resp.drag_started_by(left) && grabbed {
+        let start = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or_default();
+        ui.data_mut(|d| d.insert_temp(drag_id, CropDrag { sel, n, start, from: *cb }));
+    }
+    let drag: Option<CropDrag> = ui.data(|d| d.get_temp(drag_id)).filter(|d: &CropDrag| d.sel == sel && d.n == n);
+    if let Some(d) = drag
+        && resp.dragged_by(left)
+    {
+        if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO {
+            let cur = resp.interact_pointer_pos().unwrap_or(d.start);
+            let to = crop_edges(d.from.edges, d.from.size, n, unscale(&d.from.to_screen, cur - d.start));
+            for ((name, now), v) in CROP_EDGES.iter().zip(cb.edges).zip(to) {
+                if v != now {
+                    actions.push(("effects.setParam".into(), json!({"clip": sel.0.0, "effect": sel.1, "param": name, "value": v, "merge": CROP_MERGE})));
+                }
+            }
+        }
+        ui.ctx().set_cursor_icon(cursor);
+    }
+    if resp.drag_stopped() && drag.is_some() {
+        ui.data_mut(|d| d.remove::<CropDrag>(drag_id));
+    }
 }
 
 /// A drag of Corner Pin's corner `n`, or of all four (`None`, a drag inside the outline).
@@ -603,6 +772,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     if let Some((sel, pins)) = selected_pins(app, pic, reach, frame) {
         pin_overlay(app, ui, sel, &pins, &mut actions);
     }
+    if let Some((sel, cb)) = selected_crop(app, pic, reach, frame) {
+        crop_overlay(app, ui, sel, &cb, &mut actions);
+    }
     if double
         && app.ui.gfx_edit.is_none()
         && let Some(p) = ui.input(|i| i.pointer.interact_pos()).filter(|p| pic.contains(*p) && ui.rect_contains_pointer(pic))
@@ -637,5 +809,29 @@ mod tests {
         assert_eq!(within(handle_points(&quad), none), handle_points(&quad));
         let nan = Rect::from_min_max(pos2(f32::NAN, 0.0), pos2(100.0, 50.0));
         assert_eq!(within(handle_points(&quad), nan), handle_points(&quad));
+    }
+
+    #[test]
+    fn crop_handles_move_their_edges_and_stop_at_the_border() {
+        let size = (200.0, 100.0);
+        let none = [0.0; 4];
+        // 20 px right on a 200 px clip is 10 %
+        assert_eq!(crop_edges(none, size, Some(7), Vec2::new(20.0, 50.0)), [10.0, 0.0, 0.0, 0.0], "the left edge moves only sideways");
+        assert_eq!(crop_edges(none, size, Some(0), Vec2::new(20.0, 10.0)), [10.0, 10.0, 0.0, 0.0]);
+        assert_eq!(crop_edges(none, size, Some(2), Vec2::new(-20.0, -10.0)), [0.0, 0.0, 10.0, 10.0]);
+        assert_eq!(crop_edges(none, size, Some(4), Vec2::new(-20.0, 10.0)), [0.0, 10.0, 0.0, 0.0]);
+        assert_eq!(crop_edges(none, size, Some(5), Vec2::new(-40.0, 10.0)), [0.0, 0.0, 20.0, 0.0]);
+        assert_eq!(crop_edges(none, size, Some(6), Vec2::new(0.0, -50.0)), [0.0, 0.0, 0.0, 50.0]);
+        // outward past the clip stops at 0 %; inward past the opposite edge stops on it
+        assert_eq!(crop_edges(none, size, Some(7), Vec2::new(-50.0, 0.0)), none);
+        assert_eq!(crop_edges([0.0, 0.0, 30.0, 0.0], size, Some(7), Vec2::new(500.0, 0.0)), [70.0, 0.0, 30.0, 0.0]);
+        // a slide keeps the size and stops at the clip's border
+        let c = [10.0, 20.0, 30.0, 40.0];
+        assert_eq!(crop_edges(c, size, None, Vec2::new(20.0, -10.0)), [20.0, 10.0, 20.0, 50.0]);
+        assert_eq!(crop_edges(c, size, None, Vec2::new(1000.0, -1000.0)), [40.0, 0.0, 0.0, 60.0]);
+        // hostile sizes and offsets change nothing
+        assert_eq!(crop_edges(c, (0.0, 0.0), Some(0), Vec2::new(20.0, 20.0)), c);
+        assert_eq!(crop_edges(c, size, Some(0), Vec2::new(f64::NAN, 1.0)), c);
+        assert_eq!(crop_edges(c, (f64::MIN_POSITIVE, 1.0), Some(0), Vec2::new(1e308, 0.0)), c);
     }
 }
