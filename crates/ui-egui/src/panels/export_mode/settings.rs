@@ -723,18 +723,17 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     });
     row(ui, t, tl!("Channels"), |ui| {
         let names = [tl!("Mono"), tl!("Stereo"), "5.1"];
+        // Opus folds 5.1 to stereo (`ExportSettings::resolve`): show what is written, and keep the
+        // stored choice for a format switch back
         let cur = match s.audio.channels {
             1 => names[0],
-            6 => names[2],
+            6 if !opus => names[2],
             _ => names[1],
         };
-        if opus && s.audio.channels == 6 {
-            s.audio.channels = 2;
-        }
         let surround = if opus { Some(tl!("Opus export writes mono or stereo")) } else { None };
         let labels: Vec<(String, Option<&str>)> = vec![(names[0].to_string(), None), (names[1].to_string(), None), (names[2].to_string(), surround)];
-        if let Some(i) = combo_why(ui, reg, "export.audio.channels", cur, &labels, 120.0) {
-            s.audio.channels = [1, 2, 6][i.min(2)];
+        if let Some(&n) = combo_why(ui, reg, "export.audio.channels", cur, &labels, 120.0).and_then(|i| [1u32, 2, 6].get(i)) {
+            s.audio.channels = n;
         }
     });
     if s.audio_codec() == AudioCodec::Vorbis {

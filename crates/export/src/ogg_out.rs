@@ -17,21 +17,12 @@ use filmcraft_project::{ItemId, Project};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
-use crate::audio_out::AudioOut;
+use crate::audio_out::{AudioOut, finite};
 use crate::{ExportError, ExportMetadata, ExportSettings, Out, Progress, Result};
 
 /// The logical stream's serial number. One stream per file, so a constant keeps exports
 /// byte-for-byte reproducible.
 const SERIAL: u32 = 0x4643_4F50;
-
-/// Replaces samples a damaged source could leave non-finite, which the encoder refuses.
-pub(crate) fn finite(planar: &mut [Vec<f32>]) {
-    for v in planar.iter_mut().flatten() {
-        if !v.is_finite() {
-            *v = 0.0;
-        }
-    }
-}
 
 /// Encode the mix of `range` to `settings.path`; returns (bytes written, samples per channel).
 pub(crate) fn export(
@@ -98,6 +89,11 @@ pub(crate) fn export(
 /// Our channel order (L, R, C, LFE, Ls, Rs for 5.1) to Vorbis order (L, C, R, Ls, Rs, LFE).
 const VORBIS_51: [usize; 6] = [0, 2, 1, 4, 5, 3];
 
+/// The channels of `planar` in Vorbis order (§4.3.9): 5.1 is reordered, other layouts are the same.
+pub(crate) fn vorbis_order(planar: &[Vec<f32>]) -> Vec<&[f32]> {
+    if planar.len() == 6 { VORBIS_51.iter().filter_map(|&c| planar.get(c).map(Vec::as_slice)).collect() } else { planar.iter().map(Vec::as_slice).collect() }
+}
+
 /// Encode the mix of `range` to `settings.path` as Ogg Vorbis; returns (bytes, samples per channel).
 pub(crate) fn export_vorbis(
     project: &Arc<Project>,
@@ -142,11 +138,7 @@ pub(crate) fn export_vorbis(
             return Err(ExportError::Cancelled);
         }
         finite(&mut planar);
-        let refs: Vec<&[f32]> = if planar.len() == 6 {
-            VORBIS_51.iter().filter_map(|&c| planar.get(c).map(Vec::as_slice)).collect()
-        } else {
-            planar.iter().map(Vec::as_slice).collect()
-        };
+        let refs = vorbis_order(&planar);
         write(enc.encode(&refs).map_err(|e| ExportError::Encode(format!("Vorbis: {e}")))?, &mut out)?;
         if !settings.part_of_batch {
             progress.done.fetch_add(1, Ordering::Relaxed);

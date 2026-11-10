@@ -13,18 +13,21 @@ range-exact on every RFC 8251 conformance vector (`tests/it/vectors.rs`).
 ## Encoder
 
 ```rust
-use filmcraft_opus::{Encoder, EncoderConfig, FRAME_SIZE, PRE_SKIP};
+use filmcraft_opus::{Encoder, EncoderConfig};
 
-let mut enc = Encoder::new(EncoderConfig::new(2, 160_000))?;   // stereo, 160 kbit/s
-let head = enc.head();                                         // OpusHead: pre-skip PRE_SKIP, 48 kHz
-let mut packets = enc.encode(&[&left, &right])?;               // planar 48 kHz f32, any chunk size
-packets.extend(enc.finish()?);                                 // padded so the last sample decodes
-// stream length: enc.samples_in() samples after the pre-skip
+fn encode(left: &[f32], right: &[f32]) -> filmcraft_opus::Result<Vec<Vec<u8>>> {
+    let mut enc = Encoder::new(EncoderConfig::new(2, 160_000))?; // stereo, 160 kbit/s
+    let _head = enc.head();                                      // OpusHead: pre-skip PRE_SKIP, 48 kHz
+    let mut packets = enc.encode(&[left, right])?;               // planar 48 kHz f32, any chunk size
+    packets.extend(enc.finish()?);                               // padded so the last sample decodes
+    // the stream is enc.samples_in() samples long after the pre-skip
+    Ok(packets)
+}
 ```
 
 | | |
 |---|---|
-| Packets | TOC configuration 31 (CELT, fullband, 20 ms), one frame (code 0); every packet the same size, so the bit rate is exact (6–510 kbit/s, rounded to whole bytes per packet) |
+| Packets | TOC configuration 31 (CELT, fullband, 20 ms), one frame (code 0); every packet the same size, so the bit rate is exact: `MIN_BITRATE` to `MAX_BITRATE` (1.2–510.4 kbit/s, 3- to 1276-byte packets), rounded to whole bytes per packet. FilmCraft's export offers 6–510 kbit/s |
 | Delay | 120 samples (the CELT window overlap), signalled as the pre-skip |
 | Analysis | pre-emphasis, a forward MDCT built as the exact inverse of the decoder's (window fold + the scaled transpose of its FFT core), band energies |
 | Energy | coarse energy with the Laplace model (intra on the first frame, then inter prediction), fine energy, the final bits on leftover budget |
@@ -52,4 +55,6 @@ rate, the pitch pre-filter, multistream surround.
   mismatched input is an error, never a panic.
 
 Export (`crates/export`) checks that libopus and ffmpeg's own decoder read every `.opus`, MP4 and
-MOV it writes without a complaint, at the exact length.
+MOV it writes without a complaint. `.opus` files decode to the exact length (the last granule
+position trims the padding). In MP4 / MOV the edit list spans exactly the input, which FilmCraft's
+own import honours; ffmpeg skips the pre-skip but plays the last packet in full, up to 20 ms more.

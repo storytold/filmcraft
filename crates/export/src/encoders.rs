@@ -149,7 +149,7 @@ impl AudioEncoder for OpusAudio {
     }
     fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
         let mut planar = planar.to_vec();
-        crate::ogg_out::finite(&mut planar);
+        crate::audio_out::finite(&mut planar);
         let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
         self.enc.encode(&refs).map_err(|e| ExportError::Encode(format!("Opus: {e}")))
     }

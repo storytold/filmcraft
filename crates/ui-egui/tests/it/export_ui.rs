@@ -668,6 +668,13 @@ fn opus_is_an_audio_format_with_a_bit_rate_and_no_surround() {
     if d.has("export.audio.channels.option.0") {
         d.click("export.audio.channels");
     }
+    // a stored 5.1 shows as the stereo Opus writes, and survives drawing
+    d.app().ui.export.settings.audio.channels = 6;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.audio.channels, 6, "drawing the panel does not change the setting");
+    let e = d.ok("ui.elements", json!({"prefix": "export.audio.channels"}));
+    assert!(e.as_array().unwrap().iter().any(|e| e["id"] == json!("export.audio.channels") && e["label"] == json!("Stereo")), "{e}");
+    d.app().ui.export.settings.audio.channels = 2;
     // the Opus format: the audio format is fixed, and the summary says what is written
     d.app().ui.export.settings = ExportSettings { format: Format::Opus, ..Default::default() };
     d.app().ui.export.settings.audio.bitrate_kbps = 96;

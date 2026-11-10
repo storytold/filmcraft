@@ -49,6 +49,9 @@ const CLASSES: usize = 8;
 /// Largest residue magnitude the cascade codes: 7·225 + 7·15 + 7.
 const MAX_RESIDUE: i32 = 1687;
 
+/// The quality a NaN or infinite setting reads as.
+pub const DEFAULT_QUALITY: f32 = 6.0;
+
 /// Encoder settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EncoderConfig {
@@ -115,7 +118,7 @@ impl Encoder {
         if !(1..=768_000).contains(&cfg.sample_rate) {
             return Err(Error::InvalidArgument("Vorbis encoder: sample rate"));
         }
-        let quality = if cfg.quality.is_finite() { cfg.quality.clamp(-1.0, 10.0) } else { 3.0 };
+        let quality = if cfg.quality.is_finite() { cfg.quality.clamp(-1.0, 10.0) } else { DEFAULT_QUALITY };
         let cfg = EncoderConfig { quality, ..cfg };
         let books = vec![
             Codebook::scalar(2, &(0..CLASSES * CLASSES).map(|e| class_weight(e / CLASSES) * class_weight(e % CLASSES)).collect::<Vec<_>>())?,

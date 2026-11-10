@@ -511,6 +511,13 @@ impl ExportSettings {
             return Err(ExportError::Unsupported("floating-point audio is 32-bit: set the sample size to 32".into()));
         }
         let sample_format = self.audio.sample_format();
+        // an explicit Opus or Vorbis the format cannot carry is refused, not swapped for another codec
+        let requested = self.audio.codec;
+        if (self.has_audio() || self.format.is_audio_only()) && matches!(requested, AudioCodec::Opus | AudioCodec::Vorbis) && self.audio_codec() != requested {
+            let (name, home) =
+                if requested == AudioCodec::Opus { ("Opus", "the Opus format, or MP4 / QuickTime video") } else { ("Vorbis", "the Ogg Vorbis format") };
+            return Err(ExportError::Unsupported(format!("{} cannot carry {name} audio: {name} goes in {home}", self.format.label())));
+        }
         let lossy = matches!(self.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus | AudioCodec::Vorbis);
         if (self.has_audio() || self.format.is_audio_only()) && !lossy && !self.supports_sample_format(sample_format) {
             let codec = if self.audio_codec() == AudioCodec::Flac { "FLAC" } else { self.format.label() };

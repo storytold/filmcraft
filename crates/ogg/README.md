@@ -37,13 +37,17 @@ let packet = ogg.read_packet(&bytes, s, k)?;
 ## Writing
 
 ```rust
-let mut w = filmcraft_ogg::PageWriter::new(serial);
-let mut file = w.header(&opus_head);                                  // first page: beginning of stream
-file.extend(w.header(&filmcraft_ogg::opus_tags("FilmCraft", &[("TITLE", "Mix")])));
-for (k, p) in packets.iter().enumerate() {
-    file.extend(w.packet(p, (k as i64 + 1) * 960));                   // granule position at the packet's end
+/// An Ogg Opus file from an `OpusHead`, 20 ms packets, the pre-skip and the playable length.
+fn ogg_opus(opus_head: &[u8], packets: &[Vec<u8>], pre_skip: i64, samples: i64) -> Vec<u8> {
+    let mut w = filmcraft_ogg::PageWriter::new(0x4643_4F50);
+    let mut file = w.header(opus_head);                               // first page: beginning of stream
+    file.extend(w.header(&filmcraft_ogg::opus_tags("FilmCraft", &[("TITLE", "Mix")])));
+    for (k, p) in packets.iter().enumerate() {
+        file.extend(w.packet(p, (k as i64 + 1) * 960));               // granule position at the packet's end
+    }
+    file.extend(w.finish(Some(pre_skip + samples)));                   // end of stream, end trimming
+    file
 }
-file.extend(w.finish(Some(pre_skip + samples)));                       // end of stream, end trimming
 ```
 
 - Header packets get pages of their own, as RFC 7845 §3 and the Vorbis mapping require.

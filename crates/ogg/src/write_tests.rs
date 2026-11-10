@@ -135,3 +135,24 @@ fn vorbis_comment_has_the_framing_bit() {
     assert_eq!(*c.last().unwrap(), 1);
     assert_eq!(u32::from_le_bytes(c[7..11].try_into().unwrap()), 9);
 }
+
+/// Packets on and around the lacing boundaries (multiples of 255, where a packet ends with a
+/// zero lacing value) and an empty packet read back exactly.
+#[test]
+fn lacing_boundaries_read_back() {
+    let sizes = [0usize, 1, 254, 255, 256, 509, 510, 511, 765, 65_024, 65_025, 65_026];
+    let mut w = PageWriter::new(3);
+    let mut f = w.header(&opus_head(0));
+    f.extend(w.header(&opus_tags("v", &[])));
+    let packets: Vec<Vec<u8>> = sizes.iter().enumerate().map(|(i, &n)| (0..n).map(|k| (i * 7 + k) as u8).collect()).collect();
+    for (i, p) in packets.iter().enumerate() {
+        f.extend(w.packet(p, (i as i64 + 1) * 960));
+    }
+    f.extend(w.finish(None));
+    let ogg = open(&f).unwrap();
+    assert!(ogg.warnings.is_empty(), "{:?}", ogg.warnings);
+    assert_eq!(ogg.streams[0].packets.len(), packets.len());
+    for (k, p) in packets.iter().enumerate() {
+        assert_eq!(ogg.read_packet(&f, 0, k).unwrap(), *p, "packet {k} of {} bytes", p.len());
+    }
+}

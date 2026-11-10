@@ -100,6 +100,7 @@ fn every_bit_rate_decodes() {
         for ch in 1..=2 {
             let (out, sizes) = round_trip(&input[..ch], br);
             assert!((3..=1276).contains(&sizes[0]), "{br}: {}", sizes[0]);
+            assert!(sizes.iter().all(|&s| s == sizes[0]), "{br} bit/s: every packet the same size: {sizes:?}");
             // Noise peaking at 0.7 decodes with peaks near 1.6 at every rate: aggressive spreading
             // keeps low-rate bands from collapsing into a few spikes.
             let peak = out.iter().flatten().fold(0f32, |m, v| if v.is_finite() { m.max(v.abs()) } else { f32::INFINITY });

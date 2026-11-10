@@ -614,7 +614,9 @@ impl ExportSettings {
     }
 
     /// The Opus bit rate in bit/s: [`AudioSettings::bitrate_kbps`] limited to 6–510 kbps and
-    /// rounded to whole bytes per 20 ms packet, as the encoder writes it.
+    /// rounded to whole bytes per 20 ms packet, as the encoder writes it. The export's 6 kbps
+    /// floor is a product choice; the encoder itself goes down to
+    /// [`filmcraft_opus::MIN_BITRATE`] (1.2 kbps, three-byte packets).
     pub fn opus_bitrate(&self) -> u32 {
         let bps = self.audio.bitrate_kbps.clamp(6, 510) * 1000;
         (bps + 200) / 400 * 400
@@ -623,7 +625,7 @@ impl ExportSettings {
     /// The Vorbis quality, -1 to 10 (NaN reads as the default, 6).
     pub fn vorbis_quality(&self) -> f32 {
         let q = self.audio.vorbis_quality;
-        if q.is_finite() { (q * 10.0).round().clamp(-10.0, 100.0) / 10.0 } else { 6.0 }
+        if q.is_finite() { (q * 10.0).round().clamp(-10.0, 100.0) / 10.0 } else { filmcraft_vorbis::DEFAULT_QUALITY }
     }
 
     /// The audio codec actually used.
@@ -632,9 +634,6 @@ impl ExportSettings {
             (Format::Flac, _) => AudioCodec::Flac,
             (Format::Opus, _) => AudioCodec::Opus,
             (Format::Vorbis, _) => AudioCodec::Vorbis,
-            // Vorbis is the Ogg Vorbis format's alone
-            (_, AudioCodec::Vorbis) if self.format.is_mp4_video() => AudioCodec::Aac,
-            (_, AudioCodec::Vorbis) => AudioCodec::Pcm,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
             (Format::Mp3, _) => AudioCodec::Mp3,
@@ -642,8 +641,10 @@ impl ExportSettings {
             (_, AudioCodec::Flac) => AudioCodec::Flac,
             (_, AudioCodec::Opus) => AudioCodec::Opus,
             (f, _) if f.is_mp4_with(self.multiplexer) => AudioCodec::Aac,
-            (_, AudioCodec::Auto | AudioCodec::Mp3) if self.format.is_mp4_video() => AudioCodec::Aac,
-            (_, AudioCodec::Auto | AudioCodec::Mp3) => AudioCodec::Pcm,
+            // MP3 and Vorbis are their own formats' alone: elsewhere they read as Auto
+            // (`validate` refuses an explicit Vorbis there)
+            (_, AudioCodec::Auto | AudioCodec::Mp3 | AudioCodec::Vorbis) if self.format.is_mp4_video() => AudioCodec::Aac,
+            (_, AudioCodec::Auto | AudioCodec::Mp3 | AudioCodec::Vorbis) => AudioCodec::Pcm,
             (_, c) => c,
         }
     }

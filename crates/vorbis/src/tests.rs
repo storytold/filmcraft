@@ -57,7 +57,7 @@ fn hostile_input_is_an_error_not_a_panic() {
     assert!(Encoder::new(EncoderConfig::new(48_000, 0, 3.0)).is_err());
     assert!(Encoder::new(EncoderConfig::new(48_000, 9, 3.0)).is_err());
     assert!(Encoder::new(EncoderConfig::new(0, 2, 3.0)).is_err());
-    assert!(Encoder::new(EncoderConfig::new(48_000, 1, f32::NAN)).is_ok(), "NaN quality uses the default");
+    assert_eq!(Encoder::new(EncoderConfig::new(48_000, 1, f32::NAN)).unwrap().cfg.quality, 6.0, "NaN quality uses the default, as the export does");
     let mut e = Encoder::new(EncoderConfig::new(44_100, 2, 3.0)).unwrap();
     assert!(e.encode(&[&[0.0; 4]]).is_err());
     assert!(e.encode(&[&[0.0; 4], &[0.0; 3]]).is_err());
@@ -77,9 +77,10 @@ fn granules_count_the_samples_and_trim_the_end() {
         let mut packets = e.encode(&[&x]).unwrap();
         packets.extend(e.finish().unwrap());
         assert_eq!(packets.len(), len.div_ceil(HOP) + 1, "len {len}");
-        assert_eq!(packets[0].1, 0);
-        assert_eq!(packets.last().unwrap().1, len as i64, "len {len}");
-        assert!(packets.windows(2).all(|p| p[0].1 <= p[1].1));
+        // packet k ends output at k·1024 samples; the last one at the input's length
+        let want: Vec<i64> = (0..packets.len()).map(|k| ((k * HOP) as i64).min(len as i64)).collect();
+        let got: Vec<i64> = packets.iter().map(|p| p.1).collect();
+        assert_eq!(got, want, "len {len}");
     }
 }
 
