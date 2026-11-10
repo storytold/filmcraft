@@ -1,7 +1,7 @@
 use super::*;
 
 const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Software];
-const LINUX: &[Mode] = &[Mode::Default, Mode::Software];
+const LINUX: &[Mode] = &[Mode::Default, Mode::LowPower, Mode::Software];
 const MACOS: &[Mode] = &[Mode::Default];
 
 fn configured(mode: Mode, backend_override: Option<Backends>, windows: bool) -> (Backends, bool) {
@@ -18,7 +18,7 @@ fn no_mode_validates_indirect_calls() {
     if std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_some() {
         return;
     }
-    for mode in [Mode::Default, Mode::Dx12, Mode::Software] {
+    for mode in [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software] {
         let mut options = NativeOptions::default();
         apply_for(&mut options, mode, None, false);
         let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
@@ -69,6 +69,14 @@ fn fallback_modes_leave_out_the_crashing_backends() {
     // Software on Windows is WARP (DX12), never GL (atio6axx.dll, #477).
     assert_eq!(configured(Mode::Software, None, true), (Backends::DX12, true));
     assert_eq!(configured(Mode::Software, None, false), (Backends::VULKAN | Backends::GL, true));
+    // The integrated GPU: every backend, wgpu's choice of adapter, low power (#2553).
+    let mut options = NativeOptions::default();
+    apply_for(&mut options, Mode::LowPower, None, false);
+    let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
+        panic!("default native options must create a wgpu instance");
+    };
+    assert_eq!(create.power_preference, wgpu::PowerPreference::LowPower);
+    assert!(create.native_adapter_selector.is_none());
     // Off Windows the default is eframe's own.
     let WgpuSetup::CreateNew(eframe_default) = NativeOptions::default().wgpu_options.wgpu_setup else {
         panic!("default native options must create a wgpu instance");
@@ -102,7 +110,9 @@ fn two_failed_starts_in_a_row_move_on_to_the_next_mode_and_keep_it() {
     // the second in a row moves on: DX12, then software
     assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
     assert_eq!(mode_after(saved(Mode::Dx12, 1), &[dead(Mode::Dx12)], WINDOWS), (Mode::Software, 0, true));
-    assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::Software, 0, true));
+    // on Linux the integrated GPU comes before software
+    assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::LowPower, 0, true));
+    assert_eq!(mode_after(saved(Mode::LowPower, 1), &[dead(Mode::LowPower)], LINUX), (Mode::Software, 0, true));
     // two dead instances found at once count as two
     assert_eq!(mode_after(None, &[dead(Mode::Default), dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
     // a saved mode is kept
@@ -406,7 +416,8 @@ fn a_failed_fallback_goes_back_up_to_a_mode_not_tried() {
     assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Dx12, Mode::Software]), Some(Mode::Default));
     // every mode tried: nothing left
     assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Dx12, Mode::Software, Mode::Default]), None);
-    assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::Default]), None);
+    assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::Default]), Some(Mode::LowPower));
+    assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::LowPower, Mode::Default]), None);
     assert_eq!(next_untried(MACOS, Mode::Default, &[Mode::Default]), None);
 }
 
@@ -441,7 +452,7 @@ fn the_failure_message_lists_each_mode_how_to_choose_one_and_the_log() {
     assert!(msg.starts_with("FilmCraft could not start its window: wgpu error"), "{msg}");
     assert!(msg.contains("• default graphics (--graphics default): Adapter selection failed: no adapter"), "{msg}");
     assert!(msg.contains("• software rendering (--graphics software): no software graphics adapter"), "{msg}");
-    assert!(msg.contains("start FilmCraft with --graphics default, --graphics software."), "{msg}");
+    assert!(msg.contains("start FilmCraft with --graphics default, --graphics low-power, --graphics software."), "{msg}");
     assert!(msg.contains(env!("CARGO_PKG_VERSION")), "{msg}");
     assert!(msg.contains(&log.display().to_string()), "{msg}");
     // macOS has one mode: no choice to offer, and no list when nothing was tried
@@ -452,4 +463,21 @@ fn the_failure_message_lists_each_mode_how_to_choose_one_and_the_log() {
     let long = "é".repeat(MAX_ERROR_SHOWN * 2);
     let cut = failure_message_for(&long, &[], None, LINUX);
     assert!(cut.contains('…') && cut.chars().filter(|c| *c == 'é').count() == MAX_ERROR_SHOWN, "{cut}");
+}
+
+/// The fallback each platform actually uses, so a mode added to one is in its ladder (#2553).
+#[test]
+fn each_platform_ladder_has_its_modes() {
+    let expected = if cfg!(target_os = "windows") {
+        WINDOWS
+    } else if cfg!(target_os = "macos") {
+        MACOS
+    } else {
+        LINUX
+    };
+    assert_eq!(LADDER, expected);
+    for mode in LADDER {
+        assert_eq!(Mode::parse(mode.name()), Some(*mode));
+    }
+    assert_eq!(Mode::parse("low-power"), Some(Mode::LowPower));
 }

@@ -28,12 +28,15 @@
 //! untried one from the top: a saved fallback that no longer works, such as software rendering
 //! where no software adapter is installed, goes back to the default instead of ending every
 //! later start (#2581). When every mode has failed, [`failure_message`] lists each one with its
-//! error, how to choose a mode by hand, and where the log is.
+//! error, how to choose a mode by hand, and where the log is. A panic out of wgpu before the app
+//! exists (a surface the chosen GPU claimed and then could not configure, #2553) saves the next
+//! mode and starts FilmCraft again in it, once: the event loop does not run again in a process it
+//! unwound out of.
 //!
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
 //! [`GraphicsStart::reset_to_default`]); `--graphics default` does the same from the command
-//! line, and `--graphics dx12|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
+//! line, and `--graphics dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
 //! the saved state alone: the user is in charge.
 //!
 //! # A start that hangs
@@ -79,6 +82,9 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// The low-power (integrated) GPU (Linux): on a laptop with two GPUs the high-performance one
+    /// can claim the window's surface and still fail to draw to it (NVIDIA 470 on Wayland, #2553).
+    LowPower,
     /// A software adapter (WARP on Windows, lavapipe / llvmpipe elsewhere); the preview then
     /// composites on the CPU (`FilmcraftApp::set_wgpu`).
     Software,
@@ -90,6 +96,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::LowPower => "low-power",
             Mode::Software => "software",
         }
     }
@@ -99,12 +106,13 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::LowPower => "integrated GPU",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -114,7 +122,7 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
 } else if cfg!(target_os = "macos") {
     &[Mode::Default]
 } else {
-    &[Mode::Default, Mode::Software]
+    &[Mode::Default, Mode::LowPower, Mode::Software]
 };
 
 /// The mode after `mode` in `ladder`, if any.
@@ -551,6 +559,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
+        Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
