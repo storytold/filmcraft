@@ -410,6 +410,24 @@ fn generated_video_rejects_unbounded_dimensions_without_changing_the_project() {
 }
 
 #[test]
+fn generated_video_validates_dimensions_and_keeps_the_requested_bin() {
+    let mut session = Session::default();
+    let bin = session.execute("file.newBin", json!({"name": "Generated"})).unwrap()["bin"].as_u64().unwrap();
+    for cmd in ["file.newBarsAndTone", "file.newBlackVideo", "file.newColorMatte", "file.newCountingLeader", "file.newTransparentVideo"] {
+        let result = session.execute(cmd, json!({"width": 32, "height": 18, "bin": bin})).unwrap();
+        let item = ItemId(result["item"].as_u64().unwrap());
+        assert_eq!(session.project.root.parent_of(item), Some(filmcraft_project::BinId(bin)), "{cmd}");
+        assert_eq!(session.project.source_size(item), Some((32, 18)), "{cmd}");
+        let before = session.project.clone();
+        let history = (session.history.undo.len(), session.history.redo.len());
+        let error = session.execute(cmd, json!({"width": 0, "height": 18, "bin": bin})).unwrap_err();
+        assert!(matches!(&error, crate::EngineError::BadParams { cmd: invoked, .. } if invoked == cmd), "{error}");
+        assert!(std::sync::Arc::ptr_eq(&session.project, &before), "rejected {cmd} modified the project");
+        assert_eq!((session.history.undo.len(), session.history.redo.len()), history, "{cmd}");
+    }
+}
+
+#[test]
 fn created_media_at_the_dimension_limit_saves_and_reopens() {
     let dir = tmp_dir("created-size-roundtrip");
     let path = dir.join("cut.fcproj");
