@@ -36,6 +36,11 @@
 //! line, and `--graphics dx12|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
 //! the saved state alone: the user is in charge.
 //!
+//! # A start that hangs
+//! A driver can also hang instead of crashing (#1061). On Windows, [`probe::choose`] first tests
+//! the mode in a child process with a time limit, before this process loads any driver, and
+//! moves on from a mode that hangs there; see [`probe`].
+//!
 //! All files are written beside and renamed into place, so a reader never sees half a file; two
 //! instances updating [`STATE_FILE`] at the same moment can lose one update (a failure counted
 //! once less, a confirmation repeated by the next start), never corrupt it.
@@ -397,6 +402,17 @@ impl GraphicsStart {
         &self.failed
     }
 
+    /// Keep `error` for `mode` among this process's failures, as a mode that failed its test
+    /// start ([`probe`]) does.
+    pub fn add_failure(&mut self, mode: Mode, error: &str) {
+        self.failed.push((mode, error.to_string()));
+    }
+
+    /// The data folder this start keeps its files in; `None` without one or with `WGPU_BACKEND`.
+    pub fn folder(&self) -> Option<&Path> {
+        self.state.as_deref().and_then(Path::parent)
+    }
+
     /// Running in a fallback mode, i.e. not the platform default.
     pub fn degraded(&self) -> bool {
         self.mode != Mode::Default
@@ -412,6 +428,12 @@ impl GraphicsStart {
             return false;
         };
         log::warn!("graphics mode {} failed to start; trying {}", self.mode.name(), next.name());
+        self.switch_to(next);
+        true
+    }
+
+    /// Start in `next` instead, and save it at once with a new attempt file.
+    pub fn switch_to(&mut self, next: Mode) {
         self.mode = next;
         if let Some(state) = self.state.clone() {
             self.save(&state, Saved { mode: next, failures: 0 });
@@ -426,7 +448,6 @@ impl GraphicsStart {
                 }
             }
         }
-        true
     }
 
     /// The window is up: keep this mode, and the failed starts in a row are over.
@@ -447,6 +468,10 @@ impl GraphicsStart {
     pub fn finish(&self) {
         if let Some(path) = &self.attempt {
             remove_quietly(path);
+        }
+        // Nor was it a hang.
+        if let Some(dir) = self.folder() {
+            probe::close_record(dir, self.mode);
         }
     }
 
@@ -544,6 +569,8 @@ fn pick_software(adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>
 pub fn is_graphics_failure(err: &eframe::Error) -> bool {
     matches!(err, eframe::Error::Wgpu(_))
 }
+
+pub mod probe;
 
 #[cfg(test)]
 mod tests;

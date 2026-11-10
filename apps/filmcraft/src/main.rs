@@ -85,6 +85,17 @@ fn main() -> eframe::Result {
     if let Some(result) = craft_update::self_update::finish(&filmcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
         std::process::exit(i32::from(result.is_err()));
     }
+    // Windows: the graphics test start (graphics/probe.rs) is this program started with
+    // `--test-graphics-start <mode>`. It creates the device the window would, then exits.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let test_setup = |mode| {
+        let mut options = native_options(false);
+        graphics::apply(&mut options, mode, eframe::wgpu::Backends::from_env());
+        options.wgpu_options.wgpu_setup
+    };
+    if let Some(code) = graphics::probe::child_main(&args, test_setup) {
+        std::process::exit(code);
+    }
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
@@ -137,6 +148,16 @@ fn main() -> eframe::Result {
     // see graphics.rs.
     let backend_override = eframe::wgpu::Backends::from_env();
     let mut graphics = graphics::GraphicsStart::begin(data_root.as_deref(), backend_override.is_some(), launch.graphics);
+    // Windows: test the mode in a child process first when anything changed since the last start
+    // that worked, so a driver that hangs moves on to the next mode, or ends in a message saying
+    // what each mode did, instead of a FilmCraft that runs with no window (#1061, #2634).
+    if let Err(msg) = graphics::probe::choose(&mut graphics, launch.graphics.is_some(), backend_override.is_some(), log_file.as_deref()) {
+        log::error!("{msg}");
+        filmcraft_ui_egui::crash::record(&msg);
+        graphics.finish();
+        let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
+        std::process::exit(1);
+    }
     // The GPU export renderer creates its own wgpu instance with every backend; after a start
     // fell back, that would load the driver that failed. Exports then composite on the CPU.
     if graphics.mode() == graphics::Mode::Default {
