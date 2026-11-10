@@ -255,6 +255,27 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
 #[allow(clippy::cognitive_complexity)]
 fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
+    // Validate fields that reject invalid values before applying any part of this patch, so a
+    // malformed color or track height cannot silently succeed after earlier fields were changed.
+    for key in ["positionIndicatorColor", "videoIndicatorColor", "audioIndicatorColor", "offlineIndicatorColor"] {
+        if let Some(value) = tl.get(key) {
+            let color = value.as_str().and_then(filmcraft_project::normalize_hex_color);
+            if color.is_none() {
+                return Err(format!("`{key}` must be a hex color in #rgb or #rrggbb form"));
+            }
+        }
+    }
+    for key in ["videoTrackHeight", "audioTrackHeight"] {
+        if let Some(value) = tl.get(key) {
+            let valid = value.as_f64().is_some_and(|v| v.is_finite() && (8.0..=600.0).contains(&v));
+            if !valid {
+                return Err(format!("`{key}` must be a finite number from 8 to 600"));
+            }
+        }
+    }
+    for (key, min, max) in [("playheadSideSeconds", 0.1, 3600.0), ("shiftDragSpeed", 0.1, 50.0), ("maxZoomLevel", 0.05, 3.0)] {
+        let _ = checked_timeline_number(tl, key, min, max)?;
+    }
     let mut view_settings_changed = false;
     // hostile control parameters: NaN or infinite zoom/scroll would poison every rect in the
     // Timeline, so only finite, positive values are accepted. The zoom ceiling is applied by

@@ -427,12 +427,20 @@ fn invalid_timeline_number_settings_return_field_errors() {
         ("playheadSideSeconds", json!(3601.0), "0.1 to 3600"),
         ("shiftDragSpeed", json!("fast"), "0.1 to 50"),
         ("maxZoomLevel", Value::Null, "0.05 to 3"),
+        ("videoTrackHeight", json!(601.0), "8 to 600"),
+        ("audioTrackHeight", json!("tall"), "8 to 600"),
+        ("positionIndicatorColor", json!("red"), "hex color"),
+        ("videoIndicatorColor", json!("#12"), "hex color"),
     ] {
         let response = d.call("ui.set", json!({"timeline": {field: value}}));
         assert_eq!(response["ok"], json!(false), "{field} should reject its invalid value");
         let error = response["error"].as_str().unwrap_or_default();
         assert!(error.contains(field) && error.contains(range), "unexpected error for {field}: {error}");
     }
+    let before = d.app().ui.timeline.target_pps;
+    let response = d.call("ui.set", json!({"timeline": {"pps": 123.0, "videoIndicatorColor": "not-a-color"}}));
+    assert_eq!(response["ok"], json!(false));
+    assert_eq!(d.app().ui.timeline.target_pps, before, "invalid color rejects timeline fields before applying them");
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
@@ -451,9 +459,9 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
@@ -474,11 +482,11 @@ fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.move_to(handle + 40.0, y);
     let after = d.app().ui.timeline.target_pps;
     assert!(after < before, "the right handle dragged right zooms out: {before} -> {after}");
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging along the bar");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging over the tracks");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging over the tracks");
     d.release(handle + 40.0, y - 300.0);
-    assert_ne!(d.cursor(), CursorIcon::ResizeHorizontal, "button released, pointer over the tracks");
+    assert_ne!(d.cursor(), CursorIcon::PointingHand, "button released, pointer over the tracks");
 }
 
 /// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the

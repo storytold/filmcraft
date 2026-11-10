@@ -73,7 +73,7 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step or content edit: the tab order is journaled as view state
+    // not an undo step or content edit: the view epoch tracks tab order for the next project save
     assert_ne!(s.view_epoch, view_epoch, "a tab move is a view change");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");

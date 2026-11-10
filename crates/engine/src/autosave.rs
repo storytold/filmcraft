@@ -541,8 +541,8 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
-    /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
-    /// project's view-only change journals too, but must not be offered as "unsaved changes".
+    /// Whether the project CONTENT was unsaved when this snapshot was written. View-only
+    /// changes on a clean project are not journaled and must not be offered as recovery.
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
@@ -614,8 +614,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             ..JournalMeta::default()
         });
         if !meta.dirty {
-            // a clean project's view-only journal is not unsaved work: never offered as
-            // recovery, and not left behind either
+            // stale clean journals from older versions are not unsaved work: never offered as
+            // recovery, and not left behind either. Current senders don't write them.
             let _ = fs::remove_file(&snap);
             let _ = fs::remove_file(dir.join(META));
             drop(lock);
@@ -679,8 +679,8 @@ struct Snapshot {
     /// The session's view counter at this snapshot: a view-only change journals again even
     /// though `revision` is unchanged.
     view_epoch: u64,
-    /// Whether the project content was unsaved when this snapshot was taken (a clean project's
-    /// view-only change is journaled but never offered as recovery).
+    /// Whether project content was unsaved when this snapshot was taken. Current senders only
+    /// create snapshots for dirty content; the flag also preserves older clean-journal semantics.
     content_dirty: bool,
     path: Option<String>,
 }
@@ -990,7 +990,7 @@ struct Worker {
     /// Newest unsaved state (None = clean).
     latest: Option<Snapshot>,
     /// Revision currently in the journal (0 = none) / last auto-saved revision. The view
-    /// counters sit beside them: a view-only change must journal again at the same revision.
+    /// counters accompany dirty snapshots so saved view settings are included in recovery data.
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
@@ -1179,8 +1179,9 @@ impl Worker {
     }
 }
 
-/// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
-/// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
+/// Write metadata before dirty snapshots so an interruption cannot label unsaved work clean.
+/// The clean branch is defensive for legacy data and future producers; current senders only
+/// journal snapshots for dirty content.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
     let metadata = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
     let meta_path = dir.join(META);
