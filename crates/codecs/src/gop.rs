@@ -191,6 +191,7 @@ struct Lane {
 }
 
 impl Lane {
+    /// A lane with no decoder, at no position.
     fn empty() -> Self {
         Self { decoder: None, next: usize::MAX, start: 0, out_max: i64::MIN, at: Instant::now() }
     }
