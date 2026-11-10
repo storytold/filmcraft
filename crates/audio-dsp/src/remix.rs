@@ -526,14 +526,15 @@ pub fn joints_for(segments: f64) -> usize {
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
     let len = a.len;
+    let b = &a.beats;
+    let m = b.len();
+    // an invalid analysis is refused before the period is used for the identity check
+    if m < 2 || !a.period.is_finite() || a.period <= 0.0 {
+        return Err(RemixError::TooShort);
+    }
     let half = (a.period / 2.0) as i64;
     if (target - len).abs() <= half {
         return Ok(Plan::identity(len, xfade));
-    }
-    let b = &a.beats;
-    let m = b.len();
-    if m < 2 || !a.period.is_finite() || a.period <= 0.0 {
-        return Err(RemixError::TooShort);
     }
     let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
     if target < 2 * min_piece {
@@ -888,8 +889,11 @@ mod tests {
         // degenerate analyses are refused, not indexed
         let empty = Analysis { beats: Vec::new(), sim: Vec::new(), ..a.clone() };
         assert_eq!(plan(&empty, 100_000, Params::default()), Err(RemixError::TooShort));
-        let zero_period = Analysis { period: 0.0, ..a };
+        let zero_period = Analysis { period: 0.0, ..a.clone() };
         assert_eq!(plan(&zero_period, 100_000, Params::default()), Err(RemixError::TooShort));
+        // an infinite period must not turn a far target into an identity plan
+        let inf_period = Analysis { period: f64::INFINITY, ..a };
+        assert_eq!(plan(&inf_period, 100_000, Params::default()), Err(RemixError::TooShort));
     }
 
     #[test]
