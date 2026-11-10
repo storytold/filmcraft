@@ -16,7 +16,7 @@ use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
-use crate::state::{DisplayMode, PlaybackRes};
+use crate::state::{DirectMode, DisplayMode, PlaybackRes};
 use crate::theme::Tokens;
 use crate::widgets::ZoomThumbPart;
 
@@ -429,6 +429,71 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- transport buttons
     let row3 = Rect::from_min_size(pos2(rect.min.x, zoom_bar.max.y + 4.0), vec2(rect.width(), 32.0));
     transport(app, ui, row3, which);
+}
+
+/// The narrowest transport row that shows the direct manipulation toggle: with less room the
+/// transport buttons and the Button Editor keep it all (the toggle's commands still work).
+const DIRECT_TOGGLE_MIN_ROW: f32 = 200.0;
+
+/// The Program monitor's direct manipulation toggle at the left of the transport row (#1872): the
+/// button turns the chosen mode on and off, the arrow beside it picks Transform or Crop. Returns
+/// the rest of the row, for the transport buttons. Automation ids: `program.direct`,
+/// `program.direct.menu`, `program.direct.transform`, `program.direct.crop`.
+fn direct_toggle(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect) -> Rect {
+    if row.width() < DIRECT_TOGGLE_MIN_ROW {
+        return row;
+    }
+    let t = app.tokens;
+    let (on, mode) = (app.ui.program.direct, app.ui.program.direct_mode);
+    let button = Rect::from_min_size(pos2(row.min.x + 10.0, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
+    let arrow = Rect::from_min_size(pos2(button.max.x, button.min.y), vec2(14.0, TRANSPORT_BUTTON));
+    let label = match mode {
+        DirectMode::Transform => tl!("Toggle Transform Direct Manipulation"),
+        DirectMode::Crop => tl!("Toggle Crop Direct Manipulation"),
+    };
+    let resp = ui.interact(button, egui::Id::unique("program-direct"), Sense::click()).on_hover_text(label);
+    app.auto.add_response("program.direct", &resp, label);
+    if on {
+        ui.painter().rect_filled(button, 4.0, t.accent.gamma_multiply(0.25));
+    } else if resp.hovered() {
+        ui.painter().rect_filled(button, 4.0, t.hover);
+    }
+    let icon = if mode == DirectMode::Crop { Icon::Crop } else { Icon::TransformBox };
+    let color = if on {
+        t.accent
+    } else if resp.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(ui.painter(), Rect::from_center_size(button.center(), vec2(18.0, 18.0)), icon, color);
+    if resp.clicked() {
+        crate::panels::keyboard::toggle_direct(&mut app.ui.program, mode);
+    }
+    let menu = ui.interact(arrow, egui::Id::unique("program-direct-menu"), Sense::click()).on_hover_text(tl!("Direct Manipulation Mode"));
+    app.auto.add_response("program.direct.menu", &menu, "Direct Manipulation Mode");
+    if menu.hovered() {
+        ui.painter().rect_filled(arrow, 4.0, t.hover);
+    }
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(arrow.center(), vec2(9.0, 9.0)),
+        Icon::ChevronDown,
+        if menu.hovered() { t.tab_text_active } else { t.text_dim },
+    );
+    egui::Popup::menu(&menu).show(|ui| {
+        for (m, name) in [(DirectMode::Transform, tl!("Transform")), (DirectMode::Crop, tl!("Crop"))] {
+            let item = ui.selectable_label(on && mode == m, name);
+            app.auto.add(&format!("program.direct.{}", m.name()), item.rect, name);
+            // picking a mode turns it on, so the box shows straight away
+            if item.clicked() {
+                app.ui.program.direct = true;
+                app.ui.program.direct_mode = m;
+                ui.close();
+            }
+        }
+    });
+    Rect::from_min_max(pos2(arrow.max.x + 4.0, row.min.y), row.max)
 }
 
 /// The controls row under the picture: timecode, duration, zoom, resolution, the wrench menu
@@ -1080,6 +1145,7 @@ const TRANSPORT_BUTTON: f32 = 28.0;
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
     let src = which == Which::Source;
+    let row = if src { row } else { direct_toggle(app, ui, row) };
     let buttons: Vec<(Icon, &str, &str)> = if src {
         vec![
             (Icon::Marker, "markers.add", tl!("Add Marker (M)")),

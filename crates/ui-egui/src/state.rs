@@ -305,6 +305,26 @@ impl DisplayMode {
     }
 }
 
+/// What the Program monitor's direct manipulation toggle puts on the selected clip (#1872).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DirectMode {
+    /// Motion's box: move, scale, rotate, anchor point.
+    #[default]
+    Transform,
+    /// The Crop effect's edges.
+    Crop,
+}
+
+impl DirectMode {
+    /// The name used by automation ids and command results.
+    pub fn name(self) -> &'static str {
+        match self {
+            DirectMode::Transform => "transform",
+            DirectMode::Crop => "crop",
+        }
+    }
+}
+
 /// Monitor guide (frame pixels): `vertical` = a line at x = `position`.
 pub type Guide = filmcraft_engine::autosave::Guide;
 
@@ -341,6 +361,11 @@ pub struct MonitorView {
     /// Snap in Program Monitor: graphic drags snap to guides, the frame edges and centre.
     pub snap: bool,
     pub guides: Vec<Guide>,
+    /// Program monitor: direct manipulation is on, so the selected clip under the playhead shows
+    /// `direct_mode`'s box without its effect being picked in Effect Controls (#1872).
+    pub direct: bool,
+    /// The mode last chosen in the toggle's menu; turning the toggle on brings it back.
+    pub direct_mode: DirectMode,
 }
 
 impl Default for MonitorView {
@@ -366,6 +391,8 @@ impl Default for MonitorView {
             lock_guides: false,
             snap: true,
             guides: Vec::new(),
+            direct: false,
+            direct_mode: DirectMode::Transform,
         }
     }
 }

@@ -20,6 +20,12 @@
 //! clear how far an edge can go back out. With Zoom on, the cropped area fills the clip's frame,
 //! so there is no edge on the picture to drag and no box is drawn.
 //!
+//! The Program monitor's direct manipulation toggle (under the picture, #1872) shows a box without
+//! the effect being picked in Effect Controls: Transform puts Motion's box on the selected clip under
+//! the playhead, Crop puts its Crop effect's box there. A clip without a Crop effect shows the box
+//! on its uncropped picture, and the first drag applies Crop. While the toggle is on, only its
+//! mode's box is drawn.
+//!
 //! Automation ids: `program.transform.box`, `program.transform.handle.<n>` (0–3 the corners TL,
 //! TR, BR, BL, 4–7 the middles of the top, right, bottom and left edges, as for graphic layers),
 //! `program.transform.rotate.<n>` (just outside corner `n`), `program.transform.anchor`;
@@ -35,7 +41,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::panels::graphics::{frame_to_screen, handle_points, unscale};
-use crate::state::Tool;
+use crate::state::{DirectMode, Tool};
 
 /// How close (in points) the pointer must be to a handle or the anchor point to grab it: well
 /// beyond the drawn squares, so the small handles stay easy to take hold of.
@@ -221,10 +227,40 @@ fn selected_effect(app: &FilmcraftApp) -> Option<(Target, &TrackItem, &EffectIns
     Some(((sel.clip, index), it, e, e.def()?))
 }
 
+/// The Program monitor's direct manipulation mode, while its toggle is on.
+fn direct(app: &FilmcraftApp) -> Option<DirectMode> {
+    app.ui.program.direct.then_some(app.ui.program.direct_mode)
+}
+
+/// The clip direct manipulation works on: the top-most selected, enabled video clip under the
+/// playhead.
+fn direct_clip(app: &FilmcraftApp) -> Option<&TrackItem> {
+    let seq = app.session.active_sequence()?;
+    let t = app.session.playhead();
+    let selection = &app.session.state.selection;
+    seq.video_tracks.iter().rev().filter_map(|tr| tr.item_at(t)).find(|it| it.enabled && selection.contains(&it.id))
+}
+
+/// The first enabled effect `id` of the direct manipulation clip.
+fn direct_effect<'a>(app: &'a FilmcraftApp, id: &str) -> Option<(Target, &'a TrackItem, &'a EffectInstance, &'static EffectDef)> {
+    let it = direct_clip(app)?;
+    let (index, e) = it.effects.iter().enumerate().find(|(_, e)| e.effect == id && e.enabled)?;
+    Some(((it.id, index), it, e, e.def()?))
+}
+
 /// The selected effect (its clip and index) and its box, while it is Motion or Transform of a
-/// selected clip under the playhead.
+/// selected clip under the playhead; with Transform direct manipulation on, Motion's box of the
+/// selected clip when neither is selected.
 fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
-    let (sel, it, e, def) = selected_effect(app).filter(|s| s.3.id == "motion" || s.3.id == "transform")?;
+    let transform = |s: &(Target, &TrackItem, &EffectInstance, &'static EffectDef)| s.3.id == "motion" || s.3.id == "transform";
+    let (sel, it, e, def) = match direct(app) {
+        None => selected_effect(app).filter(transform)?,
+        Some(DirectMode::Crop) => return None,
+        Some(DirectMode::Transform) => match selected_effect(app).filter(transform) {
+            Some(s) => s,
+            None => direct_effect(app, "motion")?,
+        },
+    };
     let pl = placement(app, it, e, it.effect_time_at(app.session.playhead()), pic, reach, frame)?;
     Some((sel, def, pl))
 }
@@ -244,6 +280,9 @@ struct Pins {
 /// The selected effect (its clip and index) and its corners, while it is Corner Pin of a selected
 /// clip under the playhead.
 fn selected_pins(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, Pins)> {
+    if direct(app).is_some() {
+        return None;
+    }
     let (sel, it, e, _) = selected_effect(app).filter(|s| s.3.id == "corner_pin")?;
     let seq = app.session.active_sequence()?;
     let project = &app.session.project;
@@ -278,11 +317,32 @@ struct CropBox {
     handles: [Pos2; 8],
 }
 
+/// Where a crop box's drags go: an effect of a clip, and whether the clip has no Crop effect yet,
+/// so the first drag applies one (at `sel`'s index, the end of the clip's effects).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CropTarget {
+    sel: Target,
+    add: bool,
+}
+
 /// The selected effect (its clip and index) and its cropped area, while it is Crop (with Zoom
-/// off) of a selected clip under the playhead.
-fn selected_crop(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, CropBox)> {
-    let (sel, it, e, _) = selected_effect(app).filter(|s| s.3.id == "crop")?;
-    if e.param("zoom").and_then(|p| p.value.as_bool()).unwrap_or(false) {
+/// off) of a selected clip under the playhead. With Crop direct manipulation on, the selected
+/// clip's Crop when no Crop is selected, or its uncropped picture when it has none.
+fn selected_crop(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(CropTarget, CropBox)> {
+    let crop = |s: &(Target, &TrackItem, &EffectInstance, &'static EffectDef)| s.3.id == "crop";
+    let (target, it, e) = match direct(app) {
+        None => selected_effect(app).filter(crop).map(|(sel, it, e, _)| (CropTarget { sel, add: false }, it, Some(e)))?,
+        Some(DirectMode::Transform) => return None,
+        Some(DirectMode::Crop) => match selected_effect(app).filter(crop).or_else(|| direct_effect(app, "crop")) {
+            Some((sel, it, e, _)) => (CropTarget { sel, add: false }, it, Some(e)),
+            None => {
+                // a turned-off Crop is left alone rather than stacked with a second one
+                let it = direct_clip(app).filter(|it| !it.effects.iter().any(|e| e.effect == "crop"))?;
+                (CropTarget { sel: (it.id, it.effects.len()), add: true }, it, None)
+            }
+        },
+    };
+    if e.and_then(|e| e.param("zoom")).and_then(|p| p.value.as_bool()).unwrap_or(false) {
         return None;
     }
     let seq = app.session.active_sequence()?;
@@ -293,7 +353,7 @@ fn selected_crop(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) 
     let to_screen = frame_to_screen(pic, frame).then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), mt));
     let (w, h) = (f64::from(size.0), f64::from(size.1));
     let edges = CROP_EDGES.map(|id| {
-        let v = e.f64_at(id, mt);
+        let v = e.map_or(0.0, |e| e.f64_at(id, mt));
         if v.is_finite() { v.clamp(0.0, 100.0) } else { 0.0 }
     });
     let [l, t, r, b] = edges.map(|v| v / 100.0);
@@ -305,7 +365,7 @@ fn selected_crop(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) 
     quad.iter()
         .chain(&full)
         .all(|p| p.x.is_finite() && p.y.is_finite())
-        .then_some((sel, CropBox { to_screen, size: (w, h), edges, full, quad, handles: within(handle_points(&quad), reach) }))
+        .then_some((target, CropBox { to_screen, size: (w, h), edges, full, quad, handles: within(handle_points(&quad), reach) }))
 }
 
 /// The Crop values (Left, Top, Right, Bottom, in percent) a drag of handle `n` (`None` inside the
@@ -340,7 +400,7 @@ fn crop_edges(edges: [f64; 4], size: (f64, f64), n: Option<usize>, off: Vec2) ->
 
 /// Crop's box on the Program monitor: the faint uncropped picture, the cropped area's outline and
 /// its eight handles. Dragging a handle moves its edges; dragging inside the box slides the crop.
-fn crop_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, sel: Target, cb: &CropBox, actions: &mut Vec<(String, Value)>) {
+fn crop_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, sel: CropTarget, cb: &CropBox, actions: &mut Vec<(String, Value)>) {
     let accent = app.tokens.accent;
     let id = egui::Id::unique("program-crop");
     let grab = vec2(GRAB, GRAB) * 2.0;
@@ -374,7 +434,7 @@ fn crop_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, sel: Target, cb: &Cro
 /// A drag of Crop's handle `n`, or of the whole box (`None`, a drag inside it).
 #[derive(Clone, Copy, Debug)]
 struct CropDrag {
-    sel: Target,
+    sel: CropTarget,
     n: Option<usize>,
     start: Pos2,
     from: CropBox,
@@ -387,7 +447,7 @@ struct CropDrag {
 fn crop_drag(
     ui: &egui::Ui,
     resp: &egui::Response,
-    sel: Target,
+    sel: CropTarget,
     n: Option<usize>,
     cb: &CropBox,
     grabbed: bool,
@@ -400,16 +460,21 @@ fn crop_drag(
         let start = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or_default();
         ui.data_mut(|d| d.insert_temp(drag_id, CropDrag { sel, n, start, from: *cb }));
     }
-    let drag: Option<CropDrag> = ui.data(|d| d.get_temp(drag_id)).filter(|d: &CropDrag| d.sel == sel && d.n == n);
+    // (the Crop the drag applied is where `sel` pointed: the same target, no longer to be added)
+    let drag: Option<CropDrag> = ui.data(|d| d.get_temp(drag_id)).filter(|d: &CropDrag| d.sel.sel == sel.sel && d.n == n);
     if let Some(d) = drag
         && resp.dragged_by(left)
     {
         if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO {
             let cur = resp.interact_pointer_pos().unwrap_or(d.start);
             let to = crop_edges(d.from.edges, d.from.size, n, unscale(&d.from.to_screen, cur - d.start));
+            if sel.add {
+                actions.push(("effects.apply".into(), json!({"clips": [sel.sel.0.0], "effect": "crop"})));
+            }
+            let (clip, effect) = sel.sel;
             for ((name, now), v) in CROP_EDGES.iter().zip(cb.edges).zip(to) {
                 if v != now {
-                    actions.push(("effects.setParam".into(), json!({"clip": sel.0.0, "effect": sel.1, "param": name, "value": v, "merge": CROP_MERGE})));
+                    actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": effect, "param": name, "value": v, "merge": CROP_MERGE})));
                 }
             }
         }
