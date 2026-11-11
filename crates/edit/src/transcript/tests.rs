@@ -292,6 +292,34 @@ fn a_filler_too_short_for_a_frame_stays_in_its_clip() {
     assert_eq!(ranges.iter().map(|r| (r.start, r.duration)).collect::<Vec<_>>(), vec![(R.snap(v[4].start), R.frame_duration())]);
 }
 
+/// A clip edge can fall inside a frame (a recorded take ends on a sample). A zero-length filler
+/// next to it takes only its own clip's part of that frame, not the clip beside it.
+#[test]
+fn a_filler_too_short_for_a_frame_leaves_the_clip_beside_it_alone() {
+    let um = |q: &Sequence| {
+        let w = sequence_words(q, &transcripts());
+        assert_eq!(find_fillers(&w, &["um".to_string()]), vec![4..5]);
+        w
+    };
+    let cut = |v: &[SeqWord]| filler_ranges(v, &[4..5], R).iter().map(|r| (r.start, r.end())).collect::<Vec<_>>();
+    // its clip ends at 4.02 s, inside the frame from 4.00 s; the next word is in the clip after it
+    let mut q = seq();
+    q.audio_tracks[0].items.push(clip(100, 0.0, 4.02, 0.0));
+    q.audio_tracks[0].items.push(clip(101, 4.02, 5.98, 4.02));
+    let mut v = um(&q);
+    assert_ne!(v[4].clip, v[5].clip);
+    (v[4].start, v[4].end) = (s(4.01), s(4.01));
+    assert_eq!(cut(&v), vec![(s(4.00), s(4.02))]);
+    // its clip starts at 3.62 s, inside the frame from 3.60 s
+    let mut q = seq();
+    q.audio_tracks[0].items.push(clip(100, 0.0, 3.62, 0.0));
+    q.audio_tracks[0].items.push(clip(101, 3.62, 6.38, 3.62));
+    let mut v = um(&q);
+    assert_eq!(v[4].clip, v[5].clip);
+    (v[4].start, v[4].end) = (s(3.63), s(3.63));
+    assert_eq!(cut(&v), vec![(s(3.62), R.snap(v[5].start))]);
+}
+
 #[test]
 fn merge_ranges_joins_overlaps() {
     let r = |a: f64, b: f64| TimeRange::from_bounds(s(a), s(b));
@@ -348,6 +376,7 @@ fn captions_never_overlap_with_dense_words() {
             start: R.tick_of(i),
             end: R.tick_of(i + 1),
             clip: ClipId(1),
+            clip_range: TimeRange::from_bounds(Tick::ZERO, R.tick_of(30)),
             item: MEDIA,
             index: i as usize,
             track: 0,
@@ -381,6 +410,7 @@ fn sw(text: &str, i: usize) -> SeqWord {
         start: Tick(i as i64),
         end: Tick(i as i64 + 1),
         clip: ClipId(1),
+        clip_range: TimeRange::from_bounds(Tick::ZERO, Tick(1000)),
         item: MEDIA,
         index: i,
         track: 0,

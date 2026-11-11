@@ -32,6 +32,8 @@ pub struct SeqWord {
     pub end: Tick,
     /// The track item it is heard through and that item's media.
     pub clip: ClipId,
+    /// The sequence time that track item covers.
+    pub clip_range: TimeRange,
     pub item: ItemId,
     /// Index of the word in the media item's transcript.
     pub index: usize,
@@ -86,6 +88,7 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
                     start: a.max(it.start),
                     end: b.min(it.end()).max(a.max(it.start)),
                     clip: it.id,
+                    clip_range: it.range(),
                     item: it.item,
                     index: wi,
                     track: ti,
@@ -296,6 +299,10 @@ pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: F
                 Some(n) if n.clip == words[b].clip => rate.snap(n.start),
                 _ => s + rate.frame_duration(),
             };
+            // The time it takes is its clip's: a clip edge inside the frame (a recorded take
+            // ends on a sample) leaves the rest of that frame to the clip beside it.
+            s = s.max(words[a].clip_range.start);
+            e = e.min(words[b].clip_range.end());
         }
         if let Some(n) = next
             && e > n.start
