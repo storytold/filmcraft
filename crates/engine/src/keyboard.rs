@@ -686,21 +686,21 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The item Set / Clear Poster Frame acts on, and the frame: `item` + time, else the Source
 /// monitor clip at its playhead, else the first Project panel selection (its current poster).
-fn poster_target(s: &Session, p: &Value) -> Option<(filmcraft_project::ItemId, Tick)> {
+fn poster_target(s: &Session, p: &Value) -> Result<Option<(filmcraft_project::ItemId, Tick)>> {
     if let Some(i) = item_p(p, "item") {
-        return Some((i, time_p(s, p, "").unwrap_or_default()));
+        return Ok(Some((i, time_p(s, p, "")?.unwrap_or_default())));
     }
     let sel = s.state.project_selection.first().copied();
-    match (s.state.source_item, sel) {
+    Ok(match (s.state.source_item, sel) {
         (Some(src), None) => Some((src, s.state.source_playhead)),
         (Some(src), Some(sel)) if src == sel => Some((src, s.state.source_playhead)),
-        (_, Some(sel)) => Some((sel, time_p(s, p, "").unwrap_or_default())),
+        (_, Some(sel)) => Some((sel, time_p(s, p, "")?.unwrap_or_default())),
         (None, None) => None,
-    }
+    })
 }
 
 fn set_poster(s: &mut Session, p: &Value, clear: bool) -> Result<Value> {
-    let (item, t) = poster_target(s, p).ok_or_else(|| EngineError::Other("open a clip in the Source monitor or select one in the Project panel".into()))?;
+    let (item, t) = poster_target(s, p)?.ok_or_else(|| EngineError::Other("open a clip in the Source monitor or select one in the Project panel".into()))?;
     let it = s.project.item(item).ok_or_else(|| bad("clip.setPosterFrame", "no such item"))?;
     if matches!(it.kind, ItemKind::AdjustmentLayer { .. }) {
         return Err(EngineError::Other("adjustment layers have no poster frame".into()));

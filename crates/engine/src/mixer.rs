@@ -668,7 +668,7 @@ pub fn strip_json(s: &Session, seq: &Sequence, id: TrackId, t: Tick) -> Value {
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let seq = active_seq(s)?;
     let strips: Vec<Value> = seq.strip_ids().into_iter().map(|id| strip_json(s, seq, id, t)).collect();
     Ok(json!({
@@ -948,7 +948,7 @@ fn remove_send(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_kf(s: &mut Session, p: &Value) -> Result<Value> {
     let id = strip_p(s, p, "mixer.setKeyframe")?;
     let lane = lane_p(s, p, id, "mixer.setKeyframe")?;
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let v = value_p(p, &lane, "mixer.setKeyframe")?;
     let hold = lane_info(&lane).is_some_and(|i| i.hold);
     s.edit_sequence("Add Track Keyframe", move |q, _, _| {
@@ -970,7 +970,7 @@ fn set_kf(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete_kf(s: &mut Session, p: &Value) -> Result<Value> {
     let id = strip_p(s, p, "mixer.deleteKeyframe")?;
     let lane = lane_p(s, p, id, "mixer.deleteKeyframe")?;
-    let t = time_p(s, p, "").ok_or_else(|| bad("mixer.deleteKeyframe", "need `time`"))?;
+    let t = time_p(s, p, "")?.ok_or_else(|| bad("mixer.deleteKeyframe", "need `time`"))?;
     let ok = s.edit_sequence("Delete Track Keyframe", move |q, _, _| {
         Ok(q.with_strip_mut(id, |tr| tr.lane_mut(&lane).is_some_and(|par| par.remove_keyframe_at(t))).unwrap_or(false))
     })?;
@@ -983,8 +983,8 @@ fn delete_kf(s: &mut Session, p: &Value) -> Result<Value> {
 fn move_kf(s: &mut Session, p: &Value) -> Result<Value> {
     let id = strip_p(s, p, "mixer.moveKeyframe")?;
     let lane = lane_p(s, p, id, "mixer.moveKeyframe")?;
-    let t = time_p(s, p, "").ok_or_else(|| bad("mixer.moveKeyframe", "need `time` (the keyframe)"))?;
-    let nt = time_p(s, p, "new");
+    let t = time_p(s, p, "")?.ok_or_else(|| bad("mixer.moveKeyframe", "need `time` (the keyframe)"))?;
+    let nt = time_p(s, p, "new")?;
     let nv = p.get("value").map(|_| value_p(p, &lane, "mixer.moveKeyframe")).transpose()?;
     let ok = s.edit_sequence("Move Track Keyframe", move |q, _, _| {
         Ok(q.with_strip_mut(id, |tr| {
@@ -1074,7 +1074,7 @@ fn clip_set(s: &mut Session, p: &Value) -> Result<Value> {
     let param = str_p(p, "param").unwrap_or("level").to_string();
     let v = f64_p(p, "value").ok_or_else(|| bad("clipMixer.set", "need `value`"))?;
     let kf = bool_p(p, "keyframe").unwrap_or(false);
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let key = format!("clipMixer:{}:{effect}:{param}", clip.0);
     if bool_p(p, "begin").unwrap_or(false) {
@@ -1267,7 +1267,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let id = strip_p(s, p, "mixer.setValue")?;
                 let lane = lane_p(s, p, id, "mixer.setValue")?;
                 let v = value_p(p, &lane, "mixer.setValue")?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 if s.mixrec.active() {
                     touch(s, id, &lane, v, t)?;
                     return release(s, id, &lane, t);
@@ -1288,7 +1288,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let id = strip_p(s, p, "mixer.touch")?;
                 let lane = lane_p(s, p, id, "mixer.touch")?;
                 let v = value_p(p, &lane, "mixer.touch")?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 touch(s, id, &lane, v, t)
             },
             journal: false,
@@ -1303,7 +1303,7 @@ pub fn commands() -> Vec<CommandSpec> {
             run: |s, p| {
                 let id = strip_p(s, p, "mixer.release")?;
                 let lane = lane_p(s, p, id, "mixer.release")?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 release(s, id, &lane, t)
             },
             journal: true,
@@ -1316,7 +1316,7 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"time":ticks?}"#,
             enabled: not_recording,
             run: |s, p| {
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 record_start(s, t)
             },
             journal: false,
@@ -1329,7 +1329,7 @@ pub fn commands() -> Vec<CommandSpec> {
             params: r#"{"time":ticks?}"#,
             enabled: has_seq,
             run: |s, p| {
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 record_stop(s, t)
             },
             journal: true,
@@ -1370,7 +1370,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let id = clip_track_p(s, p, "clipMixer.touch")?;
                 let lane = clip_lane_p(p);
                 let v = f64_p(p, "value").ok_or_else(|| bad("clipMixer.touch", "need `value`"))?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 touch(s, id, &lane, v, t)
             },
             journal: false,
@@ -1385,7 +1385,7 @@ pub fn commands() -> Vec<CommandSpec> {
             run: |s, p| {
                 let id = clip_track_p(s, p, "clipMixer.release")?;
                 let lane = clip_lane_p(p);
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                let t = time_p(s, p, "")?.unwrap_or(s.playhead());
                 release(s, id, &lane, t)
             },
             journal: true,
