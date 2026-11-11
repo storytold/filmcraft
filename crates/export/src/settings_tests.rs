@@ -1798,3 +1798,29 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error() {
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 32, 18, None);
+    let dir = Scratch::new("gif-reserved");
+    let path = dir.path("out.gif");
+    let file = Arc::new(std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap());
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: path.clone(),
+        include_audio: false,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        output_file: Some(file.clone()),
+        ..Default::default()
+    };
+    // the entry still names the reservation: the GIF lands there
+    export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(b"GIF8"), "the reserved file holds the GIF");
+    // the directory entry is replaced after the reservation: no success for a file nobody can reach,
+    // and the replacement is left alone
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"decoy").unwrap();
+    assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
+}

@@ -44,6 +44,16 @@ const MAX_SIMILARITY_CELLS: usize = 4_000_000;
 /// Remix analysis supports ordinary production and high-resolution audio rates, not arbitrary
 /// integers supplied through a public library API.
 pub const MAX_ANALYSIS_SAMPLE_RATE: u32 = 384_000;
+/// Most pieces a plan may have. A planned remix has a handful of joints (a few hundred for a very
+/// long extension); a stored plan with more is damaged or hostile.
+pub const MAX_PIECES: usize = 65_536;
+/// The longest a project may run, in seconds, rounded up: `Tick::MAX` (`i64::MAX / 4` ticks at 254 016 000 000
+/// ticks/s) is 9.08 million seconds. (This crate has no dependencies, so the figure is repeated here.)
+const MAX_PROJECT_SECONDS: i64 = 9_100_000;
+/// Most output samples a plan may describe: the longest project at the highest rate remix supports, so no
+/// valid plan reaches it. A render reads at most two pieces per output sample it produces, so the work of
+/// rendering a playable plan is bounded by its output samples, whatever the piece count.
+pub const MAX_OUTPUT_SAMPLES: i64 = MAX_ANALYSIS_SAMPLE_RATE as i64 * MAX_PROJECT_SECONDS;
 
 /// One piece of the output: `len` samples read from the source at `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +94,37 @@ impl Plan {
     /// The source positions each joint cuts at: (end of the outgoing piece, start of the incoming one).
     pub fn cuts(&self) -> Vec<(i64, i64)> {
         self.pieces.windows(2).map(|w| (w[0].src + w[0].len, w[1].src)).collect()
+    }
+    /// Whether playback can follow this plan with bounded work: at most [`MAX_PIECES`] pieces and [`MAX_OUTPUT_SAMPLES`] output samples, a
+    /// non-negative crossfade, non-negative lengths, and, when there are joints, every piece at
+    /// least as long as the crossfade and non-empty. Then no more than two pieces contribute to any
+    /// output sample, and every position [`render`] computes fits in `i64`.
+    pub fn is_playable(&self) -> bool {
+        self.is_playable_within(MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Self::is_playable`] with the output limit in the plan's own units: a plan stored in ticks
+    /// (see `filmcraft-render`'s `Remix`) passes the project's longest duration in ticks instead.
+    pub fn is_playable_within(&self, max_output: i64) -> bool {
+        if self.pieces.is_empty() || self.pieces.len() > MAX_PIECES || self.xfade < 0 {
+            return false;
+        }
+        let joined = self.pieces.len() > 1;
+        let x = self.xfade;
+        let mut total = 0i64;
+        for p in &self.pieces {
+            if p.len < 0 || (joined && (p.len == 0 || p.len < x)) {
+                return false;
+            }
+            // render reads from `src − xfade/2` to `src + len + xfade/2`
+            if p.src.checked_sub(x).is_none() || p.src.checked_add(p.len).and_then(|e| e.checked_add(x)).is_none() {
+                return false;
+            }
+            match total.checked_add(p.len) {
+                Some(t) if t <= max_output => total = t,
+                _ => return false,
+            }
+        }
+        total.checked_add(x).is_some()
     }
 }
 
@@ -513,6 +554,10 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
 
 // ------------------------------------------------------------------------------------- planning
 
+/// Most joints a plan may use. Extending a short source to a long target adds joints until each
+/// jump fits, which a degenerate source (a tiny span between the intro and outro) never satisfies.
+const MAX_PLAN_JOINTS: usize = 1024;
+
 /// Number of joints the Segments slider asks for.
 pub fn joints_for(segments: f64) -> usize {
     1 + (segments.clamp(0.0, 100.0) / 34.0).floor() as usize
@@ -522,12 +567,16 @@ pub fn joints_for(segments: f64) -> usize {
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
     let len = a.len;
+    let b = &a.beats;
+    let m = b.len();
+    // an invalid analysis is refused before the period is used for the identity check
+    if m < 2 || !a.period.is_finite() || a.period <= 0.0 {
+        return Err(RemixError::TooShort);
+    }
     let half = (a.period / 2.0) as i64;
     if (target - len).abs() <= half {
         return Ok(Plan::identity(len, xfade));
     }
-    let b = &a.beats;
-    let m = b.len();
     let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
     if target < 2 * min_piece {
         return Err(RemixError::TargetTooShort);
@@ -541,7 +590,7 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
     // a backwards jump can span at most the music between the intro and outro pieces
     if target > len {
         let max_span = (len - 2 * min_piece).max(a.period as i64);
-        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
+        while k < MAX_PLAN_JOINTS && ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
             k += 1;
         }
     }
@@ -626,6 +675,10 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
 /// gains; the result does not depend on how the output is cut into requests.
 pub fn render(plan: &Plan, out0: i64, n: usize, channels: usize, read: &mut dyn FnMut(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0f32; n]; channels];
+    // a plan that would stack many pieces on the same output (or overflow its positions) plays silence
+    if !plan.is_playable() || out0.checked_add(n as i64).is_none() {
+        return out;
+    }
     let x = plan.xfade.max(0);
     let h0 = x / 2;
     let h1 = x - h0;
@@ -678,15 +731,24 @@ impl Plan {
         }
         s
     }
+    /// Parses [`Plan::to_text`]; `None` unless the plan [is playable](Plan::is_playable).
     pub fn from_text(s: &str) -> Option<Plan> {
+        Plan::from_text_within(s, MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Plan::from_text`] with the output limit in the stored plan's units (see [`Plan::is_playable_within`]).
+    pub fn from_text_within(s: &str, max_output: i64) -> Option<Plan> {
         let mut it = s.split(';');
         let xfade = it.next()?.trim().parse().ok()?;
         let mut pieces = Vec::new();
         for p in it {
+            if pieces.len() >= MAX_PIECES {
+                return None;
+            }
             let (a, b) = p.split_once(',')?;
             pieces.push(Piece { src: a.trim().parse().ok()?, len: b.trim().parse().ok()? });
         }
-        (!pieces.is_empty()).then_some(Plan { pieces, xfade })
+        let plan = Plan { pieces, xfade };
+        plan.is_playable_within(max_output).then_some(plan)
     }
 }
 
@@ -821,6 +883,7 @@ mod tests {
                         assert!(a.beats.contains(&out_end), "cut out at {out_end} is not a beat");
                         assert!(a.beats.contains(&in_start), "cut in at {in_start} is not a beat");
                     }
+                    assert!(p.is_playable(), "planned remix must survive a save and reload: {p:?}");
                     for pc in &p.pieces {
                         assert!(pc.len >= (MIN_PIECE_BEATS as f64 * a.period) as i64 - 2, "piece too short: {pc:?}");
                     }
@@ -870,6 +933,23 @@ mod tests {
         assert_eq!(analyze(&[&too_long], 1), Err(RemixError::TooLong));
         assert_eq!(similarity_cells(2_000), Ok(4_000_000));
         assert_eq!(similarity_cells(2_001), Err(RemixError::TooComplex));
+    }
+
+    #[test]
+    fn planning_a_huge_target_from_a_tiny_source_terminates() {
+        let beats: Vec<i64> = (0..24).map(|i| i * 10).collect();
+        let m = beats.len();
+        let a = Analysis { sample_rate: 48_000, len: 240, beats, period: 10.0, bpm: 0.0, sim: vec![0.0; m * m] };
+        // 2^50 samples would need ~2^43 joints: the plan gives up at its joint limit instead
+        let _ = plan(&a, 1 << 50, Params::default());
+        // degenerate analyses are refused, not indexed
+        let empty = Analysis { beats: Vec::new(), sim: Vec::new(), ..a.clone() };
+        assert_eq!(plan(&empty, 100_000, Params::default()), Err(RemixError::TooShort));
+        let zero_period = Analysis { period: 0.0, ..a.clone() };
+        assert_eq!(plan(&zero_period, 100_000, Params::default()), Err(RemixError::TooShort));
+        // an infinite period must not turn a far target into an identity plan
+        let inf_period = Analysis { period: f64::INFINITY, ..a };
+        assert_eq!(plan(&inf_period, 100_000, Params::default()), Err(RemixError::TooShort));
     }
 
     #[test]
@@ -1013,5 +1093,36 @@ mod tests {
         let p = Plan { pieces: vec![Piece { src: 0, len: 10 }, Piece { src: 50, len: 7 }], xfade: 3 };
         assert_eq!(Plan::from_text(&p.to_text()), Some(p));
         assert_eq!(Plan::from_text("x"), None);
+    }
+
+    #[test]
+    fn stored_plans_cannot_stack_pieces() {
+        // thousands of empty pieces under one huge crossfade would each read and mix the same window
+        let stacked = format!("1000000000{}", ";0,0".repeat(5000));
+        assert_eq!(Plan::from_text(&stacked), None);
+        // a crossfade longer than a piece lets three pieces overlap
+        assert_eq!(Plan::from_text("10;0,100;200,5;300,100"), None);
+        assert_eq!(Plan::from_text("-1;0,100;200,100"), None);
+        assert_eq!(Plan::from_text("0;0,-5"), None);
+        assert_eq!(Plan::from_text(&format!("0;0,{};0,{}", i64::MAX, i64::MAX)), None);
+        // the output budget counts samples: the longest project at the highest rate fits, one sample more does not
+        assert!(Plan::from_text(&format!("0;0,{}", MAX_OUTPUT_SAMPLES)).is_some());
+        assert_eq!(Plan::from_text(&format!("0;0,{};0,1", MAX_OUTPUT_SAMPLES)), None);
+        assert!(MAX_OUTPUT_SAMPLES as i128 >= 384_000 * (i64::MAX as i128 / 4 / 254_016_000_000));
+        assert_eq!(Plan::from_text(&format!("0;{},1", i64::MAX)), None);
+        let many = format!("0{}", ";0,1".repeat(MAX_PIECES + 1));
+        assert_eq!(Plan::from_text(&many), None);
+        // the identity plan of an empty clip is still a plan
+        assert!(Plan::identity(0, 960).is_playable());
+
+        // render refuses an unvalidated hostile plan instead of reading once per piece
+        let hostile = Plan { pieces: vec![Piece { src: 0, len: 0 }; 5000], xfade: 1_000_000_000 };
+        let mut reads = 0usize;
+        let out = render(&hostile, 0, 512, 2, &mut |_, len| {
+            reads += 1;
+            vec![vec![1.0; len]; 2]
+        });
+        assert_eq!(reads, 0);
+        assert!(out.iter().all(|c| c.len() == 512 && c.iter().all(|&v| v == 0.0)));
     }
 }

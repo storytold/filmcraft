@@ -24,6 +24,23 @@ use serde_json::{Value, json};
 use crate::commands::{CommandSpec, bad, bool_p, clips_p, f64_p, has_seq, u64_p};
 use crate::{EngineError, Result, Session};
 
+/// Frames one clip is analysed for at most (24 h at 60 fps).
+pub(crate) const MAX_ANALYSED_FRAMES: i64 = 24 * 3600 * 60;
+
+/// Frames the clips of one job are analysed for in all: repeated or many clips cannot sum past one clip's cap.
+pub(crate) const MAX_TOTAL_ANALYSED_FRAMES: i64 = MAX_ANALYSED_FRAMES;
+
+/// Frames to schedule for a clip of `duration`, spent from `remaining` (the job's budget). Checked before any
+/// schedule is built, so the memory a job asks for stays bounded.
+pub(crate) fn scheduled_frames(duration: Tick, frame_duration: Tick, remaining: &mut i64) -> Result<i64> {
+    let n = (duration.0 / frame_duration.0.max(1)).clamp(1, MAX_ANALYSED_FRAMES);
+    if n > *remaining {
+        return Err(bad("clip.sceneEditDetection", "the selected clips are too long to analyse in one job; select fewer or shorter clips"));
+    }
+    *remaining -= n;
+    Ok(n)
+}
+
 /// Longest side of the frames analysed (speed; the measures don't need detail).
 const ANALYSIS_WIDTH: f64 = 256.0;
 
@@ -63,8 +80,11 @@ pub struct ClipScenes {
     pub name: String,
     /// The clip's media item (a subclip's parent).
     pub media_item: ItemId,
-    /// Media range the clip shows.
+    /// Media range the clip shows. When the analysis was capped (`unanalysed` set) it reaches the
+    /// clip's end, so the last subclip covers the tail too.
     pub media_range: TimeRange,
+    /// The clip is longer than the analysis cap: its tail was not analysed, and no cut was looked for there.
+    pub unanalysed: bool,
     /// (timeline time, media time) of the first frame of each new shot.
     pub cuts: Vec<(Tick, Tick)>,
 }
@@ -95,6 +115,27 @@ struct Work {
     scale: f32,
     /// (timeline time, media time) of every sequence frame of the clip.
     frames: Vec<(Tick, Tick)>,
+    /// Media time at the clip's end when the schedule was capped short of it.
+    tail: Option<Tick>,
+}
+
+/// The media range of an analysed clip: the scheduled frames from `a` to `b` (`fdm` long each),
+/// stretched to `tail`, the clip's own end, when the schedule stopped short of it.
+fn analysed_range(a: Tick, b: Tick, fdm: Tick, tail: Option<Tick>) -> TimeRange {
+    let (mut lo, mut hi) = (a.min(b), a.max(b) + fdm);
+    if let Some(t) = tail {
+        lo = lo.min(t);
+        hi = hi.max(t);
+    }
+    TimeRange::from_bounds(lo, hi)
+}
+
+/// What to tell the user about clips whose tail was not analysed.
+fn unanalysed_warning(results: &[ClipScenes]) -> Option<String> {
+    let names: Vec<&str> = results.iter().filter(|r| r.unanalysed).map(|r| r.name.as_str()).collect();
+    (!names.is_empty()).then(|| {
+        format!("The tail of {} was not analysed (longer than {MAX_ANALYSED_FRAMES} frames); its last scene extends to the clip end", names.join(", "))
+    })
 }
 
 fn detect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -117,6 +158,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("Scene Edit Detection is already running on this sequence".into()));
     }
     let mut work = Vec::new();
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
     for c in clips_p(s, p) {
         let Some((tid, it)) = q.find_item(c) else { continue };
         if q.track(tid).is_none_or(|t| t.kind != TrackKind::Video) {
@@ -125,14 +167,19 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(media_item) = media_root(&s.project, it.item) else { continue };
         let Some(src) = s.source(it.item) else { continue };
         let Some(v) = src.info().video.clone() else { continue };
-        let n = (it.duration.0 / fd.0.max(1)).max(1);
+        // The schedule is built here, before the job can be cancelled; a project can store any
+        // clip duration, so it is capped (a day at 60 fps) rather than trusted.
+        let n = scheduled_frames(it.duration, fd, &mut remaining)?;
+        let capped = it.duration.0 / fd.0.max(1) > n;
+        // a reversed clip ends at its source in point (source_time_at(end) is one tick before it)
+        let tail = capped.then(|| if it.reverse { it.source_in } else { it.source_time_at(it.end()) });
         let frames: Vec<(Tick, Tick)> = (0..n)
             .map(|j| {
                 let t = it.start + Tick(fd.0 * j);
                 (t, it.source_time_at(t))
             })
             .collect();
-        work.push(Work { clip: c, name: it.name.clone(), media_item, src, scale: (ANALYSIS_WIDTH / v.width.max(1) as f64).min(1.0) as f32, frames });
+        work.push(Work { clip: c, name: it.name.clone(), media_item, src, scale: (ANALYSIS_WIDTH / v.width.max(1) as f64).min(1.0) as f32, frames, tail });
     }
     if work.is_empty() {
         return Err(EngineError::Other("none of the selected clips is a video clip with media to analyse".into()));
@@ -177,7 +224,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                 clip: w.clip,
                 name: w.name.clone(),
                 media_item: w.media_item,
-                media_range: TimeRange::from_bounds(a.min(b), a.max(b) + fdm),
+                media_range: analysed_range(a, b, fdm, w.tail),
+                unanalysed: w.tail.is_some(),
                 cuts,
             });
         }
@@ -218,6 +266,10 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|c| json!({"clip": c.clip.0, "cuts": c.cuts.iter().map(|x| x.0.0).collect::<Vec<_>>(), "mediaCuts": c.cuts.iter().map(|x| x.1.0).collect::<Vec<_>>()}))
                     .collect::<Vec<_>>()
             );
+            // poll applies the results and drops them, so its own warning list never reaches this reply
+            if let Some(w) = unanalysed_warning(r) {
+                out["warnings"] = json!([w]);
+            }
         }
         poll(s);
     } else {
@@ -253,9 +305,14 @@ pub fn poll(s: &mut Session) {
 
 fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Vec<ClipScenes>) -> Result<Value> {
     let n_cuts: usize = results.iter().map(|r| r.cuts.len()).sum();
+    let warning = unanalysed_warning(&results);
+    let warnings: Vec<&String> = warning.iter().collect();
     if n_cuts == 0 {
         s.toast("Scene Edit Detection found no cut points");
-        return Ok(json!({"cuts": 0}));
+        if let Some(w) = &warning {
+            s.toast(w.clone());
+        }
+        return Ok(json!({"cuts": 0, "warnings": warnings}));
     }
     let media = s.media.clone();
     s.edit("Scene Edit Detection", move |pr, _| {
@@ -320,7 +377,10 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
         Ok(())
     })?;
     s.toast(format!("Scene Edit Detection: {n_cuts} cut point(s)"));
-    Ok(json!({"cuts": n_cuts}))
+    if let Some(w) = &warning {
+        s.toast(w.clone());
+    }
+    Ok(json!({"cuts": n_cuts, "warnings": warnings}))
 }
 
 #[cfg(test)]

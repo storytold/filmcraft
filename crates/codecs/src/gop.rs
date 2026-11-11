@@ -120,6 +120,12 @@ pub trait VideoSamples: Sync {
     /// The sample presented at `t` (track units), if any.
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
+    /// Bytes sample `i` holds, from the index and without reading it. Implementations that know
+    /// it should say so: the random-access search checks a candidate against its byte budget
+    /// before [`read`](VideoSamples::read) allocates it. `None`: not known (read, then count).
+    fn sample_size(&self, _i: usize) -> Option<u64> {
+        None
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
@@ -582,6 +588,49 @@ fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Resu
     job()
 }
 
+/// Most sync candidates, and bytes read from them, one search for a random-access sample may try.
+// 65 536 probes is 18 minutes of an unkeyed 60 fps stream: far past any real GOP, yet each hostile probe stays bounded by the byte budget
+const MAX_RANDOM_ACCESS_PROBES: usize = 65_536;
+const MAX_RANDOM_ACCESS_PROBE_BYTES: usize = 512 << 20;
+
+/// The container's sync flags may be wrong for the codec (an MP4 without `stss` marks every
+/// sample): step back from sync sample `key` to one the decoder can start from (`is_ra` says, with
+/// None meaning "cannot tell", which is taken as yes). A file whose index aliases many claimed
+/// keyframes onto one large non-random-access sample would otherwise read it once per claim, so
+/// the search is bounded in probes and bytes, and stops when the request is cancelled.
+fn random_access_at_or_before(s: &dyn VideoSamples, mut key: usize, mut is_ra: impl FnMut(&[u8]) -> Option<bool>) -> crate::Result<usize> {
+    let (mut probes, mut bytes) = (0usize, 0usize);
+    // polled before the sample-zero exit too: a cancelled request must not go on to decode from there
+    if filmcraft_media::cancel::cancelled() {
+        return Err(CodecError::Cancelled);
+    }
+    while key > 0 {
+        if filmcraft_media::cancel::cancelled() {
+            return Err(CodecError::Cancelled);
+        }
+        // refused before the read: a claimed keyframe that is one huge sample must not be loaded
+        if s.sample_size(key).is_some_and(|n| n > (MAX_RANDOM_ACCESS_PROBE_BYTES - bytes) as u64) {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        let data = s.read(key)?;
+        // a container that cannot say a sample's size (see `sample_size`) is checked after the read:
+        // the initial read of an unknown size is allowed, but one sample past the budget ends the search
+        if data.len() > MAX_RANDOM_ACCESS_PROBE_BYTES - bytes {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        if is_ra(&data) != Some(false) {
+            break;
+        }
+        probes += 1;
+        bytes = bytes.saturating_add(data.len());
+        if probes >= MAX_RANDOM_ACCESS_PROBES || bytes > MAX_RANDOM_ACCESS_PROBE_BYTES {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        key = s.sync_before(key - 1);
+    }
+    Ok(key)
+}
+
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
         // unit tests count decoder restarts: each of their caches gets a pool of its own
@@ -860,15 +909,7 @@ impl GopCache {
         let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
-            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
-            // every sample): step back to a sample the decoder can start from.
-            while key > 0 {
-                let data = s.read(key)?;
-                if st.decoder.as_ref().and_then(|d| d.is_random_access(&data)) != Some(false) {
-                    break;
-                }
-                key = s.sync_before(key - 1);
-            }
+            key = random_access_at_or_before(s, key, |data| st.decoder.as_ref().and_then(|d| d.is_random_access(data)))?;
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }
@@ -942,15 +983,7 @@ impl GopCache {
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
         if !continuing {
-            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
-            // every sample): step back to a sample the decoder can start from.
-            while key > 0 {
-                let data = s.read(key)?;
-                if d.is_random_access(&data) != Some(false) {
-                    break;
-                }
-                key = s.sync_before(key - 1);
-            }
+            key = random_access_at_or_before(s, key, |data| d.is_random_access(data))?;
             d.reset();
             *next = key;
         }

@@ -416,3 +416,38 @@ fn render_previews_ignore_proxies() {
     assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A project can overstate a clip's duration; the generated proxy is as long as the opened source and still attaches,
+/// and the progress total counts the frames actually written.
+#[test]
+fn generated_proxy_attaches_when_the_stored_duration_is_too_long() {
+    let root = tmp_dir("proxy-overstated");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let real = s.project.item(items[0]).unwrap().as_media().unwrap().info.duration;
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = real + real;
+    let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half", "wait": true})).unwrap();
+    let id = r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}"));
+    let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+    let (total, done) = (job.progress.total.load(std::sync::atomic::Ordering::Relaxed), job.progress.done.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(total <= done + 1, "total {total} counts frames beyond the {done} written");
+    let proxy = &s.project.item(items[0]).unwrap().as_media().unwrap().proxy;
+    assert!(matches!(proxy, Some(filmcraft_project::MediaRef::File { .. })), "proxy not attached: {proxy:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An output made from a file the item no longer is (relinked or refreshed while the job ran) is not applied.
+#[test]
+fn an_item_changed_since_the_job_started_is_not_the_same_source() {
+    let root = tmp_dir("proxy-changed");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let clip = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
+    let started = vec![(items[0], a.to_string_lossy().into_owned(), clip.info.duration)];
+    assert!(crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = clip.info.duration + clip.info.duration;
+    assert!(!crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    let _ = std::fs::remove_dir_all(&root);
+}

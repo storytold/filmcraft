@@ -133,14 +133,17 @@ pub fn open_path(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str, reveal
     }
 }
 
-/// Where Reveal Log Files points: `<data dir>/Logs` (the temp folder without a data directory).
-pub fn logs_dir(app: &FilmcraftApp) -> std::path::PathBuf {
-    app.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Logs")).unwrap_or_else(|| filmcraft_engine::temp_dir().join("FilmCraft Logs"))
+/// Where Reveal Log Files points: `<data dir>/Logs` (a private folder in the temp folder without a data directory).
+pub fn logs_dir(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
+    match app.session.prefs_path.as_ref().and_then(|p| p.parent()) {
+        Some(d) => Ok(d.join("Logs")),
+        None => filmcraft_engine::private_temp_dir().map(|d| d.join("Logs")).map_err(|e| format!("no private temporary folder: {e}")),
+    }
 }
 
 /// Write this session's log (system report and the command journal) into [`logs_dir`].
 fn write_session_log(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
-    let dir = logs_dir(app);
+    let dir = logs_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("session-{}.log", std::process::id()));
     let mut text = format!("{}\n", system_report(app));
