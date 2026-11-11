@@ -358,6 +358,29 @@ fn hostile_archives_never_panic() {
     }
 }
 
+#[test]
+fn zip_entry_sizes_are_not_trusted() {
+    // 1 MiB that deflates to ~1 KiB, then the declared size is rewritten in both headers
+    let data = vec![b'<'; 1 << 20];
+    let mut z = zip::write(&[("project.xml", &data[..])], true);
+    let eocd = z.len() - 22;
+    let dir = u32::from_le_bytes(z[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let set_size = |z: &mut Vec<u8>, size: u32| {
+        z[22..26].copy_from_slice(&size.to_le_bytes());
+        z[dir + 24..dir + 28].copy_from_slice(&size.to_le_bytes());
+    };
+    // an entry that inflates past its declared size is refused, not grown to fit
+    set_size(&mut z, 1000);
+    let err = zip::read(&z, |_| true).err().unwrap();
+    assert!(err.contains("damaged deflate data"), "{err}");
+    // one that declares more than MAX_ENTRY is refused before anything is inflated
+    set_size(&mut z, (zip::MAX_ENTRY + 1) as u32);
+    let err = zip::read(&z, |_| true).err().unwrap();
+    assert!(err.contains("too large"), "{err}");
+    // and the import reports either as an error instead of panicking or allocating
+    assert!(import(&z, Format::Drp, None).is_err());
+}
+
 /// Compound, multicam and Fusion clips, in one XML document.
 fn nested_xml() -> String {
     let r30 = format!("{}0000000000000000", build::f64_le(30.0));

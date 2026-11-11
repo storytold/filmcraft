@@ -17,11 +17,49 @@
 //!   the file name.
 //! - **Rates and extents**: little-endian doubles; resolutions two big-endian `u64`.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Read as _;
 
 /// Largest blob payload we decompress.
 const MAX_BLOB: usize = 64 << 20;
+/// Bytes all blobs of one import may decompress to together, failed attempts included (the
+/// blobs of a real project add up to a few MiB).
+const MAX_TOTAL: usize = 256 << 20;
+/// Largest Zstandard window we accept: a blob never needs a window larger than itself, and the
+/// decoder allocates the window before reading any data.
+const MAX_WINDOW: u64 = MAX_BLOB as u64;
+
+thread_local! {
+    /// What is left of [`MAX_TOTAL`] for the import running on this thread.
+    static BUDGET: Cell<usize> = const { Cell::new(MAX_TOTAL) };
+}
+
+/// Start the decompression budget of a new import.
+pub(crate) fn reset_budget() {
+    BUDGET.set(MAX_TOTAL);
+}
+
+/// Run a decompressor with an output limit of [`MAX_BLOB`] or what is left of the import's
+/// budget, whichever is less. It returns its output and whether it succeeded; everything it
+/// produced is charged, so a bomb that hits the limit still uses up the budget.
+fn inflate(f: impl FnOnce(usize) -> (Vec<u8>, bool)) -> Option<Vec<u8>> {
+    let limit = BUDGET.get().min(MAX_BLOB);
+    if limit == 0 {
+        return None;
+    }
+    let (out, ok) = f(limit);
+    BUDGET.set(BUDGET.get().saturating_sub(out.len()));
+    (ok && out.len() <= limit).then_some(out)
+}
+
+/// A zlib stream, inflated within the budget.
+fn zlib(b: &[u8]) -> Option<Vec<u8>> {
+    inflate(|limit| match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(b, limit) {
+        Ok(v) => (v, true),
+        Err(e) => (e.output, false),
+    })
+}
 /// Deepest protobuf nesting we walk.
 const MAX_DEPTH: usize = 16;
 /// Most fields we collect from one message (real ones hold a few hundred).
@@ -108,10 +146,13 @@ pub(crate) fn payload(b: &[u8]) -> Option<Vec<u8>> {
     match flag {
         0x80 => Some(rest.to_vec()),
         0x81 => {
-            let mut dec = ruzstd::decoding::StreamingDecoder::new(rest).ok()?;
-            let mut out = Vec::new();
-            (&mut dec).take(MAX_BLOB as u64 + 1).read_to_end(&mut out).ok()?;
-            (out.len() <= MAX_BLOB).then_some(out)
+            let mut dec = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(rest, MAX_WINDOW).ok()?;
+            inflate(|limit| {
+                let mut out = Vec::new();
+                // read_to_end keeps what was read before an error, so a failed frame is charged too
+                let ok = (&mut dec).take(limit as u64 + 1).read_to_end(&mut out).is_ok();
+                (out, ok)
+            })
         }
         _ => None,
     }
@@ -370,7 +411,7 @@ pub(crate) fn strings(hex_text: &str) -> Vec<String> {
 
 /// Qt's `qCompress` framing: a big-endian `u32` length, then a zlib stream.
 fn q_uncompress(b: &[u8]) -> Option<Vec<u8>> {
-    miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(b.get(4..)?, MAX_BLOB).ok()
+    zlib(b.get(4..)?)
 }
 
 /// The tools of a Fusion composition (`CompositionBA`): the composition is `qCompress`ed and
@@ -388,7 +429,7 @@ fn fusion_tools(hex_text: &str) -> Option<String> {
         if a & 0x0f != 8 || !(u16::from(a) << 8 | u16::from(b)).is_multiple_of(31) {
             return None;
         }
-        miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(rest.get(i..)?, MAX_BLOB).ok().map(|t| String::from_utf8_lossy(&t).into_owned())
+        zlib(rest.get(i..)?).map(|t| String::from_utf8_lossy(&t).into_owned())
     })
 }
 
@@ -616,6 +657,75 @@ mod tests {
         build::bytes_field(1, b"/a", &mut p);
         build::bytes_field(2, b"b.mov", &mut p);
         assert_eq!(clip_path(&build::hex(&build::zstd_framed(&p))).as_deref(), Some("/a/b.mov"));
+    }
+
+    /// A framed Zstandard blob of `blocks` RLE blocks of 128 KiB zero bytes each (RFC 8878: no
+    /// content size, window descriptor `window`): 4 input bytes per 128 KiB of output.
+    fn zstd_bomb(window: u8, blocks: usize) -> Vec<u8> {
+        let mut z = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, window];
+        for i in 0..blocks {
+            let last = u32::from(i + 1 == blocks);
+            let head = (last | (1 << 1) | ((128u32 << 10) << 3)).to_le_bytes();
+            z.extend_from_slice(&[head[0], head[1], head[2], 0x00]);
+        }
+        let mut out = 2u32.to_be_bytes().to_vec();
+        out.extend_from_slice(&((z.len() + 1) as u32).to_be_bytes());
+        out.push(0x81);
+        out.extend_from_slice(&z);
+        out
+    }
+
+    /// Window descriptor for a 128 KiB window (exponent 7, mantissa 0).
+    const WINDOW_128K: u8 = 7 << 3;
+
+    #[test]
+    fn zstd_bombs_are_capped() {
+        reset_budget();
+        // 2 KiB that inflate to 1 MiB are fine
+        assert_eq!(payload(&zstd_bomb(WINDOW_128K, 8)).map(|p| p.len()), Some(1 << 20));
+        // ~2 KiB that inflate past MAX_BLOB are refused, having produced no more than MAX_BLOB + 1
+        reset_budget();
+        let bomb = zstd_bomb(WINDOW_128K, MAX_BLOB / (128 << 10) + 1);
+        assert!(bomb.len() < 3000);
+        assert!(payload(&bomb).is_none());
+        assert!(MAX_TOTAL - BUDGET.get() <= MAX_BLOB + 1);
+    }
+
+    #[test]
+    fn oversized_zstd_windows_are_refused_before_allocation() {
+        reset_budget();
+        // a 1 GiB window (exponent 20) on a frame that holds a single byte
+        assert!(payload(&zstd_bomb(20 << 3, 1)).is_none());
+        // nothing was decoded
+        assert_eq!(BUDGET.get(), MAX_TOTAL);
+    }
+
+    #[test]
+    fn decompression_is_budgeted_per_import() {
+        reset_budget();
+        let bomb = zstd_bomb(WINDOW_128K, MAX_BLOB / (128 << 10) + 1);
+        // each refused bomb still uses up what it inflated, so a document with many of them
+        // stops decompressing after MAX_TOTAL bytes in all
+        for _ in 0..MAX_TOTAL / MAX_BLOB {
+            assert!(payload(&bomb).is_none());
+        }
+        assert_eq!(BUDGET.get(), 0);
+        let small = build::zstd_framed(b"ok");
+        assert!(payload(&small).is_none());
+        // and the same goes for zlib (qCompress) streams
+        assert!(zlib(&miniz_oxide::deflate::compress_to_vec_zlib(b"ok", 6)).is_none());
+        // the next import starts afresh
+        reset_budget();
+        assert_eq!(payload(&small).as_deref(), Some(&b"ok"[..]));
+    }
+
+    #[test]
+    fn zlib_bombs_are_capped() {
+        reset_budget();
+        let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; MAX_BLOB + 1], 10);
+        assert!(bomb.len() < 128 << 10);
+        assert!(zlib(&bomb).is_none());
+        assert!(MAX_TOTAL - BUDGET.get() <= MAX_BLOB);
     }
 
     #[test]

@@ -326,6 +326,7 @@ fn read_item(n: Node) -> ItemDoc {
 
 /// Import a `.drp` archive (or one of its XML documents).
 pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Report)> {
+    blob::reset_budget();
     let mut report = Report::default();
     let mut doc = Doc::default();
     if zip::sniff(bytes) {
