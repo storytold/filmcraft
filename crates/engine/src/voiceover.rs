@@ -173,6 +173,8 @@ pub struct Recording {
     pub punch_out: Option<Tick>,
     pub format: InputFormat,
     pub channel: u32,
+    /// `Session::document_epoch` when the take started: its sequence and track ids belong to that project.
+    pub epoch: u64,
 }
 
 /// Voice-over state of a session: the input device and the recording in progress.
@@ -370,7 +372,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let channel = vo.input_channel.min(format.channels.saturating_sub(1) as u32);
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
-    s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel });
+    s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -451,6 +453,14 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
         return Ok(json!({"recording": false, "placed": false}));
+    }
+    if rec.epoch != s.document_epoch {
+        // another project was installed since the take started: its ids name other tracks now
+        s.voiceover.input().stop();
+        s.voiceover.rec = None;
+        s.voiceover.pending_stop = None;
+        s.voiceover.captured.clear();
+        return Err(bad("audio.voiceover.stop", "the project was replaced; the take was not placed"));
     }
     let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));
     let sr = rec.format.sample_rate.max(1) as i64;
