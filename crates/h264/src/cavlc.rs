@@ -89,10 +89,17 @@ pub(crate) fn init_tables() {
     let _ = tables();
 }
 
-/// Parse residual_block_cavlc(). Coefficients are written to `coeff[start_idx..=end_idx]` in scan order
-/// (entries outside the coded range are left untouched; the caller zeroes them).
+/// Parse residual_block_cavlc(). Each non-zero coefficient is passed to `put` as (scan index in
+/// `start_idx..=end_idx`, level); the others are zero.
 /// `nc` is the nC value (-1 for 4:2:0 chroma DC, -2 for 4:2:2 chroma DC). Returns TotalCoeff.
-pub(crate) fn residual_block(r: &mut BitReader, coeff: &mut [i32], start_idx: usize, end_idx: usize, max_num_coeff: usize, nc: i32) -> Result<u8> {
+pub(crate) fn residual_block(
+    r: &mut BitReader,
+    start_idx: usize,
+    end_idx: usize,
+    max_num_coeff: usize,
+    nc: i32,
+    mut put: impl FnMut(usize, i32),
+) -> Result<u8> {
     let t = tables();
     let col = match nc {
         -1 => 4,
@@ -162,7 +169,7 @@ pub(crate) fn residual_block(r: &mut BitReader, coeff: &mut [i32], start_idx: us
     // runs and placement: highest-frequency coefficient first
     let mut pos = start_idx + total_coeff + zeros_left - 1;
     for (i, &lv) in level.iter().enumerate().take(total_coeff) {
-        coeff[pos] = lv;
+        put(pos, lv);
         if i + 1 == total_coeff {
             break;
         }
@@ -274,7 +281,7 @@ mod tests {
         let b = w.finish();
         let mut r = BitReader::new(&b);
         let mut c = [0i32; 16];
-        let tc = residual_block(&mut r, &mut c, 0, 15, 16, 0).unwrap();
+        let tc = residual_block(&mut r, 0, 15, 16, 0, |k, v| c[k] = v).unwrap();
         assert_eq!(tc, 5);
         assert_eq!(&c[..10], &[0, 3, -1, 0, 0, -1, 1, 0, 1, 0]);
     }
