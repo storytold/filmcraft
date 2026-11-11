@@ -726,10 +726,7 @@ impl Session {
         let view_only_change = previous.as_ref().is_some_and(|sent| {
             sent.revision == cur.revision && sent.saved_revision == cur.saved_revision && sent.path == cur.path && sent.view_epoch != cur.view_epoch
         });
-        if view_only_change
-            && !force_view_snapshot
-            && self.last_view_snapshot_sent.is_some_and(|sent| sent.elapsed() < std::time::Duration::from_millis(250))
-        {
+        if view_only_change && !force_view_snapshot && self.last_view_snapshot_sent.is_some_and(|sent| sent.elapsed() < std::time::Duration::from_millis(250)) {
             return;
         }
         // the view reaches the journal whenever it is newer than what the project file holds

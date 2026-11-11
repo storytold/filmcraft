@@ -113,6 +113,44 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     (timeline_extent(sequence_seconds) - width as f64 / pps).max(0.0)
 }
 
+/// Clamp both animated zoom values and keep each view's center fixed when its zoom must come down.
+pub(crate) fn clamp_zoom_preserving_center(view: &mut TimelineView, sequence_seconds: f64, width: f32, min_view_secs: f64) {
+    let ceiling = max_pps(width, min_view_secs);
+    let floor = min_pps(sequence_seconds, width).min(ceiling);
+    let clamp_one = |scroll: f64, pps: f64| {
+        let old_pps = if pps.is_finite() && pps > 0.0 { pps } else { floor };
+        let new_pps = old_pps.clamp(floor, ceiling);
+        let old_scroll = if scroll.is_finite() { scroll.max(0.0) } else { 0.0 };
+        let center = old_scroll + f64::from(width.max(0.0)) * 0.5 / old_pps;
+        let new_scroll = if new_pps < old_pps { center - f64::from(width.max(0.0)) * 0.5 / new_pps } else { old_scroll };
+        (new_pps, new_scroll.clamp(0.0, max_scroll(sequence_seconds, width, new_pps)))
+    };
+    (view.pps, view.scroll) = clamp_one(view.scroll, view.pps);
+    (view.target_pps, view.target_scroll) = clamp_one(view.target_scroll, view.target_pps);
+}
+
+#[cfg(test)]
+mod zoom_clamp_tests {
+    use super::{clamp_zoom_preserving_center, max_scroll};
+    use crate::state::TimelineView;
+
+    #[test]
+    fn lowering_the_zoom_ceiling_preserves_current_and_target_centers_within_scroll_limits() {
+        let width = 800.0;
+        let sequence_seconds = 600.0;
+        let mut view = TimelineView { pps: 4000.0, scroll: 100.0, target_pps: 8000.0, target_scroll: 200.0, ..TimelineView::default() };
+        let current_center = view.scroll + f64::from(width) * 0.5 / view.pps;
+        let target_center = view.target_scroll + f64::from(width) * 0.5 / view.target_pps;
+
+        clamp_zoom_preserving_center(&mut view, sequence_seconds, width, 0.4);
+
+        assert!((view.scroll + f64::from(width) * 0.5 / view.pps - current_center).abs() < 1e-9);
+        assert!((view.target_scroll + f64::from(width) * 0.5 / view.target_pps - target_center).abs() < 1e-9);
+        assert!(view.scroll <= max_scroll(sequence_seconds, width, view.pps));
+        assert!(view.target_scroll <= max_scroll(sequence_seconds, width, view.target_pps));
+    }
+}
+
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {

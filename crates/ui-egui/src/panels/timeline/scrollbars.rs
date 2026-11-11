@@ -1,4 +1,4 @@
-use super::layout::{max_pps, min_pps, timeline_extent};
+use super::layout::{clamp_zoom_preserving_center, max_pps, min_pps, timeline_extent};
 use super::{Align2, Color32, CursorIcon, Drag, FilmcraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, pos2, vec2};
 use crate::icons::{self, Icon};
 use crate::widgets::{HotNumberOptions, hot_number_numeric};
@@ -139,6 +139,7 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     /// widgets measure identically on the popup's first frame and forever after (a first-frame
     /// mismatch is what made the popup jitter).
     const CONTENT_W: f32 = 257.4;
+    let sequence_seconds = app.session.active_sequence().map(|sequence| sequence.duration().seconds()).unwrap_or(0.0);
     ui.set_max_width(CONTENT_W + 16.0);
     let mut changed = false;
     family_reset(ui);
@@ -295,9 +296,7 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // a zoom established under the old ceiling must obey the new one at once: the same cap the
     // control channel applies when `maxZoomLevel` changes
     if max_zoom_changed {
-        let cap = max_pps(app.last_timeline_width, settings.max_zoom_secs());
-        app.ui.timeline.target_pps = app.ui.timeline.target_pps.min(cap);
-        app.ui.timeline.pps = app.ui.timeline.pps.min(cap);
+        clamp_zoom_preserving_center(&mut app.ui.timeline, sequence_seconds, app.last_timeline_width, settings.max_zoom_secs());
     }
     ui.separator();
     // Alternate Drag Speed first

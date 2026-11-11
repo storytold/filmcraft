@@ -143,7 +143,8 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     let separator = d.app().tokens.separator;
     let ruler = rect_of(&mut d, "timeline.ruler");
     let seq = d.app().session.active_sequence().unwrap();
-    let tracks = seq.video_tracks.len() + seq.audio_tracks.len();
+    let video_tracks = seq.video_tracks.len();
+    let tracks = video_tracks + seq.audio_tracks.len();
     // horizontal separator lines across the track area (the headers' own lines start left of the ruler)
     let mut ys: Vec<f32> = flat_shapes(&d)
         .into_iter()
@@ -164,7 +165,8 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     ys.dedup_by(|a, b| (*a - *b).abs() < 0.1);
     assert!(ys.len() > tracks, "a line under each of the {tracks} tracks and one above the top video track, found {ys:?}");
     let top_edge_y = ys[0];
-    assert!(top_edge_y > ruler.max.y, "the top video edge is drawn below the ruler at y={top_edge_y}");
+    let top_video = rect_of(&mut d, &format!("timeline.track.V{video_tracks}.color"));
+    assert!((top_edge_y - (top_video.min.y + 0.5)).abs() < 1.0, "the top video edge is drawn at the top of its row: line={top_edge_y}, row={top_video:?}");
 }
 
 // Regression test for #703: the playhead's head spanned the whole ruler and covered the markers and

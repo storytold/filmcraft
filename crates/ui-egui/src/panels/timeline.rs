@@ -46,8 +46,8 @@ use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
-use layout::video_row_tops;
 pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+use layout::{clamp_zoom_preserving_center, video_row_tops};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
@@ -743,24 +743,16 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
             v.fit_empty = empty.then_some(v.target_pps);
         }
         // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the
-        // extent and zooming in stops at the Maximum Zoom Level setting
-        let floor = min_pps(seq.duration().seconds(), content.width());
-        let ceiling = max_pps(content.width(), min_zoom_view);
-        let requested_target_pps = v.target_pps;
-        let clamped_target_pps = requested_target_pps.clamp(floor.min(ceiling), ceiling);
-        if requested_target_pps.is_finite()
-            && requested_target_pps > 0.0
-            && clamped_target_pps.is_finite()
-            && clamped_target_pps > 0.0
-            && clamped_target_pps < requested_target_pps
-            && app.tl.zoom_anchor.is_none()
-        {
-            // Enforcing a newly lowered zoom ceiling should not make the visible Timeline jump.
-            let center_time = v.target_scroll + content.width() as f64 * 0.5 / requested_target_pps;
-            v.target_scroll = (center_time - content.width() as f64 * 0.5 / clamped_target_pps).max(0.0);
+        // extent and zooming in stops at the Maximum Zoom Level setting. Keep both animated views
+        // centered if a newly lowered ceiling clamps either zoom value.
+        if app.tl.zoom_anchor.is_none() {
+            clamp_zoom_preserving_center(v, seq.duration().seconds(), content.width(), min_zoom_view);
+        } else {
+            let floor = min_pps(seq.duration().seconds(), content.width());
+            let ceiling = max_pps(content.width(), min_zoom_view);
+            v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
+            v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         }
-        v.target_pps = clamped_target_pps;
-        v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
         let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
