@@ -127,6 +127,12 @@ fn body(layout: &Layout, r: &Row, it: &TrackItem) -> Rect {
     Rect::from_min_max(pos2(layout.x_of(it.start), r.rect.min.y + 1.0), pos2(layout.x_of(it.end()), r.rect.max.y - 1.0))
 }
 
+/// Bottom of the audio clip header available to overlay controls.
+pub(super) fn header_bottom(layout: &Layout, row: &Row, clip: &TrackItem) -> f32 {
+    // Keyframe handles extend 5.5 points above the highest possible line.
+    band(body(layout, row, clip)).top() - 6.0
+}
+
 /// Whether `pos` is on `clip`'s Volume line, within 4 px.
 pub fn on_line(seq: &Sequence, layout: &Layout, clip: ClipId, pos: Pos2) -> bool {
     let Some((r, it)) = find(seq, layout, clip) else { return false };

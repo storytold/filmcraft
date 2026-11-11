@@ -21,7 +21,12 @@ pub(super) fn playhead_scissors(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: 
     let x = layout.x_of(time);
     let Some(row) = layout.rows.iter().find(|row| row.track == track_id) else { return };
     let Some(track) = seq.track(row.track) else { return };
-    let shown = layout.shown(row).intersect(layout.content);
+    let mut shown = layout.shown(row).intersect(layout.content);
+    shown.min.x = shown.left().max(layout.x_of(clip.start));
+    shown.max.x = shown.right().min(layout.x_of(clip.end()));
+    if row.kind == super::TrackKind::Audio {
+        shown.max.y = shown.bottom().min(crate::panels::timeline_volume::header_bottom(layout, row, clip));
+    }
     if row.lane || track.locked || time <= clip.start || time >= clip.end() || x < shown.left() || x > shown.right() {
         return;
     }

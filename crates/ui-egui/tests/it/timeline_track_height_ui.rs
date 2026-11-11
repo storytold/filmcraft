@@ -171,7 +171,7 @@ fn playhead_scissors_centers_on_selected_audio_and_video_clips() {
     d.ok("engine.execute", json!({"command":"playhead.set","params":{"time":time.0}}));
     assert!(visible(&mut d));
     let button = rect_of(&mut d, "timeline.playheadScissors");
-    assert!((button.center().x - x).abs() < 1.0 && button.width() >= 24.0 && button.height() >= 24.0);
+    assert!((button.center().x - x).abs() < 1.0 && button.width() >= 24.0);
     d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
     d.frames(3);
     let seq = d.app().session.active_sequence().unwrap();
@@ -194,6 +194,40 @@ fn playhead_scissors_centers_on_selected_audio_and_video_clips() {
     assert_eq!(seq.audio_tracks[0].items.len(), a_count);
     assert!(seq.video_tracks[0].items.iter().any(|clip| clip.start == time));
     d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
+}
+
+#[test]
+fn scissors_leave_adjacent_clips_and_volume_keyframes_clickable() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline":{"videoTrackHeight":60.0,"audioTrackHeight":60.0}}));
+    d.frames(3);
+    let seq = d.app().session.active_sequence().unwrap();
+    let audio = seq.audio_tracks[0].items[0].id;
+    let video = &seq.video_tracks[0].items;
+    let first = video[0].id;
+    let next = video[1].id;
+    let end = video[0].end();
+    let count = video.len();
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[first.0],"linked":false}}));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"time":end.0 - 1}}));
+    let button = rect_of(&mut d, "timeline.playheadScissors");
+    let adjacent = rect_of(&mut d, &format!("timeline.clip.{}", next.0));
+    assert!(button.right() <= adjacent.left() + 1.0);
+    d.ok("ui.click", json!({"x":adjacent.left()+9.0,"y":button.center().y}));
+    assert!(d.app().session.state.selection.contains(&next));
+    assert_eq!(d.app().session.active_sequence().unwrap().video_tracks[0].items.len(), count);
+
+    d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[audio.0],"linked":false}}));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":24}}));
+    d.ok("engine.execute", json!({"command":"effects.setParam","params":{"clip":audio.0,"effect":"volume","param":"level","value":15.0}}));
+    let button = rect_of(&mut d, "timeline.playheadScissors");
+    let line = rect_of(&mut d, &format!("timeline.clip.{}.volume", audio.0));
+    let count = d.app().session.active_sequence().unwrap().audio_tracks[0].items.len();
+    assert!(button.bottom() < line.center().y);
+    d.ok("ui.click", json!({"x":button.center().x,"y":line.center().y,"modifiers":{"ctrl":true,"command":true}}));
+    let items = &d.app().session.active_sequence().unwrap().audio_tracks[0].items;
+    assert_eq!(items.len(), count);
+    assert_eq!(items[0].effect("volume").unwrap().param("level").unwrap().keyframes.len(), 1);
 }
 
 #[test]
