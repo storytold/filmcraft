@@ -12,6 +12,7 @@ mod decoder;
 mod frame;
 mod grain;
 mod header;
+mod inspect;
 mod inter;
 mod inter_info;
 mod intra;
@@ -28,6 +29,7 @@ mod transform;
 
 pub use decoder::Decoder;
 pub use header::{ColorConfig, SequenceHeader};
+pub use inspect::{IndependentFrameInfo, independent_frame_header_info};
 pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.
