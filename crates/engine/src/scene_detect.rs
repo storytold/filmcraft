@@ -170,7 +170,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         // clip duration, so it is capped (a day at 60 fps) rather than trusted.
         let n = scheduled_frames(it.duration, fd, &mut remaining)?;
         let capped = it.duration.0 / fd.0.max(1) > n;
-        let tail = capped.then(|| it.source_time_at(it.end()));
+        // a reversed clip ends at its source in point (source_time_at(end) is one tick before it)
+        let tail = capped.then(|| if it.reverse { it.source_in } else { it.source_time_at(it.end()) });
         let frames: Vec<(Tick, Tick)> = (0..n)
             .map(|j| {
                 let t = it.start + Tick(fd.0 * j);
@@ -264,6 +265,10 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|c| json!({"clip": c.clip.0, "cuts": c.cuts.iter().map(|x| x.0.0).collect::<Vec<_>>(), "mediaCuts": c.cuts.iter().map(|x| x.1.0).collect::<Vec<_>>()}))
                     .collect::<Vec<_>>()
             );
+            // poll applies the results and drops them, so its own warning list never reaches this reply
+            if let Some(w) = unanalysed_warning(r) {
+                out["warnings"] = json!([w]);
+            }
         }
         poll(s);
     } else {
