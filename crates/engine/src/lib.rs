@@ -90,10 +90,28 @@ pub fn temp_dir() -> std::path::PathBuf {
 /// returned as is.
 pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
     use std::hash::{BuildHasher, Hasher};
-    static DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+    // The folder and, on unix, the (device, inode) it was created with.
+    static DIR: std::sync::Mutex<Option<(std::path::PathBuf, Option<(u64, u64)>)>> = std::sync::Mutex::new(None);
+    // Where a folder's identity cannot be read (non-unix) this is `None`, and the check below is only "still a real folder".
+    fn identity(p: &std::path::Path) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = p;
+            None
+        }
+    }
     let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
-    // a folder removed since (a temp cleaner) is replaced by a new private one, not recreated by a caller with the default mode
-    if let Some(d) = cached.as_ref().filter(|d| cfg!(target_arch = "wasm32") || d.is_dir()) {
+    // A folder removed or swapped since (a temp cleaner, then another user's folder or link at the
+    // same name) is replaced by a new private one, not recreated by a caller with the default mode.
+    // shortcut: this is a check at reuse; a swap between the check and the write needs directory-handle I/O.
+    if let Some((d, _)) =
+        cached.as_ref().filter(|(d, id)| cfg!(target_arch = "wasm32") || (std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()) && identity(d) == *id))
+    {
         return Ok(d.clone());
     }
     let mut last = None;
@@ -101,7 +119,7 @@ pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
         let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
         let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
         if cfg!(target_arch = "wasm32") {
-            *cached = Some(path.clone());
+            *cached = Some((path.clone(), None));
             return Ok(path);
         }
         let mut dir = std::fs::DirBuilder::new();
@@ -110,7 +128,7 @@ pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
         // `create` fails when the name exists, so a folder someone else made is never accepted
         match dir.create(&path) {
             Ok(()) => {
-                *cached = Some(path.clone());
+                *cached = Some((path.clone(), identity(&path)));
                 return Ok(path);
             }
             Err(e) => last = Some(e),
