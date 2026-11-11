@@ -1059,6 +1059,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-audio"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=8f3e83aaeeba38d7077088fb045eac4891470a04#8f3e83aaeeba38d7077088fb045eac4891470a04"
+dependencies = [
+ "craft-media",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
@@ -1094,7 +1104,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=1b34eba41e62138fc2438d2734523b302840b45d#1b34eba41e62138fc2438d2734523b302840b45d"
+source = "git+https://github.com/storytold/craft-libs?rev=8f3e83aaeeba38d7077088fb045eac4891470a04#8f3e83aaeeba38d7077088fb045eac4891470a04"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1919,25 +1929,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-aac"
-version = "0.17.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-ac3"
-version = "0.17.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-apv"
 version = "0.17.0"
 dependencies = [
@@ -2016,6 +2007,7 @@ version = "0.17.0"
 name = "filmcraft-cli"
 version = "0.17.0"
 dependencies = [
+ "craft-media",
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
@@ -2024,7 +2016,6 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-mpegts",
  "filmcraft-mxf",
- "filmcraft-ogg",
  "filmcraft-platform",
  "filmcraft-project",
  "filmcraft-render",
@@ -2038,8 +2029,8 @@ dependencies = [
 name = "filmcraft-codecs"
 version = "0.17.0"
 dependencies = [
- "filmcraft-aac",
- "filmcraft-ac3",
+ "craft-audio",
+ "craft-media",
  "filmcraft-apv",
  "filmcraft-av1",
  "filmcraft-avi",
@@ -2052,12 +2043,9 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
- "filmcraft-mpa",
  "filmcraft-mpeg2v",
  "filmcraft-mpegts",
  "filmcraft-mxf",
- "filmcraft-ogg",
- "filmcraft-opus",
  "filmcraft-prores",
  "filmcraft-testkit",
  "filmcraft-time",
@@ -2156,13 +2144,12 @@ dependencies = [
 name = "filmcraft-export"
 version = "0.17.0"
 dependencies = [
- "filmcraft-aac",
+ "craft-audio",
  "filmcraft-apv",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-dnx",
- "filmcraft-flac",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-h264enc",
@@ -2182,15 +2169,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "web-time",
-]
-
-[[package]]
-name = "filmcraft-flac"
-version = "0.17.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2354,15 +2332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-mpa"
-version = "0.17.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-mpeg2v"
 version = "0.17.0"
 dependencies = [
@@ -2384,20 +2353,6 @@ name = "filmcraft-mxf"
 version = "0.17.0"
 dependencies = [
  "chrono",
- "filmcraft-testkit",
-]
-
-[[package]]
-name = "filmcraft-ogg"
-version = "0.17.0"
-dependencies = [
- "filmcraft-testkit",
-]
-
-[[package]]
-name = "filmcraft-opus"
-version = "0.17.0"
-dependencies = [
  "filmcraft-testkit",
 ]
 

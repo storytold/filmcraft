@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use filmcraft_aac::{Encoder, EncoderConfig};
+use craft_audio::aac::{Encoder, EncoderConfig};
 
 const RATE: u32 = 48_000;
 
@@ -12,7 +12,7 @@ const RATE: u32 = 48_000;
 fn adts_tone(channels: usize, secs: u32) -> Vec<u8> {
     let tone: Vec<f32> = (0..RATE * secs).map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin() * 0.5).collect();
     let planar: Vec<&[f32]> = (0..channels).map(|_| tone.as_slice()).collect();
-    let mut enc = Encoder::new(EncoderConfig { adts: true, ..EncoderConfig::cbr(RATE, channels, 128_000) }).unwrap();
+    let mut enc = Encoder::new(EncoderConfig::cbr(RATE, channels, 128_000).with_adts(true)).unwrap();
     let mut out = Vec::new();
     for au in enc.encode(&planar).into_iter().chain(enc.flush()) {
         out.extend(au);
