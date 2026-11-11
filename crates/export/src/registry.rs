@@ -122,6 +122,23 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// The frame as [`render`](Self::render) followed by
+    /// [`over_black_rgba8`](filmcraft_render::Image::over_black_rgba8) would give it: opaque 8-bit
+    /// sRGB RGBA at the render size, `(width, height, pixels)`. The export asks for this instead
+    /// when it needs nothing else done to the picture (SDR, no alpha, no resampling or placement,
+    /// no overlay), so a renderer can hand over the final bytes without making the float frame.
+    /// `None` to let the CPU render this frame.
+    fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.render(project, seq, t, opts, sources).map(|img| (img.w, img.h, img.over_black_rgba8()))
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
