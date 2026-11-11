@@ -45,6 +45,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: stabilize,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "effects.stopStabilize",
@@ -55,6 +56,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: stop,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

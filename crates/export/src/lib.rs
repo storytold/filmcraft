@@ -20,6 +20,7 @@ mod audio_out;
 mod deflate;
 mod job;
 mod mkv_out;
+mod mp3_out;
 mod mxf_out;
 mod pace;
 mod pcm;

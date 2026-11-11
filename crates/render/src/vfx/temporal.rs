@@ -263,12 +263,9 @@ pub fn clear_stabilizer_cache() {
 /// over from the block before) at a time, whatever the clip's length.
 pub(super) const ANALYSIS_BLOCK: usize = 64;
 
-/// The step between each pair of consecutive frames of `n`, and the size of the frames. `decode`
-/// makes frame `k` (`None` when it can't be read: its steps are the identity), `size` is a frame's
-/// (width, height), `step` the motion from one frame to the next given the size of the first frame
-/// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
-/// they take part in are known; only the last frame of a block stays for the next one. `None` when
-/// cancelled or when no frame could be read.
+/// [`chunked_steps_with`] without the per-frame progress callback: the tests drive the block
+/// bookkeeping through it, production analysis wants the callback.
+#[cfg(test)]
 pub(super) fn chunked_steps<T: Send + Sync>(
     n: usize,
     block: usize,
@@ -280,7 +277,13 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     chunked_steps_with(n, block, decode, size, step, cancelled, None)
 }
 
-/// [`chunked_steps`], calling `on_frame` with the frame number as each decoded frame is done.
+/// The step between each pair of consecutive frames of `n`, and the size of the frames. `decode`
+/// makes frame `k` (`None` when it can't be read: its steps are the identity), `size` is a frame's
+/// (width, height), `step` the motion from one frame to the next given the size of the first frame
+/// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
+/// they take part in are known; only the last frame of a block stays for the next one. `on_frame`
+/// hears each frame number as a decoded frame is done. `None` when cancelled or when no frame
+/// could be read.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn chunked_steps_with<T: Send + Sync>(
     n: usize,

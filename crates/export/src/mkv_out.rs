@@ -121,6 +121,9 @@ fn audio_track_spec(settings: &ExportSettings, sr: u32, channels: u32, encoded: 
             Ok((a, AudioTrack::Encoded { sr, written: 0 }))
         }
         AudioCodec::Auto => Err(ExportError::Unsupported("Matroska: the audio codec must be resolved before writing".into())),
+        // `audio_codec()` resolves an MP3 request to PCM in this container, so no encoder produces
+        // it here; refused rather than written as something a player would misread.
+        AudioCodec::Mp3 => Err(ExportError::Unsupported("Matroska: MP3 audio is not written as Matroska".into())),
     }
 }
 

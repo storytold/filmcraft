@@ -527,7 +527,7 @@ pub struct UiState {
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
     pub expanded_fx: Vec<String>,
-    /// Effects panel: the Lumetri Presets folder shown as a thumbnail grid (wide panel).
+    /// Effects panel: the Color Grading Presets folder shown as a thumbnail grid (wide panel).
     #[serde(default)]
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
@@ -544,7 +544,7 @@ pub struct UiState {
     #[serde(default = "shown")]
     pub show_status_bar: bool,
     pub dark: bool,
-    /// Lumetri scopes visible in the Program monitor area.
+    /// Color Grading scopes visible in the Program monitor area.
     pub show_scopes: bool,
     /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden. Only
     /// `view.fullScreenProgram` turns it on, so it is not part of the saved state.
@@ -688,7 +688,7 @@ pub struct UiState {
     /// `panels::graphics_templates`.
     #[serde(default)]
     pub gfx_templates: crate::panels::graphics_templates::GfxTemplatesState,
-    /// Lumetri Scopes, Timecode, Events, Progress and Reference Monitor settings. See
+    /// Video Scopes, Timecode, Events, Progress and Reference Monitor settings. See
     /// `panels::panel_state`.
     #[serde(default)]
     pub panels: crate::panels::panel_state::PanelsState,
@@ -954,6 +954,8 @@ pub struct SequenceSettingsDraft {
     /// File ▸ New ▸ Sequence…: the dialog makes a new sequence (`file.newSequence`) with these
     /// settings and `video_tracks` / `audio_tracks` tracks, instead of changing the active one.
     pub new_sequence: bool,
+    /// New Sequence: the bin the Project panel was showing, which the new sequence lands in.
+    pub bin: Option<u64>,
     pub video_tracks: u32,
     pub audio_tracks: u32,
     pub fps_num: i64,
@@ -962,6 +964,8 @@ pub struct SequenceSettingsDraft {
     pub height: u32,
     pub scale_motion: bool,
     pub drop_frame: bool,
+    /// Video Display Format: Timecode, Feet + Frames 35mm / 16mm or Frames.
+    pub display: filmcraft_time::TimeDisplay,
     pub mix: String,
     pub sample_rate: u32,
     pub max_render_quality: bool,
@@ -976,6 +980,7 @@ impl Default for SequenceSettingsDraft {
             tab: "general".into(),
             name: String::new(),
             new_sequence: false,
+            bin: None,
             video_tracks: 3,
             audio_tracks: 3,
             fps_num: 24_000,
@@ -984,6 +989,7 @@ impl Default for SequenceSettingsDraft {
             height: 1080,
             scale_motion: true,
             drop_frame: false,
+            display: filmcraft_time::TimeDisplay::Timecode,
             mix: "Stereo".into(),
             sample_rate: 48_000,
             max_render_quality: false,
