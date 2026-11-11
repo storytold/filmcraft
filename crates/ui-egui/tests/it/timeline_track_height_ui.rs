@@ -134,7 +134,7 @@ fn rect_of(d: &mut Driver, id: &str) -> egui::Rect {
 }
 
 #[test]
-fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
+fn playhead_scissors_centers_on_selected_audio_and_video_clips() {
     let mut d = Driver::demo();
     d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":24}}));
     d.frames(3);
@@ -144,6 +144,7 @@ fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
     let other_clip = seq.video_tracks[0].items[1].id.0;
     let a_count = seq.audio_tracks[0].items.len();
     let a_clip = seq.audio_tracks[0].items[0].id.0;
+    let clip_end = seq.audio_tracks[0].items[0].end();
     let rect = rect_of(&mut d, &format!("timeline.clip.{a_clip}"));
     let ruler = rect_of(&mut d, "timeline.ruler");
     let view = &d.app().ui.timeline;
@@ -162,10 +163,15 @@ fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
     d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[a_clip],"linked":false}}));
     d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":0}}));
     assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"time":clip_end.0}}));
+    assert!(!visible(&mut d));
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":1}}));
+    let edge_button = rect_of(&mut d, "timeline.playheadScissors");
+    assert!(edge_button.left() >= ruler.left() && edge_button.width() >= 24.0);
     d.ok("engine.execute", json!({"command":"playhead.set","params":{"time":time.0}}));
     assert!(visible(&mut d));
     let button = rect_of(&mut d, "timeline.playheadScissors");
-    assert!((button.center().x - x).abs() < 1.0 && button.width() > button.height());
+    assert!((button.center().x - x).abs() < 1.0 && button.width() >= 24.0 && button.height() >= 24.0);
     d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
     d.frames(3);
     let seq = d.app().session.active_sequence().unwrap();
@@ -177,6 +183,9 @@ fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
     assert_eq!(d.app().session.active_sequence().unwrap().audio_tracks[0].items.len(), a_count);
     d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[v_clip],"linked":false}}));
     let video = rect_of(&mut d, &format!("timeline.clip.{v_clip}"));
+    d.ok("ui.click", json!({"id":"timeline.track.V1.locked"}));
+    assert!(!visible(&mut d));
+    d.ok("ui.click", json!({"id":"timeline.track.V1.locked"}));
     let button = rect_of(&mut d, "timeline.playheadScissors");
     assert!(video.contains(button.center()) && (button.center().x - x).abs() < 1.0);
     d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
@@ -185,12 +194,28 @@ fn playhead_scissors_centers_on_selected_audio_video_and_linked_edits() {
     assert_eq!(seq.audio_tracks[0].items.len(), a_count);
     assert!(seq.video_tracks[0].items.iter().any(|clip| clip.start == time));
     d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
+}
+
+#[test]
+fn linked_scissors_cut_both_tracks_at_the_playhead_and_undo_together() {
+    let mut d = Driver::demo();
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"frame":24}}));
+    let time = d.app().session.playhead();
+    let seq = d.app().session.active_sequence().unwrap();
+    let v_count = seq.video_tracks[0].items.len();
+    let a_count = seq.audio_tracks[0].items.len();
+    let v_clip = seq.video_tracks[0].items[0].id.0;
     d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[v_clip]}}));
+    let before = d.app().session.project.clone();
     assert_eq!(d.app().session.state.selection.len(), 2);
     d.ok("ui.click", json!({"id":"timeline.playheadScissors"}));
     let seq = d.app().session.active_sequence().unwrap();
     assert_eq!(seq.video_tracks[0].items.len(), v_count + 1);
     assert_eq!(seq.audio_tracks[0].items.len(), a_count + 1);
+    assert!(seq.video_tracks[0].items.iter().any(|clip| clip.start == time));
+    assert!(seq.audio_tracks[0].items.iter().any(|clip| clip.start == time));
+    d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
+    assert_eq!(*d.app().session.project, *before);
 }
 
 // Regression test for #703: the lines between the timeline's tracks were drawn in the timeline's own

@@ -27,16 +27,21 @@ pub(super) fn playhead_scissors(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: 
     }
     // Keep the button above the waveform's volume line and inside short or partially visible rows.
     let button_height = 14.0_f32.min(shown.height());
-    if button_height < 12.0 {
+    if button_height < 12.0 || shown.width() < 24.0 {
         return;
     }
-    let center = pos2(x, shown.top() + button_height * 0.5);
-    let button = Rect::from_center_size(center, vec2(24.0, button_height)).intersect(shown);
-    let resp = ui.interact(button, egui::Id::unique(("playhead-scissors", row.track.0)), Sense::click());
-    app.auto.add("timeline.playheadScissors", button, "Split clip at playhead");
+    let center = pos2(x.clamp(shown.left() + 12.0, shown.right() - 12.0), shown.top() + button_height * 0.5);
+    let button = Rect::from_center_size(center, vec2(24.0, button_height));
+    let hit_rect = Rect::from_min_size(button.min, vec2(24.0, shown.height().min(24.0)));
+    let resp = ui.interact(hit_rect, egui::Id::unique(("playhead-scissors", row.track.0)), Sense::click()).on_hover_text(tl!("Add Edit"));
+    app.auto.add("timeline.playheadScissors", hit_rect, "Split clip at playhead");
     let painter = ui.painter().with_clip_rect(button);
-    painter.rect_filled(button, 3.0, theme.playhead);
-    let icon_rect = Rect::from_center_size(center, vec2(16.0, 16.0));
+    let fill = if resp.is_pointer_button_down_on() { theme.pressed } else { theme.playhead };
+    painter.rect_filled(button, 3.0, fill);
+    if resp.hovered() || resp.has_focus() {
+        painter.rect_stroke(button, 3.0, (1.0, Color32::WHITE), egui::StrokeKind::Inside);
+    }
+    let icon_rect = Rect::from_center_size(center, egui::Vec2::splat(button_height));
     icons::paint(&painter, icon_rect, Icon::Scissors, Color32::WHITE);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
