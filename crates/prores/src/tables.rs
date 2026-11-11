@@ -49,13 +49,13 @@ pub(crate) const LEVEL_CB: [Codebook; 10] =
     [cb(0, 1, 0), cb(0, 2, 2), cb(0, 1, 1), cb(0, 1, 2), cb(0, 1, 0), cb(1, 2, 0), cb(1, 2, 0), cb(1, 2, 0), cb(1, 2, 0), cb(2, 3, 0)];
 
 /// Initial DC codebook context for the second DC of a component.
-pub(crate) const DC_CTX_INIT: u32 = 5;
+pub const DC_CTX_INIT: u32 = 5;
 /// Initial AC run / level codebook contexts.
-pub(crate) const RUN_CTX_INIT: u32 = 4;
-pub(crate) const LEVEL_CTX_INIT: u32 = 2;
+pub const RUN_CTX_INIT: u32 = 4;
+pub const LEVEL_CTX_INIT: u32 = 2;
 
 /// Progressive-frame coefficient scan: scan position → raster index within the 8×8 block.
-pub(crate) const SCAN_PROGRESSIVE: [u8; 64] = [
+pub const SCAN_PROGRESSIVE: [u8; 64] = [
     0, 1, 8, 9, 2, 3, 10, 11, //
     16, 17, 24, 25, 18, 19, 26, 27, //
     4, 5, 12, 20, 13, 6, 7, 14, //
@@ -67,7 +67,7 @@ pub(crate) const SCAN_PROGRESSIVE: [u8; 64] = [
 ];
 
 /// Interlaced-field coefficient scan: scan position → raster index within the 8×8 block.
-pub(crate) const SCAN_INTERLACED: [u8; 64] = [
+pub const SCAN_INTERLACED: [u8; 64] = [
     0, 8, 1, 9, 16, 24, 17, 25, //
     2, 10, 3, 11, 18, 26, 19, 27, //
     32, 40, 33, 34, 41, 48, 56, 49, //

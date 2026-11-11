@@ -135,7 +135,7 @@ pub fn recycle(frame: Arc<VideoFrame>) {
     let Ok(f) = Arc::try_unwrap(frame) else { return };
     match f.data {
         PixelData::Rgba8(d) => give(&U8, d),
-        PixelData::RgbaF32(_) => {}
+        PixelData::RgbaF32(_) | PixelData::Coded(_) => {}
         PixelData::Yuv8 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U8, p)),
         PixelData::Yuv16 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U16, p)),
     }

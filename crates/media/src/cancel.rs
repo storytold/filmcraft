@@ -29,6 +29,28 @@ thread_local! {
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static GPU_FRAMES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` with the GPU-frames hint `on` (restoring the previous one after): the caller
+/// composites on the GPU, so a decoder may hand out pictures the compositor decodes itself
+/// (`filmcraft_frame::PixelData::Coded`: ProRes and DNx bitstreams, ADR 0002) instead of decoding
+/// them to planes. Every other caller gets decoded pixels.
+pub fn with_gpu_frames<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    /// Restores the previous hint however `f` ends.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            GPU_FRAMES.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(GPU_FRAMES.with(|c| c.replace(on)));
+    f()
+}
+
+/// Whether the work on this thread welcomes coded GPU frames (see [`with_gpu_frames`]).
+pub fn gpu_frames() -> bool {
+    GPU_FRAMES.with(Cell::get)
 }
 
 /// Run `f` as background work when `on` (restoring the previous hint after): a thumbnail, not a

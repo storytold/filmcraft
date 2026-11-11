@@ -5,6 +5,10 @@
 //! midpoint). Rate control: a binary search finds the smallest uniform quantisation scale factor
 //! whose frame fits the CBR payload, then macroblocks get one finer step in scan order while the
 //! budget allows.
+//!
+//! Alpha (§7.3.1.2) follows a scan line's colour macroblocks: DCT-coded like luma with the
+//! macroblock's quantiser, or lossless (differential RLE, or raw samples where those are
+//! shorter); the frame size grows by half (equation 7.1's alpha factor).
 
 use crate::bits::Writer;
 use crate::dct::fdct8x8;
@@ -23,6 +27,17 @@ pub struct EncoderConfig {
     pub color_volume: ColorVolume,
     /// Pixel aspect ratio to signal (0/0 = not signalled).
     pub par: (u16, u16),
+    /// Code the frame's alpha, and how (`None`: no alpha).
+    pub alpha: Option<AlphaCoding>,
+}
+
+/// How alpha is coded (§7.3.1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlphaCoding {
+    /// DCT blocks like luma, quantised with the colour macroblock's scale.
+    Dct,
+    /// Lossless: differential run lengths, or raw samples.
+    Lossless,
 }
 
 impl EncoderConfig {
@@ -31,7 +46,7 @@ impl EncoderConfig {
             Profile::Hqx | Profile::R444 => 10,
             _ => 8,
         };
-        EncoderConfig { profile, width, height, bit_depth, color_volume: ColorVolume::Bt709, par: (0, 0) }
+        EncoderConfig { profile, width, height, bit_depth, color_volume: ColorVolume::Bt709, par: (0, 0), alpha: None }
     }
 
     pub fn chroma(&self) -> ChromaFormat {
@@ -53,11 +68,15 @@ pub struct Encoder {
 struct Prepared {
     nw: usize,
     ns: usize,
+    /// Blocks per macroblock: the colour blocks, then the alpha blocks of DCT-coded alpha.
     nblk: usize,
+    ncol: usize,
     /// `[mb * nblk + k][r]`; `[..][0]` is the DC value.
     t: Vec<[f32; 64]>,
-    /// DC bits of each macroblock (independent of the quantiser).
+    /// DC bits of each macroblock, its lossless alpha included (independent of the quantiser).
     dc_bits: Vec<u32>,
+    /// Lossless alpha of each macroblock: what to write (value, bits).
+    rle: Vec<Vec<(u32, u32)>>,
 }
 
 impl Encoder {
@@ -81,7 +100,7 @@ impl Encoder {
             return Err(Error::Input(format!("{} does not support {}-bit", cfg.profile.name(), cfg.bit_depth)));
         }
         let info = cid_info(cfg.profile.cid()).ok_or_else(|| Error::Input(format!("no compression table for {}", cfg.profile.name())))?;
-        let frame_size = cfg.profile.frame_size(cfg.width, cfg.height);
+        let frame_size = crate::tables::ri_frame_size(cfg.width, cfg.height, cfg.profile.c0(), cfg.alpha.is_some());
         let header_size = header::header_size_for(cfg.height);
         Ok(Encoder { cfg, info, frame_size, header_size, last_q: 8 })
     }
@@ -113,6 +132,9 @@ impl Encoder {
         if f.y.len() != n || f.cb.len() != cn || f.cr.len() != cn {
             return Err(Error::Input("plane sizes do not match the frame geometry".into()));
         }
+        if cfg.alpha.is_some() && f.alpha.as_ref().is_none_or(|a| a.len() != n) {
+            return Err(Error::Input("alpha coding needs an alpha plane of the frame's size".into()));
+        }
         let prep = self.prepare(f);
         let vlc = vlc(self.info.vlc);
         let budget_bits = (self.frame_size as u64 - self.header_size as u64 - 4) * 8;
@@ -133,7 +155,13 @@ impl Encoder {
         let cfg = &self.cfg;
         let nw = cfg.width.div_ceil(16) as usize;
         let ns = cfg.height.div_ceil(16) as usize;
-        let layout = self.mb_layout();
+        let ncol = self.mb_layout().len();
+        // DCT-coded alpha: four more blocks per macroblock (plane 3, coded after the colour)
+        let layout: Vec<(u8, u8, u8)> = if cfg.alpha == Some(AlphaCoding::Dct) {
+            self.mb_layout().iter().chain(&crate::decode::LAYOUT_ALPHA).copied().collect()
+        } else {
+            self.mb_layout().to_vec()
+        };
         let nblk = layout.len();
         let depth = cfg.bit_depth as i32;
         let shift = depth - f.bit_depth as i32;
@@ -142,21 +170,25 @@ impl Encoder {
         let p = self.info.p as f32;
         let w = self.info.weights;
         let cmbw = if cfg.chroma() == ChromaFormat::Yuv444 { 16 } else { 8 };
-        let planes: [(&[u16], usize, usize, usize); 3] = [
+        let alpha: &[u16] = f.alpha.as_deref().unwrap_or(&[]);
+        let planes: [(&[u16], usize, usize, usize); 4] = [
             (&f.y, f.width as usize, f.height as usize, 16),
             (&f.cb, f.chroma_width() as usize, f.chroma_height() as usize, cmbw),
             (&f.cr, f.chroma_width() as usize, f.chroma_height() as usize, cmbw),
+            (alpha, f.width as usize, f.height as usize, 16),
         ];
-        let sample = |pl: usize, x: usize, y: usize| -> f32 {
+        // a sample at the coded depth (edges repeated)
+        let code = |pl: usize, x: usize, y: usize| -> i32 {
             let (d, pw, ph, _) = planes[pl];
             let v = d[y.min(ph - 1) * pw + x.min(pw - 1)] as i32;
             let v = if shift >= 0 { v << shift } else { (v + (1 << (-shift - 1))) >> -shift };
-            v.min((1 << depth) - 1) as f32 - mid
+            v.min((1 << depth) - 1)
         };
+        let sample = |pl: usize, x: usize, y: usize| -> f32 { code(pl, x, y) as f32 - mid };
         let do_row = |s: usize| -> Vec<[f32; 64]> {
             let mut out = Vec::with_capacity(nw * nblk);
             for mb in 0..nw {
-                for &(pl, xo, yo) in layout {
+                for &(pl, xo, yo) in &layout {
                     let pl = pl as usize;
                     let x0 = mb * planes[pl].3 + xo as usize;
                     let y0 = s * 16 + yo as usize;
@@ -167,7 +199,8 @@ impl Encoder {
                         }
                     }
                     fdct8x8(&mut b);
-                    let wt = &w[(pl != 0) as usize];
+                    // (alpha is weighted like luma)
+                    let wt = &w[(pl == 1 || pl == 2) as usize];
                     let mut t = [0f32; 64];
                     let dc_max = if depth == 8 { 1023.0 } else { 4095.0 };
                     t[0] = (b[0] * inv_scale).round().clamp(-dc_max - 1.0, dc_max);
@@ -188,13 +221,31 @@ impl Encoder {
         #[cfg(not(feature = "threads"))]
         let rows: Vec<Vec<[f32; 64]>> = (0..ns).map(do_row).collect();
         let t: Vec<[f32; 64]> = rows.into_iter().flatten().collect();
+        // lossless alpha, macroblock by macroblock
+        let rle: Vec<Vec<(u32, u32)>> = if cfg.alpha == Some(AlphaCoding::Lossless) {
+            (0..ns * nw)
+                .map(|m| {
+                    let (s, mb) = (m / nw, m % nw);
+                    let mut px = [0u32; 256];
+                    for (count, p) in px.iter_mut().enumerate() {
+                        let y = count / 16;
+                        // serpentine: odd lines right to left
+                        let x = if y.is_multiple_of(2) { count % 16 } else { 15 - count % 16 };
+                        *p = code(3, mb * 16 + x, s * 16 + y) as u32;
+                    }
+                    rle_alpha(&px, depth as u32)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // DC bits with per-row, per-component prediction
         let v = vlc(self.info.vlc);
         let mut dc_bits = vec![0u32; nw * ns];
         for s in 0..ns {
-            let mut pred = [0i32; 3];
+            let mut pred = [0i32; 4];
             for mb in 0..nw {
-                let mut bits = 0;
+                let mut bits = rle.get(s * nw + mb).map_or(0, |r| r.iter().map(|t| t.1).sum());
                 for (k, &(pl, _, _)) in layout.iter().enumerate() {
                     let dc = t[(s * nw + mb) * nblk + k][0] as i32;
                     let e = dc - pred[pl as usize];
@@ -205,7 +256,7 @@ impl Encoder {
                 dc_bits[s * nw + mb] = bits;
             }
         }
-        Prepared { nw, ns, nblk, t, dc_bits }
+        Prepared { nw, ns, nblk, ncol, t, dc_bits, rle }
     }
 
     /// Per-macroblock qsf values whose coded frame fits `budget_bits`.
@@ -213,8 +264,10 @@ impl Encoder {
         let p_bits = if self.cfg.bit_depth == 8 { 4 } else { 6 };
         let max_amp = if p_bits == 4 { 1024 } else { 4096 };
         let nmb = prep.nw * prep.ns;
+        // macroblock headers: colour, and DCT-coded alpha's own
+        let headers = if prep.nblk > prep.ncol { 24 } else { 12 };
         let mb_bits = |mb: usize, q: u32| -> u32 {
-            let mut bits = 12 + prep.dc_bits[mb];
+            let mut bits = headers + prep.dc_bits[mb];
             for k in 0..prep.nblk {
                 bits += ac_bits(&prep.t[mb * prep.nblk + k], q as f32, vlc, p_bits, max_amp);
             }
@@ -291,25 +344,42 @@ impl Encoder {
         let ycbcr444 = cfg.chroma() == ChromaFormat::Yuv444 && !rgb;
         let write_row = |s: usize| -> Vec<u8> {
             let mut w = Writer::new();
-            let mut pred = [0i32; 3];
+            let mut pred = [0i32; 4];
+            let mut block = |w: &mut Writer, m: usize, k: usize, pl: u8, q: u32| {
+                let t = &prep.t[m * prep.nblk + k];
+                let dc = t[0] as i32;
+                let e = dc - pred[pl as usize];
+                pred[pl as usize] = dc;
+                let eta = dc_eta(e);
+                let (c, l) = vlc.dc_code[eta as usize];
+                w.put(c as u32, l as u32);
+                if eta > 0 {
+                    let rho = if e > 0 { e } else { e + (1 << eta) - 1 };
+                    w.put(rho as u32, eta);
+                }
+                write_ac(w, t, q as f32, vlc, p_bits, max_amp);
+            };
             for mb in 0..prep.nw {
                 let m = s * prep.nw + mb;
                 let q = qs[m];
                 w.put(q, 11);
                 w.put(ycbcr444 as u32, 1);
                 for (k, &(pl, _, _)) in layout.iter().enumerate() {
-                    let t = &prep.t[m * prep.nblk + k];
-                    let dc = t[0] as i32;
-                    let e = dc - pred[pl as usize];
-                    pred[pl as usize] = dc;
-                    let eta = dc_eta(e);
-                    let (c, l) = vlc.dc_code[eta as usize];
-                    w.put(c as u32, l as u32);
-                    if eta > 0 {
-                        let rho = if e > 0 { e } else { e + (1 << eta) - 1 };
-                        w.put(rho as u32, eta);
+                    block(&mut w, m, k, pl, q);
+                }
+            }
+            // the line's alpha after its colour
+            for mb in 0..prep.nw {
+                let m = s * prep.nw + mb;
+                if prep.nblk > prep.ncol {
+                    w.put(qs[m], 11);
+                    w.put(0, 1);
+                    for k in prep.ncol..prep.nblk {
+                        block(&mut w, m, k, 3, qs[m]);
                     }
-                    write_ac(&mut w, t, q as f32, vlc, p_bits, max_amp);
+                }
+                for &(v, n) in prep.rle.get(m).map_or(&[][..], |r| r.as_slice()) {
+                    w.put(v, n);
                 }
             }
             w.finish_aligned(4)
@@ -330,8 +400,8 @@ impl Encoder {
             field: FieldCode::Frame,
             macf: false,
             crc: false,
-            alpha: false,
-            lossless_alpha: false,
+            alpha: cfg.alpha.is_some(),
+            lossless_alpha: cfg.alpha == Some(AlphaCoding::Lossless),
             premultiplied_alpha: false,
             width: cfg.width,
             lines: cfg.height,
@@ -364,6 +434,62 @@ impl Encoder {
         out.extend_from_slice(&EOF_SIGNATURE);
         Ok(out)
     }
+}
+
+/// Lossless alpha of one macroblock (its 256 samples in serpentine order, §7.3.1.2 and §8.3; the
+/// inverse of the decoder's `decode_rle_alpha`): the run-length coding, or the raw samples where
+/// that is shorter. Runs take the predictor (previous sample, or the linear continuation of the
+/// last two) that extends furthest.
+fn rle_alpha(px: &[u32; 256], d: u32) -> Vec<(u32, u32)> {
+    let mask = (1u32 << d) - 1;
+    let rice = d / 2 - 2;
+    let mut out = vec![(1, 4)];
+    let (mut d1, mut d2) = (mask >> 1, mask >> 1);
+    let mut count = 0;
+    while count < 256 {
+        let predict = |p: u32, d1: u32, d2: u32| if p == 1 { (2 * d1).wrapping_sub(d2) } else { d1 };
+        let mut best = (0usize, 0u32, 0u32);
+        for p in 0..2 {
+            let diff = px[count].wrapping_sub(predict(p, d1, d2)) & mask;
+            let (mut a1, mut a2) = (d1, d2);
+            let mut n = 0;
+            // (a run is at most 511 long: Elias gamma with up to 8 leading zeros)
+            while count + n < 256 && n < 511 {
+                let v = predict(p, a1, a2).wrapping_add(diff) & mask;
+                if v != px[count + n] {
+                    break;
+                }
+                (a2, a1) = (a1, v);
+                n += 1;
+            }
+            if n > best.0 {
+                best = (n, p, diff);
+            }
+        }
+        let (n, p, diff) = best;
+        out.push((p, 1));
+        // Elias gamma: g zeros, then n in g + 1 bits
+        let g = 31 - (n as u32).leading_zeros();
+        out.push((1, g + 1));
+        out.push((n as u32 - (1 << g), g));
+        // the difference folded to small codes for small magnitudes, Rice-coded when shorter
+        let dcw = if diff <= mask >> 1 { 2 * diff } else { 2 * (mask - diff) + 1 };
+        let q = dcw >> rice;
+        if q + 1 + rice < d {
+            out.push((1, 1));
+            out.push((((1u32 << q) - 1) << 1, q + 1));
+            out.push((dcw & ((1 << rice) - 1), rice));
+        } else {
+            out.push((0, 1));
+            out.push((dcw, d));
+        }
+        (d1, d2) = if n >= 2 { (px[count + n - 1], px[count + n - 2]) } else { (px[count], d1) };
+        count += n;
+    }
+    if out.iter().map(|t| t.1).sum::<u32>() > 4 + 256 * d {
+        return std::iter::once((0, 4)).chain(px.iter().map(|&v| (v, d))).collect();
+    }
+    out
 }
 
 #[inline]
@@ -435,4 +561,39 @@ fn write_ac(w: &mut Writer, t: &[f32; 64], q: f32, v: &VlcSet, p_bits: u32, max_
         run = 0;
     }
     w.put(v.eob.0 as u32, v.eob.1 as u32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rle_alpha;
+
+    fn bits(t: &[(u32, u32)]) -> u32 {
+        t.iter().map(|t| t.1).sum()
+    }
+
+    #[test]
+    fn lossless_alpha_picks_runs_ramps_or_raw_samples() {
+        // opaque: one run from the mid-grey start value
+        let flat = rle_alpha(&[1023; 256], 10);
+        assert_eq!(flat[0], (1, 4));
+        assert!(bits(&flat) < 80, "{flat:?}");
+        // a ramp along the serpentine: the linear predictor carries it
+        let mut ramp = [0u32; 256];
+        for (i, v) in ramp.iter_mut().enumerate() {
+            *v = (100 + 3 * i as u32) & 1023;
+        }
+        let r = rle_alpha(&ramp, 10);
+        assert!(r.iter().skip(1).any(|&t| t == (1, 1)) && bits(&r) < 80, "{r:?}");
+        // noise: raw samples
+        let mut noise = [0u32; 256];
+        let mut x = 0x2545_f491u32;
+        for v in &mut noise {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *v = x >> 24;
+        }
+        let n = rle_alpha(&noise, 8);
+        assert_eq!((n[0], n.len(), bits(&n)), ((0, 4), 257, 4 + 256 * 8));
+    }
 }
