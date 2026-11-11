@@ -457,8 +457,8 @@ pub struct Session {
     pub saved_revision: u64,
     /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
     /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
-    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
-    /// the autosave journal.
+    /// clean project must stay clean. The project file saves these changes; the recovery journal
+    /// captures them only alongside unsaved project content.
     pub view_epoch: u64,
     /// The view counter as of the last successful save: what the project file on disk holds.
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
@@ -711,7 +711,12 @@ impl Session {
             view_epoch: self.view_epoch,
             saved_view_epoch: self.saved_view_epoch,
         };
-        if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
+        let already_sent = self.persistence.as_ref().is_some_and(|p| {
+            p.last_sent.as_ref().is_some_and(|last| {
+                if dirty { last == &cur } else { last.revision == cur.revision && last.saved_revision == cur.saved_revision && last.path == cur.path }
+            })
+        });
+        if already_sent {
             return;
         }
         // Recovery is for unsaved project content. View-only changes remain eligible for the
@@ -796,7 +801,8 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. The saved project stores view-only changes; the recovery journal
+    /// includes the view only while the project content is dirty.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }

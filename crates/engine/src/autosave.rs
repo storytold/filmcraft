@@ -541,8 +541,8 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
-    /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
-    /// project's view-only change journals too, but must not be offered as "unsaved changes".
+    /// Whether the project CONTENT was unsaved when this snapshot was written. The journal only
+    /// stores a view alongside unsaved project content.
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
@@ -608,8 +608,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             ..JournalMeta::default()
         });
         if !meta.dirty {
-            // a clean project's view-only journal is not unsaved work: never offered as
-            // recovery, and not left behind either
+            // A legacy or malformed clean snapshot is not unsaved work: never offer it as
+            // recovery, and do not leave it behind.
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
@@ -655,7 +655,7 @@ pub(crate) struct Sent {
     pub path: Option<String>,
     /// Bumped when only the stored Timeline view (zoom, scroll, sliders) changed. Tracked
     /// separately from `revision` so per-frame view changes never invalidate revision-keyed
-    /// caches, while still reaching the autosave journal.
+    /// caches, while still reaching the recovery journal when the project content is dirty.
     pub view_epoch: u64,
     /// The view counter as of the last save: it must travel in the comparison too, or a save
     /// that catches the view up sends nothing and leaves the journal behind.
@@ -666,11 +666,11 @@ struct Snapshot {
     project: Arc<Project>,
     view: filmcraft_project::ProjectView,
     revision: u64,
-    /// The session's view counter at this snapshot: a view-only change journals again even
-    /// though `revision` is unchanged.
+    /// The session's view counter at this snapshot: a view change on dirty content journals again
+    /// even though `revision` is unchanged.
     view_epoch: u64,
-    /// Whether the project content was unsaved when this snapshot was taken (a clean project's
-    /// view-only change is journaled but never offered as recovery).
+    /// Whether the project content was unsaved when this snapshot was taken; clean view-only
+    /// changes do not produce a recovery snapshot.
     content_dirty: bool,
     path: Option<String>,
 }
@@ -798,6 +798,7 @@ impl Persistence {
             autosaved_view: 0,
             first_pending: None,
             last_change: Instant::now(),
+            clear_retry_at: None,
             next_autosave: Instant::now(),
             meta: JournalMeta { pid, started_unix: started, generator: filmcraft_format::generator(), ..Default::default() },
         };
@@ -980,13 +981,15 @@ struct Worker {
     /// Newest unsaved state (None = clean).
     latest: Option<Snapshot>,
     /// Revision currently in the journal (0 = none) / last auto-saved revision. The view
-    /// counters sit beside them: a view-only change must journal again at the same revision.
+    /// counters sit beside them: a view change on dirty content must journal again at the same revision.
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
     autosaved_view: u64,
     first_pending: Option<Instant>,
     last_change: Instant,
+    /// Retry journal deletion after transient filesystem errors without repeated clean updates.
+    clear_retry_at: Option<Instant>,
     next_autosave: Instant,
     meta: JournalMeta,
 }
@@ -1007,7 +1010,7 @@ impl Worker {
 
     fn run(mut self, rx: Receiver<Msg>) {
         loop {
-            let due = [self.journal_due(), self.prefs.enabled.then_some(self.next_autosave)].into_iter().flatten().min();
+            let due = [self.journal_due(), self.prefs.enabled.then_some(self.next_autosave), self.clear_retry_at].into_iter().flatten().min();
             let msg = match due {
                 Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
                     Ok(m) => Some(m),
@@ -1022,6 +1025,9 @@ impl Worker {
             match msg {
                 Some(Msg::Dirty(s)) => {
                     let now = Instant::now();
+                    if self.clear_retry_at.is_some() && self.clear_journal() {
+                        self.clear_retry_at = None;
+                    }
                     self.first_pending.get_or_insert(now);
                     self.last_change = now;
                     self.latest = Some(*s);
@@ -1029,7 +1035,10 @@ impl Worker {
                 Some(Msg::Clean) => {
                     self.latest = None;
                     self.first_pending = None;
-                    self.clear_journal();
+                    self.clear_retry_at = None;
+                    if !self.clear_journal() {
+                        self.clear_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                    }
                 }
                 Some(Msg::Prefs(p)) => {
                     let was = self.autosave_interval();
@@ -1039,7 +1048,10 @@ impl Worker {
                         self.next_autosave = Instant::now() + self.autosave_interval();
                     }
                     if journal_was && !self.prefs.recovery_journal {
-                        self.clear_journal();
+                        self.clear_retry_at = None;
+                        if !self.clear_journal() {
+                            self.clear_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                        }
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
@@ -1060,6 +1072,9 @@ impl Worker {
                 None => {}
             }
             let now = Instant::now();
+            if self.clear_retry_at.is_some_and(|due| due <= now) {
+                self.clear_retry_at = if self.clear_journal() { None } else { Some(now + Duration::from_secs(1)) };
+            }
             if self.journal_due().is_some_and(|d| d <= now) {
                 // The worker reports write failures through its event channel.
                 let _ = self.write_journal();
@@ -1067,11 +1082,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view)) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1105,6 +1116,7 @@ impl Worker {
                 self.journaled = s.revision;
                 self.journaled_view = s.view_epoch;
                 self.first_pending = None;
+                self.clear_retry_at = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 Ok(s.revision)
             }
@@ -1119,11 +1131,21 @@ impl Worker {
         }
     }
 
-    fn clear_journal(&mut self) {
-        let _ = fs::remove_file(self.session_dir.join(META));
-        let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
-        self.journaled = 0;
-        self.journaled_view = 0;
+    fn clear_journal(&mut self) -> bool {
+        let mut cleared = true;
+        for name in [META, SNAPSHOT] {
+            if let Err(error) = fs::remove_file(self.session_dir.join(name))
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                self.error(format!("recovery journal: could not remove {name}: {error}"));
+                cleared = false;
+            }
+        }
+        if cleared {
+            self.journaled = 0;
+            self.journaled_view = 0;
+        }
+        cleared
     }
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
@@ -1217,8 +1239,10 @@ mod durability_tests {
         session.execute("file.openDemoProject", json!({})).unwrap();
         assert!(!session.is_dirty());
         session.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        let last_sent = session.persistence.as_ref().and_then(|p| p.last_sent.clone());
         session.view_changed();
         session.sync_persistence();
+        assert_eq!(session.persistence.as_ref().and_then(|p| p.last_sent.clone()), last_sent, "clean view changes do not resend journal cleanup");
         assert_eq!(session.persistence.as_ref().unwrap().flush().unwrap(), None);
         let session_dir = session.persistence.as_ref().unwrap().session_dir.clone();
         assert!(!session_dir.join(SNAPSHOT).exists());
@@ -1271,6 +1295,51 @@ mod worker_failure_tests {
 
     fn failure_toasts(s: &mut Session) -> usize {
         s.drain_events().into_iter().filter(|e| matches!(e, Event::Toast { error: true, .. })).count()
+    }
+
+    #[test]
+    fn failed_journal_cleanup_can_be_retried_without_erasing_counters_early() {
+        struct TestDir(PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TestDir(std::env::temp_dir().join(format!("fc-clean-retry-{}", std::process::id())));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let meta_dir = dir.0.join(META);
+        fs::create_dir(&meta_dir).unwrap();
+        fs::write(dir.0.join(SNAPSHOT), b"stale snapshot").unwrap();
+        let (events, _receiver) = channel();
+        let mut worker = Worker {
+            data_dir: dir.0.clone(),
+            session_dir: dir.0.clone(),
+            local_offset: |_| 0,
+            debounce: Duration::from_millis(10),
+            prefs: AutoSavePrefs::default(),
+            events,
+            latest: None,
+            journaled: 9,
+            journaled_view: 3,
+            autosaved: 0,
+            autosaved_view: 0,
+            first_pending: None,
+            last_change: Instant::now(),
+            clear_retry_at: None,
+            next_autosave: Instant::now(),
+            meta: JournalMeta::default(),
+        };
+
+        assert!(!worker.clear_journal(), "a directory at the metadata path prevents the first cleanup");
+        assert_eq!((worker.journaled, worker.journaled_view), (9, 3));
+        assert!(!dir.0.join(SNAPSHOT).exists());
+
+        fs::remove_dir(&meta_dir).unwrap();
+        fs::write(&meta_dir, b"stale metadata").unwrap();
+        assert!(worker.clear_journal(), "a later retry removes the remaining metadata");
+        assert!(!meta_dir.exists());
+        assert_eq!((worker.journaled, worker.journaled_view), (0, 0));
     }
 
     fn verify_report_and_foreground_save(s: &mut Session, dir: &Path) {

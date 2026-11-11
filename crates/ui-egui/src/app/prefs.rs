@@ -189,9 +189,8 @@ impl FilmcraftApp {
         } else if self.timeline_view_last != Some(shown) {
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
-            // the zoom and scroll are part of the saved session: carry the change into the
-            // autosave journal via the view counter (never the revision -- these change on
-            // every frame of a drag, and a clean project must stay clean)
+            // the zoom and scroll are part of the saved project view. The view counter keeps
+            // them separate from content edits; recovery journals them only alongside dirty content.
             self.session.view_changed();
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);

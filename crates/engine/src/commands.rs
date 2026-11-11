@@ -2692,8 +2692,8 @@ fn build() -> Vec<CommandSpec> {
             let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
             let tab = s.state.open_sequences.remove(from);
             s.state.open_sequences.insert(to, tab);
-            // the tab order is part of the saved view: it must reach the autosave journal even
-            // on a clean project (view-only change: no cache invalidation, project stays clean)
+            // the tab order is part of the saved project view. This is a view-only change, so it
+            // does not invalidate caches or make clean project content dirty.
             s.view_changed();
             Ok(json!({"index": to}))
         }),
