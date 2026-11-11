@@ -589,7 +589,8 @@ fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Resu
 }
 
 /// Most sync candidates, and bytes read from them, one search for a random-access sample may try.
-const MAX_RANDOM_ACCESS_PROBES: usize = 4096;
+// 65 536 probes is 18 minutes of an unkeyed 60 fps stream: far past any real GOP, yet each hostile probe stays bounded by the byte budget
+const MAX_RANDOM_ACCESS_PROBES: usize = 65_536;
 const MAX_RANDOM_ACCESS_PROBE_BYTES: usize = 512 << 20;
 
 /// The container's sync flags may be wrong for the codec (an MP4 without `stss` marks every
