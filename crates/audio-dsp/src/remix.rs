@@ -47,6 +47,13 @@ pub const MAX_ANALYSIS_SAMPLE_RATE: u32 = 384_000;
 /// Most pieces a plan may have. A planned remix has a handful of joints (a few hundred for a very
 /// long extension); a stored plan with more is damaged or hostile.
 pub const MAX_PIECES: usize = 65_536;
+/// The longest a project may run, in seconds, rounded up: `Tick::MAX` (`i64::MAX / 4` ticks at 254 016 000 000
+/// ticks/s) is 9.08 million seconds. (This crate has no dependencies, so the figure is repeated here.)
+const MAX_PROJECT_SECONDS: i64 = 9_100_000;
+/// Most output samples a plan may describe: the longest project at the highest rate remix supports, so no
+/// valid plan reaches it. A render reads at most two pieces per output sample it produces, so the work of
+/// rendering a playable plan is bounded by its output samples, whatever the piece count.
+pub const MAX_OUTPUT_SAMPLES: i64 = MAX_ANALYSIS_SAMPLE_RATE as i64 * MAX_PROJECT_SECONDS;
 
 /// One piece of the output: `len` samples read from the source at `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +95,7 @@ impl Plan {
     pub fn cuts(&self) -> Vec<(i64, i64)> {
         self.pieces.windows(2).map(|w| (w[0].src + w[0].len, w[1].src)).collect()
     }
-    /// Whether playback can follow this plan with bounded work: at most [`MAX_PIECES`] pieces, a
+    /// Whether playback can follow this plan with bounded work: at most [`MAX_PIECES`] pieces and [`MAX_OUTPUT_SAMPLES`] output samples, a
     /// non-negative crossfade, non-negative lengths, and, when there are joints, every piece at
     /// least as long as the crossfade and non-empty. Then no more than two pieces contribute to any
     /// output sample, and every position [`render`] computes fits in `i64`.
@@ -108,8 +115,8 @@ impl Plan {
                 return false;
             }
             match total.checked_add(p.len) {
-                Some(t) => total = t,
-                None => return false,
+                Some(t) if t <= MAX_OUTPUT_SAMPLES => total = t,
+                _ => return false,
             }
         }
         total.checked_add(x).is_some()
@@ -1063,6 +1070,10 @@ mod tests {
         assert_eq!(Plan::from_text("-1;0,100;200,100"), None);
         assert_eq!(Plan::from_text("0;0,-5"), None);
         assert_eq!(Plan::from_text(&format!("0;0,{};0,{}", i64::MAX, i64::MAX)), None);
+        // the output budget counts samples: the longest project at the highest rate fits, one sample more does not
+        assert!(Plan::from_text(&format!("0;0,{}", MAX_OUTPUT_SAMPLES)).is_some());
+        assert_eq!(Plan::from_text(&format!("0;0,{};0,1", MAX_OUTPUT_SAMPLES)), None);
+        assert!(MAX_OUTPUT_SAMPLES as i128 >= 384_000 * (i64::MAX as i128 / 4 / 254_016_000_000));
         assert_eq!(Plan::from_text(&format!("0;{},1", i64::MAX)), None);
         let many = format!("0{}", ";0,1".repeat(MAX_PIECES + 1));
         assert_eq!(Plan::from_text(&many), None);
