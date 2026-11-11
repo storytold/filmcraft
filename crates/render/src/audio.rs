@@ -1,5 +1,6 @@
 //! Clip-level audio: clip gain → clip effects → Volume / Channel Volume / Panner, audio transitions
-//! and speed changes (varispeed resampling), summed per track. The track/submix/Mix graph that
+//! and speed changes (varispeed resampling, or a time stretch that keeps the pitch with Maintain
+//! Audio Pitch, see [`crate::stretch`]), summed per track. The track/submix/Mix graph that
 //! consumes it is [`crate::mixer`].
 //!
 //! Stereo, mono and adaptive tracks carry two channels. 5.1 tracks carry six (L, R, C, LFE, Ls,
@@ -320,7 +321,7 @@ fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn S
 
 /// A clip's source sound: `len` samples from sample `m0` of the source's own time, at the
 /// sequence's sample rate (a media source's audio, or a nested sequence's mix).
-type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
+pub(crate) type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
 /// timeline samples `[a0, a0 + n)`, `w` channels.
@@ -388,6 +389,9 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         remixed
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
+    } else if let Some(stretched) = crate::stretch::applies(item, speed).then(|| crate::stretch::read(item, src, a0, n, sr, w)).flatten() {
+        // Maintain Audio Pitch: time-stretched (falls back to varispeed for a span too long to read)
+        Some(stretched)
     } else {
         // varispeed: read a longer span and resample linearly
         let span = ((n as f64) * speed).ceil() as usize + 2;
@@ -441,6 +445,24 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         dst[off..off + m].copy_from_slice(&ch[..m]);
     }
     out
+}
+
+/// The source channels (of `available`) a clip plays on a track of `w` channels (2 or 6), as
+/// [`raw_channels`] picks them: a six-channel fold-down, its [`source_pair`], or its [`source_51`]
+/// channels. Maintain Audio Pitch aligns its grains on these and stretches only these.
+pub(crate) fn played_channels(item: &TrackItem, available: usize, w: usize) -> Vec<usize> {
+    let mut v = if w == 2 {
+        source_51_fold(item, available).unwrap_or_else(|| {
+            let (l, r) = source_pair(item, available);
+            vec![l, r]
+        })
+    } else {
+        source_51(item, available)
+    };
+    v.retain(|&c| c < available);
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 /// The source channels a clip on a 5.1 track plays: six picked channels (Modify ▸ Audio Channels),

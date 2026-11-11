@@ -170,6 +170,9 @@ type Subbands = [[[f32; tables::SUBBANDS]; 36]; 2];
 pub struct Decoder {
     /// The synthesis filter's `V` vector per channel (§2.4.3.2, Figure A.2).
     v: [[f32; 1024]; 2],
+    /// Where the newest 64 values of each `V` start: `V` is a ring, logical index `l` sits at
+    /// `(pos + l) % 1024`.
+    pos: [usize; 2],
     sb: Box<Subbands>,
 }
 
@@ -181,12 +184,13 @@ impl Default for Decoder {
 
 impl Decoder {
     pub fn new() -> Self {
-        Self { v: [[0.0; 1024]; 2], sb: Box::new([[[0.0; 32]; 36]; 2]) }
+        Self { v: [[0.0; 1024]; 2], pos: [0; 2], sb: Box::new([[[0.0; 32]; 36]; 2]) }
     }
 
     /// Forget the filter history.
     pub fn reset(&mut self) {
         self.v = [[0.0; 1024]; 2];
+        self.pos = [0; 2];
     }
 
     /// Decode the frame at the start of `frame` (which may run on into the next frames; only
@@ -216,12 +220,12 @@ impl Decoder {
             36
         };
         let window = tables::window();
-        let matrix = tables::matrix();
+        let matrix = tables::matrix_t();
         let mut channels = vec![vec![0f32; slots * 32]; nch];
         for (ch, out) in channels.iter_mut().enumerate() {
-            let (Some(v), Some(sb)) = (self.v.get_mut(ch), self.sb.get(ch)) else { continue };
+            let (Some(v), Some(pos), Some(sb)) = (self.v.get_mut(ch), self.pos.get_mut(ch), self.sb.get(ch)) else { continue };
             for (slot, o) in sb.iter().take(slots).zip(out.as_chunks_mut::<32>().0) {
-                synthesize(v, matrix, window, slot, o);
+                synthesize(v, pos, matrix, window, slot, o);
             }
         }
         Ok(Frame { header, channels })
@@ -393,18 +397,43 @@ fn layer2(r: &mut BitReader, h: &Header, out: &mut Subbands) -> Result<()> {
 
 /// The synthesis subband filter (§2.4.3.2, Figure A.2) for one time slot: 32 subband samples in,
 /// 32 PCM samples out.
-fn synthesize(v: &mut [f32; 1024], n: &[[f32; 32]; 64], d: &[f32; 512], s: &[f32; 32], out: &mut [f32; 32]) {
-    v.copy_within(0..960, 64);
-    for (vi, row) in v.iter_mut().zip(n.iter()) {
-        *vi = row.iter().zip(s.iter()).map(|(a, b)| a * b).sum();
-    }
-    for (j, o) in out.iter_mut().enumerate() {
-        let mut acc = 0f32;
-        for i in 0..8 {
-            acc += v[i * 128 + j] * d[i * 64 + j] + v[i * 128 + 96 + j] * d[i * 64 + 32 + j];
+fn synthesize(v: &mut [f32; 1024], pos: &mut usize, n: &[[f32; 36]; 32], d: &[f32; 512], s: &[f32; 32], out: &mut [f32; 32]) {
+    // shift V by 64: move the ring's start back instead of copying 960 values
+    *pos = (*pos + 1024 - 64) % 1024;
+    let p = *pos;
+    // Only 33 of the 64 rows of N are distinct (N[32 - i] = -N[i], N[96 - i] = N[i]): compute the
+    // sums of rows 0..=16 and 48..64 (padded to 36 for the vector width), accumulated column by
+    // column, each sum adding its terms in k order from -0.0 like `Iterator::sum`
+    let mut acc = [-0.0f32; 36];
+    for (col, &sk) in n.iter().zip(s.iter()) {
+        for (a, &c) in acc.iter_mut().zip(col.iter()) {
+            *a += c * sk;
         }
-        *o = acc;
     }
+    if let Some(head) = v.get_mut(p..).and_then(|t| t.first_chunk_mut::<64>()) {
+        for i in 0..16 {
+            head[i] = acc[i];
+            head[32 - i] = -acc[i];
+        }
+        head[16] = acc[16];
+        for j in 0..16 {
+            head[48 + j] = acc[17 + j];
+            if j > 0 {
+                head[48 - j] = acc[17 + j];
+            }
+        }
+    }
+    let mut o = [0f32; 32];
+    // p is a multiple of 64, so each 32-value run below is contiguous in the ring
+    let run = |l: usize| v.get((p + l) % 1024..).and_then(|t| t.first_chunk::<32>());
+    for (i, db) in d.as_chunks::<64>().0.iter().enumerate() {
+        let (Some(va), Some(vc)) = (run(i * 128), run(i * 128 + 96)) else { continue };
+        let (Some(da), Some(dc)) = (db.first_chunk::<32>(), db.last_chunk::<32>()) else { continue };
+        for ((((o, &a), &b), &c), &e) in o.iter_mut().zip(va).zip(da).zip(vc).zip(dc) {
+            *o += a * b + c * e;
+        }
+    }
+    *out = o;
 }
 
 #[cfg(test)]

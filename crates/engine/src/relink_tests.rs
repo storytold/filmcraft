@@ -267,6 +267,8 @@ fn replace_footage_ignores_old_background_proxy_and_ingest_outputs() {
             job: u64::MAX,
             on_done,
             sources,
+            source_durations: Default::default(),
+            started_from: Vec::new(),
             outputs: std::sync::Arc::new(std::sync::Mutex::new(items.iter().map(|id| (*id, original.to_string_lossy().into_owned())).collect())),
         });
         crate::proxies::poll(&mut s);
@@ -296,7 +298,14 @@ fn replace_footage_invalidates_pending_jobs_for_the_same_source() {
             })
             .collect();
         let outputs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        s.media_jobs.push(PendingJob { job: u64::MAX, on_done, sources, outputs: outputs.clone() });
+        s.media_jobs.push(PendingJob {
+            job: u64::MAX,
+            on_done,
+            sources,
+            source_durations: Default::default(),
+            started_from: Vec::new(),
+            outputs: outputs.clone(),
+        });
         // Rejected replacements must not invalidate work that still belongs to this source.
         assert!(s.execute("media.replaceFootage", json!({"item":items[0].0,"path":root.join("missing.mov").to_string_lossy()})).is_err());
         assert_eq!(s.media_jobs[0].sources.len(), 2);
@@ -340,6 +349,8 @@ fn replace_footage_cleans_up_unreferenced_job_outputs() {
             job: u64::MAX,
             on_done,
             sources,
+            source_durations: Default::default(),
+            started_from: Vec::new(),
             outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![
                 (items[0], stale.to_string_lossy().into_owned()),
                 (items[1], valid.to_string_lossy().into_owned()),

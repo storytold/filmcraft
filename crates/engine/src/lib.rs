@@ -42,6 +42,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -165,7 +166,7 @@ pub trait Services: Send + Sync {
 pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        std::fs::read(path)
+        filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -197,7 +198,7 @@ impl Services for FsServices {
         Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
-        Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
+        Some(std::sync::Arc::new(|p: &str| filmcraft_media::reader::read_regular_file(std::path::Path::new(p))))
     }
     /// Media are read in place from the open file: a clip costs its index, not its size.
     #[cfg(any(unix, windows))]
@@ -1393,6 +1394,8 @@ mod media_watch_tests;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod named_targets_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]
