@@ -25,6 +25,24 @@ pub trait ByteReader: Send + Sync {
 
 pub type SharedReader = Arc<dyn ByteReader>;
 
+/// Open `path` for reading without blocking on a FIFO that was swapped in after the metadata check
+/// (`O_NONBLOCK`; it changes nothing for a regular file, and the callers check the handle's type).
+/// `O_NONBLOCK` has no std constant: it is 0o4000 on Linux and 4 on the BSD family, and the open
+/// stays a plain one on any other target.
+fn open_nonblocking(path: &std::path::Path) -> io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        o.custom_flags(0o4000);
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))]
+        o.custom_flags(0x4);
+    }
+    o.open(path)
+}
+
 /// Read a whole regular file. A FIFO, device or folder is refused, checked before opening (a named
 /// pipe with no writer would block the open) and again on the open handle, and at most the length
 /// the handle reports is read: a link to an endless source cannot fill memory, and a file that
@@ -35,7 +53,7 @@ pub fn read_regular_file(path: &std::path::Path) -> io::Result<Vec<u8>> {
     if !std::fs::metadata(path)?.is_file() {
         return Err(not_regular());
     }
-    let file = std::fs::File::open(path)?;
+    let file = open_nonblocking(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(not_regular());
@@ -164,7 +182,7 @@ impl FileReader {
         if !std::fs::metadata(path)?.is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file", path.display())));
         }
-        let file = std::fs::File::open(path)?;
+        let file = open_nonblocking(path)?;
         let m = file.metadata()?;
         if !m.is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file", path.display())));
@@ -181,7 +199,7 @@ impl FileReader {
         if let Some(file) = self.pool.get(self.id) {
             return Ok(file);
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = open_nonblocking(&self.path)?;
         let m = file.metadata()?;
         if !m.is_file() || m.len() < self.len {
             return Err(io::Error::other(format!("{} changed since it was opened", self.path.display())));
@@ -299,6 +317,21 @@ mod regular_file_tests {
         }
         assert!(read_regular_file(&fifo).is_err());
         assert!(super::FileReader::open(&fifo).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The open itself must not block on a FIFO swapped in after the path check (a FIFO with no writer).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opening_a_fifo_with_no_writer_does_not_block() {
+        let dir = std::env::temp_dir().join(format!("fc-reg-fifo-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        if std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            let f = super::open_nonblocking(&fifo).unwrap();
+            assert!(!f.metadata().unwrap().is_file());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
