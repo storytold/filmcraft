@@ -140,7 +140,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
             std::fs::read_dir(&dir).map_err(|e| format!("{dir}: {e}"))?.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         let frames = sequence_frames(&n, &names);
         let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let loader: filmcraft_media::sequence::FrameLoader = Arc::new(|p: &str| std::fs::read(p));
+        let loader: filmcraft_media::sequence::FrameLoader = Arc::new(|p: &str| filmcraft_media::reader::read_regular_file(std::path::Path::new(p)));
         // the timebase of a fresh install (Settings ▸ Media ▸ Indeterminate Media Timebase)
         let src = ImageSequenceSource::new(&name, frames, filmcraft_time::FrameRate::FPS_29_97, loader).map_err(|e| format!("{path}: {e}"))?;
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();
@@ -153,7 +153,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         });
         return Ok(v);
     }
-    let bytes: Arc<[u8]> = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?.into();
+    let bytes: Arc<[u8]> = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?.into();
     let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let head = &bytes[..bytes.len().min(70_000)];
     if filmcraft_mxf::sniff(head) {
