@@ -587,3 +587,67 @@ fn export_with_missing_media_fails_unless_allowed() {
     assert!(String::from_utf8_lossy(&render.stderr).contains("still.png"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--bridge` with `--data-dir` (an app started with `--data-dir`) sends the token from that
+/// folder's `control-token` file, for `exec` and for `mcp`.
+#[test]
+fn bridge_reads_the_token_file_from_data_dir() {
+    use std::io::{BufRead, BufReader};
+    let dir = tempfile::tempdir().unwrap();
+    let token = "0123456789abcdef".repeat(4);
+    let path = dir.path().join("control-token");
+    std::fs::write(&path, format!("{token}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    // A stand-in for the app: records the token of each request and answers it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (seen_tx, seen) = std::sync::mpsc::channel::<Value>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let seen_tx = seen_tx.clone();
+            std::thread::spawn(move || {
+                let mut w = stream.try_clone().unwrap();
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let _ = seen_tx.send(req["token"].clone());
+                    let reply = if req["method"] == "initialize" || req["method"] == "tools/list" { json!({}) } else { json!("done") };
+                    let _ = writeln!(w, "{}", json!({"id": req["id"], "ok": true, "result": reply}));
+                }
+            });
+        }
+    });
+    let data_dir = dir.path().to_str().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+        .env_remove("FILMCRAFT_CONTROL_TOKEN")
+        .args(["--bridge", &addr, "--data-dir", data_dir, "exec", "sequence.inspect"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(seen.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), json!(token));
+    // mcp: one tool call through the bridge.
+    let mut mcp = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+        .env_remove("FILMCRAFT_CONTROL_TOKEN")
+        .args(["mcp", "--bridge", &addr, "--data-dir", data_dir])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    for msg in [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "command_run", "arguments": {"id": "sequence.inspect", "params": {}}}}),
+    ] {
+        writeln!(stdin, "{msg}").unwrap();
+    }
+    let got = seen.recv_timeout(std::time::Duration::from_secs(20));
+    drop(stdin);
+    let _ = mcp.kill();
+    let _ = mcp.wait();
+    assert_eq!(got.unwrap(), json!(token));
+}

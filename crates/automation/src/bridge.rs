@@ -18,10 +18,18 @@ const MAX_IDLE: usize = 4;
 
 type Conn = (BufReader<tokio::net::tcp::OwnedReadHalf>, tokio::net::tcp::OwnedWriteHalf);
 
+/// The app's reply to a request without a valid credential (`control_server.rs`).
+const AUTH_FAILED: &str = "control authentication failed";
+
 pub struct BridgeClient {
     addr: String,
-    /// Inherited from the same owner-controlled environment as the desktop app.
-    token: Option<String>,
+    /// Inherited from the same owner-controlled environment as the desktop app, or read from its
+    /// `control-token` file.
+    token: std::sync::RwLock<Option<String>>,
+    /// The data folder whose `control-token` file the credential came from (no
+    /// `FILMCRAFT_CONTROL_TOKEN`): read again when the app refuses the credential, because every
+    /// Settings start of the app writes a new one.
+    token_dir: Option<std::path::PathBuf>,
     /// Connections with no request in flight. A request takes one (or opens one) for its whole
     /// round trip and puts it back only once the reply is read, so a slow or abandoned request
     /// never holds up the others or leaves its late reply for the next one to read (#1538).
@@ -39,15 +47,47 @@ impl BridgeClient {
     }
 
     /// [`Self::new`], looking for the `control-token` file in `data_dir` (the app's `--data-dir`)
-    /// instead of the default data folder when it is given. `FILMCRAFT_CONTROL_TOKEN` still wins.
+    /// instead of the default data folder when it is given. `FILMCRAFT_CONTROL_TOKEN` still wins;
+    /// a value of it that is not 64 hex characters is an error here, before any connection.
     pub fn with_data_dir(addr: impl Into<String>, data_dir: Option<&std::path::Path>) -> Result<Self, AutomationError> {
+        let data_dir = data_dir.map(std::path::Path::to_path_buf).or_else(filmcraft_engine::autosave::default_data_dir);
+        Self::with_credential(addr, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok(), data_dir)
+    }
+
+    /// [`Self::with_data_dir`] with the value of `FILMCRAFT_CONTROL_TOKEN` passed in (tests don't
+    /// touch the process environment) and the data folder already resolved.
+    fn with_credential(addr: impl Into<String>, env_token: Option<String>, data_dir: Option<std::path::PathBuf>) -> Result<Self, AutomationError> {
         let addr = addr.into();
         let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
         if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
             return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
         }
-        let data_dir = data_dir.map(std::path::Path::to_path_buf).or_else(filmcraft_engine::autosave::default_data_dir);
-        Ok(Self { addr, token: filmcraft_engine::autosave::control_token(data_dir.as_deref()), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        let env_token = env_token.filter(|t| !t.is_empty());
+        if let Some(t) = &env_token
+            && !filmcraft_engine::autosave::is_control_token(t)
+        {
+            return Err(AutomationError::BadRequest("FILMCRAFT_CONTROL_TOKEN must contain 64 hex characters (see docs/control-protocol.md)".into()));
+        }
+        let token_dir = if env_token.is_some() { None } else { data_dir };
+        let token = filmcraft_engine::autosave::control_token_from(env_token, token_dir.as_deref());
+        Ok(Self { addr, token: std::sync::RwLock::new(token), token_dir, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+    }
+
+    fn token(&self) -> Option<String> {
+        self.token.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Read the token file again after the app refused the credential; true when it now holds a
+    /// different token (the app was restarted from Settings and wrote a new one).
+    fn refresh_token(&self) -> bool {
+        let Some(dir) = &self.token_dir else { return false };
+        let fresh = filmcraft_engine::autosave::read_control_token(dir);
+        let mut token = self.token.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fresh.is_none() || *token == fresh {
+            return false;
+        }
+        *token = fresh;
+        true
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -97,7 +137,7 @@ impl BridgeClient {
                 None => self.connect().await?,
             };
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let line = format!("{}\n", json!({"id": id, "token": self.token, "method": method, "params": params}));
+            let line = format!("{}\n", json!({"id": id, "token": self.token(), "method": method, "params": params}));
             let res: Result<Value, AutomationError> = async {
                 conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
                 let mut buf = String::new();
@@ -109,12 +149,17 @@ impl BridgeClient {
             }
             .await;
             match res {
+                // The app closes the connection after refusing a credential. A token from the
+                // token file may just be outdated (the app was started again from Settings): read
+                // the file again and retry once on a fresh connection.
+                Ok(v) if attempt == 0 && auth_failed(&v) && self.refresh_token() => {}
                 Ok(v) => {
-                    let mut idle = self.idle.lock().await;
-                    if idle.len() < MAX_IDLE {
-                        idle.push(conn);
+                    if !auth_failed(&v) {
+                        let mut idle = self.idle.lock().await;
+                        if idle.len() < MAX_IDLE {
+                            idle.push(conn);
+                        }
                     }
-                    drop(idle);
                     return if v.get("ok").and_then(Value::as_bool) == Some(true) {
                         Ok(v.get("result").cloned().unwrap_or(Value::Null))
                     } else {
@@ -139,6 +184,11 @@ impl BridgeClient {
         let (r, w) = s.into_split();
         Ok((BufReader::new(r), w))
     }
+}
+
+/// Whether `reply` is the app refusing the request's credential.
+fn auth_failed(reply: &Value) -> bool {
+    reply.get("ok").and_then(Value::as_bool) != Some(true) && reply.get("error").and_then(Value::as_str).is_some_and(|e| e.starts_with(AUTH_FAILED))
 }
 
 #[cfg(test)]
@@ -312,21 +362,96 @@ mod tests {
         assert_eq!(seen[1]["params"]["command"], "sequence.inspect");
     }
 
-    /// An app started with `--data-dir` writes its `control-token` file there: the bridge given
-    /// that folder reads it instead of the default data folder's.
-    #[test]
-    fn the_token_file_is_read_from_the_given_data_dir() {
-        if std::env::var_os("FILMCRAFT_CONTROL_TOKEN").is_some() {
-            return; // the variable wins over any file; nothing to check here
+    const ENV_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// Write `token` as an app's Settings start does: owner-only.
+    fn write_token(dir: &std::path::Path, token: &str) {
+        let path = dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE);
+        let tmp = dir.join("token.tmp");
+        std::fs::write(&tmp, format!("{token}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+        std::fs::rename(tmp, path).unwrap();
+    }
+
+    fn client(env: Option<&str>, dir: &std::path::Path) -> Result<BridgeClient, AutomationError> {
+        BridgeClient::with_credential("127.0.0.1:9876", env.map(str::to_string), Some(dir.to_path_buf()))
+    }
+
+    /// Where the credential comes from: the environment variable wins over the file; an empty or
+    /// unset variable falls back to the file in the given data folder (the app's `--data-dir`);
+    /// no usable file gives no credential; a malformed variable is an error before connecting.
+    #[test]
+    fn the_credential_comes_from_the_environment_else_the_token_file() {
         let dir = tempfile::tempdir().unwrap();
-        let token = "fedcba9876543210".repeat(4);
-        std::fs::write(dir.path().join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE), format!("{token}\n")).unwrap();
-        let b = BridgeClient::with_data_dir("127.0.0.1:9876", Some(dir.path())).unwrap();
-        assert_eq!(b.token.as_deref(), Some(token.as_str()));
-        // A folder without a usable token file gives no file credential.
+        let file_token = "fedcba9876543210".repeat(4);
+        write_token(dir.path(), &file_token);
+        assert_eq!(client(Some(ENV_TOKEN), dir.path()).unwrap().token().as_deref(), Some(ENV_TOKEN));
+        assert_eq!(client(None, dir.path()).unwrap().token().as_deref(), Some(file_token.as_str()));
+        assert_eq!(client(Some(""), dir.path()).unwrap().token().as_deref(), Some(file_token.as_str()));
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(BridgeClient::with_data_dir("127.0.0.1:9876", Some(empty.path())).unwrap().token, None);
+        assert_eq!(client(None, empty.path()).unwrap().token(), None);
+        for bad in ["abc", &"g".repeat(64), &"a".repeat(65)] {
+            let Err(e) = client(Some(bad), dir.path()) else { panic!("`{bad}` was accepted") };
+            assert!(e.to_string().contains("FILMCRAFT_CONTROL_TOKEN"), "{e}");
+        }
+    }
+
+    /// A stand-in for the app's control server that accepts only the token `accept()` returns at
+    /// the time of each request and, like the app, closes the connection after a refusal.
+    async fn strict_app(accept: Arc<std::sync::Mutex<String>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                let accept = accept.clone();
+                tokio::spawn(async move {
+                    let (r, mut w) = s.into_split();
+                    let mut lines = BufReader::new(r).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        let want = accept.lock().unwrap().clone();
+                        if req["token"] != json!(want) {
+                            let reply = json!({"ok": false, "error": "control authentication failed; closing the connection"});
+                            let _ = w.write_all(format!("{reply}\n").as_bytes()).await;
+                            return;
+                        }
+                        let _ = w.write_all(format!("{}\n", json!({"id": req["id"], "ok": true, "result": "done"})).as_bytes()).await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// The app was started again from Settings and wrote a new token: a running bridge reads the
+    /// file again and goes on, instead of failing until it is restarted.
+    #[tokio::test]
+    async fn a_rotated_token_file_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = "1111111111111111".repeat(4);
+        let new = "2222222222222222".repeat(4);
+        write_token(dir.path(), &old);
+        let accept = Arc::new(std::sync::Mutex::new(old.clone()));
+        let addr = strict_app(accept.clone()).await;
+        let b = BridgeClient::with_credential(addr, None, Some(dir.path().to_path_buf())).unwrap();
+        assert_eq!(b.execute("a", json!({})).await.unwrap(), json!("done"));
+        write_token(dir.path(), &new);
+        *accept.lock().unwrap() = new.clone();
+        assert_eq!(b.execute("b", json!({})).await.unwrap(), json!("done"));
+        assert_eq!(b.token().as_deref(), Some(new.as_str()));
+        // A credential the app still refuses is reported, not retried forever.
+        *accept.lock().unwrap() = "3333333333333333".repeat(4);
+        let e = b.execute("c", json!({})).await.unwrap_err();
+        assert!(e.to_string().contains("control authentication failed"), "{e}");
+        // An environment credential is never replaced by the file.
+        write_token(dir.path(), &"3333333333333333".repeat(4));
+        let from_env = BridgeClient::with_credential(b.addr.clone(), Some(old.clone()), Some(dir.path().to_path_buf())).unwrap();
+        assert!(from_env.execute("d", json!({})).await.is_err());
+        assert_eq!(from_env.token().as_deref(), Some(old.as_str()));
     }
 
     #[tokio::test]
@@ -335,7 +460,7 @@ mod tests {
         let mut b = BridgeClient::new(addr).unwrap();
         // Inject directly to avoid mutating the process environment in parallel tests.
         let token = "0123456789abcdef".repeat(4);
-        b.token = Some(token.clone());
+        b.token = std::sync::RwLock::new(Some(token.clone()));
         b.call("ui.inspect", json!({})).await.unwrap();
         b.execute("file.saveAs", json!({"path": "/owner/project.fcproj"})).await.unwrap();
         let seen = seen.lock().await;

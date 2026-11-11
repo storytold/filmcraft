@@ -377,57 +377,162 @@ fn scratch_dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
-#[test]
-fn settings_start_writes_an_owner_only_token_the_bridge_can_read() {
-    let tmp = scratch_dir();
-    let dir = tmp.path();
-    let token = create_token_file(dir).unwrap();
-    assert!(filmcraft_engine::autosave::is_control_token(&token), "{token}");
-    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(token.as_str()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE)).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+fn free_port() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// Send one request with `token` to a server on `port` and return whether it reached the UI queue.
+fn reaches_the_queue(port: u16, rx: &Receiver<ControlRequest>, ready: &AtomicBool, token: &str) -> bool {
+    ready.store(true, Ordering::Relaxed);
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(c, "{}", json!({"id": 1, "token": token, "method": "ui.inspect"})).unwrap();
+    match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(request) => {
+            let _ = request.reply.send(json!({"ok": true}));
+            true
+        }
+        Err(_) => false,
     }
-    // A second token replaces the first (a damaged or deleted file gets a fresh one).
-    let again = create_token_file(dir).unwrap();
-    assert_ne!(again, token);
-    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(again.as_str()));
+}
+
+fn token_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE)
 }
 
 #[test]
-fn a_damaged_token_file_is_not_used() {
+fn a_settings_start_writes_a_fresh_owner_only_token_that_the_server_accepts() {
     let tmp = scratch_dir();
-    let dir = tmp.path();
-    std::fs::create_dir_all(dir).unwrap();
-    let path = dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE);
-    for junk in ["", "abc", &"g".repeat(64), &"a".repeat(65)] {
-        std::fs::write(&path, junk).unwrap();
-        assert_eq!(filmcraft_engine::autosave::read_control_token(dir), None, "{junk:?}");
+    // A data folder that does not exist yet is created.
+    let dir = tmp.path().join("nested").join("FilmCraft");
+    let port = free_port();
+    let (rx, ready, why) = start_with(port, egui::Context::default(), None, Some(&dir));
+    assert_eq!(why, None);
+    let token = filmcraft_engine::autosave::load_control_token(&dir).unwrap().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(token_path(&dir)).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
-    std::fs::write(&path, vec![b'a'; 1_000_000]).unwrap();
-    assert_eq!(filmcraft_engine::autosave::read_control_token(dir), None);
-    std::fs::write(&path, format!("  {TOKEN}\r\n")).unwrap();
-    assert_eq!(filmcraft_engine::autosave::read_control_token(dir).as_deref(), Some(TOKEN));
+    // No temporary file is left behind.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    assert!(reaches_the_queue(port, &rx, &ready, &token));
+    assert!(!reaches_the_queue(port, &rx, &ready, TOKEN), "only the new token is accepted");
+}
+
+#[test]
+fn every_settings_start_replaces_the_token() {
+    let tmp = scratch_dir();
+    let first = write_token_file(tmp.path()).unwrap();
+    let second = write_token_file(tmp.path()).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(filmcraft_engine::autosave::load_control_token(tmp.path()).unwrap().as_deref(), Some(second.as_str()));
+}
+
+#[test]
+fn the_environment_token_wins_and_no_file_is_written() {
+    let tmp = scratch_dir();
+    let port = free_port();
+    let (rx, ready, why) = start_with(port, egui::Context::default(), Some(TOKEN.into()), Some(tmp.path()));
+    assert_eq!(why, None);
+    assert!(!token_path(tmp.path()).exists());
+    assert!(reaches_the_queue(port, &rx, &ready, TOKEN));
+}
+
+#[test]
+fn control_without_the_environment_token_stays_closed_and_ignores_the_file() {
+    // `--control` passes no token folder: a token file, even a valid one, is not used, as before.
+    let tmp = scratch_dir();
+    write_token_file(tmp.path()).unwrap();
+    let port = free_port();
+    let (rx, _ready, why) = start_with(port, egui::Context::default(), None, None);
+    assert_eq!(why, Some(DisabledWhy::Token));
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+    let _still_available = TcpListener::bind(("127.0.0.1", port)).unwrap();
+}
+
+#[test]
+fn a_busy_port_leaves_the_running_servers_token_alone() {
+    let tmp = scratch_dir();
+    let running = write_token_file(tmp.path()).unwrap();
+    let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let (_rx, _ready, why) = start_with(port, egui::Context::default(), None, Some(tmp.path()));
+    assert!(matches!(why, Some(DisabledWhy::Bind { .. })), "{why:?}");
+    assert_eq!(filmcraft_engine::autosave::load_control_token(tmp.path()).unwrap().as_deref(), Some(running.as_str()));
+}
+
+#[test]
+fn a_token_file_that_cannot_be_written_is_its_own_reason() {
+    let tmp = scratch_dir();
+    // The "data folder" is a file: nothing can be created in it.
+    let not_a_dir = tmp.path().join("file");
+    std::fs::write(&not_a_dir, b"x").unwrap();
+    let port = free_port();
+    let (rx, _ready, why) = start_with(port, egui::Context::default(), None, Some(&not_a_dir));
+    let Some(DisabledWhy::TokenFile { error }) = &why else { panic!("{why:?}") };
+    assert!(why.as_ref().unwrap().reason().contains("token file"), "{error}");
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+    let _still_available = TcpListener::bind(("127.0.0.1", port)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_loose_or_linked_token_file_is_replaced_not_written_through() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch_dir();
+    // A world-readable file with a valid token: refused when read, replaced on the next start.
+    std::fs::write(token_path(tmp.path()), format!("{TOKEN}\n")).unwrap();
+    std::fs::set_permissions(token_path(tmp.path()), std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(filmcraft_engine::autosave::load_control_token(tmp.path()).is_err());
+    let token = write_token_file(tmp.path()).unwrap();
+    assert_eq!(std::fs::metadata(token_path(tmp.path())).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(filmcraft_engine::autosave::load_control_token(tmp.path()).unwrap().as_deref(), Some(token.as_str()));
+    // A link planted in place of the file: the link is replaced, its target is not touched.
+    let target = tmp.path().join("elsewhere");
+    std::fs::write(&target, b"keep").unwrap();
+    std::fs::remove_file(token_path(tmp.path())).unwrap();
+    std::os::unix::fs::symlink(&target, token_path(tmp.path())).unwrap();
+    assert!(filmcraft_engine::autosave::load_control_token(tmp.path()).is_err(), "a link is never read");
+    let token = write_token_file(tmp.path()).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    assert!(std::fs::symlink_metadata(token_path(tmp.path())).unwrap().file_type().is_file());
+    assert_eq!(filmcraft_engine::autosave::load_control_token(tmp.path()).unwrap().as_deref(), Some(token.as_str()));
 }
 
 #[test]
 fn the_settings_port_is_read_from_the_preferences_file() {
     let tmp = scratch_dir();
     let dir = tmp.path();
+    let prefs_path = dir.join(filmcraft_engine::autosave::PREFS_FILE);
     // No preferences file, or the setting off: no server.
     assert_eq!(port_from_settings(dir), None);
     let mut prefs = filmcraft_engine::autosave::Preferences::default();
     prefs.control_server.port = 9911;
-    prefs.save(&dir.join(filmcraft_engine::autosave::PREFS_FILE)).unwrap();
+    prefs.save(&prefs_path).unwrap();
     assert_eq!(port_from_settings(dir), None);
     prefs.control_server.start_at_launch = true;
-    prefs.save(&dir.join(filmcraft_engine::autosave::PREFS_FILE)).unwrap();
+    prefs.save(&prefs_path).unwrap();
     assert_eq!(port_from_settings(dir), Some(9911));
-    // A hand-edited port out of range is clamped by the schema on load.
-    std::fs::write(dir.join(filmcraft_engine::autosave::PREFS_FILE), r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":99999999}}"#).unwrap();
-    assert_eq!(port_from_settings(dir), Some(65_535));
-    std::fs::write(dir.join(filmcraft_engine::autosave::PREFS_FILE), r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":-5}}"#).unwrap();
-    assert_eq!(port_from_settings(dir), Some(1024));
+    // Hand-edited files: out-of-range ports are clamped by the schema on load; wrong types,
+    // missing fields and broken JSON fall back to the defaults (off, or port 9876) without a panic.
+    for (text, want) in [
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":0}}"#, Some(1024)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":1023}}"#, Some(1024)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":1024}}"#, Some(1024)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":65535}}"#, Some(65_535)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":65536}}"#, Some(65_535)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":99999999}}"#, Some(65_535)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":-5}}"#, Some(1024)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true,"port":"9000"}}"#, Some(9876)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":true}}"#, Some(9876)),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":"yes","port":9000}}"#, None),
+        (r#"{"version":2,"controlServer":5}"#, None),
+        (r#"{"version":2,"controlServer":{"startAtLaunch":tr"#, None),
+    ] {
+        std::fs::write(&prefs_path, text).unwrap();
+        assert_eq!(port_from_settings(dir), want, "{text}");
+    }
 }

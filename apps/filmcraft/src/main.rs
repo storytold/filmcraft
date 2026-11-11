@@ -9,8 +9,8 @@
 //!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`, or Settings ▸ Control Server ▸ Start the control
 //! server when FilmCraft starts) starts a localhost JSON-lines control server; it needs
-//! `FILMCRAFT_CONTROL_TOKEN` or the `control-token` file in the data folder, which the Settings
-//! start creates (see `docs/control-protocol.md`).
+//! `FILMCRAFT_CONTROL_TOKEN`, except that a Settings start without it writes a fresh token to the
+//! `control-token` file in the data folder (see `docs/control-protocol.md`).
 //! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
@@ -217,10 +217,13 @@ fn app_creator(launch: Launch, settings_port: Option<u16>, graphics: graphics::G
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let token_dir = data_dir.clone().or_else(default_data_dir);
         let control = match (control_port, settings_port) {
-            (Some(port), _) => Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref(), false)),
-            (None, Some(port)) => Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref(), true)),
+            (Some(port), _) => Some(control_server::start(port, cc.egui_ctx.clone(), None)),
+            (None, Some(port)) => {
+                log::info!("control server: started by Settings ▸ Control Server on port {port}");
+                let token_dir = data_dir.clone().or_else(default_data_dir);
+                Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref()))
+            }
             (None, None) => None,
         };
         if control_input_only && let Some((_, _, Some(why))) = &control {
@@ -384,8 +387,10 @@ fn app_creator(launch: Launch, settings_port: Option<u16>, graphics: graphics::G
             // The token cause is shown in the app as a fully translated sentence (the English
             // `reason()` stays for the log and the input-only error); a bind failure stays in the
             // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token),
+                Some(control_server::DisabledWhy::TokenFile { .. }) => app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::TokenFile),
+                _ => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);

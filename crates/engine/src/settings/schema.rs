@@ -591,7 +591,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             b("controlServer.startAtLaunch", "Start the control server when FilmCraft starts", true),
             sub("controlServer.port", "Port", int(1024.0, 65_535.0, ""), "controlServer.startAtLaunch", true),
             Row::Note(
-                "The control server lets agents and MCP clients (filmcraft-cli mcp --bridge 127.0.0.1:<port>) drive FilmCraft. It listens on this computer only (127.0.0.1). Clients authenticate with FILMCRAFT_CONTROL_TOKEN; when that variable is not set, FilmCraft creates a token in the file control-token in its data folder, and filmcraft-cli reads it from there. --control <port> on the command line or FILMCRAFT_CONTROL_PORT override these settings. Changes take effect the next time you start FilmCraft.",
+                "The control server lets agents and MCP clients (filmcraft-cli mcp --bridge 127.0.0.1:<port>) drive FilmCraft. It listens on this computer only (127.0.0.1). Clients authenticate with FILMCRAFT_CONTROL_TOKEN; when that variable is not set, FilmCraft writes a new token to the file control-token in its data folder at each start, and filmcraft-cli reads it from there. Keep that file private. --control <port> on the command line or FILMCRAFT_CONTROL_PORT override these settings. Changes take effect the next time you start FilmCraft.",
             ),
         ],
     },

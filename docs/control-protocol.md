@@ -16,22 +16,40 @@ filmcraft-cli mcp --bridge 127.0.0.1:9876
 FilmCraft starts* and choose a *Port* (default 9876, 1024–65535) to get the server without
 `--control`, e.g. when FilmCraft is opened from the Dock, Start menu or a file. The setting is
 stored as `controlServer.startAtLaunch` / `controlServer.port` in `preferences.json` (also
-`prefs.set`) and takes effect at the next start; `--control` and `FILMCRAFT_CONTROL_PORT` override
-it. When `FILMCRAFT_CONTROL_TOKEN` is not set, the app then creates a random token in the file
-`control-token` in its data folder (owner-only on Unix; macOS `~/Library/Application Support/FilmCraft`,
-Windows `%APPDATA%\FilmCraft`, Linux `~/.local/share/filmcraft`, or `FILMCRAFT_DATA_DIR`) and keeps
-using it. `filmcraft-cli … --bridge` reads the same file when the variable is not set, so an MCP
-client only needs:
+`prefs.set`, which clamps the port to the range and returns the stored preferences) and takes
+effect at the next start. `--control` and `FILMCRAFT_CONTROL_PORT` override it, and
+`--control-input-only` still needs one of them.
+
+When `FILMCRAFT_CONTROL_TOKEN` is set, a Settings start uses it like `--control` does. When it is
+not set, every Settings start writes a **new** random token to the file `control-token` in the
+data folder, after the port is bound (a second FilmCraft that cannot bind the port leaves the
+running one's token alone). The data folder is macOS `~/Library/Application Support/FilmCraft`,
+Windows `%APPDATA%\FilmCraft`, Linux `~/.local/share/filmcraft`, or `FILMCRAFT_DATA_DIR`, or the
+folder given with `--data-dir`. The log names where the credential came from, never its value.
+`--control` and `FILMCRAFT_CONTROL_PORT` never create or read the file: without the variable they
+leave the listener closed, as before.
+
+`filmcraft-cli … --bridge` reads the same file when the variable is not set; for an app started
+with `--data-dir`, pass the same `--data-dir` to `filmcraft-cli`. When the app refuses its
+credential, the bridge reads the file again once, so a running MCP server keeps working after
+FilmCraft was restarted with a new token. An MCP client therefore only needs:
 
 ```json
 {"mcpServers": {"filmcraft": {"command": "filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"]}}}
 ```
 
-`FILMCRAFT_CONTROL_TOKEN`, when set, always wins over the file (on both sides). `--control` reads an
-existing token file too but never creates one. Delete the file to get a new token at the next start.
+The token file is a secret like the variable: anyone who can read it can drive FilmCraft. On Unix
+it is written owner-only (`0600`, in a folder created `0700`), and a token file that is a link, is
+owned by another user, or is readable or writable by others is refused when read and replaced at
+the next Settings start. On Windows it is protected only by the permissions of the data folder
+(`%APPDATA%` is per-user; a custom `--data-dir` or `FILMCRAFT_DATA_DIR` must be too). Don't share,
+sync or back up the data folder to places other people can read, and don't use a `--data-dir` that
+other accounts can write to. Turning the setting off stops the server at the next start; the last
+token file stays until you delete it.
 
-The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
-command-line arguments, logs, checked-in MCP configuration, or shared files. Without a valid value,
+The CLI / MCP bridge reads this variable automatically. Keep it (and the `control-token` file)
+private: don't put the value in command-line arguments, logs, checked-in MCP configuration, or
+shared files. Without a valid value,
 the desktop leaves the listener closed. Every raw JSON request must include the same top-level
 `token` string; missing or incorrect credentials get an error and close the connection before any
 request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.

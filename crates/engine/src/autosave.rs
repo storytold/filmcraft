@@ -496,32 +496,89 @@ impl Preferences {
 /// The preferences file in the data directory.
 pub const PREFS_FILE: &str = "preferences.json";
 
-/// The control server's credential in the data directory: written by the desktop app when
-/// Settings ▸ Control Server starts the server and `FILMCRAFT_CONTROL_TOKEN` is not set, read by
-/// both the app and `filmcraft-cli … --bridge` when that variable is not set. Owner-only on Unix.
+/// The control server's credential in the data directory. The desktop app writes a fresh one each
+/// time Settings ▸ Control Server starts the server while `FILMCRAFT_CONTROL_TOKEN` is not set;
+/// `filmcraft-cli … --bridge` reads it when that variable is not set. It is a secret: on Unix it is
+/// owner-only (`0600`) and a file that is not is refused; on Windows it relies on the per-user
+/// data folder's permissions.
 pub const CONTROL_TOKEN_FILE: &str = "control-token";
+
+/// Longest token file accepted (64 hex characters plus line endings and spaces).
+const MAX_CONTROL_TOKEN_FILE: u64 = 1024;
 
 /// Whether `token` is a usable control credential: 64 hex characters.
 pub fn is_control_token(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The credential stored in `<data_dir>/control-token`, if there is a usable one.
-pub fn read_control_token(data_dir: &Path) -> Option<String> {
-    // A valid file is 64 bytes plus perhaps a newline; don't read more from a stray large file.
-    let meta = fs::metadata(data_dir.join(CONTROL_TOKEN_FILE)).ok()?;
-    if !meta.is_file() || meta.len() > 1024 {
-        return None;
+/// The credential stored in `<data_dir>/control-token`: `Ok(None)` when there is no such file,
+/// `Err(why)` when there is one that must not be used, `Ok(Some(token))` otherwise.
+///
+/// The file must be a regular file (not a symlink), at most [`MAX_CONTROL_TOKEN_FILE`] bytes, and on
+/// Unix owned by this user and not readable or writable by anyone else: a token another account
+/// could read has leaked, and one another account planted would let it drive the app.
+pub fn load_control_token(data_dir: &Path) -> std::result::Result<Option<String>, String> {
+    use std::io::Read;
+    let path = data_dir.join(CONTROL_TOKEN_FILE);
+    let link = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if !link.file_type().is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
     }
-    let text = fs::read_to_string(data_dir.join(CONTROL_TOKEN_FILE)).ok()?;
+    let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Check the file that was opened, not the path: it may have been swapped since.
+    let meta = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (meta.dev(), meta.ino()) != (link.dev(), link.ino()) {
+            return Err(format!("{} changed while it was opened", path.display()));
+        }
+        if meta.uid() != rustix::process::geteuid().as_raw() {
+            return Err(format!("{} belongs to another user", path.display()));
+        }
+        if meta.mode() & 0o077 != 0 {
+            return Err(format!("{} is readable or writable by other users (mode {:o}; it must be 600)", path.display(), meta.mode() & 0o777));
+        }
+    }
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let mut text = String::new();
+    // Bounded read of the opened file: a size checked earlier is no limit on what is read now.
+    file.take(MAX_CONTROL_TOKEN_FILE + 1).read_to_string(&mut text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if text.len() as u64 > MAX_CONTROL_TOKEN_FILE {
+        return Err(format!("{} is too large", path.display()));
+    }
     let token = text.trim();
-    is_control_token(token).then(|| token.to_string())
+    if !is_control_token(token) {
+        return Err(format!("{} does not hold 64 hex characters", path.display()));
+    }
+    Ok(Some(token.to_string()))
 }
 
-/// The control credential a client or the app uses: `FILMCRAFT_CONTROL_TOKEN` when it is set (even
-/// a malformed value, so the app can say what is wrong), else the token file in `data_dir`.
+/// The credential in `<data_dir>/control-token`, if there is a usable one; see [`load_control_token`].
+/// A file that is refused is logged and treated as missing.
+pub fn read_control_token(data_dir: &Path) -> Option<String> {
+    load_control_token(data_dir).unwrap_or_else(|why| {
+        log::warn!("control token file not used: {why}");
+        None
+    })
+}
+
+/// The control credential a bridge client uses: `env` (the value of `FILMCRAFT_CONTROL_TOKEN`) when
+/// it is set and not empty, even a malformed value, so the caller can say what is wrong; else the
+/// token file in `data_dir`.
+pub fn control_token_from(env: Option<String>, data_dir: Option<&Path>) -> Option<String> {
+    env.filter(|t| !t.is_empty()).or_else(|| data_dir.and_then(read_control_token))
+}
+
+/// [`control_token_from`] with the process's `FILMCRAFT_CONTROL_TOKEN`.
 pub fn control_token(data_dir: Option<&Path>) -> Option<String> {
-    std::env::var("FILMCRAFT_CONTROL_TOKEN").ok().filter(|t| !t.is_empty()).or_else(|| data_dir.and_then(read_control_token))
+    control_token_from(std::env::var("FILMCRAFT_CONTROL_TOKEN").ok(), data_dir)
 }
 
 /// A file with this name next to the executable makes the install portable: its data directory is

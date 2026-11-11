@@ -36,6 +36,8 @@ pub enum DisabledWhy {
     /// The port could not be bound. Showing this in the app is left to #3318, which reworks
     /// port-collision reporting; until then the reason is only logged.
     Bind { port: u16, error: String },
+    /// Settings ▸ Control Server started the server, but its token file could not be written.
+    TokenFile { error: String },
 }
 
 /// `--control-input-only` was given but the control server is not serving: the session would be
@@ -58,30 +60,53 @@ impl DisabledWhy {
         match self {
             Self::Token => "FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)".into(),
             Self::Bind { port, error } => format!("could not bind 127.0.0.1:{port}: {error}"),
+            Self::TokenFile { error } => format!("could not write the control token file: {error}"),
         }
     }
 }
 
-/// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
-/// answer requests (until then they are rejected with a retryable error), and — when the server
-/// is *not* running — why (#3436), for the log and (for a bad token) the status bar.
+/// Start the server for `--control` / `FILMCRAFT_CONTROL_PORT` (`token_dir` is `None`) or for
+/// Settings ▸ Control Server (`token_dir` is the data folder). Returns the request queue, a flag
+/// the app sets once it can answer requests (until then they are rejected with a retryable error),
+/// and — when the server is *not* running — why (#3436), for the log and the status bar.
 ///
-/// The credential is `FILMCRAFT_CONTROL_TOKEN`, else the token file in `data_dir`
-/// ([`filmcraft_engine::autosave::CONTROL_TOKEN_FILE`]). `create_token` (the server was started by
-/// Settings ▸ Control Server, typically from a desktop launch without that variable) writes a fresh
-/// token file when there is no usable one, so the bridge can read the same credential.
-pub fn start(port: u16, ctx: egui::Context, data_dir: Option<&Path>, create_token: bool) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    let mut token = filmcraft_engine::autosave::control_token(data_dir);
-    if token.is_none()
-        && create_token
-        && let Some(dir) = data_dir
-    {
-        match create_token_file(dir) {
-            Ok(t) => token = Some(t),
-            Err(e) => log::warn!("could not write the control token file in {}: {e}", dir.display()),
+/// The credential is `FILMCRAFT_CONTROL_TOKEN` whenever it is set. Without it, `--control` stays
+/// closed as before, while a Settings start writes a fresh random token to
+/// `<token_dir>/control-token` (see [`write_token_file`]) once the port is bound, for the bridge
+/// to read; every Settings start replaces the previous token.
+pub fn start(port: u16, ctx: egui::Context, token_dir: Option<&Path>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    start_with(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok().filter(|t| !t.is_empty()), token_dir)
+}
+
+/// [`start`] with the value of `FILMCRAFT_CONTROL_TOKEN` passed in, so tests don't touch the
+/// process environment.
+fn start_with(
+    port: u16,
+    ctx: egui::Context,
+    env_token: Option<String>,
+    token_dir: Option<&Path>,
+) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    let dir = match (env_token, token_dir) {
+        (Some(token), _) => {
+            log::info!("control server credential: FILMCRAFT_CONTROL_TOKEN");
+            return start_with_token(port, ctx, Some(token));
         }
+        (None, None) => return start_with_token(port, ctx, None),
+        (None, Some(dir)) => dir,
+    };
+    // Bind before writing: a second FilmCraft on the same port must not replace the token the
+    // running one serves with.
+    let listener = match bind(port) {
+        Ok(l) => l,
+        Err(why) => return disabled(why),
+    };
+    match write_token_file(dir) {
+        Ok(token) => {
+            log::info!("control server credential: {} (new for this launch)", dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE).display());
+            serve_on(listener, port, ctx, token)
+        }
+        Err(e) => disabled(DisabledWhy::TokenFile { error: format!("{}: {e}", dir.display()) }),
     }
-    start_with_token(port, ctx, token)
 }
 
 /// The control port from Settings ▸ Control Server, when "Start the control server when FilmCraft
@@ -90,62 +115,92 @@ pub fn port_from_settings(data_dir: &Path) -> Option<u16> {
     filmcraft_engine::autosave::Preferences::load(&data_dir.join(filmcraft_engine::autosave::PREFS_FILE)).control_server.launch_port()
 }
 
-/// Write a new random credential to `<dir>/control-token` (owner-only on Unix) and return it.
-fn create_token_file(dir: &Path) -> std::io::Result<String> {
+/// Write a new random credential to `<dir>/control-token` and return it.
+///
+/// The token goes to a new temporary file in the same folder (created exclusively, so never through
+/// an existing file or link; owner-only on Unix), is synced, and then renamed over
+/// `control-token`. The rename replaces whatever was there (an old token, a link, a file with
+/// loose permissions) without following it, and a crash leaves either the old file or the new
+/// one, never a partial token. The folder is created owner-only on Unix when it does not exist.
+fn write_token_file(dir: &Path) -> std::io::Result<String> {
+    use std::fs::{DirBuilder, OpenOptions};
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)?;
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+    let tmp = dir.join(format!(".{}.{suffix}.tmp", filmcraft_engine::autosave::CONTROL_TOKEN_FILE));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&path)?;
-    // An older file keeps its mode on open: make sure it is owner-only before the secret goes in.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let written = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(token.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, dir.join(filmcraft_engine::autosave::CONTROL_TOKEN_FILE))
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    file.write_all(token.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    log::info!("control server token written to {}", path.display());
+    // Make the rename itself durable (Unix; a folder can't be opened as a file on Windows).
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(token)
 }
 
+/// The server is not running: log why (a desktop launch has no stderr to read; #3436) and hand the
+/// reason back for the status bar.
+fn disabled(why: DisabledWhy) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    log::warn!("control server disabled: {}", why.reason());
+    let (_tx, rx) = channel::<ControlRequest>();
+    (rx, Arc::new(AtomicBool::new(true)), Some(why))
+}
+
+fn bind(port: u16) -> Result<TcpListener, DisabledWhy> {
+    TcpListener::bind(("127.0.0.1", port)).map_err(|error| DisabledWhy::Bind { port, error: error.to_string() })
+}
+
 fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    let (tx, rx) = channel::<ControlRequest>();
-    // An inherited environment variable (or the owner-only token file in the per-user data
-    // folder) shares the credential with the owner's bridge process without exposing it in
-    // command-line arguments or logs.
+    // An inherited environment variable (or, for a Settings start, the owner-only token file)
+    // shares the credential with the owner's bridge process without exposing it in command-line
+    // arguments or logs.
     let Some(token) = token.filter(|t| filmcraft_engine::autosave::is_control_token(t)) else {
-        // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
-        // the app, which shows it in the status bar.
-        log::warn!("control server disabled: {}", DisabledWhy::Token.reason());
-        return (rx, Arc::new(AtomicBool::new(true)), Some(DisabledWhy::Token));
+        return disabled(DisabledWhy::Token);
     };
-    match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(listener) => {
-            log::info!("control server listening on 127.0.0.1:{port}");
-            // Requests that arrive before the app can answer them are rejected with a retryable
-            // error instead of queued: a queued request outlives its 60 s reply wait, and a
-            // client retry would then apply the same mutation twice (#3436).
-            let ready = Arc::new(AtomicBool::new(false));
-            let loop_ready = Arc::clone(&ready);
-            std::thread::spawn(move || accept_loop(listener, tx, ctx, token, loop_ready));
-            (rx, ready, None)
-        }
-        Err(error) => {
-            let why = DisabledWhy::Bind { port, error: error.to_string() };
-            log::warn!("control server disabled: {}", why.reason());
-            (rx, Arc::new(AtomicBool::new(true)), Some(why))
-        }
+    match bind(port) {
+        Ok(listener) => serve_on(listener, port, ctx, token),
+        Err(why) => disabled(why),
     }
+}
+
+/// Serve `listener` with `token` on a background thread.
+fn serve_on(listener: TcpListener, port: u16, ctx: egui::Context, token: String) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    let (tx, rx) = channel::<ControlRequest>();
+    log::info!("control server listening on 127.0.0.1:{port}");
+    // Requests that arrive before the app can answer them are rejected with a retryable
+    // error instead of queued: a queued request outlives its 60 s reply wait, and a
+    // client retry would then apply the same mutation twice (#3436).
+    let ready = Arc::new(AtomicBool::new(false));
+    let loop_ready = Arc::clone(&ready);
+    std::thread::spawn(move || accept_loop(listener, tx, ctx, token, loop_ready));
+    (rx, ready, None)
 }
 
 fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String, ready: Arc<AtomicBool>) {
