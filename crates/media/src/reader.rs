@@ -27,15 +27,33 @@ pub type SharedReader = Arc<dyn ByteReader>;
 
 /// Open `path` for reading without blocking on a FIFO that was swapped in after the metadata check
 /// (`O_NONBLOCK`; it changes nothing for a regular file, and the callers check the handle's type).
-/// `O_NONBLOCK` has no std constant: it is 0o4000 on Linux and 4 on the BSD family, and the open
-/// stays a plain one on any other target.
+/// `O_NONBLOCK` has no std constant (no libc dependency here): it is 0o4000 on most Linux targets,
+/// 0x80 on Linux MIPS, 0x4000 on Linux SPARC and 4 on the BSD family, and the open stays a plain
+/// one on any other target.
 fn open_nonblocking(path: &std::path::Path) -> io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6")
+        ))]
+        o.custom_flags(0x80);
+        #[cfg(all(any(target_os = "linux", target_os = "android"), any(target_arch = "sparc", target_arch = "sparc64")))]
+        o.custom_flags(0x4000);
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            not(any(
+                target_arch = "mips",
+                target_arch = "mips32r6",
+                target_arch = "mips64",
+                target_arch = "mips64r6",
+                target_arch = "sparc",
+                target_arch = "sparc64"
+            ))
+        ))]
         o.custom_flags(0o4000);
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))]
         o.custom_flags(0x4);
