@@ -142,6 +142,28 @@ pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
     width.max(1.0) as f64 / min_view
 }
 
+/// The shared zoom range: fit the whole Timeline at the wide end and honor the Maximum Zoom Level
+/// setting at the sharp end.
+pub fn zoom_range(sequence_seconds: f64, width: f32, min_view_secs: f64) -> (f64, f64) {
+    let ceiling = max_pps(width, min_view_secs);
+    (min_pps(sequence_seconds, width).min(ceiling), ceiling)
+}
+
+#[cfg(test)]
+mod zoom_range_tests {
+    use super::{max_pps, min_pps, zoom_range};
+
+    #[test]
+    fn shared_zoom_range_fits_the_timeline_and_honors_the_maximum_zoom_setting() {
+        let (floor, ceiling) = zoom_range(3600.0, 800.0, 0.4);
+        assert_eq!(floor, min_pps(3600.0, 800.0));
+        assert_eq!(ceiling, max_pps(800.0, 0.4));
+
+        let (short_floor, short_ceiling) = zoom_range(0.0, 800.0, 0.05);
+        assert!(short_floor <= short_ceiling, "the Timeline's range remains valid when its extent is shorter than the zoom setting");
+    }
+}
+
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;

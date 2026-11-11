@@ -47,7 +47,7 @@ use interact::{interact, move_transition_preview, preview_drag};
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
-pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about, zoom_range};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
@@ -724,6 +724,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
     let empty = seq.duration().seconds() <= 0.0;
     let dur_s = seq.duration().seconds().max(1.0);
     let min_zoom_view = app.session.state.timeline_ui.max_zoom_secs();
+    let (floor, ceiling) = zoom_range(seq.duration().seconds(), content.width(), min_zoom_view);
     {
         let v = &mut app.ui.timeline;
         if let Some(p) = v.fit_empty
@@ -735,17 +736,13 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         if v.fit_pending && content.width() > 50.0 {
             // the fit floor is the sequence-dependent one (the whole Timeline in view): a fixed
             // 0.05 floor stopped a long sequence from ever fitting
-            let ceiling = max_pps(content.width(), min_zoom_view);
-            let fit_floor = min_pps(seq.duration().seconds(), content.width()).min(ceiling);
-            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(fit_floor, ceiling);
+            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(floor, ceiling);
             v.target_scroll = 0.0;
             v.fit_pending = false;
             v.fit_empty = empty.then_some(v.target_pps);
         }
         // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the
         // extent and zooming in stops at the Maximum Zoom Level setting
-        let floor = min_pps(seq.duration().seconds(), content.width());
-        let ceiling = max_pps(content.width(), min_zoom_view);
         v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
         v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
