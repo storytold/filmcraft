@@ -781,7 +781,7 @@ fn frame_blending_mixes_the_next_frame_before_the_effects() {
     let mut ends = Vec::new();
     for ops in [Vec::new(), vec![tint]] {
         for weight in [0.0, 0.3, 1.0] {
-            let mix = Some(filmcraft_render::plan::FrameMix { frame: next.clone(), weight });
+            let mix = Some(filmcraft_render::plan::FrameMix { frame: next.clone(), weight, flow: false });
             let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.clone(), mix };
             let plan = FramePlan::Layers {
                 width: w as usize,
@@ -802,6 +802,71 @@ fn frame_blending_mixes_the_next_frame_before_the_effects() {
     // (the two frames differ, so a stage that dropped the next frame could not match at weight 1)
     let (_, mean, _) = stats8(&ends[0], &ends[1], &vec![true; (w * h) as usize]);
     assert!(mean > 10.0, "the next frame should change the picture: mean difference {mean}");
+}
+
+/// A textured 8-bit Y'CbCr frame with its content moved `dx` pixels right, and a bright square
+/// that moves twice as far.
+fn moving_frame(w: u32, h: u32, dx: f32) -> Arc<VideoFrame> {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut y = Vec::with_capacity((w * h) as usize);
+    for j in 0..h {
+        for i in 0..w {
+            let (u, v) = (i as f32 + 0.5 - dx, j as f32 + 0.5);
+            let l = 110.0 + 45.0 * (u * 0.21).sin() * (v * 0.17).cos() + 30.0 * ((u + v) * 0.11).sin();
+            let sq = (u - dx - w as f32 * 0.4).abs() < 14.0 && (v - h as f32 * 0.5).abs() < 14.0;
+            y.push(if sq { 230 } else { l.clamp(16.0, 235.0) as u8 });
+        }
+    }
+    let u: Vec<u8> = (0..cw * ch).map(|i| (100 + (i / cw) * 40 / ch) as u8).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| (150 - (i % cw) * 30 / cw) as u8).collect();
+    Arc::new(VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    })
+}
+
+/// Optical Flow on the GPU: the in-between frame of two frames with motion, interpolated before
+/// the effects as the CPU plan executor (`flow::interpolate`) interpolates it, on a frame narrower
+/// than the flow's working width (the pyramid's finest level is the working image's size) and a
+/// wider one (estimated on a reduced copy), with and without effects.
+#[test]
+fn optical_flow_interpolates_the_next_frame_on_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(320u32, 180u32), (1280, 200)] {
+        let (a, next) = (moving_frame(w, h, 0.0), moving_frame(w, h, 6.0));
+        let tint = FxOp::eval(&effect("tint", &[("amount", fl(60.0))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("tint op");
+        for ops in [Vec::new(), vec![tint]] {
+            for weight in [0.25, 0.5] {
+                let layer = |flow| {
+                    let mix = Some(filmcraft_render::plan::FrameMix { frame: next.clone(), weight, flow });
+                    let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.clone(), mix };
+                    FramePlan::Layers {
+                        width: w as usize,
+                        height: h as usize,
+                        layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(a.clone(), Affine::IDENTITY, 1.0, Blend::Normal) }],
+                    }
+                };
+                let plan = layer(true);
+                let cpu = execute_cpu(&plan).over_black_rgba8();
+                c.composite(&plan);
+                let (_, _, gpu) = c.read_output().expect("readback");
+                let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+                let (_, apart, _) = stats8(&cpu, &execute_cpu(&layer(false)).over_black_rgba8(), &interior(&plan));
+                eprintln!("{w}x{h}, {} ops, weight {weight}: 8-bit p99 {p99} mean {mean:.3} max {max} (flow vs blend mean {apart:.3})", ops.len());
+                assert!(p99 <= 2 && mean < 1.0, "{w}x{h}, {} ops, weight {weight}: p99 {p99}, mean {mean}", ops.len());
+                // (the flow must move the picture: a stage that only blended would not match)
+                assert!(apart > 3.0 * mean.max(0.1), "{w}x{h}: Optical Flow should differ from the blend ({apart} vs {mean})");
+            }
+        }
+    }
 }
 
 /// Plans without effects never create working textures.

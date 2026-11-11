@@ -255,10 +255,14 @@ fn frame_blending_plans_the_next_frame_on_the_gpu_layer() {
         let mixed: usize = [1, 3, 10, 21].into_iter().map(|f| mixed_layers(&p, f)).sum();
         assert!(mixed > 0, "effects {effects}: no frame mixed the next one on the GPU layer");
     }
+    // Optical Flow: the same GPU layer, interpolated instead of mixed (and the CPU reference of
+    // the plan still matches the CPU render)
     clip(&mut p, seq, id).time_interpolation = filmcraft_project::TimeInterpolation::OpticalFlow;
+    let flowed: usize = [1, 3, 10, 21].into_iter().map(|f| mixed_layers(&p, f)).sum();
+    assert!(flowed > 0, "no Optical Flow frame was planned on the GPU layer");
     let plan = plan::plan_frame(&p, seq, r.tick_of(1), RenderOptions::default(), plan::DeviceCaps::ALL, &map);
     let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("an Optical Flow frame still plans as layers") };
-    assert!(layers.iter().all(|l| l.fx.is_none()), "Optical Flow is drawn as a CPU canvas layer");
+    assert!(layers.iter().filter_map(|l| l.fx.as_ref()?.mix.as_ref()).all(|m| m.flow), "the in-between frame is interpolated, not mixed");
 }
 
 #[test]

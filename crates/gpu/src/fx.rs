@@ -67,6 +67,8 @@ pub(crate) struct FxStage {
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
+    /// Optical Flow's passes ([`crate::flow`]).
+    flow: crate::flow::FlowStage,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
     /// Open [`begin_frame`](Self::begin_frame)s.
@@ -75,9 +77,22 @@ pub(crate) struct FxStage {
     created: u64,
 }
 
+/// The pipeline of a compute pass.
+#[derive(Clone, Copy)]
+pub(crate) enum Pipe {
+    /// One invocation per pixel (`fx_px`).
+    Px,
+    /// The running-sum box blur (`fx_run`).
+    Run,
+    /// Optical Flow (`flow.wgsl`): per pixel, then its splat's two passes.
+    FlowPx,
+    FlowScore,
+    FlowWin,
+}
+
 /// One compute pass of a job.
 struct Dispatch {
-    run: bool,
+    pipe: Pipe,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -410,7 +425,17 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            flow: crate::flow::FlowStage::new(device),
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            frames: 0,
+            created: 0,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -486,7 +511,7 @@ impl FxStage {
             return None;
         }
         let mix = match (&fx.mix, mix_bg) {
-            (Some(m), Some(bg)) => Some((m.weight, bg)),
+            (Some(m), Some(bg)) => Some((m.weight, m.flow, bg)),
             (Some(_), None) => return None,
             (None, _) => None,
         };
@@ -499,10 +524,43 @@ impl FxStage {
         // Frame Blending: the next frame is drawn onto working image 1 and mixed with the frame's
         // (0) into 2, where the effects start
         let mut mix_source = None;
-        if let Some((weight, bg)) = mix {
-            let s = step(OP_FRAME_MIX, [0; 4], &[weight]);
+        if let Some((weight, flow, bg)) = mix {
             let (src, aux, dst) = (views.first()?, views.get(1)?, views.get(2)?);
-            dispatches.push(Dispatch { run: false, bg: self.step_group(device, queue, &s, (w, h), src, dst, aux), groups: (w.div_ceil(16), h.div_ceil(16)) });
+            // Optical Flow strictly between the frames (at an end point it is that frame, as the mix)
+            if flow && weight > 0.0 && weight < 1.0 {
+                let (s, sizes) = crate::flow::levels(w, h);
+                let mut levels = Vec::with_capacity(sizes.len());
+                let mut between = None;
+                for (i, &size) in sizes.iter().enumerate() {
+                    // past the working images when a level is their size (frames up to WORK_W wide)
+                    let skip = if size == (w, h) { n } else { 0 };
+                    let k = crate::flow::LEVEL_IMAGES + if i == 0 { crate::flow::FINEST_EXTRA } else { 0 };
+                    let v: Vec<wgpu::TextureView> = self.targets(device, size, skip + k).into_iter().skip(skip).map(|t| t.1).collect();
+                    let [a, b, scratch, tensor, f0, f1, g0, g1, rest @ ..] = v.as_slice() else { return None };
+                    if let [e0, e1] = rest {
+                        between = Some([e0.clone(), e1.clone()]);
+                    }
+                    let c = |v: &wgpu::TextureView| v.clone();
+                    levels.push(crate::flow::Level {
+                        size,
+                        a: c(a),
+                        b: c(b),
+                        scratch: c(scratch),
+                        tensor: c(tensor),
+                        f01: [c(f0), c(f1)],
+                        f10: [c(g0), c(g1)],
+                    });
+                }
+                let passes = self.flow.passes(device, queue, (src, aux, dst), (w, h), weight, s, &levels, &between?, dummy)?;
+                dispatches.extend(passes.into_iter().map(|p| Dispatch { pipe: p.pipe, bg: p.bg, groups: p.groups }));
+            } else {
+                let s = step(OP_FRAME_MIX, [0; 4], &[weight]);
+                dispatches.push(Dispatch {
+                    pipe: Pipe::Px,
+                    bg: self.step_group(device, queue, &s, (w, h), src, dst, aux),
+                    groups: (w.div_ceil(16), h.div_ceil(16)),
+                });
+            }
             mix_source = Some((bg, aux.clone()));
             cur = 2;
         }
@@ -528,7 +586,7 @@ impl FxStage {
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            dispatches.push(Dispatch { pipe: if s.run { Pipe::Run } else { Pipe::Px }, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -610,7 +668,13 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(match d.pipe {
+                Pipe::Px => &self.px,
+                Pipe::Run => &self.run,
+                Pipe::FlowPx => &self.flow.px,
+                Pipe::FlowScore => &self.flow.score,
+                Pipe::FlowWin => &self.flow.win,
+            });
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }

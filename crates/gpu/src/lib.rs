@@ -40,6 +40,7 @@ use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
 pub mod export_renderer;
+mod flow;
 pub mod fx;
 pub mod lut;
 pub mod mask;

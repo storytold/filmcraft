@@ -63,23 +63,25 @@ pub struct LayerFx {
     /// [`MediaSource::video_frame_unturned`]: filmcraft_media::MediaSource::video_frame_unturned
     pub turns: u8,
     pub ops: Vec<FxOp>,
-    /// Frame Blending: the next source frame, mixed into the frame's working image before `ops`
-    /// run, as `media_image` mixes the two on the CPU.
+    /// Frame Blending or Optical Flow: the next source frame, mixed (or motion interpolated)
+    /// into the frame's working image before `ops` run, as `media_image` does on the CPU.
     pub mix: Option<FrameMix>,
 }
 
-/// The next source frame of a Frame Blending layer ([`LayerFx::mix`]): the same size, turns and
-/// colour as the layer's frame, and its weight (0..1).
+/// The next source frame of a Frame Blending or Optical Flow layer ([`LayerFx::mix`]): the same
+/// size, turns and colour as the layer's frame, and its weight (0..1).
 #[derive(Clone, Debug)]
 pub struct FrameMix {
     pub frame: Arc<VideoFrame>,
     pub weight: f32,
+    /// Optical Flow ([`crate::flow::interpolate`]) instead of the cross-fade.
+    pub flow: bool,
 }
 
-/// The same frame (not equal pixels) at the same weight.
+/// The same frame (not equal pixels) at the same weight and interpolation.
 impl PartialEq for FrameMix {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.frame, &other.frame) && self.weight == other.weight
+        Arc::ptr_eq(&self.frame, &other.frame) && self.weight == other.weight && self.flow == other.flow
     }
 }
 
@@ -606,20 +608,20 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let upright = |f: &VideoFrame| if turns % 2 == 1 { (f.height, f.width) } else { (f.width, f.height) };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
-        // media and other pipelines are converted on the CPU (below), and so are Optical Flow's
-        // in-between frames (on speed-changed or rate-conformed clips)
+        // media and other pipelines are converted on the CPU (below)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
-        // Frame Blending: the next frame, mixed into the effect stage's working image as
-        // `media_image` mixes it (None: no in-between frame; a next frame it would not mix in, as
-        // one of another size, is left out the same way). Some(None) is planned on the CPU.
+        // Frame Blending and Optical Flow: the next frame, mixed (or motion interpolated) into the
+        // effect stage's working image as `media_image` does it (Some(None): no in-between frame;
+        // a next frame it would not use, as one of another size, is left out the same way). None
+        // is planned on the CPU.
+        let flow = item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow;
         let mix = match crate::media_interpolation(item, t, &src, seq.settings.frame_rate) {
             None => Some(None),
-            Some(_) if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow => None,
             Some((next, w)) => match src.video_frame_unturned(FrameRequest { time: next, scale: want }) {
                 // (decoded through the first frame's input transform, so it must share its colour)
                 Ok((f2, t2)) if (f2.width, f2.height, t2) == (frame.width, frame.height, turns) => {
-                    (f2.color == frame.color).then_some(Some(FrameMix { frame: f2, weight: w }))
+                    (f2.color == frame.color).then_some(Some(FrameMix { frame: f2, weight: w, flow }))
                 }
                 _ => Some(None),
             },
@@ -705,7 +707,8 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
     let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
     if let Some(m) = &fx.mix {
-        img = img.lerp(&turned(linear_image(&m.frame, fx.decimation.max(1) as usize, input), fx.turns), m.weight);
+        let next = turned(linear_image(&m.frame, fx.decimation.max(1) as usize, input), fx.turns);
+        img = if m.flow { crate::flow::interpolate(&img, &next, m.weight) } else { img.lerp(&next, m.weight) };
     }
     for op in &fx.ops {
         op.apply(&mut img);

@@ -329,7 +329,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
 - **Have:** multicam sources with more than 16 angles are paged 4 × 4 in the Multi-Camera view;
   Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
-  coarse-to-fine Lucas–Kanade, CPU; #780); Morph Cut morphs the subject along that optical flow
+  coarse-to-fine Lucas–Kanade; on the GPU effect stage, else the CPU; #780); Morph Cut morphs the subject along that optical flow
   instead of cross-dissolving (CPU; #805); Transform shutter angle motion blur (#415); Ultra Key
   Setting applied as a parameter preset (#458); rectangle and polygon masks round their corners
   with circular fillets (`masks.add` `cornerRadius`, `masks.roundCorners`, every path keyframe;
