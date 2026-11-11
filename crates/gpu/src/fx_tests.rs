@@ -348,6 +348,25 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        (
+            "lumetri",
+            vec![("wheel_shadows", pt(0.4, -0.2)), ("wheel_midtones", pt(-0.3, 0.5)), ("wheel_highlights", pt(0.1, 0.6)), ("wheel_highlights_l", fl(30.0))],
+            false,
+        ),
+        ("lumetri", vec![("sharpen", fl(60.0))], false),
+        ("lumetri", vec![("sharpen", fl(-40.0))], false),
+        (
+            "lumetri",
+            vec![
+                ("exposure", fl(0.3)),
+                ("contrast", fl(20.0)),
+                ("sharpen", fl(100.0)),
+                ("wheel_shadows_l", fl(-100.0)),
+                ("wheel_midtones_l", fl(-50.0)),
+                ("vignette_amount", fl(-1.0)),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -634,10 +653,14 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
 
-    // sharpen alone
-    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    // Sharpen and the Color Wheels run on the GPU
+    for params in [vec![("sharpen", fl(20.0))], vec![("wheel_shadows", pt(0.5, 0.0))], vec![("wheel_midtones_l", fl(20.0))]] {
+        let op = FxOp::eval(&effect("lumetri", &params), &cx(Tick::ZERO, 1.0), w, h);
+        assert!(op.as_ref().is_some_and(|o| o.gpu_ok()), "{params:?}");
+    }
+    // ... unless a section the GPU lacks is on as well
+    let e = effect("lumetri", &[("sharpen", fl(20.0)), ("wheel_shadows", pt(0.5, 0.0)), ("hsl_on", ParamValue::Bool(true))]);
+    assert!(FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h).is_some_and(|o| !o.gpu_ok()));
 
     // input_lut alone
     let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
@@ -661,16 +684,6 @@ fn lumetri_unsupported_sections_fall_back() {
 
     // hue_vs_sat non-empty
     let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel offset
-    let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // wheel lightness
-    let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 

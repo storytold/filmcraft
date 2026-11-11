@@ -1763,6 +1763,29 @@ mod lumetri_cpu_parity_tests {
                     ("blacks", fl(-100.0)),
                 ],
             ),
+            (
+                "wheels",
+                vec![
+                    ("wheel_shadows", ParamValue::Vec2(filmcraft_geom::Vec2::new(0.4, -0.2))),
+                    ("wheel_midtones", ParamValue::Vec2(filmcraft_geom::Vec2::new(-0.3, 0.5))),
+                    ("wheel_highlights", ParamValue::Vec2(filmcraft_geom::Vec2::new(0.1, 0.6))),
+                    ("wheel_highlights_l", fl(30.0)),
+                ],
+            ),
+            ("sharpen", vec![("sharpen", fl(60.0))]),
+            (
+                // Sharpen 100 with the shadow and midtone lightness lowered, after a basic grade
+                "basic_wheels_sharpen",
+                vec![
+                    ("exposure", fl(0.3)),
+                    ("contrast", fl(20.0)),
+                    ("saturation", fl(110.0)),
+                    ("sharpen", fl(100.0)),
+                    ("wheel_shadows_l", fl(-100.0)),
+                    ("wheel_midtones_l", fl(-50.0)),
+                    ("vignette_amount", fl(-1.0)),
+                ],
+            ),
         ];
 
         let (w, h) = (67usize, 41usize);
