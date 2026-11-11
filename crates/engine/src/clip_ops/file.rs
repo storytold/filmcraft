@@ -141,8 +141,10 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
     let height = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
     let secs = f64_p(p, "seconds").unwrap_or(10.0).max(rate.frame_duration().seconds());
     let duration = rate.snap_nearest(Tick::from_seconds_f64(secs)).max(rate.frame_duration());
+    // a `;` label counts drop-frame, at the rates that have it, and the file keeps that count
+    let drop_frame = str_p(p, "timecode").is_some_and(|tc| tc.contains(';')) && rate.supports_drop_frame();
     let start_tc = match str_p(p, "timecode") {
-        Some(tc) => Some(parse_timecode(tc, rate, false, 0).map_err(|e| bad("file.newOfflineFile", format!("timecode: {e:?}")))?),
+        Some(tc) => Some(parse_timecode(tc, rate, drop_frame, 0).map_err(|e| bad("file.newOfflineFile", format!("timecode: {e:?}")))?),
         None => None,
     };
     // A name, never a path: the item's media path is what Make Offline ▸ delete would remove.
@@ -180,6 +182,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
             .collect(),
         container: String::new(),
         start_timecode: start_tc,
+        drop_frame_timecode: drop_frame,
         file_size: None,
     };
     let mut meta = BTreeMap::new();

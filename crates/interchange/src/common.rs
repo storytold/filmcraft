@@ -312,6 +312,8 @@ pub(crate) struct MediaSpec {
     /// (sample rate, channels).
     pub audio: Option<(u32, u32)>,
     pub start_tc: Option<i64>,
+    /// `start_tc` counts drop-frame (kept only at rates that have it).
+    pub drop_frame: bool,
     pub kind: Option<MediaKind>,
 }
 
@@ -344,6 +346,7 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
             .collect(),
         container: String::new(),
         start_timecode: spec.start_tc,
+        drop_frame_timecode: spec.drop_frame && spec.video.is_some_and(|(_, _, r)| r.supports_drop_frame()),
         file_size: None,
     }
 }
@@ -918,6 +921,7 @@ mod tests {
             audio_streams: vec![],
             container: "mp4".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: None,
         };
         let media_id = p.add_item(

@@ -332,7 +332,9 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
         ItemKind::Subclip { parent, .. } => p.item(*parent).map(|x| x.frame_rate()).unwrap_or_default(),
         _ => it.frame_rate(),
     };
-    let tc = |t: Tick| format_time(t, rate, false, TimeDisplay::Timecode, 48000);
+    // media timecode in the file's own count: drop-frame when it is
+    let df = media.is_some_and(|m| m.info.drop_frame_timecode);
+    let tc = |t: Tick| format_time(t, rate, df, TimeDisplay::Timecode, 48000);
     let time = |t: Option<Tick>| match t {
         Some(t) => (tc(t), SortKey::Num(t.0 as f64)),
         None => (String::new(), SortKey::Num(f64::MIN)),

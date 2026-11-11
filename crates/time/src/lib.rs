@@ -552,7 +552,11 @@ pub fn parse_timecode(input: &str, rate: FrameRate, drop_frame: bool, current: i
     let base = rate.timecode_base();
     let frames = if nums.len() == 1 && rel.is_some() {
         fr
-    } else if drop_frame && rate.supports_drop_frame() && m < 60 && sec < 60 && fr < base {
+    } else if drop_frame && rate.supports_drop_frame() {
+        // overflowing fields carry into the next one first, then drop-frame counting applies
+        let (sec, fr) = (sec.saturating_add(fr / base), fr % base);
+        let (m, sec) = (m.saturating_add(sec / 60), sec % 60);
+        let (h, m) = (h.saturating_add(m / 60), m % 60);
         fields_to_frames(h, m, sec, fr, rate, true)
     } else {
         // Saturating: typed or agent-sent timecodes can have absurdly large fields.

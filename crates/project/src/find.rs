@@ -126,8 +126,11 @@ pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
             }
         }
         "media duration" | "duration" => {
-            let rate = it.frame_rate();
-            filmcraft_time::format_timecode_frames(rate.frame_at(it.duration()), rate, false)
+            // a subclip counts at its media's rate, as the Project panel does
+            let rate = media.map_or_else(|| it.frame_rate(), |m| m.frame_rate());
+            // in the media's own count, as the Project panel shows it
+            let drop_frame = media.is_some_and(|m| m.info.drop_frame_timecode);
+            filmcraft_time::format_timecode_frames(rate.frame_at(it.duration()), rate, drop_frame)
         }
         "video info" => media
             .and_then(|m| m.info.video.as_ref())

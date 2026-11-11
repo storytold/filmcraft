@@ -362,6 +362,13 @@ pub struct ExportSettings {
     pub caption_sidecar: Option<String>,
     pub effects: ExportEffects,
     pub metadata: ExportMetadata,
+    /// QuickTime and MP4 movies: write a timecode track (`tmcd`) that starts at the sequence's
+    /// Start Time, as MXF files always do. Off unless asked for.
+    #[serde(default)]
+    pub timecode_track: bool,
+    /// Reel (tape) name stored in that timecode track; empty for none.
+    #[serde(default)]
+    pub reel_name: String,
     /// Two-pass state (set by the exporter).
     #[serde(skip)]
     pub h264_pass: H264Pass,
@@ -471,6 +478,8 @@ impl Default for ExportSettings {
             caption_sidecar: None,
             effects: ExportEffects::default(),
             metadata: ExportMetadata::default(),
+            timecode_track: false,
+            reel_name: String::new(),
             h264_pass: H264Pass::Single,
             signal: ColorSignal::default(),
             sink: None,

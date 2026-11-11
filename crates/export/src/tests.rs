@@ -151,6 +151,42 @@ fn sdr_exports_carry_a_colr_box() {
     }
 }
 
+/// With `timecode_track`, QuickTime and MP4 movies carry a `tmcd` track that starts at the
+/// sequence's Start Time (drop-frame as the sequence counts it) and names the reel; without it,
+/// none, as before.
+#[test]
+fn timecode_track_starts_at_the_sequence_start_time_and_names_the_reel() {
+    use filmcraft_isobmff::CodecConfig;
+    let timecode = |path: &str| {
+        let file = filmcraft_isobmff::open(std::fs::read(path).unwrap()).unwrap();
+        file.tracks.iter().find_map(|t| match t.codec() {
+            Some(CodecConfig::Timecode(tc)) => Some(tc.clone()),
+            _ => None,
+        })
+    };
+    let (p, seq, m) = project();
+    let mut p = (*p).clone();
+    let q = p.sequence_mut(seq).unwrap();
+    q.settings.frame_rate = FrameRate::FPS_29_97;
+    q.settings.drop_frame = true;
+    // 01:00:00;00 drop-frame
+    q.start_timecode = 107_892;
+    let p = Arc::new(p);
+    for (format, name) in [(Format::ProRes, "tc.mov"), (Format::H264, "tc.mp4")] {
+        let path = tmp(name);
+        let settings = ExportSettings { format, path: path.clone(), timecode_track: true, reel_name: "A001".into(), ..Default::default() };
+        export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+        let tc = timecode(&path).unwrap_or_else(|| panic!("{name}: no timecode track"));
+        assert_eq!((tc.start_frame, tc.drop_frame(), tc.name.as_deref()), (Some(107_892), true, Some("A001")), "{name}");
+        assert_eq!((tc.timescale, tc.frame_duration, tc.frames_per_second), (30_000, 1001, 30), "{name}");
+        assert_eq!(tc.format_frame(107_892), "01:00:00;00");
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        assert_eq!(filmcraft_codecs::open_bytes(name, bytes).unwrap().info().start_timecode, Some(107_892), "{name}");
+        export(&p, seq, &ExportSettings { format, path: path.clone(), ..Default::default() }, &m, &Progress::default()).unwrap();
+        assert_eq!(timecode(&path), None, "{name}: no timecode track unless asked for");
+    }
+}
+
 /// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
 /// Include Alpha Channel the picture's alpha survives instead of being flattened over black.
 #[test]

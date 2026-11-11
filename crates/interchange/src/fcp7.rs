@@ -292,6 +292,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             video: dims.map(|(w, h)| (w, h, r)),
             audio: aud,
             start_tc: child(def, "timecode").and_then(|t| child_i64(t, "frame")),
+            drop_frame: child(def, "timecode").and_then(|t| child_text(t, "displayformat")).is_some_and(|d| d.eq_ignore_ascii_case("DF")),
             kind: None,
         };
         if spec.video.is_none() && spec.audio.is_none() {
@@ -1186,7 +1187,7 @@ impl Exp<'_, '_> {
         write_rate(&mut self.w, frate);
         self.w.text("duration", frames_round(frate, m.info.duration));
         let tc = m.info.start_timecode.unwrap_or(0);
-        self.write_timecode(tc, frate, false);
+        self.write_timecode(tc, frate, m.info.drop_frame_timecode && frate.supports_drop_frame());
         self.w.open("media", &[]);
         if let Some(v) = &m.info.video {
             self.w.open("video", &[]);

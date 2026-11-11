@@ -414,6 +414,7 @@ impl AviSource {
             audio_streams,
             container: "AVI".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.0.len()),
         };
         let mut vorder: Vec<usize> = (0..vframes.len()).collect();
