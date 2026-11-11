@@ -71,37 +71,29 @@ impl Driver {
         self.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y + dy}}));
         self.frames(3);
     }
-
-    fn labels(&self) -> (String, String) {
-        let seq = self.app().session.active_sequence().unwrap();
-        (format!("V{}", seq.video_tracks.len()), format!("A{}", seq.audio_tracks.len()))
-    }
 }
 
 #[test]
-fn the_top_edge_of_the_highest_video_track_resizes_the_video_tracks() {
+fn the_video_track_slider_end_resizes_video_tracks_without_changing_audio_tracks() {
     let mut d = Driver::demo();
     let (v0, a0) = d.heights();
-    // The top end circle controls the video track height.
+    // Pulling the top circle inward shortens the thumb and grows the video tracks.
     d.drag("timeline.trackSlider.video.topCircle", 0.5, 15.0);
     let (v1, a1) = d.heights();
     assert!(v1 > v0 + 5.0, "video tracks grow: {v0} -> {v1}");
     assert_eq!(a1, a0, "audio tracks are left alone");
-    // and up makes them shorter again
     d.drag("timeline.trackSlider.video.topCircle", 0.5, -15.0);
     assert!(d.heights().0 < v1 - 5.0);
 }
 
 #[test]
-fn the_bottom_edge_of_the_last_audio_track_resizes_the_audio_tracks_from_either_side_of_the_line() {
+fn the_audio_track_slider_end_resizes_audio_tracks_without_changing_video_tracks() {
     let mut d = Driver::demo();
     let (v0, a0) = d.heights();
-    // The bottom end circle controls audio track height.
     d.drag("timeline.trackSlider.audio.bottomCircle", 0.5, -15.0);
     let (v1, a1) = d.heights();
     assert!(a1 > a0 + 5.0, "audio tracks grow: {a0} -> {a1}");
     assert_eq!(v1, v0, "video tracks are left alone");
-    // Moving it back down makes the tracks shorter again.
     d.drag("timeline.trackSlider.audio.bottomCircle", 0.5, 15.0);
     assert!(d.heights().1 < a1 - 5.0);
 }
@@ -131,10 +123,9 @@ fn rect_of(d: &mut Driver, id: &str) -> egui::Rect {
 #[test]
 fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     let mut d = Driver::demo();
-    let (top, _) = d.labels();
     let separator = d.app().tokens.separator;
     let ruler = rect_of(&mut d, "timeline.ruler");
-    let top_track = rect_of(&mut d, &format!("timeline.track.{top}.target"));
+    let header_bg = d.app().tokens.tl_header_bg;
     let seq = d.app().session.active_sequence().unwrap();
     let tracks = seq.video_tracks.len() + seq.audio_tracks.len();
     // horizontal separator lines across the track area (the headers' own lines start left of the ruler)
@@ -157,7 +148,15 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     ys.dedup_by(|a, b| (*a - *b).abs() < 0.1);
     assert!(ys.len() > tracks, "a line under each of the {tracks} tracks and one above the top video track, found {ys:?}");
     let first = ys[0];
-    assert!((first - top_track.min.y).abs() < 1.5, "the first line ({first}) is at the top edge of the highest video track ({})", top_track.min.y);
+    let header_top = flat_shapes(&d)
+        .into_iter()
+        .filter_map(|s| match s {
+            egui::Shape::Rect(r) if r.fill == header_bg => Some(r.rect.min.y),
+            _ => None,
+        })
+        .find(|y| (*y - first).abs() < 1.5)
+        .expect("the top video track header starts at the first separator line");
+    assert!((first - header_top).abs() < 1.5, "the first line ({first}) is at the video header's top edge ({header_top})");
 }
 
 // Regression test for #703: the playhead's head spanned the whole ruler and covered the markers and
