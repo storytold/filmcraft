@@ -59,6 +59,7 @@ pub(crate) fn read_accum(c: &GpuCompositor) -> Vec<f32> {
         wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(*h) } },
         wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
     );
+
     c.queue.submit([enc.finish()]);
     let slice = buf.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
@@ -151,9 +152,8 @@ fn gpu_blend_modes_match_cpu() {
         1.0,
         24,
         filmcraft_time::FrameRate::FPS_24,
-    )
-    .unwrap();
-    let demo = Arc::new(VideoFrame::rgba8(320, 180, pixels));
+    );
+    let demo = Arc::new(VideoFrame::rgba8(320, 180, pixels.expect("pixels")));
     let base = ramp_layer(200, 180, 3);
     let top = ramp_layer(160, 120, 0);
     for mode in Blend::ALL {
