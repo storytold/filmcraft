@@ -618,7 +618,8 @@ impl VideoSamples for MkvVideo<'_> {
         self.src.read(self.track, i)
     }
     fn sample_size(&self, i: usize) -> Option<u64> {
-        Some(u64::from(self.src.file.tracks.get(self.track)?.samples.get(i)?.size))
+        // the size `read` returns: the stored size plus the header-stripping or ProRes prefix
+        self.src.file.tracks.get(self.track)?.sample_size(i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let Some(e) = &self.src.ventry else {

@@ -456,9 +456,6 @@ impl VideoSamples for MxfVideo<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.file.read_sample(&self.src.bytes, self.track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
-    fn sample_size(&self, i: usize) -> Option<u64> {
-        Some(u64::from(self.src.file.tracks.get(self.track)?.samples.get(i)?.size))
-    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         if let Some(why) = &self.src.unsupported {
             return Err(CodecError::Unsupported(why.clone()));

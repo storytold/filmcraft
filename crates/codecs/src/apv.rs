@@ -150,9 +150,6 @@ impl VideoSamples for ApvVideo<'_> {
         let (off, sz) = self.0.samples.get(i).copied().ok_or_else(|| CodecError::Container("sample index out of range".into()))?;
         filmcraft_media::reader::read_range(&*self.0.bytes.0, off, sz as usize).map_err(|e| CodecError::Container(e.to_string()))
     }
-    fn sample_size(&self, i: usize) -> Option<u64> {
-        self.0.samples.get(i).map(|&(_, sz)| sz as u64)
-    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         Ok(Box::new(ApvDecoder))
     }

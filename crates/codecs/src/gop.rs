@@ -612,6 +612,11 @@ fn random_access_at_or_before(s: &dyn VideoSamples, mut key: usize, mut is_ra: i
             return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
         }
         let data = s.read(key)?;
+        // a container that cannot say a sample's size (see `sample_size`) is checked after the read:
+        // the initial read of an unknown size is allowed, but one sample past the budget ends the search
+        if data.len() > MAX_RANDOM_ACCESS_PROBE_BYTES - bytes {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
         if is_ra(&data) != Some(false) {
             break;
         }

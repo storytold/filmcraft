@@ -508,10 +508,6 @@ impl VideoSamples for AviVideo<'_> {
         let f = self.src.vframes.get(i).ok_or_else(|| CodecError::Container("frame out of range".into()))?;
         self.src.read(self.stream, f.chunk)
     }
-    fn sample_size(&self, i: usize) -> Option<u64> {
-        let f = self.src.vframes.get(i)?;
-        Some(u64::from(self.src.file.streams.get(self.stream)?.chunks.get(f.chunk)?.size))
-    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let v = self.src.info.video.as_ref().ok_or_else(|| CodecError::Unsupported("no video stream".into()))?;
         let (w, h) = (v.width.min(u32::from(u16::MAX)) as u16, v.height.min(u32::from(u16::MAX)) as u16);

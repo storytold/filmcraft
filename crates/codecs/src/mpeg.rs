@@ -787,13 +787,6 @@ impl VideoSamples for MpegVideo<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read_unit(self.v, i)
     }
-    fn sample_size(&self, i: usize) -> Option<u64> {
-        let u = *self.v.units.get(i)?;
-        if let Some((_, aus)) = &self.src.es {
-            return Some(aus.get(u)?.len() as u64);
-        }
-        Some(u64::from(self.src.file.as_ref()?.streams.get(self.v.stream)?.units.get(u)?.size))
-    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         if let Some(why) = &self.src.unsupported_video {
             return Err(CodecError::Unsupported(why.clone()));

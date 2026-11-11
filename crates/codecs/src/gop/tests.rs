@@ -1104,6 +1104,32 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     // a sample that can start a decode ends the search at once
     assert_eq!(random_access_at_or_before(&s, 100, |_| Some(true)).unwrap(), 100);
     assert_eq!(random_access_at_or_before(&s, 0, |_| Some(false)).unwrap(), 0);
+    // a container that cannot say a sample's size: the oversized candidate is refused after its one read
+    struct Unsized(Aliased);
+    impl VideoSamples for Unsized {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.0.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; MAX_RANDOM_ACCESS_PROBE_BYTES + 1])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    let u = Unsized(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&u, 100, |_| Some(true)).is_err());
+    assert_eq!(u.0.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
     // a cancelled request is refused even when the search starts at sample zero
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
