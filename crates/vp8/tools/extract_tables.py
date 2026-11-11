@@ -48,12 +48,13 @@ def table(name, count, occurrence=-1):
                 if depth == 0:
                     break
             i += 1
-        body = re.sub(r"/\*.*?\*/", "", text[brace:i], flags=re.S)
-        body = re.sub(r"//[^\n]*", "", body)
-        found.append([int(v) for v in re.findall(r"-?\d+", body)])
+        found.append(text[brace:i])
     if not found:
         sys.exit("table %s not found" % name)
-    vals = found[occurrence]
+    # only the wanted definition is cleaned of comments and parsed into integers
+    body = re.sub(r"/\*.*?\*/", "", found[occurrence], flags=re.S)
+    body = re.sub(r"//[^\n]*", "", body)
+    vals = [int(v) for v in re.findall(r"-?\d+", body)]
     if len(vals) != count:
         sys.exit("table %s: %d values, expected %d" % (name, len(vals), count))
     return vals
