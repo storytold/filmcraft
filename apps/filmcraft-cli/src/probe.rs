@@ -65,12 +65,12 @@ fn ogg_details(src: &filmcraft_codecs::OggSource) -> Value {
         .iter()
         .map(|s| {
             let mut v = json!({"serial": s.serial, "codec": s.codec.name(), "packets": s.packets.len(), "pages": s.pages, "lastGranule": s.last_granule, "endOfStream": s.saw_eos});
-            if s.codec == filmcraft_ogg::Codec::Opus
+            if s.codec == craft_media::ogg::Codec::Opus
                 && let Some(h) = s.headers.first()
                 && h.len() >= 12
             {
                 let pre_skip = u16::from_le_bytes([h[10], h[11]]);
-                let t = filmcraft_ogg::OpusTiming::of(s, pre_skip as u32);
+                let t = craft_media::ogg::OpusTiming::of(s, pre_skip as u32);
                 v["preSkip"] = json!(pre_skip);
                 v["samples48k"] = json!(t.total);
             }
@@ -168,7 +168,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         v["mpeg"] = mpeg_details(&src);
         return Ok(v);
     }
-    if filmcraft_ogg::sniff(head)
+    if craft_media::ogg::sniff(head)
         && let Ok(src) = filmcraft_codecs::OggSource::open(&name, bytes.clone())
     {
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();

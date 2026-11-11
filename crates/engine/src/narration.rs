@@ -194,7 +194,10 @@ fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near
         },
         _ => None,
     });
-    let dir = beside.unwrap_or_else(|| crate::voiceover::media_dir(s, p, "Narrations"));
+    let dir = match beside {
+        Some(d) => d,
+        None => crate::voiceover::media_dir(s, p, "Narrations")?,
+    };
     let path = crate::voiceover::unique_wav_path(s, &dir, BASE_NAME)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
