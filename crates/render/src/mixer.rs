@@ -598,6 +598,12 @@ fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
     C.get_or_init(Default::default)
 }
 
+/// Keys of graphs [`build_state`] refused (same key and sample rate: same refusal).
+fn refused_graphs() -> &'static Mutex<std::collections::HashSet<u64>> {
+    static R: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
 /// Total latency (samples) of the sequence's mixer graph: how far ahead of the timeline the graph
 /// is read so its output lines up.
 pub fn graph_latency(seq: &Sequence) -> usize {
@@ -894,7 +900,19 @@ pub(crate) fn mix_graph_at(
         Some(st) => (st, 0usize),
         None => {
             // refused: silence in the Mix's own width (6 channels for a 5.1 Mix)
-            let Some(st) = build_state(&plan, sr) else { return AudioBuffer::silence(sr, plan.strips.last().map_or(2, |s| s.width), frames) };
+            let refused = || AudioBuffer::silence(sr, plan.strips.last().map_or(2, |s| s.width), frames);
+            // a refused graph is remembered by its key, so every block does not rebuild all its DSP states to refuse it again
+            if lock(refused_graphs()).contains(&key) {
+                return refused();
+            }
+            let Some(st) = build_state(&plan, sr) else {
+                let mut r = lock(refused_graphs());
+                if r.len() >= 64 {
+                    r.clear();
+                }
+                r.insert(key);
+                return refused();
+            };
             let pre = plan.preroll(Tick::from_units(start, sr as i64), sr).max(st.latency);
             (st, pre)
         }

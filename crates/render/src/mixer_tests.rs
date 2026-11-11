@@ -768,6 +768,9 @@ fn a_graph_with_absurd_latency_is_refused_not_allocated() {
     assert_eq!(graph_latency(r.p.sequence(r.seq).unwrap()), 0);
     let [l, _] = r.mix(0, 1_000);
     assert!(l.iter().all(|s| *s == 0.0));
+    // the refusal is remembered: the next block is silent too, without building the graph again
+    let [l, _] = r.mix(1_000, 1_000);
+    assert!(l.iter().all(|s| *s == 0.0));
 }
 
 #[test]
