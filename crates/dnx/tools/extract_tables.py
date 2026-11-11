@@ -45,12 +45,15 @@ def weights(sec):
     return nums
 
 
-def check_prefix(codes):
-    """Kraft sum of a prefix code (1.0 when complete)."""
-    for a in codes:
-        for b in codes:
-            if a is not b and b.startswith(a):
-                raise SystemExit("not a prefix code: %s %s" % (a, b))
+def check_prefix(codes, expected):
+    """Kraft sum of a prefix code (1.0 when complete). The table size is checked first, and the
+    prefix test compares neighbours of the sorted codes, so a bad input costs n log n."""
+    if len(codes) != expected:
+        raise SystemExit("expected %d codewords, found %d" % (expected, len(codes)))
+    ordered = sorted(codes)
+    for a, b in zip(ordered, ordered[1:]):
+        if b.startswith(a):
+            raise SystemExit("not a prefix code: %s %s" % (a, b))
     return sum(2.0 ** -len(c) for c in codes)
 
 
@@ -95,7 +98,7 @@ for n, t in enumerate(etables):
             code, ln, am, fr, fi = m.groups()
             assert len(code) == int(ln), m.group(0)
             ent.append((code, 0 if am.startswith("EOB") else int(am), int(fr), int(fi), am.startswith("EOB")))
-    k = check_prefix([e[0] for e in ent])
+    k = check_prefix([e[0] for e in ent], 4 * 64 + 1)
     assert abs(k - 1.0) < 1e-12, (t, k, len(ent))
     assert sum(e[4] for e in ent) == 1 and len(ent) == 4 * 64 + 1, (t, len(ent))
     rent = []
@@ -106,14 +109,14 @@ for n, t in enumerate(etables):
                 continue
             rent.append((code, int(r)))
     assert len(rent) == 62 and sorted(r for _, r in rent) == list(range(1, 63)), (t, len(rent))
-    assert abs(check_prefix([c for c, _ in rent]) - 1.0) < 1e-12
+    assert abs(check_prefix([c for c, _ in rent], 62) - 1.0) < 1e-12
     dent = []
     for l in dc:
         m = re.match(r"^\s+([01]+)\s+(\d+)\s*$", l)
         if m:
             dent.append((m.group(1), int(m.group(2))))
     assert [e for _, e in dent] == list(range(len(dent))), (t, dent)
-    assert abs(check_prefix([c for c, _ in dent]) - 1.0) < 1e-12, (t, dent)
+    assert abs(check_prefix([c for c, _ in dent], len(dent)) - 1.0) < 1e-12, (t, dent)
     name = t.replace(".", "_")
     out.append("/// Table %s: (codeword, length, amplitude (0 = EOB), Frun, Findex)." % t)
     out.append("pub const AMP_%s: [(u16, u8, u8, u8, u8); %d] = [" % (name, len(ent)))

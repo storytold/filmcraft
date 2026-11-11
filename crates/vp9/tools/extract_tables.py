@@ -32,8 +32,10 @@ def table(name, count):
     """Integers of the table `name[...] = { ... }` (the last definition in the text)."""
     starts = [m.start() for m in re.finditer(r"\b%s\s*\[" % re.escape(name), text)]
     for s in reversed(starts):
-        eq = text.find("=", s)
-        brace = text.find("{", s)
+        # the `=` and `{` of a definition sit within the declaration: look only that far, so a use
+        # of the name does not scan the rest of the specification
+        eq = text.find("=", s, s + 256)
+        brace = text.find("{", s, s + 512)
         if eq < 0 or brace < 0 or eq > brace or text[s:eq].count("\n") > 2:
             continue
         depth = 0
