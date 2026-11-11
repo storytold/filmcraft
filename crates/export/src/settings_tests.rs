@@ -1633,10 +1633,12 @@ fn store_fixture() -> (Arc<Project>, ItemId, SourceMap, Arc<std::sync::atomic::A
     (Arc::new(p), seq, sources, reads)
 }
 
+/// The export range of the store tests: 3.5 s, so four measuring chunks (the last one short).
 fn store_range() -> TimeRange {
     TimeRange::new(Tick::ZERO, Tick(7 * TICKS_PER_SECOND / 2))
 }
 
+/// Loudness Normalization on (-14 LUFS, -2 dBTP) with `channels` output channels.
 fn loudness_settings(channels: u32) -> ExportSettings {
     let mut settings = ExportSettings::default();
     settings.audio.channels = channels;
@@ -1644,6 +1646,7 @@ fn loudness_settings(channels: u32) -> ExportSettings {
     settings
 }
 
+/// The bit patterns of planar samples, so comparisons are exact (NaN and -0.0 included).
 fn planar_bits(planar: &[Vec<f32>]) -> Vec<Vec<u32>> {
     planar.iter().map(|c| c.iter().map(|v| v.to_bits()).collect()).collect()
 }
@@ -1677,6 +1680,7 @@ fn export_audio(
     out
 }
 
+/// The files in `dir`.
 fn files_of(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect()
 }
@@ -1748,6 +1752,24 @@ fn loudness_mix_store_falls_back_when_the_file_cannot_be_read() {
         },
     );
     assert_eq!(planar_bits(&live), planar_bits(&stored));
+}
+
+/// The store holds the user's programme audio: on Unix it is created readable by its owner only.
+#[cfg(unix)]
+#[test]
+fn loudness_mix_store_file_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = store_fixture();
+    let (p, seq, sources, _) = &f;
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-private");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    audio.measure(&settings, sources, &|| false).unwrap();
+    let files = files_of(&dir.0);
+    assert_eq!(files.len(), 1, "{files:?}");
+    let mode = std::fs::metadata(&files[0]).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "group/other bits set: {mode:o}");
 }
 
 #[test]

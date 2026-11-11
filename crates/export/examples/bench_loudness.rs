@@ -60,6 +60,23 @@ fn project(secs: u32, tracks: usize) -> (Arc<Project>, ItemId, ItemId, SharedSou
     (Arc::new(p), seq, item, Arc::new(src))
 }
 
+/// FNV-1a of a file, read through a fixed buffer (exports can be larger than memory).
+fn fnv1a(path: &std::path::Path) -> u64 {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).expect("output");
+    let mut buf = vec![0u8; 1 << 20];
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    loop {
+        let n = file.read(&mut buf).expect("read output");
+        if n == 0 {
+            return hash;
+        }
+        for b in &buf[..n] {
+            hash = (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let runs: usize = arg(&args, "--runs").and_then(|v| v.parse().ok()).unwrap_or(3).max(1);
@@ -86,7 +103,7 @@ fn main() {
             let dt = t0.elapsed().as_secs_f64();
             let rep = prog.loudness.lock().ok().and_then(|g| *g);
             // FNV-1a of the file, to check that a change leaves the exported audio identical
-            let hash = std::fs::read(&out).expect("output").iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+            let hash = fnv1a(&out);
             eprintln!("loudness {loud} run {i}: {dt:.3} s, output {hash:016x}, {rep:?}");
             times.push(dt);
         }

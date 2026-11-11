@@ -14,6 +14,7 @@ const SAMPLE_BYTES: usize = 4;
 /// Frames decoded per file read.
 const READ_BLOCK_FRAMES: usize = 1 << 16;
 
+/// The mixed export range in a temporary file (see the module docs).
 pub(crate) struct MixStore {
     file: File,
     path: PathBuf,
@@ -25,6 +26,7 @@ pub(crate) struct MixStore {
     channels: usize,
 }
 
+/// An `InvalidInput` error with a fixed message.
 fn invalid(msg: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, msg)
 }
@@ -44,7 +46,13 @@ impl MixStore {
             let dir = dir.map_or_else(std::env::temp_dir, Path::to_path_buf);
             let name = format!("filmcraft-loudness-{}-{}.f32", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
             let path = dir.join(name);
-            let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).ok()?;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true).write(true).create_new(true);
+            // the mix is the user's programme audio: other local users must not read it from a
+            // shared temporary directory
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+            let file = opts.open(&path).ok()?;
             Some(MixStore { file, path, start, len: 0, channels })
         }
         #[cfg(target_arch = "wasm32")]
