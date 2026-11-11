@@ -1001,6 +1001,7 @@ fn zoom_anchor_is_in_the_navigation_category() {
     use settings::ZoomAnchor;
     let (cat, f) = settings::fields().into_iter().find(|(_, f)| f.key == "navigation.zoomAnchor").expect("registry field");
     assert_eq!(cat, "navigation");
+    assert!(f.wired);
     assert_eq!(f.label, "Zoom Anchor Point");
     let Kind::Choice(opts) = f.kind else { panic!("the anchor is a choice") };
     assert_eq!(opts.iter().map(|o| o.0).collect::<Vec<_>>(), ["cursor", "playhead"]);

@@ -1,7 +1,7 @@
 use super::layout::Layout;
 use super::{
-    Align2, Color32, Drag, EDGE_PX, FilmcraftApp, Icon, ItemId, Rect, Sense, Sequence, Stroke, ThumbnailMode, Tick, TimeRange, Tokens, Value, format_time,
-    icons, json, marker_range_rect, marker_rect, pos2, vec2, work_area_rect,
+    Align2, Color32, Drag, EDGE_PX, FilmcraftApp, Icon, ItemId, RULER_SPLIT_OFFSET, Rect, Sense, Sequence, Stroke, ThumbnailMode, Tick, TimeRange, Tokens,
+    Value, format_time, icons, json, marker_range_rect, marker_rect, pos2, ruler_inout_marks, vec2, work_area_rect,
 };
 use crate::panels::timeline_hit::marker_end_rect;
 
@@ -57,16 +57,22 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
     // toolbar: 30 × 30 buttons, "on" = #4b4b4b fill
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
-    let toggles: [(Icon, &str, bool, bool, &str); 6] = [
+    // what the bare wheel does now (Settings ▸ Navigation ▸ Timeline Mouse Scrolling), for the quick-setting button
+    let wheel_now = app.session.prefs.wheel_action(false, false, false).to_string();
+    let toggles: [(Icon, &str, bool, bool, &str); 7] = [
         (Icon::Nest, "nest", !app.session.state.sequences_as_clips, true, tl!("Insert and overwrite sequences as nests or individual clips")),
         (Icon::Magnet, "snap", app.session.state.snapping, true, tl!("Snap in Timeline (S)")),
         (Icon::Link, "linked", app.session.state.linked_selection, true, tl!("Linked Selection")),
         (Icon::Captions, "captions", false, false, tl!("Caption track options")),
         (Icon::Marker, "marker", false, false, tl!("Add Marker (M)")),
         (Icon::Wrench, "settings", false, false, tl!("Timeline Display Settings")),
+        (Icon::Mouse, "wheel", wheel_now != "vertical", true, tl!("Timeline Mouse Wheel Behavior")),
     ];
+    // seven buttons fit the header column: they close up a little when it is narrow
+    let pitch = ((hw - 16.0) / 7.0).clamp(24.0, 30.0);
+    let size = pitch - 2.0;
     for (icon, key, on, toggle, tip) in toggles {
-        let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
+        let r = Rect::from_min_size(pos2(x, y), vec2(size, size));
         let resp = ui.interact(r, egui::Id::unique(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("timeline.toggle.{key}"), r, tip);
         if toggle && on {
@@ -74,7 +80,7 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         } else if resp.hovered() {
             p.rect_filled(r, 4.0, t.hover);
         }
-        icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
+        icons::paint(&p, r.shrink(size / 4.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
                 "nest" => app.session.execute("sequence.nestSequences", json!({})),
@@ -84,23 +90,21 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
                 _ => Ok(Value::Null),
             };
         }
+        if key == "wheel" {
+            egui::Popup::menu(&resp).show(|ui| wheel_menu(app, ui, &wheel_now, t));
+        }
         if key == "settings" {
             // stays open while options are toggled: only a click outside it (or an action) closes it
             egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| timeline_settings(app, ui));
         }
-        x += 30.0;
+        x += pitch;
     }
     // ----- ruler: markers row · labels · ticks · 2 pt render bar
     let clip = p.with_clip_rect(ruler);
     let label_y = ruler.min.y + 24.0;
     let tick_base = ruler.max.y - 3.0;
     let (minor, label_step) = ruler_steps(layout.pps / rate.as_f64(), rate.timecode_base());
-    // In/Out band
-    if seq.mark_in.is_some() || seq.mark_out.is_some() {
-        let a = layout.x_of(seq.mark_in.unwrap_or(Tick::ZERO));
-        let b = layout.x_of(seq.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration()));
-        clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
-    }
+    draw_in_out_band(app, &clip, ruler, layout, seq, label_y, tick_base, t);
     // split points: a short bracket with a V or A tag (video above, audio below)
     let sp = seq.split;
     for (t, is_in, tag, low) in
@@ -220,6 +224,63 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
     }
 }
 
+/// The In/Out band of the ruler, with the divider and the In/Out handles of a split ruler (Settings ▸
+/// Navigation); a drag there shows live.
+#[allow(clippy::too_many_arguments)]
+fn draw_in_out_band(app: &FilmcraftApp, clip: &egui::Painter, ruler: Rect, layout: &Layout, seq: &Sequence, label_y: f32, tick_base: f32, t: &Tokens) {
+    let rate = seq.settings.frame_rate;
+    let (mark_in, mark_out) = match app.tl.drag {
+        Some(Drag::RulerInOut { anchor, current }) => {
+            let (i, o) = ruler_inout_marks(anchor, current, rate);
+            (Some(i), Some(o))
+        }
+        _ => (seq.mark_in, seq.mark_out),
+    };
+    let split_ruler = app.session.prefs.navigation.ruler_drag_in_out;
+    let split_line_y = ruler.min.y + RULER_SPLIT_OFFSET;
+    if split_ruler {
+        clip.line_segment([pos2(ruler.min.x, split_line_y), pos2(ruler.max.x, split_line_y)], Stroke::new(1.0, t.separator.gamma_multiply(0.8)));
+    }
+    if mark_in.is_none() && mark_out.is_none() {
+        return;
+    }
+    let a = layout.x_of(mark_in.unwrap_or(Tick::ZERO));
+    let b = layout.x_of(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration()));
+    if !split_ruler {
+        clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
+        return;
+    }
+    clip.rect_filled(Rect::from_min_max(pos2(a, ruler.min.y + 2.0), pos2(b, tick_base)), 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x5c, 0x5c, 165));
+    let col = Color32::from_rgb(0xf0, 0xc8, 0x3c);
+    for (x, dir) in [(a, 1.0_f32), (b, -1.0_f32)] {
+        clip.line_segment([pos2(x, ruler.min.y + 1.0), pos2(x, split_line_y)], Stroke::new(1.5, col));
+        clip.line_segment([pos2(x, ruler.min.y + 1.5), pos2(x + dir * 5.0, ruler.min.y + 1.5)], Stroke::new(1.5, col));
+    }
+}
+
+/// The mouse button's menu: what the bare wheel does on the Timeline, and a way to the Settings page.
+fn wheel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, wheel_now: &str, t: &Tokens) {
+    ui.set_min_width(210.0);
+    ui.label(egui::RichText::new(tl!("Timeline Mouse Wheel Behavior")).color(t.text_dim).size(11.5));
+    ui.separator();
+    for &(val, label) in filmcraft_engine::settings::MOUSE_SCROLL.iter().filter(|(v, _)| *v != "off") {
+        let c = ui.selectable_label(wheel_now == val, crate::i18n::t(label));
+        app.auto.add(&format!("timeline.wheelMode.{val}"), c.rect, label);
+        if c.clicked() {
+            // only the bare wheel changes; the modifiers stay as they are in Settings ▸ Navigation
+            let _ = app.session.execute("prefs.set", json!({"key": "navigation.mouseScrolling", "value": val}));
+            ui.close();
+        }
+    }
+    ui.separator();
+    let more = ui.selectable_label(false, tl!("More Settings…"));
+    app.auto.add("timeline.wheelMode.moreSettings", more.rect, "More Settings…");
+    if more.clicked() {
+        let _ = crate::panels::settings::open(app, "navigation");
+        ui.close();
+    }
+}
+
 /// The Timeline Display Settings popup from the ruler toolbar: thumbnails, waveforms, edit
 /// markers and the track-height presets.
 fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
@@ -257,11 +318,13 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     }
     ui.separator();
     if ui.button(tl!("Expand All Tracks")).clicked() {
+        app.ui.timeline.track_h_override.clear();
         app.ui.timeline.video_track_h = 64.0;
         app.ui.timeline.audio_track_h = 64.0;
         ui.close();
     }
     if ui.button(tl!("Minimize All Tracks")).clicked() {
+        app.ui.timeline.track_h_override.clear();
         app.ui.timeline.video_track_h = 26.0;
         app.ui.timeline.audio_track_h = 26.0;
         ui.close();

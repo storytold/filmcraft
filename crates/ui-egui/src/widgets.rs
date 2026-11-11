@@ -510,6 +510,26 @@ pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::
     resp
 }
 
+/// The small "Timeline Mouse Wheel Behavior" button of the monitors, Effect Controls and Timeline:
+/// always the mouse icon, filled while the wheel is set to something other than the default.
+pub fn wheel_mode_button(ui: &mut Ui, rect: Rect, active: bool, t: &Tokens, id: egui::Id) -> Response {
+    let resp = ui.interact(rect, id, Sense::click());
+    if active {
+        ui.painter().rect_filled(rect, 4.0, t.pressed);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, t.hover);
+    }
+    let color = if active {
+        t.accent
+    } else if resp.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(ui.painter(), rect.shrink(4.0), Icon::Mouse, color);
+    resp
+}
+
 /// Where dialogs open: the centre of the app window. Dialogs use it as `default_pos` with a
 /// centre pivot instead of `Window::anchor`, which would pin them: egui makes anchored windows
 /// immovable, so they could not be dragged by the title bar.

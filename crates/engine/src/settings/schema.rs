@@ -604,19 +604,19 @@ pub(super) static CATEGORIES: &[Category] = &[
                 "Timeline Mouse Wheel",
                 &[
                     f("navigation.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
-                    f("navigation.altScrolling", "Alt + Scroll", Kind::Choice(MOUSE_SCROLL), false),
-                    f("navigation.shiftScrolling", "Shift + Scroll", Kind::Choice(MOUSE_SCROLL), false),
-                    f("navigation.ctrlScrolling", "Ctrl + Scroll", Kind::Choice(MOUSE_SCROLL), false),
-                    f("navigation.zoomAnchor", "Zoom Anchor Point", Kind::Choice(ZOOM_ANCHOR), false),
+                    f("navigation.altScrolling", "Alt + Scroll", Kind::Choice(MOUSE_SCROLL), true),
+                    f("navigation.shiftScrolling", "Shift + Scroll", Kind::Choice(MOUSE_SCROLL), true),
+                    f("navigation.ctrlScrolling", "Ctrl + Scroll", Kind::Choice(MOUSE_SCROLL), true),
+                    f("navigation.zoomAnchor", "Zoom Anchor Point", Kind::Choice(ZOOM_ANCHOR), true),
                 ],
             ),
             Row::Group(
                 "Timeline Clicks and Drags",
                 &[
-                    f("navigation.clickToMovePlayhead", "Move Playhead on Timeline Click", Kind::Choice(CLICK_PLAYHEAD), false),
-                    f("navigation.dragPlayheadLine", "Drag Playhead Line Across Tracks", Kind::Choice(DRAG_PLAYHEAD_LINE), false),
-                    b("navigation.rulerDragInOut", "Split Time Ruler: Drag Upper Half to Set In/Out Range", false),
-                    b("navigation.middleButtonPan", "Pan Timeline by Dragging With Middle Mouse Button", false),
+                    f("navigation.clickToMovePlayhead", "Move Playhead on Timeline Click", Kind::Choice(CLICK_PLAYHEAD), true),
+                    f("navigation.dragPlayheadLine", "Drag Playhead Line Across Tracks", Kind::Choice(DRAG_PLAYHEAD_LINE), true),
+                    b("navigation.rulerDragInOut", "Split Time Ruler: Drag Upper Half to Set In/Out Range", true),
+                    b("navigation.middleButtonPan", "Pan Timeline by Dragging With Middle Mouse Button", true),
                 ],
             ),
             Row::Table {
