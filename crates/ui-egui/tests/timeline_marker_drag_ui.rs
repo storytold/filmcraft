@@ -205,3 +205,20 @@ fn only_the_selection_tool_drags_a_marker() {
         }
     }
 }
+
+#[test]
+fn a_range_ending_off_screen_has_no_end_handle_at_the_ruler_edge() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let id = d.exec("markers.add", json!({"frame": 30, "durationFrames": 1_000_000, "name": "Long"}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let before = marker(&d, id);
+    let ruler = d.rect("timeline.ruler");
+    let band = d.rect(&format!("timeline.markerRange.{id}"));
+    let (x, y) = (ruler[0] + ruler[2] - 1.0, band[1] + band[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x - 60.0, "y": y}, "steps": 10}));
+    d.frames(3);
+    let m = marker(&d, id);
+    // pressing the band moves it, as anywhere on the band; it must not stretch it
+    assert_eq!(m.duration, before.duration, "the clipped band edge is not the marker's end");
+}

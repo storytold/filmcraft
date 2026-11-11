@@ -145,8 +145,15 @@ pub fn marker_end_at(seq: &Sequence, layout: &Layout, pos: Pos2, alt: bool) -> O
     if !layout.ruler.contains(pos) {
         return None;
     }
+    // against the unclipped end: a range ending off screen has no handle on the ruler's edge
     let end = seq.markers.iter().rev().find(|m| {
-        marker_range_rect(layout, m).is_some_and(|r| (pos.x - r.max.x).abs() <= 4.0 && pos.y <= r.max.y + 4.0 && !marker_rect(layout, m.start).contains(pos))
+        marker_end_rect(layout, m).is_some_and(|e| {
+            let end_x = e.center().x;
+            layout.ruler.x_range().contains(end_x)
+                && (pos.x - end_x).abs() <= 4.0
+                && marker_range_rect(layout, m).is_some_and(|r| pos.y <= r.max.y + 4.0)
+                && !marker_rect(layout, m.start).contains(pos)
+        })
     });
     end.or_else(|| alt.then(|| seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos))).flatten()).map(|m| m.id)
 }
