@@ -625,7 +625,7 @@ impl GopCache {
     }
 
     fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+        let _ = self.store_finished(st, pts, self.finish(f), draft);
     }
 
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
@@ -634,8 +634,9 @@ impl GopCache {
         self.budget.min(FRAME_CACHE_CEILING).max(reserve)
     }
 
-    /// Cache a frame [`Self::finish`] has been applied to.
-    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+    /// Cache a frame [`Self::finish`] has been applied to. Returns the stored picture, which the
+    /// caller keeps even when the cache evicts it again to meet the budget.
+    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> Arc<VideoFrame> {
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -646,7 +647,8 @@ impl GopCache {
         let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
-        if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
+        let stored = Arc::new(f);
+        if let Some(old) = st.frames.insert(pts, stored.clone()) {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
@@ -690,6 +692,7 @@ impl GopCache {
             pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
         }
         pool.trim_frames(&self.shared);
+        stored
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
@@ -949,10 +952,19 @@ impl GopCache {
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
+        // what this decode produced, kept apart from the cache: a concurrent request can move the pin and
+        // have the cache evict this frame before it is read back
+        let mut mine: Option<(i64, Arc<VideoFrame>)> = None;
         for (pts, frame, draft) in res? {
-            self.store_finished(&mut st, pts, frame, draft);
+            let stored = self.store_finished(&mut st, pts, frame, draft);
+            if pts <= want_pts && mine.as_ref().is_none_or(|(p, _)| pts > *p) {
+                mine = Some((pts, stored));
+            }
         }
-        st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        match st.at_or_before(want_pts, true) {
+            Some(f) => Ok(f),
+            None => mine.map(|(_, f)| f).ok_or_else(|| CodecError::Decode("frame not produced".into())),
+        }
     }
 }
 

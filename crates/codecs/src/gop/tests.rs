@@ -880,7 +880,10 @@ fn two_frames_over_the_ceiling_keep_only_the_requested_one() {
     st.pin = 0;
     let big = || VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]);
     c.store_finished(&mut st, 0, big(), false);
-    c.store_finished(&mut st, 1000, big(), false);
+    let second = c.store_finished(&mut st, 1000, big(), false);
     assert!(st.bytes <= FRAME_CACHE_CEILING, "{} bytes cached over the ceiling", st.bytes);
     assert!(st.frames.contains_key(&0), "the requested frame is kept");
+    // the frame a decode produced is handed back even though the cache had to drop it (another request owns the pin)
+    assert!(!st.frames.contains_key(&1000));
+    assert_eq!((second.width, second.height), (8192, 6400));
 }
