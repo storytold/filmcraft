@@ -270,7 +270,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
         let w = wheel_input(&ctx);
         let inv = app.session.state.timeline_ui.inverted_controls;
         // macOS delivers Shift+wheel sideways (delta.x only): treat it as the wheel's own axis
-        let wdy = if w.delta.y == 0.0 { w.delta.x } else { w.delta.y };
+        let wdy = if w.shift && w.delta.y == 0.0 { w.delta.x } else { w.delta.y };
         // Ctrl + Shift + wheel zooms about the pointer, and Inverted controls turns that around
         if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && wdy != 0.0) || (w.command && w.shift && wdy != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 {
