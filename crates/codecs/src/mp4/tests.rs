@@ -1,5 +1,5 @@
 use super::*;
-use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+use filmcraft_isobmff::{Brand, FourCc, FragmentedWriter, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use filmcraft_media::FrameRequest;
 
 /// A one-frame 64×32 ProRes MOV (bright left half, dark right half) whose `tkhd` matrix is
@@ -514,4 +514,92 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     };
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
+}
+
+/// Locate the writer's 64-bit decode times without looking inside sample data.
+fn tfdt_time_offsets(bytes: &[u8]) -> Vec<usize> {
+    use filmcraft_isobmff::boxes::BoxIter;
+
+    let children = |range, kind| BoxIter::within(bytes, range).map(|b| b.expect("valid fixture box")).filter(move |b| b.kind == FourCc(kind));
+    let mut offsets = Vec::new();
+    for moof in children(0..bytes.len(), *b"moof") {
+        for traf in children(moof.payload_range(), *b"traf") {
+            let mut boxes = children(traf.payload_range(), *b"tfdt");
+            let tfdt = boxes.next().expect("one tfdt per generated traf");
+            assert!(boxes.next().is_none(), "duplicate tfdt in generated traf");
+            assert_eq!(tfdt.payload.len(), 12, "v1 tfdt contains a full-box header and a u64");
+            assert_eq!(&tfdt.payload[..4], &[1, 0, 0, 0], "expected v1 tfdt with zero flags");
+            offsets.push(tfdt.payload_range().start + 4);
+        }
+    }
+    offsets
+}
+
+/// Four fragments, each containing two AAC packets and optionally one distinct picture.
+fn fragment_clip(video_times: Option<[u64; 4]>, audio_times: [u64; 4]) -> Mp4Source {
+    let mut mux = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Mp4));
+    let video = video_times.map(|_| mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 6000)).unwrap());
+    let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(48_000, 1, 96_000)).unwrap();
+    let tone: Vec<f32> = (0..16384).map(|i| 0.5 * (i as f32 * 0.13).sin()).collect();
+    let mut units = encoder.encode(&[&tone]);
+    units.extend(encoder.flush());
+    let audio = mux.add_track(TrackConfig::new(SampleEntry::aac(encoder.audio_specific_config(), 1, 48_000), 48_000)).unwrap();
+    let mut times = Vec::new();
+    for (k, audio_time) in audio_times.into_iter().enumerate() {
+        if let (Some(track), Some(v)) = (video, video_times) {
+            let mut frame = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+            frame.y.fill(100 + 200 * k as u16);
+            let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&frame).unwrap();
+            mux.write_sample(track, WriteSample { data: &data, duration: 240, composition_offset: 0, is_sync: true }).unwrap();
+            times.push(v[k]);
+        }
+        for data in &units[k * 2..k * 2 + 2] {
+            mux.write_sample(audio, WriteSample { data, duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        times.push(audio_time);
+        mux.flush_fragment().unwrap();
+    }
+    let mut bytes = mux.finish().unwrap();
+    // A tfdt lookalike in media data must not count as a timestamp.
+    bytes.extend_from_slice(b"\0\0\0\x1cmdat\0\0\0\x14tfdt\x01\0\0\0\0\0\0\0\0\0\0\0");
+    let offsets = tfdt_time_offsets(&bytes);
+    assert_eq!(offsets.len(), times.len());
+    for (p, time) in offsets.into_iter().zip(times) {
+        bytes[p..p + 8].copy_from_slice(&time.to_be_bytes());
+    }
+    Mp4Source::open("fragmented.mp4", bytes.into()).unwrap()
+}
+
+#[test]
+fn common_fragment_shift_preserves_sync_gaps_and_the_final_picture() {
+    // Video starts 20 ms after audio. Both tracks have a 100 ms gap halfway through.
+    let video = [120, 360, 1200, 1440];
+    let audio = [0, 2048, 8896, 10944];
+    let control = fragment_clip(Some(video), audio);
+    // A source clock can exceed the project Tick range even for a subsecond clip.
+    let origin = 50_000_000u64;
+    let shifted = fragment_clip(Some(video.map(|t| t + origin * 6000)), audio.map(|t| t + origin * 48000));
+    let picture = |src: &Mp4Source, ms| src.video_frame(FrameRequest::full(Tick::from_units(ms, 1000))).unwrap().luma8();
+    assert_eq!(shifted.info().duration, Tick::from_units(280, 1000));
+    for ms in [20, 60, 150, 200, 279] {
+        assert_eq!(picture(&shifted, ms), picture(&control, ms));
+    }
+    assert_ne!(picture(&shifted, 200), picture(&shifted, 279));
+    let pcm = shifted.audio(0, 13000, 48000).unwrap();
+    assert_eq!(pcm.channels, control.audio(0, 13000, 48000).unwrap().channels);
+    assert!(pcm.channels[0][4096..8896].iter().all(|&v| v == 0.0));
+    assert!(pcm.channels[0][8896..].iter().any(|v| v.abs() > 0.1));
+}
+
+#[test]
+fn audio_only_seek_finds_the_earliest_packet_in_decode_order() {
+    let control = fragment_clip(None, [0, 2048, 4096, 6144]);
+    let shifted = fragment_clip(None, [1999, 824, 6095, 8143]);
+    let read = |src: &Mp4Source, start| src.audio(start, 128, 48000).unwrap().channels;
+    assert_eq!(shifted.info().duration, Tick::from_units(8143 + 2048 - 824, 48000));
+    let first = read(&control, 2048);
+    assert!(first[0].iter().any(|v| v.abs() > 0.1));
+    assert_eq!(read(&shifted, 0), first);
+    // At raw time 2000, packet 3 overlaps packet 0 and is decoded last.
+    assert_eq!(read(&shifted, 2000 - 824), read(&control, 3072 + 2000 - 1848));
 }
