@@ -371,9 +371,6 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
     Some(left == right)
 }
 
-/// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
-/// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
-/// the clip.
 /// A sequence's sample rate as the mixer runs it: a damaged project can claim any rate, and the
 /// request sizing in [`nested_mix`] and the mixing in `mixer::mix_graph_at` must agree.
 pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
@@ -389,6 +386,9 @@ fn read_speed(item: &TrackItem) -> f64 {
     item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED)
 }
 
+/// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
+/// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
+/// the clip.
 fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
