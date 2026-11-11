@@ -436,3 +436,18 @@ fn generated_proxy_attaches_when_the_stored_duration_is_too_long() {
     assert!(matches!(proxy, Some(filmcraft_project::MediaRef::File { .. })), "proxy not attached: {proxy:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// An output made from a file the item no longer is (relinked or refreshed while the job ran) is not applied.
+#[test]
+fn an_item_changed_since_the_job_started_is_not_the_same_source() {
+    let root = tmp_dir("proxy-changed");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let clip = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
+    let started = vec![(items[0], a.to_string_lossy().into_owned(), clip.info.duration)];
+    assert!(crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = clip.info.duration + clip.info.duration;
+    assert!(!crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    let _ = std::fs::remove_dir_all(&root);
+}

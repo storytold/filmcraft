@@ -84,9 +84,13 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
-    /// Length of each item's opened source: a generated proxy is as long as the source, which a
-    /// project's stored duration can overstate.
-    pub source_durations: Vec<(ItemId, Tick)>,
+    /// Length of the source each finished output was transcoded from (the worker's own copy, filled
+    /// as it goes): a generated proxy is as long as that source, which a project's stored duration
+    /// can overstate.
+    pub source_durations: Arc<Mutex<Vec<(ItemId, Tick)>>>,
+    /// What each item was when the job started: (item, path, stored duration). An output whose item
+    /// has been relinked or refreshed since was made from a different file and is not applied.
+    pub started_from: Vec<(ItemId, String, Tick)>,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -264,23 +268,24 @@ fn items_param(s: &Session, p: &Value) -> Vec<ItemId> {
 fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
     let mut tasks = Vec::new();
     let mut total = 0;
-    let mut source_durations = Vec::new();
+    let mut started_from = Vec::new();
     for (item, output, pr) in work {
-        let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
+        let (clip, path, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
         let src = s.media.full_res_source(&s.project, item, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: no source")))?;
         if s.media.offline_status(item).is_some() {
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
         let source_duration = src.info().duration;
         total += frame_count(&clip, Some(TimeRange { start: Tick::ZERO, duration: source_duration }));
-        source_durations.push((item, source_duration));
+        started_from.push((item, path, clip.info.duration));
         tasks.push((item, clip, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
-    let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
+    let source_durations: Arc<Mutex<Vec<(ItemId, Tick)>>> = Arc::default();
+    let (prog, res, outs, durs) = (job.progress.clone(), job.result.clone(), outputs.clone(), source_durations.clone());
     // Media jobs run one after another, in the order they were started (#1831); the browser has no
     // threads to wait on, and runs each job where it is started.
     #[cfg(not(target_arch = "wasm32"))]
@@ -310,10 +315,13 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             // its own copy of the file, opened here rather than on the main thread, so the
             // monitors keep their decoder
             let src = pool.own_source(&project, item, &*services).unwrap_or(src);
+            // the length of the file actually transcoded: the cached source may be an older read of it
+            let source_duration = src.info().duration;
             match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
                     output.preserve();
+                    durs.lock().unwrap_or_else(|e| e.into_inner()).push((item, source_duration));
                     outs.lock().unwrap_or_else(|e| e.into_inner()).push((item, out));
                 }
                 Err(e) => {
@@ -340,7 +348,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations, started_from });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -363,11 +371,17 @@ pub fn poll(s: &mut Session) {
     for i in finished.into_iter().rev() {
         let pj = s.media_jobs.remove(i);
         let outs = std::mem::take(&mut *pj.outputs.lock().unwrap_or_else(|e| e.into_inner()));
+        let source_durations = std::mem::take(&mut *pj.source_durations.lock().unwrap_or_else(|e| e.into_inner()));
+        let (outs, changed): (Vec<_>, Vec<_>) = outs.into_iter().partition(|(item, _)| unchanged_since_start(&s.project, *item, &pj.started_from));
+        for (item, _) in &changed {
+            let name = s.project.item(*item).map_or_else(|| format!("item {}", item.0), |i| i.name.clone());
+            s.error_toast("job", format!("{name} changed while its copy was made; the copy was not applied"));
+        }
         if outs.is_empty() {
             continue;
         }
         let r = match pj.on_done {
-            OnDone::AttachProxies => attach_checked(s, &outs, false, &pj.source_durations).map(|_| ()),
+            OnDone::AttachProxies => attach_checked(s, &outs, false, &source_durations).map(|_| ()),
             OnDone::ReplaceMedia => replace_media(s, &outs),
             OnDone::Nothing => Ok(()),
         };
@@ -375,6 +389,12 @@ pub fn poll(s: &mut Session) {
             s.error_toast("job", e.to_string());
         }
     }
+}
+
+/// Whether `item` is still the file (path and stored length) it was when the job started.
+pub(crate) fn unchanged_since_start(p: &Project, item: ItemId, started: &[(ItemId, String, Tick)]) -> bool {
+    let Some((_, path, dur)) = started.iter().find(|(i, ..)| *i == item) else { return true };
+    media_path(p, item).is_some_and(|(clip, now, _)| now == *path && clip.info.duration == *dur)
 }
 
 /// Check a proxy file against its clip: duration within one frame, same frame rate.
