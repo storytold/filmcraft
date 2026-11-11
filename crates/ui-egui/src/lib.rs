@@ -161,6 +161,12 @@ pub struct Playback {
     /// s; negative = not yet stamped), and whether the Program monitor has them ready.
     pub preroll: Option<f64>,
     pub preroll_ready: bool,
+    /// ... or still being made (the preroll waits longer, [`frames::PREROLL_MAX_S`]).
+    pub preroll_pending: bool,
+    /// The project revision the preroll began at. A project that changes while the preroll waits
+    /// (a value dragged as Play is pressed makes a revision per UI pass) never has its first
+    /// frames ready at the current revision, so the longer wait would only hold the picture.
+    pub preroll_revision: Option<u64>,
     /// The window was hidden (occluded/minimized) since the monitor last refreshed.
     pub hidden: bool,
     /// Forward playback stops here (Play In to Out, Play from Playhead to Out Point).
