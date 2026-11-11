@@ -753,13 +753,20 @@ impl GopCache {
         f
     }
 
-    /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    /// Store decoder output (in presentation order) and advance `out_max`. Returns the stored
+    /// frame nearest at or before `want_pts`, which the caller keeps even when the cache evicts it.
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>, want_pts: i64) -> Option<Taken> {
         count_frames(&out);
+        let mut nearest: Option<Taken> = None;
         for d in out {
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
+            let pts = d.pts;
+            let t = self.store(st, pts, d.frame, d.draft);
+            if pts <= want_pts && nearest.as_ref().is_none_or(|n| pts > n.pts) {
+                nearest = Some(t);
+            }
         }
+        nearest
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -903,6 +910,15 @@ impl GopCache {
             return Err(CodecError::Decode("no video decoder".into()));
         };
         decoder.set_draft(draft);
+        // what this decode produced, kept apart from the cache: eviction may drop the only eligible fallback
+        let mut mine: Option<Taken> = None;
+        let keep = |mine: &mut Option<Taken>, t: Option<Taken>| {
+            if let Some(t) = t
+                && mine.as_ref().is_none_or(|m| t.pts > m.pts)
+            {
+                *mine = Some(t);
+            }
+        };
         while st.next < limit {
             if filmcraft_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
@@ -921,18 +937,24 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            keep(&mut mine, self.store_output(st, out, want_pts));
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            keep(&mut mine, self.store_output(st, out, want_pts));
             st.next = usize::MAX;
         }
-        // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
-        st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks); a closer
+        // frame of this decode beats an older cached one, and covers the cache having evicted it
+        match (st.at_or_before(want_pts, draft), mine) {
+            (Some(c), Some(m)) if m.pts > c.pts => Ok(m),
+            (Some(c), _) => Ok(c),
+            (None, Some(m)) => Ok(m),
+            (None, None) => Err(CodecError::Decode("frame not produced".into())),
+        }
     }
 
     /// A nested request (see [`Self::frame`]): decode from the sync sample with a fresh decoder,

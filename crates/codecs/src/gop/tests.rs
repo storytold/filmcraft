@@ -1075,3 +1075,17 @@ fn two_frames_over_the_ceiling_keep_only_the_requested_one() {
     assert!(!st.frames.contains_key(&1000));
     assert_eq!((second.width, second.height), (8192, 6400));
 }
+
+#[test]
+fn a_decode_whose_only_fallback_was_evicted_still_returns_it() {
+    // two ~200 MiB frames around the pin: the cache keeps the newest one and drops the older, which is the
+    // only frame at or before the wanted pts
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 1000;
+    let big = |pts| crate::video::DecodedFrame { pts, frame: VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]), draft: false };
+    let nearest = c.store_output(&mut st, vec![big(0), big(2000)], 1500).expect("the frame at 0");
+    assert_eq!(nearest.pts, 0);
+    assert!(!st.frames.contains_key(&0), "the cache dropped it");
+    assert_eq!((nearest.frame.width, nearest.frame.height), (8192, 6400));
+}
