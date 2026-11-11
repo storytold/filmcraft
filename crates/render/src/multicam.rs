@@ -106,7 +106,15 @@ pub fn render_grid_page(
     let (cols, rows) = (l.cols, l.rows);
     let (cw, ch) = output_size(seq, cell_scale);
     let opts = RenderOptions { scale: cell_scale, ..Default::default() };
-    let cells: Vec<Image> = angles.par_iter().map(|&a| render_angle(project, seq, a, t, opts, sources)).collect();
+    // the cells share this frame's nested-render budget (a worker has no visit of its own)
+    let budget = crate::nest_budget::current();
+    let cells: Vec<Image> = angles
+        .par_iter()
+        .map(|&a| {
+            let _shared = crate::nest_budget::Adopt::new(&budget);
+            render_angle(project, seq, a, t, opts, sources)
+        })
+        .collect();
     let mut out = Image::filled(cw * cols, ch * rows, [0.0, 0.0, 0.0, 1.0]);
     for (k, cell) in cells.iter().enumerate().take(cols * rows) {
         let (x0, y0) = ((k % cols) * cw, (k / cols) * ch);

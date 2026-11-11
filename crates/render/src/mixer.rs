@@ -892,10 +892,13 @@ pub(crate) fn mix_graph_at(
     // tracks: independent, in parallel
     let ntr = plan.strips.iter().take_while(|s| s.kind == Kind::Track).count();
     let (track_states, rest) = st.strips.split_at_mut(ntr);
+    // the tasks share this call's nested-mix budget (a worker has no visit of its own)
+    let budget = crate::nest_budget::current();
     let track_outs: Vec<Option<StripOut>> = track_states
         .par_iter_mut()
         .enumerate()
         .map(|(si, ss)| {
+            let _shared = crate::nest_budget::Adopt::new(&budget);
             let s = &plan.strips[si];
             if s.silent {
                 ss.delays.iter_mut().for_each(DelayLine::clear);
