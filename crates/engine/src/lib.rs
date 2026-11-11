@@ -796,7 +796,8 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. The saved project stores view-only changes; the recovery journal
+    /// includes the view only while the project content is dirty.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }

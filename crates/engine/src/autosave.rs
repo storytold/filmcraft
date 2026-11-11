@@ -541,8 +541,8 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
-    /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
-    /// project's view-only change journals too, but must not be offered as "unsaved changes".
+    /// Whether the project CONTENT was unsaved when this snapshot was written. The journal only
+    /// stores a view alongside unsaved project content.
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
@@ -608,8 +608,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
             ..JournalMeta::default()
         });
         if !meta.dirty {
-            // a clean project's view-only journal is not unsaved work: never offered as
-            // recovery, and not left behind either
+            // A legacy or malformed clean snapshot is not unsaved work: never offer it as
+            // recovery, and do not leave it behind.
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
@@ -655,7 +655,7 @@ pub(crate) struct Sent {
     pub path: Option<String>,
     /// Bumped when only the stored Timeline view (zoom, scroll, sliders) changed. Tracked
     /// separately from `revision` so per-frame view changes never invalidate revision-keyed
-    /// caches, while still reaching the autosave journal.
+    /// caches, while still reaching the recovery journal when the project content is dirty.
     pub view_epoch: u64,
     /// The view counter as of the last save: it must travel in the comparison too, or a save
     /// that catches the view up sends nothing and leaves the journal behind.
@@ -666,11 +666,11 @@ struct Snapshot {
     project: Arc<Project>,
     view: filmcraft_project::ProjectView,
     revision: u64,
-    /// The session's view counter at this snapshot: a view-only change journals again even
-    /// though `revision` is unchanged.
+    /// The session's view counter at this snapshot: a view change on dirty content journals again
+    /// even though `revision` is unchanged.
     view_epoch: u64,
-    /// Whether the project content was unsaved when this snapshot was taken (a clean project's
-    /// view-only change is journaled but never offered as recovery).
+    /// Whether the project content was unsaved when this snapshot was taken; clean view-only
+    /// changes do not produce a recovery snapshot.
     content_dirty: bool,
     path: Option<String>,
 }
@@ -980,7 +980,7 @@ struct Worker {
     /// Newest unsaved state (None = clean).
     latest: Option<Snapshot>,
     /// Revision currently in the journal (0 = none) / last auto-saved revision. The view
-    /// counters sit beside them: a view-only change must journal again at the same revision.
+    /// counters sit beside them: a view change on dirty content must journal again at the same revision.
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
@@ -1067,11 +1067,7 @@ impl Worker {
             if self.prefs.enabled && self.next_autosave <= now {
                 // a view-only snapshot never becomes an auto-save version: there is no unsaved
                 // work in it, and the ring would fill with copies of the saved project
-                if self
-                    .latest
-                    .as_ref()
-                    .is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view))
-                {
+                if self.latest.as_ref().is_some_and(|s| s.content_dirty && (s.revision != self.autosaved || s.view_epoch != self.autosaved_view)) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
