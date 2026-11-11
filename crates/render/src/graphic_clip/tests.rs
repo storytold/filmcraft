@@ -488,3 +488,20 @@ fn responsive_time_remaps_layer_keyframes_not_the_clips_own_effects() {
     assert!((own_at(&item, 2.5) - 0.5).abs() < 1e-4, "media 4.5 s: {}", own_at(&item, 2.5));
     assert!((own_at(&item, 0.0) - 1.0).abs() < 1e-4, "media 2 s: {}", own_at(&item, 0.0));
 }
+
+#[test]
+fn style_runs_that_own_no_glyph_cost_no_colour_group() {
+    use filmcraft_project::graphic_design::{CharStyle, LayerExtra, StyleRun};
+    let mut e = new_text_layer("A", Vec2::new(20.0, 100.0), 60.0);
+    set(&mut e, "fill_color", ParamValue::Color([1.0, 1.0, 1.0, 1.0]));
+    // 3000 runs over the one character, each with its own fill: only the last one wins it, and
+    // the rest own nothing, so they must not each cost a full-size mask and pass
+    let runs: Vec<StyleRun> =
+        (0..3000).map(|i| StyleRun { start: 0, end: 1, style: CharStyle { fill: Some([1.0, i as f32 / 3000.0, 0.0, 1.0]), ..Default::default() } }).collect();
+    e.layer = Some(Box::new(LayerExtra { runs, ..Default::default() }));
+    let mut img = Image::new(2000, 1000);
+    let t = std::time::Instant::now();
+    render_graphic_layers(&[e], Tick::ZERO, (2000, 1000), &Affine::IDENTITY, &mut img);
+    assert!(t.elapsed() < std::time::Duration::from_secs(15), "{:?}", t.elapsed());
+    assert!(ink_box(&img).is_some(), "the letter is still drawn");
+}

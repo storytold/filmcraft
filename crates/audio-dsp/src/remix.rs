@@ -513,6 +513,10 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
 
 // ------------------------------------------------------------------------------------- planning
 
+/// Most joints a plan may use. Extending a short source to a long target adds joints until each
+/// jump fits, which a degenerate source (a tiny span between the intro and outro) never satisfies.
+const MAX_PLAN_JOINTS: usize = 1024;
+
 /// Number of joints the Segments slider asks for.
 pub fn joints_for(segments: f64) -> usize {
     1 + (segments.clamp(0.0, 100.0) / 34.0).floor() as usize
@@ -522,12 +526,16 @@ pub fn joints_for(segments: f64) -> usize {
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
     let len = a.len;
+    let b = &a.beats;
+    let m = b.len();
+    // an invalid analysis is refused before the period is used for the identity check
+    if m < 2 || !a.period.is_finite() || a.period <= 0.0 {
+        return Err(RemixError::TooShort);
+    }
     let half = (a.period / 2.0) as i64;
     if (target - len).abs() <= half {
         return Ok(Plan::identity(len, xfade));
     }
-    let b = &a.beats;
-    let m = b.len();
     let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
     if target < 2 * min_piece {
         return Err(RemixError::TargetTooShort);
@@ -541,7 +549,7 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
     // a backwards jump can span at most the music between the intro and outro pieces
     if target > len {
         let max_span = (len - 2 * min_piece).max(a.period as i64);
-        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
+        while k < MAX_PLAN_JOINTS && ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
             k += 1;
         }
     }
@@ -692,7 +700,8 @@ impl Plan {
 
 /// Generated rhythmic test music: drums on every beat, a bass note per beat and a chord pad per
 /// bar following `sections` of four-bar progressions. Returns stereo planar audio and the true
-/// beat positions (samples). Used by tests here and in the engine.
+/// beat positions (samples). Used by tests here, in the engine and in the UI.
+#[cfg(any(test, feature = "test-util"))]
 pub fn test_music(sr: u32, bpm: f64, bars: usize, seed: u32) -> (Vec<Vec<f32>>, Vec<i64>) {
     let beat = sr as f64 * 60.0 / bpm;
     let n = (bars as f64 * 4.0 * beat).round() as usize;
@@ -869,6 +878,23 @@ mod tests {
         assert_eq!(analyze(&[&too_long], 1), Err(RemixError::TooLong));
         assert_eq!(similarity_cells(2_000), Ok(4_000_000));
         assert_eq!(similarity_cells(2_001), Err(RemixError::TooComplex));
+    }
+
+    #[test]
+    fn planning_a_huge_target_from_a_tiny_source_terminates() {
+        let beats: Vec<i64> = (0..24).map(|i| i * 10).collect();
+        let m = beats.len();
+        let a = Analysis { sample_rate: 48_000, len: 240, beats, period: 10.0, bpm: 0.0, sim: vec![0.0; m * m] };
+        // 2^50 samples would need ~2^43 joints: the plan gives up at its joint limit instead
+        let _ = plan(&a, 1 << 50, Params::default());
+        // degenerate analyses are refused, not indexed
+        let empty = Analysis { beats: Vec::new(), sim: Vec::new(), ..a.clone() };
+        assert_eq!(plan(&empty, 100_000, Params::default()), Err(RemixError::TooShort));
+        let zero_period = Analysis { period: 0.0, ..a.clone() };
+        assert_eq!(plan(&zero_period, 100_000, Params::default()), Err(RemixError::TooShort));
+        // an infinite period must not turn a far target into an identity plan
+        let inf_period = Analysis { period: f64::INFINITY, ..a };
+        assert_eq!(plan(&inf_period, 100_000, Params::default()), Err(RemixError::TooShort));
     }
 
     #[test]

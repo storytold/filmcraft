@@ -155,3 +155,24 @@ fn roundtrip_and_delay() {
     let e: f32 = out[..512].iter().map(|v| v * v).sum();
     assert!(e < 1e-3);
 }
+
+/// One large batch (fed to the encoder a window at a time) encodes to the same access units as the
+/// same audio in small caller chunks.
+#[test]
+fn a_large_batch_encodes_like_small_chunks() {
+    let rate = 48_000u32;
+    let n = 60_000; // several internal feed windows
+    let sig: Vec<Vec<f32>> = (0..2).map(|c| if c == 0 { clicks(rate, n) } else { chords(rate, n, 0.01) }).collect();
+    let run = |chunk: usize| {
+        let mut enc = Encoder::new(EncoderConfig::cbr(rate, 2, 128_000)).unwrap();
+        let mut aus = Vec::new();
+        for start in (0..n).step_by(chunk) {
+            let end = (start + chunk).min(n);
+            let refs: Vec<&[f32]> = sig.iter().map(|v| &v[start..end]).collect();
+            aus.extend(enc.encode(&refs));
+        }
+        aus.extend(enc.flush());
+        aus
+    };
+    assert_eq!(run(n), run(777));
+}
