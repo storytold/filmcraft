@@ -37,7 +37,18 @@ fn package() -> Vec<u8> {
 }
 
 fn ctx<'a>() -> FxCtx<'a> {
-    FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working: Default::default() }
+    FxCtx {
+        t: Tick::ZERO,
+        px_scale: 1.0,
+        mask_scale: 1.0,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: "",
+        project: None,
+        env: None,
+        frame_rate: 24.0,
+        working: Default::default(),
+    }
 }
 
 fn instance(id: &str) -> EffectInstance {

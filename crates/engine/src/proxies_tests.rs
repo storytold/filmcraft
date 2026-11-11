@@ -426,7 +426,7 @@ fn generated_proxy_attaches_when_the_stored_duration_is_too_long() {
     make_movie(&a, DemoScene::Aurora, W, H, 12);
     let (mut s, items, _) = session_with(&[&a]);
     let real = s.project.item(items[0]).unwrap().as_media().unwrap().info.duration;
-    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = real + real;
+    s.project_mut().item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = real + real;
     let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half", "wait": true})).unwrap();
     let id = r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}"));
     let job = s.jobs.iter().find(|j| j.id == id).unwrap();
@@ -447,7 +447,7 @@ fn an_item_changed_since_the_job_started_is_not_the_same_source() {
     let clip = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
     let started = vec![(items[0], a.to_string_lossy().into_owned(), clip.info.duration)];
     assert!(crate::proxies::unchanged_since_start(&s.project, items[0], &started));
-    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = clip.info.duration + clip.info.duration;
+    s.project_mut().item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = clip.info.duration + clip.info.duration;
     assert!(!crate::proxies::unchanged_since_start(&s.project, items[0], &started));
     let _ = std::fs::remove_dir_all(&root);
 }
