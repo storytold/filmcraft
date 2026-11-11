@@ -615,9 +615,10 @@ impl Decoder {
                 let changed = self.seq.as_ref().is_none_or(|o| o.mb_width != s.mb_width || o.mb_height != s.mb_height || o.info.chroma != s.info.chroma);
                 if changed {
                     // the reset must not hide an overflow already seen in this access unit
-                    let overflow = self.output_overflow;
+                    let (overflow, need_intra) = (self.output_overflow, self.need_intra);
                     self.reset();
                     self.output_overflow = overflow;
+                    self.need_intra = need_intra;
                 }
                 self.seq = Some(s);
             }
