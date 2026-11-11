@@ -120,6 +120,12 @@ pub trait VideoSamples: Sync {
     /// The sample presented at `t` (track units), if any.
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
+    /// Bytes sample `i` holds, from the index and without reading it. Implementations that know
+    /// it should say so: the random-access search checks a candidate against its byte budget
+    /// before [`read`](VideoSamples::read) allocates it. `None`: not known (read, then count).
+    fn sample_size(&self, _i: usize) -> Option<u64> {
+        None
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
@@ -585,6 +591,10 @@ fn random_access_at_or_before(s: &dyn VideoSamples, mut key: usize, mut is_ra: i
     while key > 0 {
         if filmcraft_media::cancel::cancelled() {
             return Err(CodecError::Cancelled);
+        }
+        // refused before the read: a claimed keyframe that is one huge sample must not be loaded
+        if s.sample_size(key).is_some_and(|n| n > (MAX_RANDOM_ACCESS_PROBE_BYTES - bytes) as u64) {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
         }
         let data = s.read(key)?;
         if is_ra(&data) != Some(false) {

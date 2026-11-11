@@ -883,6 +883,34 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
         }
     }
     let s = Aliased { reads: Default::default() };
+    struct Huge(Aliased);
+    impl VideoSamples for Huge {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn sample_size(&self, _: usize) -> Option<u64> {
+            Some(MAX_RANDOM_ACCESS_PROBE_BYTES as u64 + 1)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    // a candidate declared larger than the byte budget is refused without being read
+    let h = Huge(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&h, 100, |_| Some(true)).is_err());
+    assert_eq!(h.0.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert!(random_access_at_or_before(&s, 1 << 19, |_| Some(false)).is_err());
     assert!(s.reads.load(std::sync::atomic::Ordering::Relaxed) <= MAX_RANDOM_ACCESS_PROBES);
     // a sample that can start a decode ends the search at once
