@@ -127,6 +127,7 @@ fn a_delayed_source_retry_still_stops_or_loops_at_the_end() {
         if looping {
             assert_eq!(app.session.state.source_playhead, Tick::ZERO);
             assert_sample(&output, 0.0);
+            assert_eq!(output.first_samples.lock().unwrap().len(), 2, "the retry opens once at the loop start");
         } else {
             assert_eq!(app.session.state.source_playhead, view.rate.snap(view.end - view.rate.frame_duration()));
         }
@@ -147,4 +148,28 @@ fn a_source_retry_before_the_first_tick_has_no_elapsed_playback() {
     assert_eq!(app.source_playback.clock.anchor_tick, Tick::ZERO);
     assert_eq!(app.source_playback.clock.anchor_time, 10.0);
     app.stop_source();
+}
+
+/// A permanently frozen Source stops reopening the device, including across loop boundaries.
+#[test]
+fn source_keeps_looping_silently_after_the_last_retry() {
+    let (mut app, output) = app();
+    stall(&mut app);
+    app.source_playback.clock.looping = true;
+    let mut now = 10.0 + AUDIO_STALL_S;
+    for _ in 0..crate::audio::MAX_AUDIO_RETRIES {
+        now += AUDIO_RETRY_S;
+        advance(&mut app, now);
+        now += AUDIO_STALL_S;
+        advance(&mut app, now);
+    }
+    assert!(app.ui.status.contains("Audio retries stopped"));
+    let count = 1 + usize::from(crate::audio::MAX_AUDIO_RETRIES);
+    assert_eq!(output.first_samples.lock().unwrap().len(), count);
+    advance(&mut app, now + 10.0);
+    assert!(app.source_playback.clock.playing);
+    assert_eq!(app.session.state.source_playhead, Tick::ZERO);
+    advance(&mut app, now + 10.5);
+    assert!(app.session.state.source_playhead > Tick::ZERO);
+    assert_eq!(output.first_samples.lock().unwrap().len(), count);
 }

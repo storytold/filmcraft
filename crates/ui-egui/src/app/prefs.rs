@@ -124,8 +124,9 @@ impl FilmcraftApp {
             self.playback.anchor_tick = self.session.playhead();
             let now = self.now();
             self.playback.anchor_time = now;
-            self.playback.audio_seen = (0, now);
-            self.start_audio(now);
+            self.playback.audio_retry_attempts = 0;
+            self.playback.audio_retry_at = 0.0;
+            self.start_audio();
         }
         if let Some(note) = self.audio.as_ref().and_then(|a| a.note()) {
             self.ui.status = note;

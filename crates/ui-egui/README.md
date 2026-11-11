@@ -93,8 +93,11 @@ keeps Source navigation, markers and marked-range playback separate from Program
 
 Program and Source playback switch to the wall clock if the output stops consuming samples for
 one second, even when the device reports no error (#3785). Both reopen the output after two
-seconds, using the current playhead and a fresh device-clock grace period. Failed reopens retain
-the two-second retry interval; stopping playback cancels retries. This recovers from a stalled
+seconds, using the current playhead. The one-second grace period starts after the open returns.
+Both transports make up to three automatic attempts per outage, spaced at least two seconds
+apart. The status bar reports recovery when the output consumes samples. If all attempts fail
+or freeze, playback continues silently and the status bar suggests pausing and playing again.
+Stopping playback cancels retries. This recovers from a stalled
 output without requiring pause/play, but does not diagnose why a particular driver stopped.
 Program and Source retries first advance from the wall-clock anchor, including time since the
 last UI frame and playback speed, so the reopened mixer starts at the current position. The

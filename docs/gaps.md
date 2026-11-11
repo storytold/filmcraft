@@ -310,7 +310,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   silence (#840).
 - **Have:** Program and Source playback reopen an output that stops consuming samples without
   reporting an error (#3785). After the one-second stall timeout, playback uses the wall clock
-  and retries the output every two seconds from the current playhead. Simulated-device tests
+  and retries from the current playhead up to three times, at least two seconds apart. The status
+  bar reports when samples resume or retries stop. Simulated-device tests
   cover recovery and failed reopens; the underlying Windows driver stall remains unconfirmed.
 - **Estimate:** 20–40 h.
 

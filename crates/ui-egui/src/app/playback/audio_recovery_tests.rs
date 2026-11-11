@@ -332,6 +332,7 @@ fn a_device_that_appears_mid_playback_starts_sounding() {
 /// Unlike a lost device, a stalled output still returns a valid but frozen frame counter.
 #[derive(Clone)]
 struct Stalling {
+    opened_at: Arc<std::sync::Mutex<Option<web_time::Instant>>>,
     starts: Arc<AtomicUsize>,
     frames: Arc<AtomicU64>,
     opens: Arc<AtomicBool>,
@@ -341,6 +342,7 @@ impl AudioOut for Stalling {
     fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
         self.starts.fetch_add(1, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);
+        *self.opened_at.lock().unwrap() = Some(web_time::Instant::now());
         if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err("device unavailable".into()) }
     }
     fn stop(&mut self) {}
@@ -357,7 +359,13 @@ fn stalling_output() -> (FilmcraftApp, Stalling) {
     session.execute("file.openDemoProject", json!({})).unwrap();
     session.set_playhead(Tick::from_seconds_f64(2.0));
     let mut app = FilmcraftApp::new(session);
-    let device = Stalling { starts: Arc::new(AtomicUsize::new(0)), frames: Arc::new(AtomicU64::new(0)), opens: Arc::new(AtomicBool::new(true)) };
+    app.set_now_for_test(0.0);
+    let device = Stalling {
+        opened_at: Default::default(),
+        starts: Arc::new(AtomicUsize::new(0)),
+        frames: Arc::new(AtomicU64::new(0)),
+        opens: Arc::new(AtomicBool::new(true)),
+    };
     app.audio = Some(Box::new(device.clone()));
     (app, device)
 }
@@ -403,6 +411,7 @@ fn a_stalled_output_retries_and_follows_the_new_device_clock() {
 
             device.frames.store(12_000, Ordering::Relaxed);
             advance_at(&mut app, &ctx, retry_at + 0.25);
+            assert!(app.ui.status.contains("Audio output recovered"));
             let recovered = app.session.sequence_rate().snap(retry_position + Tick::from_seconds_f64(0.25 * speed));
             assert_eq!(app.session.playhead(), recovered, "only the new stream's samples advance the clock");
 
@@ -451,6 +460,61 @@ fn a_stalled_outputs_failed_reopen_is_retried_and_stop_cancels_it() {
     assert_eq!(device.starts.load(Ordering::Relaxed), 3, "Stop cancels the pending reopen");
     assert_eq!(app.playback.audio_retry_at, 0.0);
     assert_eq!(app.session.playhead(), stopped);
+}
+
+/// Check the timestamp against the actual open inside the fake, without sleeping for a stall.
+#[test]
+fn retry_grace_begins_after_the_device_reopens() {
+    let (mut app, device) = stalling_output();
+    let ctx = egui::Context::default();
+    app.play(1.0);
+    app.end_preroll(0.0);
+    advance_at(&mut app, &ctx, AUDIO_STALL_S);
+    app.test_now = None;
+    app.ui_clock_offset = Some(AUDIO_STALL_S + AUDIO_RETRY_S);
+    app.advance_playback(&ctx);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 2);
+    let opened_at = device.opened_at.lock().unwrap().unwrap().duration_since(app.clock_start).as_secs_f64() + AUDIO_STALL_S + AUDIO_RETRY_S;
+    assert!(app.playback.audio_seen.1 >= opened_at);
+    advance_at(&mut app, &ctx, opened_at + AUDIO_STALL_S / 2.0);
+    assert!(app.playback.audio_clock);
+}
+
+/// Both failed opens and successful opens with a frozen counter eventually leave playback silent.
+#[test]
+fn program_stops_retrying_an_unrecoverable_output_until_play_is_restarted() {
+    use crate::audio::MAX_AUDIO_RETRIES;
+    for opens in [true, false] {
+        let (mut app, device) = stalling_output();
+        let ctx = egui::Context::default();
+        app.play(1.0);
+        app.end_preroll(0.0);
+        let mut now = AUDIO_STALL_S;
+        advance_at(&mut app, &ctx, now);
+        device.opens.store(opens, Ordering::Relaxed);
+        for attempt in 1..=MAX_AUDIO_RETRIES {
+            now += AUDIO_RETRY_S;
+            advance_at(&mut app, &ctx, now);
+            assert_eq!(device.starts.load(Ordering::Relaxed), 1 + usize::from(attempt));
+            if opens {
+                assert!(!app.ui.status.contains("recovered"));
+                now += AUDIO_STALL_S;
+                advance_at(&mut app, &ctx, now);
+            }
+        }
+        assert!(app.ui.status.contains("Audio retries stopped"));
+        assert!(!app.playback.audio_clock);
+        let silent_at = app.session.playhead();
+        advance_at(&mut app, &ctx, now + AUDIO_RETRY_S + 0.25);
+        assert!(app.session.playhead() > silent_at);
+        assert_eq!(device.starts.load(Ordering::Relaxed), 1 + usize::from(MAX_AUDIO_RETRIES));
+        app.stop();
+        device.opens.store(true, Ordering::Relaxed);
+        app.play(1.0);
+        app.end_preroll(now + AUDIO_RETRY_S + 0.25);
+        assert!(app.playback.audio_clock);
+        assert_eq!(device.starts.load(Ordering::Relaxed), 2 + usize::from(MAX_AUDIO_RETRIES));
+    }
 }
 
 /// #2633: a press that only moves the playhead has nothing to stop, so it must not close the

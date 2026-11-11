@@ -11,6 +11,56 @@ pub const AUDIO_STALL_S: f64 = 1.0;
 /// timer brings the sound back when the device recovers (#2503).
 pub const AUDIO_RETRY_S: f64 = 2.0;
 
+/// Per outage. A reopened stream can still have a permanently frozen clock.
+pub(crate) const MAX_AUDIO_RETRIES: u8 = 3;
+
+impl super::Playback {
+    /// Consume a due retry once. Opening the device can block the UI thread.
+    pub(crate) fn begin_audio_retry(&mut self, now: f64) -> bool {
+        if self.audio_clock || self.audio_retry_at <= 0.0 || now < self.audio_retry_at {
+            return false;
+        }
+        self.audio_retry_at = 0.0;
+        self.audio_retry_attempts = self.audio_retry_attempts.saturating_add(1);
+        true
+    }
+
+    /// A loop can end before a replacement stream plays its first sample. Keep that attempt
+    /// in the same outage so short loops cannot repeatedly open a frozen device.
+    pub(crate) fn interrupt_retry_for_loop(&mut self, now: f64, status: &mut String) -> bool {
+        if !self.audio_clock || self.audio_retry_attempts == 0 {
+            return false;
+        }
+        self.audio_clock = false;
+        self.schedule_audio_retry(now.max(self.audio_seen.1), status);
+        true
+    }
+
+    /// Preserve the delay and attempt limit when the transport loops.
+    pub(crate) fn waiting_for_audio(&self) -> bool {
+        !self.audio_clock && (self.audio_retry_at > 0.0 || self.audio_retry_attempts >= MAX_AUDIO_RETRIES)
+    }
+
+    /// Schedule from the end of a failed attempt, including a stream that opened but never played.
+    pub(crate) fn schedule_audio_retry(&mut self, now: f64, status: &mut String) {
+        if self.audio_retry_attempts < MAX_AUDIO_RETRIES {
+            self.audio_retry_at = now + AUDIO_RETRY_S;
+        } else {
+            self.audio_retry_at = 0.0;
+            *status = tl!("Audio retries stopped. Playback will continue without sound. Pause and play to try again.").into();
+        }
+    }
+
+    /// Report recovery once the replacement stream actually consumes samples.
+    pub(crate) fn audio_progress(&mut self, frames: u64, now: f64, status: &mut String) {
+        self.audio_seen = (frames, now.max(self.audio_seen.1));
+        if self.audio_retry_attempts > 0 {
+            self.audio_retry_attempts = 0;
+            *status = tl!("Audio output recovered.").into();
+        }
+    }
+}
+
 /// Effective sample rate for shuttle playback. The audio device still runs at `device_rate`,
 /// so at 2x its output samples represent twice the timeline duration. Reverse and
 /// extreme shuttle speeds remain silent rather than asking the mixer for invalid rates.

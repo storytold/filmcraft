@@ -8,7 +8,9 @@ use filmcraft_render::SourceProvider;
 use filmcraft_time::Tick;
 use serde_json::json;
 
-use crate::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Playback, shuttle};
+#[cfg(test)]
+use crate::AUDIO_RETRY_S;
+use crate::{AUDIO_STALL_S, FilmcraftApp, Playback, shuttle};
 
 #[cfg(test)]
 mod tests;
@@ -105,7 +107,7 @@ impl FilmcraftApp {
         self.source_playback.shown = time;
         self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
-        self.start_source_audio(0.0);
+        self.start_source_audio();
         Ok(())
     }
 
@@ -122,7 +124,8 @@ impl FilmcraftApp {
         }
     }
 
-    fn start_source_audio(&mut self, now: f64) {
+    /// Open Source audio at its playhead and start measuring stalls after the open returns.
+    fn start_source_audio(&mut self) {
         self.source_playback.clock.audio_clock = false;
         if (self.source_playback.clock.speed - 1.0).abs() > 1e-9 {
             if let Some(audio) = self.audio.as_mut() {
@@ -233,12 +236,13 @@ impl FilmcraftApp {
         };
         match audio.start(fill) {
             Ok(_) => {
+                self.source_playback.clock.audio_seen = (0, self.now());
                 self.source_playback.clock.audio_clock = true;
                 self.source_playback.clock.audio_retry_at = 0.0;
             }
             Err(e) => {
                 self.ui.status = format!("Source audio output failed: {e}");
-                self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
+                self.source_playback.clock.schedule_audio_retry(self.now(), &mut self.ui.status);
             }
         }
     }
@@ -265,52 +269,60 @@ impl FilmcraftApp {
         if time != self.source_playback.shown {
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
-            self.source_playback.clock.audio_seen = (0, now);
-            self.start_source_audio(now);
+            self.source_playback.clock.audio_retry_at = 0.0;
+            self.source_playback.clock.audio_retry_attempts = 0;
+            self.start_source_audio();
         }
-        if !self.source_playback.clock.audio_clock && self.source_playback.clock.audio_retry_at > 0.0 && now >= self.source_playback.clock.audio_retry_at {
+        let clock = &self.source_playback.clock;
+        let range = view.selected_range();
+        let end = clock.stop_at.unwrap_or_else(|| if clock.looping { range.end() } else { view.end }).min(view.end);
+        let loop_start = self.source_playback.range_start.unwrap_or(range.start).max(view.start);
+        if self.source_playback.clock.begin_audio_retry(now) {
             // Catch up from the wall-clock anchor, not the last displayed frame, before opening
             // the mixer. Retain the unsnapped position on the clock for the range/end logic below.
             let clock = &mut self.source_playback.clock;
             let elapsed = if clock.anchor_time < 0.0 { 0.0 } else { (now - clock.anchor_time).max(0.0) };
             time = Tick(clock.anchor_tick.0.saturating_add(Tick::from_seconds_f64(elapsed * clock.speed).0));
-            clock.audio_retry_at = now + AUDIO_RETRY_S;
+            // A late retry can already be past Out. Open once, at the first playable sample.
+            if clock.looping && time >= end {
+                time = loop_start;
+            }
             clock.anchor_tick = time;
             clock.anchor_time = now;
-            clock.audio_seen = (0, now);
             if let Err(e) = self.session.execute("source.setPlayhead", json!({"time": time.0})) {
                 self.stop_source();
                 self.ui.status = e.to_string();
                 return;
             }
-            self.start_source_audio(now);
+            self.start_source_audio();
         }
         if self.source_playback.clock.audio_clock
             && let Some(audio) = self.audio.as_mut()
         {
             audio.recover();
         }
+        let observed_at = self.now();
         let clock = &mut self.source_playback.clock;
         if clock.anchor_time < 0.0 {
             clock.anchor_time = now;
-            clock.audio_seen = (0, now);
+            clock.audio_seen = (0, observed_at);
         }
         let reading = if clock.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|n| (n, a.sample_rate()))) } else { None };
         if let Some((frames, _)) = reading
             && frames != clock.audio_seen.0
         {
-            clock.audio_seen = (frames, now);
+            clock.audio_progress(frames, observed_at, &mut self.ui.status);
         }
-        if clock.audio_clock && (reading.is_none() || now - clock.audio_seen.1 >= AUDIO_STALL_S) {
+        if clock.audio_clock && (reading.is_none() || observed_at - clock.audio_seen.1 >= AUDIO_STALL_S) {
             clock.anchor_tick = time;
             clock.anchor_time = now;
             clock.audio_clock = false;
             // Reopen lost and stalled streams while playback continues on the wall clock (#3785).
-            clock.audio_retry_at = now + AUDIO_RETRY_S;
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
             self.ui.status = "Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)".into();
+            clock.schedule_audio_retry(observed_at, &mut self.ui.status);
         }
         let elapsed = match reading {
             Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),
@@ -334,12 +346,9 @@ impl FilmcraftApp {
             ctx.request_repaint();
             return;
         }
-        let range = view.selected_range();
-        let end = clock.stop_at.unwrap_or_else(|| if clock.looping { range.end() } else { view.end }).min(view.end);
         let ended = next >= end;
         if ended && clock.looping {
-            let start = self.source_playback.range_start.unwrap_or(range.start).max(view.start);
-            if let Err(e) = self.session.execute("source.setPlayhead", json!({"time":start.0})) {
+            if let Err(e) = self.session.execute("source.setPlayhead", json!({"time":loop_start.0})) {
                 self.stop_source();
                 self.ui.status = e.to_string();
                 return;
@@ -348,8 +357,14 @@ impl FilmcraftApp {
             self.source_playback.shown = time;
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
-            self.source_playback.clock.audio_seen = (0, now);
-            self.start_source_audio(now);
+            if self.source_playback.clock.interrupt_retry_for_loop(observed_at, &mut self.ui.status)
+                && let Some(audio) = self.audio.as_mut()
+            {
+                audio.stop();
+            }
+            if !self.source_playback.clock.waiting_for_audio() {
+                self.start_source_audio();
+            }
             ctx.request_repaint();
             return;
         }
