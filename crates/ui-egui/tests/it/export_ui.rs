@@ -409,6 +409,7 @@ fn export_button_and_quick_export_popup() {
     d.click("export.button");
     let out = d.path("button.wav");
     d.wait_until("the export", |_| std::fs::metadata(&out).map(|m| m.len() >= 44 + 24_000 * 6).unwrap_or(false));
+    d.wait_until("the export job", |d| d.app().session.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
     // Quick Export: header button → popup with presets → Export
     d.exec("markers.markIn", json!({"seconds": 0.0}));
     d.exec("markers.markOut", json!({"seconds": 0.2}));

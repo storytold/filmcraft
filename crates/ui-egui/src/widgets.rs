@@ -110,6 +110,14 @@ fn hot_number_editor(
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
+    let pending_cursor_id = id.with("numeric-cursor");
+    if numeric_only
+        && let Some(cursor) = ui.data_mut(|data| data.remove_temp::<usize>(pending_cursor_id))
+        && let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
+    {
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(cursor))));
+        state.store(ui.ctx(), edit_id);
+    }
     arrows_start_from_the_end(ui, edit_id, buf);
     // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
     let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
@@ -126,15 +134,15 @@ fn hot_number_editor(
         let mut kept = String::with_capacity(before.len());
         let mut kept_before_cursor = 0usize;
         for (i, ch) in before.chars().enumerate() {
-            let ok = if ch.is_ascii_digit() {
-                true
-            } else if ch == '.' && !decimal_seen {
-                decimal_seen = true;
-                true
-            } else if ch == '-' && range.0 < 0.0 && kept.is_empty() {
-                true
+            let ok = if ch == '.' {
+                if decimal_seen {
+                    false
+                } else {
+                    decimal_seen = true;
+                    true
+                }
             } else {
-                false
+                ch.is_ascii_digit() || (ch == '-' && range.0 < 0.0 && kept.is_empty())
             };
             if ok {
                 if i < cursor {
@@ -149,6 +157,8 @@ fn hot_number_editor(
                 st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
                 st.store(ui.ctx(), edit_id);
             }
+            ui.data_mut(|data| data.insert_temp(pending_cursor_id, kept_before_cursor));
+            ui.ctx().request_repaint();
         }
     }
     let mut out = stepped;
@@ -792,6 +802,72 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    fn numeric_frame(
+        ctx: &egui::Context,
+        id: egui::Id,
+        value: f64,
+        range: (f64, f64),
+        initial: Option<(&str, usize)>,
+        events: Vec<egui::Event>,
+    ) -> (Option<String>, Option<f64>, usize) {
+        let edit_id = id.with("edit");
+        if let Some((text, cursor)) = initial {
+            ctx.data_mut(|data| {
+                data.insert_temp(id.with("editing"), text.to_owned());
+                data.insert_temp(id.with("select-all"), false);
+            });
+            let mut state = egui::text_edit::TextEditState::default();
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(cursor))));
+            state.store(ctx, edit_id);
+            ctx.memory_mut(|memory| memory.request_focus(edit_id));
+        }
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut committed = None;
+        ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            let (_, changed) = hot_number_numeric(ui, "Value", id, value, HotNumberOptions::new(1.0, range, 1, "", &t));
+            committed = changed;
+        })
+        .textures_delta
+        .clear();
+        let text = ctx.data(|data| data.get_temp::<String>(id.with("editing")));
+        let cursor = egui::text_edit::TextEditState::load(ctx, edit_id)
+            .and_then(|state| state.cursor.char_range().map(|range| usize::from(range.primary.index)))
+            .unwrap_or(0);
+        (text, committed, cursor)
+    }
+
+    #[test]
+    fn hot_number_numeric_filters_locale_decimal_and_invalid_characters() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("numeric-filter");
+        let (comma, _, _) = numeric_frame(&ctx, id, 0.0, (0.0, 100.0), Some(("1,5", 3)), vec![]);
+        assert_eq!(comma.as_deref(), Some("1.5"));
+
+        let (multiple_points, _, _) = numeric_frame(&ctx, id, 0.0, (0.0, 100.0), Some(("1.2.3", 5)), vec![]);
+        assert_eq!(multiple_points.as_deref(), Some("1.23"));
+
+        let (unsigned_minus, _, _) = numeric_frame(&ctx, id, 0.0, (0.0, 100.0), Some(("-12", 3)), vec![]);
+        assert_eq!(unsigned_minus.as_deref(), Some("12"));
+    }
+
+    #[test]
+    fn hot_number_numeric_restores_the_cursor_after_filtering_and_commits_signed_values() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("numeric-cursor");
+        let (filtered, _, _) = numeric_frame(&ctx, id, 12.0, (0.0, 100.0), Some(("1x2", 2)), vec![]);
+        assert_eq!(filtered.as_deref(), Some("12"));
+        let (_, _, cursor) = numeric_frame(&ctx, id, 12.0, (0.0, 100.0), None, vec![]);
+        assert_eq!(cursor, 1, "the caret stays after the same surviving digit");
+
+        let signed = egui::Id::unique("numeric-signed");
+        let (entry, _, _) = numeric_frame(&ctx, signed, -12.5, (-100.0, 100.0), Some(("-12.5", 5)), vec![]);
+        assert_eq!(entry.as_deref(), Some("-12.5"), "an existing negative value remains negative while editing");
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let (after_commit, committed, _) = numeric_frame(&ctx, signed, -12.5, (-100.0, 100.0), None, vec![enter]);
+        assert_eq!(committed, Some(-12.5));
+        assert!(after_commit.is_none(), "committing ends numeric editing");
     }
 
     /// The queue's progress line is painted digit by digit; a screen reader still reads it whole.
