@@ -725,24 +725,21 @@ fn input_text(ui: &egui::Ui) -> Option<String> {
     ui.input(|i| {
         let mut out = None;
         for e in &i.events {
-            match e {
-                // the press OR the release: the shortcut matcher consumes presses out of the
-                // frame's events (bound keys), but the release always survives
-                egui::Event::Key { key, modifiers, .. } => {
-                    let mut s = String::new();
-                    if modifiers.ctrl || modifiers.mac_cmd {
-                        s.push_str("Ctrl + ");
-                    }
-                    if modifiers.shift {
-                        s.push_str("Shift + ");
-                    }
-                    if modifiers.alt {
-                        s.push_str("Alt + ");
-                    }
-                    s.push_str(&format!("{key:?}"));
-                    out = Some(s);
+            // The press OR the release: the shortcut matcher consumes presses out of the
+            // frame's events (bound keys), but the release always survives.
+            if let egui::Event::Key { key, modifiers, .. } = e {
+                let mut s = String::new();
+                if modifiers.ctrl || modifiers.mac_cmd {
+                    s.push_str("Ctrl + ");
                 }
-                _ => {}
+                if modifiers.shift {
+                    s.push_str("Shift + ");
+                }
+                if modifiers.alt {
+                    s.push_str("Alt + ");
+                }
+                s.push_str(&format!("{key:?}"));
+                out = Some(s);
             }
         }
         out

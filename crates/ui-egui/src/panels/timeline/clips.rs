@@ -348,18 +348,6 @@ pub(super) fn draw_clip(
     }
 }
 
-#[cfg(test)]
-mod thumbnail_height_tests {
-    use super::thumbnail_render_height;
-
-    #[test]
-    fn rendered_thumbnail_height_tracks_live_width_and_stays_in_clip() {
-        assert_eq!(thumbnail_render_height(160.0, 16.0 / 9.0, 120.0), 90.0);
-        assert_eq!(thumbnail_render_height(320.0, 16.0 / 9.0, 100.0), 100.0);
-        assert_eq!(thumbnail_render_height(100.0, 0.0, 100.0), 0.0);
-    }
-}
-
 /// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
 pub(super) fn paint_hatch(p: &egui::Painter, r: Rect) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
@@ -401,5 +389,17 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_height_tests {
+    use super::thumbnail_render_height;
+
+    #[test]
+    fn rendered_thumbnail_height_tracks_live_width_and_stays_in_clip() {
+        assert_eq!(thumbnail_render_height(160.0, 16.0 / 9.0, 120.0), 90.0);
+        assert_eq!(thumbnail_render_height(320.0, 16.0 / 9.0, 100.0), 100.0);
+        assert_eq!(thumbnail_render_height(100.0, 0.0, 100.0), 0.0);
     }
 }
