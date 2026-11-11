@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::Session;
 use crate::media_test_util::{session_with, tmp_dir};
+use crate::scene_detect::{ClipScenes, MAX_ANALYSED_FRAMES, MAX_TOTAL_ANALYSED_FRAMES, analysed_range, scheduled_frames, unanalysed_warning};
 
 /// Write a 24 fps ProRes movie of demo scenes played one after the other: `shots` = (scene,
 /// frames). The cuts are at the running sums of the frame counts.
@@ -204,4 +205,39 @@ fn detects_the_cuts_of_an_ffmpeg_concat_and_cuts_linked_audio() {
     for (x, y) in q.video_tracks[0].items.iter().zip(&q.audio_tracks[0].items) {
         assert!(x.link.is_some() && x.link == y.link);
     }
+}
+
+#[test]
+fn the_frame_budget_spans_all_selected_clips() {
+    let fd = Tick(1000);
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
+    // one clip may use up to a day at 60 fps, but not twice that across clips (or repeats of one clip)
+    let day = Tick(fd.0 * MAX_ANALYSED_FRAMES / 2);
+    assert_eq!(scheduled_frames(day, fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES / 2);
+    assert_eq!(scheduled_frames(day, fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES / 2);
+    assert!(scheduled_frames(Tick(fd.0), fd, &mut remaining).is_err());
+    // a stored duration beyond the cap cannot ask for more than the cap, and then nothing is left
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
+    assert_eq!(scheduled_frames(Tick(i64::MAX), fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES);
+    assert!(scheduled_frames(Tick(0), fd, &mut remaining).is_err());
+}
+
+#[test]
+fn a_capped_analysis_extends_the_last_subclip_to_the_clip_end_and_warns() {
+    let (fd, end) = (Tick(10), Tick(1_000));
+    // scheduled frames reach 40: without a cap the range stops after the analysed frames, with one it reaches the clip end
+    assert_eq!(analysed_range(Tick(0), Tick(40), fd, None), TimeRange::from_bounds(Tick(0), Tick(50)));
+    assert_eq!(analysed_range(Tick(0), Tick(40), fd, Some(end)), TimeRange::from_bounds(Tick(0), end));
+    // a reversed clip runs down: its tail is below the first scheduled time
+    assert_eq!(analysed_range(Tick(900), Tick(860), fd, Some(Tick(100))), TimeRange::from_bounds(Tick(100), Tick(910)));
+    let scenes = |name: &str, unanalysed| ClipScenes {
+        clip: filmcraft_project::ClipId(1),
+        name: name.into(),
+        media_item: ItemId(2),
+        media_range: TimeRange::from_bounds(Tick(0), Tick(10)),
+        unanalysed,
+        cuts: vec![],
+    };
+    assert!(unanalysed_warning(&[scenes("a", false)]).is_none());
+    assert!(unanalysed_warning(&[scenes("a", false), scenes("long.mov", true)]).is_some_and(|w| w.contains("long.mov") && !w.contains(", a")));
 }
