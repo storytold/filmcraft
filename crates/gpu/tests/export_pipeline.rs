@@ -111,7 +111,12 @@ fn gpu_export_matches_cpu_and_counts() {
         return;
     };
     // A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
-    let tmp = tempfile::Builder::new().prefix("fc-gpu-export-").tempdir().unwrap();
+    let mut b = tempfile::Builder::new();
+    b.prefix("fc-gpu-export-");
+    // owner-only, so another local user cannot swap an output for a symlink
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let tmp = b.tempdir().unwrap();
     let base = tmp.path();
     // Clean registry first: Auto with no factory must be byte-equal to Off.
     export_png(base, "off-cpu", GpuRendering::Off, (320, 180));

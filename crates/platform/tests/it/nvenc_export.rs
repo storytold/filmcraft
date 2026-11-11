@@ -44,7 +44,12 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
 
 /// A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
 fn tmp_dir() -> tempfile::TempDir {
-    tempfile::Builder::new().prefix("fc-nvenc-").tempdir().unwrap()
+    let mut b = tempfile::Builder::new();
+    b.prefix("fc-nvenc-");
+    // owner-only, so another local user cannot swap an output for a symlink
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    b.tempdir().unwrap()
 }
 
 fn tmp(dir: &tempfile::TempDir, name: &str) -> String {
