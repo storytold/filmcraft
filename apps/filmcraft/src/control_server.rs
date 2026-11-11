@@ -173,10 +173,12 @@ fn disabled(why: DisabledWhy) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Opt
     (rx, Arc::new(AtomicBool::new(true)), Some(why))
 }
 
+/// Listen on the loopback `port`.
 fn bind(port: u16) -> Result<TcpListener, DisabledWhy> {
     TcpListener::bind(("127.0.0.1", port)).map_err(|error| DisabledWhy::Bind { port, error: error.to_string() })
 }
 
+/// Serve on `port` with `token`, or report why not (no valid token, the port is taken).
 fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
     // An inherited environment variable (or, for a Settings start, the owner-only token file)
     // shares the credential with the owner's bridge process without exposing it in command-line

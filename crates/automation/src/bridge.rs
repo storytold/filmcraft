@@ -73,20 +73,22 @@ impl BridgeClient {
         Ok(Self { addr, token: std::sync::RwLock::new(token), token_dir, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
     }
 
+    /// The credential the next request sends.
     fn token(&self) -> Option<String> {
         self.token.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
-    /// Read the token file again after the app refused the credential; true when it now holds a
-    /// different token (the app was restarted from Settings and wrote a new one).
-    fn refresh_token(&self) -> bool {
+    /// Read the token file again after the app refused `sent`, the credential the refused request
+    /// carried. True when the file now holds a usable token other than `sent` (the app was
+    /// restarted from Settings and wrote a new one, or a concurrent request already picked it up),
+    /// which the next request then sends.
+    fn refresh_token(&self, sent: Option<&str>) -> bool {
         let Some(dir) = &self.token_dir else { return false };
-        let fresh = filmcraft_engine::autosave::read_control_token(dir);
-        let mut token = self.token.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if fresh.is_none() || *token == fresh {
+        let Some(fresh) = filmcraft_engine::autosave::read_control_token(dir) else { return false };
+        if Some(fresh.as_str()) == sent {
             return false;
         }
-        *token = fresh;
+        *self.token.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fresh);
         true
     }
 
@@ -128,16 +130,23 @@ impl BridgeClient {
     }
 
     /// Call a control method; returns `result` or the app's error.
+    ///
+    /// Retries are bounded: one on a fresh connection after a transport failure (the reused one may
+    /// have been closed by an app restart), and one after reading the token file again when the
+    /// app refused a credential that came from it (a restart from Settings writes a new token).
+    /// Both can happen for the same call: a restarted app first fails the stale connection, then
+    /// refuses the old token.
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, AutomationError> {
-        for attempt in 0..2 {
-            // A retry gets a fresh connection: the failed one may have been closed by an app restart.
-            let idle = if attempt == 0 { self.idle.lock().await.pop() } else { None };
+        let (mut reconnected, mut refreshed) = (false, false);
+        loop {
+            let idle = if reconnected || refreshed { None } else { self.idle.lock().await.pop() };
             let mut conn = match idle {
                 Some(c) => c,
                 None => self.connect().await?,
             };
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let line = format!("{}\n", json!({"id": id, "token": self.token(), "method": method, "params": params}));
+            let sent = self.token();
+            let line = format!("{}\n", json!({"id": id, "token": sent, "method": method, "params": params}));
             let res: Result<Value, AutomationError> = async {
                 conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
                 let mut buf = String::new();
@@ -149,10 +158,8 @@ impl BridgeClient {
             }
             .await;
             match res {
-                // The app closes the connection after refusing a credential. A token from the
-                // token file may just be outdated (the app was started again from Settings): read
-                // the file again and retry once on a fresh connection.
-                Ok(v) if attempt == 0 && auth_failed(&v) && self.refresh_token() => {}
+                // The app closes the connection after refusing a credential: retry on a new one.
+                Ok(v) if auth_failed(&v) && !refreshed && self.refresh_token(sent.as_deref()) => refreshed = true,
                 Ok(v) => {
                     if !auth_failed(&v) {
                         let mut idle = self.idle.lock().await;
@@ -166,11 +173,10 @@ impl BridgeClient {
                         Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()))
                     };
                 }
-                Err(_) if attempt == 0 => {}
+                Err(_) if !reconnected => reconnected = true,
                 Err(e) => return Err(e),
             }
         }
-        Err(AutomationError::Bridge("unreachable".into()))
     }
 
     async fn connect(&self) -> Result<Conn, AutomationError> {
@@ -452,6 +458,47 @@ mod tests {
         let from_env = BridgeClient::with_credential(b.addr.clone(), Some(old.clone()), Some(dir.path().to_path_buf())).unwrap();
         assert!(from_env.execute("d", json!({})).await.is_err());
         assert_eq!(from_env.token().as_deref(), Some(old.as_str()));
+    }
+
+    /// FilmCraft restarted from Settings: the reused connection is dead and the token was rotated.
+    /// The call reconnects and then reads the new token, instead of failing on the old one.
+    #[tokio::test]
+    async fn a_restart_with_a_new_token_is_survived_after_a_dead_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = "4444444444444444".repeat(4);
+        let new = "5555555555555555".repeat(4);
+        write_token(dir.path(), &old);
+        let accept = Arc::new(std::sync::Mutex::new(old.clone()));
+        let addr = strict_app(accept.clone()).await;
+        let b = BridgeClient::with_credential(addr, None, Some(dir.path().to_path_buf())).unwrap();
+        assert_eq!(b.execute("a", json!({})).await.unwrap(), json!("done"));
+        // Replace the pooled connection with one whose peer (the "old app") has closed it.
+        let gone = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stale = TcpStream::connect(gone.local_addr().unwrap()).await.unwrap();
+        drop(gone.accept().await.unwrap());
+        let (r, w) = stale.into_split();
+        *b.idle.lock().await = vec![(BufReader::new(r), w)];
+        write_token(dir.path(), &new);
+        *accept.lock().unwrap() = new.clone();
+        assert_eq!(b.execute("b", json!({})).await.unwrap(), json!("done"));
+        assert_eq!(b.token().as_deref(), Some(new.as_str()));
+    }
+
+    /// Another request already picked up the new token: a request refused with the old one still
+    /// retries, because the file's token differs from the one it sent.
+    #[test]
+    fn a_refresh_compares_with_the_token_the_request_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = "6666666666666666".repeat(4);
+        let new = "7777777777777777".repeat(4);
+        write_token(dir.path(), &new);
+        let b = BridgeClient::with_credential("127.0.0.1:9876", None, Some(dir.path().to_path_buf())).unwrap();
+        assert_eq!(b.token().as_deref(), Some(new.as_str()), "the shared token is already the new one");
+        assert!(b.refresh_token(Some(&old)), "the request sent the old token: retry");
+        assert!(!b.refresh_token(Some(&new)), "the request sent the file's token: nothing to retry with");
+        let empty = tempfile::tempdir().unwrap();
+        let c = BridgeClient::with_credential("127.0.0.1:9876", None, Some(empty.path().to_path_buf())).unwrap();
+        assert!(!c.refresh_token(Some(&old)), "no usable file token: no retry");
     }
 
     #[tokio::test]

@@ -23,16 +23,21 @@ effect at the next start. `--control` and `FILMCRAFT_CONTROL_PORT` override it, 
 When `FILMCRAFT_CONTROL_TOKEN` is set, a Settings start uses it like `--control` does. When it is
 not set, every Settings start writes a **new** random token to the file `control-token` in the
 data folder, after the port is bound (a second FilmCraft that cannot bind the port leaves the
-running one's token alone). The data folder is macOS `~/Library/Application Support/FilmCraft`,
-Windows `%APPDATA%\FilmCraft`, Linux `~/.local/share/filmcraft`, or `FILMCRAFT_DATA_DIR`, or the
-folder given with `--data-dir`. The log names where the credential came from, never its value.
+running one's token alone). The data folder is the one given with `--data-dir`, else
+`FILMCRAFT_DATA_DIR`, else `<exe dir>/data` for a portable install (a `portable.txt` next to the
+executable), else macOS `~/Library/Application Support/FilmCraft`, Windows `%APPDATA%\FilmCraft`,
+Linux `$XDG_DATA_HOME/filmcraft` (default `~/.local/share/filmcraft`). The log names where the
+credential came from, never its value.
 `--control` and `FILMCRAFT_CONTROL_PORT` never create or read the file: without the variable they
 leave the listener closed, as before.
 
-`filmcraft-cli … --bridge` reads the same file when the variable is not set; for an app started
-with `--data-dir`, pass the same `--data-dir` to `filmcraft-cli`. When the app refuses its
-credential, the bridge reads the file again once, so a running MCP server keeps working after
-FilmCraft was restarted with a new token. An MCP client therefore only needs:
+`filmcraft-cli … --bridge` reads the same file when the variable is not set. It looks for the data
+folder the same way, but from its own environment and executable: when that is not the desktop's
+folder (FilmCraft started with `--data-dir`, a portable FilmCraft with a separately installed CLI,
+a different `FILMCRAFT_DATA_DIR` or `XDG_DATA_HOME`), pass the desktop's folder with `--data-dir`.
+When the app refuses its credential, the bridge reads the file again once, so a running MCP server
+keeps working after FilmCraft was restarted with a new token. An MCP client therefore only needs
+(replace `9876` with the port set in Settings ▸ Control Server):
 
 ```json
 {"mcpServers": {"filmcraft": {"command": "filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"]}}}
