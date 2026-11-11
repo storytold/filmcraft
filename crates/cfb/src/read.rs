@@ -28,7 +28,9 @@ pub struct Entry {
     pub size: u64,
     /// Child entries of a storage, in the in-order position of its sibling tree. For a well-formed
     /// file that is sorted by [`compare_names`]; the reader does not validate the tree's order, so
-    /// a hostile file may give any order (lookups by name do not depend on it).
+    /// a hostile file may give any order (lookups by name do not depend on it). Read-only after
+    /// open: [`CompoundFile::child`] answers from an index built from this list and the entry names
+    /// when the file is parsed, so changing either afterwards leaves the lookup stale.
     pub children: Vec<usize>,
     /// `children` sorted by [`compare_names`] (stable, so equal names keep their in-order
     /// position): [`CompoundFile::child`] binary-searches it instead of scanning every sibling,
@@ -52,6 +54,8 @@ pub struct CompoundFile<'a> {
     fat: Vec<u32>,
     minifat: Vec<u32>,
     mini_stream: Vec<u8>,
+    /// The directory entries. Read-only after open (see [`Entry::children`]): the by-name index
+    /// behind [`CompoundFile::child`] is built once when the file is parsed.
     pub entries: Vec<Entry>,
 }
 
