@@ -91,6 +91,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("filmcraft", 6),
     ("cli", 6),
     ("web", 6),
+    ("android", 6),
 ];
 
 /// L0 crates that are not codecs/containers (no `bitstream`-only restriction).
@@ -436,6 +437,79 @@ mod serve_tests {
     }
 }
 
+/// Build or run the Android app with cargo-apk (`cargo xtask android [--run] [--target <target>] [--release]`).
+fn android(args: &[String]) -> Result<(), String> {
+    let mut run_app = false;
+    let mut release = false;
+    let mut target = "aarch64-linux-android".to_string();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--help" | "-h" => {
+                println!("usage: cargo xtask android [--run] [--target <arch>] [--release]");
+                println!("  --run              Install and launch on connected Android device/emulator");
+                println!("  --target <arch>    Target architecture (default: aarch64-linux-android)");
+                println!("  --release          Build in release mode with optimizations");
+                return Ok(());
+            }
+            "--run" => run_app = true,
+            "--release" => release = true,
+            "--target" => {
+                let Some(t) = it.next() else {
+                    return Err("--target requires a target triple (e.g. aarch64-linux-android)".into());
+                };
+                target = t.clone();
+            }
+            unknown => return Err(format!("unknown android option `{unknown}` (try --run, --release, --target <arch>)")),
+        }
+    }
+
+    let out = Command::new("cargo").args(["apk", "version"]).output().map_err(|_| "cargo-apk not found: install with `cargo install cargo-apk`".to_string())?;
+    if !out.status.success() {
+        return Err("cargo-apk is not working: reinstall with `cargo install cargo-apk`".into());
+    }
+
+    // The Android resources are generated under target/ (gitignored): the launcher icons are
+    // copies of the app icon in assets/app-icon, so no second copy is committed, and aapt would
+    // take an `.attribution` sidecar next to a resource for a resource of its own.
+    let res_dir = root().join("target/android-res");
+    let _ = std::fs::remove_dir_all(&res_dir);
+    let icon_sources = [
+        ("mipmap-mdpi", "assets/app-icon/hicolor/48x48/apps/ai.storyteller.filmcraft.png"),
+        ("mipmap-hdpi", "assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png"),
+        ("mipmap-xhdpi", "assets/app-icon/hicolor/128x128/apps/ai.storyteller.filmcraft.png"),
+        ("mipmap-xxhdpi", "assets/app-icon/hicolor/256x256/apps/ai.storyteller.filmcraft.png"),
+        ("mipmap-xxxhdpi", "assets/app-icon/hicolor/512x512/apps/ai.storyteller.filmcraft.png"),
+    ];
+    for (dir, src) in icon_sources {
+        let dir_path = res_dir.join(dir);
+        std::fs::create_dir_all(&dir_path).map_err(|e| format!("cannot create {}: {e}", dir_path.display()))?;
+        let (from, to) = (root().join(src), dir_path.join("ic_launcher.png"));
+        std::fs::copy(&from, &to).map_err(|e| format!("cannot copy the launcher icon {} to {}: {e}", from.display(), to.display()))?;
+    }
+    let values = res_dir.join("values");
+    std::fs::create_dir_all(&values).map_err(|e| format!("cannot create {}: {e}", values.display()))?;
+    let (from, to) = (root().join("apps/filmcraft-android/res/values/strings.xml"), values.join("strings.xml"));
+    std::fs::copy(&from, &to).map_err(|e| format!("cannot copy {} to {}: {e}", from.display(), to.display()))?;
+
+    let action = if run_app { "run" } else { "build" };
+    let mut cmd = Command::new("cargo");
+    cmd.args(["apk", action, "-p", "filmcraft-android", "--target", &target]);
+    if release {
+        cmd.arg("--release");
+    }
+
+    // Trailing slashes break path joins in Android tooling.
+    if let Ok(ndk) = std::env::var("ANDROID_NDK_ROOT").or_else(|_| std::env::var("NDK_HOME")) {
+        cmd.env("ANDROID_NDK_ROOT", ndk.trim_end_matches(['\\', '/']));
+    }
+    if let Ok(sdk) = std::env::var("ANDROID_HOME").or_else(|_| std::env::var("ANDROID_SDK_ROOT")) {
+        cmd.env("ANDROID_HOME", sdk.trim_end_matches(['\\', '/']));
+    }
+
+    run(&mut cmd)
+}
+
 /// (crate, test target, test) whose ignored test builds that crate's fixture matrix.
 const FIXTURE_GENERATORS: &[(&str, &str, &str)] = &[
     ("h264", "it", "conformance::generate_fixtures"),
@@ -564,6 +638,7 @@ fn main() -> ExitCode {
         "bench" => bench(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "android" => android(&std::env::args().skip(2).collect::<Vec<_>>()),
         "version" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
@@ -577,7 +652,7 @@ fn main() -> ExitCode {
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|android [--run] [--target <arch>] [--release]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };

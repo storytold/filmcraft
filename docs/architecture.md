@@ -22,7 +22,7 @@ Design principles:
 ## 1. Layers
 
 ```text
- L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web
+ L6  apps/filmcraft · apps/filmcraft-cli · apps/filmcraft-web · apps/filmcraft-android
  L5  ui-egui · automation · platform
  L4  engine
  L3  render · gpu · export · golden (test-only)
@@ -83,6 +83,7 @@ and `filmcraft-cli`.
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
+| `filmcraft-android` | L6 | mobile runner (cdylib): eframe mobile runner on wgpu/Vulkan/GLES, NativeActivity/GameActivity ([README](../apps/filmcraft-android/README.md)) |
 
 ### What `cargo xtask layers` enforces
 
