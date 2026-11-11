@@ -545,9 +545,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         } else if let Some(s) = child(c, "sequence") {
-            self.sequence(s, None)
+            // A nested sequence left out (nested too deeply, or recursive) stays in the timeline as an offline
+            // clip, so the clip keeps its place and length instead of shortening the sequence.
+            match self.sequence(s, None) {
+                Some(id) => Some(id),
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a nested sequence that was left out; imported offline"));
+                    Some(self.offline_media(kind, seq_rate, frame, name))
+                }
+            }
         } else {
             self.report.warn(format!("clip \"{name}\" has no media reference; imported offline"));
+            Some(self.offline_media(kind, seq_rate, frame, name))
+        }
+    }
+
+    fn offline_media(&mut self, kind: TrackKind, seq_rate: FrameRate, frame: (u32, u32), name: &str) -> ItemId {
+        {
             let spec = MediaSpec {
                 video: (kind == TrackKind::Video).then_some((frame.0, frame.1, seq_rate)),
                 audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
@@ -559,7 +573,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
                 m.offline = true;
             }
-            Some(id)
+            id
         }
     }
 

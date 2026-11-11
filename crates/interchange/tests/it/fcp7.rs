@@ -768,3 +768,28 @@ fn a_sequence_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
     let s63 = imp.project.sequences().find(|i| i.name == "S63").and_then(|i| imp.project.sequence(i.id)).unwrap();
     assert_eq!(s63.video_tracks[0].items.len(), 1, "sequence-63 keeps its nested sequence-64");
 }
+
+#[test]
+fn a_nested_clip_left_out_by_the_depth_limit_stays_as_an_offline_placeholder_with_its_extent() {
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("left out; imported offline"), "{rep:?}");
+    let p = &imp.project;
+    let placeholder = p
+        .sequences()
+        .filter_map(|i| p.sequence(i.id))
+        .flat_map(|s| s.video_tracks.iter().flat_map(|t| t.items.iter()))
+        .find(|ti| p.item(ti.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline))
+        .expect("an offline placeholder");
+    assert!(placeholder.duration > Tick::ZERO, "the clip keeps its length");
+}
