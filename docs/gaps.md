@@ -18,7 +18,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 |---|---|---|---|---|
 | G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 40–70 h |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
-| G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
+| G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 20–35 h |
 | G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
 | G5 | Hardware acceleration is partial | hardware | partly | 120–200 h |
 | G6 | No real-world media corpus or workflow acceptance tests | measurement | yes | 40–70 h |
