@@ -161,6 +161,19 @@ impl PictureInfo {
         let d = self.component_depth;
         d > 0 && self.black_ref_level == Some(0) && self.white_ref_level == Some((1u32 << d.min(31)) - 1)
     }
+    /// The ITU-T H.273 code points its colour labels name, as (colour primaries, transfer
+    /// characteristics, matrix coefficients), for the labels the writer uses: Rec. 709 and BT.2020
+    /// primaries and coding equations, and the Rec. 709, SMPTE ST 2084 (PQ) and ARIB STD-B67 (HLG)
+    /// transfers. A missing label, or one not among these, is `None`.
+    pub fn color_codes(&self) -> (Option<u8>, Option<u8>, Option<u8>) {
+        use crate::write::labels::{CE_709, CE_2020, CP_709, CP_2020, TC_709, TC_HLG, TC_PQ};
+        let code = |label: &Option<Ul>, known: &[([u8; 16], u8)]| known.iter().find(|(k, _)| label.as_ref().is_some_and(|l| l.matches(k))).map(|(_, c)| *c);
+        (
+            code(&self.color_primaries, &[(CP_709, 1), (CP_2020, 9)]),
+            code(&self.transfer_characteristic, &[(TC_709, 1), (TC_PQ, 16), (TC_HLG, 18)]),
+            code(&self.coding_equations, &[(CE_709, 1), (CE_2020, 9)]),
+        )
+    }
 }
 
 /// PCM layout of a sound track.
@@ -283,6 +296,29 @@ mod tests {
         let mut b = [0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0];
         b[8..8 + item.len()].copy_from_slice(item);
         Ul(b)
+    }
+
+    /// The colour labels the writer uses give their H.273 code points whatever the label's
+    /// registry version byte; a missing label, or one the writer doesn't use, gives none.
+    #[test]
+    fn colour_labels_give_their_code_points() {
+        use crate::write::labels::{CE_709, CE_2020, CP_709, CP_2020, TC_709, TC_HLG, TC_PQ};
+        let p = |tc: [u8; 16], cp: [u8; 16], ce: [u8; 16]| PictureInfo {
+            transfer_characteristic: Some(Ul(tc)),
+            color_primaries: Some(Ul(cp)),
+            coding_equations: Some(Ul(ce)),
+            ..Default::default()
+        };
+        assert_eq!(p(TC_HLG, CP_2020, CE_2020).color_codes(), (Some(9), Some(18), Some(9)));
+        assert_eq!(p(TC_PQ, CP_2020, CE_2020).color_codes(), (Some(9), Some(16), Some(9)));
+        assert_eq!(p(TC_709, CP_709, CE_709).color_codes(), (Some(1), Some(1), Some(1)));
+        let mut older = TC_HLG;
+        older[7] = 0x01;
+        assert_eq!(p(older, CP_2020, CE_2020).color_codes().1, Some(18));
+        let mut unused = TC_709;
+        unused[13] = 0x7F;
+        assert_eq!(p(unused, CP_709, CE_709).color_codes(), (Some(1), None, Some(1)));
+        assert_eq!(PictureInfo::default().color_codes(), (None, None, None));
     }
 
     #[test]
