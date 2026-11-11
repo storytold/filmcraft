@@ -12,7 +12,7 @@
 //!   opaque.
 //!
 //! The file is hostile: decoding stops at [`MAX_FRAMES`] frames or [`MAX_DECODED_BYTES`] of
-//! pictures (the clip then ends there), and a frame that fails to decode ends the animation at the
+//! distinct pictures (repeats of the previous picture are merged and count once; the clip then ends there), and a frame that fails to decode ends the animation at the
 //! frames decoded before it. A file that turns out not to be animated (one frame, or no frame that
 //! decodes) is left to the still decoders, which is what happened to every animated image before.
 
@@ -141,18 +141,18 @@ impl AnimatedSource {
             let buffer = frame.into_buffer();
             let (w, h) = buffer.dimensions();
             let rgba = buffer.into_raw();
-            // every frame is a full canvas decode, repeated frames included
-            decoded = decoded.saturating_add(rgba.len());
-            if decoded > max_decoded {
-                truncated = true;
-                break;
-            }
             if let (Some(last), Some(d)) = (pictures.last(), durations.last_mut())
                 && (last.0, last.1) == (w, h)
                 && last.2 == rgba
             {
                 *d = Tick(d.0.saturating_add(ticks.0));
                 continue;
+            }
+            // a repeat of the previous picture is merged above and costs nothing: only distinct pictures are kept
+            decoded = decoded.saturating_add(rgba.len());
+            if decoded > max_decoded {
+                truncated = true;
+                break;
             }
             has_alpha = has_alpha || rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
             pictures.push((w, h, rgba));
