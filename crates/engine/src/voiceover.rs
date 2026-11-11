@@ -403,27 +403,30 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Directory recordings are written to.
-fn record_dir(s: &Session, p: &Value) -> String {
+fn record_dir(s: &Session, p: &Value) -> Result<String> {
     media_dir(s, p, "Voice-over Recordings")
 }
 
 /// Directory generated media (recordings, narrations) is written to: `dir`, else Project
 /// Settings ▸ Scratch Disks ▸ Captured, else next to the project, else `fallback` in the data or
 /// temporary directory.
-pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
+pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> Result<String> {
     if let Some(d) = str_p(p, "dir") {
-        return d.to_string();
+        return Ok(d.to_string());
     }
     if let Some(d) =
         crate::project_tools::trusted_scratch(s.project.settings.scratch.captured.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
     {
-        return d.to_string_lossy().into_owned();
+        return Ok(d.to_string_lossy().into_owned());
     }
     if let Some(d) = s.path.as_deref().and_then(|x| std::path::Path::new(x).parent()).filter(|d| !d.as_os_str().is_empty()) {
-        return d.to_string_lossy().into_owned();
+        return Ok(d.to_string_lossy().into_owned());
     }
-    let base = s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(|| crate::temp_dir().join("FilmCraft"));
-    base.join(fallback).to_string_lossy().into_owned()
+    let base = match s.prefs_path.as_ref().and_then(|p| p.parent()) {
+        Some(d) => d.to_path_buf(),
+        None => crate::private_temp_dir().map_err(|e| EngineError::Other(format!("no private temporary folder: {e}")))?,
+    };
+    Ok(base.join(fallback).to_string_lossy().into_owned())
 }
 
 /// `<dir>/<base> <n>.wav` with the first `n` used by neither a project item nor an existing file;
@@ -497,7 +500,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("audio.voiceover.stop", "the record track was deleted or locked; restore it before saving the take"));
     }
     // write the file
-    let dir = record_dir(s, p);
+    let dir = record_dir(s, p)?;
     let base = s.prefs.voice_over.name.clone();
     let path = unique_wav_path(s, &dir, &base)?;
     if !cfg!(target_arch = "wasm32") {
