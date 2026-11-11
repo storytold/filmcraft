@@ -1257,6 +1257,27 @@ mod tests {
 mod shown_limit_tests {
     use super::*;
 
+    fn shown(bytes: usize) -> (Output, usize, u32) {
+        (Output::Decoded(Slot::new(), bytes), 0, 0)
+    }
+
+    #[test]
+    fn push_shown_refuses_a_chunk_past_either_limit_and_drops_what_it_showed() {
+        let (mut out, mut bytes) = (Vec::new(), 0usize);
+        push_shown(&mut out, &mut bytes, shown(10)).unwrap();
+        assert_eq!((out.len(), bytes), (1, 10));
+        // past the byte budget
+        assert!(push_shown(&mut out, &mut bytes, shown(MAX_SHOWN_BYTES_PER_CHUNK)).is_err());
+        assert!(out.is_empty(), "the refused chunk shows nothing");
+        // past the count limit
+        let (mut out, mut bytes) = (Vec::new(), 0usize);
+        for _ in 0..MAX_SHOWN_PER_CHUNK {
+            push_shown(&mut out, &mut bytes, shown(0)).unwrap();
+        }
+        assert!(push_shown(&mut out, &mut bytes, shown(0)).is_err());
+        assert!(out.is_empty());
+    }
+
     #[test]
     fn a_chunk_may_show_a_bounded_number_of_pictures() {
         assert!(shown_within_limit(0) && shown_within_limit(MAX_SHOWN_PER_CHUNK));
