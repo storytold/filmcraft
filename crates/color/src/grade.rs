@@ -1,11 +1,11 @@
-//! The grading signal colour correctors (Lumetri) work on.
+//! The grading signal colour correctors (Color Grading) work on.
 //!
 //! Grading controls (whites / blacks, highlights / shadows, contrast, curves, wheels, keys) are
 //! defined on a perceptual signal from 0 (black) to 1 (white), not on linear light. In an SDR
 //! working space that signal is the sRGB-encoded display value, and 1 is SDR white.
 //!
 //! In an HDR working space (Rec. 2100 PQ or HLG) the signal follows the working space's own
-//! transfer function and is **normalised to HDR White** (cd/m², Lumetri ▸ Basic Correction ▸ HDR
+//! transfer function and is **normalised to HDR White** (cd/m², Color Grading ▸ Basic Correction ▸ HDR
 //! White; the curves have their own HDR Range): signal 1 is HDR White, so the sliders and curves
 //! span 0 … HDR White nits the way they span black … white in SDR, and highlights above HDR
 //! White (speculars) are values above 1 that pass through instead of clipping:

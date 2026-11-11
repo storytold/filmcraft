@@ -71,3 +71,104 @@ fn gigantic_sequences_are_refused() {
     assert!(!accepted(16383, 16383, 1));
     assert!(!accepted(8192, 8192, 1));
 }
+
+/// A picture of `coding_type` (1 = I, 2 = P): picture header, coding extension, one slice with a junk payload.
+fn picture_of(coding_type: u32) -> Vec<u8> {
+    let mut h = Bits::default();
+    h.put(0, 10); // temporal_reference
+    h.put(coding_type, 3); // picture_coding_type
+    h.put(0xffff, 16); // vbv_delay
+    if coding_type == 2 {
+        h.put(0, 1); // full_pel_forward_vector
+        h.put(7, 3); // forward_f_code
+    }
+    let mut e = Bits::default();
+    e.put(8, 4); // picture_coding_extension
+    e.put(0xffff, 16); // f_codes
+    e.put(0, 2); // intra_dc_precision
+    e.put(3, 2); // picture_structure: frame
+    e.put(0, 10); // flags up to progressive_frame
+    e.put(1, 1); // progressive_frame
+    e.put(0, 1); // composite_display_flag
+    let mut out = vec![0, 0, 1, 0x00];
+    out.extend(h.bytes);
+    out.extend([0, 0, 1, 0xb5]);
+    out.extend(e.bytes);
+    out.extend([0, 0, 1, 0x01, 0x80, 0x80]);
+    out
+}
+
+fn picture() -> Vec<u8> {
+    picture_of(1)
+}
+
+#[test]
+fn an_access_unit_of_many_pictures_stops_early() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..200 {
+        data.extend(picture());
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err(), "200 pictures in one access unit must be refused");
+    // pictures after the refusal are not decoded: the per-picture slice errors stay near the output cap
+    assert!(dec.errors() <= 32, "{} picture errors", dec.errors());
+}
+
+#[test]
+fn a_dimension_change_does_not_hide_an_overflow() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..20 {
+        data.extend(picture());
+    }
+    data.extend(sequence(128, 64, 1));
+    data.extend(picture());
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err(), "the reset for the new dimensions must not clear the overflow");
+}
+
+#[test]
+fn a_refused_access_unit_leaves_no_stale_references() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..200 {
+        data.extend(picture());
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err());
+    // a P picture cannot continue from the refused access unit's anchor
+    assert!(dec.decode(&picture_of(2), 1).unwrap().is_empty());
+    assert!(dec.flush().is_empty(), "a P picture after the refusal was decoded from stale references");
+    // an I picture restarts decoding; nothing from the refused access unit comes out before it
+    let two = [picture(), picture()].concat();
+    assert_eq!(dec.decode(&two, 2).unwrap().len(), 1, "the first I picture is shown when the second arrives");
+    assert_eq!(dec.flush().len(), 1);
+}
+
+/// `data` without its extension units (an MPEG-1 stream): everything from a 00 00 01 b5 start code up to the next start code.
+fn mpeg1(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        if data[i..].starts_with(&[0, 0, 1, 0xb5]) {
+            i += 4;
+            while i < data.len() && !data[i..].starts_with(&[0, 0, 1]) {
+                i += 1;
+            }
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn an_mpeg1_d_picture_restarts_decoding_after_a_refused_access_unit() {
+    let mut data = mpeg1(&sequence(64, 64, 1));
+    for _ in 0..200 {
+        data.extend(mpeg1(&picture()));
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err());
+    let two = [mpeg1(&picture_of(4)), mpeg1(&picture_of(4))].concat();
+    assert_eq!(dec.decode(&two, 1).unwrap().len(), 1, "the first D picture is shown when the second arrives");
+}
