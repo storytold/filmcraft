@@ -231,7 +231,7 @@ fn header_line_buttons(
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =
-        crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
+        crate::widgets::icon_toggle_clipped(ui, sr, visible, Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
     app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
     if sresp.clicked() {
         actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
@@ -239,9 +239,10 @@ fn header_line_buttons(
     x += 24.0;
     if r.kind == TrackKind::Video {
         let er = small(x, upper_y);
-        let eresp = crate::widgets::icon_toggle(
+        let eresp = crate::widgets::icon_toggle_clipped(
             ui,
-            er.intersect(visible),
+            er,
+            visible,
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
             true,
             t,

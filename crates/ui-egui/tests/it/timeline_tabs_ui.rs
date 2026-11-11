@@ -131,6 +131,13 @@ impl Driver {
 }
 
 #[test]
+fn first_fit_of_a_sequence_does_not_mark_its_view_dirty() {
+    let mut d = Driver::new();
+    d.frames(4);
+    assert!(!d.app().session.is_view_dirty(), "the initial fit is derived from the sequence and layout");
+}
+
+#[test]
 fn each_sequence_tab_keeps_its_own_zoom_scroll_and_track_heights() {
     let mut d = Driver::new();
     let main = d.active();
@@ -275,7 +282,7 @@ fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     let mut e = Driver::new();
     e.ok("ui.set", json!({"timeline": {"pps": 77.0, "scroll": 9.0}}));
     e.frames(3);
-    e.exec("file.open", json!({"path": path}));
+    e.app().session.execute("file.open", json!({"path": path})).unwrap();
     e.frames(3);
     assert_eq!((e.open(), e.active()), (vec![other, main], other));
     assert_eq!(e.view(), (15.0, 0.5, 60.0));
