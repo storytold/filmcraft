@@ -3,6 +3,18 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Selected clip parameters
+
+In Effect Controls and Properties, changes to Motion, Opacity, Volume, Channel Volume and
+Panner values set the entered value on every selected clip of the matching track kind. Linked
+partners participate when Linked Selection is enabled; locked tracks stay unchanged. Each clip
+uses its own media time for animated parameters, and one Undo restores the whole group's prior
+values. Masks and individual keyframe edits keep their instance-specific targets.
+
+`effects.setParam` accepts either `clip` or a nonempty `clips` list. A list requires an effect id
+(not a clip-local effect index) and does not accept a mask. Invalid targets or a missing effect
+reject the entire change. A merged drag includes the complete target set in its undo merge key.
+
 ## Selected text strokes
 
 With characters selected using the Type tool, both Stroke rows read and write that range's

@@ -421,7 +421,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let tc = filmcraft_time::format_time(ph, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
     ui.painter().text(pos2(rect.min.x + 10.0, rect.max.y - 13.0), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
     keys.finish(app, ui);
-    run(app, ui.ctx(), actions);
+    run_selection(app, ui.ctx(), actions);
 }
 
 /// The thin line under a row, across the names, the values and the keyframe lane, so a row can be
@@ -1189,13 +1189,14 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             }
                         }
                         Some(ParamValue::Float(v)) => {
-                            let (_, nv) = crate::widgets::hot_number(
+                            let (response, nv) = crate::widgets::hot_number(
                                 &mut vui,
                                 label,
                                 egui::Id::unique(("pp", p, clip.0)),
                                 v,
                                 HotNumberOptions::new(speed, range, if p == "scale" { 0 } else { 1 }, unit, &t),
                             );
+                            app.auto.add(&format!("properties.{p}"), response.rect, label);
                             if let Some(nv) = nv {
                                 actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv})));
                             }
@@ -1264,13 +1265,14 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (_, nv) = crate::widgets::hot_number(
+            let (response, nv) = crate::widgets::hot_number(
                 &mut vui,
                 tl!("Level"),
                 egui::Id::unique(("pp-vol", clip.0)),
                 v,
                 HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),
             );
+            app.auto.add("properties.volume", response.rect, "Level");
             if let Some(nv) = nv {
                 actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
             }
@@ -1302,11 +1304,59 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("properties.speed", br, "Speed");
         open_speed = bresp.clicked();
     });
-    run(app, ui.ctx(), actions);
+    run_selection(app, ui.ctx(), actions);
     // the footer button reads out the clip's speed and opens Clip ▸ Speed/Duration…, as in Premiere
     if open_speed && let Err(e) = crate::menus::invoke(app, ui.ctx(), "clip.speedDuration", json!({})) {
         app.ui.status = e;
     }
+}
+
+/// Fixed clip parameters have a shared meaning across a selection. Keep masks, keyframes and
+/// repeated added effects addressed to their own instance; a numeric effect index is local to a clip.
+fn run_selection(app: &mut FilmcraftApp, ctx: &egui::Context, mut actions: Vec<(String, Value)>) {
+    if let Some(seq) = app.session.active_sequence() {
+        let selected: Vec<_> = app.session.state.selection.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+        actions.retain_mut(|(cmd, p)| {
+            if cmd != "effects.setParam" || p.get("mask").is_some_and(|v| !v.is_null()) {
+                return true;
+            }
+            let Some((track, source)) = p["clip"].as_u64().and_then(|id| seq.find_item(ClipId(id))) else { return true };
+            let effect = match &p["effect"] {
+                Value::String(id) => Some(id.as_str()),
+                Value::Number(n) => n.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| source.effects.get(i)).map(|e| e.effect.as_str()),
+                _ => None,
+            };
+            let Some(effect @ ("motion" | "opacity" | "volume" | "channel_volume" | "panner")) = effect else { return true };
+            let effect = effect.to_string();
+            let Some(kind) = seq.track(track).map(|t| t.kind) else { return true };
+            let ids: Vec<_> = seq
+                .all_tracks()
+                .filter(|t| t.kind == kind && !t.locked)
+                .flat_map(|t| &t.items)
+                .filter(|it| {
+                    let targeted = selected.iter().any(|s| s.id == it.id || (app.session.state.linked_selection && s.link.is_some() && s.link == it.link));
+                    targeted
+                        && it
+                            .effect(&effect)
+                            .is_some_and(|e| !ignored_by_uniform_scale(it, e, p["param"].as_str().unwrap_or(""), effect_time_now(it, app.session.playhead())))
+                })
+                .map(|it| it.id.0)
+                .collect();
+            if ids.is_empty() {
+                return false;
+            }
+            // Preserve the single-clip command and its instance index when there is no group.
+            if (ids.len() > 1 || ids.first() != Some(&source.id.0))
+                && let Some(object) = p.as_object_mut()
+            {
+                object.remove("clip");
+                object.insert("clips".into(), json!(ids));
+                object.insert("effect".into(), json!(effect));
+            }
+            true
+        });
+    }
+    run(app, ctx, actions);
 }
 
 /// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
@@ -1706,6 +1756,139 @@ mod drag_undo_tests {
         app.session.undo();
         assert_eq!(scale(&app), start, "one undo restores the scale from before the drag");
         assert_eq!(app.session.undo(), None, "the drag must not have left extra 1% steps");
+    }
+}
+
+#[cfg(test)]
+mod multi_clip_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_selection_updates_only_unlocked_matching_tracks_and_respects_linked_selection() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let videos: Vec<_> = q.video_tracks[0].items.iter().take(2).map(|it| it.id).collect();
+        let audios: Vec<_> = videos
+            .iter()
+            .map(|id| {
+                let link = q.find_item(*id).unwrap().1.link.unwrap();
+                q.audio_tracks.iter().flat_map(|t| &t.items).find(|it| it.link == Some(link)).unwrap().id
+            })
+            .collect();
+        s.execute("timeline.select", json!({"clips": videos.iter().map(|c| c.0).collect::<Vec<_>>(), "linked": false})).unwrap();
+        s.state.linked_selection = true;
+        let mut app = FilmcraftApp::new(s);
+        let ctx = egui::Context::default();
+        let write = |app: &mut FilmcraftApp, clip: ClipId, effect, param, value| {
+            run_selection(app, &ctx, vec![("effects.setParam".into(), json!({"clip": clip.0, "effect": effect, "param": param, "value": value}))]);
+        };
+        write(&mut app, audios[0], "volume", "level", -12.0);
+        for id in &audios {
+            assert_eq!(
+                app.session.active_sequence().unwrap().find_item(*id).unwrap().1.effect("volume").unwrap().param("level").unwrap().value.as_f64(),
+                Some(-12.0)
+            );
+        }
+        app.session.state.linked_selection = false;
+        app.session.execute("timeline.select", json!({"clips": [videos[0].0, audios[0].0, audios[1].0], "linked": false})).unwrap();
+        app.session
+            .edit_sequence("Lock video", |q, _, _| {
+                q.video_tracks[0].locked = true;
+                Ok(())
+            })
+            .unwrap();
+        let before = app.session.project.clone();
+        write(&mut app, videos[0], "motion", "scale", 150.0);
+        assert_eq!(app.session.project, before, "locked video stays unchanged");
+        write(&mut app, audios[0], "volume", "level", -8.0);
+        for id in &audios {
+            assert_eq!(
+                app.session.active_sequence().unwrap().find_item(*id).unwrap().1.effect("volume").unwrap().param("level").unwrap().value.as_f64(),
+                Some(-8.0)
+            );
+        }
+        app.session.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.project, before);
+    }
+
+    fn drag_parameter(properties: bool, audio: bool) {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let seq = s.active_sequence().unwrap();
+        let track = if audio { &seq.audio_tracks[0] } else { &seq.video_tracks[0] };
+        let ids: Vec<_> = track.items.iter().take(3).map(|it| it.id).collect();
+        let (effect, param) = if audio { ("volume", "level") } else { ("motion", "scale") };
+        // Distinct values prove that undo restores every clip, not just the displayed one.
+        for (i, id) in ids.iter().enumerate() {
+            s.execute(
+                "effects.setParam",
+                json!({"clip": id.0, "effect": effect, "param": param, "value": if audio { -3.0 * i as f64 } else { 100.0 + 10.0 * i as f64 }}),
+            )
+            .unwrap();
+        }
+        s.execute("timeline.select", json!({"clips": [ids[0].0, ids[1].0], "linked": false})).unwrap();
+        s.state.linked_selection = false;
+        let before = s.project.clone();
+        let mut app = FilmcraftApp::new(s);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 1600.0));
+        let mut time = 0.0;
+        let mut frame = |app: &mut FilmcraftApp, events: Vec<egui::Event>| {
+            time += 0.1;
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(time), events, ..Default::default() }, |ui| {
+                if properties {
+                    properties_panel(app, ui, rect);
+                } else {
+                    show(app, ui, rect);
+                }
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut app, vec![]);
+        let start = if properties {
+            let [x, y, w, h] = app.auto.find(if audio { "properties.volume" } else { "properties.scale" }).expect("property value").rect;
+            pos2(x + w / 2.0, y + h / 2.0)
+        } else {
+            let idx = app.session.active_sequence().unwrap().find_item(ids[0]).unwrap().1.effects.iter().position(|e| e.effect == effect).unwrap();
+            let [x, y, w, h] = app.auto.find(&format!("effectControls.{effect}.{idx}.{param}.name")).expect("parameter row").rect;
+            pos2(x + w + 12.0, y + h / 2.0)
+        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&mut app, vec![egui::Event::PointerMoved(start), button(start, true)]);
+        for dx in [10.0, 20.0, 30.0] {
+            frame(&mut app, vec![egui::Event::PointerMoved(start + vec2(dx, 0.0))]);
+            frame(&mut app, vec![]); // idle frames must not split a drag's undo step
+        }
+        frame(&mut app, vec![button(start + vec2(30.0, 0.0), false)]);
+        let value = |app: &FilmcraftApp, id| {
+            app.session.active_sequence().unwrap().find_item(id).unwrap().1.effect(effect).unwrap().param(param).unwrap().value.as_f64().unwrap()
+        };
+        assert_ne!(value(&app, ids[0]), if audio { 0.0 } else { 100.0 }, "the pointer changed the displayed field");
+        assert_eq!(value(&app, ids[0]), value(&app, ids[1]), "every selected clip gets the entered value");
+        assert_eq!(value(&app, ids[2]), if audio { -6.0 } else { 120.0 }, "unselected clip stays unchanged");
+        assert_eq!(app.session.state.selection, ids[..2]);
+        app.session.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.project, before, "one undo restores every clip's distinct starting value");
+    }
+
+    #[test]
+    fn effect_controls_scale_changes_all_selected_video_clips() {
+        drag_parameter(false, false);
+    }
+    #[test]
+    fn effect_controls_volume_changes_all_selected_audio_clips() {
+        drag_parameter(false, true);
+    }
+    #[test]
+    fn properties_scale_changes_all_selected_video_clips() {
+        drag_parameter(true, false);
+    }
+    #[test]
+    fn properties_volume_changes_all_selected_audio_clips() {
+        drag_parameter(true, true);
     }
 }
 

@@ -24,6 +24,63 @@ fn clip_ids(s: &Session, track: usize) -> Vec<u64> {
 }
 
 #[test]
+fn set_param_updates_multiple_clips_atomically_in_one_undo_step() {
+    let mut s = demo();
+    let ids = clip_ids(&s, 0);
+    let before = s.project.clone();
+    let count = s.history.undo.len();
+    for (value, begin) in [(125.0, true), (150.0, false)] {
+        s.execute(
+            "effects.setParam",
+            json!({"clips": [ids[0], ids[1], ids[0]], "effect": "motion", "param": "scale", "value": value, "merge": true, "begin": begin}),
+        )
+        .unwrap();
+    }
+    for id in &ids[..2] {
+        let it = s.active_sequence().unwrap().find_item(ClipId(*id)).unwrap().1;
+        assert_eq!(it.effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(150.0));
+    }
+    assert_eq!(s.history.undo.len(), count + 1);
+    s.undo().unwrap();
+    assert_eq!(s.project, before);
+    s.redo().unwrap();
+    let edited = s.project.clone();
+    let count = s.history.undo.len();
+    for targets in [json!([]), json!([ids[0], u64::MAX]), json!([ids[0], "bad"]), json!(null)] {
+        assert!(s.execute("effects.setParam", json!({"clips": targets, "effect": "motion", "param": "scale", "value": 75})).is_err());
+        assert_eq!(s.project, edited);
+        assert_eq!(s.history.undo.len(), count);
+    }
+    // A later clip lacking the effect must roll back the first clip's write.
+    s.execute("effects.apply", json!({"clips": [ids[0]], "effect": "gaussian_blur"})).unwrap();
+    let before = s.project.clone();
+    assert!(s.execute("effects.setParam", json!({"clips": [ids[0], ids[1]], "effect": "gaussian_blur", "param": "blurriness", "value": 25})).is_err());
+    assert_eq!(s.project, before);
+}
+
+#[test]
+fn set_param_batch_uses_each_clips_media_time_and_rejects_ambiguous_targets() {
+    let mut s = demo();
+    let ids: Vec<_> = s.active_sequence().unwrap().audio_tracks[0].items.iter().take(2).map(|it| it.id.0).collect();
+    for id in &ids {
+        s.execute("effects.toggleAnimation", json!({"clip": id, "effect": "volume", "param": "level"})).unwrap();
+    }
+    s.execute("effects.setParam", json!({"clips": ids, "effect": "volume", "param": "level", "value": -12})).unwrap();
+    for id in &ids {
+        let it = s.active_sequence().unwrap().find_item(ClipId(*id)).unwrap().1;
+        let mt = it.effect_time_at(s.playhead().clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+        assert_eq!(it.effect("volume").unwrap().param("level").unwrap().value_at(mt).as_f64(), Some(-12.0));
+    }
+    let before = s.project.clone();
+    for extra in [json!({"clip": ids[0]}), json!({"effect": 0}), json!({"mask": 0}), json!({"value": "invalid"})] {
+        let mut p = json!({"clips": ids, "effect": "volume", "param": "level", "value": -8});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert!(s.execute("effects.setParam", p).is_err());
+        assert_eq!(s.project, before);
+    }
+}
+
+#[test]
 fn demo_project_is_valid_and_renders() {
     let s = demo();
     assert_eq!(s.project.name, "FilmCraft – Demo Project");
