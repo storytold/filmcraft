@@ -8,7 +8,7 @@
 //! render (see `filmcraft_engine::previews`).
 
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
@@ -143,6 +143,13 @@ struct Job {
     /// zero for the frame due now), so a decoder catching up may skip pictures only late frames
     /// need (`filmcraft_media::cancel::with_catch_up`).
     catch_up: Option<Tick>,
+    /// While playing: when this frame is due on screen (None: not a playback frame, or the
+    /// clock has not started), so a worker can leave out a frame it could not finish in time
+    /// ([`starts_too_late`]).
+    due: Option<Instant>,
+    /// Queued by playback (the frame due now or a prefetch): sources may decode ahead for the
+    /// frames to come and drop one they passed (`filmcraft_media::cancel::with_playing`).
+    playing: bool,
     time: Tick,
     /// Output scale relative to the target's frame size.
     scale: f32,
@@ -167,6 +174,10 @@ struct Shared {
     workers: usize,
     /// Always-on counters for `perf.stats`.
     stats: Mutex<FrameStats>,
+    /// Playback frames a source dropped (a decoder that fell behind left them out): not asked
+    /// for again while playing (the monitor shows the nearest frame); cleared when playback
+    /// stops, and a paused request decodes them exactly.
+    dropped: Mutex<HashSet<FrameKey>>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
 }
@@ -179,6 +190,11 @@ pub struct FrameStats {
     /// Jobs whose decode/render panicked (the worker survives; the frame is not cached).
     pub failed: u64,
     pub cancelled: u64,
+    /// Cancelled jobs whose sources had finished (nothing gave up): their frame was cached.
+    pub kept_late: u64,
+    /// Playback jobs left out when a worker got to them: they could not have been ready in time
+    /// ([`starts_too_late`]).
+    pub late_skipped: u64,
     /// Jobs served from a render preview.
     pub preview: u64,
     /// Playback prefetch jobs.
@@ -211,7 +227,7 @@ impl FrameStats {
         let n = self.jobs.max(1) as f64;
         let req = self.request_hits + self.request_misses;
         serde_json::json!({
-            "jobs": self.jobs, "cancelled": self.cancelled, "failedJobs": self.failed, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
+            "jobs": self.jobs, "cancelled": self.cancelled, "keptLate": self.kept_late, "lateSkipped": self.late_skipped, "failedJobs": self.failed, "previewJobs": self.preview, "prefetchJobs": self.prefetch,
             "requestHitRate": if req == 0 { 0.0 } else { self.request_hits as f64 / req as f64 },
             "decodeMs": {"mean": self.source_ms / n, "p50": pct(&|r| r.0, 0.5), "p95": pct(&|r| r.0, 0.95)},
             "renderMs": {"mean": self.render_ms / n, "p50": pct(&|r| r.1, 0.5), "p95": pct(&|r| r.1, 0.95)},
@@ -277,13 +293,11 @@ pub fn process_cpu_time() -> Option<Duration> {
 thread_local! {
     /// (wall, cpu) spent in source `video_frame` calls by this worker during the current job.
     static SOURCE_TIME: Cell<(Duration, Duration)> = const { Cell::new((Duration::ZERO, Duration::ZERO)) };
-    /// This worker is profiling the current job (thread CPU of source calls is measured).
-    static PROFILING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f`, adding its wall/CPU time to this thread's source-time accumulator.
 fn timed_source<R>(f: impl FnOnce() -> R) -> R {
-    let cpu = || if PROFILING.with(Cell::get) { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
+    let cpu = || thread_cpu_time().unwrap_or_default();
     let (w0, c0) = (Instant::now(), cpu());
     let r = f();
     let (dw, dc) = (w0.elapsed(), cpu().saturating_sub(c0));
@@ -429,6 +443,8 @@ struct FrameRequest<'a> {
     priority: u32,
     prefetch: bool,
     catch_up: Option<Tick>,
+    due: Option<Instant>,
+    playing: bool,
 }
 
 /// Frames queued ahead of the playhead while playing (and how far ahead a queued job may be
@@ -446,6 +462,17 @@ pub const PREROLL_FRAMES: i64 = 6;
 /// [`FrameServer::request`]); earlier non-reference pictures are skipped on the way.
 pub const SCRUB_KEEP_S: f64 = 2.0;
 pub const PREROLL_TIMEOUT_S: f64 = 0.5;
+/// ... unless the first frames are still being made ([`FrameServer::preroll_pending`]): a
+/// long-GOP decoder's first pictures take a while (a seek to the sync sample and the frames in
+/// flight of a frame-threaded decoder) and starting the clock before they come leaves playback
+/// behind from the first frame. The preroll then ends at this many seconds at the latest.
+pub const PREROLL_MAX_S: f64 = 2.5;
+
+/// How many frames behind the playhead a playing monitor looks for a ready picture when the
+/// frame due is not: a sequential (long-GOP) decoder that falls behind delivers its frames a
+/// little late, and the latest of them is the picture to show; a few frames further than the
+/// late frames a decoder near the playhead produces (`NEAR_SAMPLES` in the GOP cache).
+pub const PLAYING_LOOK_BACK: i64 = 12;
 
 /// How many revisions behind the project a playing monitor's picture may be while the frame due
 /// is not ready at the current one (#1673). A value dragged during playback makes a revision per
@@ -508,6 +535,7 @@ impl FrameServer {
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
+            dropped: Mutex::new(HashSet::new()),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -627,11 +655,11 @@ impl FrameServer {
     /// non-reference pictures, while nearby frames stay decoded (and cached) for scrubbing back.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
         let late = (prio == 0).then(|| Tick::from_seconds_f64(SCRUB_KEEP_S));
-        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late });
+        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late, due: None, playing: false });
     }
 
     fn request_job(&self, request: FrameRequest<'_>) {
-        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up } = request;
+        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up, due, playing } = request;
         let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
         if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
@@ -643,15 +671,23 @@ impl FrameServer {
             hit();
             return;
         }
+        if playing && self.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).contains(&key) {
+            return;
+        }
         let mut q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(j) = q.iter_mut().find(|j| j.key == key) {
             j.prio = j.prio.min(prio);
             j.prefetch &= prefetch;
+            j.playing |= playing;
             // the playhead only moves on: the newest (smallest) margin
             j.catch_up = match (j.catch_up, catch_up) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
+            // the newest estimate of when the frame is due
+            if due.is_some() {
+                j.due = due;
+            }
             drop(q);
             hit();
             return;
@@ -674,7 +710,19 @@ impl FrameServer {
                 }
             }
         }
-        q.push_back(Job { key, queued: Instant::now(), cancel: Default::default(), prefetch, catch_up, time, scale, project: project.clone(), prio });
+        q.push_back(Job {
+            key,
+            queued: Instant::now(),
+            cancel: Default::default(),
+            prefetch,
+            catch_up,
+            due,
+            playing,
+            time,
+            scale,
+            project: project.clone(),
+            prio,
+        });
         drop(q);
         self.shared.cv.notify_one();
     }
@@ -683,9 +731,11 @@ impl FrameServer {
     /// then the next frames in display order, and drop queued jobs for this target that are
     /// stale (old revision, behind the playhead or too far ahead).
     ///
-    /// When frames cost more to render than the frame interval (CPU effects), frames that could
-    /// not be ready in time are not started and the workers get evenly spaced frames they can
-    /// finish ([`playback_plan`]). While `preroll` (clock not started yet) every frame is wanted.
+    /// When frames cost more than the workers can finish at the frame rate (CPU effects, a
+    /// source that decodes on the worker), frames that could not be ready in time are not asked
+    /// for and the workers get evenly spaced frames they can finish ([`playback_plan`]); a queued
+    /// frame that can no longer be ready when a worker gets to it is left out there
+    /// ([`starts_too_late`]). While `preroll` (clock not started yet) every frame is wanted.
     pub fn schedule_playback(&self, key: FrameKey, rate: filmcraft_time::FrameRate, scale: f32, project: &Arc<Project>, speed: f64, preroll: bool) {
         let dir = if speed < 0.0 { -1 } else { 1 };
         let step = speed.abs().max(1.0) as i64;
@@ -701,16 +751,24 @@ impl FrameServer {
                 priority: 0,
                 prefetch: false,
                 catch_up: (!preroll && dir > 0).then_some(Tick::ZERO),
+                due: None,
+                playing: true,
             });
         }
         // During preroll the clock has not started: only the frames that gate start, not a
         // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
         let ahead = if preroll { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
+        let now = Instant::now();
         for i in 0..ahead {
             let f = key.frame + (lead + i * stride) * dir * step;
             if f >= 0 {
                 // forward play: frames before the playhead are late (reverse play skips nothing)
                 let late = (!preroll && dir > 0).then(|| rate.tick_of(f) - rate.tick_of(key.frame));
+                // when the frame is due: (lead + i * stride) displayed frames from now
+                let due = (!preroll && fps > 0.0)
+                    .then(|| (lead + i * stride) as f64 / fps)
+                    .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
+                    .and_then(|d| now.checked_add(d));
                 self.request_job(FrameRequest {
                     key: FrameKey { frame: f, ..key },
                     time: rate.tick_of(f),
@@ -719,6 +777,8 @@ impl FrameServer {
                     priority: i as u32 + 1,
                     prefetch: true,
                     catch_up: late,
+                    due,
+                    playing: true,
                 });
             }
         }
@@ -739,6 +799,19 @@ impl FrameServer {
     pub fn preroll_ready(&self, key: FrameKey, speed: f64, last: i64) -> bool {
         let step = (speed.abs().max(1.0) as i64) * if speed < 0.0 { -1 } else { 1 };
         (0..PREROLL_FRAMES).map(|i| key.frame + i * step).filter(|f| *f >= 0 && *f <= last).all(|f| self.is_ready(&FrameKey { frame: f, ..key }))
+    }
+
+    /// Whether a job for `k` is queued or running (and still wanted).
+    pub fn is_pending(&self, k: &FrameKey) -> bool {
+        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|j| j.key == *k)
+            || self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(key, cancel, _)| key == k && !cancel.load(Ordering::Relaxed))
+    }
+
+    /// Whether any of the frames [`Self::preroll_ready`] waits for is still being made: the
+    /// preroll may wait for it up to [`PREROLL_MAX_S`].
+    pub fn preroll_pending(&self, key: FrameKey, speed: f64, last: i64) -> bool {
+        let step = (speed.abs().max(1.0) as i64) * if speed < 0.0 { -1 } else { 1 };
+        (0..PREROLL_FRAMES).map(|i| key.frame + i * step).filter(|f| *f >= 0 && *f <= last).any(|f| self.is_pending(&FrameKey { frame: f, ..key }))
     }
 
     /// The current per-frame render cost estimate (s), see [`playback_plan`].
@@ -766,6 +839,7 @@ impl FrameServer {
     /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
+        self.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
         for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if *prefetch {
@@ -935,6 +1009,13 @@ fn worker(
                     // highest priority (lowest number) first; FIFO among equals
                     let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i).unwrap_or(0);
                     if let Some(job) = q.remove(best) {
+                        // A playback frame that cannot be ready by the time it is due would only
+                        // be cancelled once finished: this worker goes on to one it can finish.
+                        let cost = Duration::from_secs_f64(*sh.render_cost.lock().unwrap_or_else(PoisonError::into_inner));
+                        if job.prefetch && starts_too_late(job.due, Instant::now(), cost) {
+                            sh.stats.lock().unwrap_or_else(PoisonError::into_inner).late_skipped += 1;
+                            continue;
+                        }
                         break job;
                     }
                 }
@@ -954,6 +1035,37 @@ fn worker(
             f();
         }
     }
+}
+
+/// Whether a playback job taken from the queue `now` would finish after its frame is `due`, at
+/// the workers' current per-frame `cost`. Workers take the nearest frame first; when that frame
+/// Whether a job's result is the frame and goes into the cache: not when a source gave up on
+/// it (a layer missing, a decode given up or a late frame dropped on purpose), and not when it
+/// was cancelled because the server is stopping. A job cancelled for another reason (playback
+/// moved on) whose sources all finished has the frame: it is cached for the next request.
+fn keep_result(cancelled: bool, gave_up: bool, stopping: bool) -> bool {
+    !gave_up && !(cancelled && stopping)
+}
+
+/// can no longer be on time, starting it only has it cancelled once finished, while a frame
+/// further ahead could still have been ready. Left unchecked, every worker was busy on frames
+/// that were already lost and nothing reached the screen once a picture cost more than the
+/// frame interval (a 4K intra picture decoded on the worker: ~170 ms at 50 fps).
+fn starts_too_late(due: Option<Instant>, now: Instant, cost: Duration) -> bool {
+    due.is_some_and(|due| due.saturating_duration_since(now) < cost)
+}
+
+/// The work of one frame job that occupied its worker, for [`FrameServer::render_cost`]: the
+/// job's wall time outside its source calls (compositing, CPU effects) plus the CPU time the
+/// worker itself spent inside them. A source that decodes the frame on the calling thread (an
+/// intra-only stream: every frame worker decodes a different picture at once) is work the
+/// workers can only finish at `workers / cost` frames per second, so playback must skip frames
+/// evenly once that is below the frame rate; without it, every job was cancelled just before
+/// its picture came out and nothing was shown. Waiting inside a source call, for a decoder's own
+/// threads or for another worker's turn at a sequential decoder, is left out: skipping frames
+/// saves none of it.
+fn job_cost(job_wall: Duration, source_wall: Duration, source_cpu: Duration) -> Duration {
+    job_wall.saturating_sub(source_wall) + source_cpu.min(source_wall)
 }
 
 /// Run one job and cache its result. Returns false when the job's media was still loading (an
@@ -982,44 +1094,63 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let profiling = sh.profiling.load(Ordering::Relaxed);
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
     SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
-    PROFILING.with(|p| p.set(profiling));
-    // A cancelled job may have missed layers (its source gave up): its result is not cached.
-    // A job whose media bytes were still loading (web) rendered with missing layers: like a
-    // cancelled one, its result is not cached (the caller retries it).
+    // A cancelled job whose source gave up (`cancel::gave_up`) may have missed layers: its
+    // result is not cached. One cancelled after its sources had finished is complete and is
+    // cached: playback that fell behind shows it as the nearest frame, and decoding it again
+    // would cost the same (unless the server is stopping). A job whose media bytes were still
+    // loading (web) rendered with missing layers: like a cancelled one, its result is not
+    // cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
+    let mut kept_late = false;
+    let mut gave_up = false;
+    let complete = |cancel: &std::sync::atomic::AtomicBool, kept: &mut bool, gave_up: &mut bool| {
+        let cancelled = cancel.load(Ordering::Relaxed);
+        *gave_up = filmcraft_media::cancel::gave_up();
+        let keep = keep_result(cancelled, *gave_up, sh.stop.load(Ordering::Relaxed));
+        *kept = keep && cancelled;
+        keep
+    };
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
-        filmcraft_media::cancel::with_catch_up(job.catch_up, || {
-            filmcraft_media::cancel::with_draft(job.key.draft, || {
-                filmcraft_media::cancel::with_background(is_background(job), || {
-                    if let Target::SequencePlan(seq, caps) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+        filmcraft_media::cancel::with_playing(job.playing, || {
+            filmcraft_media::cancel::with_catch_up(job.catch_up, || {
+                filmcraft_media::cancel::with_draft(job.key.draft, || {
+                    filmcraft_media::cancel::with_background(is_background(job), || {
+                        if let Target::SequencePlan(seq, caps) = job.key.target {
+                            let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
+                                // Convert texels for upload here, not on the UI thread when the frame is shown.
+                                let prepared = filmcraft_gpu::prepare(&plan);
+                                sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+                            }
+                            pv
+                        } else {
+                            let (img, pv) = render_job(job, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
+                                sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
+                            }
+                            pv
                         }
-                        pv
-                    } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
-                        }
-                        pv
-                    }
+                    })
                 })
             })
         })
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    if job.playing && !loading && !cancelled && gave_up {
+        let mut dropped = sh.dropped.lock().unwrap_or_else(PoisonError::into_inner);
+        if dropped.len() >= 1024 {
+            dropped.clear();
+        }
+        dropped.insert(job.key);
+    }
     if job.prefetch {
-        // Work beyond fetching source frames (decoding is sequential per source and is
-        // not saved by skipping frames, so it is left out of the estimate). A cancelled job
-        // only tells that the work takes at least this long.
-        let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
+        // A cancelled job only tells that the work takes at least this long.
+        let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
+        let cost = job_cost(started.elapsed(), source_wall, source_cpu).as_secs_f64();
         let mut c = sh.render_cost.lock().unwrap_or_else(PoisonError::into_inner);
         if !cancelled || cost > *c {
             *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
@@ -1032,6 +1163,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         let mut st = sh.stats.lock().unwrap_or_else(PoisonError::into_inner);
         st.jobs += 1;
         st.cancelled += cancelled as u64;
+        st.kept_late += kept_late as u64;
         st.preview += preview as u64;
         st.prefetch += job.prefetch as u64;
         st.source_ms += src_ms;
@@ -1153,6 +1285,16 @@ mod tests {
     use filmcraft_project::ItemId;
 
     #[test]
+    fn a_result_is_cached_unless_a_source_gave_up_or_the_server_stops() {
+        use super::keep_result;
+        assert!(keep_result(false, false, false));
+        assert!(keep_result(true, false, false), "cancelled after its sources finished: the frame is there");
+        assert!(!keep_result(true, false, true), "cancelled because the server stops");
+        assert!(!keep_result(false, true, false), "a source dropped a late frame on purpose");
+        assert!(!keep_result(true, true, false), "a source stopped short");
+    }
+
+    #[test]
     fn only_item_thumbnails_are_background_work() {
         let item = Target::Item(ItemId(1));
         // thumbnails (50) and the Media Browser (40)
@@ -1206,6 +1348,36 @@ mod tests {
         assert_eq!(rev, [(10, 5), (10, 4), (11, 5), (11, 4), (12, 5), (12, 4)]);
         // no revision before the first
         assert_eq!(recent_keys(FrameKey { revision: 0, ..key }, 1, 0, 64).count(), 1);
+    }
+
+    /// The cost that paces playback counts the worker's own decoding (an intra-only source
+    /// decodes on the calling thread) but not its waits for a decoder's threads.
+    #[test]
+    fn job_cost_counts_the_workers_own_decoding_but_not_its_waits() {
+        use super::job_cost;
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // 5 ms of compositing; the frame came from the cache
+        assert_eq!(job_cost(ms(5), ms(0), ms(0)), ms(5));
+        // a 4K intra picture decoded on this worker: 140 ms of CPU inside the source call
+        assert_eq!(job_cost(ms(145), ms(140), ms(138)), ms(143));
+        // waited 450 ms for a frame-threaded decoder to output the picture: not this worker's work
+        assert_eq!(job_cost(ms(455), ms(450), ms(2)), ms(7));
+        // a clock quirk (CPU time over wall time) cannot inflate the cost
+        assert_eq!(job_cost(ms(10), ms(8), ms(20)), ms(10));
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_ready_in_time_is_not_started() {
+        use super::starts_too_late;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let ms = Duration::from_millis;
+        assert!(!starts_too_late(None, now, ms(170)), "no due time: thumbnails, the frame on screen");
+        assert!(!starts_too_late(Some(now + ms(200)), now, ms(170)));
+        assert!(starts_too_late(Some(now + ms(150)), now, ms(170)));
+        assert!(starts_too_late(Some(now - ms(10)), now, ms(1)), "already due");
+        assert!(!starts_too_late(Some(now - ms(10)), now, ms(0)), "an unknown cost never leaves a frame out");
     }
 
     #[test]
@@ -1301,6 +1473,8 @@ mod tests {
             cancel: Default::default(),
             prefetch: false,
             catch_up: None,
+            due: None,
+            playing: false,
             time: filmcraft_time::Tick::ZERO,
             scale: 0.1,
             project: Arc::new(filmcraft_project::Project::new("Frames")),
@@ -1310,7 +1484,39 @@ mod tests {
         server.shared.stop.store(true, Ordering::Relaxed);
         run_job(&server.shared, &job, &server.pool, &server.services, &server.previews);
         assert!(job.cancel.load(Ordering::Relaxed), "the job ran without its cancel flag");
-        assert!(!server.is_ready(&job.key), "a cancelled job's frame is not cached");
+        assert!(!server.is_ready(&job.key), "a cancelled job's frame is not cached while the server stops");
+    }
+
+    /// Playback that moved past a frame cancels its job; when the job's sources had already
+    /// produced their frames (nothing gave up), the result is complete and is cached: a late
+    /// frame is still the nearest picture to show, and nothing is saved by throwing it away.
+    #[test]
+    fn a_job_cancelled_after_its_sources_finished_is_still_cached() {
+        use super::{FrameKey, FrameServer, Job, Target, run_job};
+        use filmcraft_project::ItemId;
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let job = Job {
+            key: FrameKey { target: Target::Item(ItemId(999)), frame: 0, size: 32, revision: 0, draft: false },
+            queued: web_time::Instant::now(),
+            cancel: Default::default(),
+            prefetch: true,
+            catch_up: None,
+            due: None,
+            playing: false,
+            time: filmcraft_time::Tick::ZERO,
+            scale: 0.1,
+            project: Arc::new(filmcraft_project::Project::new("Frames")),
+            prio: 1,
+        };
+        // cancelled before it ran: the missing item renders its slate without asking any source
+        job.cancel.store(true, Ordering::Relaxed);
+        run_job(&server.shared, &job, &server.pool, &server.services, &server.previews);
+        assert!(server.is_ready(&job.key), "a complete result is cached although the job was cancelled");
+        let st = server.shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!((st.cancelled, st.kept_late), (1, 1));
     }
     /// A sequence plan is made for the caps in its key: the same frame asked for a device without
     /// an effect stage and for one with it gives two cached plans, the CPU image and the plan with

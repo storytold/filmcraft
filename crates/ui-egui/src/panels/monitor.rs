@@ -90,7 +90,11 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         let preroll = which == Which::Program && app.playback.preroll.is_some();
         app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
         if preroll {
-            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
+            let last = rate.frame_at(duration) - 1;
+            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, last);
+            // (only while the project stands still: see `Playback::preroll_revision`)
+            let unchanged = *app.playback.preroll_revision.get_or_insert(key.revision) == key.revision;
+            app.playback.preroll_pending = !app.playback.preroll_ready && unchanged && app.frames.preroll_pending(key, app.playback.speed, last);
         }
     } else {
         app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
@@ -108,7 +112,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             .frames
             .get_plan(&key)
             .map(|p| (key, p))
-            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| app.frames.nearest_plan(key, crate::frames::PLAYING_LOOK_BACK))
             .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
             .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
@@ -612,7 +616,7 @@ fn play_direction(speed: f64) -> i64 {
 /// While playing, a frame to show when the one due is not ready at the project's revision: the
 /// same frame (or one just played) rendered for one of the last few revisions (#1673).
 fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option<FrameKey> {
-    dir.and_then(|dir| app.frames.recent(key, dir, 6, crate::frames::PLAYING_REVISION_LAG))
+    dir.and_then(|dir| app.frames.recent(key, dir, crate::frames::PLAYING_LOOK_BACK, crate::frames::PLAYING_REVISION_LAG))
 }
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before

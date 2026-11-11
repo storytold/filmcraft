@@ -4,7 +4,10 @@
 //! decoder seeking back to a keyframe and decoding forward) poll [`cancelled`] and give up with
 //! [`MediaError::Cancelled`](crate::MediaError::Cancelled) once the job is no longer wanted, e.g.
 //! playback has moved past its frame. The flag travels through a thread-local, so the
-//! [`MediaSource`](crate::MediaSource) API is unchanged.
+//! [`MediaSource`](crate::MediaSource) API is unchanged. Whether anything did give up is
+//! recorded ([`gave_up`]): a job cancelled after its sources had already produced their frames
+//! is complete, and caching it costs nothing while a late frame is still the best picture to
+//! show.
 //!
 //! The same way, [`with_catch_up`] tells sources which frames before the requested one are late
 //! (playback has passed them): a decoder that has to decode forward to the frame may skip
@@ -26,7 +29,11 @@ use filmcraft_time::Tick;
 
 thread_local! {
     static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    /// Set once work inside the current [`with_cancel`] scope saw the flag ([`cancelled`]
+    /// returned true), on this thread or on one a [`Context`] carried the scope to.
+    static GAVE_UP: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
+    static PLAYING: Cell<bool> = const { Cell::new(false) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
 }
@@ -83,17 +90,63 @@ pub fn catch_up() -> Option<Tick> {
     CATCH_UP.with(Cell::get)
 }
 
-/// Run `f` with `flag` as this thread's cancellation flag (restoring the previous one after).
-pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
-    let prev = CURRENT.with(|c| c.replace(Some(flag.clone())));
+/// Run `f` as playback work (restoring the previous setting after): the frame is one of a run
+/// the playhead moves through, so a sequential decoder may decode ahead for the frames to come
+/// and a frame it has passed is dropped rather than seeked back to. A scrub or a paused monitor
+/// is not playback: its frame is decoded exactly.
+pub fn with_playing<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let prev = PLAYING.with(|c| c.replace(on));
     let r = f();
-    CURRENT.with(|c| *c.borrow_mut() = prev);
+    PLAYING.with(|c| c.set(prev));
     r
 }
 
-/// Whether the work running on this thread has been cancelled.
+/// Whether the work running on this thread is playback ([`with_playing`]).
+pub fn playing() -> bool {
+    PLAYING.with(Cell::get)
+}
+
+/// Run `f` with `flag` as this thread's cancellation flag (restoring the previous one after).
+/// [`gave_up`] starts out false for the scope.
+pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
+    let prev = CURRENT.with(|c| c.replace(Some(flag.clone())));
+    let prev_gave_up = GAVE_UP.with(|g| g.replace(Some(Arc::new(AtomicBool::new(false)))));
+    let r = f();
+    CURRENT.with(|c| *c.borrow_mut() = prev);
+    GAVE_UP.with(|g| *g.borrow_mut() = prev_gave_up);
+    r
+}
+
+/// Whether the work running on this thread has been cancelled. Work that asks is expected to
+/// give up when it has: the answer true is recorded for [`gave_up`].
 pub fn cancelled() -> bool {
-    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
+    let c = CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)));
+    if c {
+        GAVE_UP.with(|g| {
+            if let Some(g) = g.borrow().as_ref() {
+                g.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+    c
+}
+
+/// Whether work in the current [`with_cancel`] scope saw that it was cancelled (and so may have
+/// stopped short: a frame with layers missing, a decode given up). False when nothing asked:
+/// the scope's result is complete even if its flag was set meanwhile.
+pub fn gave_up() -> bool {
+    GAVE_UP.with(|g| g.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
+}
+
+/// Record that the work in the current [`with_cancel`] scope stops short on purpose, whether or
+/// not it was cancelled (a decoder dropping a late frame rather than restarting): the scope's
+/// result is incomplete and must not be cached as the frame.
+pub fn give_up() {
+    GAVE_UP.with(|g| {
+        if let Some(g) = g.borrow().as_ref() {
+            g.store(true, Ordering::Relaxed);
+        }
+    });
 }
 
 /// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
@@ -101,7 +154,9 @@ pub fn cancelled() -> bool {
 #[derive(Clone, Default)]
 pub struct Context {
     cancel: Option<Arc<AtomicBool>>,
+    gave_up: Option<Arc<AtomicBool>>,
     catch_up: Option<Tick>,
+    playing: bool,
     draft: bool,
     background: bool,
 }
@@ -109,7 +164,14 @@ pub struct Context {
 impl Context {
     /// This thread's hints.
     pub fn current() -> Self {
-        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+        Context {
+            cancel: CURRENT.with(|c| c.borrow().clone()),
+            gave_up: GAVE_UP.with(|g| g.borrow().clone()),
+            catch_up: catch_up(),
+            playing: playing(),
+            draft: draft(),
+            background: background(),
+        }
     }
 
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
@@ -120,14 +182,18 @@ impl Context {
             fn drop(&mut self) {
                 let prev = std::mem::take(&mut self.0);
                 CURRENT.with(|c| *c.borrow_mut() = prev.cancel);
+                GAVE_UP.with(|g| *g.borrow_mut() = prev.gave_up);
                 CATCH_UP.with(|c| c.set(prev.catch_up));
+                PLAYING.with(|c| c.set(prev.playing));
                 DRAFT.with(|c| c.set(prev.draft));
                 BACKGROUND.with(|c| c.set(prev.background));
             }
         }
         let _restore = Restore(Context::current());
         CURRENT.with(|c| *c.borrow_mut() = self.cancel);
+        GAVE_UP.with(|g| *g.borrow_mut() = self.gave_up);
         CATCH_UP.with(|c| c.set(self.catch_up));
+        PLAYING.with(|c| c.set(self.playing));
         DRAFT.with(|c| c.set(self.draft));
         BACKGROUND.with(|c| c.set(self.background));
         f()
@@ -152,6 +218,53 @@ mod tests {
                 assert_eq!((cancelled(), draft(), background(), catch_up()), (false, false, false, None));
             });
         });
+    }
+
+    /// A job cancelled after its sources finished is complete; one whose source saw the flag
+    /// is not, also when the source saw it on a thread the context was carried to.
+    #[test]
+    fn playing_is_off_by_default_and_scoped() {
+        assert!(!playing());
+        let (inner, carried) = with_playing(true, || {
+            let ctx = Context::current();
+            let carried = std::thread::scope(|s| s.spawn(|| ctx.run(playing)).join()).unwrap_or(false);
+            (playing(), carried)
+        });
+        assert!(inner && carried, "the hint holds inside the scope and travels with the context");
+        assert!(!playing());
+    }
+
+    #[test]
+    fn giving_up_on_purpose_is_recorded_without_a_cancellation() {
+        let flag = Arc::new(AtomicBool::new(false));
+        give_up();
+        assert!(!gave_up(), "outside a scope there is nothing to record it in");
+        let (before, after) = with_cancel(&flag, || {
+            let before = gave_up();
+            give_up();
+            (before, gave_up())
+        });
+        assert!(!before && after, "an explicit give-up is recorded although the flag is clear");
+        assert!(!gave_up(), "and does not leak out of the scope");
+    }
+
+    #[test]
+    fn giving_up_is_recorded_for_the_scope_and_across_threads() {
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(!gave_up(), "outside a scope nothing gave up");
+        let (before, after, inner) = with_cancel(&flag, || {
+            let before = gave_up();
+            flag.store(true, Ordering::Relaxed);
+            // the flag is set, but nothing has asked yet
+            let after = gave_up();
+            let ctx = Context::current();
+            let inner = std::thread::scope(|s| s.spawn(|| ctx.run(|| (cancelled(), gave_up()))).join()).unwrap_or((false, false));
+            (before, after, inner)
+        });
+        assert!(!before && !after, "a set flag alone is not giving up");
+        assert_eq!(inner, (true, true), "a source on another thread saw the flag");
+        assert!(!gave_up(), "the scope's record does not leak out");
+        with_cancel(&flag, || assert!(!gave_up(), "a new scope starts clean, even with the flag set"));
     }
 
     #[test]

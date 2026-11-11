@@ -382,6 +382,142 @@ fn cancelled_request_stops_decoding_and_keeps_state() {
     assert_eq!(s.resets.load(Ordering::Relaxed), 1);
 }
 
+/// Playback that fell behind cancels the request for a frame the decoder is about to produce;
+/// the few samples to it are decoded anyway (the frame is shown late), while a frame far
+/// ahead is given up on.
+#[test]
+fn a_cancelled_request_near_the_running_decoder_is_still_served() {
+    let s = samples(300, 250, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 5_000).expect("frame")), 5);
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 9_000));
+    assert_eq!(index_of(&r.expect("near: decoded although cancelled")), 9);
+    assert_eq!(s.decodes.load(Ordering::Relaxed), 10);
+    let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 40_000));
+    assert!(matches!(r, Err(CodecError::Cancelled)), "far ahead: given up");
+    assert_eq!(s.decodes.load(Ordering::Relaxed), 10, "nothing decoded for it");
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+}
+
+/// A playing request for frame `i` (late before `late`, both in samples).
+fn play(c: &GopCache, s: &Samples, i: usize, late: usize) -> crate::Result<usize> {
+    filmcraft_media::cancel::with_playing(true, || c.frame_late(s, i as i64 * 1000, Some(late as i64 * 1000)).map(|f| index_of(&f)))
+}
+
+/// Playback decodes ahead of its requests (the pump), so the frames to come are cache hits and
+/// the decoder runs on without a restart.
+#[test]
+fn playback_decodes_ahead_and_the_next_frames_are_hits() {
+    let s = samples(300, 250, 2, false);
+    let c = GopCache::new(None);
+    assert_eq!(play(&c, &s, 5, 5).expect("frame"), 5);
+    let fed = s.decodes.load(Ordering::Relaxed);
+    assert!(fed > 8 && fed <= 5 + PUMP_AHEAD + 1, "decoded ahead: {fed}");
+    assert_eq!(play(&c, &s, 6, 6).expect("frame"), 6);
+    assert_eq!(play(&c, &s, 20, 20).expect("frame"), 20);
+    assert_eq!(s.decodes.load(Ordering::Relaxed), fed, "hits");
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+    // a frame further on continues the run
+    assert_eq!(play(&c, &s, 40, 40).expect("frame"), 40);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+}
+
+/// Playback that fell behind skipped late non-reference samples; a playing request for one of
+/// them (the monitor asking for the frame due now) is dropped rather than restarting the
+/// decoder, which would stall every frame after it. A request with time to spare decodes it.
+#[test]
+fn a_playing_request_for_a_frame_the_run_passed_is_dropped_not_seeked() {
+    let s = samples(300, 250, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(play(&c, &s, 5, 5).expect("frame"), 5);
+    // the playhead is at 60: the odd samples on the way are skipped
+    let skipped = gop_stats().skipped;
+    assert_eq!(play(&c, &s, 60, 60).expect("frame"), 60);
+    assert!(gop_stats().skipped > skipped);
+    let (decodes, resets, dropped) = (s.decodes.load(Ordering::Relaxed), s.resets.load(Ordering::Relaxed), gop_stats().dropped);
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (r, gave_up) = filmcraft_media::cancel::with_cancel(&flag, || (play(&c, &s, 41, 41), filmcraft_media::cancel::gave_up()));
+    assert!(matches!(r, Err(CodecError::Cancelled)), "dropped");
+    assert!(gave_up, "the drop counts as giving up (the result is not cached)");
+    assert_eq!(s.decodes.load(Ordering::Relaxed), decodes, "nothing decoded for it");
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "no restart");
+    assert!(gop_stats().dropped > dropped);
+    // a reference sample that was decoded is still served
+    assert_eq!(play(&c, &s, 40, 40).expect("cached"), 40);
+    // with time to spare (a paused monitor, a scrub) the frame is decoded exactly
+    assert_eq!(index_of(&c.frame(&s, 41_000).expect("frame")), 41);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
+}
+
+/// Two playing requests at once: one decodes ahead, the other waits for its picture instead
+/// of restarting the decoder.
+/// A request with time to spare (the monitor paused on the clip) interrupts playback decoding
+/// and decodes its frame exactly; the next playing request runs on from there.
+#[test]
+fn a_paused_request_stops_playback_decoding_and_is_exact() {
+    let s = samples(300, 250, 2, false);
+    let c = GopCache::new(None);
+    assert_eq!(play(&c, &s, 5, 5).expect("frame"), 5);
+    let fed = s.decodes.load(Ordering::Relaxed);
+    // sample 3 was skipped (late, non-reference): decoded exactly from the sync sample
+    assert_eq!(index_of(&c.frame(&s, 3_000).expect("frame")), 3);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 2);
+    assert_eq!(play(&c, &s, 4, 4).expect("frame"), 4);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 2, "playback continues the new run");
+    assert!(s.decodes.load(Ordering::Relaxed) > fed);
+}
+
+/// Two playing requests at once: one decodes ahead; the other, for a picture still on its
+/// way, is answered pending (asked again later) rather than waiting or restarting the decoder.
+/// Which of the two gets to the cache first is up to the scheduler.
+#[test]
+fn a_concurrent_playing_request_for_a_picture_on_its_way_is_pending() {
+    let s = samples(300, 250, 3, false);
+    let c = GopCache::new(None);
+    // prefetches: the playhead is at 0, nothing is late
+    let ask = |i: usize| (play(&c, &s, i, 0), filmcraft_media::pending::take());
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| ask(5));
+        let b = scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(2));
+            ask(9)
+        });
+        (a.join().unwrap_or((Ok(0), false)), b.join().unwrap_or((Ok(0), false)))
+    });
+    let mut served = 0;
+    let mut passed = false;
+    for (want, got) in [(5, a), (9, b)] {
+        match got {
+            // decoded by this request, or decoded ahead before it came
+            (Ok(i), false) if i == want => served += 1,
+            (Err(CodecError::Cancelled), true) => {}
+            // the later frame's request came first and the run went past the earlier frame
+            // without keeping it: dropped, as in playback that fell behind
+            (Err(CodecError::Cancelled), false) if want == 5 => passed = true,
+            other => panic!("frame {want}: pending or served: {other:?}"),
+        }
+    }
+    assert!(served >= 1, "one of the two requests decodes");
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1, "one run");
+    // asked again, as playback does while a frame is pending, until the run has got there
+    let again = |i: usize| {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match ask(i) {
+                (Err(CodecError::Cancelled), true) if Instant::now() < until => std::thread::sleep(Duration::from_millis(1)),
+                (r, _) => return r,
+            }
+        }
+    };
+    if !passed {
+        assert_eq!(again(5).expect("frame"), 5);
+    }
+    assert_eq!(again(9).expect("frame"), 9);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+    assert!(s.decodes.load(Ordering::Relaxed) <= 9 + PUMP_AHEAD + 1);
+}
+
 #[test]
 fn idle_caches_give_up_their_decoders_beyond_the_cap() {
     let pool = Arc::new(Pool::new(2, Duration::ZERO, FRAME_BUDGET));
