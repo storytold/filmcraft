@@ -2017,6 +2017,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     #[test]
     fn a_reference_panicking_after_publishing_rows_fails_without_a_hang() {
         let Some(tus) = inter_stream(STREAMS[0]) else { return };
