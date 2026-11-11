@@ -81,7 +81,7 @@ impl SymphoniaDecoder {
 enum Inner {
     /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
     /// Surround output is reordered to WAV/SMPTE order (see [`aac_to_wav_order`]).
-    Aac { dec: Box<filmcraft_aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
+    Aac { dec: Box<craft_audio::aac::Decoder>, asc: Vec<u8>, up: Option<Box<Upsample2x>> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
     /// MPEG audio at this rate whose layer arrives with the first frame (MP4 / QuickTime name the
@@ -89,13 +89,13 @@ enum Inner {
     MpegPending(u32),
     /// Our own Opus decoder (always 48 kHz output; pre-skip is left to container timestamps).
     /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
-    Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
+    Opus { dec: Box<craft_audio::opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(SymphoniaDecoder),
     /// Our AC-3 and E-AC-3 decoder (ATSC A/52, Annex E).
-    Ac3(Box<filmcraft_ac3::Decoder>),
+    Ac3(Box<craft_audio::ac3::Decoder>),
     /// Our MPEG-1/2 audio Layer I and II decoder (ISO/IEC 11172-3, 13818-3).
-    Mpa(Box<filmcraft_mpa::Decoder>),
+    Mpa(Box<craft_audio::mpa::Decoder>),
 }
 
 /// Opus always decodes at 48 kHz (RFC 7845 §5.1: the input rate in the header is informational).
@@ -152,7 +152,7 @@ fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>
 /// without parsing frame lengths. For a multistream packet this is the first stream's TOC, which
 /// every stream shares. `None` for an empty or invalid (> 120 ms) packet.
 pub fn opus_packet_samples(data: &[u8]) -> Option<usize> {
-    let toc = filmcraft_opus::Toc::parse(*data.first()?);
+    let toc = craft_audio::opus::Toc::parse(*data.first()?);
     let frames = match data[0] & 3 {
         0 => 1,
         1 | 2 => 2,
@@ -182,7 +182,7 @@ impl PacketDecoder {
     /// object types. `sample_rate` is the stream's output rate: when it is twice the core rate
     /// (HE-AAC, see [`aac_output_rate`]) the decoded core is upsampled to it.
     pub fn aac(asc: &[u8], sample_rate: u32) -> Result<Self> {
-        if let Ok(dec) = filmcraft_aac::Decoder::new(asc) {
+        if let Ok(dec) = craft_audio::aac::Decoder::new(asc) {
             let up = upsamples_core(dec.sample_rate(), sample_rate).then(|| Box::new(Upsample2x::new(dec.channels())));
             return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up }, channels: 0 });
         }
@@ -190,8 +190,8 @@ impl PacketDecoder {
     }
     /// Opus from an `OpusHead` (Matroska `CodecPrivate`, Ogg) or a `dOps` box payload. Output is
     /// 48 kHz; pre-skip is *not* trimmed here (Matroska `CodecDelay` / MP4 edit lists do that).
-    pub fn opus(head: filmcraft_opus::OpusHead) -> Result<Self> {
-        let dec = filmcraft_opus::Decoder::from_head(head, OPUS_RATE).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
+    pub fn opus(head: craft_audio::opus::OpusHead) -> Result<Self> {
+        let dec = craft_audio::opus::Decoder::from_head(head, OPUS_RATE).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
         let channels = dec.channels();
         let order = if dec.head().mapping_family == 1 { vorbis_to_wav_order(channels) } else { None };
         Ok(Self { inner: Inner::Opus { dec: Box::new(dec), order }, channels })
@@ -223,13 +223,13 @@ impl PacketDecoder {
         {
             return Ok(());
         }
-        let dec = filmcraft_aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
+        let dec = craft_audio::aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
         self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), up: None };
         Ok(())
     }
     /// AC-3 and E-AC-3 (ATSC A/52, Annex E).
     pub fn ac3() -> Result<Self> {
-        Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
+        Ok(Self { inner: Inner::Ac3(Box::new(craft_audio::ac3::Decoder::new())), channels: 0 })
     }
     /// Whether this decodes Opus (which needs [`OPUS_PRE_ROLL`] of pre-roll after a seek).
     pub fn is_opus(&self) -> bool {
@@ -244,7 +244,7 @@ impl PacketDecoder {
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             // the decoder needs the STREAMINFO body: `dfLa` holds it after the 4-byte block header
             C::Flac(f) => Self::new(CODEC_TYPE_FLAC, rate, f.metadata_blocks.get(4..38).map(<[u8]>::to_vec)),
-            C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
+            C::Opus(o) => Self::opus(craft_audio::opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             other => Err(CodecError::Unsupported(format!("{} audio", other.name()))),
         }
     }
@@ -333,7 +333,7 @@ impl PacketDecoder {
     pub fn reset(&mut self) {
         match &mut self.inner {
             Inner::Aac { dec, asc, up } => {
-                if let Ok(d) = filmcraft_aac::Decoder::new(asc) {
+                if let Ok(d) = craft_audio::aac::Decoder::new(asc) {
                     **dec = d;
                 }
                 if let Some(up) = up {
@@ -372,7 +372,7 @@ pub fn mpeg_audio_layer(frame: &[u8]) -> Option<u8> {
 /// AAC-LC config at 24 kHz or less) SBR is only visible as fill-element data in the access units,
 /// so the first ones are decoded to look for it. `None` if `asc` is not one our decoder reads.
 pub fn aac_output_rate<'a>(asc: &[u8], first_units: impl IntoIterator<Item = &'a [u8]>) -> Option<u32> {
-    let mut dec = filmcraft_aac::Decoder::new(asc).ok()?;
+    let mut dec = craft_audio::aac::Decoder::new(asc).ok()?;
     let core = dec.sample_rate();
     if let Some(ext) = dec.config().extension_sample_rate {
         return Some(ext);
@@ -416,13 +416,13 @@ pub enum FixedFrames<'a> {
 pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Option<i64> {
     let mpegts = match codec {
         FixedFrames::Aac(asc) => {
-            let core = filmcraft_aac::Decoder::new(asc).ok()?.sample_rate();
+            let core = craft_audio::aac::Decoder::new(asc).ok()?.sample_rate();
             return Some(if upsamples_core(core, rate) { 2048 } else { 1024 });
         }
         FixedFrames::Eac3 => {
             let mut samples = 0usize;
             let mut p = 0;
-            while let Some(h) = first.get(p..).and_then(|b| filmcraft_ac3::parse_header(b).ok()) {
+            while let Some(h) = first.get(p..).and_then(|b| craft_audio::ac3::parse_header(b).ok()) {
                 if h.is_primary() {
                     if h.sample_rate != rate {
                         return None;
@@ -1097,13 +1097,13 @@ fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
 /// with a Layer I / II frame followed by another frame (or the end), e.g. MP3.
 fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
     let mut p = id3v2_len(bytes);
-    let frame_at = |p: usize| bytes.get(p..).and_then(|b| filmcraft_mpa::parse_header(b).ok()).filter(|h| h.frame_bytes > 0);
+    let frame_at = |p: usize| bytes.get(p..).and_then(|b| craft_audio::mpa::parse_header(b).ok()).filter(|h| h.frame_bytes > 0);
     let first = frame_at(p)?;
     let next = p.saturating_add(first.frame_bytes);
     if first.layer == 3 || (next < bytes.len() && frame_at(next).is_none_or(|h| h.layer != first.layer || h.sample_rate != first.sample_rate)) {
         return None;
     }
-    let mut dec = filmcraft_mpa::Decoder::new();
+    let mut dec = craft_audio::mpa::Decoder::new();
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); first.channels()];
     while let Some(rest) = bytes.get(p..).filter(|r| r.len() >= 4) {
         match dec.decode(rest) {
@@ -1168,7 +1168,7 @@ mod mpeg_layer12_tests {
     fn silent_frame(bitrate_index: u8, mode: u8) -> Vec<u8> {
         let h = [0xFF, 0xFD, bitrate_index << 4 | 0x04, mode << 6];
         let mut f = h.to_vec();
-        f.resize(filmcraft_mpa::parse_header(&h).unwrap().frame_bytes, 0);
+        f.resize(craft_audio::mpa::parse_header(&h).unwrap().frame_bytes, 0);
         f
     }
 
@@ -1278,7 +1278,7 @@ mod surround_order_tests {
         let wav: Vec<Vec<f32>> = hz.iter().map(|&f| tone(f)).collect();
         // the encoder takes AAC element order (as the exporter feeds it): C L R Ls Rs LFE
         let coded: Vec<&[f32]> = [2usize, 0, 1, 4, 5, 3].iter().map(|&c| wav[c].as_slice()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 6, 384_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 6, 384_000)).unwrap();
         let mut units = enc.encode(&coded);
         units.extend(enc.flush());
 

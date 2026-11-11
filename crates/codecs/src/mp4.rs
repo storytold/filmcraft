@@ -613,7 +613,7 @@ fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(
         return Some((rate, channels));
     }
     let data = t.samples.first().and_then(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, s.size as usize).ok());
-    let h = filmcraft_ac3::parse_header(data.as_deref()?).ok()?;
+    let h = craft_audio::ac3::parse_header(data.as_deref()?).ok()?;
     // A dependent E-AC-3 substream doesn't describe the full program; report only if the first
     // packet is the primary independent substream.
     let is_primary = if let CodecConfig::Eac3 { .. } = &entry.codec { h.is_primary() } else { true };
@@ -1019,7 +1019,7 @@ mod he_aac_tests {
         let core = 22_050u32;
         let n = core as usize * 2;
         let tone: Vec<f32> = (0..n).map(|i| 0.25 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / core as f32).sin()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(core, 2, 64_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(core, 2, 64_000)).unwrap();
         let mut aus = enc.encode(&[&tone, &tone]);
         aus.extend(enc.flush());
         // AOT 5, core 22.05 kHz, stereo, extension 44.1 kHz, core AOT 2
@@ -1048,7 +1048,7 @@ mod he_aac_tests {
         use filmcraft_isobmff::Edit;
         let rate = 32_000u32;
         let tone: Vec<f32> = (0..rate as usize / 2).map(|i| 0.25 * (i as f32 * 0.05).sin()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
         let mut aus = enc.encode(&[&tone]);
         aus.extend(enc.flush());
         // AOT 2 (AAC-LC), 32 kHz (index 5), mono
@@ -1120,7 +1120,7 @@ mod corrupt_audio_tests {
     fn failed_aac_packet_silences_overlap_independent_of_request_boundary() {
         let rate = 48_000u32;
         let tone: Vec<f32> = (0..8192).map(|i| 0.3 * (i as f32 * 0.13).sin()).collect();
-        let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut encoder = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
         let mut units = encoder.encode(&[&tone]);
         units.extend(encoder.flush());
         assert!(units.len() >= 2);
