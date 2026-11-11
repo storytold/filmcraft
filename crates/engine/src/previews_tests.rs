@@ -390,3 +390,36 @@ fn preview_files_are_streamed_not_read_whole() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A sequence nested so deeply that the hash walk gives up cannot be previewed: the command says so
+/// instead of reporting up-to-date previews.
+#[test]
+fn a_sequence_too_deeply_nested_to_preview_is_not_reported_up_to_date() {
+    let (mut s, _) = session("too-nested");
+    let r = FrameRate::FPS_24;
+    let mut p = (*s.project).clone();
+    let matte = crate::demo::add_generator(
+        &mut p,
+        &s.media,
+        GeneratorSource::new(Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] }, 64, 36, r, Tick(10 * TICKS_PER_SECOND)),
+        "M",
+        Label::Iris,
+        None,
+    );
+    let mut below = matte;
+    for level in 0..9 {
+        let q = p.new_sequence(&format!("L{level}"), SequenceSettings { width: 64, height: 36, frame_rate: r, ..Default::default() }, 20, 1, None);
+        for track in 0..20 {
+            let ti = p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+            p.sequence_mut(q).unwrap().video_tracks[track].items.push(ti);
+        }
+        below = q;
+    }
+    s.project = Arc::new(p);
+    s.state.active_sequence = Some(below);
+    s.state.open_sequences = vec![below];
+    let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    assert_eq!(v["segments"], 0);
+    assert!(v["skipped"].as_u64().unwrap() >= 1, "{v}");
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}

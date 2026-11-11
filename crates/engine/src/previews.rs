@@ -655,12 +655,19 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
     }
     if todo.is_empty() {
-        s.toast(if mode == RenderMode::EffectsInToOut {
-            "Nothing to render: no red segments without previews between In and Out"
+        // segments a nest budget left uncacheable are not "up to date": say they cannot be previewed
+        let skipped = segs
+            .iter()
+            .filter(|g| !g.cacheable && mode.renders(g.need) && (mode != RenderMode::Selection || g.clips.iter().any(|c| selection.contains(c))))
+            .count();
+        s.toast(if skipped > 0 {
+            format!("Nothing to render: {skipped} segment{} too deeply nested to be previewed", if skipped == 1 { " is" } else { "s are" })
+        } else if mode == RenderMode::EffectsInToOut {
+            "Nothing to render: no red segments without previews between In and Out".into()
         } else {
-            "Nothing to render: previews are up to date"
+            "Nothing to render: previews are up to date".into()
         });
-        return Ok(json!({"job": null, "segments": 0}));
+        return Ok(json!({"job": null, "segments": 0, "skipped": skipped}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
     let frames: i64 = todo.iter().map(|t| t.len).fold(0, i64::saturating_add);
@@ -760,15 +767,18 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = store.dir().ok_or_else(|| EngineError::Other("render previews are not available here (no preview folder)".into()))?;
     let sr = s.project.sequence(seq).map(|q| q.settings.sample_rate).unwrap_or(48_000) as i64;
     let (a, b) = (range.start.to_units_floor(sr), range.end().to_units_floor(sr));
-    let todo: Vec<AudioSegment> = store
-        .audio_segments(&s.project, seq)
-        .iter()
-        .filter(|g| g.cacheable && g.first_sample < b && a < g.first_sample + g.samples && !store.has_audio(&g.hash))
-        .cloned()
-        .collect();
+    let in_range = |g: &&AudioSegment| g.first_sample < b && a < g.first_sample + g.samples;
+    let all = store.audio_segments(&s.project, seq);
+    let todo: Vec<AudioSegment> = all.iter().filter(in_range).filter(|g| g.cacheable && !store.has_audio(&g.hash)).cloned().collect();
     if todo.is_empty() {
-        s.toast("Nothing to render: audio previews are up to date");
-        return Ok(json!({"job": null, "segments": 0}));
+        // segments a nest budget left uncacheable are not "up to date": say they cannot be previewed
+        let skipped = all.iter().filter(in_range).filter(|g| !g.cacheable).count();
+        s.toast(if skipped > 0 {
+            format!("Nothing to render: {skipped} audio segment{} too deeply nested to be previewed", if skipped == 1 { " is" } else { "s are" })
+        } else {
+            "Nothing to render: audio previews are up to date".into()
+        });
+        return Ok(json!({"job": null, "segments": 0, "skipped": skipped}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
     let total: i64 = todo.iter().map(|g| g.samples).sum();

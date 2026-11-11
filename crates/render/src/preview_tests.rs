@@ -353,3 +353,21 @@ fn an_unmeasurable_nest_is_charged_a_conservative_cost() {
     assert!(unmeasured.is_finite() && unmeasured > 1000.0, "{unmeasured}");
     assert_eq!(decode_cost_ms(&p, s, 9), 0.0, "the depth limit keeps its zero cost");
 }
+
+#[test]
+fn a_subclip_that_is_its_own_parent_does_not_recurse_forever() {
+    let (mut p, _, ocean, seq) = setup();
+    let sub = p.add_item(
+        "sub",
+        Label::Iris,
+        ItemKind::Subclip { parent: ocean, range: TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), restrict_trims: false },
+        None,
+    );
+    place(&mut p, seq, 0, sub, 0, 24);
+    // a damaged project: the subclip names itself as its parent
+    if let Some(ItemKind::Subclip { parent, .. }) = p.item_mut(sub).map(|i| &mut i.kind) {
+        *parent = sub;
+    }
+    let s = std::thread::Builder::new().stack_size(256 << 10).spawn(move || video_segments(&p, seq).len()).unwrap().join().unwrap();
+    assert_eq!(s, 1);
+}
