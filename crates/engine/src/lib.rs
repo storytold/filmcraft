@@ -42,6 +42,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -1393,6 +1394,8 @@ mod media_watch_tests;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod named_targets_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]
