@@ -132,7 +132,8 @@ struct FrameJob {
 
 /// A shown picture in output order.
 enum Output {
-    Decoded(Arc<Slot<Picture>>),
+    /// The picture and the bytes of its `u16` sample planes.
+    Decoded(Arc<Slot<Picture>>, usize),
     /// show_existing_frame: built from the reference slot when it is finished.
     Existing(Box<ExistingOutput>),
 }
@@ -151,14 +152,22 @@ struct ExistingOutput {
 impl Output {
     fn is_ready(&self) -> bool {
         match self {
-            Output::Decoded(s) => s.is_set(),
+            Output::Decoded(s, _) => s.is_set(),
             Output::Existing(e) => e.slot.is_set(),
+        }
+    }
+
+    /// Bytes the picture holds once handed out.
+    fn bytes(&self) -> usize {
+        match self {
+            Output::Decoded(_, n) => *n,
+            Output::Existing(e) => picture_bytes(e.width, e.height, &e.seq.color),
         }
     }
 
     fn take(self) -> Result<Picture> {
         match self {
-            Output::Decoded(s) => s.take(),
+            Output::Decoded(s, _) => s.take(),
             Output::Existing(e) => {
                 let ExistingOutput { slot, seq, width, height, grain, apply_film_grain, pts } = *e;
                 let rf = slot.wait()?;
@@ -277,12 +286,32 @@ fn shown_within_limit(n: usize) -> bool {
     n <= MAX_SHOWN_PER_CHUNK
 }
 
+/// Most bytes of pictures one `decode` chunk may show together. The count limit alone allows 256
+/// copies of one 4K reference (about 6.4 GB) from a few hundred bytes of show_existing_frame headers.
+const MAX_SHOWN_BYTES_PER_CHUNK: usize = 1 << 30;
+
+fn shown_bytes_within_limit(bytes: usize) -> bool {
+    bytes <= MAX_SHOWN_BYTES_PER_CHUNK
+}
+
+/// Bytes of the `u16` sample planes of a `w` × `h` picture.
+fn picture_bytes(w: usize, h: usize, c: &crate::header::ColorConfig) -> usize {
+    let plane = |n: usize, shift: u8| n.saturating_add(usize::from(shift)) >> shift;
+    let chroma = if c.num_planes > 1 { plane(w, c.subsampling_x).saturating_mul(plane(h, c.subsampling_y)).saturating_mul(2) } else { 0 };
+    w.saturating_mul(h).saturating_add(chroma).saturating_mul(2)
+}
+
 /// Add a shown picture to a chunk's outputs, refusing the chunk (and dropping everything it showed)
 /// before the list can grow past [`MAX_SHOWN_PER_CHUNK`].
 fn push_shown(out: &mut Vec<(Output, usize, u32)>, item: (Output, usize, u32)) -> Result<()> {
     if !shown_within_limit(out.len() + 1) {
         out.clear();
         return Err(Error::Invalid("too many pictures shown by one chunk"));
+    }
+    let bytes = out.iter().fold(item.0.bytes(), |n, (o, ..)| n.saturating_add(o.bytes()));
+    if !shown_bytes_within_limit(bytes) {
+        out.clear();
+        return Err(Error::Invalid("pictures shown by one chunk are too large"));
     }
     out.push(item);
     Ok(())
@@ -676,7 +705,8 @@ impl Decoder {
                 self.ref_frames[i] = Some(job.slot.clone());
             }
         }
-        let output = job.picture.clone().map(Output::Decoded);
+        let output =
+            job.picture.clone().map(|p| Output::Decoded(p, picture_bytes(job.fh.upscaled_width as usize, job.fh.frame_height as usize, &job.seq.color)));
         #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
         if let Some(w) = &self.workers
             && let Some(tx) = &w.tx
@@ -1203,5 +1233,18 @@ mod shown_limit_tests {
     fn a_chunk_may_show_a_bounded_number_of_pictures() {
         assert!(shown_within_limit(0) && shown_within_limit(MAX_SHOWN_PER_CHUNK));
         assert!(!shown_within_limit(MAX_SHOWN_PER_CHUNK + 1));
+    }
+
+    #[test]
+    fn a_chunk_may_show_a_bounded_number_of_bytes() {
+        let c = crate::header::ColorConfig { num_planes: 3, subsampling_x: 1, subsampling_y: 1, ..Default::default() };
+        // 4K 4:2:0, u16 samples: about 25 MB; 256 of them is far past the limit, a few are fine
+        let one = picture_bytes(3840, 2160, &c);
+        assert_eq!(one, (3840 * 2160 + 2 * 1920 * 1080) * 2);
+        assert!(shown_bytes_within_limit(4 * one));
+        assert!(!shown_bytes_within_limit(MAX_SHOWN_PER_CHUNK * one));
+        let mono = crate::header::ColorConfig { num_planes: 1, ..Default::default() };
+        assert_eq!(picture_bytes(10, 5, &mono), 100);
+        assert_eq!(picture_bytes(usize::MAX, 2, &c), usize::MAX);
     }
 }
