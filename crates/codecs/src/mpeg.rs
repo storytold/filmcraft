@@ -274,6 +274,7 @@ impl MpegSource {
                         has_alpha: false,
                         bitrate: None,
                         hdr: None,
+                        color_assumed: None,
                     });
                     src.setup_audio(file, None);
                 }
@@ -465,6 +466,7 @@ impl MpegSource {
             has_alpha: false,
             bitrate: (secs > 0.0).then(|| (total_bytes as f64 * 8.0 / secs) as u64),
             hdr: None,
+            color_assumed: None,
         });
         Ok(())
     }

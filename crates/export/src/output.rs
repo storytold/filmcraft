@@ -69,12 +69,46 @@ impl Out {
     }
 }
 
+/// Whether `path` still names the open `file` (the same device and inode). Another process can
+/// replace a reserved output's directory entry while the handle stays open; a write through the
+/// handle then lands in a file nobody can reach. Where the identity cannot be read (non-Unix
+/// targets) this says yes, as an unchecked write did before.
+pub fn path_is_file(path: &str, file: &std::fs::File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(path), file.metadata()) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, file);
+        true
+    }
+}
+
 /// Write one finished output file (to the sink when there is one); returns its size.
 pub(crate) fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<u64> {
     let n = data.len() as u64;
-    match &settings.sink {
-        Some(sink) => (sink.0)(path, data),
-        None => std::fs::write(path, &data),
+    match (&settings.sink, &settings.output_file) {
+        (Some(sink), _) => (sink.0)(path, data),
+        // the primary file was reserved and opened by the caller: write through that handle, as
+        // reopening the path would follow whatever replaced the entry in the meantime
+        (None, Some(file)) if path == settings.path => (|| {
+            let mut f = file.try_clone()?;
+            f.set_len(0)?;
+            std::io::Seek::rewind(&mut f)?;
+            f.write_all(&data)?;
+            f.flush()?;
+            if path_is_file(path, &f) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!("{path} was replaced while the export was written; the export was not saved there")))
+            }
+        })(),
+        (None, _) => std::fs::write(path, &data),
     }
     .map_err(|e| ExportError::Io(e.to_string()))?;
     Ok(n)
@@ -129,5 +163,30 @@ impl Write for SharedBuf {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_displaced_reservation_is_an_error_and_the_replacement_is_kept() {
+        let dir = std::env::temp_dir().join(format!("fc-displaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.gif");
+        let path_str = path.to_string_lossy().into_owned();
+        let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap();
+        assert!(path_is_file(&path_str, &file));
+        let settings = ExportSettings { path: path_str.clone(), output_file: Some(Arc::new(file)), ..Default::default() };
+        assert_eq!(write_output(&settings, &path_str, b"gif".to_vec()).unwrap(), 3);
+        assert_eq!(std::fs::read(&path).unwrap(), b"gif");
+        // another process replaces the entry
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"theirs").unwrap();
+        assert!(write_output(&settings, &path_str, b"gif".to_vec()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"theirs");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
