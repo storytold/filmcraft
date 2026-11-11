@@ -480,9 +480,17 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         d.ok("ui.playback", json!({"action": "play"}));
         d.frames(10);
         let prefix = if workspace == "Audio" { "mixer.Mix.meter" } else { "audioMeters.channel." };
-        let playing = d.ok("ui.elements", json!({"prefix": prefix}));
         let labels = |elements: &Value| elements.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        let active = labels(&playing);
+        let mut active = labels(&d.ok("ui.elements", json!({"prefix": prefix})));
+        // Media playback reaches the meter asynchronously; wait a bounded time for signal before
+        // measuring how it releases after Stop. This does not force frames after playback stops.
+        for _ in 0..30 {
+            if active.iter().any(|label| !label.contains("-90.0")) {
+                break;
+            }
+            d.frames(2);
+            active = labels(&d.ok("ui.elements", json!({"prefix": prefix})));
+        }
         assert!(!active.is_empty(), "{workspace}: the meters must be visible");
         assert!(active.iter().any(|label| !label.contains("-90.0")), "{workspace}: the demo must feed the meters: {active:?}");
         d.ok("ui.playback", json!({"action": "stop"}));

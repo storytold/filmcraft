@@ -810,12 +810,31 @@ fn controls_listen_key() -> egui::Id {
     egui::Id::unique("tl-controls-listening")
 }
 
+#[cfg(test)]
+mod controls_listening_tests {
+    use super::*;
+
+    #[test]
+    fn closing_the_popup_clears_a_pending_control_capture() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| d.insert_temp(controls_listen_key(), Some(2usize)));
+        assert!(controls_listening(&ctx));
+        clear_controls_listening(&ctx);
+        assert!(!controls_listening(&ctx));
+    }
+}
+
 /// Whether a Controls box is listening for a new shortcut. While it is, the rest of the
 /// application must not hear the key: the shortcut matcher consumes presses from the frame's
 /// events (which is also why the capture used to miss them), and a bound key would fire its
 /// action in the background while the user is naming a new binding.
 pub fn controls_listening(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<Option<usize>>(controls_listen_key())).flatten().is_some()
+}
+
+/// Forget a pending Controls capture when its settings popup no longer has an owner.
+pub fn clear_controls_listening(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(controls_listen_key(), None::<usize>));
 }
 
 /// While a Controls box listens, the next input becomes its binding (Escape cancels). Runs from
@@ -1923,8 +1942,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // with Ctrl/Alt fires even in a text field (it is a shortcut, not typing); a plain key only
     // when no text field has focus (`egui_wants_keyboard_input` is not enough: any clicked widget
     // counts there, including the box itself).
-    let chord_ok = !controls_listening(ui.ctx())
-        && chord_text.is_some_and(|c| c.contains("Ctrl") || c.contains("Alt") || !ui.ctx().text_edit_focused());
+    let chord_ok = !controls_listening(ui.ctx()) && chord_text.is_some_and(|c| c.contains("Ctrl") || c.contains("Alt") || !ui.ctx().text_edit_focused());
     let pointer_in_bar = ui.input(|i| i.pointer.interact_pos().is_some_and(|p| bar.contains(p)));
     let (center_bound, explode_bound, alternate_speed_down, settings_bound) = {
         let s = &app.session.state.timeline_ui;
@@ -2310,6 +2328,7 @@ fn release_zoombar_cursor(ctx: &egui::Context) {
 /// sliders' settings menus are mutually exclusive: opening one takes the other with it.
 pub(super) fn close_zoombar_popup(ctx: &egui::Context) {
     egui::Popup::close_id(ctx, egui::Id::unique("tl-zoombar").with("popup"));
+    clear_controls_listening(ctx);
 }
 
 /// The window that comes up when a slider is hidden: it only tells the user how to bring it

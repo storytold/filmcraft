@@ -52,7 +52,7 @@ pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, ti
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
-pub use scrollbars::{controls_listening, set_track_slider_hidden, set_zoombar_hidden, zoombar_cursor_watchdog};
+pub use scrollbars::{clear_controls_listening, controls_listening, set_track_slider_hidden, set_zoombar_hidden, zoombar_cursor_watchdog};
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
 pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};
@@ -1455,7 +1455,7 @@ mod new_track_tests {
             rect: Rect::from_min_max(pos2(0.0, y0), pos2(800.0, y0 + 50.0)),
             lane: false,
         };
-        let layout = Layout {
+        let mut layout = Layout {
             content: Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 500.0)),
             ruler: Rect::from_min_max(pos2(0.0, -20.0), pos2(800.0, 0.0)),
             rows: vec![row(TrackKind::Video, &seq.video_tracks[0], 150.0), row(TrackKind::Audio, &seq.audio_tracks[0], 205.0)],
@@ -1465,19 +1465,25 @@ mod new_track_tests {
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
-        let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
-        assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
-        assert_eq!(at(300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        let at = |layout: &Layout, y| new_track_at(&seq, layout, y, 50.0, 50.0);
+        assert_eq!(at(&layout, 40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
+        assert_eq!(at(&layout, 300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
         // the Mix row counts as "below the last audio track" now, with the same band
-        assert_eq!(at(480.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        assert_eq!(at(&layout, 480.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
         // anywhere above the video rows -- over the ruler, or past the Timeline's own rect --
         // wants a new video track; anywhere below the audio rows a new audio one
-        assert_eq!(at(-20.0).map(|(k, _)| k), Some(TrackKind::Video), "over the ruler");
-        assert_eq!(at(-400.0).map(|(k, _)| k), Some(TrackKind::Video), "far above the window");
-        assert_eq!(at(900.0).map(|(k, _)| k), Some(TrackKind::Audio), "far below the window");
+        assert_eq!(at(&layout, -20.0).map(|(k, _)| k), Some(TrackKind::Video), "over the ruler");
+        assert_eq!(at(&layout, -400.0).map(|(k, _)| k), Some(TrackKind::Video), "far above the window");
+        assert_eq!(at(&layout, 900.0).map(|(k, _)| k), Some(TrackKind::Audio), "far below the window");
         for y in [160.0, 202.0, 230.0] {
-            assert_eq!(at(y), None, "y = {y}");
+            assert_eq!(at(&layout, y), None, "y = {y}");
         }
+        // A scrolled row can leave the pointer above the ruler or under Mix without any real
+        // vertical room to fit the preview band; don't offer an inverted band there.
+        layout.rows[0].rect.min.y = 0.0;
+        assert_eq!(at(&layout, -10.0), None, "no room above the video tracks");
+        layout.rows[1].rect.max.y = 470.0;
+        assert_eq!(at(&layout, 480.0), None, "no room below audio tracks or through Mix");
     }
 
     #[test]

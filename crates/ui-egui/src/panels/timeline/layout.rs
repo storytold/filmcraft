@@ -74,12 +74,12 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
         // ANYWHERE above the top video row counts -- over the ruler, or outside the Timeline's
         // own rect entirely (a clip dragged above the window wants a new track too)
-        (y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
+        (top > tracks_top && y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
     } else {
         let bottom = layout.rows.iter().filter(|r| r.kind == TrackKind::Audio).map(|r| r.rect.max.y).fold(layout.split_y + DIVIDER_H, f32::max);
         let mix = layout.content.max.y - MASTER_H;
         // anywhere below the last audio row counts, Mix row and past the window's edge included
-        (y >= bottom).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
+        (bottom < mix && y >= bottom).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
     }
 }
 

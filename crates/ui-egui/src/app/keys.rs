@@ -4,6 +4,9 @@ impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
     /// to a focused text field except dock dividers.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.session.active_sequence().is_none() {
+            panels::timeline::clear_controls_listening(ctx);
+        }
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
@@ -55,6 +58,9 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
+        if self.session.active_sequence().is_none() {
+            panels::timeline::clear_controls_listening(ctx);
+        }
         if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
             return;
         }
