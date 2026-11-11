@@ -41,6 +41,14 @@ fn rewrap(path: &std::path::Path, name: &str, channel_config: u8, channels: u32)
     out
 }
 
+/// The channel configuration of `path`'s AAC track.
+fn channel_config(path: &std::path::Path) -> Option<u8> {
+    filmcraft_isobmff::open(bytes(path)).unwrap().tracks.iter().find_map(|t| match &t.entries.first()?.codec {
+        filmcraft_isobmff::CodecConfig::Aac(a) => Some(a.channel_config),
+        _ => None,
+    })
+}
+
 /// Our decode of the whole file, channel by channel.
 fn ours(path: &std::path::Path, name: &str) -> (u32, Vec<Vec<f32>>) {
     let src = filmcraft_codecs::open_bytes(name, bytes(path)).unwrap();
@@ -73,10 +81,7 @@ fn aac_channel_configurations_report_and_decode_every_channel() {
         eprintln!("SKIPPED: this ffmpeg can't encode 7.1 AAC");
         return;
     };
-    let asc = filmcraft_isobmff::open(bytes(&seven)).unwrap().tracks.iter().find_map(|t| match &t.entries.first()?.codec {
-        filmcraft_isobmff::CodecConfig::Aac(a) => Some(a.channel_config),
-        _ => None,
-    });
+    let asc = channel_config(&seven);
     let twelve = match asc {
         Some(7) => rewrap(&seven, "aac_71_cfg12.mp4", 12, 8),
         Some(12) => seven.clone(),
@@ -104,5 +109,34 @@ fn aac_channel_configurations_report_and_decode_every_channel() {
         let path = tones(&ff, name, layout, n).unwrap();
         let (ch, got) = ours(&path, name);
         assert_eq!((ch as usize, got.len()), (n, n), "{layout}");
+    }
+}
+
+#[test]
+fn aac_seven_one_in_latm_reports_and_decodes_every_channel() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(mp4) = tones(&ff, "aac_71_for_latm.mp4", "7.1", 8) else {
+        eprintln!("SKIPPED: this ffmpeg can't encode 7.1 AAC");
+        return;
+    };
+    let copy = ["-i", mp4.to_str().unwrap(), "-c:a", "copy", "-f", "mpegts", "-mpegts_flags", "latm"];
+    let Some(ts) = fixture(&ff, "aac_71_latm.ts", &copy) else {
+        eprintln!("SKIPPED: this ffmpeg can't write AAC in LATM");
+        return;
+    };
+    let (ch, got) = ours(&ts, "aac_71_latm.ts");
+    assert_eq!((ch, got.len()), (8, 8), "channels reported and decoded");
+    let want = theirs(&ff, &ts, 8);
+    // ffmpeg 8 writes configuration 7, whose decoded order stays ours, so that one is matched
+    // whatever the order: each of our channels takes a channel of ffmpeg's for itself
+    let in_order = channel_config(&mp4) == Some(12);
+    let mut unmatched: Vec<&Vec<f32>> = want.iter().collect();
+    for (c, a) in got.iter().enumerate() {
+        assert!(peak(a) > 0.05, "channel {c} is silent");
+        let (k, d) = unmatched.iter().enumerate().map(|(k, b)| (k, diff(a, b))).min_by(|x, y| x.1.total_cmp(&y.1)).unwrap();
+        println!("channel {c}: peak {:.3}, max |ours - ffmpeg| {d:.5}", peak(a));
+        assert!(d < 0.01, "channel {c}: no channel of ffmpeg's is left that it matches, nearest is off by {d}");
+        unmatched.swap_remove(k);
+        assert!(!in_order || diff(a, &want[c]) < 0.01, "channel {c}: not in ffmpeg's order");
     }
 }
