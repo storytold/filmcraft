@@ -133,7 +133,11 @@ impl Default for Options {
 /// Add `extra` to `base`; an entry replaces any earlier one with the same tag (the last of
 /// several in `extra` wins). One pass: scanning `base` for every extra tag was quadratic.
 fn merge_tags(base: &mut Vec<(u16, Value)>, extra: &[(u16, Value)]) {
-    let last: std::collections::HashMap<u16, usize> = extra.iter().enumerate().map(|(i, e)| (e.0, i)).collect();
+    // inserted one at a time: collecting would reserve `extra.len()` entries up front, and there are at most 65 536 distinct tags
+    let mut last: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+    for (i, e) in extra.iter().enumerate() {
+        last.insert(e.0, i);
+    }
     base.retain(|e| !last.contains_key(&e.0));
     for (i, (t, v)) in extra.iter().enumerate() {
         if last.get(t) == Some(&i) {
