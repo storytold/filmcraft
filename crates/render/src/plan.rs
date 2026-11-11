@@ -340,6 +340,7 @@ fn adjustment_ops(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick, sc
     let cx = crate::effects::FxCtx {
         t: mt,
         px_scale: scale,
+        mask_scale: scale,
         seconds: (t - it.start).seconds(),
         timecode: "",
         clip_name: &it.name,
