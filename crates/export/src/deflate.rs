@@ -748,6 +748,7 @@ pub(crate) mod tests {
         out
     }
 
+    /// Shared tables and the candidate skip find exactly the matches the previous matcher found.
     #[test]
     fn shared_tables_find_the_matches_the_old_per_chunk_tables_found() {
         let mut tables = Tables::default();
@@ -760,6 +761,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// Shared tables compress to the bytes fresh ones give, also when positions run out and they start over.
     #[test]
     fn shared_tables_give_the_bytes_of_fresh_ones() {
         let mut shared = Tables::default();
@@ -777,6 +779,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// Later chunks use the same tables instead of allocating new ones.
     #[test]
     fn the_tables_are_reused_across_chunks() {
         let mut tables = Tables::default();
