@@ -16,6 +16,8 @@ default = []
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
 neural-voices = ["filmcraft-engine/neural-voices"]
+# The Enhance Speech (Neural) audio effect (DeepFilterNet on the CPU, model downloaded on first use).
+neural-enhance = ["filmcraft-engine/neural-enhance"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

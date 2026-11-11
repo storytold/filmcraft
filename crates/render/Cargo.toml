@@ -9,6 +9,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Neural speech enhancement (the Enhance Speech (Neural) effect) on the CPU. Off by default.
+neural-enhance = ["filmcraft-enhance/deepfilter"]
+
 [dependencies]
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
@@ -17,6 +22,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
+filmcraft-enhance = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-text = { workspace = true }
 rayon = { workspace = true }

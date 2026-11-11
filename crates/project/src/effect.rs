@@ -14,7 +14,7 @@ use crate::keyframe::{Param, ParamValue};
 
 mod audio;
 use crate::mask::Mask;
-pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
+pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, NEURAL_ENHANCE_MODELS, PREMIERE_AUDIO_EFFECTS};
 
 mod vfx;
 pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point, ultra_key_setting};

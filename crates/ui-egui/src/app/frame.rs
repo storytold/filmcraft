@@ -47,7 +47,8 @@ impl FilmcraftApp {
         // Text to Speech panel selection and its repaint cadence are presentation state; they do
         // not poll a background queue.
         panels::tts::follow_selection(self);
-        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
+        panels::neural_enhance::poll(self);
+        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() || self.ui.neural_enhance.download.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let t = self.tokens;

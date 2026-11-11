@@ -1,0 +1,28 @@
+[package]
+name = "filmcraft-enhance"
+description = "FilmCraft neural speech enhancement: the model catalogue and store, the streaming audio effect, and (feature deepfilter) DeepFilterNet inference on tract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# DeepFilterNet inference on the CPU (libDF on tract, pure Rust). Off by default and in wasm builds.
+deepfilter = ["dep:deep_filter", "dep:ndarray"]
+
+[dependencies]
+filmcraft-audio-dsp = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+sha2 = "0.10"
+# libDF 0.5.6 (MIT OR Apache-2.0). crates.io only has 0.2.5, which has no inference runtime.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "978576aa8400552a4ce9730838c635aa30db5e61", default-features = false, features = ["tract"], optional = true }
+ndarray = { version = "0.15", optional = true }
+
+[dev-dependencies]
+tempfile = "3.27"

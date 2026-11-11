@@ -108,6 +108,17 @@ pub(crate) fn mapping(id: &str) -> Option<Mapping> {
                 d.set_param("tone", e.param("tone").and_then(|p| p.value_at(t).as_f64()).unwrap_or(0.0) as f32);
             },
         },
+        // The model answers from a recurrent state and running level statistics: a second of
+        // pre-roll lets both settle before the first sample that is heard.
+        "neural_enhance" => Mapping {
+            dsp: filmcraft_enhance::ID,
+            preroll: |_, _| 1.0,
+            apply: |d, e, t| {
+                set_if_changed(d, "attenuation", f(e, "attenuation", t));
+                set_if_changed(d, "post_filter", if e.param("post_filter").and_then(|p| p.value.as_bool()).unwrap_or(false) { 1.0 } else { 0.0 });
+                set_if_changed(d, "mix", f(e, "mix", t));
+            },
+        },
         "stereo_width" => Mapping { dsp: "stereo_width", preroll: |_, _| 0.0, apply: |d, e, t| ignore(d.set_param("width", f(e, "width", t))) },
         "studio_reverb" => Mapping {
             dsp: "reverb",
@@ -266,9 +277,29 @@ fn direct(d: &mut dyn AudioEffect, e: &EffectInstance, t: Tick) {
 /// effect editors: [`AudioEffect::response_db`] / [`AudioEffect::transfer_db`]).
 pub fn configured(e: &EffectInstance, t: Tick, sample_rate: u32) -> Option<Box<dyn AudioEffect>> {
     let m = mapping(&e.effect)?;
-    let mut d = filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, 2)?;
+    let mut d = create(e, &m, sample_rate, 2)?;
     (m.apply)(d.as_mut(), e, t);
     Some(d)
+}
+
+/// The model the `neural_enhance` instance `e` selects (an index into the catalogue).
+fn neural_model(e: &EffectInstance) -> usize {
+    e.param("model").and_then(|p| p.value.as_f64()).filter(|v| v.is_finite() && *v >= 0.0).map_or(0, |v| v as usize)
+}
+
+/// The DSP processor of the project effect `e` (mapped by `m`) for `width` channels.
+pub(crate) fn create(e: &EffectInstance, m: &Mapping, sample_rate: u32, width: usize) -> Option<Box<dyn AudioEffect>> {
+    if m.dsp == filmcraft_enhance::ID {
+        return Some(Box::new(filmcraft_enhance::NeuralEnhance::new(sample_rate as f32, width, neural_model(e))));
+    }
+    filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, width)
+}
+
+/// What decides which processor [`create`] builds for `e` beyond the effect's id: cached chains
+/// are rebuilt when it changes. For `neural_enhance` that is the chosen model and the state of the
+/// model store (a model that finishes downloading starts to be used).
+pub(crate) fn variant(e: &EffectInstance, m: &Mapping) -> u64 {
+    if m.dsp == filmcraft_enhance::ID { (neural_model(e) as u64).wrapping_shl(48) ^ filmcraft_enhance::catalog::generation().wrapping_add(1) } else { 0 }
 }
 
 /// Processing latency (samples) of a project audio effect at `sample_rate`.
@@ -323,6 +354,7 @@ fn structure_hash(item: &TrackItem) -> u64 {
     for (e, m) in active(item) {
         e.effect.hash(&mut h);
         m.dsp.hash(&mut h);
+        variant(e, &m).hash(&mut h);
     }
     h.finish()
 }
@@ -372,8 +404,8 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
             let pre_s = act.iter().map(|(e, m)| (m.preroll)(e, mt)).fold(0.0, f64::max);
             let pre = (pre_s * sr as f64).ceil() as usize;
             let mut fx: Vec<Box<dyn AudioEffect>> = Vec::new();
-            for (_, m) in &act {
-                if let Some(d) = filmcraft_audio_dsp::create_effect(m.dsp, sr as f32, width) {
+            for (e, m) in &act {
+                if let Some(d) = create(e, m, sr, width) {
                     fx.push(d);
                 }
             }
@@ -409,7 +441,7 @@ mod tests {
     fn every_audio_effect_has_dsp() {
         for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Audio && !d.intrinsic) {
             let m = mapping(d.id).unwrap_or_else(|| panic!("{} has no DSP mapping", d.id));
-            assert!(filmcraft_audio_dsp::effect_info(m.dsp).is_some(), "{} → unknown DSP {}", d.id, m.dsp);
+            assert!(filmcraft_audio_dsp::effect_info(m.dsp).is_some() || m.dsp == filmcraft_enhance::ID, "{} → unknown DSP {}", d.id, m.dsp);
             let inst = d.instance();
             let mut fx = configured(&inst, Tick::ZERO, 48000).unwrap();
             let mut l: Vec<f32> = (0..4800).map(|i| ((i * 7919 % 1000) as f32 / 1000.0 - 0.5) * 0.5).collect();
