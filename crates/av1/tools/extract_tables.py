@@ -113,10 +113,21 @@ for name, val in pending:
 
 
 # --- tables ---
+WORD = re.compile(r"[A-Za-z0-9_]")
+
+
 def cells(text):
     """Split one initialiser cell. A missing comma between two operands on separate lines
     (Split_Tx_Size in the spec text: `TX_32X32` / `TX_4X8`) yields two cells."""
-    parts = re.split(r"(?<=[A-Za-z0-9_])[^\S\n]*\n[^\S\n]*(?=[A-Za-z0-9_])", text.strip())
+    lines = text.strip().split("\n")
+    parts = [lines[0]]
+    for line in lines[1:]:
+        head, tail = parts[-1].rstrip(" \t\r\f\v"), line.lstrip(" \t\r\f\v")
+        if WORD.fullmatch(head[-1:]) and WORD.match(tail):
+            parts[-1] = head
+            parts.append(tail)
+        else:
+            parts[-1] += "\n" + line
     if len(parts) > 1:
         sys.stderr.write("note: missing comma in spec table between %s\n" % parts)
     return parts

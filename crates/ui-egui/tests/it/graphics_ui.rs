@@ -320,6 +320,95 @@ fn shadow_color_drag_is_one_undo_step() {
     assert_eq!(color(&mut d), before, "one undo restores the original color");
 }
 
+/// Both stroke rows keep the character range when changing colour, width and enablement.
+#[test]
+fn stroke_colour_pickers_edit_only_the_type_tool_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics", "tool": "Type"}));
+    d.exec("playhead.set", json!({"seconds": 2}));
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": p[0] + p[2] * 0.2, "y": p[1] + p[3] * 0.4}));
+    d.ok("ui.type", json!({"text": "1234"}));
+    let clip = d.exec("graphics.list", json!({}))["clip"].as_u64().unwrap();
+    d.exec(
+        "graphics.set",
+        json!({"clip": clip, "props": {
+            "size": 180, "stroke": true, "stroke_color": "#0000ff", "stroke_width": 8,
+            "stroke2": true, "stroke2_color": "#00ff00", "stroke2_width": 16
+        }}),
+    );
+    d.ok("ui.key", json!({"key": "Home"}));
+    for _ in 0..2 {
+        d.ok("ui.key", json!({"key": "Shift+ArrowRight"}));
+    }
+    d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dy": -400.0}));
+    d.frames(3);
+    for (id, key) in [("stroke_color", "strokeColor"), ("stroke2_color", "stroke2Color")] {
+        let layer_before = text_param(&mut d, clip, id);
+        let styles = |d: &mut Driver| d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        let before = styles(&mut d);
+        let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        let red = d.harness.get_by_role_and_label(Role::SpinButton, "R").rect().center();
+        d.ok("ui.drag", json!({"from": {"x": red.x, "y": red.y}, "to": {"x": red.x + 120.0, "y": red.y}, "steps": 4}));
+        d.frames(3);
+        let after = styles(&mut d);
+        assert_ne!(after[0][key], before[0][key], "the {id} picker edits the selected characters");
+        assert_eq!((after[0]["start"].as_u64(), after[0]["end"].as_u64()), (Some(0), Some(2)));
+        assert_eq!(text_param(&mut d, clip, id), layer_before, "unselected text inherits the original colour");
+        assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0 + 1);
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(styles(&mut d), before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(styles(&mut d), after);
+    }
+    for (id, key) in [("stroke_width", "strokeWidth"), ("stroke2_width", "stroke2Width")] {
+        let inherited = text_param(&mut d, clip, id);
+        let before = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        let r = d.rect(&format!("graphics.prop.{id}"));
+        let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 80.0, "y": y}, "steps": 6}));
+        d.frames(3);
+        let after = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        assert!(after[0][key].as_f64().unwrap() > inherited.as_ref().and_then(|v| v.as_f64()).unwrap() + 1.0);
+        assert_eq!((after[0]["start"].as_u64(), after[0]["end"].as_u64()), (Some(0), Some(2)));
+        assert_eq!(text_param(&mut d, clip, id), inherited, "the other characters keep the layer width");
+        assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0 + 1);
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"], before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"], after);
+    }
+    for id in ["stroke", "stroke2"] {
+        let inherited = text_param(&mut d, clip, id);
+        for enabled in [false, true] {
+            d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+            let styles = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+            assert_eq!(styles[0][id].as_bool(), Some(enabled));
+            assert_eq!(text_param(&mut d, clip, id), inherited);
+        }
+    }
+    d.exec(
+        "graphics.setCharStyle",
+        json!({"clip": clip, "start": 0, "end": 2, "style": {"strokeColor": "#ff0000", "strokeWidth": 12, "stroke2Color": "#ffff00", "stroke2Width": 32}}),
+    );
+    // Wait for background rendering before the optional screenshot. The colour and undo
+    // assertions above do not need a finished monitor frame when this runs headless in the suite.
+    if d.shots.is_some() {
+        let revision = d.harness.state().session.revision;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while d.harness.state().program_picture().is_none_or(|k| k.revision != revision) && std::time::Instant::now() < deadline {
+            d.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(d.harness.state().program_picture().is_some_and(|k| k.revision == revision), "the preview displays the edited stroke colours");
+    }
+    d.shot("per-character-stroke-colours");
+}
+
 /// With a Type-tool selection the Style buttons show and toggle the selected characters' style,
 /// not the layer's: a second click turns Faux Bold (or All Caps, or Small Caps) off again.
 #[test]

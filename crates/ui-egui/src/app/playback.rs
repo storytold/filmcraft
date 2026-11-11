@@ -74,6 +74,7 @@ impl FilmcraftApp {
         if self.playback.playing {
             self.stop();
         }
+        self.release_scrub_output();
         let a = self.audio.as_mut().ok_or("no audio output (check Settings > Audio Hardware)")?;
         let sr = a.sample_rate().max(1);
         a.stop();
@@ -123,6 +124,9 @@ impl FilmcraftApp {
         if let Some(a) = self.audio.as_mut() {
             a.stop();
         }
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.stop();
+        }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
         self.playback.audio_retry_at = 0.0;
@@ -146,9 +150,20 @@ impl FilmcraftApp {
         }
     }
 
+    /// Give the scrub output's device back before playback opens its own stream (#2633). The scrub
+    /// stream lingers for a few seconds after the last grain, and a device that takes one stream
+    /// at a time (a raw ALSA `hw:` device, an exclusive-mode output) would refuse playback's.
+    fn release_scrub_output(&mut self) {
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.release();
+            self.scrub.device_stopped();
+        }
+    }
+
     pub(super) fn start_audio(&mut self, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
+        self.release_scrub_output();
         let Some(a) = self.audio.as_mut() else { return };
         let sr = a.sample_rate();
         // Output frames still follow the accelerated timeline. The pitch preference selects
