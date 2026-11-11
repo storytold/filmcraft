@@ -9,6 +9,10 @@
 //! - Audio: every PCM sound track (Broadcast Wave / AES3, ST 382; ST 331 AES3 elements in D-10)
 //!   is presented as one multichannel stream, sample-exact.
 //! - Start timecode: the material package's timecode track.
+//! - CinemaDNG (CinemaDNG Image Data Format Specification §7: one frame-wrapped DNG dataset per
+//!   edit unit): each picture is developed on its own by `filmcraft-dng` (through
+//!   `filmcraft_media::still::dng`, as DNG stills and CinemaDNG folders are) into scene-linear
+//!   Rec. 709 float frames; size and pixel format come from the first DNG, not the descriptor.
 
 use std::sync::Arc;
 
@@ -35,6 +39,15 @@ pub fn sniff(head: &[u8]) -> bool {
     filmcraft_mxf::sniff(head)
 }
 
+/// CinemaDNG pictures of an MXF file.
+struct DngPictures {
+    /// Developed pictures by (stored index, reduced-resolution level).
+    cache: filmcraft_media::FrameCache<(usize, u8)>,
+    settings: filmcraft_media::raw::RawSettings,
+    /// The first picture's as-shot white balance (temperature, tint).
+    as_shot: Option<(f64, f64)>,
+}
+
 pub struct MxfSource {
     info: MediaInfo,
     bytes: crate::Src,
@@ -53,6 +66,8 @@ pub struct MxfSource {
     unsupported: Option<String>,
     /// MPEG-2: the first sequence header (primes decoders that start without one).
     mpeg2_header: Vec<u8>,
+    /// CinemaDNG: every picture is intra coded and developed on its own, outside the GOP cache.
+    dng: Option<DngPictures>,
     /// Sound tracks combined into one stream: (track, first stored sample frame).
     atracks: Vec<(usize, u64)>,
     /// Presented sample frames.
@@ -217,6 +232,33 @@ fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[filmcr
 const AVC_ORDER_HEAD: usize = 2 << 10;
 const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
 
+/// The first DNG's developed size, pixel format and as-shot white balance (or why it failed).
+type DngProbe = Result<(u32, u32, String, Option<(f64, f64)>), MediaError>;
+
+/// CinemaDNG: the first DNG's developed size, pixel format and as-shot white balance (the RGBA
+/// descriptor describes the decoded picture, but nothing checks it does).
+fn probe_cinema_dng(file: &MxfFile, bytes: &crate::Src, track: usize, name: &str) -> DngProbe {
+    let s = file.read_sample(bytes, track, 0).map_err(|e| MediaError::Decode(e.to_string()))?;
+    let (w, h, pf, _) = filmcraft_media::still::dng::probe(name, &s)?;
+    Ok((w, h, pf, filmcraft_media::still::dng::as_shot(&s)))
+}
+
+/// CinemaDNG: the codec name for the probe result, setting up the developed-picture cache, or
+/// the reason the track cannot be played.
+fn cinema_dng_codec(probe: Option<&DngProbe>, dng: &mut Option<DngPictures>, unsupported: &mut Option<String>) -> String {
+    match probe {
+        Some(Ok((_, _, _, as_shot))) => {
+            *dng = Some(DngPictures { cache: filmcraft_media::FrameCache::new(256 << 20), settings: Default::default(), as_shot: *as_shot });
+            filmcraft_media::still::dng::MXF_CODEC.into()
+        }
+        Some(Err(e)) => {
+            *unsupported = Some(format!("CinemaDNG in MXF: {e}"));
+            "CinemaDNG (unsupported)".into()
+        }
+        None => "CinemaDNG".into(),
+    }
+}
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -249,6 +291,7 @@ impl MxfSource {
         let (mut vpts, mut vorder, mut vfirst, mut vcount) = (Vec::new(), Vec::new(), 0, 0);
         let mut explicit_color = None;
         let mut mpeg2_header = Vec::new();
+        let mut dng = None;
         if let Some(vi) = vtrack {
             let t = &file.tracks[vi];
             let p = t.picture.clone().unwrap_or_default();
@@ -283,11 +326,16 @@ impl MxfSource {
                 .then(|| file.read_sample(&bytes, vi, 0).ok())
                 .flatten()
                 .and_then(|s| Some((filmcraft_mpeg2v::probe(&s)?, filmcraft_mpeg2v::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
-            let (w, h) = match &mpeg {
-                Some((info, _, _)) => (info.width, info.height),
-                None => (p.frame_width(), p.frame_height()),
+            let dng_probe = (t.codec == Codec::CinemaDng).then(|| probe_cinema_dng(&file, &bytes, vi, name));
+            let (w, h) = match (&mpeg, &dng_probe) {
+                (Some((info, _, _)), _) => (info.width, info.height),
+                (None, Some(Ok((w, h, _, _)))) => (*w, *h),
+                _ => (p.frame_width(), p.frame_height()),
             };
-            let par = if p.aspect_ratio.is_valid() && w > 0 && h > 0 {
+            let par = if dng_probe.is_some() {
+                // DNG DefaultScale is not applied: pixels are shown square
+                (1, 1)
+            } else if p.aspect_ratio.is_valid() && w > 0 && h > 0 {
                 let n = p.aspect_ratio.num as u64 * h as u64;
                 let d = p.aspect_ratio.den as u64 * w as u64;
                 let g = gcd(n, d).max(1);
@@ -305,6 +353,7 @@ impl MxfSource {
                 Codec::ProRes { profile } => prores_name(profile).into(),
                 c @ Codec::Avc { .. } => c.name().into(),
                 Codec::Mpeg2 if mpeg.is_some() => mpeg.as_ref().map(|m| m.0.codec_name()).unwrap_or_default(),
+                Codec::CinemaDng => cinema_dng_codec(dng_probe.as_ref(), &mut dng, &mut unsupported),
                 other => {
                     let why = format!("{} video in MXF (FilmCraft has no {} decoder)", other.name(), other.name());
                     unsupported = Some(why);
@@ -332,7 +381,11 @@ impl MxfSource {
                 mpeg2_header = header.clone();
             }
             let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), ..filmcraft_color::ColorInfo::REC709 };
-            if p.full_range() {
+            // CinemaDNG (developed: `dng` is set exactly when the probe succeeded)
+            if let Some(Ok((_, _, pf, _))) = &dng_probe {
+                pixel_format = pf.clone();
+                color = filmcraft_media::still::dng::LINEAR_709;
+            } else if p.full_range() {
                 color.range = filmcraft_color::Range::Full;
                 explicit_color = Some(color);
             }
@@ -414,10 +467,23 @@ impl MxfSource {
             video: GopCache::new(explicit_color),
             unsupported,
             mpeg2_header,
+            dng,
             atracks: combined,
             aframes,
             file,
         })
+    }
+
+    /// CinemaDNG: develop the picture shown at display position `d` at reduced-resolution `level`.
+    fn dng_frame(&self, track: usize, dng: &DngPictures, d: i64, level: u8) -> Result<Arc<VideoFrame>, MediaError> {
+        let stored = usize::try_from(d).ok().and_then(|d| self.vorder.get(d).copied()).ok_or(MediaError::Decode("MXF: picture out of range".into()))?;
+        if let Some(f) = dng.cache.get(&(stored, level)) {
+            return Ok(f);
+        }
+        let bytes = self.file.read_sample(&self.bytes, track, stored).map_err(|e| MediaError::Decode(e.to_string()))?;
+        let frame = Arc::new(filmcraft_media::still::dng::decode_with(&self.info.name, &bytes, &dng.settings, level)?.frame);
+        dng.cache.insert((stored, level), frame.clone());
+        Ok(frame)
     }
 
     /// The demuxed file (tracks, partitions, index, timecode).
@@ -488,6 +554,9 @@ impl MediaSource for MxfSource {
         }
         let rate = self.info.frame_rate();
         let f = rate.frame_at(req.time.max(Tick::ZERO)).clamp(0, self.vcount - 1);
+        if let Some(dng) = &self.dng {
+            return self.dng_frame(ti, dng, self.vfirst + f, filmcraft_media::raw::scale_level(req.scale));
+        }
         let late = filmcraft_media::cancel::catch_up().map(|m| self.vfirst + rate.frame_at(req.time - m));
         let frame = self.video.frame_late(&MxfVideo { src: self, track: ti }, self.vfirst + f, late)?;
         Ok(frame)
@@ -540,6 +609,18 @@ impl MediaSource for MxfSource {
             }
         }
         Ok(out)
+    }
+
+    fn raw_info(&self) -> Option<filmcraft_media::raw::RawInfo> {
+        self.dng.as_ref().map(|d| filmcraft_media::raw::RawInfo { as_shot: d.as_shot, settings: d.settings })
+    }
+
+    fn with_raw_settings(&self, settings: &filmcraft_media::raw::RawSettings) -> Option<SharedSource> {
+        self.dng.as_ref()?;
+        // a fresh source over the same reader (the index and metadata are read again)
+        let mut s = MxfSource::open_reader(&self.info.name, self.bytes.0.clone()).ok()?;
+        s.dng.as_mut()?.settings = *settings;
+        Some(Arc::new(s))
     }
 }
 

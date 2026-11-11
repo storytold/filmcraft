@@ -861,13 +861,17 @@ fn build_track(
             }
             // A wrong or missing label: trust the essence bytes.
             if let Some(first) = elements.first() {
-                let head = read_upto(src, first.value_offset, 64)?;
+                let head = read_upto(src, first.value_offset, 4096)?;
                 if let Some(sniffed) = sniff_picture(&head) {
                     let agree = std::mem::discriminant(&sniffed) == std::mem::discriminant(&codec);
                     if !agree && !matches!(codec, Codec::Avc { intra: true }) {
                         codec = sniffed;
                     }
                 }
+            }
+            // CinemaDNG §7.1.1.2: a "TIFF" picture element type names DNG pictures
+            if codec == Codec::Unknown && elements.first().is_some_and(|e| e.key.0[12] == 0x15 && e.key.0[14] == crate::essence::CINEMADNG_ELEMENT_TYPE) {
+                codec = Codec::CinemaDng;
             }
             t.codec = codec;
             t.picture = Some(pi);
