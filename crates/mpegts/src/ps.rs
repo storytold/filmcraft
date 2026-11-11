@@ -15,6 +15,9 @@ struct Win<'a, S: ByteSource + ?Sized> {
     /// Bytes zero-filled by window refills (tests count them).
     #[cfg(test)]
     zero_filled: usize,
+    /// Window refills (tests count them).
+    #[cfg(test)]
+    refills: usize,
 }
 
 impl<'a, S: ByteSource + ?Sized> Win<'a, S> {
@@ -25,12 +28,20 @@ impl<'a, S: ByteSource + ?Sized> Win<'a, S> {
             start: 0,
             #[cfg(test)]
             zero_filled: 0,
+            #[cfg(test)]
+            refills: 0,
         }
     }
     /// The bytes [pos, pos + n) (fewer at the end of the file).
     fn get(&mut self, pos: u64, n: usize) -> Result<&[u8]> {
-        let have = pos >= self.start && pos + n as u64 <= self.start + self.buf.len() as u64;
+        let end = self.start + self.buf.len() as u64;
+        // a window that already reaches the end of the file holds all there is to read past `pos`
+        let have = pos >= self.start && (pos.saturating_add(n as u64) <= end || end >= self.src.len());
         if !have {
+            #[cfg(test)]
+            {
+                self.refills += 1;
+            }
             // never more than the file still holds past `pos`: `read_some` would not fill it, and
             // zeroing a megabyte for every packet near the end of the file is wasted work
             let remaining = self.src.len().saturating_sub(pos);
@@ -350,6 +361,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Dense recovery candidates near the end ask for more bytes than the file still holds: the
+    /// window that already reaches the end serves them, without a refill each.
+    #[test]
+    fn requests_past_the_end_reuse_a_window_that_reaches_it() {
+        let d = data(5000);
+        let mut w = Win::new(d.as_slice());
+        assert_eq!(w.get(4000, 32).unwrap(), &d[4000..4032]);
+        let first = w.refills;
+        for pos in 4000..4990 {
+            assert_eq!(w.get(pos, 4096).unwrap(), &d[pos as usize..], "pos {pos}");
+        }
+        assert_eq!(w.refills, first, "a refill per request");
     }
 
     #[test]

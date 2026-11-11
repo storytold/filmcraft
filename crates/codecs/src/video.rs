@@ -835,7 +835,8 @@ pub fn apv_to_video_frame(f: filmcraft_apv::Frame) -> VideoFrame {
     }
     let neutral = 1u16 << f.bit_depth.saturating_sub(1);
     let (cb, cr) = if f.chroma == filmcraft_apv::ChromaFormat::Monochrome {
-        let u = vec![neutral; (f.width as usize) * (f.height as usize)];
+        // as long as the luma plane the frame really holds, not as the declared size claims
+        let u = vec![neutral; f.y.len()];
         (u.clone(), u)
     } else {
         (f.cb, f.cr)
@@ -1375,5 +1376,37 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod apv_convert_tests {
+    use super::apv_to_video_frame;
+
+    /// The neutral chroma of a monochrome frame is as large as the luma the frame holds, not as the
+    /// declared dimensions (a caller-built frame with a huge size and no samples must not allocate it).
+    #[test]
+    fn monochrome_chroma_follows_the_luma_plane_not_the_declared_size() {
+        let f = filmcraft_apv::Frame {
+            width: 20_000,
+            height: 20_000,
+            chroma: filmcraft_apv::ChromaFormat::Monochrome,
+            bit_depth: 10,
+            y: vec![512; 64],
+            cb: Vec::new(),
+            cr: Vec::new(),
+            alpha: None,
+            color: Default::default(),
+            profile_idc: 0,
+            level_idc: 0,
+            band_idc: 0,
+            mastering_display: None,
+            content_light: None,
+        };
+        let v = apv_to_video_frame(f);
+        match v.data {
+            filmcraft_frame::PixelData::Yuv16 { planes, .. } => assert!(planes.iter().all(|p| p.len() == 64)),
+            _ => panic!("10-bit APV is 16-bit data"),
+        }
     }
 }

@@ -555,6 +555,11 @@ impl<W: Write + Seek> MxfWriter<W> {
         // low but technically positive edit rate can turn padding into a multi-gigabyte Vec.
         const MAX_PCM_EDIT_UNIT_BYTES: u128 = 64 << 20;
         for sound in &cfg.sound {
+            // an edit unit shorter than one sample holds no sound: the index (OP-Atom) or the package
+            // run (OP1a) would grow with the edit rate instead of with the audio
+            if cfg.edit_rate.num as u128 > u128::from(sound.sample_rate) * cfg.edit_rate.den as u128 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "MXF edit rate above the sound sample rate"));
+            }
             let samples = (u128::from(sound.sample_rate) * cfg.edit_rate.den as u128).div_ceil(cfg.edit_rate.num as u128);
             let bytes = samples.saturating_mul(u128::from(sound.block_align()));
             if bytes > MAX_PCM_EDIT_UNIT_BYTES {
