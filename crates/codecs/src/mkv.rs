@@ -617,6 +617,10 @@ impl VideoSamples for MkvVideo<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read(self.track, i)
     }
+    fn sample_size(&self, i: usize) -> Option<u64> {
+        // the size `read` returns: the stored size plus the header-stripping or ProRes prefix
+        self.src.file.tracks.get(self.track)?.sample_size(i)
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let Some(e) = &self.src.ventry else {
             return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
