@@ -99,7 +99,12 @@ fn exec_inspect_and_describe() {
 
 /// A new folder only this user can enter, never one that already existed in the shared temp dir.
 fn private_dir(prefix: &str) -> std::path::PathBuf {
-    tempfile::Builder::new().prefix(prefix).tempdir().unwrap().keep()
+    let mut b = tempfile::Builder::new();
+    b.prefix(prefix);
+    // tempfile creates with 0777 before the umask, so ask for owner-only
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    b.tempdir().unwrap().keep()
 }
 
 /// A project in a new folder of its own.

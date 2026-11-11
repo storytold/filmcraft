@@ -137,7 +137,10 @@ impl Display {
     }
 
     fn target(&self, seq: ItemId) -> Target {
-        if self.gpu.is_some() { Target::SequencePlan(seq) } else { Target::Sequence(seq) }
+        match &self.gpu {
+            Some((c, _)) => Target::SequencePlan(seq, c.caps()),
+            None => Target::Sequence(seq),
+        }
     }
 
     /// Show the exact frame, or the nearest earlier cached one; returns whether it was exact.

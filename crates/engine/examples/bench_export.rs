@@ -138,7 +138,12 @@ fn main() {
     };
     let keep = arg(&args, "--keep").map(PathBuf::from);
     // A fresh private folder, never a predictable name another user could have prepared.
-    let dir = tempfile::Builder::new().prefix("filmcraft-bench-export-").tempdir().expect("temp dir");
+    let mut b = tempfile::Builder::new();
+    b.prefix("filmcraft-bench-export-");
+    // owner-only (tempfile creates with 0777 before the umask), so another local user cannot plant a symlink for the output
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let dir = b.tempdir().expect("temp dir");
     let out = keep.clone().unwrap_or_else(|| dir.path().join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
     let mut s = session(&src);
     let mut times = Vec::new();
