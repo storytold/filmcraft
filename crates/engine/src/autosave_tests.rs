@@ -37,8 +37,8 @@ fn new_projects_start_with_aligned_saved_view_epochs() {
 #[test]
 fn project_timeline_settings_restore_when_tab_restoration_is_disabled() {
     let mut s = demo();
-    let dir = temp_dir("restore-timeline-settings");
-    let path = dir.join("settings.fcproj");
+    let dir = TempDirGuard(temp_dir("restore-timeline-settings"));
+    let path = dir.0.join("settings.fcproj");
     s.state.timeline_ui.smooth_animations = true;
     s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
     s.prefs.timeline.restore_open_sequences = false;
@@ -46,7 +46,14 @@ fn project_timeline_settings_restore_when_tab_restoration_is_disabled() {
 
     s.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
     assert!(s.state.timeline_ui.smooth_animations);
-    std::fs::remove_dir_all(dir).unwrap();
+}
+
+struct TempDirGuard(std::path::PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {

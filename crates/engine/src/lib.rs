@@ -714,13 +714,12 @@ impl Session {
         if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
-        // the view reaches the journal whenever it is newer than what the project file holds
-        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
-        // once a save catches up -- no matter what order the two arrive in
-        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        // Recovery snapshots are only useful while project content is dirty. A view-only change
+        // is saved with the project, but does not need a full project snapshot in the journal.
+        let view = dirty.then(|| self.project_view());
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
-            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
+            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, self.path.clone());
         } else {
             p.send_clean();
         }
@@ -804,7 +803,7 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. A dirty project's next recovery snapshot carries the newest view.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }
@@ -823,7 +822,8 @@ impl Session {
         self.is_dirty() || self.is_view_dirty()
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed. The view is saved with the project and joins
+    /// the recovery journal only while project content is dirty.
     pub fn project_view_changed(&mut self) {
         self.view_changed();
         self.sync_persistence();

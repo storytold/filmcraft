@@ -541,8 +541,7 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
-    /// Whether the project CONTENT was unsaved when this snapshot was written. A clean
-    /// project's view-only change journals too, but must not be offered as "unsaved changes".
+    /// Whether the project content was unsaved when this snapshot was written.
     /// Older journals without the field keep being offered (the default is true).
     #[serde(default = "journal_dirty_by_default")]
     pub dirty: bool,
@@ -663,9 +662,8 @@ pub(crate) struct Sent {
     pub revision: u64,
     pub saved_revision: u64,
     pub path: Option<String>,
-    /// Bumped when only the stored Timeline view (zoom, scroll, sliders) changed. Tracked
-    /// separately from `revision` so per-frame view changes never invalidate revision-keyed
-    /// caches, while still reaching the autosave journal.
+    /// Tracked separately from `revision` so view changes never invalidate revision-keyed caches.
+    /// When content is dirty, the newest view travels with its recovery snapshot.
     pub view_epoch: u64,
     /// The view counter as of the last save: it must travel in the comparison too, or a save
     /// that catches the view up sends nothing and leaves the journal behind.
@@ -676,12 +674,8 @@ struct Snapshot {
     project: Arc<Project>,
     view: filmcraft_project::ProjectView,
     revision: u64,
-    /// The session's view counter at this snapshot: a view-only change journals again even
-    /// though `revision` is unchanged.
+    /// The session's view counter at this dirty-content snapshot.
     view_epoch: u64,
-    /// Whether the project content was unsaved when this snapshot was taken (a clean project's
-    /// view-only change is journaled but never offered as recovery).
-    content_dirty: bool,
     path: Option<String>,
 }
 
@@ -833,16 +827,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(
-        &self,
-        project: Arc<Project>,
-        view: filmcraft_project::ProjectView,
-        revision: u64,
-        view_epoch: u64,
-        content_dirty: bool,
-        path: Option<String>,
-    ) {
-        self.send(Msg::Dirty(Box::new(Snapshot { project, view, revision, view_epoch, content_dirty, path })));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, view: filmcraft_project::ProjectView, revision: u64, view_epoch: u64, path: Option<String>) {
+        self.send(Msg::Dirty(Box::new(Snapshot { project, view, revision, view_epoch, path })));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -990,7 +976,7 @@ struct Worker {
     /// Newest unsaved state (None = clean).
     latest: Option<Snapshot>,
     /// Revision currently in the journal (0 = none) / last auto-saved revision. The view
-    /// counters sit beside them: a view-only change must journal again at the same revision.
+    /// counter tracks updates to a dirty project's recovery snapshot without changing revision.
     journaled: u64,
     journaled_view: u64,
     autosaved: u64,
@@ -1052,7 +1038,7 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.as_ref().is_some_and(|s| s.content_dirty) { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
@@ -1073,9 +1059,7 @@ impl Worker {
                 let _ = self.write_journal();
             }
             if self.prefs.enabled && self.next_autosave <= now {
-                // a view-only snapshot never becomes an auto-save version: there is no unsaved
-                // work in it, and the ring would fill with copies of the saved project
-                if self.latest.as_ref().is_some_and(|s| s.content_dirty && s.revision != self.autosaved) {
+                if self.latest.as_ref().is_some_and(|s| s.revision != self.autosaved) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1101,7 +1085,7 @@ impl Worker {
         meta.project_name = s.project.name.clone();
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
-        meta.dirty = s.content_dirty;
+        meta.dirty = true;
         let r = write_recovery_pair(&self.session_dir, &bytes, &meta, filmcraft_format::atomic_write);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
@@ -1229,6 +1213,14 @@ fn read_snapshot_fingerprint(path: &Path) -> io::Result<u64> {
 mod durability_tests {
     use super::*;
 
+    struct TempDirGuard(PathBuf);
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn recovery_keeps_original_when_worker_has_stopped() {
         let d = std::env::temp_dir().join(format!("fc-recover-worker-stopped-{}", std::process::id()));
@@ -1253,6 +1245,7 @@ mod durability_tests {
     #[test]
     fn failed_clean_to_dirty_pair_does_not_offer_a_stale_snapshot() {
         let d = std::env::temp_dir().join(format!("fc-recovery-dirty-transition-{}", std::process::id()));
+        let _cleanup = TempDirGuard(d.clone());
         let _ = fs::remove_dir_all(&d);
         let session = recovery_root(&d).join("1-1");
         fs::create_dir_all(&session).unwrap();
@@ -1278,6 +1271,7 @@ mod durability_tests {
     #[test]
     fn interrupted_dirty_to_dirty_update_keeps_previous_snapshot_recoverable() {
         let d = std::env::temp_dir().join(format!("fc-recovery-dirty-update-{}", std::process::id()));
+        let _cleanup = TempDirGuard(d.clone());
         let _ = fs::remove_dir_all(&d);
         let session = recovery_root(&d).join("1-2");
         fs::create_dir_all(&session).unwrap();
@@ -1297,7 +1291,7 @@ mod durability_tests {
         assert_eq!(fs::read(session.join(SNAPSHOT)).unwrap(), old_snapshot);
         let candidates = scan_candidates(&d, None);
         assert_eq!(candidates.len(), 1);
-        assert_eq!(filmcraft_format::decode(&fs::read(&candidates[0].dir.join(SNAPSHOT)).unwrap()).unwrap().project, old_project);
+        assert_eq!(filmcraft_format::decode(&fs::read(candidates[0].dir.join(SNAPSHOT)).unwrap()).unwrap().project, old_project);
         fs::remove_dir_all(&d).unwrap();
     }
 }
@@ -1444,6 +1438,7 @@ mod worker_failure_tests {
         s.view_changed();
         s.sync_persistence();
 
+        assert_eq!(s.persistence.as_ref().unwrap().flush().unwrap(), None, "a clean project's view is not written to the recovery journal");
         assert!(s.persistence.as_ref().unwrap().auto_save_now().unwrap().is_none());
         let auto_saves = dir.join(names::AUTO_SAVE_DIR);
         assert!(!auto_saves.exists() || fs::read_dir(&auto_saves).unwrap().next().is_none());

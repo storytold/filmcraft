@@ -18,6 +18,15 @@ use serde_json::{Value, json};
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    _test_dirs: Vec<TestDirGuard>,
+}
+
+struct TestDirGuard(PathBuf);
+
+impl Drop for TestDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Driver {
@@ -27,7 +36,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
+        let mut d = Driver { harness, tx, _test_dirs: Vec::new() };
         d.frames(4);
         d
     }
@@ -123,6 +132,7 @@ fn projects(d: &mut Driver, test: &str) -> (PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!("fc-open-project-prompt-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    d._test_dirs.push(TestDirGuard(dir.clone()));
     let current = dir.join("current.fcproj").to_string_lossy().into_owned();
     let other = dir.join("other.fcproj").to_string_lossy().into_owned();
     d.exec("file.saveAs", json!({"path": other}));
