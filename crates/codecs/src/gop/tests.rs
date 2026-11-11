@@ -23,6 +23,10 @@ struct Samples {
     intra: bool,
     resets: Arc<AtomicUsize>,
     decodes: Arc<AtomicUsize>,
+    /// Decoders made so far, and how many may be made (the rest fail, like a hardware decoder
+    /// at its session limit).
+    made: Arc<AtomicUsize>,
+    max_decoders: usize,
 }
 
 /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
@@ -98,6 +102,9 @@ impl VideoSamples for Samples {
         Ok(vec![i as u8])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        if self.made.fetch_add(1, Ordering::Relaxed) >= self.max_decoders {
+            return Err(CodecError::Decode("no decoder session left".into()));
+        }
         Ok(Box::new(Dec {
             delay: self.delay,
             intra: self.intra,
@@ -111,7 +118,7 @@ impl VideoSamples for Samples {
 }
 
 fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default(), made: Default::default(), max_decoders: usize::MAX }
 }
 
 fn index_of(f: &VideoFrame) -> usize {
@@ -266,6 +273,182 @@ fn running_decoder_continues_through_a_nearby_sync_sample() {
     assert_eq!(index_of(&c.frame(&s, 150_000).expect("frame")), 150);
     assert_eq!(s.resets.load(Ordering::Relaxed), 2);
     assert!(s.decodes.load(Ordering::Relaxed) <= 41 + 1);
+}
+
+/// Two places in one long GOP, asked for side by side and slightly out of order (the two sides of
+/// a dissolve, as frame workers ask), run as two decode runs instead of one that restarts on
+/// nearly every request.
+#[test]
+fn two_places_in_one_gop_run_side_by_side_without_restarting() {
+    // The two sides of a dissolve between clips cut from one long-GOP file: every output frame
+    // asks for a frame near 100 and one near 1100, slightly out of order like frame workers do.
+    // One decode run restarted at a sync sample on nearly every request.
+    let s = samples(2000, 1000, 2, false);
+    let c = GopCache::new(None);
+    for f in 0..100usize {
+        let order = if f % 2 == 0 { [f, f + 1] } else { [f, f - 1] };
+        for a in order {
+            for place in [150 + a, 1150 + a] {
+                assert_eq!(index_of(&c.frame(&s, place as i64 * 1000).expect("frame")), place);
+            }
+        }
+    }
+    // two runs start (one per GOP) and a request a few pictures behind a run restarts that run
+    // at most now and then: nothing like one restart per request
+    assert!(s.resets.load(Ordering::Relaxed) <= 8, "{} restarts", s.resets.load(Ordering::Relaxed));
+    assert!(s.decodes.load(Ordering::Relaxed) < 2000, "{} samples decoded", s.decodes.load(Ordering::Relaxed));
+}
+
+/// Seeks that never go back to the GOP just left leave one decoder; going back parks a second
+/// run, and both runs then carry on without restarting.
+#[test]
+fn seeks_that_never_come_back_keep_one_decoder() {
+    // scrubbing or cutting between distant places must not hold a second decoder (a 4K software
+    // decoder holds hundreds of MB): only going back to the GOP just left makes a second run
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for frame in [25usize, 1500, 2500, 3500] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+    // back to the GOP the last restart left (3500 -> 2500): a second run is parked
+    assert_eq!(index_of(&c.frame(&s, 2_600_000).expect("frame")), 2600);
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 2);
+    // each run carries on in its own GOP without restarting
+    let resets = s.resets.load(Ordering::Relaxed);
+    for f in 0..20usize {
+        assert_eq!(index_of(&c.frame(&s, (2601 + f) as i64 * 1000).expect("frame")), 2601 + f);
+        assert_eq!(index_of(&c.frame(&s, (3501 + f) as i64 * 1000).expect("frame")), 3501 + f);
+    }
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "neither run restarts again");
+}
+
+/// A far request after the cache has been played along parks the running decoder at once, so
+/// neither place restarts when the other is asked for.
+#[test]
+fn a_far_request_after_playback_parks_the_running_decoder_at_once() {
+    // playing along, then the other place of a dissolve is asked for: the running decoder keeps
+    // its place, so coming back to it does not restart it
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
+    let resets = s.resets.load(Ordering::Relaxed);
+    assert_eq!(index_of(&c.frame(&s, 200_000).expect("frame")), 200);
+    assert_eq!(index_of(&c.frame(&s, 1_151_000).expect("frame")), 1151);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "both places carry on without restarting");
+}
+
+/// A released decoder leaves no remembered place: a later one-way seek back to the GOP last left
+/// is not a return and parks no second run.
+#[test]
+fn a_released_decoder_leaves_no_place_to_return_to() {
+    // 25 -> 1500 -> 2500 leaves the GOP of 1500 as the place last left; after the decoder is
+    // given up, a one-way seek 3500 -> 1600 (an uncached frame of that GOP) is not a return and
+    // must not park a second run
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for frame in [25usize, 1500, 2500] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    let released = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).release_decoder(&c.shared.pool);
+    drop(released);
+    for frame in [3500usize, 1600] {
+        assert_eq!(index_of(&c.frame(&s, frame as i64 * 1000).expect("frame")), frame);
+    }
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+}
+
+/// A parked run left unused for [`IDLE`] is given up by the next request even when that request
+/// is a cache hit; a dissolve then rebuilds its two runs with a few restarts and its forward
+/// requests do not restart them again.
+#[test]
+fn a_dissolve_carries_on_after_its_parked_run_expires() {
+    let s = samples(4000, 1000, 0, false);
+    let c = GopCache::new(None);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    {
+        let mut st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let parked = st.parked.as_mut().expect("the first place's run is parked");
+        parked.at = Instant::now().checked_sub(IDLE + Duration::from_secs(1)).expect("a clock that has run for IDLE");
+    }
+    // a cache hit (frame 1150 is cached) releases the expired run
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_none());
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+    // both places go on, alternating, cached frames and new ones
+    let before = s.resets.load(Ordering::Relaxed);
+    for f in 0..60usize {
+        assert_eq!(index_of(&c.frame(&s, (190 + f) as i64 * 1000).expect("frame")), 190 + f);
+        assert_eq!(index_of(&c.frame(&s, (1150 + f) as i64 * 1000).expect("frame")), 1150 + f);
+    }
+    let restarts = s.resets.load(Ordering::Relaxed) - before;
+    assert!(restarts <= 3, "{restarts} restarts to rebuild the two runs");
+    assert!(c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).parked.is_some());
+}
+
+/// Releasing an expired parked run on a cache hit gives back the frames its window held: the
+/// cache is within its single-run budget at once (not at the next frame it stores), still holds
+/// the frame asked for, and the pool's byte count follows.
+#[test]
+fn an_expired_parked_run_gives_back_its_frames_at_once() {
+    let pool = Arc::new(Pool::new(4, IDLE, 1 << 30));
+    let mut c = GopCache::in_pool(None, pool.clone());
+    // one-pixel frames of 4 bytes: a single run keeps 75 of them, two runs 150
+    c.budget = 300;
+    let s = samples(4000, 1000, 0, false);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    {
+        let mut st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.bytes > 300, "the two runs hold {} bytes, over one run's budget", st.bytes);
+        let parked = st.parked.as_mut().expect("the first place's run is parked");
+        parked.at = Instant::now().checked_sub(IDLE + Duration::from_secs(1)).expect("a clock that has run for IDLE");
+    }
+    // a cache hit releases the expired run
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    let st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(st.parked.is_none());
+    assert!(st.bytes <= 300, "{} bytes held after the release", st.bytes);
+    assert!(st.frames.contains_key(&1_150_000), "the frame asked for stays");
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), st.bytes, "the pool's count follows");
+}
+
+/// A second decoder that cannot be made (a hardware decoder's session limit) leaves the running
+/// decoder working: the far request restarts it in place, as a single run always did, and later
+/// requests for both places are still answered.
+#[test]
+fn a_second_decoder_that_cannot_be_made_leaves_the_first_working() {
+    let mut s = samples(4000, 1000, 0, false);
+    s.max_decoders = 1;
+    let c = GopCache::new(None);
+    for f in 150..200usize {
+        assert_eq!(index_of(&c.frame(&s, f as i64 * 1000).expect("frame")), f);
+    }
+    // the other place of a dissolve: a second decoder is wanted and cannot be made
+    assert_eq!(index_of(&c.frame(&s, 1_150_000).expect("frame")), 1150);
+    {
+        let st = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.parked.is_none(), "nothing is parked");
+        assert!(st.decoder.is_some(), "the working decoder is still the active one");
+    }
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1);
+    for f in 0..20usize {
+        assert_eq!(index_of(&c.frame(&s, (200 + f) as i64 * 1000).expect("frame")), 200 + f);
+        assert_eq!(index_of(&c.frame(&s, (1151 + f) as i64 * 1000).expect("frame")), 1151 + f);
+    }
 }
 
 #[test]
