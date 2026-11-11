@@ -275,7 +275,7 @@ impl PreviewStore {
     /// The rendered frames of `seg`, counted from its start: sorted, merged, within the segment.
     pub fn coverage(&self, seg: &Segment) -> Vec<(i64, i64)> {
         let video = self.video.read().unwrap_or_else(|e| e.into_inner());
-        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        let Some(parts) = video.get(&seg.hash).filter(|_| seg.cacheable) else { return Vec::new() };
         let n = seg.frames.max(0);
         let mut iv: Vec<(i64, i64)> = parts.iter().map(|p| (p.off.clamp(0, n), p.off.saturating_add(p.len).clamp(0, n))).filter(|(a, b)| a < b).collect();
         iv.sort_unstable();
@@ -300,7 +300,7 @@ impl PreviewStore {
             return Vec::new();
         }
         let video = self.video.read().unwrap_or_else(|e| e.into_inner());
-        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        let Some(parts) = video.get(&seg.hash).filter(|_| seg.cacheable) else { return Vec::new() };
         parts.iter().filter(|p| p.off < b && a < p.off.saturating_add(p.len)).map(|p| p.name.clone()).collect()
     }
 
@@ -441,7 +441,7 @@ impl PreviewStore {
         while pos < end {
             let i = segs.partition_point(|g| g.first_sample <= pos);
             let seg = i.checked_sub(1).map(|i| &segs[i]).filter(|g| pos < g.first_sample + g.samples);
-            let preview = seg.filter(|g| self.has_audio(&g.hash)).and_then(|g| self.load_audio(&g.hash).map(|a| (g, a)));
+            let preview = seg.filter(|g| g.cacheable && self.has_audio(&g.hash)).and_then(|g| self.load_audio(&g.hash).map(|a| (g, a)));
             let next = match seg {
                 Some(g) => (g.first_sample + g.samples).min(end),
                 None => segs.get(i).map(|g| g.first_sample).unwrap_or(end).min(end),
@@ -532,7 +532,7 @@ impl PreviewStore {
             return None;
         }
         let segs = self.segments(project, seq);
-        let seg = segment_at(&segs, frame)?;
+        let seg = segment_at(&segs, frame).filter(|g| g.cacheable)?;
         let rel = frame.checked_sub(seg.first_frame)?;
         let (name, off) = {
             let video = self.video.read().unwrap_or_else(|e| e.into_inner());
@@ -644,7 +644,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
     let mut todo: Vec<Todo> = Vec::new();
-    for g in segs.iter().filter(|g| mode.renders(g.need)) {
+    for g in segs.iter().filter(|g| g.cacheable && mode.renders(g.need)) {
         let (a, b) = match mode {
             RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
             RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
@@ -763,7 +763,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let todo: Vec<AudioSegment> = store
         .audio_segments(&s.project, seq)
         .iter()
-        .filter(|g| g.first_sample < b && a < g.first_sample + g.samples && !store.has_audio(&g.hash))
+        .filter(|g| g.cacheable && g.first_sample < b && a < g.first_sample + g.samples && !store.has_audio(&g.hash))
         .cloned()
         .collect();
     if todo.is_empty() {

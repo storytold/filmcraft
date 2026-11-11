@@ -106,7 +106,9 @@ pub fn render_grid_page(
     let (cols, rows) = (l.cols, l.rows);
     let (cw, ch) = output_size(seq, cell_scale);
     let opts = RenderOptions { scale: cell_scale, ..Default::default() };
-    // the cells share this frame's nested-render budget (a worker has no visit of its own)
+    // the grid is one outermost call (a fresh budget unless it runs inside one); its cells share it
+    // (a worker has no visit of its own)
+    let _visit = crate::nest_budget::Visit::enter();
     let budget = crate::nest_budget::current();
     let cells: Vec<Image> = angles
         .par_iter()

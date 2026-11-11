@@ -20,6 +20,7 @@ thread_local! {
 /// One sequence render or mix in progress on this thread. The outermost one starts a fresh count.
 pub(crate) struct Visit {
     exhausted: bool,
+    count: Count,
 }
 
 impl Visit {
@@ -32,7 +33,13 @@ impl Visit {
             c.get_or_insert_with(Count::default).clone()
         });
         ACTIVE.with(|a| a.set(a.get() + 1));
-        Visit { exhausted: count.fetch_add(1, Ordering::Relaxed).saturating_add(1) > MAX_NESTED_VISITS }
+        Visit { exhausted: count.fetch_add(1, Ordering::Relaxed).saturating_add(1) > MAX_NESTED_VISITS, count }
+    }
+
+    /// Whether any visit of this call (this one or one it started) went past the budget: what it
+    /// hashed or estimated is incomplete, so a hash taken from it must not name a cache entry.
+    pub(crate) fn overran(&self) -> bool {
+        self.count.load(Ordering::Relaxed) > MAX_NESTED_VISITS
     }
 
     /// Whether this call is past the budget and must produce nothing.
@@ -50,6 +57,11 @@ impl Drop for Visit {
 /// The count of the call in progress on this thread, to hand to the tasks it fans out to
 /// ([`Adopt::new`]); a worker thread has no visit of its own and would start a fresh count.
 pub(crate) fn current() -> Option<Count> {
+    // outside any visit the stored count is a finished call's: handing it on would start the next
+    // call already spent
+    if ACTIVE.with(Cell::get) == 0 {
+        return None;
+    }
     COUNT.with(|c| c.borrow().clone())
 }
 
@@ -92,6 +104,23 @@ mod tests {
             assert!(Visit::enter().exhausted());
         }
         assert!(!Visit::enter().exhausted());
+    }
+
+    #[test]
+    fn a_finished_call_leaves_no_count_to_adopt() {
+        {
+            let _v = Visit::enter();
+            assert!(current().is_some());
+        }
+        assert!(current().is_none(), "a later top-level fan-out starts a fresh budget");
+    }
+
+    #[test]
+    fn overran_reports_a_spent_budget_to_the_outermost_call() {
+        let outer = Visit::enter();
+        assert!(!outer.overran());
+        let _inner: Vec<Visit> = (0..MAX_NESTED_VISITS).map(|_| Visit::enter()).collect();
+        assert!(outer.overran());
     }
 
     #[test]

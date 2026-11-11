@@ -321,6 +321,18 @@ fn hashing_a_fan_out_of_nests_is_bounded_and_stable() {
     assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
     assert_eq!(a.len(), 1);
     assert_eq!(a[0].hash, video_segments(&p, below)[0].hash);
+    // the walk was cut short, so the hash must not name a preview
+    assert!(!a[0].cacheable);
+}
+
+#[test]
+fn an_ordinary_segment_is_cacheable() {
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let s = p.new_sequence("n", SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let ti = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+    p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    assert!(video_segments(&p, s).iter().all(|g| g.cacheable));
 }
 
 /// A nest the cost walk cannot reach within its visit budget is charged a conservative cost, so it is

@@ -76,11 +76,15 @@ pub(super) fn waveform_display_gain(source_peak: f32, clip_gain_db: f64) -> f32 
 
 /// A key that changes when the sound of sequence `item` does: its audio segments (clips,
 /// transitions, mixer state; see `filmcraft_render::preview::audio_segments`) and its length.
-fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId) -> u64 {
+fn sequence_audio_key(project: &filmcraft_project::Project, item: ItemId, revision: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for seg in filmcraft_render::preview::audio_segments(project, item) {
         (seg.first_sample, seg.samples, seg.hash).hash(&mut h);
+        // a hash that did not cover the whole mix proves nothing: remix on every edit instead
+        if !seg.cacheable {
+            revision.hash(&mut h);
+        }
     }
     project.sequence(item).map(|q| (q.duration().0, q.settings.sample_rate)).hash(&mut h);
     h.finish()
@@ -94,7 +98,7 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
     let key = match app.tl.seq_keys_seen.get(&item) {
         Some(&(rev, key)) if rev == revision => key,
         _ => {
-            let key = sequence_audio_key(&app.session.project, item);
+            let key = sequence_audio_key(&app.session.project, item, revision);
             app.tl.seq_keys_seen.insert(item, (revision, key));
             key
         }

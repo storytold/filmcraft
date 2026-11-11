@@ -88,6 +88,9 @@ pub struct Segment {
     pub cost_ms: f64,
     /// Visible clips (including both sides of transitions), for Render Selection.
     pub clips: Vec<ClipId>,
+    /// False when the hash walk ran out of its nested-sequence budget: the hash does not cover the
+    /// whole picture, so no preview may be stored or reused under it.
+    pub cacheable: bool,
 }
 
 impl Segment {
@@ -192,6 +195,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
                 }
             }
         }
+        let cacheable = !walk.overran();
         drop(walk);
         if absolute {
             h.json(&("absolute", fa));
@@ -205,7 +209,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
         } else {
             Need::Realtime
         };
-        out.push(Segment { first_frame: fa, frames: fb - fa, start: t, end: rate.tick_of(fb), hash: h.hex(), need, cost_ms, clips });
+        out.push(Segment { first_frame: fa, frames: fb - fa, start: t, end: rate.tick_of(fb), hash: h.hex(), need, cost_ms, clips, cacheable });
     }
     out
 }
@@ -222,6 +226,9 @@ pub struct AudioSegment {
     pub first_sample: i64,
     pub samples: i64,
     pub hash: String,
+    /// False when the hash walk ran out of its nested-sequence budget (see [`Segment::cacheable`]):
+    /// neither a rendered audio preview nor cached waveform peaks may be keyed on the hash.
+    pub cacheable: bool,
 }
 
 /// Audio segments of sequence `seq_id`: cut at every audio clip and audio transition edge. The
@@ -294,9 +301,10 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
                 heard = true;
             }
         }
+        let cacheable = !walk.overran();
         drop(walk);
         if heard {
-            out.push(AudioSegment { first_sample: a, samples: b - a, hash: h.hex() });
+            out.push(AudioSegment { first_sample: a, samples: b - a, hash: h.hex(), cacheable });
         }
     }
     out
