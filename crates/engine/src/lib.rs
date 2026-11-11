@@ -457,8 +457,8 @@ pub struct Session {
     pub saved_revision: u64,
     /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
     /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
-    /// clean project must stay clean. `sync_persistence` tracks it for project saves and journals
-    /// the view only while project content is dirty.
+    /// clean project must stay clean. Project saves track it; recovery journals include the
+    /// view only while project content is dirty.
     pub view_epoch: u64,
     /// The view counter as of the last successful save: what the project file on disk holds.
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
@@ -807,7 +807,8 @@ impl Session {
         self.revision != self.saved_revision
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed and update persistence; recovery journals
+    /// include its view only while project content is dirty.
     pub fn project_view_changed(&mut self) {
         self.view_changed();
         self.sync_persistence();

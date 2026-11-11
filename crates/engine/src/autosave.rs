@@ -665,10 +665,11 @@ pub(crate) struct Sent {
     pub path: Option<String>,
     /// Bumped when only the stored Timeline view (zoom, scroll, sliders) changed. Tracked
     /// separately from `revision` so per-frame view changes never invalidate revision-keyed
-    /// caches, while still reaching the autosave journal.
+    /// caches. View-only changes are saved with the project and reach recovery journals only
+    /// while project content is dirty.
     pub view_epoch: u64,
     /// The view counter as of the last save: it must travel in the comparison too, or a save
-    /// that catches the view up sends nothing and leaves the journal behind.
+    /// that catches the view up is still detected by persistence.
     pub saved_view_epoch: u64,
 }
 
@@ -676,11 +677,12 @@ struct Snapshot {
     project: Arc<Project>,
     view: filmcraft_project::ProjectView,
     revision: u64,
-    /// The session's view counter at this snapshot: a view-only change journals again even
-    /// though `revision` is unchanged.
+    /// The session's view counter at this snapshot. Recovery snapshots carry view state alongside
+    /// their content revision; the view may differ from the revision.
     view_epoch: u64,
     /// Whether project content was unsaved when this snapshot was taken. Current senders only
-    /// create snapshots for dirty content; the flag also preserves older clean-journal semantics.
+    /// create snapshots for dirty content; keep the flag as defensive handling for any future
+    /// producer that sends a clean snapshot.
     content_dirty: bool,
     path: Option<String>,
 }
