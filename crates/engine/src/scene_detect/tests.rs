@@ -152,6 +152,85 @@ fn background_job_reports_progress_and_cancel_changes_nothing() {
     assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
 }
 
+/// Run `jobs.list` until job `job` reports finished.
+fn wait_listed_finished(s: &mut Session, job: &serde_json::Value) {
+    let t0 = std::time::Instant::now();
+    while !s.execute("jobs.list", json!({})).unwrap().as_array().unwrap().iter().any(|j| j["id"] == *job && j["finished"] == true) {
+        assert!(t0.elapsed().as_secs() < 120, "job never finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn background_job_is_applied_without_a_ui_frame_loop() {
+    // headless sessions (CLI, MCP) never call `poll_persistence`: commands alone must apply the job (#4145)
+    let dir = tmp_dir("scene-headless");
+    let path = dir.join("headless.mov");
+    make_cut_movie(&path, &[(DemoScene::Dunes, 18), (DemoScene::Plasma, 18)], 128, 72);
+    let (mut s, items, _) = session_with(&[&path]);
+    select_v1(&mut s);
+    let job = s.execute("clip.sceneEditDetection", json!({"generateMarkers": true})).unwrap()["job"].clone();
+    wait_listed_finished(&mut s, &job);
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(s.scene_jobs.is_empty());
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 2, "cut applied by the next command");
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().markers.len(), 1);
+}
+
+/// A Scene Edit Detection job on V1's clip that is still running, with results that cut the clip
+/// `frames` in. It ends only when the test stores `finished` in the returned progress, so nothing
+/// depends on how fast the detection thread is.
+fn pending_job(s: &mut Session, id: u64, frames: i64) -> Arc<filmcraft_export::Progress> {
+    let seq = s.state.active_sequence.unwrap();
+    let q = s.active_sequence().unwrap();
+    let rate = q.settings.frame_rate;
+    let it = &q.video_tracks[0].items[0];
+    let cut = (it.start + rate.tick_of(frames), it.source_in + rate.tick_of(frames));
+    let scenes =
+        super::ClipScenes { clip: it.id, name: it.name.clone(), media_item: it.item, media_range: TimeRange::new(it.source_in, it.duration), cuts: vec![cut] };
+    let job = crate::Job { id, label: "Scene Edit Detection".into(), progress: Default::default(), result: Default::default() };
+    let progress = job.progress.clone();
+    s.jobs.push(job);
+    let apply = super::SceneApply { cuts: true, subclips: false, markers: false };
+    let results = Arc::new(std::sync::Mutex::new(Some(vec![scenes])));
+    s.scene_jobs.push(super::PendingScene { job: id, seq, apply, results, epoch: s.document_epoch });
+    progress
+}
+
+#[test]
+fn reopening_the_project_drops_a_pending_job() {
+    // a job started on the old document must not cut the same clip in the reopened one (#4145)
+    use std::sync::atomic::Ordering;
+    let dir = tmp_dir("scene-epoch");
+    let path = dir.join("epoch.mov");
+    make_cut_movie(&path, &[(DemoScene::Dunes, 18), (DemoScene::Plasma, 18)], 128, 72);
+    let (mut s, _, _) = session_with(&[&path]);
+    let project = dir.join("epoch.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": project})).unwrap();
+    let clips = |s: &Session| s.active_sequence().unwrap().video_tracks[0].items.len();
+    // control: left alone, the same job cuts the clip at the first command after it ends
+    let progress = pending_job(&mut s, 9001, 18);
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert_eq!(clips(&s), 1, "still running");
+    progress.finished.store(true, Ordering::Relaxed);
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert_eq!(clips(&s), 2, "applied once it ended");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clips(&s), 1);
+    // the project is reopened while the job still runs: the reopened sequence has the same ids
+    let progress = pending_job(&mut s, 9002, 18);
+    s.execute("file.open", json!({"path": project})).unwrap();
+    assert_eq!(clips(&s), 1);
+    s.execute("jobs.list", json!({})).unwrap();
+    assert!(s.scene_jobs.is_empty(), "stale job survived file.open");
+    assert!(progress.cancel.load(Ordering::Relaxed), "the stale job is cancelled");
+    progress.finished.store(true, Ordering::Relaxed);
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert_eq!(clips(&s), 1, "the reopened project is not cut");
+    let h = s.execute("history.list", json!({})).unwrap();
+    assert!(!h["undo"].as_array().unwrap().iter().any(|v| v == "Scene Edit Detection"), "{h}");
+}
+
 fn ffmpeg_fixture() -> Option<PathBuf> {
     let ffmpeg = filmcraft_testkit::oracle::ffmpeg_or_skip("scene_detect")?;
     let out = filmcraft_testkit::fixtures_dir("engine/scene").join("three_shots.mp4");

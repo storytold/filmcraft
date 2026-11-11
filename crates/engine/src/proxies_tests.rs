@@ -63,6 +63,28 @@ fn create_attach_toggle_renders_the_same_picture() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn background_proxies_are_attached_without_a_ui_frame_loop() {
+    // headless sessions (CLI, MCP) never call `poll_persistence`: commands alone must attach them (#4145)
+    let root = tmp_dir("proxy-headless");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::OceanSunset, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half"})).unwrap();
+    let out = r["outputs"][0]["path"].as_str().unwrap().to_string();
+    let job = json!(r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}")));
+    let t0 = std::time::Instant::now();
+    while !s.execute("jobs.list", json!({})).unwrap().as_array().unwrap().iter().any(|j| j["id"] == job && j["finished"] == true) {
+        assert!(t0.elapsed().as_secs() < 120, "job never finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(s.media_jobs.is_empty());
+    let m = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
+    assert_eq!(m.proxy, Some(filmcraft_project::MediaRef::File { path: out }), "attached by the next command");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// #1831: proxies asked for while another job runs wait their turn, one at a time in the order they
 /// were asked for, instead of all encoding at once.
 #[test]
