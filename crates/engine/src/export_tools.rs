@@ -518,7 +518,7 @@ impl ExportOutputs {
 
     /// Whether the export writes `candidate`, compared as files (canonical, so another spelling of
     /// the path or a link to it counts; the case is ignored where the file system ignores it).
-    fn writes(&self, candidate: &str) -> bool {
+    pub(crate) fn writes(&self, candidate: &str) -> bool {
         if same_file(&self.path, candidate) || self.sidecar.as_deref().is_some_and(|p| same_file(p, candidate)) {
             return true;
         }
@@ -539,11 +539,27 @@ fn is_numbered_still_of(path: &str, candidate: &str) -> bool {
         let digits = name.get(stem.len()..).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
         cand_ext.eq_ignore_ascii_case(&ext) && name.get(..stem.len()).is_some_and(|head| same_name(head, &stem)) && digits.is_some() && same_folder(dest, cand)
     };
-    // the path as it is named (the exporter writes through a link at `Shot000.png`, wherever it
-    // leads) and the file it resolves to (a link `alias.png` to the still `Shot000.png`)
+    // The path as it is named (the exporter writes through a link at `Shot000.png`, wherever it
+    // leads), then each link it leads through (`alias.png` → `Shot000.png` → `elsewhere/frame.png`
+    // names `Shot000.png`), then the file it ends at. The names are looked at first: nothing is
+    // resolved for a file that is not a link.
     let named = Path::new(candidate);
-    named_like_a_still(named) || named_like_a_still(&canonical(named))
+    if named_like_a_still(named) {
+        return true;
+    }
+    let mut at = named.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        let Ok(target) = std::fs::read_link(&at) else { return false };
+        at = if target.is_absolute() { target } else { at.parent().unwrap_or(Path::new("")).join(target) };
+        if named_like_a_still(&at) || named_like_a_still(&canonical(&at)) {
+            return true;
+        }
+    }
+    false
 }
+
+/// Links followed to see whether a file is a still of a running export.
+const MAX_LINK_HOPS: usize = 16;
 
 fn same_folder(a: &Path, b: &Path) -> bool {
     let folder = |p: &Path| canonical(p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")));
