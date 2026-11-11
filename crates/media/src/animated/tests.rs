@@ -53,6 +53,24 @@ fn gif(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
 
 /// A small animated WebP built from lossless WebP frame bitstreams.
 fn webp(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
+    let frames = frames
+        .iter()
+        .map(|(pixels, duration_ms)| WebpFrame { pixels: pixels.clone(), width: W, height: H, x: 0, y: 0, duration_ms: *duration_ms, flags: 0x02 })
+        .collect::<Vec<_>>();
+    webp_with_frames(&frames)
+}
+
+struct WebpFrame {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    duration_ms: u32,
+    flags: u8,
+}
+
+fn webp_with_frames(frames: &[WebpFrame]) -> Vec<u8> {
     fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
         out.extend_from_slice(kind);
         out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
@@ -68,9 +86,9 @@ fn webp(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
         out[2] = (value >> 16) as u8;
     }
 
-    fn frame_chunk(pixels: &[u8], duration_ms: u32) -> Vec<u8> {
+    fn frame_chunk(frame: &WebpFrame) -> Vec<u8> {
         let mut encoded = Vec::new();
-        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded).encode(pixels, W, H, image::ExtendedColorType::Rgba8).unwrap();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut encoded).encode(&frame.pixels, frame.width, frame.height, image::ExtendedColorType::Rgba8).unwrap();
 
         let mut pos = 12;
         let bitstream = loop {
@@ -84,10 +102,12 @@ fn webp(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
         };
 
         let mut data = vec![0; 16];
-        u24(&mut data[6..9], W - 1);
-        u24(&mut data[9..12], H - 1);
-        u24(&mut data[12..15], duration_ms);
-        data[15] = 0x02; // replace the previous canvas instead of blending
+        u24(&mut data[0..3], frame.x / 2);
+        u24(&mut data[3..6], frame.y / 2);
+        u24(&mut data[6..9], frame.width - 1);
+        u24(&mut data[9..12], frame.height - 1);
+        u24(&mut data[12..15], frame.duration_ms);
+        data[15] = frame.flags;
         data.extend_from_slice(&bitstream);
         data
     }
@@ -99,8 +119,8 @@ fn webp(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
     u24(&mut extended[7..10], H - 1);
     chunk(&mut chunks, b"VP8X", &extended);
     chunk(&mut chunks, b"ANIM", &[0, 0, 0, 0, 0, 0]);
-    for (pixels, duration_ms) in frames {
-        chunk(&mut chunks, b"ANMF", &frame_chunk(pixels, *duration_ms));
+    for frame in frames {
+        chunk(&mut chunks, b"ANMF", &frame_chunk(frame));
     }
 
     let mut out = b"RIFF".to_vec();
@@ -185,6 +205,21 @@ fn animated_webp_plays_every_frame_with_timing_and_transparency() {
     assert_eq!(pixels(&*s, Tick::ZERO), red);
     assert_eq!(pixels(&*s, ms(39)), red);
     assert_eq!(pixels(&*s, ms(40)), green);
+}
+
+#[test]
+fn animated_webp_disposal_clears_transparent_frame_without_ghosts() {
+    let first = [255, 0, 0, 255].into_iter().cycle().take(2 * 2 * 4).collect::<Vec<_>>();
+    let second = [[0, 255, 0, 255], [0, 0, 0, 0], [0, 255, 0, 255], [0, 0, 0, 0]].concat();
+    let frames = [
+        WebpFrame { pixels: first, width: 2, height: 2, x: 0, y: 0, duration_ms: 40, flags: 0x03 },
+        WebpFrame { pixels: second, width: 2, height: 2, x: 2, y: 0, duration_ms: 60, flags: 0x02 },
+    ];
+    let bytes = webp_with_frames(&frames);
+    let source = open_bytes("ghost.webp", bytes.into(), &[]).unwrap();
+    let second = pixels(&*source, ms(40));
+    assert_eq!(&second[0..4], &[0, 0, 0, 0], "the disposed frame area is transparent");
+    assert_eq!(&second[8..12], &[0, 255, 0, 255], "the next frame is drawn in its own rectangle");
 }
 
 #[test]

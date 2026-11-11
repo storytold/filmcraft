@@ -3758,8 +3758,7 @@ dependencies = [
 [[package]]
 name = "image-webp"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+source = "git+https://github.com/image-rs/image-webp?rev=9cf843bfe3a59e83176b2287c575d40cfb8b85c4#9cf843bfe3a59e83176b2287c575d40cfb8b85c4"
 dependencies = [
  "byteorder-lite",
  "quick-error 2.0.1",
