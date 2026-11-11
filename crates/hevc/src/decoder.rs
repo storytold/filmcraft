@@ -16,6 +16,12 @@ use filmcraft_bitstream::{annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// Completed pictures a failed `decode` call leaves queued for the next call (older ones are dropped).
+const MAX_QUEUED_AFTER_ERROR: usize = 32;
+/// Most pictures one `decode` call may start: a chunk is an access unit, or a few in a transport
+/// stream packet. Each picture is a full frame, and small slices make them cheap to ask for.
+const MAX_PICTURES_PER_CALL: usize = 64;
+
 /// A picture whose slices are being collected.
 struct PendingPic {
     frame: FrameRef,
@@ -80,6 +86,8 @@ pub struct Decoder {
     /// One lazily allocated gray backing for unavailable references in the active format.
     gray_reference: Option<Frame>,
     first_picture: bool,
+    /// Pictures started by the current `decode` call (see [`MAX_PICTURES_PER_CALL`]).
+    call_pictures: usize,
     after_eos: bool,
     /// RASL pictures associated with the last IRAP are skipped (it had NoRaslOutputFlag = 1).
     skip_rasl: bool,
@@ -136,6 +144,7 @@ impl Decoder {
             active_sps: None,
             gray_reference: None,
             first_picture: true,
+            call_pictures: 0,
             after_eos: false,
             skip_rasl: false,
             layout_cache: Vec::new(),
@@ -190,9 +199,16 @@ impl Decoder {
     /// access unit through reordering.
     pub fn decode(&mut self, data: &[u8], pts: i64) -> Result<Vec<Picture>> {
         let nals = match self.nal_length_size {
-            Some(n) => length_prefixed_nals(data, n)?,
+            Some(n) => match length_prefixed_nals(data, n) {
+                Ok(nals) => nals,
+                Err(e) => {
+                    self.trim_queue_after_error();
+                    return Err(e.into());
+                }
+            },
             None => annexb_nals(data),
         };
+        self.call_pictures = 0;
         let mut result = Ok(());
         for nal in nals {
             if let Err(e) = self.handle_nal(nal, pts) {
@@ -203,6 +219,9 @@ impl Decoder {
         self.submit_pending();
         if let Some(e) = self.take_error() {
             result = result.and(Err(e));
+        }
+        if result.is_err() {
+            self.trim_queue_after_error();
         }
         result?;
         let max_queue = self.max_in_flight * 2;
@@ -215,6 +234,12 @@ impl Decoder {
             pics.push(make_picture(&o));
         }
         Ok(pics)
+    }
+
+    /// A caller that keeps feeding data after errors never drains the queue: keep the newest few.
+    fn trim_queue_after_error(&mut self) {
+        let excess = self.out_queue.len().saturating_sub(MAX_QUEUED_AFTER_ERROR);
+        self.out_queue.drain(..excess);
     }
 
     /// Output all remaining pictures (end of stream).
@@ -381,6 +406,8 @@ impl Decoder {
 
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pps: &Arc<Pps>, pts: i64) -> Result<()> {
         ensure!(sh.first_slice_segment_in_pic && !sh.dependent, "invalid first slice segment");
+        self.call_pictures += 1;
+        ensure!(self.call_pictures <= MAX_PICTURES_PER_CALL, "too many pictures in one chunk");
         let hdr = sh.nal;
         let changed = match &self.active_sps {
             None => true,
@@ -621,6 +648,57 @@ fn make_picture(o: &Output<FrameRef>) -> Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decoder_with_full_queue() -> Decoder {
+        let mut decoder = Decoder::new();
+        let meta = Arc::new(OutputMeta {
+            pts: 0,
+            key: false,
+            crop: (0, 0, 16, 16),
+            full_range: false,
+            colour_primaries: 2,
+            transfer_characteristics: 2,
+            matrix_coefficients: 2,
+            sar: (1, 1),
+            bit_depth: 8,
+            draft: false,
+        });
+        for id in 0..(MAX_QUEUED_AFTER_ERROR as u32 * 4) {
+            let frame = Arc::new(Frame::new(id, id as i32, 16, 16, 4, 8, 8));
+            decoder.out_queue.push_back(Output { frame, poc: id as i32, meta: meta.clone() });
+        }
+        decoder
+    }
+
+    #[test]
+    /// A failed decode call does not let completed pictures pile up in the output queue.
+    fn failed_decode_bounds_the_output_queue() {
+        let mut decoder = decoder_with_full_queue();
+        // a VPS NAL (type 32) with a truncated payload fails to parse
+        assert!(decoder.decode(&[0, 0, 1, 0x40, 0x01, 0xFF], 0).is_err());
+        assert_eq!(decoder.out_queue.len(), MAX_QUEUED_AFTER_ERROR);
+    }
+
+    #[test]
+    /// A truncated length-prefixed sample fails before any NAL is handled and still trims the queue.
+    fn framing_error_bounds_the_output_queue() {
+        let mut decoder = decoder_with_full_queue();
+        decoder.nal_length_size = Some(4);
+        assert!(decoder.decode(&[0, 0, 0, 9, 1, 2], 0).is_err());
+        assert_eq!(decoder.out_queue.len(), MAX_QUEUED_AFTER_ERROR);
+    }
+
+    #[test]
+    /// A chunk may start only so many pictures, however cheap each one is to ask for.
+    fn a_chunk_with_too_many_pictures_is_refused() {
+        let one = crate::synth_tests::missing_reference_picture(0, &[]);
+        let mut decoder = Decoder::new();
+        let ok: Vec<u8> = (0..MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&ok, 0).is_ok());
+        let mut decoder = Decoder::new();
+        let too_many: Vec<u8> = (0..=MAX_PICTURES_PER_CALL).flat_map(|_| one.iter().copied()).collect();
+        assert!(decoder.decode(&too_many, 0).is_err());
+    }
 
     fn missing_refs(decoder: &mut Decoder, poc: u32, deltas: &[i32]) -> Vec<FrameRef> {
         let stream = crate::synth_tests::missing_reference_picture(poc, deltas);

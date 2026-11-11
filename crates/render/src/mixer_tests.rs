@@ -749,3 +749,214 @@ fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
     assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
 }
+
+// ---- Speed/Duration ▸ Maintain Audio Pitch
+
+/// Positive-going zero crossings per second of the mix's left channel.
+fn pitch_hz(mix: &AudioBuffer) -> f64 {
+    let x = &mix.channels[0];
+    let n = x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    n as f64 * 48_000.0 / x.len() as f64
+}
+
+fn rms(x: &[f32]) -> f64 {
+    (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len().max(1) as f64).sqrt()
+}
+
+/// The 500 Hz nest of [`nested_tone`] at `speed` (reversed with `reverse`), with Maintain Audio
+/// Pitch on or off. Each test picks its own speed and length: chains are kept per clip.
+fn tone_at_speed(speed: f64, reverse: bool, maintain_pitch: bool) -> (Project, ItemId, SourceMap) {
+    let (mut p, outer, map, _) = nested_tone(48_000);
+    let nest = &mut p.sequence_mut(outer).unwrap().audio_tracks[0].items[0];
+    nest.speed = speed;
+    nest.reverse = reverse;
+    nest.maintain_pitch = maintain_pitch;
+    nest.duration = Tick((10.0 / speed * TICKS_PER_SECOND as f64) as i64);
+    (p, outer, map)
+}
+
+#[test]
+fn maintain_audio_pitch_keeps_a_faster_or_slower_clip_at_its_pitch() {
+    for (speed, reverse) in [(2.0, false), (0.5, false), (1.5, true), (3.0, false)] {
+        let (p, outer, map) = tone_at_speed(speed, reverse, true);
+        let start = 48_000 + 123;
+        let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 24_000, &map, None);
+        let hz = pitch_hz(&mix);
+        assert!((hz - 500.0).abs() < 10.0, "{speed}× (reversed: {reverse}) with Maintain Audio Pitch: {hz} Hz");
+        // in-phase grains: the level of the tone (0.5 peak), with no dips at the crossfades
+        let level = rms(&mix.channels[0]);
+        assert!((level - 0.5 / 2f64.sqrt()).abs() < 0.02, "{speed}×: rms {level}");
+        assert!(mix.channels.iter().flatten().all(|s| s.is_finite() && s.abs() <= 0.51));
+    }
+    // without it the clip is resampled: an octave up at double speed
+    let (p, outer, map) = tone_at_speed(2.0, false, false);
+    let mix = mix_graph(&p, p.sequence(outer).unwrap(), 48_000, 24_000, &map, None);
+    assert!((pitch_hz(&mix) - 1000.0).abs() < 10.0, "{}", pitch_hz(&mix));
+}
+
+/// A read whose source span is longer than one stretch can take (a very fast clip read in one long
+/// request) is left to varispeed: `stretch::read` declines it without reading the source.
+#[test]
+fn a_stretch_too_long_for_one_read_falls_back_to_varispeed() {
+    let (p, outer, _) = tone_at_speed(100.0, false, true);
+    let mut item = p.sequence(outer).unwrap().audio_tracks[0].items[0].clone();
+    item.duration = Tick(1000 * TICKS_PER_SECOND);
+    let reads = std::cell::Cell::new(0);
+    let src = |_: i64, n: usize| {
+        reads.set(reads.get() + 1);
+        Some(AudioBuffer::silence(48_000, 2, n))
+    };
+    // 200 000 output samples at 100× read 20 million source samples, more than 2^24
+    assert!(crate::stretch::read(&item, &src, 0, 200_000, 48_000, 2).is_none());
+    assert_eq!(reads.get(), 0, "the source is not read");
+    // a short read of the same clip is stretched
+    assert!(crate::stretch::read(&item, &src, 0, 4_800, 48_000, 2).is_some());
+}
+
+#[test]
+fn a_time_stretched_clip_sounds_the_same_however_playback_cuts_its_reads() {
+    let (p, outer, map) = tone_at_speed(1.25, false, true);
+    let seq = p.sequence(outer).unwrap();
+    let start = 48_000 * 2 + 7;
+    let whole = mix_graph(&p, seq, start, 30_000, &map, None);
+    // the same samples read in playback-sized blocks, and in odd sizes, continue one chain
+    for block in [1024usize, 997, 4096] {
+        let mut cut = vec![Vec::new(), Vec::new()];
+        let mut at = start;
+        while (at - start) < 30_000 {
+            let n = block.min(30_000 - (at - start) as usize);
+            let b = mix_graph(&p, seq, at, n, &map, None);
+            for (c, ch) in cut.iter_mut().zip(&b.channels) {
+                c.extend_from_slice(ch);
+            }
+            at += n as i64;
+        }
+        for (a, b) in whole.channels.iter().zip(&cut) {
+            let diff = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+            assert!(diff < 1e-6, "blocks of {block}: off by {diff}");
+        }
+    }
+    // a read somewhere else (a seek) starts a new chain: still the tone, at its pitch
+    let seek = mix_graph(&p, seq, 48_000 * 5 + 31, 12_000, &map, None);
+    assert!((pitch_hz(&seek) - 500.0).abs() < 12.0, "{}", pitch_hz(&seek));
+}
+
+// Maintain Audio Pitch on noise: a pure tone looks right from any aligned grain (chains that
+// differ by whole periods give the same samples), so these compare reads sample for sample on
+// white noise, where any grain at another position shows.
+
+/// Deterministic white noise in [-0.5, 0.5), a different sequence per channel.
+fn noise_at(c: usize, s: i64) -> f32 {
+    let mut z = (s as u64).wrapping_add((c as u64) << 48).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z ^= z >> 31;
+    z = z.wrapping_mul(0xBF58_4476_D1CE_4E5B);
+    z ^= z >> 29;
+    (z >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+}
+
+/// `len` samples from source sample `m0` of a two-channel source whose channel `c` at sample `s`
+/// is `f(c, s)`.
+fn noise_source(f: impl Fn(usize, i64) -> f32, m0: i64, len: usize) -> Option<AudioBuffer> {
+    Some(AudioBuffer { sample_rate: 48_000, channels: (0..2).map(|c| (0..len as i64).map(|i| f(c, m0 + i)).collect()).collect() })
+}
+
+/// A 2 s clip at timeline 1 s of source from 3 s on, at `speed` (reversed with `reverse`), with
+/// Maintain Audio Pitch. `id` keys its chains: each test uses its own ids.
+fn stretched_clip(id: u64, speed: f64, reverse: bool) -> filmcraft_project::TrackItem {
+    let (p, outer, _) = tone_at_speed(speed, reverse, true);
+    let mut item = p.sequence(outer).unwrap().audio_tracks[0].items[0].clone();
+    item.id = filmcraft_project::ClipId(id);
+    item.start = Tick(TICKS_PER_SECOND);
+    item.duration = Tick(2 * TICKS_PER_SECOND);
+    item.source_in = Tick(3 * TICKS_PER_SECOND);
+    item
+}
+
+/// Timeline samples `[a0, a0 + total)` of `item` read with `stretch::read` in blocks of `block`.
+fn stretched(item: &filmcraft_project::TrackItem, src: &dyn Fn(i64, usize) -> Option<AudioBuffer>, a0: i64, total: usize, block: usize) -> Vec<Vec<f32>> {
+    let mut out = vec![Vec::new(), Vec::new()];
+    let mut at = a0;
+    while ((at - a0) as usize) < total {
+        let n = block.min(total - (at - a0) as usize);
+        let b = crate::stretch::read(item, src, at, n, 48_000, 2).expect("stretched");
+        for (o, c) in out.iter_mut().zip(&b.channels) {
+            o.extend_from_slice(c);
+        }
+        at += n as i64;
+    }
+    out
+}
+
+#[test]
+fn a_stretched_noise_clip_reads_the_same_whole_or_in_blocks() {
+    let src = |m0: i64, len: usize| noise_source(noise_at, m0, len);
+    for (i, (speed, reverse)) in [(1.25, false), (0.5, false), (2.0, true), (3.0, false)].into_iter().enumerate() {
+        let a0 = 48_000 + 4_321;
+        let whole = stretched(&stretched_clip(0x1684_0100 + i as u64, speed, reverse), &src, a0, 30_000, 30_000);
+        assert!(whole[0].iter().any(|s| s.abs() > 0.1), "{speed}×: not silent");
+        for (j, block) in [1024usize, 997, 4096, 333].into_iter().enumerate() {
+            let id = 0x1684_0200 + (i as u64) * 16 + j as u64;
+            let cut = stretched(&stretched_clip(id, speed, reverse), &src, a0, 30_000, block);
+            assert_eq!(whole, cut, "{speed}× (reversed: {reverse}) in blocks of {block}");
+        }
+    }
+}
+
+/// Two readers of one clip at once (an export and a scrub just before each of its blocks, say)
+/// each get exactly what they get alone: neither continues the other's chain.
+#[test]
+fn two_interleaved_readers_of_a_stretched_clip_each_read_as_if_alone() {
+    let src = |m0: i64, len: usize| noise_source(noise_at, m0, len);
+    let (speed, base, blocks) = (1.5, 48_000 + 5_000, 24);
+    // reader A plays blocks of 1024 in order; reader B reads 500 samples starting 600 before each
+    let a_reads: Vec<i64> = (0..blocks).map(|b| base + b * 1024).collect();
+    let alone_a = stretched(&stretched_clip(0x1684_0300, speed, false), &src, base, blocks as usize * 1024, 1024);
+    let alone_b: Vec<Vec<Vec<f32>>> = a_reads.iter().map(|&a| stretched(&stretched_clip(0x1684_0301, speed, false), &src, a - 600, 500, 500)).collect();
+    let shared = stretched_clip(0x1684_0302, speed, false);
+    let mut a = vec![Vec::new(), Vec::new()];
+    for (&at, b_alone) in a_reads.iter().zip(&alone_b) {
+        assert_eq!(&stretched(&shared, &src, at - 600, 500, 500), b_alone, "reader B at {at}");
+        for (o, c) in a.iter_mut().zip(stretched(&shared, &src, at, 1024, 1024)) {
+            o.extend_from_slice(&c);
+        }
+    }
+    assert_eq!(a, alone_a, "reader A");
+}
+
+/// Grains read only the clip's own source: what lies past its in and out points (the handles)
+/// never plays, forwards or reversed, slower or faster.
+#[test]
+fn a_stretched_clip_plays_none_of_its_handles() {
+    for (i, (speed, reverse)) in [(0.5, false), (0.25, false), (3.0, false), (0.5, true), (3.0, true)].into_iter().enumerate() {
+        let item = stretched_clip(0x1684_0400 + 2 * i as u64, speed, reverse);
+        // the clip's source span at 48 kHz, and a loud burst just outside it on both sides
+        let (s_in, s_out) = (item.source_in.to_units_floor(48_000), item.source_out().to_units_floor(48_000));
+        let clean = |m0: i64, len: usize| noise_source(|c, s| if (s_in..s_out).contains(&s) { noise_at(c, s) } else { 0.0 }, m0, len);
+        let burst = |m0: i64, len: usize| noise_source(|c, s| if (s_in..s_out).contains(&s) { noise_at(c, s) } else { 100.0 }, m0, len);
+        let (a0, total) = (48_000, 96_000);
+        let want = stretched(&item, &clean, a0, total, 1024);
+        let got = stretched(&stretched_clip(0x1684_0401 + 2 * i as u64, speed, reverse), &burst, a0, total, 1024);
+        assert!(got.iter().flatten().all(|s| s.abs() <= 0.5), "{speed}× (reversed: {reverse}): the handles play");
+        assert_eq!(got, want, "{speed}× (reversed: {reverse})");
+    }
+}
+
+/// A clip that plays one channel of a two-channel source is aligned on that channel alone: what
+/// the other channel holds (another mic, LTC) changes nothing it plays, and it isn't stretched.
+#[test]
+fn a_stretched_clip_aligns_on_the_channels_it_plays() {
+    let mut mono = stretched_clip(0x1684_0500, 1.5, false);
+    mono.source_channels = vec![0];
+    let mut other = mono.clone();
+    other.id = filmcraft_project::ClipId(0x1684_0501);
+    let quiet = |m0: i64, len: usize| noise_source(|c, s| if c == 0 { noise_at(0, s) } else { 0.0 }, m0, len);
+    let ltc = |m0: i64, len: usize| noise_source(|c, s| if c == 0 { noise_at(0, s) } else { 0.9 * noise_at(1, s).signum() }, m0, len);
+    let a = stretched(&mono, &quiet, 60_000, 20_000, 1024);
+    let b = stretched(&other, &ltc, 60_000, 20_000, 1024);
+    assert_eq!(a[0], b[0], "the played channel");
+    assert!(b[1].iter().all(|s| *s == 0.0), "the unplayed channel isn't stretched");
+    // the same clip playing both channels stretches both
+    let mut both = stretched_clip(0x1684_0502, 1.5, false);
+    both.source_channels = vec![0, 1];
+    assert!(stretched(&both, &ltc, 60_000, 4_800, 1024)[1].iter().any(|s| s.abs() > 0.5));
+}
