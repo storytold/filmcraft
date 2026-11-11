@@ -83,7 +83,7 @@ pub fn temp_dir() -> std::path::PathBuf {
 }
 
 /// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
-/// for and the same for the rest of the process. Use it, not a fixed name in the shared temp folder:
+/// for and the same for the rest of the process (a new one if the cached folder was removed). Use it, not a fixed name in the shared temp folder:
 /// another local user can pre-create that name and plant links in it. An error when no folder could
 /// be created (a missing `TMPDIR`): callers must not fall back to creating the path themselves, which
 /// would make it with the default mode. On wasm32 the virtual filesystem has no owner, so the path is
@@ -92,7 +92,8 @@ pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
     use std::hash::{BuildHasher, Hasher};
     static DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
     let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(d) = cached.as_ref() {
+    // a folder removed since (a temp cleaner) is replaced by a new private one, not recreated by a caller with the default mode
+    if let Some(d) = cached.as_ref().filter(|d| cfg!(target_arch = "wasm32") || d.is_dir()) {
         return Ok(d.clone());
     }
     let mut last = None;
