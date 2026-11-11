@@ -5,6 +5,10 @@
 //! The limiter's look-ahead delays its output; [`AudioOut`] mixes that many samples ahead (silence
 //! past the end of the range) and drops the first ones, so the exported audio stays aligned with
 //! the picture and exactly as long as the range.
+//!
+//! The measuring passes differ only in gain and limiter, so the range is mixed once: the first
+//! pass streams the folded mix to a temporary [`MixStore`] file and every later mix reads it back.
+//! If the file cannot be created, written or read, that mix is done live, with identical output.
 
 use std::sync::Arc;
 
@@ -14,6 +18,7 @@ use filmcraft_project::{ItemId, Project, Sequence};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
+use crate::mix_store::MixStore;
 use crate::{ExportError, ExportSettings, Result};
 
 /// What loudness normalization measured and did.
@@ -40,6 +45,14 @@ pub(crate) struct AudioOut {
     /// End of the range (samples); input past it is silence.
     end: i64,
     pub loudness: Option<LoudnessReport>,
+    /// The completed mix of the range, once the first measuring pass has written it.
+    store: Option<MixStore>,
+    /// True while measuring passes re-pull the range: the store must outlive their ends.
+    measuring: bool,
+    #[cfg(test)]
+    store_enabled: bool,
+    #[cfg(test)]
+    store_dir: Option<std::path::PathBuf>,
 }
 
 impl AudioOut {
@@ -61,7 +74,49 @@ impl AudioOut {
             l
         });
         let latency = limiter.as_ref().map(|l| l.latency() as i64).unwrap_or(0);
-        Ok(AudioOut { project, seq, sr, channels: r.channels as usize, gain: 1.0, limiter, latency, next_in: start, out: start, end, loudness: None })
+        Ok(AudioOut {
+            project,
+            seq,
+            sr,
+            channels: r.channels as usize,
+            gain: 1.0,
+            limiter,
+            latency,
+            next_in: start,
+            out: start,
+            end,
+            loudness: None,
+            store: None,
+            measuring: false,
+            #[cfg(test)]
+            store_enabled: true,
+            #[cfg(test)]
+            store_dir: None,
+        })
+    }
+
+    /// Test switch: mix live in every pass, as before the store existed.
+    #[cfg(test)]
+    pub fn disable_store(&mut self) {
+        self.store_enabled = false;
+    }
+
+    /// Test switch: where the store file goes instead of the system temporary directory.
+    #[cfg(test)]
+    pub fn set_store_dir(&mut self, dir: std::path::PathBuf) {
+        self.store_dir = Some(dir);
+    }
+
+    fn new_store(&self) -> Option<MixStore> {
+        #[cfg(test)]
+        {
+            if !self.store_enabled {
+                return None;
+            }
+            MixStore::create(self.out, self.channels, self.store_dir.as_deref())
+        }
+        #[cfg(not(test))]
+        MixStore::create(self.out, self.channels, None)
     }
 
     /// The loudness pass: measure the integrated loudness of the whole range and set the gain
@@ -73,16 +128,27 @@ impl AudioOut {
         }
         let mut meter = filmcraft_audio_dsp::LoudnessMeter::new(self.sr as f64, self.channels);
         let mut pos = self.out;
+        self.store = None;
+        let mut store = if pos < self.end { self.new_store() } else { None };
         while pos < self.end {
             if cancel() {
                 return Err(ExportError::Cancelled);
             }
             let n = (self.end - pos).min(self.sr as i64) as usize;
-            let buf = self.mix(pos, n, sources);
+            // live: the store being filled is not readable yet
+            let buf = self.mix_live(pos, n, sources);
+            if store.as_mut().is_some_and(|s| s.append(&buf).is_err()) {
+                store = None;
+            }
             let refs: Vec<&[f32]> = buf.iter().map(Vec::as_slice).collect();
             meter.process(&refs);
             pos += n as i64;
         }
+        if store.as_mut().is_some_and(|s| s.finish().is_err()) {
+            store = None;
+        }
+        self.store = store;
+        self.measuring = true;
         let measured = meter.integrated();
         let gain_db = filmcraft_audio_dsp::normalize_gain_db(measured, ln.target_lufs);
         // Limiting changes integrated loudness. Measure the actual limited signal and
@@ -99,6 +165,8 @@ impl AudioOut {
                 let mut limited = filmcraft_audio_dsp::LoudnessMeter::new(self.sr as f64, self.channels);
                 while self.out < self.end {
                     if cancel() {
+                        self.measuring = false;
+                        self.store = None;
                         self.rewind(start, best_gain);
                         return Err(ExportError::Cancelled);
                     }
@@ -126,6 +194,7 @@ impl AudioOut {
                 trial_gain += error.clamp(-3.0, 3.0);
             }
         }
+        self.measuring = false;
         self.rewind(start, best_gain);
         self.loudness = Some(LoudnessReport { measured_lufs: measured, gain_db: best_gain });
         Ok(())
@@ -145,6 +214,18 @@ impl AudioOut {
     /// Stereo output of a 5.1 Mix is the ITU-R BS.775 downmix; 5.1 output of a stereo Mix places it
     /// on L and R; 5.1 is in L, R, C, LFE, Ls, Rs order.
     fn mix(&self, pos: i64, n: usize, sources: &dyn SourceProvider) -> Vec<Vec<f32>> {
+        if let Some(store) = &self.store {
+            // the mixer's output does not depend on how requests are chunked, so a failed read
+            // falls back to mixing live for just this call
+            if let Ok(buf) = store.read(pos, n) {
+                return buf;
+            }
+        }
+        self.mix_live(pos, n, sources)
+    }
+
+    /// [`Self::mix`] straight from the sequence.
+    fn mix_live(&self, pos: i64, n: usize, sources: &dyn SourceProvider) -> Vec<Vec<f32>> {
         let real = (self.end - pos).clamp(0, n as i64) as usize;
         let out_ch = if self.channels == 6 { 6 } else { 2 };
         let mut st = if real > 0 {
@@ -194,6 +275,10 @@ impl AudioOut {
             c.resize(n_out, 0.0);
         }
         self.out = until;
+        if self.out >= self.end && !self.measuring {
+            // delivery is done: free the temporary file now
+            self.store = None;
+        }
         Some(buf)
     }
 

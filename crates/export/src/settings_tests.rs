@@ -1599,6 +1599,197 @@ fn loudness_normalization_corrects_limiter_loss_and_bounds_impossible_targets() 
     assert_eq!(reads_at_cancel.get(), Some(reads.load(Ordering::Relaxed)));
 }
 
+/// A 4 s sequence whose audio clip (Studio Reverb on it) reads through [`CrestSource`], which
+/// counts the source `audio()` reads.
+fn store_fixture() -> (Arc<Project>, ItemId, SourceMap, Arc<std::sync::atomic::AtomicUsize>) {
+    let mut p = Project::new("store");
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let dur = Tick(4 * TICKS_PER_SECOND);
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let g = GeneratorSource::new(Generator::Tone { hz: 440.0, db: -6.0 }, 64, 36, r, dur);
+    let info = g.info().clone();
+    let item = p.add_item(
+        "tone",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let mut sources = SourceMap::default();
+    sources.0.insert(item, Arc::new(CrestSource(Arc::new(g), reads.clone())) as Arc<dyn MediaSource>);
+    let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 36, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let mut clip = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(96)), r).unwrap();
+    clip.effects.extend(filmcraft_project::find_effect("studio_reverb").map(|d| d.instance()));
+    p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(clip);
+    (Arc::new(p), seq, sources, reads)
+}
+
+fn store_range() -> TimeRange {
+    TimeRange::new(Tick::ZERO, Tick(7 * TICKS_PER_SECOND / 2))
+}
+
+fn loudness_settings(channels: u32) -> ExportSettings {
+    let mut settings = ExportSettings::default();
+    settings.audio.channels = channels;
+    settings.effects.loudness = LoudnessNormalization { enabled: true, target_lufs: -14.0, true_peak_dbtp: -2.0 };
+    settings
+}
+
+fn planar_bits(planar: &[Vec<f32>]) -> Vec<Vec<u32>> {
+    planar.iter().map(|c| c.iter().map(|v| v.to_bits()).collect()).collect()
+}
+
+/// `measure`, then the output in one `rest` (or `pull`s of `chunk` samples).
+fn export_audio(
+    f: &(Arc<Project>, ItemId, SourceMap, Arc<std::sync::atomic::AtomicUsize>),
+    settings: &ExportSettings,
+    chunk: Option<usize>,
+    configure: impl FnOnce(&mut audio_out::AudioOut),
+    between: impl FnOnce(),
+) -> Vec<Vec<f32>> {
+    let (p, seq, sources, _) = f;
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, settings, store_range()).unwrap();
+    configure(&mut audio);
+    audio.measure(settings, sources, &|| false).unwrap();
+    between();
+    let Some(chunk) = chunk else {
+        return audio.rest(sources).unwrap();
+    };
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    while audio.remaining() > 0 {
+        let until = audio.out + chunk as i64;
+        if let Some(buf) = audio.pull(until, sources) {
+            out.resize(buf.len(), Vec::new());
+            for (o, b) in out.iter_mut().zip(buf) {
+                o.extend(b);
+            }
+        }
+    }
+    out
+}
+
+fn files_of(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect()
+}
+
+#[test]
+fn loudness_normalization_mixes_the_range_once() {
+    let f = store_fixture();
+    let (p, seq, sources, reads) = &f;
+    // the baseline: one plain pass over the range in the same 1 s chunks the measuring pass uses
+    let mut plain = audio_out::AudioOut::new(p.clone(), *seq, &ExportSettings::default(), store_range()).unwrap();
+    while plain.remaining() > 0 {
+        let until = plain.out + plain.sr as i64;
+        plain.pull(until, sources);
+    }
+    let one_pass = reads.swap(0, Ordering::Relaxed);
+    assert!(one_pass > 0);
+
+    let settings = loudness_settings(2);
+    export_audio(&f, &settings, None, |_| {}, || {});
+    let with_store = reads.swap(0, Ordering::Relaxed);
+    export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let without_store = reads.swap(0, Ordering::Relaxed);
+    assert!(without_store > with_store, "live passes mix repeatedly: {without_store} vs {with_store}");
+    assert_eq!(with_store, one_pass, "measure + rest must read the sources like one plain pass");
+}
+
+#[test]
+fn loudness_mix_store_output_is_bit_identical_to_live_mixing() {
+    for channels in [1, 2, 6] {
+        let f = store_fixture();
+        let settings = loudness_settings(channels);
+        for chunk in [None, Some(1000)] {
+            let live = export_audio(&f, &settings, chunk, audio_out::AudioOut::disable_store, || {});
+            let stored = export_audio(&f, &settings, chunk, |_| {}, || {});
+            assert_eq!(live.len(), channels as usize);
+            assert_eq!(live[0].len(), 168_000);
+            assert_eq!(planar_bits(&live), planar_bits(&stored), "channels={channels} chunk={chunk:?}");
+        }
+    }
+}
+
+#[test]
+fn loudness_mix_store_falls_back_when_the_file_cannot_be_made() {
+    let f = store_fixture();
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-missing");
+    let missing = dir.0.join("not-there");
+    let live = export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let stored = export_audio(&f, &settings, None, |a| a.set_store_dir(missing.clone()), || {});
+    assert_eq!(planar_bits(&live), planar_bits(&stored));
+    assert!(!missing.exists());
+}
+
+#[test]
+fn loudness_mix_store_falls_back_when_the_file_cannot_be_read() {
+    let f = store_fixture();
+    let settings = loudness_settings(2);
+    let dir = Scratch::new("mixstore-truncated");
+    let live = export_audio(&f, &settings, None, audio_out::AudioOut::disable_store, || {});
+    let stored = export_audio(
+        &f,
+        &settings,
+        None,
+        |a| a.set_store_dir(dir.0.clone()),
+        || {
+            let files = files_of(&dir.0);
+            assert_eq!(files.len(), 1, "{files:?}");
+            std::fs::OpenOptions::new().write(true).open(&files[0]).unwrap().set_len(0).unwrap();
+        },
+    );
+    assert_eq!(planar_bits(&live), planar_bits(&stored));
+}
+
+#[test]
+fn loudness_mix_store_file_is_removed_after_delivery_and_after_cancel() {
+    let f = store_fixture();
+    let (p, seq, sources, _) = &f;
+    let settings = loudness_settings(2);
+
+    // delivered: the file exists after measuring and is gone once the range has been pulled
+    let dir = Scratch::new("mixstore-delivered");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    audio.measure(&settings, sources, &|| false).unwrap();
+    assert_eq!(files_of(&dir.0).len(), 1);
+    audio.rest(sources).unwrap();
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+
+    // cancelled in the first pass, after a chunk was written
+    let dir = Scratch::new("mixstore-cancelled");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    let polls = std::cell::Cell::new(0);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 2
+    };
+    assert!(matches!(audio.measure(&settings, sources, &cancel), Err(ExportError::Cancelled)));
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+
+    // cancelled during a refinement pass
+    let dir = Scratch::new("mixstore-cancelled-late");
+    let mut audio = audio_out::AudioOut::new(p.clone(), *seq, &settings, store_range()).unwrap();
+    audio.set_store_dir(dir.0.clone());
+    let polls = std::cell::Cell::new(0);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        polls.get() > 6
+    };
+    assert!(matches!(audio.measure(&settings, sources, &cancel), Err(ExportError::Cancelled)));
+    assert!(files_of(&dir.0).is_empty(), "{:?}", files_of(&dir.0));
+}
+
 /// 32-bit integer and float audio in every container that takes them, read back by ffprobe (an
 /// external oracle) and, where FilmCraft imports the format, by FilmCraft's own readers.
 #[test]
