@@ -37,6 +37,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         enabled: has_video_selection,
         run: detect,
         journal: true,
+        named: crate::commands::NamedKeys::NONE,
     }]
 }
 
