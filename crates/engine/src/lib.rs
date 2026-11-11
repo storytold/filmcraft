@@ -84,26 +84,38 @@ pub fn temp_dir() -> std::path::PathBuf {
 
 /// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
 /// for and the same for the rest of the process. Use it, not a fixed name in the shared temp folder:
-/// another local user can pre-create that name and plant links in it.
-pub fn private_temp_dir() -> std::path::PathBuf {
+/// another local user can pre-create that name and plant links in it. An error when no folder could
+/// be created (a missing `TMPDIR`): callers must not fall back to creating the path themselves, which
+/// would make it with the default mode. On wasm32 the virtual filesystem has no owner, so the path is
+/// returned as is.
+pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
     use std::hash::{BuildHasher, Hasher};
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let mut path = std::path::PathBuf::new();
-        for _ in 0..16 {
-            let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
-            path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
-            let mut dir = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
-            // `create` fails when the name exists, so a folder someone else made is never accepted
-            if dir.create(&path).is_ok() {
-                break;
-            }
+    static DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+    let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = cached.as_ref() {
+        return Ok(d.clone());
+    }
+    let mut last = None;
+    for _ in 0..16 {
+        let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
+        if cfg!(target_arch = "wasm32") {
+            *cached = Some(path.clone());
+            return Ok(path);
         }
-        path
-    })
-    .clone()
+        let mut dir = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+        // `create` fails when the name exists, so a folder someone else made is never accepted
+        match dir.create(&path) {
+            Ok(()) => {
+                *cached = Some(path.clone());
+                return Ok(path);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no private temp folder")))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1499,9 +1511,9 @@ mod private_temp_dir_tests {
     #[test]
     fn the_private_temp_dir_is_new_owner_only_and_stable() {
         use std::os::unix::fs::PermissionsExt;
-        let d = super::private_temp_dir();
+        let d = super::private_temp_dir().unwrap();
         assert!(d.is_dir());
         assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(d, super::private_temp_dir());
+        assert_eq!(d, super::private_temp_dir().unwrap());
     }
 }
