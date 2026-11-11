@@ -67,7 +67,11 @@ jobs:
       # Same craft-fonts commit as ci.yml and release.yml.
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       timeout-minutes: 120
+      # The tests run under nextest (the gate installs it), as in `cargo xtask ci` on Linux: each
+      # test in a process of its own, with .config/nextest.toml's groups. Under `cargo test` the
+      # tests of one binary share a process, rayon's global pool included, so one test's work
+      # waits behind another's and the timing-bound UI tests fail now and then.
       windows-command: |
         pkgs=(-p filmcraft -p filmcraft-platform -p filmcraft-media -p filmcraft-engine -p filmcraft-gpu -p filmcraft-h264 -p filmcraft-ui-egui)
         cargo clippy "${pkgs[@]}" --all-targets --locked --keep-going -- -D warnings
-        cargo test "${pkgs[@]}" --locked --lib --bins --tests --no-fail-fast
+        cargo nextest run "${pkgs[@]}" --locked --lib --bins --tests --no-fail-fast
