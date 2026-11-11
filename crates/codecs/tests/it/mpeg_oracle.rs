@@ -709,3 +709,11 @@ fn generate_fixtures() {
         });
     }
 }
+
+/// Resampled audio must not depend on where a read starts (#4673): 48 kHz LPCM read at 44.1 kHz.
+#[test]
+fn resampled_audio_does_not_depend_on_the_read_cuts() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let src = open(&make(&ff, "ps_mpeg2_lpcm.vob"));
+    filmcraft_testkit::cuts::assert_cut_independent("vob LPCM 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+}

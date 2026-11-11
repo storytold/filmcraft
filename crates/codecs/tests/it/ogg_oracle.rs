@@ -227,3 +227,12 @@ fn generate_fixtures() {
         filmcraft_testkit::fixtures::generate_and_report(n, std::slice::from_ref(&out), || fixture(&ff, n, &spec(n)));
     }
 }
+
+/// Resampled audio must not depend on where a read starts (#4673): Opus (48 kHz) read at 44.1 kHz.
+#[test]
+fn resampled_opus_does_not_depend_on_the_read_cuts() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "ogg_opus_music.opus");
+    let src = OggSource::open("cuts.opus", bytes(&f)).unwrap();
+    filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+}

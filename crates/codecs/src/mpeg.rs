@@ -853,17 +853,7 @@ impl MediaSource for MpegSource {
             }
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let x = src[c].get(i0).copied().unwrap_or(0.0);
-                let y = src[c].get(i0 + 1).copied().unwrap_or(x);
-                out.channels[c][k] = x + (y - x) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, a.rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }

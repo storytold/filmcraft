@@ -434,3 +434,11 @@ fn generate_fixtures() {
         });
     }
 }
+
+/// Resampled audio must not depend on where a read starts (#4673): 48 kHz PCM read at 44.1 kHz.
+#[test]
+fn resampled_audio_does_not_depend_on_the_read_cuts() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let src = open(&make(&ff, "mxf_atom_pcm.mxf"));
+    filmcraft_testkit::cuts::assert_cut_independent("MXF PCM 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+}

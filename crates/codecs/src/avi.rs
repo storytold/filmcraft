@@ -575,19 +575,8 @@ impl MediaSource for AviSource {
             i += 1;
         }
         drop(st);
-        let frac = s0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for (c, o) in out.channels.iter_mut().enumerate() {
-            let Some(s) = src.get(c) else { continue };
-            for (k, d) in o.iter_mut().enumerate() {
-                let pos = k as f64 * ratio - frac;
-                let i0 = pos.floor().max(0.0) as usize;
-                let f = (pos - i0 as f64) as f32;
-                let a = s.get(i0).copied().unwrap_or(0.0);
-                let b = s.get(i0 + 1).copied().unwrap_or(a);
-                *d = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, ainfo.sample_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }

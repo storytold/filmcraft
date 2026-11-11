@@ -697,18 +697,8 @@ impl MediaSource for MkvSource {
             i += 1;
         }
         drop(st);
-        let frac = s0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -756,6 +746,18 @@ mod multi_audio_tests {
         assert!((primary.channels[0][20] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][20] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 50, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673).
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let mut t = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        t.audio = Some((48_000.0, 1, Some(16)));
+        let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![t], MuxOptions::default()).unwrap();
+        let pcm: Vec<u8> = (0..9_600).flat_map(|i| (((f64::from(i) * 0.05).sin() * 20_000.0) as i16).to_le_bytes()).collect();
+        writer.write_frame(0, 0, true, &pcm, Some(200_000_000)).unwrap();
+        let source = super::MkvSource::open("tone.mkv", writer.finish().unwrap().into_inner().into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("mkv 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| source.audio(s, n, 44_100).unwrap().channels);
     }
 }
 

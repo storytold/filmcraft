@@ -285,3 +285,10 @@ fn a_video_stream_with_pictures_comes_before_an_empty_one() {
         assert!(src.video_frame(at()).unwrap().to_rgba8() == good.video_frame(at()).unwrap().to_rgba8(), "frame {k}");
     }
 }
+
+/// Resampled audio must not depend on where a read starts (#4673): 48 kHz PCM read at 44.1 kHz.
+#[test]
+fn resampled_audio_does_not_depend_on_the_read_cuts() {
+    let Some((_, src)) = avi("avi_mjpeg_pcm.avi", &["-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p"], &["-c:a", "pcm_s16le"]) else { return };
+    filmcraft_testkit::cuts::assert_cut_independent("AVI PCM 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+}

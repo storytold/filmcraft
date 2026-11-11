@@ -252,17 +252,7 @@ impl MediaSource for OggSource {
             out.channels = src;
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, OPUS_RATE, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
