@@ -280,6 +280,20 @@ fn long_files_split_the_index_into_segments() {
 }
 
 #[test]
+fn an_edit_rate_above_the_sample_rate_is_rejected_for_every_pattern() {
+    for pattern in [Pattern::Op1a, Pattern::OpAtom] {
+        let mut cfg = WriterConfig::new(pattern, Rational::new(48_001, 1), PackageIds::from_seed("fast", "Fast"));
+        cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 1, bits: 16 }];
+        let err = MxfWriter::new(Cursor::new(Vec::new()), cfg).err().unwrap();
+        assert!(err.to_string().contains("above the sound sample rate"), "{err}");
+    }
+    // one sample per edit unit is the finest rate that stays valid
+    let mut cfg = WriterConfig::new(Pattern::OpAtom, Rational::new(48_000, 1), PackageIds::from_seed("fine", "Fine"));
+    cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 1, bits: 16 }];
+    assert!(MxfWriter::new(Cursor::new(Vec::new()), cfg).is_ok());
+}
+
+#[test]
 fn rejects_bad_configs() {
     let ids = PackageIds::from_seed("x", "x");
     let cfg = WriterConfig::new(Pattern::Op1a, Rational::new(25, 1), ids.clone());
