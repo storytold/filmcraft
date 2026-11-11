@@ -17,6 +17,10 @@ whisper = ["filmcraft-speech/whisper"]
 speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
+# Music generation: HTTPS for hosted providers and model downloads.
+music-download = ["filmcraft-music/download"]
+# Music generation: on-device Stable Audio 3 through ONNX Runtime (loaded at run time).
+music-native = ["music-download", "filmcraft-music/native"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -38,6 +42,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-music = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

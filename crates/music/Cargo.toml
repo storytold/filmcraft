@@ -1,0 +1,30 @@
+[package]
+name = "filmcraft-music"
+description = "FilmCraft music generation: a provider-agnostic interface, a native Stable Audio 3 pipeline and hosted audio-generation APIs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Local inference of the Stable Audio 3 graphs through ONNX Runtime. The runtime library is loaded
+# at run time (`load-dynamic`), not linked, so the build stays pure Rust. Off by default.
+native = ["dep:ort", "dep:tokenizers"]
+# HTTPS for the hosted providers and the model downloads (pure-Rust TLS, like filmcraft-speech).
+download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std", "coreml", "cuda", "directml"], optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"], optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+sha2 = { version = "0.10", optional = true }
