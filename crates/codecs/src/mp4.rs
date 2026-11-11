@@ -490,6 +490,9 @@ impl VideoSamples for Mp4Video<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read(self.track, i)
     }
+    fn sample_size(&self, i: usize) -> Option<u64> {
+        Some(u64::from(self.src.file.tracks.get(self.track)?.samples.get(i)?.size))
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         make_video_decoder(&self.src.file.tracks[self.track].entries[0])
     }
