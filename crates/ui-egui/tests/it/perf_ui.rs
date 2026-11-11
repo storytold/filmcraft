@@ -372,13 +372,19 @@ fn sequence_thumbnails_wait_for_edits_to_stop() {
     });
     d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 60.0}));
     let misses = d.harness.state().frames.stats().request_misses;
+    let edited_at = ctx.input(|i| i.time);
     assert!(thumb(&mut d).is_some(), "the old thumbnail stays up");
     assert_eq!(d.harness.state().frames.stats().request_misses, misses, "no thumbnail job right after an edit");
     let rev = d.harness.state().session.revision;
     let key = FrameKey { target: Target::Item(seq), frame: 0, size: 64, revision: rev, draft: false };
+    // only this key's frame is checked, so the Program monitor's own jobs after the edit don't count
     wait_for("the thumbnail of the edited sequence", Duration::from_millis(20), || {
         d.frames(1);
-        thumb(&mut d);
-        d.harness.state().frames.is_ready(&key)
+        let shown = thumb(&mut d).is_some();
+        let waited = ctx.input(|i| i.time) - edited_at;
+        let ready = d.harness.state().frames.is_ready(&key);
+        assert!(shown, "the old thumbnail stays up until the new one is ready ({waited:.2} s after the edit)");
+        assert!(!ready || waited >= 0.5, "the edited thumbnail was rendered {waited:.2} s after the edit, before the edits settled");
+        ready
     });
 }
