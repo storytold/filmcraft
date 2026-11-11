@@ -100,6 +100,11 @@ impl Plan {
     /// least as long as the crossfade and non-empty. Then no more than two pieces contribute to any
     /// output sample, and every position [`render`] computes fits in `i64`.
     pub fn is_playable(&self) -> bool {
+        self.is_playable_within(MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Self::is_playable`] with the output limit in the plan's own units: a plan stored in ticks
+    /// (see `filmcraft-render`'s `Remix`) passes the project's longest duration in ticks instead.
+    pub fn is_playable_within(&self, max_output: i64) -> bool {
         if self.pieces.is_empty() || self.pieces.len() > MAX_PIECES || self.xfade < 0 {
             return false;
         }
@@ -115,7 +120,7 @@ impl Plan {
                 return false;
             }
             match total.checked_add(p.len) {
-                Some(t) if t <= MAX_OUTPUT_SAMPLES => total = t,
+                Some(t) if t <= max_output => total = t,
                 _ => return false,
             }
         }
@@ -720,6 +725,10 @@ impl Plan {
     }
     /// Parses [`Plan::to_text`]; `None` unless the plan [is playable](Plan::is_playable).
     pub fn from_text(s: &str) -> Option<Plan> {
+        Plan::from_text_within(s, MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Plan::from_text`] with the output limit in the stored plan's units (see [`Plan::is_playable_within`]).
+    pub fn from_text_within(s: &str, max_output: i64) -> Option<Plan> {
         let mut it = s.split(';');
         let xfade = it.next()?.trim().parse().ok()?;
         let mut pieces = Vec::new();
@@ -731,7 +740,7 @@ impl Plan {
             pieces.push(Piece { src: a.trim().parse().ok()?, len: b.trim().parse().ok()? });
         }
         let plan = Plan { pieces, xfade };
-        plan.is_playable().then_some(plan)
+        plan.is_playable_within(max_output).then_some(plan)
     }
 }
 
