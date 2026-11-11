@@ -497,6 +497,9 @@ fn frame_hold_options_add_frame_hold_and_hold_segment() {
     assert_eq!(r["clips"].as_array().map(Vec::len), Some(1));
     let long = format!("00:00:03:{}", "0".repeat(100_000));
     assert!(s.execute("clip.frameHoldOptions", json!({"holdOn": "sourceTimecode", "timecode": long})).is_err());
+    // the limit counts characters, not bytes: 51 characters of multi-byte padding are accepted
+    let padded = format!("{pad}00:00:03:00{pad}", pad = "\u{3000}".repeat(20));
+    s.execute("clip.frameHoldOptions", json!({"holdOn": "sourceTimecode", "timecode": padded})).unwrap();
     s.execute("clip.frameHoldOptions", json!({"enabled": false})).unwrap();
     assert_eq!(clip(&s, c.id.0).frame_hold, None);
     // Hold Filters: effects animate through a hold unless it is on

@@ -359,7 +359,8 @@ fn dir_size_at(d: &Path, depth: u32) -> u64 {
     rd.filter_map(|e| e.ok())
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_size_at(&e.path(), depth + 1),
-            Ok(t) if t.is_symlink() => 0,
+            // a link to a file counts as the file (copy_dir copies it); links to folders are not followed
+            Ok(t) if t.is_symlink() => std::fs::metadata(e.path()).map_or(0, |m| if m.is_file() { m.len() } else { 0 }),
             _ => e.metadata().map_or(0, |m| m.len()),
         })
         .sum()
@@ -372,7 +373,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<u64> {
 /// Copy the files under `from` (not through symbolic links to folders, which could loop).
 fn copy_dir_at(from: &Path, to: &Path, depth: u32) -> std::io::Result<u64> {
     if depth > MAX_DIR_DEPTH {
-        return Ok(0);
+        return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
     }
     std::fs::create_dir_all(to)?;
     let mut n = 0;
@@ -422,6 +423,24 @@ mod folder_walk_tests {
         let out = dir.join("copy-out");
         assert_eq!(copy_dir(&dir.join("a"), &out).unwrap(), 10);
         assert!(out.join("b/f.bin").exists() && !out.join("loop0").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_links_count_and_a_too_deep_folder_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-walk2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("f.bin"), [0u8; 10]).unwrap();
+        std::os::unix::fs::symlink(dir.join("f.bin"), dir.join("a/link.bin")).unwrap();
+        assert_eq!(dir_size(&dir.join("a")), 10);
+        let mut deep = dir.join("deep");
+        for _ in 0..=MAX_DIR_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("f.bin"), [0u8; 1]).unwrap();
+        assert!(copy_dir(&dir.join("deep"), &dir.join("out")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

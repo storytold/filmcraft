@@ -29,7 +29,7 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
     let ph = s.playhead();
     let seq_t = time_p(s, p, "");
     let tc = str_p(p, "timecode").map(str::to_string);
-    if tc.as_ref().is_some_and(|t| t.len() > MAX_TIMECODE_LEN) {
+    if tc.as_ref().is_some_and(|t| t.chars().count() > MAX_TIMECODE_LEN) {
         return Err(bad("clip.frameHoldOptions", "timecode is too long"));
     }
     let rates: BTreeMap<ClipId, (FrameRate, i64)> = {
