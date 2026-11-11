@@ -49,7 +49,7 @@
             sed -i '/egui_demo_lib/d; /egui_inspection/d; /egui_system_font_provider/d' Cargo.toml
           '';
 
-          buildAndTestSubpackages = [ "apps/filmcraft" "apps/filmcraft-cli" ];
+          cargoBuildFlags = [ "-p" "filmcraft" "-p" "filmcraft-cli" ];
 
           # Disable tests during nix build to save RAM and avoid OOM (tests are run in CI)
           doCheck = false;
@@ -62,16 +62,7 @@
             makeWrapper
           ];
 
-          buildInputs = runtimeLibs ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-            AppKit
-            CoreAudio
-            CoreFoundation
-            CoreGraphics
-            CoreVideo
-            Foundation
-            Metal
-            Security
-          ]);
+          buildInputs = runtimeLibs;
 
           postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             install -Dm644 packaging/linux/ai.storyteller.filmcraft.desktop $out/share/applications/ai.storyteller.filmcraft.desktop
@@ -82,6 +73,8 @@
 
             wrapProgram $out/bin/filmcraft \
               --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
+            wrapProgram $out/bin/filmcraft-cli \
+              --suffix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
           '';
 
           meta = with lib; {
