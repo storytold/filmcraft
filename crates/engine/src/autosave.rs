@@ -584,6 +584,58 @@ fn lock_is_stale(dir: &Path) -> bool {
     }
 }
 
+/// Remove inactive clean or empty recovery sessions. A lock is held through content cleanup so
+/// a live worker can never lose its snapshot; unreadable metadata and dirty snapshots are kept.
+fn cleanup_inactive_sessions(data_dir: &Path, skip: Option<&Path>) {
+    let Ok(entries) = fs::read_dir(recovery_root(data_dir)) else { return };
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let dir = entry.path();
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) || Some(dir.as_path()) == skip {
+            continue;
+        }
+        let lock_path = dir.join(LOCK);
+        if !fs::symlink_metadata(&lock_path).is_ok_and(|meta| meta.file_type().is_file()) {
+            continue;
+        }
+        let Ok(lock) = File::options().read(true).write(true).open(&lock_path) else { continue };
+        if lock.try_lock().is_err() {
+            continue;
+        }
+
+        let snapshot = dir.join(SNAPSHOT);
+        let meta_path = dir.join(META);
+        let metadata = fs::read(&meta_path).ok().and_then(|bytes| serde_json::from_slice::<JournalMeta>(&bytes).ok());
+        let clean = metadata.as_ref().is_some_and(|meta| !meta.dirty);
+        let empty = !snapshot.exists() && !meta_path.exists();
+        if !clean && !empty {
+            continue;
+        }
+        let Ok(contents) = fs::read_dir(&dir) else { continue };
+        let Ok(contents) = contents.collect::<io::Result<Vec<_>>>() else { continue };
+        let safe_contents = contents.iter().all(|entry| {
+            let name = entry.file_name();
+            let expected = name == LOCK || name == SNAPSHOT || name == META;
+            expected && entry.file_type().is_ok_and(|kind| kind.is_file())
+        });
+        if !safe_contents {
+            continue;
+        }
+        if snapshot.exists() && fs::remove_file(&snapshot).is_err() {
+            continue;
+        }
+        if meta_path.exists() && fs::remove_file(&meta_path).is_err() {
+            continue;
+        }
+
+        // Session directory names are unique and are never reopened by a worker. Release the
+        // lock only after the snapshot is gone, then remove the lock file and empty directory.
+        drop(lock);
+        if fs::remove_file(&lock_path).is_ok() {
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+}
+
 /// Find snapshots of sessions that are no longer running. This read-only listing never deletes
 /// session data; `skip` is the caller's own session directory.
 pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCandidate> {
@@ -778,6 +830,7 @@ impl Persistence {
         let lock = File::options().create(true).truncate(false).read(true).write(true).open(session_dir.join(LOCK))?;
         // Unsupported locking only weakens stale detection; it must not stop the app.
         let _ = lock.try_lock();
+        cleanup_inactive_sessions(&cfg.data_dir, Some(&session_dir));
         let candidates = scan_candidates(&cfg.data_dir, Some(&session_dir));
         let (tx, rx) = channel();
         let (etx, events) = channel();
@@ -1187,10 +1240,7 @@ struct TestDir(std::path::PathBuf);
 impl TestDir {
     fn new(tag: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
         let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
         fs::create_dir(&path).unwrap();
@@ -1217,6 +1267,57 @@ impl Drop for TestDir {
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+
+    #[test]
+    fn cleanup_removes_inactive_clean_and_empty_sessions_only() {
+        let dir = TestDir::new("cleanup-sessions");
+        let root = recovery_root(&dir);
+
+        let clean = root.join("1-clean");
+        fs::create_dir_all(&clean).unwrap();
+        let lock = File::create(clean.join(LOCK)).unwrap();
+        lock.try_lock().unwrap();
+        drop(lock);
+        fs::write(clean.join(SNAPSHOT), b"clean snapshot").unwrap();
+        fs::write(clean.join(META), serde_json::to_vec(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        let empty = root.join("2-empty");
+        fs::create_dir_all(&empty).unwrap();
+        let lock = File::create(empty.join(LOCK)).unwrap();
+        lock.try_lock().unwrap();
+        drop(lock);
+
+        let dirty = root.join("3-dirty");
+        fs::create_dir_all(&dirty).unwrap();
+        let lock = File::create(dirty.join(LOCK)).unwrap();
+        lock.try_lock().unwrap();
+        drop(lock);
+        fs::write(dirty.join(SNAPSHOT), b"unsaved snapshot").unwrap();
+        fs::write(dirty.join(META), serde_json::to_vec(&JournalMeta { dirty: true, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        let unreadable = root.join("4-unreadable");
+        fs::create_dir_all(&unreadable).unwrap();
+        let lock = File::create(unreadable.join(LOCK)).unwrap();
+        lock.try_lock().unwrap();
+        drop(lock);
+        fs::write(unreadable.join(SNAPSHOT), b"possibly unsaved snapshot").unwrap();
+        fs::write(unreadable.join(META), b"not metadata").unwrap();
+
+        let active = root.join("5-active");
+        fs::create_dir_all(&active).unwrap();
+        let active_lock = File::create(active.join(LOCK)).unwrap();
+        let _ = active_lock.try_lock();
+        fs::write(active.join(SNAPSHOT), b"active snapshot").unwrap();
+        fs::write(active.join(META), serde_json::to_vec(&JournalMeta { dirty: false, ..JournalMeta::default() }).unwrap()).unwrap();
+
+        cleanup_inactive_sessions(&dir, None);
+
+        assert!(!clean.exists(), "inactive clean snapshots are removed");
+        assert!(!empty.exists(), "inactive empty sessions are removed");
+        assert_eq!(fs::read(dirty.join(SNAPSHOT)).unwrap(), b"unsaved snapshot");
+        assert_eq!(fs::read(unreadable.join(SNAPSHOT)).unwrap(), b"possibly unsaved snapshot");
+        assert_eq!(fs::read(active.join(SNAPSHOT)).unwrap(), b"active snapshot");
+    }
 
     #[test]
     fn scan_leaves_an_empty_session_without_a_stale_lock_alone() {
