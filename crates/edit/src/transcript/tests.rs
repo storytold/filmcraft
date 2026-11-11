@@ -293,32 +293,40 @@ fn a_filler_too_short_for_a_frame_stays_in_its_clip() {
 }
 
 /// A clip edge can fall inside a frame (a recorded take ends on a sample). A zero-length filler
-/// next to it takes only its own clip's part of that frame, not the clip beside it.
+/// takes only whole frames of its own clip, so the ripple keeps later clips on the frame grid: next
+/// to such an edge, it has a whole frame or is left.
 #[test]
-fn a_filler_too_short_for_a_frame_leaves_the_clip_beside_it_alone() {
-    let um = |q: &Sequence| {
+fn a_filler_too_short_for_a_frame_keeps_to_whole_frames_of_its_clip() {
+    let words_of = |q: &Sequence| {
         let w = sequence_words(q, &transcripts());
         assert_eq!(find_fillers(&w, &["um".to_string()]), vec![4..5]);
         w
     };
     let hit = 4..5;
     let cut = |v: &[SeqWord]| filler_ranges(v, std::slice::from_ref(&hit), R).iter().map(|r| (r.start, r.end())).collect::<Vec<_>>();
+    let on_frames = |r: &[(Tick, Tick)]| r.iter().all(|&(a, b)| R.snap(a) == a && R.snap(b) == b);
     // its clip ends at 4.02 s, inside the frame from 4.00 s; the next word is in the clip after it
     let mut q = seq();
     q.audio_tracks[0].items.push(clip(100, 0.0, 4.02, 0.0));
     q.audio_tracks[0].items.push(clip(101, 4.02, 5.98, 4.02));
-    let mut v = um(&q);
+    let mut v = words_of(&q);
     assert_ne!(v[4].clip, v[5].clip);
     (v[4].start, v[4].end) = (s(4.01), s(4.01));
-    assert_eq!(cut(&v), vec![(s(4.00), s(4.02))]);
+    assert!(cut(&v).is_empty(), "the frame from 4.00 s is partly the next clip's");
+    (v[4].start, v[4].end) = (s(3.97), s(3.97));
+    assert_eq!(cut(&v), vec![(s(3.96), s(4.00))], "a whole frame inside its clip");
     // its clip starts at 3.62 s, inside the frame from 3.60 s
     let mut q = seq();
     q.audio_tracks[0].items.push(clip(100, 0.0, 3.62, 0.0));
     q.audio_tracks[0].items.push(clip(101, 3.62, 6.38, 3.62));
-    let mut v = um(&q);
+    let mut v = words_of(&q);
     assert_eq!(v[4].clip, v[5].clip);
     (v[4].start, v[4].end) = (s(3.63), s(3.63));
-    assert_eq!(cut(&v), vec![(s(3.62), R.snap(v[5].start))]);
+    assert!(cut(&v).is_empty(), "the frame from 3.60 s is partly the clip before");
+    (v[4].start, v[4].end) = (s(3.65), s(3.65));
+    let r = cut(&v);
+    assert_eq!(r, vec![(s(3.64), R.snap(v[5].start))], "from its clip's first whole frame");
+    assert!(on_frames(&r));
 }
 
 #[test]

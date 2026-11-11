@@ -273,8 +273,10 @@ pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Rang
 /// zero-length word, as speech recognition often gives one, or one shorter than half a frame)
 /// takes the time from the frame it starts in up to the next word's start in the same clip, as a
 /// filler with real length takes its own span; with no later word in its clip, one frame (#4622).
-/// One the word before it ends inside the frame of, or whose next word starts in that frame, has
-/// no time of its own and is left.
+/// That time stays inside its clip on whole frames, so the ripple keeps every later clip on the
+/// frame grid. One the word before it ends inside the frame of, whose next word starts in that
+/// frame, or whose clip has no whole frame around it (a clip edge inside the frame: a recorded take
+/// ends on a sample) has no time of its own and is left.
 pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: FrameRate) -> Vec<TimeRange> {
     let mut out = Vec::new();
     for h in hits {
@@ -285,7 +287,10 @@ pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: F
         // Spanning no frame: from the frame it starts in, so the cut holds its moment.
         let no_frame = e <= s;
         if no_frame {
-            s = rate.snap(words[a].start);
+            // Not before its clip's first whole frame: the frame a clip edge falls in is shared.
+            let first = rate.snap(words[a].clip_range.start);
+            let first = if first < words[a].clip_range.start { first + rate.frame_duration() } else { first };
+            s = rate.snap(words[a].start).max(first);
         }
         if a > 0 && s < words[a - 1].end {
             s = rate.snap(words[a - 1].end) + rate.frame_duration();
@@ -298,11 +303,8 @@ pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: F
             e = match next {
                 Some(n) if n.clip == words[b].clip => rate.snap(n.start),
                 _ => s + rate.frame_duration(),
-            };
-            // The time it takes is its clip's: a clip edge inside the frame (a recorded take
-            // ends on a sample) leaves the rest of that frame to the clip beside it.
-            s = s.max(words[a].clip_range.start);
-            e = e.min(words[b].clip_range.end());
+            }
+            .min(rate.snap(words[b].clip_range.end()));
         }
         if let Some(n) = next
             && e > n.start
