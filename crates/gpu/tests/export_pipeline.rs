@@ -70,21 +70,15 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
     (Arc::new(p), seq, m)
 }
 
-/// One private folder per test process, never a predictable name another user could have prepared.
-fn out_dir() -> &'static std::path::Path {
-    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| tempfile::Builder::new().prefix("fc-gpu-export-").tempdir().unwrap().keep())
-}
-
-fn png(dir: &str, name: &str) -> Vec<u8> {
+fn png(base: &std::path::Path, dir: &str, name: &str) -> Vec<u8> {
     // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
     let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
-    std::fs::read(out_dir().join(format!("{dir}{index:03}.png"))).unwrap()
+    std::fs::read(base.join(format!("{dir}{index:03}.png"))).unwrap()
 }
 
-fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
+fn export_png(base: &std::path::Path, dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
     let (p, seq, m) = project(w, h);
-    let mut s = ExportSettings { format: Format::PngSequence, path: out_dir().join(dir).to_string_lossy().into_owned(), ..Default::default() };
+    let mut s = ExportSettings { format: Format::PngSequence, path: base.join(dir).to_string_lossy().into_owned(), ..Default::default() };
     s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
@@ -116,18 +110,21 @@ fn gpu_export_matches_cpu_and_counts() {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
     };
+    // A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
+    let tmp = tempfile::Builder::new().prefix("fc-gpu-export-").tempdir().unwrap();
+    let base = tmp.path();
     // Clean registry first: Auto with no factory must be byte-equal to Off.
-    export_png("off-cpu", GpuRendering::Off, (320, 180));
-    export_png("off-auto", GpuRendering::Auto, (320, 180));
-    assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
+    export_png(base, "off-cpu", GpuRendering::Off, (320, 180));
+    export_png(base, "off-auto", GpuRendering::Auto, (320, 180));
+    assert_eq!(png(base, "off-cpu", "img000.png"), png(base, "off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
     register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
-        export_png("cpu", GpuRendering::Off, size);
-        export_png("gpu", GpuRendering::Auto, size);
+        export_png(base, "cpu", GpuRendering::Off, size);
+        export_png(base, "gpu", GpuRendering::Auto, size);
         for f in ["000", "001"] {
-            assert_parity(&png("cpu", &format!("img{f}.png")), &png("gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
+            assert_parity(&png(base, "cpu", &format!("img{f}.png")), &png(base, "gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
         }
         let _ = i;
     }

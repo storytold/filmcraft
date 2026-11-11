@@ -138,8 +138,8 @@ fn main() {
     };
     let keep = arg(&args, "--keep").map(PathBuf::from);
     // A fresh private folder, never a predictable name another user could have prepared.
-    let dir = tempfile::Builder::new().prefix("filmcraft-bench-export-").tempdir().expect("temp dir").keep();
-    let out = keep.clone().unwrap_or_else(|| dir.join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
+    let dir = tempfile::Builder::new().prefix("filmcraft-bench-export-").tempdir().expect("temp dir");
+    let out = keep.clone().unwrap_or_else(|| dir.path().join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
     let mut s = session(&src);
     let mut times = Vec::new();
     let mut stages = Vec::new();
@@ -166,7 +166,4 @@ fn main() {
     sorted.sort_by(f64::total_cmp);
     println!("export {format}: runs {runs}, median {:.3} s, min {:.3} s", sorted[runs / 2], sorted[0]);
     println!("stages (last run): {}", stages.iter().map(|(n, s)| format!("{n} {s:.3}")).collect::<Vec<_>>().join(", "));
-    if keep.is_none() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
