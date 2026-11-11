@@ -109,7 +109,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let project_path = dest_dir.join(format!("{name}.fcproj")).to_string_lossy().into_owned();
 
     // ---- the new project
-    let mut proj = (*s.project).clone();
+    let mut proj = (**s.project).clone();
     if exclude_unused {
         let keep: BTreeSet<ItemId> = proj
             .items
@@ -401,11 +401,11 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Project Manager…",
         menu: &["File"],
         shortcut: None,
+        alt_shortcuts: &[],
         params: r#"{"destination":str,"mode":"collect|consolidate","sequences":[id]?,"excludeUnused":bool=true,"handles":frames=30,"preset":"prores_lt|prores_hq|h264|…","includeProxies":bool,"includePreviews":bool=false,"projectName":str?,"dryRun":bool=false,"overwrite":bool=false,"wait":bool=false}"#,
         enabled: |s| if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) },
         run,
         journal: false,
-        named: crate::commands::NamedKeys::NONE,
     }]
 }
 

@@ -207,7 +207,91 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
 }
 
 /// Execute a UI or engine command by id.
-pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    let result = match id {
+        LINK_EDIT_IN => save_first_then(app, ctx, id, params),
+        _ => invoke_gated(app, ctx, id, params),
+    };
+    if id == LINK_EDIT_IN
+        && let Err(why) = &result
+    {
+        report_link_edit_in(app, why);
+    }
+    result
+}
+
+/// Edit in EffectCraft writes its result next to the project file, so an unsaved project is saved
+/// first: ask where (Save As), then run `id` on the same selection. A cancelled dialog cancels the
+/// command and says so in the status line only. The check comes first: a call the command would
+/// refuse anyway (nothing selected) must not ask for a file name.
+///
+/// A host that shows the dialog without blocking answers later, so everything that needs the saved
+/// project runs in the dialog's continuation: it finds the path the save set, puts the selection
+/// back, and runs the command.
+fn save_first_then(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if app.session.path.is_none() && app.session.is_enabled(id) {
+        let selection = app.session.state.selection.clone();
+        let (ctx, id) = (ctx.clone(), id.to_owned());
+        return app.save_project_dialog(
+            "file.save",
+            Some(Box::new(move |app, saved| {
+                match saved {
+                    // The save failed. Its message is already on the status line.
+                    Some(Err(why)) => return Err(why),
+                    Some(Ok(_)) if app.session.path.is_some() => {}
+                    _ => {
+                        app.ui.status = tl!("Edit in EffectCraft cancelled").to_string();
+                        return Ok(Value::Null);
+                    }
+                }
+                // Saving does not move the selection, but the user may have clicked while the dialog was
+                // open. The command must link the clip that was selected when it started.
+                if app.session.state.selection != selection {
+                    app.session.state.selection = selection;
+                }
+                invoke_gated(app, &ctx, &id, params)
+            })),
+        );
+    }
+    invoke_gated(app, ctx, id, params)
+}
+
+/// Engine id of Clip ▸ Edit in EffectCraft.
+pub const LINK_EDIT_IN: &str = "link.editIn";
+
+/// A failed `link.editIn` must be seen wherever it started (menu, clip menu, key), so the status
+/// line says why. While a Craft Link dialog is up (EffectCraft is starting, a choice is waiting)
+/// that dialog is the message and the status line stays as it is.
+fn report_link_edit_in(app: &mut FilmcraftApp, why: &str) {
+    if app.hooks.dialog_label.as_ref().is_some_and(|label| label().is_some()) {
+        return;
+    }
+    app.ui.status = why.to_string();
+}
+
+fn invoke_gated(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    // Engine ids are gated inside `Session::execute`. This gate is only for ids execute does not resolve.
+    if app.session.registry.resolve(id).is_none() {
+        let gate = app.session.open_ui(id, &params)?;
+        let params = gate.params.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| invoke_body(app, ctx, id, params)));
+        match result {
+            Ok(value) => {
+                let outcome = if value.is_ok() { filmcraft_engine::UiOutcome::Ok } else { filmcraft_engine::UiOutcome::Err };
+                app.session.close_ui(gate, outcome);
+                value
+            }
+            Err(payload) => {
+                app.session.close_ui(gate, filmcraft_engine::UiOutcome::Panicked);
+                std::panic::resume_unwind(payload)
+            }
+        }
+    } else {
+        invoke_body(app, ctx, id, params)
+    }
+}
+
+fn invoke_body(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -920,6 +1004,10 @@ pub struct MenuItem {
     pub path: Vec<String>,
     pub shortcut: Option<String>,
     pub enabled: bool,
+    /// Why the entry is greyed (the command's own refusal text). `None` when it is enabled or no
+    /// reason is known. Menus show it as the hover text of the greyed entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Checkmark state of toggle / radio items (None = not checkable).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
@@ -994,9 +1082,25 @@ fn open_recent(items: &mut Vec<MenuItem>, session: &filmcraft_engine::Session, t
     let mut sub: Vec<MenuItem> = recent
         .iter()
         .enumerate()
-        .map(|(i, p)| MenuItem { id: format!("file.openRecent.{i}"), label: recent_name(p), path: path.clone(), shortcut: None, enabled: true, checked: None })
+        .map(|(i, p)| MenuItem {
+            id: format!("file.openRecent.{i}"),
+            label: recent_name(p),
+            path: path.clone(),
+            shortcut: None,
+            enabled: true,
+            reason: None,
+            checked: None,
+        })
         .collect();
-    sub.push(MenuItem { id: "file.clearRecent".into(), label: tr("Clear Recent Files"), path, shortcut: None, enabled: !recent.is_empty(), checked: None });
+    sub.push(MenuItem {
+        id: "file.clearRecent".into(),
+        label: tr("Clear Recent Files"),
+        path,
+        shortcut: None,
+        enabled: !recent.is_empty(),
+        reason: None,
+        checked: None,
+    });
     items.splice(at + 1..at + 1, sub);
 }
 
@@ -1019,23 +1123,14 @@ pub fn default_menu_items() -> Vec<MenuItem> {
 /// Menu entries with their live shortcuts and enablement.
 pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     let mut out = Vec::new();
-    for c in filmcraft_engine::command_specs() {
-        if c.menu.is_empty() {
-            continue;
-        }
+    for (id, label, path) in session.menu_command_rows() {
         // Edit ▸ Label items carry the names from Settings ▸ Labels
-        let label = match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
+        let label = match id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
             Some(l) => session.prefs.labels.name(l),
-            None => c.label.into(),
+            None => label,
         };
-        out.push(MenuItem {
-            id: c.id.into(),
-            label,
-            path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: session.shortcuts.primary(c.id),
-            enabled: session.is_enabled(c.id),
-            checked: None,
-        });
+        let reason = session.enabled_state(&id).err();
+        out.push(MenuItem { id: id.clone(), label, path, shortcut: session.shortcuts.primary(&id), enabled: reason.is_none(), reason, checked: None });
     }
     for c in UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS) {
         if c.menu.is_empty() {
@@ -1047,6 +1142,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             path: c.menu.iter().map(|s| s.to_string()).collect(),
             shortcut: session.shortcuts.primary(c.id),
             enabled: true,
+            reason: None,
             checked: None,
         });
     }
@@ -1057,6 +1153,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             path: vec!["Window".into()],
             shortcut: session.shortcuts.primary(&panel_command_id(p)),
             enabled: true,
+            reason: None,
             checked: None,
         });
     }
@@ -1240,7 +1337,9 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // The bar's titles and their menus share one size and colour, as in a native menu bar.
     egui::MenuBar::new().style(crate::theme::menu_style).config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         let mut titles = Vec::with_capacity(MENUS.len());
-        for top in MENUS {
+        // Plug-ins add their own top-level menu ("Plugins") when a command asks for it.
+        let plugins_menu = items.iter().any(|i| i.path.first().map(String::as_str) == Some("Plugins")).then_some("Plugins");
+        for top in MENUS.into_iter().chain(plugins_menu) {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
             let r = ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
@@ -1355,6 +1454,15 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
+/// Hover text for a greyed entry: the reason the command refuses. Enabled entries and entries with
+/// no known reason are returned unchanged. Every menu that greys an entry goes through this.
+pub fn disabled_hint(response: egui::Response, reason: Option<&str>) -> egui::Response {
+    match reason {
+        Some(why) => response.on_disabled_hover_text(why),
+        None => response,
+    }
+}
+
 /// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
 /// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
 /// arrow cursor, lined up with its tip.
@@ -1390,6 +1498,7 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
     if let Some(hint) = crate::links::menu_hint(&it.id) {
         hint_at_pointer(ui, &r, hint);
     }
+    let r = disabled_hint(r, it.reason.as_deref());
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {
         paint_swatch(ui, r.rect, color);

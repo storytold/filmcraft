@@ -10,6 +10,7 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_project::{EffectInstance, ParamValue};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::image::Image;
 
@@ -95,6 +96,22 @@ pub(crate) fn hash3(x: usize, y: usize, z: u64) -> f32 {
     h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     h ^= h >> 29;
     (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// A plug-in effect: draws into the layer image. An `Err` leaves the image as it was.
+pub type PluginFx = Arc<dyn Fn(&mut Image, &EffectInstance, &FxCtx) -> Result<(), String> + Send + Sync>;
+
+static PLUGIN_FX: RwLock<Vec<(String, PluginFx)>> = RwLock::new(Vec::new());
+
+/// Route effect `id`, which no built-in handles, to `fx`. Replaces the same id.
+pub fn register_plugin_fx(id: &str, fx: PluginFx) {
+    let mut all = PLUGIN_FX.write().unwrap_or_else(PoisonError::into_inner);
+    all.retain(|(known, _)| known != id);
+    all.push((id.to_owned(), fx));
+}
+
+pub fn unregister_plugin_fx(id: &str) {
+    PLUGIN_FX.write().unwrap_or_else(PoisonError::into_inner).retain(|(known, _)| known != id);
 }
 
 /// Apply one effect. Unknown/unimplemented ids are a no-op (they still round-trip in the project).
@@ -505,7 +522,12 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let box_alpha = if e.effect == "timecode" { (f(e, "opacity", cx) / 100.0).clamp(0.0, 1.0) * 0.8 } else { 0.8 };
             crate::graphics::burn_text(img, &text, family, pos, px, box_alpha);
         }
-        _ => {}
+        id => {
+            let fx = PLUGIN_FX.read().unwrap_or_else(PoisonError::into_inner).iter().find(|(known, _)| known == id).map(|(_, fx)| Arc::clone(fx));
+            if let Some(Err(why)) = fx.map(|fx| fx(img, e, cx)) {
+                log::warn!("plug-in effect {id}: {why}");
+            }
+        }
     }
 }
 
@@ -1859,5 +1881,51 @@ mod lumetri_cpu_parity_tests {
 
         let oval = render(-100.0);
         assert!(red(&oval, 79, 20) > red(&ellipse, 79, 20), "negative values widen the oval");
+    }
+}
+
+#[cfg(test)]
+mod plugin_fx_tests {
+    use super::*;
+
+    #[test]
+    fn a_plugin_effect_runs_for_an_id_no_built_in_handles_and_an_error_changes_nothing() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            mask_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: Default::default(),
+        };
+        let instance = |id: &str| EffectInstance {
+            effect: id.into(),
+            enabled: true,
+            params: Default::default(),
+            masks: vec![],
+            post_fader: false,
+            essential: false,
+            layer: None,
+        };
+        register_plugin_fx(
+            "test.halve",
+            Arc::new(|img, _, _| {
+                img.px.iter_mut().for_each(|v| *v *= 0.5);
+                Ok(())
+            }),
+        );
+        register_plugin_fx("test.fail", Arc::new(|_, _, _| Err("no".into())));
+        let mut img = Image::filled(2, 2, [0.8, 0.4, 0.2, 1.0]);
+        apply(&mut img, &instance("test.fail"), &cx);
+        assert_eq!(img.get(0, 0), [0.8, 0.4, 0.2, 1.0]);
+        apply(&mut img, &instance("test.halve"), &cx);
+        assert_eq!(img.get(1, 1), [0.4, 0.2, 0.1, 0.5]);
+        unregister_plugin_fx("test.halve");
+        apply(&mut img, &instance("test.halve"), &cx);
+        assert_eq!(img.get(1, 1), [0.4, 0.2, 0.1, 0.5], "an unregistered id is a no-op again");
     }
 }

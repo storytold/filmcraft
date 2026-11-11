@@ -146,13 +146,13 @@ fn paste_attributes_with_scaled_keyframes_and_remove_attributes() {
     // animate scale over the whole of clip A (media time keyframes)
     let a_now = clip(&s, a.id.0);
     {
-        let mut p = (*s.project).clone();
+        let mut p = (**s.project).clone();
         let seq = s.state.active_sequence.unwrap();
         let it = p.sequence_mut(seq).unwrap().find_item_mut(a.id).unwrap().1;
         let sc = it.effect_mut("motion").unwrap().param_mut("scale").unwrap();
         sc.put_keyframe(a_now.source_in, filmcraft_project::ParamValue::Float(100.0));
         sc.put_keyframe(a_now.source_out(), filmcraft_project::ParamValue::Float(200.0));
-        s.project = std::sync::Arc::new(p);
+        s.set_project(std::sync::Arc::new(p));
     }
     select(&mut s, &[a.id.0]);
     s.execute("edit.copy", json!({})).unwrap();
@@ -427,13 +427,13 @@ fn modify_audio_channels_and_breakout_to_mono() {
     let right = s.project.item(made[1]).unwrap().as_media().unwrap().interpret.audio_channels.clone().unwrap();
     assert_eq!(right.clips, vec![vec![1]]);
     s.state.project_selection = vec![item_named(&s, "Bars and Tone")];
-    s.project = std::sync::Arc::new({
-        let mut p = (*s.project).clone();
+    s.set_project(std::sync::Arc::new({
+        let mut p = (**s.project).clone();
         if let Some(m) = p.item_mut(item_named(&s, "Bars and Tone")).and_then(|i| i.as_media_mut()) {
             m.info.audio_streams.clear();
         }
         p
-    });
+    }));
     assert!(s.execute("clip.breakoutToMono", json!({})).is_err(), "no audio");
 }
 
@@ -776,7 +776,7 @@ fn replace_from_bin_keeps_the_source_in_on_request() {
     assert_eq!((clip(&s, c.id.0).item, clip(&s, c.id.0).source_in), (dunes, Tick::ZERO));
     assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": []}));
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     // keepSourceIn: the same place in the new media, everything else as before
     let r = s.execute("clip.replaceFromBin", json!({"keepSourceIn": true})).unwrap();
     let got = clip(&s, c.id.0);
@@ -784,9 +784,9 @@ fn replace_from_bin_keeps_the_source_in_on_request() {
     assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": [], "sourceInClamped": []}));
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("clip.replaceFromBin", json!({"keepSourceIn": false})).unwrap();
     assert_eq!(clip(&s, c.id.0).source_in, Tick::ZERO);
@@ -854,9 +854,9 @@ fn replace_with_clip_reports_clips_that_run_past_the_new_media() {
     assert_eq!(r["short"], json!([{"clip": c.id.0, "shortByFrames": slot - 12}]));
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(*s.project, *before);
+    assert_eq!(**s.project, *before);
     s.execute("edit.redo", json!({})).unwrap();
-    assert_eq!(*s.project, *after);
+    assert_eq!(**s.project, *after);
     s.execute("edit.undo", json!({})).unwrap();
     // long enough media: nothing is short
     assert_eq!(s.execute("clip.replaceFromBin", json!({"item": forest.0})).unwrap()["short"], json!([]));
@@ -919,7 +919,7 @@ fn subclip_source_monitor_trims_and_markers() {
     let r24 = filmcraft_time::FrameRate::FPS_23_976;
     let f = |n: i64| r24.tick_of(n);
     // clip markers on the master clip at frames 10, 30, 60 and 90
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     if let Some(ItemKind::Media(m)) = p.item_mut(ocean).map(|i| &mut i.kind) {
         for (k, n) in [10, 30, 60, 90].into_iter().enumerate() {
             m.markers.push(filmcraft_project::Marker {
@@ -936,7 +936,7 @@ fn subclip_source_monitor_trims_and_markers() {
             });
         }
     }
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.execute("project.setMarks", json!({"item": ocean.0, "in": f(24).0, "out": f(71).0})).unwrap();
     s.execute("project.select", json!({"items": [ocean.0]})).unwrap();
     s.state.source_item = None;
@@ -1092,7 +1092,7 @@ fn edits_leave_untouched_sequences_alone() {
     let mut s = Session::default();
     let old = s.execute("file.newSequence", json!({"name": "Old", "video": 1, "audio": 0})).unwrap()["sequence"].as_u64().unwrap();
     {
-        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(ItemId(old)).unwrap();
+        let q = s.project_mut().sequence_mut(ItemId(old)).unwrap();
         q.video_tracks[0].transitions.push(filmcraft_project::Transition {
             id: filmcraft_project::TransitionId(9999),
             effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
@@ -1119,7 +1119,7 @@ fn a_cyclic_subclip_chain_has_no_media_duration() {
     s.execute("source.open", json!({"item": ocean.0})).unwrap();
     let sub = ItemId(s.execute("clip.makeSubclip", json!({})).unwrap()["item"].as_u64().unwrap());
     s.execute("clip.editSubclip", json!({"item": sub.0, "restrictTrims": false})).unwrap();
-    let Some(ItemKind::Subclip { parent, .. }) = std::sync::Arc::make_mut(&mut s.project).item_mut(sub).map(|i| &mut i.kind) else { panic!() };
+    let Some(ItemKind::Subclip { parent, .. }) = s.project_mut().item_mut(sub).map(|i| &mut i.kind) else { panic!() };
     *parent = sub;
     assert_eq!(crate::media_duration(&s.project, &s.media, sub), None);
 }
@@ -1308,7 +1308,7 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
     // an older project: Motion without its Rotation entry
     {
-        let p = std::sync::Arc::make_mut(&mut s.project);
+        let p = s.project_mut();
         let q = p.sequence_mut(seq).unwrap();
         let (_, it) = q.find_item_mut(clip).unwrap();
         let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();

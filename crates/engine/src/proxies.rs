@@ -641,17 +641,18 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Create Proxies…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half"?,"destination":str?,"attach":bool=true,"wait":bool=false}"#,
             enabled: has_file_media,
             run: create,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.attachProxies",
             label: "Attach Proxies…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str}|{"items":[id],"paths":[str]},"force":bool=false"#,
             enabled: has_file_media,
             run: |s, p| {
@@ -665,13 +666,13 @@ pub fn commands() -> Vec<CommandSpec> {
                 attach(s, &pairs, bool_p(p, "force").unwrap_or(false))
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.detachProxies",
             label: "Detach Proxies",
             menu: &["Clip", "Proxy"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"items":[id]?}"#,
             enabled: has_file_media,
             run: |s, p| {
@@ -690,13 +691,13 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"detached": n}))
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.reconnectFullRes",
             label: "Reconnect Full Resolution Media…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str}"#,
             enabled: has_file_media,
             run: |s, p| {
@@ -710,13 +711,13 @@ pub fn commands() -> Vec<CommandSpec> {
                 crate::relink::relink(s, &q)
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.toggleProxies",
             label: "Toggle Proxies",
             menu: &["View"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"enabled":bool?}"#,
             enabled: always,
             run: |s, p| {
@@ -728,24 +729,24 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": on, "clipsWithProxies": attached}))
             },
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.proxyPresets",
             label: "Proxy Presets",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default()),
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "project.ingestSettings",
             label: "Ingest Settings…",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"enabled":bool?,"action":"copy|transcode|createProxies|copyAndCreateProxies"?,"destination":str?,"preset":str?}"#,
             enabled: always,
             run: |s, p| {
@@ -778,7 +779,6 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(serde_json::to_value(&s.project.settings.ingest).unwrap_or_default())
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

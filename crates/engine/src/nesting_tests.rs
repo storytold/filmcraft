@@ -85,12 +85,12 @@ fn a_project_opened_with_a_cycle_can_still_be_edited_and_repaired() {
     let mut s = demo();
     let a = s.state.active_sequence.unwrap();
     // what a damaged project file would hold: the sequence on its own track
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = p.sequence(a).unwrap().settings.frame_rate;
     let it = p.make_track_item(a, TrackKind::Video, Tick(900 * filmcraft_time::TICKS_PER_SECOND), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
     let bad = it.id;
     p.sequence_mut(a).unwrap().video_tracks[0].items.push(it);
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     assert_eq!(s.project.nest_cycle(), Some(a));
     // unrelated edits still work
     let first = clip_ids(&s, TrackKind::Video, 0)[0];
@@ -396,7 +396,7 @@ fn a_nest_whose_sound_track_is_taken_is_picture_only_and_moves_up_a_video_track(
     };
     let sounds: Vec<filmcraft_project::TrackItem> =
         s.active_sequence().unwrap().audio_tracks[0].items.iter().filter(|i| i.link == first.link || i.link == third.link).cloned().collect();
-    let before = (*s.project).clone();
+    let before = (**s.project).clone();
     let (nested, clips) = nest_of(&mut s, &[first.id, third.id], "Around");
     let q = s.active_sequence().unwrap();
     q.check().expect("no two clips overlap on a track");

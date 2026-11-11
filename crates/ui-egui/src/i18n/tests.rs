@@ -441,7 +441,7 @@ fn dynamic_names() -> Vec<String> {
     }
     // every command (Keyboard Shortcuts dialog, History panel) and the shortcut contexts
     let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-    for c in app.session.shortcuts.commands() {
+    for c in app.session.shortcuts.commands(&app.session.registry) {
         push(&mut out, &c.label);
         push(&mut out, &c.category);
     }

@@ -630,6 +630,8 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
         "status": status,
         "identity": m.identity,
         "proxy": proxy,
+        "link": s.link_badges.get(&id),
+        "link_frames": s.link_frames.get(&id).map(|(live, late, fallback)| json!({"live": live, "late": late, "fallback": fallback})),
     }))
 }
 
@@ -640,6 +642,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Find Missing Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: |s, _| {
@@ -647,13 +650,13 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.status",
             label: "Media Status",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id?}"#,
             enabled: always,
             run: |s, p| {
@@ -664,13 +667,13 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(Value::Array(ids.into_iter().filter_map(|i| status_json(s, i)).collect()))
             },
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.linkMedia",
             label: "Link Media…",
             menu: &["File"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{}  (opens the Link Media dialog; agents use media.relink / media.autoRelink)"#,
             enabled: always,
             run: |s, _| {
@@ -679,35 +682,35 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"missing": list}))
             },
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.relink",
             label: "Relink Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.refreshChanged",
             label: "Refresh Changed Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: crate::media_watch::refresh_changed,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.replaceFootage",
             label: "Replace Footage…",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id,"path":str}"#,
             enabled: always,
             run: |s, p| {
@@ -717,35 +720,35 @@ pub fn commands() -> Vec<CommandSpec> {
                 relink(s, &q)
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.autoRelink",
             label: "Relink Moved Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"from":str,"to":str}|{"folder":str} + match options"#,
             enabled: always,
             run: auto_relink,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.search",
             label: "Search for Media",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"folder":str,"item":id?,"exactName":bool=true}"#,
             enabled: always,
             run: |s, p| search(s, p),
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.makeOffline",
             label: "Make Offline…",
             menu: &["File"],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"items":[id]?,"deleteFiles":bool=false}"#,
             enabled: |s| {
                 let any = s
@@ -757,18 +760,17 @@ pub fn commands() -> Vec<CommandSpec> {
             },
             run: make_offline,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.offlineAll",
             label: "Offline All",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
             run: offline_all,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

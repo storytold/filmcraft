@@ -114,11 +114,10 @@ fn single_frame_in_out_warning_follows_the_selected_range() {
     let mut s = demo();
     for rate in [filmcraft_time::FrameRate::FPS_25, filmcraft_time::FrameRate::FPS_23_976] {
         let seq = s.state.active_sequence.unwrap();
-        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = rate;
+        s.project_mut().sequence_mut(seq).unwrap().settings.frame_rate = rate;
         s.execute("markers.markIn", json!({"frame": 12})).unwrap();
         s.execute("markers.markOut", json!({"frame": 12})).unwrap();
-        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().work_area =
-            Some(filmcraft_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
+        s.project_mut().sequence_mut(seq).unwrap().work_area = Some(filmcraft_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
         for p in [json!({}), json!({"range":null}), json!({"range":"inOut"}), json!({"range":{"mode":"Sequence In/Out"}})] {
             let v = s.execute("export.resolve", p.clone()).unwrap();
             assert_eq!(v["frames"], 1, "{p}: {v}");
@@ -146,7 +145,7 @@ fn single_frame_in_out_warning_follows_the_selected_range() {
     }
     // A one-frame sequence without marks is intentional and must stay quiet.
     let seq = s.state.active_sequence.unwrap();
-    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    let q = s.project_mut().sequence_mut(seq).unwrap();
     q.mark_in = None;
     q.mark_out = None;
     q.video_tracks.clear();
@@ -1082,7 +1081,7 @@ fn caption_sidecars_keep_only_the_exported_interval() {
     // Every time is both a millisecond and an exact frame boundary at 25 fps.
     let fixture = "WEBVTT\n\nSTYLE\n::cue { color: yellow }\n\nREGION\nid:bottom\n\nNOTE original fixture\n\nbefore\n00:00:00.000 --> 00:00:01.000\nBefore\n\nin\n00:00:01.600 --> 00:00:02.400 line:90% align:center\n<v Ann>Crossing In\n\ninside\n00:00:03.000 --> 00:00:04.000\nInside\n\nout\n00:00:04.600 --> 00:00:05.400\nCrossing Out\n\nafter\n00:00:06.000 --> 00:00:07.000\nAfter\n";
     let (mut s, files) = session(fixture);
-    let original = serde_json::to_value(&s.project).unwrap();
+    let original = serde_json::to_value(&*s.project).unwrap();
     let history = s.execute("history.list", json!({})).unwrap();
     let ticks = |tenths: i64| Tick(tenths * (TICKS_PER_SECOND / 10));
     let expected = [(ticks(0), ticks(4), "Crossing In"), (ticks(10), ticks(20), "Inside"), (ticks(26), ticks(30), "Crossing Out")];
@@ -1116,7 +1115,7 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         let standalone = filmcraft_captions::parse(files.0.lock().unwrap().get(&path).unwrap(), format).unwrap();
         assert_eq!(standalone, all);
     }
-    assert_eq!(serde_json::to_value(&s.project).unwrap(), original, "export must not trim the project captions");
+    assert_eq!(serde_json::to_value(&*s.project).unwrap(), original, "export must not trim the project captions");
     assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
 
     let (mut edge, edge_files) = session("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nEnds at In\n\n00:00:05.000 --> 00:00:06.000\nStarts at Out\n");

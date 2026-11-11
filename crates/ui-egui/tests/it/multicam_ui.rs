@@ -75,9 +75,9 @@ fn session() -> (Session, Vec<u64>) {
     let mut s = Session::default();
     let r = s.execute("file.import", json!({"paths": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
     let items: Vec<u64> = r["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let seq = p.new_sequence("Cut", SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     s.state.active_sequence = Some(seq);
     s.state.open_sequences = vec![seq];
     (s, items)
@@ -323,9 +323,9 @@ fn many_angle_session() -> (Session, u64) {
 /// A session with the empty sequence "Cut" and nothing imported.
 fn session_empty() -> (Session, ()) {
     let mut s = Session::default();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let seq = p.new_sequence("Cut", SequenceSettings { width: W, height: H, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 2, None);
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     s.state.active_sequence = Some(seq);
     s.state.open_sequences = vec![seq];
     (s, ())

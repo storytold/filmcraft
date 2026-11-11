@@ -1,0 +1,36 @@
+[package]
+name = "filmcraft-plugins"
+description = "FilmCraft side of the suite plug-in host (craft-abi 1): Services over a Session, install flow, plug-in manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craft-command = { workspace = true }
+craft-ipc = { workspace = true }
+craft-plugin-abi = { workspace = true }
+craft-plugin-host = { workspace = true, features = ["wasmi", "deterministic", "link"] }
+craft-plugin-ui = { workspace = true, features = ["host"] }
+filmcraft-engine = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-render = { workspace = true }
+egui = { workspace = true }
+getrandom = "0.3"
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+filmcraft-format = { workspace = true }
+filmcraft-link = { workspace = true }
+filmcraft-ui-egui = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-time = { workspace = true }
+egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+wat = "1.262.0"

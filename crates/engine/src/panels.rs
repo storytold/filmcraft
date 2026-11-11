@@ -387,17 +387,7 @@ fn notes_set(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------ registry
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
-    let q = |id, label, params, run| CommandSpec {
-        id,
-        label,
-        menu: &[],
-        shortcut: None,
-        params,
-        enabled: always,
-        run,
-        journal: false,
-        named: crate::commands::NamedKeys::NONE,
-    };
+    let q = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: always, run, journal: false };
     vec![
         q("events.list", "List Events", r#"{"level":"info|warning|error"?,"since":id?}"#, events_list),
         CommandSpec {
@@ -405,6 +395,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Clear All Events",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: "{}",
             enabled: always,
             run: |s, _| {
@@ -413,7 +404,6 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"cleared": n}))
             },
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         q("metadata.get", "Get Metadata", r#"{"item":id?,"clip":id?}"#, metadata_get),
         CommandSpec {
@@ -421,11 +411,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Edit Metadata",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"item":id?,"clip":id?,"field":"Name|Label|Description|Scene|Shot|Log Note|Comment|Tape Name|Client|Camera Angle|…","value":str} | {"item":id?,"fields":{name:str}}"#,
             enabled: always,
             run: metadata_set,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         q("project.notes", "Get Project Notes", "{}", notes_get),
         CommandSpec {
@@ -433,11 +423,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Edit Project Notes",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"text":str,"merge":str?}"#,
             enabled: always,
             run: notes_set,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

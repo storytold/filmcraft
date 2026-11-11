@@ -51,7 +51,7 @@ fn specs_append_container_streams_after_channel_map_clips() {
 #[test]
 fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
     let mut s = Session::default();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = FrameRate::FPS_24;
     let seq = p.new_sequence("Two streams", Default::default(), 1, 1, None);
     let source = filmcraft_media::generators::GeneratorSource::new(filmcraft_media::Generator::BarsAndTone, 32, 32, rate, rate.tick_of(24));
@@ -77,7 +77,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
         let q = p.sequence(seq).unwrap();
         (q.video_tracks[0].id, q.audio_tracks[0].id)
     };
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(seq);
     let ids = crate::commands::place_item(
         &mut s,
@@ -108,7 +108,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
 #[test]
 fn clip_peaks_measure_the_stream_the_clip_plays() {
     let mut s = Session::default();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = FrameRate::FPS_24;
     let seq = p.new_sequence("Two streams", Default::default(), 1, 1, None);
     let source = filmcraft_media::generators::GeneratorSource::new(filmcraft_media::Generator::BarsAndTone, 32, 32, rate, rate.tick_of(24));
@@ -134,7 +134,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
         let q = p.sequence(seq).unwrap();
         (q.video_tracks[0].id, q.audio_tracks[0].id)
     };
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     s.state.active_sequence = Some(seq);
     let ids = crate::commands::place_item(
         &mut s,
@@ -164,7 +164,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
 fn missing_audio_tracks_are_cloned_from_the_destination() {
     let s = demo();
     let seq = active(&s);
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let have = p.sequence(seq).map(|q| q.audio_tracks.len()).unwrap_or(0);
     assert!(have >= 1);
     if let Some(t) = p.sequence_mut(seq).and_then(|q| q.audio_tracks.get_mut(0)) {
@@ -220,7 +220,7 @@ fn import_keeps_every_audio_stream_and_places_linked_clips() {
 fn hostile_track_counts_are_an_error_not_a_crash() {
     let s = demo();
     let seq = active(&s);
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     assert!(ensure_audio_tracks(&mut p, seq, usize::MAX, usize::MAX, "test").is_err());
     assert!(ensure_audio_tracks(&mut p, seq, 0, 1_000_000, "test").is_err());
     assert!(ensure_audio_tracks(&mut p, ItemId(u64::MAX), 0, 1, "test").is_err());

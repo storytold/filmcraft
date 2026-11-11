@@ -37,10 +37,10 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut: None, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: always, run, journal: false }
 }
 
 const G: &[&str] = &["Graphics and Titles"];
@@ -1003,7 +1003,7 @@ pub fn sync_source_graphics(s: &mut Session) {
     if s.project.source_graphics.is_empty() {
         return;
     }
-    let p = Arc::make_mut(&mut s.project);
+    let p = s.project_mut();
     let items: Vec<ItemId> = p.source_graphics.keys().copied().collect();
     for item in items {
         let master = p.source_graphics[&item].clone();
@@ -1082,7 +1082,7 @@ pub fn fonts_used(s: &Session) -> Vec<(String, String, usize)> {
         Some(x) => x.2 += 1,
         None => v.push((fam, st, 1)),
     };
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     for_each_layer(&mut p, |e| {
         let (fam, st) = (text_of(e, "font"), text_of(e, "font_style"));
         add(if fam.is_empty() { "Inter".into() } else { fam.clone() }, if st.is_empty() { "Regular".into() } else { st.clone() });

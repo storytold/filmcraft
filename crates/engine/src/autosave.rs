@@ -1188,7 +1188,7 @@ mod worker_failure_tests {
         s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
         assert!(!s.is_dirty());
         let loaded = filmcraft_format::decode(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(loaded.project, *s.project);
+        assert_eq!(loaded.project, **s.project);
         s.poll_persistence();
         assert_eq!(failure_toasts(s), 0);
     }

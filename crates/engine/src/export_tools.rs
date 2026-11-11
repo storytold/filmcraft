@@ -1213,7 +1213,7 @@ fn spec(
     run: Run,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled, run, journal }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {

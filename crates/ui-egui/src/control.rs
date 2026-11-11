@@ -608,6 +608,13 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
         }
+        // Craft Link wire methods (`link.focus`, `link.refresh`) are the `plugin.craft.link.*` commands.
+        m if m.starts_with("link.") && app.session.registry.resolve(&format!("plugin.craft.{m}")).is_some() => {
+            match crate::menus::invoke(app, ctx, &format!("plugin.craft.{m}"), p.clone()) {
+                Ok(v) => ok(v),
+                Err(e) => err(e),
+            }
+        }
         m => err(format!("unknown method `{m}`")),
     }
 }
@@ -655,7 +662,7 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
         "elements": app.auto.all().len(),
-        "dialog": app.dialog.map(|d| format!("{d:?}")),
+        "dialog": app.dialog.map(|d| format!("{d:?}")).or_else(|| app.hooks.dialog_label.as_ref().and_then(|label| label())),
     })
 }
 

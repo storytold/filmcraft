@@ -551,7 +551,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
         pace: 1.2,
         speech_duration: filmcraft_time::Tick::ZERO,
     };
-    std::sync::Arc::make_mut(&mut session.project).narrations.insert(clip.item, narration.clone());
+    session.project_mut().narrations.insert(clip.item, narration.clone());
     let project = session.project.clone();
     let mut app = FilmcraftApp::new(session);
     app.show_panel(PanelKind::TextToSpeech);

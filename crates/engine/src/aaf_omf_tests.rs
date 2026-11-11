@@ -19,7 +19,7 @@ fn setup(name: &str) -> (Session, Vec<ItemId>, ItemId, std::path::PathBuf) {
     let (mut s, items, seq) = session_with(&[&a, &b]);
     // trim both clips so handles exist: A plays media 12..36, B 6..30
     let rate = FrameRate::FPS_24;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let q = p.sequence_mut(seq).unwrap();
     for t in q.all_tracks_mut() {
         for (i, c) in t.items.iter_mut().enumerate() {
@@ -28,7 +28,7 @@ fn setup(name: &str) -> (Session, Vec<ItemId>, ItemId, std::path::PathBuf) {
             c.duration = rate.tick_of(24);
         }
     }
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     (s, items, seq, dir)
 }
 
@@ -214,10 +214,10 @@ fn aaf_video_mixdown() {
 fn omf_renders_clip_effects_into_embedded_audio() {
     let (mut s, _items, seq, dir) = setup("omf-render");
     // −6.0206 dB on the first audio clip: half amplitude
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let q = p.sequence_mut(seq).unwrap();
     q.audio_tracks[0].items[0].effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.020_599_913)));
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     let orig = s.project.sequence(seq).unwrap().clone();
     let path = dir.join("mix.omf").to_string_lossy().into_owned();
     let r = s.execute("file.exportOmf", json!({"path": path, "renderAudioEffects": true, "handles": 0, "sequence": seq.0})).unwrap();
@@ -260,11 +260,11 @@ fn setup_nested(name: &str) -> (Session, Vec<ItemId>, ItemId, ItemId, std::path:
     let clips: Vec<u64> = s.project.sequence(seq).unwrap().all_tracks().flat_map(|t| t.items.iter().map(|c| c.id.0)).collect();
     s.execute("timeline.select", json!({"clips": clips})).unwrap();
     let inner = ItemId(s.execute("clip.nest", json!({"name": "Inner"})).unwrap()["sequence"].as_u64().unwrap());
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let q = p.sequence_mut(seq).unwrap();
     assert_eq!((q.video_tracks[0].items.len(), q.audio_tracks[0].items.len()), (1, 1), "one linked nest");
     q.audio_tracks[0].items[0].effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(-6.020_599_913)));
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     (s, items, seq, inner, dir)
 }
 
@@ -470,7 +470,7 @@ mod selected_streams {
     fn add_source(s: &mut Session, streams: usize) -> (ItemId, Calls) {
         let source = Arc::new(Tones::new(streams));
         let calls = source.calls.clone();
-        let mut project = (*s.project).clone();
+        let mut project = (**s.project).clone();
         let item = project.add_item(
             "distinct tones",
             Label::Iris,
@@ -487,7 +487,7 @@ mod selected_streams {
             })),
             None,
         );
-        s.project = Arc::new(project);
+        s.set_project(Arc::new(project));
         s.media.insert(item, source);
         (item, calls)
     }
@@ -495,10 +495,10 @@ mod selected_streams {
     fn fixture() -> (Session, ItemId, ItemId, Calls, Arc<MemoryFiles>) {
         let files = Arc::new(MemoryFiles::default());
         let mut session = Session::new(files.clone());
-        let mut project = (*session.project).clone();
+        let mut project = (**session.project).clone();
         let sequence =
             project.new_sequence("streams", SequenceSettings { width: 32, height: 18, frame_rate: FrameRate::FPS_24, ..Default::default() }, 0, 1, None);
-        session.project = Arc::new(project);
+        session.set_project(Arc::new(project));
         session.state.active_sequence = Some(sequence);
         session.state.open_sequences = vec![sequence];
         let (item, calls) = add_source(&mut session, 3);

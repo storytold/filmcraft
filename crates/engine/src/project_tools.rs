@@ -45,7 +45,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 
 fn query(
@@ -57,7 +57,7 @@ fn query(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal: false }
 }
 
 const FIND_PARAMS: &str = r#"{"scope":"project|timeline"?,"column":str?,"operator":"contains|matches|beginsWith|endsWith|doesNotContain"?,"text":str?,"rows":[{"column":str,"operator":str,"text":str}]?,"matchAll":bool=true,"caseSensitive":bool=false,"in":"all|clips|markers"?}"#;
@@ -637,7 +637,7 @@ fn save_as_template(s: &mut Session, p: &Value) -> Result<Value> {
             dir.join(format!("{}.fcproj", sanitize(&name))).to_string_lossy().to_string()
         }
     };
-    let mut proj = (*s.project).clone();
+    let mut proj = (**s.project).clone();
     proj.name = name.clone();
     proj.root.name = name.clone();
     s.services.write_file(&path, &filmcraft_format::encode(&proj, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -677,7 +677,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
     proj.name = name.clone();
     proj.root.name = name;
-    s.project = std::sync::Arc::new(proj);
+    s.set_project(std::sync::Arc::new(proj));
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
@@ -691,9 +691,9 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.media.clear();
     s.media.clear_stored();
     s.media.add_stored(&s.project, Some(path.as_str()));
-    s.revision += 1;
+    let hooks = s.hooks.clone();
+    hooks.with_cause(craft_command::Cause::Load, || s.bump());
     s.saved_revision = s.revision;
-    s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));
     }

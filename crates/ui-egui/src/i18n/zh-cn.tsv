@@ -3624,6 +3624,12 @@
 	Invalid duration: {error}	持续时间无效：{error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
+	Edit in EffectCraft	在 EffectCraft 中编辑
+	Edit in EffectCraft cancelled	已取消在 EffectCraft 中编辑
+	select a clip in the timeline	请在时间轴中选择一个剪辑
+	select a nested sequence clip	请选择一个嵌套序列剪辑
+	Click Continue to nest your clip. This keeps the effect in FilmCraft, but you will not see it applied in EffectCraft.	点击“继续”以嵌套你的片段。这会将效果保留在 FilmCraft 中，但你在 EffectCraft 中看不到它的应用效果。
+	Unimportable FilmCraft effects:	无法导入的 FilmCraft 效果：
 	Enter a positive duration within the supported speed range.	请输入支持的速度范围内的正时长。
 	Show Video Names	显示视频名称
 	Show Audio Names	显示音频名称

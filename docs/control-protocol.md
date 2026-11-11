@@ -18,6 +18,13 @@ the desktop leaves the listener closed. Every raw JSON request must include the 
 `token` string; missing or incorrect credentials get an error and close the connection before any
 request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
 
+The Craft Link socket is a separate listener, not part of `--control`. It is always on, takes no flag
+and uses no TCP port. It is a local socket (`filmcraft-<pid>` in the per-user runtime directory) that
+`craft-ipc` checks: the socket file is owner-only, the peer user id must match, and each connection
+must present the token from the instance record within two seconds. Methods the link layer does not
+answer itself, such as `link.open`, reach the same request queue as `--control` requests. See
+[craft-link.md](craft-link.md).
+
 Socket reads and writes time out after two minutes without progress, releasing the connection slot.
 Expiration closes the connection without an unsolicited reply; reconnect before the next request
 (the CLI / MCP bridge does this automatically). Waiting for a UI reply has its separate 60-second
@@ -47,7 +54,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | Method | Params | |
 |---|---|---|
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
-| `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
+| `engine.commands` / `ui.menu.list` | – | command registry / menu tree. `engine.commands` is `command.list`. Each row includes `schema`, the JSON Schema from `registry.schema`, with `x-craft-source` of `doc`, `derived`, or `opaque`. Plugin commands registered on the session are in this list. |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
 | `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect (`status.text` carries the status bar's whole message or hint, even when the bar shows it shortened); `window` (the `n` of `panel.float.<n>`) marks an element drawn in a floating panel's own OS window, whose rect is in that window's coordinates |
@@ -62,6 +69,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |
+| `link.focus`, `link.refresh` | `{link_id, place?, activation?}` / `{link_id, epoch?}` | Craft Link requests from EffectCraft. Each runs the command `plugin.craft.<method>` (the link crate registers it). `link.focus` opens the sequence that holds the link, moves the playhead, selection and view to `place`, and takes focus when `activation.token` is given. `link.refresh` records the epoch, deletes the render previews that cover the linked clips and bumps the view. Both answer `link_unknown` for an id no media item carries |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
 
 For `ui.click` and `ui.drag`, omitted or null counts/steps use the defaults. Out-of-range or

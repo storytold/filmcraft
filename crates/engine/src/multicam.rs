@@ -46,7 +46,7 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run, journal: bool) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
+    CommandSpec { id, label, menu, shortcut: None, alt_shortcuts: &[], params, enabled, run, journal }
 }
 
 macro_rules! camera_keys {
@@ -56,23 +56,21 @@ macro_rules! camera_keys {
                 id: concat!("multicam.selectCamera", $n),
                 label: concat!("Select Camera ", $n),
                 menu: &[],
-                shortcut: Some(concat!($n)),
+                shortcut: Some(concat!($n)), alt_shortcuts: &[],
                 params: r#"{"videoOnly":bool?}"#,
                 enabled: has_seq,
                 run: |s, p| cut(s, &on_page(with_camera(p, $n))),
                 journal: true,
-                named: crate::commands::NamedKeys::NONE,
             },
             CommandSpec {
                 id: concat!("multicam.cutToCamera", $n),
                 label: concat!("Cut to Camera ", $n),
                 menu: &[],
-                shortcut: Some(concat!("Ctrl+", $n)),
+                shortcut: Some(concat!("Ctrl+", $n)), alt_shortcuts: &[],
                 params: r#"{"videoOnly":bool?}"#,
                 enabled: has_seq,
                 run: |s, p| cut_to_camera(s, &on_page(with_camera(p, $n))),
                 journal: true,
-                named: crate::commands::NamedKeys::NONE,
             },
         )*]
     };
@@ -218,22 +216,22 @@ fn base_commands() -> Vec<CommandSpec> {
             label: "Multi-Camera Grid",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"time":ticks?,"playing":bool?,"cellPixels":f32?,"playbackScale":f32?}"#,
             enabled: always,
             run: grid_info,
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "multicam.inspect",
             label: "Inspect Multi-Camera",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"time":ticks?}"#,
             enabled: always,
             run: inspect,
             journal: false,
-            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

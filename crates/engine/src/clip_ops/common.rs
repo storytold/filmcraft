@@ -113,7 +113,7 @@ pub(super) fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Fold the undo steps pushed since the history had `n0` entries into one step named `label`.
-pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
+pub fn collapse_history(s: &mut Session, n0: usize, label: &str) {
     if s.history.undo.len() > n0 {
         let (first, origin) = (s.history.undo[n0].1.clone(), s.history.undo[n0].2.clone());
         s.history.undo.truncate(n0);

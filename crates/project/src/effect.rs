@@ -5,7 +5,7 @@
 //! and are looked up by `EffectDef::id`.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard};
 
 use filmcraft_geom::Vec2;
 use serde::{Deserialize, Serialize};
@@ -888,8 +888,33 @@ pub fn effect_defs() -> &'static [EffectDef] {
     DEFS.get_or_init(build_effects)
 }
 
+/// Effects a plug-in adds while it is loaded. A def is `'static` like the built-in ones: the
+/// registrant leaks it, so a reload costs one small def per effect.
+static PLUGIN_DEFS: RwLock<Vec<&'static EffectDef>> = RwLock::new(Vec::new());
+
+fn plugin_defs() -> RwLockReadGuard<'static, Vec<&'static EffectDef>> {
+    PLUGIN_DEFS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Add a plug-in effect to the catalog (the Effects panel, `find_effect`). Replaces the same id.
+pub fn register_plugin_effect(def: &'static EffectDef) {
+    let mut defs = PLUGIN_DEFS.write().unwrap_or_else(PoisonError::into_inner);
+    defs.retain(|d| d.id != def.id);
+    defs.push(def);
+}
+
+/// Take a plug-in effect out of the catalog.
+pub fn unregister_plugin_effect(id: &str) {
+    PLUGIN_DEFS.write().unwrap_or_else(PoisonError::into_inner).retain(|d| d.id != id);
+}
+
+/// Every effect a loaded plug-in provides.
+pub fn plugin_effect_defs() -> Vec<&'static EffectDef> {
+    plugin_defs().clone()
+}
+
 pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
-    effect_defs().iter().find(|e| e.id == id)
+    effect_defs().iter().find(|e| e.id == id).or_else(|| plugin_defs().iter().copied().find(|e| e.id == id))
 }
 
 /// Case-insensitive lookup by id or display name.
@@ -900,7 +925,9 @@ pub fn find_effect_by_name(name: &str) -> Option<&'static EffectDef> {
         "lumetri" | "lumetri color" | "color grade" => Some("lumetri"),
         _ => None,
     };
-    legacy_id.and_then(find_effect).or_else(|| effect_defs().iter().find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
+    legacy_id
+        .and_then(find_effect)
+        .or_else(|| effect_defs().iter().chain(plugin_defs().iter().copied()).find(|e| e.id == n || e.name.to_ascii_lowercase() == n))
 }
 
 /// Names a user may still type into the Effects panel search for an effect whose display label
@@ -947,6 +974,30 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn plugin_effects_join_and_leave_the_catalog() {
+        let def: &'static EffectDef = Box::leak(Box::new(EffectDef {
+            id: "test.plugin.fx",
+            name: "Test Plug-in Fx",
+            kind: EffectKind::Video,
+            category: &["Video Effects", "Plug-ins"],
+            params: vec![],
+            intrinsic: false,
+            accelerated: false,
+            float32: true,
+            yuv: false,
+        }));
+        assert!(find_effect(def.id).is_none());
+        register_plugin_effect(def);
+        register_plugin_effect(def);
+        assert_eq!(plugin_effect_defs().iter().filter(|d| d.id == def.id).count(), 1, "the same id replaces itself");
+        assert_eq!(find_effect(def.id).map(|d| d.name), Some("Test Plug-in Fx"));
+        assert_eq!(find_effect_by_name("test plug-in fx").map(|d| d.id), Some(def.id));
+        assert!(!effect_defs().iter().any(|d| d.id == def.id), "built-ins stay a fixed list");
+        unregister_plugin_effect(def.id);
+        assert!(find_effect(def.id).is_none());
     }
 
     #[test]

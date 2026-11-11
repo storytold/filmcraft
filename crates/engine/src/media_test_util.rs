@@ -83,7 +83,7 @@ pub fn session_with(files: &[&Path]) -> (Session, Vec<ItemId>, ItemId) {
     let info = s.project.item(items[0]).unwrap().as_media().unwrap().info.clone();
     let v = info.video.clone().unwrap();
     let rate = v.frame_rate;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let seq = p.new_sequence("Seq", SequenceSettings { width: v.width, height: v.height, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let mut at = Tick::ZERO;
     for &it in &items {
@@ -99,7 +99,7 @@ pub fn session_with(files: &[&Path]) -> (Session, Vec<ItemId>, ItemId) {
         q.audio_tracks[0].items.push(ai);
         at += d;
     }
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     s.state.active_sequence = Some(seq);
     s.state.open_sequences = vec![seq];
     (s, items, seq)

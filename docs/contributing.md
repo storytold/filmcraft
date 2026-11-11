@@ -243,7 +243,10 @@ stream is cut into blocks (there are tests for this).
    - never commit media.
 4. Wire it in:
    - decoders: a `VideoDecoderFactory` in `crates/codecs` (`video.rs`, default list in `lib.rs`);
-   - containers: an `Opener` in `codecs::openers()`;
+   - containers: a plain `fn(&str, Arc<[u8]>) -> Option<Result<SharedSource>>` (`OpenerFn`) that you add to
+     the `plain` array in `codecs::openers()` (`crates/codecs/src/lib.rs`; raise its length by one). `filmcraft_media::opener_of`
+     wraps each entry as an `Opener`. An opener that needs state is an `Opener` closure instead;
+     see `crates/media/README.md`;
    - encoders: an `export::VideoEncoder` / audio encoder plus a `Format` in `crates/export`.
 5. Write the README: features, API, test matrix, accuracy and speed numbers, limitations. Use
    `crates/h264/README.md` as the model.

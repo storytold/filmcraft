@@ -124,10 +124,10 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Read Video Scopes",
         menu: &[],
         shortcut: None,
+        alt_shortcuts: &[],
         params: r#"{"scopes":["waveform","parade","histogram","vectorscopeYuv","vectorscopeHls"]?,"waveformType":"rgb|luma|yc|ycNoChroma"?,"paradeType":"rgb|yuv|rgbWhite"?,"colorSpace":"auto|601|709|2100"?,"clamp":bool=true,"columns":n=8,"peaks":n=8,"bins":bool=true,"scale":0.5,"time":ticks?|"frame"|"seconds"|"timecode"}"#,
         enabled: has_seq,
         run: scopes_read,
         journal: false,
-        named: crate::commands::NamedKeys::NONE,
     }]
 }

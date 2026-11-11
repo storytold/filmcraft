@@ -902,7 +902,7 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     // clip's first intrinsic effect, in the order they were applied
     fn before_intrinsics(s: &mut Session, clip: ClipId, n: usize) {
         let seq = s.state.active_sequence.unwrap();
-        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let q = s.project_mut().sequence_mut(seq).unwrap();
         let it = q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).find(|i| i.id == clip).unwrap();
         let applied = it.effects.split_off(it.effects.len() - n);
         let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap();

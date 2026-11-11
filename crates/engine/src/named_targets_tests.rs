@@ -1,11 +1,11 @@
-//! #65: the registry says which commands take their targets by name (`CommandSpec::named`), and
+//! #65: the registry says which commands take their targets by name (`commands::named_keys`), and
 //! every command that says so really reads those keys. A command that documented `clips` but read
 //! only the selection would pass the enabled check and then act on nothing.
 
 use filmcraft_project::{ClipId, ItemId};
 use serde_json::{Value, json};
 
-use crate::commands::{NamedKeys, command_specs};
+use crate::commands::{NamedKeys, command_specs, named_keys};
 use crate::{Result, Session};
 
 fn demo() -> (Session, ClipId, ItemId) {
@@ -27,10 +27,10 @@ fn outcome(s: &Session, r: Result<Value>) -> (bool, String) {
 #[test]
 fn the_flag_follows_the_parameter_doc() {
     let spec = |id: &str| command_specs().iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no command {id}"));
-    assert!(spec("clip.enable").named.contains(NamedKeys::CLIPS));
-    assert!(!spec("clip.enable").named.contains(NamedKeys::CLIP), "a key the command does not document is not a named target");
-    assert!(spec("clip.replaceFromBin").named.contains(NamedKeys::ITEM));
-    assert!(spec("edit.undo").named.is_none());
+    assert!(named_keys(spec("clip.enable")).contains(NamedKeys::CLIPS));
+    assert!(!named_keys(spec("clip.enable")).contains(NamedKeys::CLIP), "a key the command does not document is not a named target");
+    assert!(named_keys(spec("clip.replaceFromBin")).contains(NamedKeys::ITEM));
+    assert!(named_keys(spec("edit.undo")).is_none());
 }
 
 #[test]
@@ -41,16 +41,16 @@ fn named_targets_are_read_by_the_commands_that_declare_them() {
     let untouched = outcome(&demo().0, Ok(Value::Null)).1;
     let mut checked = 0;
     for spec in command_specs() {
-        if spec.named.is_none() || spec.id.starts_with("file.") || spec.id.starts_with("export.") {
+        if named_keys(spec).is_none() || spec.id.starts_with("file.") || spec.id.starts_with("export.") {
             continue;
         }
         let mut cases: Vec<(&str, Value)> = Vec::new();
         // a key documented without `?` is an argument of the command (`masks.select` takes the
         // clip it selects a mask of), not an alternative to the selection
-        if spec.named.contains(NamedKeys::CLIPS) && spec.params.contains("\"clips\":[id]?") {
+        if named_keys(spec).contains(NamedKeys::CLIPS) && spec.params.contains("\"clips\":[id]?") {
             cases.push(("clips", json!({"clips": [clip.0]})));
         }
-        if spec.named.contains(NamedKeys::CLIP) && spec.params.contains("\"clip\":id?") {
+        if named_keys(spec).contains(NamedKeys::CLIP) && spec.params.contains("\"clip\":id?") {
             cases.push(("clip", json!({"clip": clip.0})));
         }
 

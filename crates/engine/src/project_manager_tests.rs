@@ -19,7 +19,7 @@ fn project(root: &std::path::Path) -> (Session, Vec<ItemId>, String) {
     s.execute("file.import", json!({"paths": [unused.to_string_lossy()]})).unwrap();
     // use only frames 20..32 of a (V1 + A1)
     let seq = s.state.active_sequence.unwrap();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let rate = filmcraft_time::FrameRate::FPS_24;
     let q = p.sequence_mut(seq).unwrap();
     for t in q.all_tracks_mut() {
@@ -30,7 +30,7 @@ fn project(root: &std::path::Path) -> (Session, Vec<ItemId>, String) {
             x.start = rate.tick_of(12);
         }
     }
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
     let path = root.join("p.fcproj").to_string_lossy().into_owned();
     s.execute("file.save", json!({"path": path})).unwrap();
     (s, items, path)
@@ -109,7 +109,7 @@ fn nested_subclip_keeps_its_whole_parent_chain_used() {
     let root = tmp_dir("pm-nested-subclip");
     let (s, items, _) = project(&root);
     let seq = s.state.active_sequence.unwrap();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let range = TimeRange::new(Tick::ZERO, Tick(1000));
     let inner = p.add_item("Inner", Label::Iris, ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
     let outer = p.add_item("Outer", Label::Iris, ItemKind::Subclip { parent: inner, range, restrict_trims: false }, None);

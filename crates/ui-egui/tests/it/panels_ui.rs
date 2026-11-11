@@ -256,12 +256,12 @@ fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
     d.click("history.deleteRedoable.ok");
     assert!(!d.has("history.deleteRedoable.ok"));
     assert_eq!(redo(&mut d), 0);
-    assert_eq!(*d.app().session.project, *project, "the project does not change");
+    assert_eq!(**d.app().session.project, *project, "the project does not change");
 
     d.click("panel.menu.History");
     d.click("panel.menu.History.clear");
     assert_eq!(d.exec("history.list", json!({})), json!({"undo": [], "redo": []}));
-    assert_eq!(*d.app().session.project, *project, "the project does not change");
+    assert_eq!(**d.app().session.project, *project, "the project does not change");
     assert!(!d.app().session.is_enabled("history.clear"), "an empty history has nothing to clear");
 }
 
@@ -728,7 +728,7 @@ fn metadata_keeps_the_timeline_item_when_its_tab_and_field_take_focus() {
     assert_eq!(d.label("metadata.header"), format!("Clip: {b_name}"));
     d.click("panel.tab.Metadata");
     assert_eq!(d.label("metadata.header"), format!("Clip: {b_name}"), "inspector focus must not reactivate the old Project selection");
-    let before = serde_json::to_value(&d.app().session.project).unwrap();
+    let before = serde_json::to_value(&*d.app().session.project).unwrap();
     let undo = d.app().session.history.undo.len();
     d.click("metadata.field.Scene");
     d.ok("ui.type", json!({"text":"42B"}));
@@ -737,11 +737,11 @@ fn metadata_keeps_the_timeline_item_when_its_tab_and_field_take_focus() {
     assert_eq!(d.app().session.project.item(b).unwrap().metadata.get("Scene").map(String::as_str), Some("42B"));
     assert!(!d.app().session.project.item(a).unwrap().metadata.contains_key("Scene"));
     assert_eq!(d.app().session.history.undo.len(), undo + 1);
-    let after = serde_json::to_value(&d.app().session.project).unwrap();
+    let after = serde_json::to_value(&*d.app().session.project).unwrap();
     d.exec("edit.undo", json!({}));
-    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), before);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), after);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), after);
     d.snapshot("panels-metadata-timeline-selection", Some("metadata."));
 }
 
@@ -845,7 +845,7 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     d.click("panel.tab.Info");
     assert_eq!(d.label("info.item"), name);
     assert!(d.has("panel.tab.Project"), "the inactive Project tab must be visible before closing it");
-    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let project = serde_json::to_value(&*d.app().session.project).unwrap();
     let state = d.exec("state.inspect", json!({}));
     let history = d.exec("history.list", json!({}));
     let revision = d.app().session.revision;
@@ -853,7 +853,7 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     d.ok("ui.click", json!({"id":"panel.tab.Project", "button":"middle"}));
     d.frames(3);
     assert!(!d.has("panel.tab.Project"), "middle-click closes the inactive tab");
-    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), project);
     assert_eq!(d.exec("state.inspect", json!({})), state);
     assert_eq!(d.exec("history.list", json!({})), history);
     assert_eq!(d.app().session.revision, revision);
