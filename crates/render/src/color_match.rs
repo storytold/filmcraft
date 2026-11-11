@@ -187,6 +187,7 @@ fn graded_stats(img: &Image, base: &EffectInstance, x: &[f32; 10], skin_protect:
     let cx = FxCtx {
         t: Tick::ZERO,
         px_scale: g.w as f32 / 1920.0,
+        mask_scale: g.w as f32 / 1920.0,
         seconds: 0.0,
         timecode: "",
         clip_name: "",
@@ -357,6 +358,7 @@ mod tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 0.1,
+            mask_scale: 0.1,
             seconds: 0.0,
             timecode: "",
             clip_name: "",

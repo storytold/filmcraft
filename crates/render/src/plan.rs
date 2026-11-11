@@ -488,6 +488,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
             let cx = crate::effects::FxCtx {
                 t: mt,
                 px_scale,
+                mask_scale: px_scale,
                 seconds: (t - item.start).seconds(),
                 timecode: tc,
                 clip_name: &item.name,
