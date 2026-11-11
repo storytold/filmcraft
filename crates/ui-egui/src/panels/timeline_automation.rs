@@ -99,8 +99,9 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, 
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
     // clipped to its area: the icon keeps its size and is cut off at the edge (the painter
     // clips), so a half-scrolled header never squeezes the glyph
-    let resp = crate::widgets::icon_toggle_clipped(ui, rect, visible, Icon::Keyframe, showing.is_some(), t, egui::Id::unique(("lanebtn", r.track.0)), Some(LANE_COL))
-        .on_hover_text(tl!("Show Keyframes"));
+    let resp =
+        crate::widgets::icon_toggle_clipped(ui, rect, visible, Icon::Keyframe, showing.is_some(), t, egui::Id::unique(("lanebtn", r.track.0)), Some(LANE_COL))
+            .on_hover_text(tl!("Show Keyframes"));
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
     egui::Popup::menu(&resp).show(|ui| {

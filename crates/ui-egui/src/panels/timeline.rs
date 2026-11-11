@@ -686,10 +686,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
 fn paint_alternate_position_focus_ring(app: &FilmcraftApp, ctx: &egui::Context) {
     let undocked = ctx.input(|input| input.viewport().parent.is_some());
-    if !undocked
-        || !app.session.state.timeline_ui.track_slider_alternate_position
-        || app.session.state.timeline_ui.zoom_bar_hidden
-    {
+    if !undocked || !app.session.state.timeline_ui.track_slider_alternate_position || app.session.state.timeline_ui.zoom_bar_hidden {
         return;
     }
     let rect = ctx.content_rect();
