@@ -241,133 +241,140 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             return;
         }
-        ui.label(egui::RichText::new(tl!("Words (click to highlight)")).strong());
-        ui.horizontal_wrapped(|ui| {
-            for (i, w) in d.words.iter().enumerate() {
-                let on = d.heroes.get(i).copied().unwrap_or(false);
-                let r = ui.selectable_label(on, w);
-                elems.push((format!("letteringFx.word.{i}"), r.rect, w.clone()));
-                if r.clicked()
-                    && let Some(h) = d.heroes.get_mut(i)
-                {
-                    *h = !*h;
-                }
-            }
-        });
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tl!("Style")).strong());
-        if d.templates.is_empty() {
-            ui.label(tl!("No templates found in the template bank."));
-        }
-        for t in d.templates.clone() {
-            let selected = d.template.as_deref() == Some(t.id.as_str());
-            let fill = if selected { app.tokens.accent.gamma_multiply(0.35) } else { ui.visuals().faint_bg_color };
-            let card = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new(&t.name).strong());
-                if !t.description.is_empty() {
-                    ui.label(egui::RichText::new(&t.description).weak());
-                }
-            });
-            let r = card.response.interact(egui::Sense::click());
-            elems.push((format!("letteringFx.template.{}", t.id), r.rect, t.name.clone()));
-            if r.clicked() {
-                d.template = Some(t.id.clone());
-            }
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tl!("Words per line")).strong());
-            let r = ui.add(egui::DragValue::new(&mut d.per_line).range(1..=12));
-            elems.push(("letteringFx.perLine".into(), r.rect, "Words per line".into()));
-        });
-        let solo = ui.checkbox(&mut d.solo, tl!("Highlight words appear alone"));
-        elems.push(("letteringFx.solo".into(), solo.rect, "Highlight words appear alone".into()));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tl!("Colors (the style's own unless changed)")).strong());
-        for (i, (key, start)) in COLORS.iter().enumerate() {
-            let label = color_label(i);
-            ui.horizontal(|ui| {
-                ui.label(&label);
-                match d.colors.get_mut(i) {
-                    Some(slot @ Some(_)) => {
-                        if let Some(rgb) = slot.as_mut() {
-                            let r = ui.color_edit_button_srgb(rgb);
-                            elems.push((format!("letteringFx.color.{key}"), r.rect, label.clone()));
-                        }
-                        let x = ui.button(tl!("Reset"));
-                        elems.push((format!("letteringFx.color.{key}.reset"), x.rect, "Reset".into()));
-                        if x.clicked() {
-                            *slot = None;
+        // the body scrolls (a long span or a small screen must not push Cancel / Send out of reach)
+        let body_h = (ctx.content_rect().height() * 0.8 - 150.0).max(160.0);
+        egui::ScrollArea::vertical().id_salt("lettering-body").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
+            ui.label(egui::RichText::new(tl!("Words (click to highlight)")).strong());
+            egui::ScrollArea::vertical().id_salt("lettering-words").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, w) in d.words.iter().enumerate() {
+                        let on = d.heroes.get(i).copied().unwrap_or(false);
+                        let r = ui.selectable_label(on, w);
+                        elems.push((format!("letteringFx.word.{i}"), r.rect, w.clone()));
+                        if r.clicked()
+                            && let Some(h) = d.heroes.get_mut(i)
+                        {
+                            *h = !*h;
                         }
                     }
-                    Some(slot) => {
-                        let b = ui.button(tl!("Change"));
-                        elems.push((format!("letteringFx.color.{key}"), b.rect, label.clone()));
-                        if b.clicked() {
-                            *slot = Some(*start);
-                        }
-                    }
-                    None => {}
-                }
+                });
             });
-        }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tl!("Fonts (the style's own unless changed)")).strong());
-        for (i, key) in FONT_KEYS.iter().enumerate() {
-            let label = font_label(i);
-            let fams = d.fonts.clone().unwrap_or_default();
-            let mut pick = d.font_picks.get(i).cloned().flatten();
-            let mut start = false;
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Style")).strong());
+            if d.templates.is_empty() {
+                ui.label(tl!("No templates found in the template bank."));
+            }
+            for t in d.templates.clone() {
+                let selected = d.template.as_deref() == Some(t.id.as_str());
+                let fill = if selected { app.tokens.accent.gamma_multiply(0.35) } else { ui.visuals().faint_bg_color };
+                let card = egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new(&t.name).strong());
+                    if !t.description.is_empty() {
+                        ui.label(egui::RichText::new(&t.description).weak());
+                    }
+                });
+                let r = card.response.interact(egui::Sense::click());
+                elems.push((format!("letteringFx.template.{}", t.id), r.rect, t.name.clone()));
+                if r.clicked() {
+                    d.template = Some(t.id.clone());
+                }
+            }
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(&label);
-                let mut reset = false;
-                match pick.as_mut() {
-                    Some((family, style)) => {
-                        let r = craft_ui::ComboBox::from_id_salt(("lettering-font", *key)).selected_text(family.clone()).width(170.0).show_ui(ui, |ui| {
-                            for (name, styles) in fams.iter() {
-                                if ui.selectable_label(name == family, name).clicked() {
-                                    *family = name.clone();
-                                    if !styles.contains(style) {
-                                        *style = styles.iter().find(|s| s.as_str() == "Regular").or_else(|| styles.first()).cloned().unwrap_or_default();
+                ui.label(egui::RichText::new(tl!("Words per line")).strong());
+                let r = ui.add(egui::DragValue::new(&mut d.per_line).range(1..=12));
+                elems.push(("letteringFx.perLine".into(), r.rect, "Words per line".into()));
+            });
+            let solo = ui.checkbox(&mut d.solo, tl!("Highlight words appear alone"));
+            elems.push(("letteringFx.solo".into(), solo.rect, "Highlight words appear alone".into()));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Colors (the style's own unless changed)")).strong());
+            for (i, (key, start)) in COLORS.iter().enumerate() {
+                let label = color_label(i);
+                ui.horizontal(|ui| {
+                    ui.label(&label);
+                    match d.colors.get_mut(i) {
+                        Some(slot @ Some(_)) => {
+                            if let Some(rgb) = slot.as_mut() {
+                                let r = ui.color_edit_button_srgb(rgb);
+                                elems.push((format!("letteringFx.color.{key}"), r.rect, label.clone()));
+                            }
+                            let x = ui.button(tl!("Reset"));
+                            elems.push((format!("letteringFx.color.{key}.reset"), x.rect, "Reset".into()));
+                            if x.clicked() {
+                                *slot = None;
+                            }
+                        }
+                        Some(slot) => {
+                            let b = ui.button(tl!("Change"));
+                            elems.push((format!("letteringFx.color.{key}"), b.rect, label.clone()));
+                            if b.clicked() {
+                                *slot = Some(*start);
+                            }
+                        }
+                        None => {}
+                    }
+                });
+            }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Fonts (the style's own unless changed)")).strong());
+            for (i, key) in FONT_KEYS.iter().enumerate() {
+                let label = font_label(i);
+                let fams = d.fonts.clone().unwrap_or_default();
+                let mut pick = d.font_picks.get(i).cloned().flatten();
+                let mut start = false;
+                ui.horizontal(|ui| {
+                    ui.label(&label);
+                    let mut reset = false;
+                    match pick.as_mut() {
+                        Some((family, style)) => {
+                            let r = craft_ui::ComboBox::from_id_salt(("lettering-font", *key)).selected_text(family.clone()).width(170.0).show_ui(ui, |ui| {
+                                for (name, styles) in fams.iter() {
+                                    if ui.selectable_label(name == family, name).clicked() {
+                                        *family = name.clone();
+                                        if !styles.contains(style) {
+                                            *style = styles.iter().find(|s| s.as_str() == "Regular").or_else(|| styles.first()).cloned().unwrap_or_default();
+                                        }
                                     }
                                 }
-                            }
-                        });
-                        elems.push((format!("letteringFx.font.{key}"), r.response.rect, label.clone()));
-                        let styles = fams.iter().find(|(n, _)| n == family).map(|(_, s)| s.clone()).unwrap_or_default();
-                        let r = craft_ui::ComboBox::from_id_salt(("lettering-font-style", *key)).selected_text(style.clone()).width(120.0).show_ui(ui, |ui| {
-                            for st in &styles {
-                                if ui.selectable_label(st == style, st).clicked() {
-                                    *style = st.clone();
-                                }
-                            }
-                        });
-                        elems.push((format!("letteringFx.font.{key}.style"), r.response.rect, "Style".into()));
-                        let x = ui.button(tl!("Reset"));
-                        elems.push((format!("letteringFx.font.{key}.reset"), x.rect, "Reset".into()));
-                        reset = x.clicked();
+                            });
+                            elems.push((format!("letteringFx.font.{key}"), r.response.rect, label.clone()));
+                            let styles = fams.iter().find(|(n, _)| n == family).map(|(_, s)| s.clone()).unwrap_or_default();
+                            let r =
+                                craft_ui::ComboBox::from_id_salt(("lettering-font-style", *key)).selected_text(style.clone()).width(120.0).show_ui(ui, |ui| {
+                                    for st in &styles {
+                                        if ui.selectable_label(st == style, st).clicked() {
+                                            *style = st.clone();
+                                        }
+                                    }
+                                });
+                            elems.push((format!("letteringFx.font.{key}.style"), r.response.rect, "Style".into()));
+                            let x = ui.button(tl!("Reset"));
+                            elems.push((format!("letteringFx.font.{key}.reset"), x.rect, "Reset".into()));
+                            reset = x.clicked();
+                        }
+                        None => {
+                            let b = ui.button(tl!("Change"));
+                            elems.push((format!("letteringFx.font.{key}"), b.rect, label.clone()));
+                            start = b.clicked();
+                        }
                     }
-                    None => {
-                        let b = ui.button(tl!("Change"));
-                        elems.push((format!("letteringFx.font.{key}"), b.rect, label.clone()));
-                        start = b.clicked();
+                    if reset {
+                        pick = None;
                     }
+                });
+                if start {
+                    if d.fonts.is_none() {
+                        d.fonts = Some(Arc::new(filmcraft_text::picker_families()));
+                    }
+                    pick = d.fonts.as_deref().and_then(|f| default_font(f));
                 }
-                if reset {
-                    pick = None;
+                if let Some(slot) = d.font_picks.get_mut(i) {
+                    *slot = pick;
                 }
-            });
-            if start {
-                if d.fonts.is_none() {
-                    d.fonts = Some(Arc::new(filmcraft_text::picker_families()));
-                }
-                pick = d.fonts.as_deref().and_then(|f| default_font(f));
             }
-            if let Some(slot) = d.font_picks.get_mut(i) {
-                *slot = pick;
-            }
-        }
+        });
         if let Some(p) = &d.problem {
             ui.colored_label(ui.visuals().error_fg_color, p);
         }
