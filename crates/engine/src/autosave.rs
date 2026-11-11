@@ -803,7 +803,6 @@ impl Persistence {
             journaled_view: 0,
             journaled_dirty: false,
             autosaved: 0,
-            autosaved_view: 0,
             autosaved_settings: 0,
             first_pending: None,
             last_change: Instant::now(),
@@ -832,6 +831,7 @@ impl Persistence {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn send_dirty(
         &self,
         project: Arc<Project>,
@@ -844,9 +844,7 @@ impl Persistence {
         settings_dirty: bool,
         path: Option<String>,
     ) {
-        self.send(Msg::Dirty(Box::new(Snapshot {
-            project, view, revision, view_epoch, settings_epoch, unsaved_dirty, content_dirty, settings_dirty, path,
-        })));
+        self.send(Msg::Dirty(Box::new(Snapshot { project, view, revision, view_epoch, settings_epoch, unsaved_dirty, content_dirty, settings_dirty, path })));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -999,7 +997,6 @@ struct Worker {
     journaled_view: u64,
     journaled_dirty: bool,
     autosaved: u64,
-    autosaved_view: u64,
     autosaved_settings: u64,
     first_pending: Option<Instant>,
     last_change: Instant,
@@ -1164,7 +1161,6 @@ impl Worker {
         match r {
             Ok(path) => {
                 self.autosaved = s.revision;
-                self.autosaved_view = s.view_epoch;
                 self.autosaved_settings = s.settings_epoch;
                 let _ = self.events.send(WorkerEvent::AutoSaved { path: path.clone(), revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 if self.prefs.save_current_project
@@ -1173,7 +1169,10 @@ impl Worker {
                     match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                         Ok(()) => {
                             let _ = self.events.send(WorkerEvent::SavedProject {
-                                path: p.clone(), revision: s.revision, view_epoch: s.view_epoch, settings_epoch: s.settings_epoch,
+                                path: p.clone(),
+                                revision: s.revision,
+                                view_epoch: s.view_epoch,
+                                settings_epoch: s.settings_epoch,
                             });
                         }
                         Err(e) => self.error(format!("saving {p}: {e}")),
@@ -1210,8 +1209,7 @@ fn journal_matches(snapshot: &Snapshot, revision: u64, view_epoch: u64, unsaved_
 }
 
 fn needs_auto_save(snapshot: &Snapshot, autosaved_revision: u64, autosaved_settings: u64) -> bool {
-    (snapshot.content_dirty && snapshot.revision != autosaved_revision)
-        || (snapshot.settings_dirty && snapshot.settings_epoch != autosaved_settings)
+    (snapshot.content_dirty && snapshot.revision != autosaved_revision) || (snapshot.settings_dirty && snapshot.settings_epoch != autosaved_settings)
 }
 
 #[cfg(test)]

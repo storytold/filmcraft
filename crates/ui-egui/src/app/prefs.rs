@@ -151,6 +151,8 @@ impl FilmcraftApp {
     pub(super) fn sync_timeline_view(&mut self) {
         let Some(active) = self.session.state.active_sequence else {
             self.timeline_view_of = None;
+            self.tl.timeline_view_restore_pending = false;
+            self.tl.timeline_view_auto_adjusting = false;
             return;
         };
         let stored = self.session.state.timeline_views.get(&active).copied();
@@ -176,23 +178,33 @@ impl FilmcraftApp {
                 Some(s) => {
                     show(v, s);
                     self.timeline_view_last = Some(s);
+                    self.tl.timeline_view_restore_pending = true;
+                    self.tl.timeline_view_auto_adjusting = false;
                 }
                 None => {
                     let d = state::TimelineView::default();
                     (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (0.0, 0.0, d.video_track_h, d.audio_track_h);
                     (v.fit_pending, v.fit_empty) = (true, None);
                     self.timeline_view_last = None;
+                    self.tl.timeline_view_restore_pending = false;
+                    self.tl.timeline_view_auto_adjusting = false;
                 }
             }
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
         } else if self.timeline_view_last != Some(shown) {
+            let first_fit = self.timeline_view_last.is_none();
+            let automatic_clamp = self.tl.timeline_view_auto_adjusting;
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
-            // the zoom and scroll are part of the saved session: carry the change into the
-            // autosave journal via the view counter (never the revision -- these change on
-            // every frame of a drag, and a clean project must stay clean)
-            self.session.view_changed();
+            // First-fit layout and a clamp of a restored view are derived from the current panel;
+            // only user changes should advance the unsaved-view counter.
+            if !first_fit && !automatic_clamp {
+                self.session.view_changed();
+            }
+            if automatic_clamp && !v.animating() {
+                self.tl.timeline_view_auto_adjusting = false;
+            }
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);
             self.timeline_view_last = Some(s);

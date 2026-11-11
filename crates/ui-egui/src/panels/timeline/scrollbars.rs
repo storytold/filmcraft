@@ -1094,14 +1094,7 @@ fn shift_edge_speed_multiplier(visible_seconds: f64) -> f64 {
 }
 
 /// Extend a short edge run to the semicircle tangent instead of flattening its cap.
-fn minimap_indicator_bounds(
-    mut xa: f32,
-    mut xb: f32,
-    left_tangent: f32,
-    right_tangent: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> (f32, f32) {
+fn minimap_indicator_bounds(mut xa: f32, mut xb: f32, left_tangent: f32, right_tangent: f32, hug_left: bool, hug_right: bool) -> (f32, f32) {
     if hug_left {
         xb = xb.max(left_tangent);
     }
@@ -1117,13 +1110,7 @@ fn minimap_indicator_hugs_edges(index: usize, run_count: usize, left_gap: f32, r
 }
 
 /// Fill narrow interior indicators, but keep edge indicators outlined unless Fill Clips is enabled.
-fn minimap_indicator_filled(
-    fill_clips: bool,
-    width: f32,
-    min_outline_width: f32,
-    hug_left: bool,
-    hug_right: bool,
-) -> bool {
+fn minimap_indicator_filled(fill_clips: bool, width: f32, min_outline_width: f32, hug_left: bool, hug_right: bool) -> bool {
     fill_clips || (width < min_outline_width && !hug_left && !hug_right)
 }
 
@@ -1376,14 +1363,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
             let cap_rr = (bot - top) / 2.0;
-            (xa, xb) = minimap_indicator_bounds(
-                xa,
-                xb,
-                bar.min.x + ins + sh + cap_r,
-                bar.max.x - ins - sh - cap_rr,
-                hug_left,
-                hug_right,
-            );
+            (xa, xb) = minimap_indicator_bounds(xa, xb, bar.min.x + ins + sh + cap_r, bar.max.x - ins - sh - cap_rr, hug_left, hug_right);
             let at = |y: f32, left: bool| -> f32 {
                 if left {
                     if hug_left {
@@ -1427,13 +1407,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // "very near the beginning" / "very near the end": within the pill's cap zones
             let (hug_left, hug_right) = minimap_indicator_hugs_edges(index, runs.len(), x0 - bar.min.x, bar.max.x - x1, rad);
             let col = color_for(k);
-            if minimap_indicator_filled(
-                fill,
-                x1 - x0,
-                5.0 * px,
-                hug_left,
-                hug_right,
-            ) {
+            if minimap_indicator_filled(fill, x1 - x0, 5.0 * px, hug_left, hug_right) {
                 // solid: one triangle fan over the whole shape (rounded cap included)
                 let pts = outline(x0, x1, 0.0, hug_left, hug_right);
                 let n = pts.len().max(3);
@@ -1601,9 +1575,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let v = &mut app.ui.timeline;
         // fitting the whole Timeline: the floor is the sequence-dependent one (the same value
         // the fit computes), never a fixed 0.05, or a long sequence can never fit
-        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9))
-            .min(max_pps(view_w, min_view))
-            .max(min_pps(seq_seconds, view_w));
+        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9)).min(max_pps(view_w, min_view)).max(min_pps(seq_seconds, view_w));
         v.target_pps = fit_pps;
         v.target_scroll = 0.0;
         if !app.session.state.timeline_ui.smooth_animations {
@@ -1621,9 +1593,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         let span = side * 2.0;
         // fitting the centring range: no fixed 0.05 floor (it stopped a long range from ever
         // fitting), just the Maximum Zoom Level ceiling
-        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9))
-            .min(max_pps(view_w, min_view))
-            .max(min_pps(seq_seconds, view_w));
+        let fit_pps = (view_w.max(1.0) as f64 / span.max(1e-9)).min(max_pps(view_w, min_view)).max(min_pps(seq_seconds, view_w));
         let playhead = app.session.playhead().seconds();
         let visible_seconds = view_w.max(1.0) as f64 / fit_pps;
         let target_scroll = centered_scroll(playhead, visible_seconds, seq_seconds);
@@ -2205,17 +2175,17 @@ pub(super) fn vertical_scrollbar(
                 // with `lo == hi` every drag frame would clamp to the bar and snap the tracks
                 // to their tallest
                 if hi > lo {
-                let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
-                if (new_len - h).abs() > f32::EPSILON {
-                    let len = new_len;
-                    let new_h = height_of(len);
-                    let max_new = (slots * new_h - window_h).max(0.0);
-                    let top = top_of(len);
-                    let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
-                    let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
-                    *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
-                    *track_h = new_h;
-                }
+                    let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
+                    if (new_len - h).abs() > f32::EPSILON {
+                        let len = new_len;
+                        let new_h = height_of(len);
+                        let max_new = (slots * new_h - window_h).max(0.0);
+                        let top = top_of(len);
+                        let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
+                        let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
+                        *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
+                        *track_h = new_h;
+                    }
                 }
             }
             // the middle: 1:1 scroll, as the zoom bar's middle (Inverted controls never touches

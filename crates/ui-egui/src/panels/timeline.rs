@@ -94,6 +94,11 @@ pub type PeakKey = (ItemId, usize);
 /// Transient interaction state.
 #[derive(Default)]
 pub struct TlState {
+    /// The active sequence view came from disk and has not yet been checked against this panel's
+    /// measured zoom limits.
+    pub timeline_view_restore_pending: bool,
+    /// A restored view is settling after an automatic clamp; those frames are not user edits.
+    pub timeline_view_auto_adjusting: bool,
     pub drag: Option<Drag>,
     /// What the primary button went down on in the Timeline (#259); see [`Pressed`].
     pub pressed: Option<Pressed>,
@@ -724,6 +729,8 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
     let empty = seq.duration().seconds() <= 0.0;
     let dur_s = seq.duration().seconds().max(1.0);
     let min_zoom_view = app.session.state.timeline_ui.max_zoom_secs();
+    let restoring_saved_view = std::mem::take(&mut app.tl.timeline_view_restore_pending);
+    let original_zoom_scroll = (app.ui.timeline.pps, app.ui.timeline.target_pps, app.ui.timeline.scroll, app.ui.timeline.target_scroll);
     {
         let v = &mut app.ui.timeline;
         if let Some(p) = v.fit_empty
@@ -819,6 +826,10 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         }
         v.scroll = v.scroll.clamp(0.0, max_scroll(seconds, content.width(), v.pps));
         v.target_scroll = v.target_scroll.clamp(0.0, max_scroll(seconds, content.width(), v.target_pps));
+    }
+    let adjusted_zoom_scroll = (app.ui.timeline.pps, app.ui.timeline.target_pps, app.ui.timeline.scroll, app.ui.timeline.target_scroll);
+    if restoring_saved_view && adjusted_zoom_scroll != original_zoom_scroll {
+        app.tl.timeline_view_auto_adjusting = true;
     }
 }
 
