@@ -1123,6 +1123,14 @@ Fixed:
 A cold drag went from ~1.5 s of frozen playhead (two opens of 558 + 191 ms) to ~0.6 s (one open of
 558 ms). That last open is still on the UI thread; moving it off is the next step of #2633.
 
+Then (#3000): the scrub grain plays on its own output, `CpalScrubOut`, whose thread opens and owns
+the stream (`cpal::Stream` is `!Send`) and keeps it for 5 s after the last grain. The frame that
+moves the playhead only sends the grain's mixer over a channel, so a press or a drag does no
+blocking work at all; from a cold audio engine the first grain is silent for the ~0.6 s the stream
+takes to open on its thread. Playback gives the scrub device back (`ScrubOut::release`, waiting at
+most 250 ms) before it opens its own stream, so a device that takes one stream at a time is free.
+Playback's own start still opens on the UI thread.
+
 Test: `crates/ui-egui/tests/it/scrub_stop_ui.rs` — a press that only moves the playhead closes no
 stream, and a press while playing still stops the transport. `apps/filmcraft` (`audio::tests`) —
 the device default rate needs no configuration search.
