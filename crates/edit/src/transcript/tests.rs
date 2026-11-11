@@ -301,7 +301,8 @@ fn a_filler_too_short_for_a_frame_leaves_the_clip_beside_it_alone() {
         assert_eq!(find_fillers(&w, &["um".to_string()]), vec![4..5]);
         w
     };
-    let cut = |v: &[SeqWord]| filler_ranges(v, &[4..5], R).iter().map(|r| (r.start, r.end())).collect::<Vec<_>>();
+    let hit = 4..5;
+    let cut = |v: &[SeqWord]| filler_ranges(v, std::slice::from_ref(&hit), R).iter().map(|r| (r.start, r.end())).collect::<Vec<_>>();
     // its clip ends at 4.02 s, inside the frame from 4.00 s; the next word is in the clip after it
     let mut q = seq();
     q.audio_tracks[0].items.push(clip(100, 0.0, 4.02, 0.0));
