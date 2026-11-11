@@ -173,6 +173,8 @@ pub struct Preferences {
     pub playback: PlaybackPrefs,
     pub plugins: settings::PluginPrefs,
     pub timeline: settings::TimelinePrefs,
+    /// Settings ▸ Navigation: the mouse on the Timeline, the monitors and Effect Controls.
+    pub navigation: settings::NavigationPrefs,
     pub trim: TrimPrefs,
     pub essential_sound: EssentialSoundPrefs,
     pub guides: GuidePrefs,
@@ -203,6 +205,7 @@ impl Default for Preferences {
             playback: Default::default(),
             plugins: Default::default(),
             timeline: Default::default(),
+            navigation: Default::default(),
             trim: Default::default(),
             essential_sound: Default::default(),
             guides: Default::default(),

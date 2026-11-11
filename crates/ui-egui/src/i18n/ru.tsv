@@ -3740,3 +3740,35 @@
 	Toggle Color Grading Section	Переключить раздел грейдинга
 	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов
+	Zoom Anchor Point	Точка привязки масштабирования
+	Cursor Position	Положение указателя
+	Playhead Position	Положение курсора воспроизведения
+	Step Playhead (Frames)	Перемещать курсор воспроизведения (кадры)
+	Disabled	Отключено
+	Alt + Scroll	Alt + колесо
+	Shift + Scroll	Shift + колесо
+	Ctrl + Scroll	Ctrl + колесо
+	Move Playhead on Timeline Click	Перемещать курсор воспроизведения щелчком по таймлайну
+	Ruler Only	Только на линейке
+	Empty Space Only	Только на пустом месте
+	Anywhere on Timeline	В любом месте таймлайна
+	Drag Playhead Line Across Tracks	Перетаскивание линии курсора воспроизведения поверх дорожек
+	Anywhere, Including Over Clips	В любом месте, в том числе поверх клипов
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Разделённая линейка времени: перетаскивание в верхней половине задаёт вход/выход
+	Program Monitor Mouse Wheel	Колесо мыши в мониторе программы
+	Source Monitor Mouse Wheel	Колесо мыши в мониторе источника
+	Effect Controls Mouse Wheel	Колесо мыши в элементах управления эффектами
+	Scroll	Колесо
+	Over the Preview	Над изображением
+	Over the Time Ruler	Над линейкой времени
+	Timeline Mouse Wheel Behavior	Поведение колеса мыши на таймлайне
+	Step Frames	Шаг по кадрам
+	Step Keyframes	Шаг по ключевым кадрам
+	Off (Ruler Head Only)	Выкл. (только за головку на линейке)
+	Pan Timeline by Dragging With Middle Mouse Button	Сдвигать таймлайн перетаскиванием средней кнопкой мыши
+	Navigation…	Навигация…
+	Navigation Style	Стиль навигации
+	Alternative	Альтернативный
+	Timeline Mouse Wheel	Колесо мыши на таймлайне
+	Timeline Clicks and Drags	Щелчки и перетаскивание на таймлайне
+	More Settings…	Другие настройки…

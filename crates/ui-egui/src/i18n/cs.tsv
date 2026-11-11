@@ -3650,3 +3650,35 @@
 	Toggle Color Grading Section	Přepnout sekci barevných úprav
 	Color Grading Section	Sekce barevných úprav
 	Read Video Scopes	Načíst videoskopy
+	Zoom Anchor Point	Kotevní bod přiblížení
+	Cursor Position	Poloha kurzoru
+	Playhead Position	Poloha přehrávací hlavy
+	Step Playhead (Frames)	Posun přehrávací hlavy (snímky)
+	Disabled	Zakázáno
+	Alt + Scroll	Alt + kolečko
+	Shift + Scroll	Shift + kolečko
+	Ctrl + Scroll	Ctrl + kolečko
+	Move Playhead on Timeline Click	Přesunout přehrávací hlavu kliknutím na časovou osu
+	Ruler Only	Pouze na pravítku
+	Empty Space Only	Pouze v prázdném místě
+	Anywhere on Timeline	Kdekoli na časové ose
+	Drag Playhead Line Across Tracks	Tažení čáry přehrávací hlavy přes stopy
+	Anywhere, Including Over Clips	Kdekoli, i přes klipy
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Rozdělené časové pravítko: tažením v horní polovině nastavíte vstupní a výstupní bod
+	Program Monitor Mouse Wheel	Kolečko myši v programovém monitoru
+	Source Monitor Mouse Wheel	Kolečko myši ve zdrojovém monitoru
+	Effect Controls Mouse Wheel	Kolečko myši v ovládání efektů
+	Scroll	Kolečko
+	Over the Preview	Nad náhledem
+	Over the Time Ruler	Nad časovým pravítkem
+	Timeline Mouse Wheel Behavior	Chování kolečka myši na časové ose
+	Step Frames	Krok po snímcích
+	Step Keyframes	Krok po klíčových snímcích
+	Off (Ruler Head Only)	Vypnuto (pouze za hlavici na pravítku)
+	Pan Timeline by Dragging With Middle Mouse Button	Posouvat časovou osu tažením prostředním tlačítkem myši
+	Navigation…	Navigace…
+	Navigation Style	Styl navigace
+	Alternative	Alternativní
+	Timeline Mouse Wheel	Kolečko myši na časové ose
+	Timeline Clicks and Drags	Kliknutí a tažení na časové ose
+	More Settings…	Další nastavení…
