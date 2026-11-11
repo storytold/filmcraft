@@ -115,3 +115,7 @@ real_name = "Helen Kwok"
 [people.dotCooCoo]
 real_name = "Robert Lee"
 sync_github_name = true
+
+[people.bysh71]
+display_name = "Felix"
+sync_github_name = false
