@@ -214,7 +214,9 @@ pub fn color_key(src: &Image, c: &ColorRange, t: Tick, px_scale: f32) -> Vec<f32
             if k.is_finite() { k.clamp(0.0, 1.0) } else { 0.0 }
         })
         .collect();
-    let scale = if px_scale.is_finite() { px_scale.max(0.0) } else { 1.0 };
+    // Blur is an effect size: capped like `FxCtx::px_scale`, so a mask placed by a huge uncapped
+    // scale (a stored media width far off the decoded one) cannot blow up the blur radius
+    let scale = if px_scale.is_finite() { px_scale.clamp(0.0, crate::MAX_EFFECT_PX_SCALE) } else { 1.0 };
     let sigma = v(&c.blur, 0.0, 100.0, 0.0) / 100.0 * 20.0 * scale;
     if sigma >= 0.3 { crate::vfx::blur_plane(&key, src.w, src.h, sigma) } else { key }
 }
@@ -398,6 +400,18 @@ mod tests {
         apply_effect(&mut img, &e, &cx);
         // the 4-wide mask covers all 8 working pixels at 2 working px per clip px
         assert!(img.px.chunks(4).all(|p| p[0] < 0.5), "mask did not cover the whole image");
+    }
+
+    /// The colour key's Blur is an effect size: past the effect-scale cap a larger (uncapped mask)
+    /// scale blurs no further.
+    #[test]
+    fn color_key_blur_takes_the_capped_effect_scale() {
+        let img = red_blue(40, 4);
+        let mut c = filmcraft_project::ColorRange::default();
+        c.blur.value = filmcraft_project::ParamValue::Float(1.0);
+        let capped = color_key(&img, &c, Tick(0), crate::MAX_EFFECT_PX_SCALE);
+        assert_eq!(color_key(&img, &c, Tick(0), crate::MAX_EFFECT_PX_SCALE * 50.0), capped);
+        assert_ne!(color_key(&img, &c, Tick(0), 1.0), capped, "the blur still grows below the cap");
     }
 
     /// Left half red, right half blue (opaque), `w`×`h`.
