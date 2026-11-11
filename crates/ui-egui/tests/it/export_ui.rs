@@ -167,6 +167,7 @@ fn export_mode_settings_and_summary() {
         "export.video.bitrateMode",
         "export.video.hardwareEncoding",
         "export.video.maxQuality",
+        "export.video.maxThreads",
         "export.audio.sampleRate",
         "export.range",
         "export.scaling",
@@ -631,4 +632,113 @@ fn the_export_range_follows_the_sequence_marks() {
     d.exec("markers.markOut", json!({"seconds": 3.0}));
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
+}
+
+/// #1216: the Export Settings dialog caps how many CPU threads an export uses.
+#[test]
+fn cpu_threads_can_be_capped_from_the_dialog() {
+    let mut d = Driver::new("cpu-threads");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    let elem = |d: &mut Driver, id: &str| -> Value {
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id)).cloned()).unwrap_or(Value::Null)
+    };
+    assert!(d.has("export.video.maxThreads"), "the CPU Threads control is in the Video section");
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!("All cores"), "all cores unless asked");
+    assert_eq!(d.app().ui.export.settings.max_threads, 0);
+
+    // open the combo: All cores, then 1, 2, … up to the machine's core count
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).max(1);
+    d.click("export.video.maxThreads");
+    assert_eq!(elem(&mut d, "export.video.maxThreads.option.0")["label"], json!("All cores"));
+    for n in 1..=cores.min(3) {
+        let id = format!("export.video.maxThreads.option.{n}");
+        assert_eq!(elem(&mut d, &id)["label"], json!(n.to_string()), "{id}");
+    }
+    // pick the smallest non-zero cap this machine can offer: the setting follows, and the preset
+    // becomes Custom like any other edit
+    let pick = cores.min(2);
+    d.click(&format!("export.video.maxThreads.option.{pick}"));
+    assert_eq!(d.app().ui.export.settings.max_threads, pick as u32);
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!(pick.to_string()));
+    assert_eq!(d.app().ui.export.preset, "Custom");
+
+    // `ui.set` reaches it too; a cap above the core count shows the core count
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 3}}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3);
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 4096}}}));
+    d.frames(3);
+    assert_eq!(elem(&mut d, "export.video.maxThreads")["label"], json!(cores.to_string()), "a cap above the core count shows the core count");
+    d.snapshot("export-cpu-threads");
+}
+
+/// #1216: Settings ▸ Playback ▸ Export CPU Threads is the app-wide default for Export mode.
+#[test]
+fn the_export_thread_default_seeds_export_mode() {
+    let mut d = Driver::new("export-threads-default");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 0, "all cores by default");
+    // the app-wide default seeds Export mode while it has not set its own cap
+    d.app().session.prefs.playback.export_threads = 2;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    // a value picked in Export mode is left alone when the default changes
+    d.app().ui.export.settings.max_threads = 5;
+    d.app().ui.export.export_threads_inherited = false;
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 5, "an export cap picked in Export mode wins");
+}
+
+/// #1216: a preset whose cap equals the app-wide default applied when it was picked is still
+/// explicit: a later default change must not rewrite it.
+#[test]
+fn an_explicit_preset_cap_equal_to_the_default_is_not_reseeded() {
+    let mut d = Driver::new("export-threads-preset");
+    d.exec("export.presets.save", json!({"name": "Capped 2", "format": "h264", "maxThreads": 2}));
+    d.app().session.prefs.playback.export_threads = 2;
+    d.ok("ui.set", json!({"mode": "export", "export": {"preset": "Capped 2"}}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "the preset's own cap wins over a later default");
+}
+
+/// #1216: the CPU Threads cap is machine-wide, so switching the export format keeps it: a picked
+/// cap (and an inherited default) must not fall back to "All cores" on a format switch.
+#[test]
+fn a_format_switch_keeps_the_thread_cap() {
+    use filmcraft_engine::export::Format;
+
+    let mut d = Driver::new("export-threads-format-switch");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.ok("ui.set", json!({"export": {"settings": {"maxThreads": 2}}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2);
+    let pick = |d: &mut Driver, format: Format| {
+        let i = Format::ALL.iter().position(|f| *f == format).expect("in Format::ALL");
+        d.click("export.format");
+        d.click(&format!("export.format.option.{i}"));
+        d.frames(3);
+    };
+    // a picked cap survives a switch to another format and back
+    let from = d.app().ui.export.settings.format;
+    let other = Format::ALL.iter().copied().find(|f| *f != from && filmcraft_engine::export::available(*f)).expect("a second available format");
+    pick(&mut d, other);
+    assert_eq!(d.app().ui.export.settings.format, other, "the switch took");
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "a picked cap survives a format switch");
+    pick(&mut d, from);
+    assert_eq!(d.app().ui.export.settings.max_threads, 2, "and back");
+    // an inherited default does too
+    d.app().ui.export.export_threads_inherited = true;
+    d.app().session.prefs.playback.export_threads = 3;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3);
+    pick(&mut d, other);
+    assert_eq!(d.app().ui.export.settings.max_threads, 3, "an inherited cap survives a format switch");
 }

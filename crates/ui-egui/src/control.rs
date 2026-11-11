@@ -202,6 +202,10 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Ok(e) => app.ui.export = e,
             Err(e) => return err(format!("`export`: {e}")),
         }
+        // #1216: a cap set explicitly over the control channel wins over the app-wide default
+        if patch.get("settings").and_then(|s| s.get("maxThreads")).is_some() && patch.get("exportThreadsInherited").is_none() {
+            app.ui.export.export_threads_inherited = false;
+        }
     }
     // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
     if let Some(patch) = p.get("panels") {

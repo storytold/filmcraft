@@ -330,6 +330,9 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                             frame_rate: keep.frame_rate,
                             effects: keep.effects,
                             metadata: keep.metadata,
+                            // #1216: the CPU Threads cap is machine-wide, not per format: a switch
+                            // must not reset a picked cap (or an inherited default) to "All cores"
+                            max_threads: keep.max_threads,
                             ..Default::default()
                         };
                     }
@@ -344,7 +347,12 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             ui.add_space(8.0);
             let s = &mut ex.settings;
             if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+                let mut threads_picked = false;
+                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr, &mut threads_picked);
+                // #1216: a cap picked here is explicit and wins over the app-wide default
+                if threads_picked {
+                    ex.export_threads_inherited = false;
+                }
             }
             if (s.has_audio()
                 || !s.has_video()
@@ -437,7 +445,8 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+#[allow(clippy::too_many_arguments)]
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool, threads_picked: &mut bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -674,6 +683,19 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     });
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
+    // #1216: cap the export's CPU threads (0 = every core, as before). A huge value from a preset
+    // is clamped for display: the export clamps it to the machine's cores anyway.
+    row(ui, t, tl!("CPU Threads"), |ui| {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).max(1);
+        let sel = (s.max_threads as usize).min(cores);
+        let all = tl!("All cores").to_string();
+        let labels: std::vec::Vec<(String, bool)> = std::iter::once((all.clone(), true)).chain((1..=cores).map(|n| (n.to_string(), true))).collect();
+        let cur = if sel == 0 { all } else { sel.to_string() };
+        if let Some(i) = combo(ui, reg, "export.video.maxThreads", &cur, &labels, 120.) {
+            s.max_threads = i as u32;
+            *threads_picked = true;
+        }
+    });
 }
 
 fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {

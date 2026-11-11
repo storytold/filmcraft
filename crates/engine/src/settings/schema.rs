@@ -537,6 +537,8 @@ pub(super) static CATEGORIES: &[Category] = &[
             Row::Note(
                 "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
             ),
+            // #1216: the export's own cap wins; this is only the fallback for exports that do not set one.
+            f("playback.exportThreads", "Export CPU Threads", int(0.0, 1024.0, ""), true),
         ],
     },
     Category {

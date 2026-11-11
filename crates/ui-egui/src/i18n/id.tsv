@@ -2186,6 +2186,7 @@
 	Path	Jalur
 	Path Points	Titik Jalur
 	Pause Media Encoder queue during playback	Jeda antrean Media Encoder selama pemutaran
+	Export CPU Threads	Thread CPU untuk ekspor
 	Peak Frequency	Frekuensi Puncak
 	Peak Gain	Gain Puncak
 	Pedestal	Pedestal
@@ -2931,6 +2932,8 @@
 	Quality	Kualitas
 	Render at Maximum Depth	Render pada Kedalaman Maksimum
 	Use Maximum Render Quality	Gunakan Kualitas Render Maksimum
+	CPU Threads	Thread CPU
+	All cores	Semua inti
 	Export Audio	Ekspor Audio
 	Audio Format	Format Audio
 	Uncompressed (PCM)	Tanpa Kompresi (PCM)

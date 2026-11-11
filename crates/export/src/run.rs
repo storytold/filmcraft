@@ -55,15 +55,27 @@ pub(crate) fn gif_delay_cs(rate: FrameRate, i: i64) -> u16 {
     u16::try_from(cs.clamp(0, i128::from(u16::MAX))).unwrap_or(u16::MAX)
 }
 
-/// A pool of `max_threads` threads to run an export on, or `None` when it should run where it is:
-/// no cap (0), a cap that is not below the pool the caller is in already, or no threads to spare
-/// (the browser).
-fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
+/// A pool of `max_threads` threads to run an export on, or `None` when it should run where it is
+/// (no cap (0), or no threads to spare (the browser)).
+/// The pool's width never exceeds the pool the caller is in already: a cap at or above that adds
+/// no threads, it only borrows a same-size pool, so an export never runs on more than before.
+/// #1216: the cap also reaches the decoders: every pool worker carries it, so a decoder made
+/// inside the export sizes its own pool to at most `cap`. This must hold on every path: reusing
+/// the caller's pool wholesale would leave its workers without the hint and let their decoders
+/// use the whole machine.
+pub(crate) fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
     let cap = max_threads as usize;
-    if cap == 0 || cap >= rayon::current_num_threads() || cfg!(target_arch = "wasm32") {
+    if cap == 0 || cfg!(target_arch = "wasm32") {
         return None;
     }
-    rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let width = cap.min(rayon::current_num_threads().max(1)).max(1);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(width)
+        .thread_name(|i| format!("filmcraft-export-{i}"))
+        .start_handler(move |_| filmcraft_media::cancel::set_max_threads(Some(cap.min(cores))))
+        .build()
+        .ok()
 }
 
 /// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on

@@ -2178,6 +2178,7 @@
 	Path	Tracciato
 	Path Points	Punti del tracciato
 	Pause Media Encoder queue during playback	Sospendi la coda di Media Encoder durante la riproduzione
+	Export CPU Threads	Thread CPU per l'esportazione
 	Peak Frequency	Frequenza di picco
 	Peak Gain	Guadagno di picco
 	Pedestal	Piedistallo
@@ -2923,6 +2924,8 @@
 	Quality	Qualità
 	Render at Maximum Depth	Esegui rendering alla profondità massima
 	Use Maximum Render Quality	Usa la massima qualità di rendering
+	CPU Threads	Thread CPU
+	All cores	Tutti i nuclei
 	Export Audio	Esporta audio
 	Audio Format	Formato audio
 	Uncompressed (PCM)	Non compresso (PCM)

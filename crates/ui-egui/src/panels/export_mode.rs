@@ -10,7 +10,7 @@
 //!
 //! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
-//! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
+//! `export.video.*` (`export.video.maxThreads`: All cores / 1…N), `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
@@ -81,6 +81,11 @@ pub struct ExportUi {
     /// Range follows them again (Source In/Out with marks set, else Entire Source; #2749). Part of
     /// the state, so a `ui.set` of other export fields keeps it (and a chosen Range stays).
     pub range_for: Option<(u64, Option<i64>, Option<i64>)>,
+    /// Whether `settings.max_threads` follows the app-wide default (`playback.export_threads`,
+    /// #1216): a changed default reseeds it only while this is set. Picking a value in the dialog,
+    /// applying a preset (which stores its own cap, even one equal to the old default) or setting
+    /// it over the control channel clears it, so an explicit cap is never overwritten.
+    pub export_threads_inherited: bool,
 }
 
 impl Default for ExportUi {
@@ -101,6 +106,7 @@ impl Default for ExportUi {
             quick_path: String::new(),
             quick_preset: String::new(),
             range_for: None,
+            export_threads_inherited: true,
         }
     }
 }
@@ -142,6 +148,8 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
         Some(p) => {
             app.ui.export.settings = p.settings;
             app.ui.export.preset = p.name;
+            // the preset's cap is explicit, even when it equals the app-wide default
+            app.ui.export.export_threads_inherited = false;
             true
         }
         None => {

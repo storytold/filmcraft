@@ -209,6 +209,13 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     }
     apply_nested_settings(&mut settings, p, cmd)?;
     apply_flat_overrides(&mut settings, p, cmd)?;
+    // #1216: the app-wide default (Settings ▸ Playback ▸ Export CPU Threads) fills in only when
+    // the export does not set its own cap. An explicit cap — including an explicit 0 ("all
+    // cores") — and a preset's cap (which wins by being the base settings) are preserved.
+    let explicit = preset.is_some() || p.get("maxThreads").is_some() || p.get("settings").and_then(|v| v.get("maxThreads")).is_some();
+    if !explicit && s.prefs.playback.export_threads != 0 {
+        settings.max_threads = s.prefs.playback.export_threads;
+    }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     Ok((preset, settings))
 }
