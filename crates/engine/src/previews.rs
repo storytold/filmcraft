@@ -395,7 +395,7 @@ impl PreviewStore {
                 return Some(s);
             }
         }
-        let bytes = std::fs::read(self.audio_path_for(hash)?).ok()?;
+        let bytes = filmcraft_media::reader::read_regular_file(&self.audio_path_for(hash)?).ok()?;
         let samples = Arc::new(read_wav_f32(&bytes)?);
         let mut g = self.audio.lock().unwrap_or_else(|e| e.into_inner());
         g.push((hash.to_string(), samples.clone()));
@@ -577,7 +577,7 @@ pub(crate) fn open_preview_file(_pool: &MediaPool, name: &str, path: &std::path:
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn open_preview_file(pool: &MediaPool, name: &str, path: &std::path::Path) -> Option<SharedSource> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = filmcraft_media::reader::read_regular_file(path).ok()?;
     pool.open_bytes(name, bytes.into()).ok()
 }
 
