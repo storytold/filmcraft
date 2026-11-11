@@ -192,9 +192,13 @@ impl ReservedOutput {
 impl Drop for ReservedOutput {
     fn drop(&mut self) {
         if !self.keep {
+            // Only our own file goes: a replacement someone put at the path is theirs.
+            let ours = self.file.as_deref().is_none_or(|f| filmcraft_export::path_is_file(&self.path.to_string_lossy(), f));
             // Release our handle before removal, which is required on Windows.
             self.file.take();
-            let _ = std::fs::remove_file(&self.path);
+            if ours {
+                let _ = std::fs::remove_file(&self.path);
+            }
         }
     }
 }
