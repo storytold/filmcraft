@@ -432,7 +432,13 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
 }
 
 /// Write a DNG holding `samples` (`width` × `height` × `samples_per_pixel`, interleaved).
+///
+/// # Panics
+/// When `o.bits` is outside 1..=16 (the samples are 16 bits wide): a file with empty or wrong raw
+/// strips must not be returned as if it were written. This is a fixture writer, so the check is an
+/// assertion rather than an error channel.
 pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
+    assert!((1..=16).contains(&o.bits), "DNG writer: {} bits per sample is outside 1..=16", o.bits);
     let be = o.big_endian;
     let mut buf = if be { b"MM\0*\0\0\0\0".to_vec() } else { b"II*\0\0\0\0\0".to_vec() };
     let (offs, counts) = put_chunks(&mut buf, samples, o);
@@ -518,6 +524,12 @@ mod bound_tests {
         // many distinct tags merge without a scan per tag
         let many: Vec<(u16, Value)> = (0..60_000u32).map(|i| ((i % 65_000) as u16, Value::Byte(vec![]))).collect();
         merge_tags(&mut Vec::new(), &many);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 1..=16")]
+    fn write_rejects_a_depth_outside_one_to_sixteen() {
+        write(&[0; 4], &Options { width: 2, height: 2, bits: 17, compression: Compression::None, ..Default::default() });
     }
 
     #[test]
