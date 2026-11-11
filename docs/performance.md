@@ -267,8 +267,8 @@ alternating rounds, `filmcraft-cli … run` of `file.exportMedia` (H.264, `gpuRe
 
 | scene | main | **after** |
 |---|---|---|
-| the CityNight demo footage under an adjustment layer (Lumetri: contrast, exposure, vignette; Gaussian Blur 4) | 35.5, 35.8 | **9.4, 8.6** |
-| a real edit: 1080p H.264 camera clips with dips to black, an adjustment layer with Lumetri over 89 % of it, about 150 titles and shapes above | 26.1, 24.4 | **5.2, 5.0** |
+| the CityNight demo footage under an adjustment layer (Color Grading: contrast, exposure, vignette; Gaussian Blur 4) | 35.5, 35.8 | **9.4, 8.6** |
+| a real edit: 1080p H.264 camera clips with dips to black, an adjustment layer with Color Grading over 89 % of it, about 150 titles and shapes above | 26.1, 24.4 | **5.2, 5.0** |
 
 4.0× and 5.0× faster (means of the two rounds). GPU 3D utilisation (`nvidia-smi dmon`) went from
 1–4 % to 18–31 %. The two builds' files decode to the same picture within encoder noise (ffmpeg `psnr`
