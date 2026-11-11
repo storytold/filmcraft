@@ -27,6 +27,9 @@
 
 pub mod aaf;
 pub mod ale;
+pub mod avid_bin;
+pub mod avid_catalog;
+pub mod avid_sequence;
 pub mod edl;
 pub mod essence;
 pub mod fcp7;

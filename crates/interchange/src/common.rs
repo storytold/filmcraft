@@ -366,7 +366,7 @@ pub(crate) fn media_clip(media: MediaRef, info: MediaInfo) -> MediaClip {
 pub(crate) fn item_path(p: &Project, id: ItemId) -> Option<&str> {
     match &item_media(p, id)?.media {
         MediaRef::File { path } => Some(path),
-        MediaRef::Generator(_) => None,
+        MediaRef::Generator(_) | MediaRef::Components { .. } => None,
     }
 }
 
@@ -402,7 +402,7 @@ pub(crate) fn uncarried_clip(p: &Project, c: &TrackItem, rate: FrameRate) -> Opt
 pub(crate) fn generator_of(p: &Project, id: ItemId) -> Option<&Generator> {
     match &item_media(p, id)?.media {
         MediaRef::Generator(g) => Some(g),
-        MediaRef::File { .. } => None,
+        MediaRef::File { .. } | MediaRef::Components { .. } => None,
     }
 }
 

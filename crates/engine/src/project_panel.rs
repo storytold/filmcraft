@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use filmcraft_project::{Bin, BinEntry, BinId, ItemId, ItemKind, MediaRef, Project, ProjectItem, TrackKind};
+use filmcraft_project::{AudioChannels, Bin, BinEntry, BinId, ItemId, ItemKind, MediaRef, Project, ProjectItem, TrackKind};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -398,7 +398,18 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
                         }
                     )
                 })
-                .unwrap_or_default(),
+                .unwrap_or_else(|| match &it.kind {
+                    ItemKind::Sequence(q) => {
+                        let layout = match q.settings.audio_master {
+                            AudioChannels::Mono => "Mono",
+                            AudioChannels::Stereo => "Stereo",
+                            AudioChannels::Surround51 => "5.1",
+                            AudioChannels::Adaptive => "Adaptive",
+                        };
+                        format!("{} Hz - {layout}", q.settings.sample_rate)
+                    }
+                    _ => String::new(),
+                }),
         ),
         "Audio Codec" => text(media.and_then(|m| m.info.audio()).map(|a| a.codec.clone()).unwrap_or_default()),
         "Color Space" => text(match (media.and_then(|m| m.info.video.as_ref().map(|v| (m, v))), &it.kind) {

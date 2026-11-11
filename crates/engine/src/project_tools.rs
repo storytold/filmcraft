@@ -379,7 +379,7 @@ fn media_of(p: &Project, id: ItemId) -> Option<(ItemId, &filmcraft_project::Medi
 fn file_path(m: &filmcraft_project::MediaClip) -> Option<&str> {
     match &m.media {
         MediaRef::File { path } => Some(path),
-        MediaRef::Generator(_) => None,
+        MediaRef::Generator(_) | MediaRef::Components { .. } => None,
     }
 }
 

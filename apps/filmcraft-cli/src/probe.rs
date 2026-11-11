@@ -24,6 +24,8 @@ fn mxf_details(src: &filmcraft_codecs::MxfSource) -> Value {
                 "codec": t.codec.name(),
                 "wrapping": format!("{:?}", t.wrapping),
                 "editRate": rate(t.edit_rate),
+                "materialEditRate": t.material_edit_rate.map(rate),
+                "materialDuration": t.material_duration,
                 "origin": t.origin,
                 "startPosition": t.start_position,
                 "duration": t.duration,

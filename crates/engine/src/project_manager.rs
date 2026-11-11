@@ -127,6 +127,9 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             proj.root.remove_item(i);
         }
     }
+    if proj.items.values().any(|i| i.as_media().is_some_and(|m| matches!(m.media, MediaRef::Components { .. }))) {
+        return Err(bad("file.projectManager", "collect/consolidate of multi-file audio is not supported yet"));
+    }
     // ---- work list and estimate
     let mut work = Vec::new();
     let mut taken: Vec<String> = Vec::new();

@@ -41,6 +41,8 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: independently identified MXF audio and picture components, stable logical channel
+//!   slots, and pending verification for offline picture bindings. Reads earlier audio-only references.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -63,7 +65,7 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 /// edit a shipped one.
 pub const MIGRATIONS: &[Migration] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
-    v15_to_v16, v16_to_v17,
+    v15_to_v16, v16_to_v17, v17_to_v18,
 ];
 
 /// The schema version this build writes (and the newest it reads).
@@ -406,13 +408,34 @@ fn v16_to_v17(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v17 → v18: Component references retain their audio-only alias, and the new picture
+/// verification flag defaults to false for existing bindings.
+fn v17_to_v18(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
+    }
+
+    #[test]
+    fn legacy_picture_binding_defaults_to_verified_and_pending_roundtrips() {
+        let legacy = serde_json::json!({"track":1,"file_package":vec![0;32],"path":"/picture.mxf","source_start":0,"length":100});
+        let mut picture: filmcraft_project::PictureComponent = serde_json::from_value(legacy).unwrap();
+        assert!(!picture.format_pending);
+        picture.format_pending = true;
+        let decoded: filmcraft_project::PictureComponent = serde_json::from_slice(&serde_json::to_vec(&picture).unwrap()).unwrap();
+        assert!(decoded.format_pending);
+        let mut doc: Value = serde_json::from_slice(&encode(&Project::new("Legacy 17"), false)).unwrap();
+        doc["schema_version"] = Value::from(17);
+        let loaded = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(loaded.migrated());
+        assert_eq!(loaded.project.name, "Legacy 17");
     }
 
     #[test]

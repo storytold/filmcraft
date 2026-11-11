@@ -247,6 +247,10 @@ impl Exp<'_, '_> {
         let avail = tr(m.info.start_timecode.map(|f| m.frame_rate().tick_of(f)).unwrap_or(Tick::ZERO), m.info.duration, rate);
         let meta = json!({"filmcraft": {"item": item.0, "label": self.p.item(item).map(|i| i.label), "custom_label_color": self.p.item(item).and_then(|i| i.custom_label_color), "info": m.info, "offline": m.offline}});
         match &m.media {
+            MediaRef::Components { .. } => {
+                self.report.warn("multi-file audio reference is exported as a missing reference");
+                json!({"OTIO_SCHEMA":"MissingReference.1","name":name,"available_range":avail,"metadata":meta})
+            }
             MediaRef::Generator(g) => json!({
                 "OTIO_SCHEMA": "GeneratorReference.1",
                 "name": name,
