@@ -5409,7 +5409,11 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let c = per.candidates.get(idx).cloned().ok_or_else(|| bad("file.recover", "no recovery session"))?;
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
+    let view = loaded.view;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(view) = view.filter(|_| s.prefs.timeline.restore_open_sequences) {
+        s.restore_project_view(view);
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }

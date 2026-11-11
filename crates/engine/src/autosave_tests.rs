@@ -163,6 +163,7 @@ fn crash_recovery_end_to_end() {
     let mut a = demo();
     start(&mut a, &d);
     a.execute("file.saveAs", json!({"path": proj})).unwrap();
+    a.state.timeline_ui.inverted_controls = true;
     a.execute("sequence.addEdit", json!({"seconds": 1.5})).unwrap();
     a.execute("sequence.addEdit", json!({"seconds": 2.5})).unwrap();
     let rev = a.revision;
@@ -188,6 +189,7 @@ fn crash_recovery_end_to_end() {
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);
     c.execute("file.recover", json!({})).unwrap();
     assert_eq!(*c.project, edited);
+    assert!(c.state.timeline_ui.inverted_controls, "recovery restores the saved Timeline settings");
     assert!(c.is_dirty(), "recovered changes are unsaved");
     assert_eq!(c.path.as_deref(), Some(proj.as_str()));
     assert!(c.recovery_candidates().is_empty());

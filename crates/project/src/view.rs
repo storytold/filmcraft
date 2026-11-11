@@ -269,6 +269,19 @@ impl ProjectView {
 /// One bad value in `timeline_ui` must not throw away the whole saved view (the open tabs and
 /// playheads beside it): a block that fails to deserialize falls back to the defaults, and
 /// [`TimelineUiSettings::checked`] then bounds whatever survived.
+fn read_timeline_field<T: serde::de::DeserializeOwned + Clone>(values: &serde_json::Map<String, serde_json::Value>, name: &str, default: &T) -> T {
+    match values.get(name) {
+        Some(value) => match serde_json::from_value::<T>(value.clone()) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("invalid timeline UI setting `{name}`; using its default: {error}");
+                default.clone()
+            }
+        },
+        None => default.clone(),
+    }
+}
+
 fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TimelineUiSettings, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     let Some(values) = value.as_object() else {
@@ -277,18 +290,9 @@ fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Timelin
     };
     let default = TimelineUiSettings::default();
     macro_rules! read {
-        ($field:ident, $ty:ty) => {{
-            match values.get(stringify!($field)) {
-                Some(value) => match serde_json::from_value::<$ty>(value.clone()) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        log::warn!("invalid timeline UI setting `{}`; using its default: {error}", stringify!($field));
-                        default.$field
-                    }
-                },
-                None => default.$field,
-            }
-        }};
+        ($field:ident, $ty:ty) => {
+            read_timeline_field::<$ty>(values, stringify!($field), &default.$field)
+        };
     }
     Ok(TimelineUiSettings {
         smooth_animations: read!(smooth_animations, bool),

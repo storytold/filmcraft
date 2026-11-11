@@ -687,13 +687,17 @@ impl Session {
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
         let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
         let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
+        let Some(p) = self.persistence.as_ref() else { return };
         if p.last_sent.as_ref() == Some(&cur) {
             return;
         }
+        let view = dirty.then(|| self.project_view());
+        let Some(p) = self.persistence.as_mut() else { return };
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            if let Some(view) = view {
+                p.send_dirty(self.project.clone(), view, self.revision, self.path.clone());
+            }
         } else {
             p.send_clean();
         }
