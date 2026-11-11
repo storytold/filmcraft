@@ -685,6 +685,10 @@ pub fn latm_split(frame: &[u8], last: &mut Option<LatmConfig>) -> Option<(Vec<u8
             break;
         }
     }
+    // Each payload byte is a byte of this frame: a longer claim is truncated, and must not size the buffer.
+    if len > frame.len() {
+        return None;
+    }
     let mut payload = Vec::with_capacity(len);
     for _ in 0..len {
         payload.push(r.read_bits(8).ok()? as u8);
