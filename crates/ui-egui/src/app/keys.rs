@@ -41,14 +41,15 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        // In Effect Controls, Delete and Backspace act on the selected keyframes and must never
-        // reach a clip-deleting command (edit.clear, edit.rippleDelete, timeline.delete, …),
-        // whatever a shortcut set maps them to: handle them by key here, before command dispatch.
-        // A focused text field keeps the keys for editing, and a focused divider for its nudging.
-        if self.ui.focused == PanelKind::EffectControls && !text_focused && !divider_focused {
+        // In Effect Controls with keyframes selected, Delete and Backspace delete them here, before
+        // command dispatch — so they work whatever a set maps the keys to (a legacy timeline.delete
+        // included) and never reach a clip-deleting command. With no keyframe selected the keys are
+        // left for `fire_shortcuts`, which removes the selected effect / mask / transition, never the
+        // clip. A focused text field keeps the keys for editing, and a focused divider for its nudging.
+        if self.ui.focused == PanelKind::EffectControls && !text_focused && !divider_focused && !self.ui.keyframe_selection.is_empty() {
             let delete =
                 ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) | i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
-            if delete && !self.ui.keyframe_selection.is_empty() {
+            if delete {
                 let params = json!({ "keyframes": self.ui.keyframe_selection });
                 match menus::invoke(self, ctx, "effects.deleteKeyframes", params) {
                     // Drop the now-deleted keys so a second Delete does not reference stale refs.
@@ -162,20 +163,6 @@ impl FilmcraftApp {
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for id in fire {
-            // The plain-key guard above handles Delete and Backspace, but a modifier variant
-            // (Shift+Delete / Alt+Backspace, and the clipboard events they arrive as on Windows)
-            // reaches dispatch as Clear or Ripple Delete: in Effect Controls those act on the
-            // selected keyframes too, never the clip. Nothing selected does nothing.
-            if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete") {
-                if !self.ui.keyframe_selection.is_empty() {
-                    let params = json!({ "keyframes": self.ui.keyframe_selection });
-                    match menus::invoke(self, ctx, "effects.deleteKeyframes", params) {
-                        Ok(_) => self.ui.keyframe_selection.clear(),
-                        Err(e) => self.ui.status = e,
-                    }
-                }
-                continue;
-            }
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;
@@ -183,15 +170,25 @@ impl FilmcraftApp {
             } else {
                 None
             };
-            // Clear and Ripple Delete in Effect Controls never reach the clip (#1354). They remove the
-            // selected effect, or the selected mask when no effect is selected; Motion and the other
-            // fixed effects cannot be removed. A selection made on a clip the panel no longer shows
-            // (clip A's effect selected, clip B selected in the Timeline) is stale and removes
-            // nothing (#1400 review). With nothing removable selected the key is consumed and does
-            // nothing, so a repeated Backspace cannot fall through to `edit.clear` and delete the
+            // Clear and Ripple Delete in Effect Controls never reach the clip (#1354). With keyframes
+            // selected they delete those (the plain-key guard above takes the unmodified keys; this
+            // catches the modifier variants that arrive as Clear / Ripple Delete). Otherwise they
+            // remove the selected effect, or the selected mask when no effect is selected; Motion and
+            // the other fixed effects cannot be removed. A selection made on a clip the panel no
+            // longer shows (clip A's effect selected, clip B selected in the Timeline) is stale and
+            // removes nothing (#1400 review). With nothing removable selected the key is consumed and
+            // does nothing, so a repeated Backspace cannot fall through to `edit.clear` and delete the
             // timeline clip. A transition shown in the panel is the exception: `edit.clear` removes
             // it, as it does from the Timeline, and Ripple Delete is consumed.
             if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete") {
+                if !self.ui.keyframe_selection.is_empty() {
+                    let params = json!({ "keyframes": self.ui.keyframe_selection });
+                    match menus::invoke(self, ctx, "effects.deleteKeyframes", params) {
+                        Ok(_) => self.ui.keyframe_selection.clear(),
+                        Err(e) => self.ui.status = e,
+                    }
+                    continue;
+                }
                 // the clips the panel shows: the selected video clip and its linked audio clip, so a
                 // selection on any row the panel displays is removable
                 let shown = crate::panels::effect_controls::selected_clips(self);
