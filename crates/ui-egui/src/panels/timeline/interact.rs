@@ -1159,6 +1159,38 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
 }
 
+/// Select the transition under a context click without retaining an earlier cut-menu target.
+fn prepare_transition_menu(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    resp: &egui::Response,
+    seq: &Sequence,
+    layout: &Layout,
+    edit_point_menu_id: egui::Id,
+) -> egui::Id {
+    let transition_menu_id = egui::Id::unique("timeline.transitionMenu.open");
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let transition = match hit(seq, layout, p) {
+            Hit::Transition { id, .. } => Some(id),
+            _ => None,
+        };
+        ctx.data_mut(|d| d.insert_temp(transition_menu_id, transition.is_some()));
+        if let Some(id) = transition {
+            // A selected transition keeps its group; an unselected one becomes the sole target.
+            // Retire the earlier cut menu so it cannot intercept this transition's Clear action.
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+            if !app.session.state.transition_selection.contains(&id)
+                && let Err(e) = app.session.execute("timeline.select", json!({"transitions": [id.0]}))
+            {
+                app.ui.status = e.to_string();
+            }
+        }
+    }
+    transition_menu_id
+}
+
 /// Handle Timeline pointer input: remember the grab from the press frame, jump the playhead on a ruler press, select a marker on its press, and reset the
 /// cancel flag once the button is released.
 pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
@@ -1280,6 +1312,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     let edit_point_menu_id = egui::Id::unique("timeline.editPointMenu.target");
     // the clip right-clicked, remembered while its menu is open: Unlink leaves only it selected
     let menu_clip_id = egui::Id::unique("timeline.clipMenu.clip");
+    let transition_menu_id = prepare_transition_menu(app, &ctx, &resp, seq, layout, edit_point_menu_id);
     // right-clicking empty time between clips selects the gap and opens its menu (#648, #668)
     let gap_menu_id = egui::Id::unique("timeline.gapMenu.open");
     if resp.secondary_clicked()
@@ -1354,6 +1387,17 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
             }
             if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
                 ruler_menu(app, &ctx, ui);
+                return;
+            }
+            if ctx.data(|d| d.get_temp::<bool>(transition_menu_id)).unwrap_or(false) {
+                let r = ui.add_enabled(!app.session.state.transition_selection.is_empty(), egui::Button::new(tl!("Clear")));
+                app.auto.add("timeline.transitionMenu.clear", r.rect, "Clear");
+                if r.clicked() {
+                    if let Err(e) = app.session.execute("sequence.removeTransition", json!({})) {
+                        app.ui.status = e.to_string();
+                    }
+                    ui.close();
+                }
                 return;
             }
             if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
