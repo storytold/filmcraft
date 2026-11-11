@@ -582,6 +582,22 @@ fn overflowing_out_mark_reports_an_error_without_starting_a_preview_job() {
     assert!(s.jobs.is_empty());
 }
 
+#[test]
+fn an_in_point_after_the_out_point_reports_an_error_without_a_job_or_deletion() {
+    let (mut s, tint) = session("in-after-out");
+    render_tint(&mut s, tint);
+    let jobs = s.jobs.len();
+    for marks in [(10, 9), (20, 5)] {
+        set_marks(&mut s, Some(marks));
+        for command in ["sequence.renderEffectsInToOut", "sequence.renderInToOut", "sequence.deleteRenderFilesInToOut"] {
+            assert!(s.execute(command, json!({"wait": true})).is_err(), "{command}: {marks:?}");
+        }
+        assert_eq!(s.previews.count(), 1);
+        assert_eq!(s.jobs.len(), jobs);
+    }
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
 fn job_error(s: &Session, v: &Value) -> String {
     let id = v["job"].as_u64().expect("a job was started");
     let j = s.jobs.iter().find(|j| j.id == id).unwrap().to_json();

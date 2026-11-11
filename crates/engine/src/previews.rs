@@ -631,7 +631,8 @@ fn in_out(s: &Session) -> Result<(ItemId, TimeRange)> {
         Some(out) => Tick(out.0.checked_add(fd.0).ok_or_else(|| EngineError::Other("set an Out point within the sequence time range".into()))?),
         None => q.duration(),
     };
-    if a < Tick::ZERO || b < Tick::ZERO || b.0.checked_sub(a.0).is_none() {
+    let reversed = q.mark_in.zip(q.mark_out).is_some_and(|(i, o)| i > o);
+    if a < Tick::ZERO || b < Tick::ZERO || b.0.checked_sub(a.0).is_none() || reversed {
         return Err(EngineError::Other("set valid In and Out points before rendering previews".into()));
     }
     Ok((id, TimeRange::from_bounds(a, b.max(a))))
