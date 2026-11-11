@@ -1286,8 +1286,8 @@ mod durability_tests {
         filmcraft_format::atomic_write(&old_dir.join(META), &serde_json::to_vec(&meta).unwrap()).unwrap();
 
         let mut session = crate::Session::default();
-        session.prefs.timeline.restore_open_sequences = false;
         session.start_autosave(AutosaveConfig::new(&d)).unwrap();
+        session.prefs.timeline.restore_open_sequences = false;
         session.execute("file.recover", json!({"id": "1-1"})).unwrap();
         assert!(session.state.timeline_ui.inverted_controls, "the recovery view's Timeline settings survive even when tab restoration is disabled");
 
@@ -1313,13 +1313,14 @@ mod worker_failure_tests {
         fs::write(&meta_path, serde_json::to_vec(&JournalMeta { dirty: false, revision: 1, ..JournalMeta::default() }).unwrap()).unwrap();
 
         let mut snapshot_write_attempted = false;
-        let result = write_journal_pair(&session_dir, b"new dirty snapshot", &JournalMeta { dirty: true, revision: 2, ..JournalMeta::default() }, |path, bytes| {
-            if path == snapshot_path {
-                snapshot_write_attempted = true;
-                return Err(io::Error::other("interrupted snapshot replacement"));
-            }
-            fs::write(path, bytes)
-        });
+        let result =
+            write_journal_pair(&session_dir, b"new dirty snapshot", &JournalMeta { dirty: true, revision: 2, ..JournalMeta::default() }, |path, bytes| {
+                if path == snapshot_path {
+                    snapshot_write_attempted = true;
+                    return Err(io::Error::other("interrupted snapshot replacement"));
+                }
+                fs::write(path, bytes)
+            });
 
         assert!(result.is_err());
         assert!(snapshot_write_attempted);
@@ -1352,7 +1353,7 @@ mod worker_failure_tests {
         assert_eq!(fs::read(session_dir.join(SNAPSHOT)).unwrap(), old_snapshot);
         let candidates = scan_candidates(&data_dir, None);
         assert_eq!(candidates.len(), 1);
-        assert_eq!(filmcraft_format::decode(&fs::read(&candidates[0].dir.join(SNAPSHOT)).unwrap()).unwrap().project, old_project);
+        assert_eq!(filmcraft_format::decode(&fs::read(candidates[0].dir.join(SNAPSHOT)).unwrap()).unwrap().project, old_project);
         fs::remove_dir_all(data_dir).unwrap();
     }
 

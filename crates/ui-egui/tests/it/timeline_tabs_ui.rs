@@ -275,7 +275,7 @@ fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     let mut e = Driver::new();
     e.ok("ui.set", json!({"timeline": {"pps": 77.0, "scroll": 9.0}}));
     e.frames(3);
-    e.exec("file.open", json!({"path": path}));
+    e.app().session.execute("file.open", json!({"path": path})).unwrap();
     e.frames(3);
     assert_eq!((e.open(), e.active()), (vec![other, main], other));
     assert_eq!(e.view(), (15.0, 0.5, 60.0));
