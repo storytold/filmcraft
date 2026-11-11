@@ -27,11 +27,12 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
     let hold_filters = bool_p(p, "holdFilters").unwrap_or(false);
     let mode = str_p(p, "holdOn").unwrap_or("in").to_string();
     let ph = s.playhead();
-    let seq_t = time_p(s, p, "");
-    let tc = str_p(p, "timecode").map(str::to_string);
-    if tc.as_ref().is_some_and(|t| t.chars().count() > MAX_TIMECODE_LEN) {
+    // checked before time_p, which would parse (and allocate per separator of) an oversized timecode
+    if str_p(p, "timecode").is_some_and(|t| t.chars().count() > MAX_TIMECODE_LEN) {
         return Err(bad("clip.frameHoldOptions", "timecode is too long"));
     }
+    let seq_t = time_p(s, p, "");
+    let tc = str_p(p, "timecode").map(str::to_string);
     let rates: BTreeMap<ClipId, (FrameRate, i64)> = {
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
         clips
