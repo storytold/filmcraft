@@ -301,15 +301,16 @@ fn is_separator(label: &str) -> bool {
 }
 
 fn push_leaf(prefix: &[String], label: &str, min: usize, out: &mut Vec<Vec<String>>) -> Result<(), String> {
+    // the size limit applies to separators too: a skipped leaf under an oversized ancestor is still refused
+    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
+    if bytes > MAX_PATH_BYTES {
+        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+    }
     if is_separator(label) || prefix.iter().any(|p| is_separator(p)) {
         return Ok(());
     }
     if out.len() >= MAX_ITEMS {
         return Err(format!("reference has more than {MAX_ITEMS} items"));
-    }
-    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
-    if bytes > MAX_PATH_BYTES {
-        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
     }
     let mut path = prefix.to_vec();
     path.push(label.trim().to_string());
@@ -324,14 +325,20 @@ fn split_path(s: &str) -> Option<Vec<String>> {
     (parts.len() >= 2 && parts.iter().all(|p| !p.is_empty())).then_some(parts)
 }
 
-fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>, nodes: &mut usize) -> Result<(), String> {
-    if depth > MAX_DEPTH {
-        return Err(format!("reference is nested deeper than {MAX_DEPTH} levels"));
-    }
+/// Spend one node of the walk budget; leaves handled without a recursive call spend one too.
+fn count_node(nodes: &mut usize) -> Result<(), String> {
     *nodes += 1;
     if *nodes > MAX_NODES {
         return Err(format!("reference has more than {MAX_NODES} nodes"));
     }
+    Ok(())
+}
+
+fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>, nodes: &mut usize) -> Result<(), String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("reference is nested deeper than {MAX_DEPTH} levels"));
+    }
+    count_node(nodes)?;
     // Checked before the ancestors are copied, so a long ancestor shared by many containers costs nothing.
     let with = |label: &str| {
         let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len()));
@@ -354,6 +361,13 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             for el in a {
                 match el {
                     Value::Array(path) if !path.is_empty() && path.iter().all(Value::is_string) => {
+                        count_node(nodes)?;
+                        // checked before the ancestors are copied, whether or not the leaf is skipped
+                        let bytes =
+                            prefix.iter().map(String::len).chain(path.iter().filter_map(Value::as_str).map(str::len)).try_fold(0usize, usize::checked_add);
+                        if bytes.is_none_or(|b| b > MAX_PATH_BYTES) {
+                            return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+                        }
                         let parts: Vec<String> = prefix.iter().cloned().chain(path.iter().filter_map(|p| p.as_str().map(str::to_string))).collect();
                         if let Some((label, menus)) = parts.split_last() {
                             push_leaf(menus, label, min, out)?;
@@ -378,6 +392,7 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
                     if has_entries(val) {
                         walk(val, &with(k)?, depth + 1, min, out, nodes)?;
                     } else {
+                        count_node(nodes)?;
                         push_leaf(prefix, k, min, out)?;
                     }
                 }
@@ -645,6 +660,14 @@ mod tests {
         assert!(reference_paths(&anc, Area::Menus).unwrap_err().contains("bytes"));
         // so is a walk over more nodes than the budget, even when none becomes an item
         assert!(reference_paths(&json!(vec![""; MAX_NODES + 1]), Area::Menus).unwrap_err().contains("nodes"));
+        // flat paths and scalar entries spend the node budget, and a skipped leaf cannot hide an oversized path
+        assert!(reference_paths(&json!(vec![json!(["-"]); MAX_NODES + 1]), Area::Menus).unwrap_err().contains("nodes"));
+        let scalars: serde_json::Map<String, Value> = (0..MAX_NODES + 1).map(|i| (i.to_string(), Value::Null)).collect();
+        assert!(reference_paths(&json!([scalars]), Area::Menus).unwrap_err().contains("nodes"));
+        let flat = json!([["x".repeat(MAX_PATH_BYTES + 1), "-"]]);
+        assert!(reference_paths(&flat, Area::Menus).unwrap_err().contains("bytes"));
+        let string_path = json!([format!("{} > -", "x".repeat(MAX_PATH_BYTES + 1))]);
+        assert!(reference_paths(&string_path, Area::Menus).unwrap_err().contains("bytes"));
         // odd values are skipped, not trusted
         assert_eq!(reference_paths(&json!([1, null, true, {"name": 5}, ["File"]]), Area::Menus).unwrap(), Vec::<Vec<String>>::new());
     }

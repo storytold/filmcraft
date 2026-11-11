@@ -378,6 +378,7 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
             let _release = Release(done);
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
             let mut line = String::new();
             let mut reader = BufReader::new(std::io::Read::take(
                 match stream.try_clone() {
