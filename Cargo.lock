@@ -2054,6 +2054,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-mpa",
  "filmcraft-mpeg2v",
+ "filmcraft-mpeg4v",
  "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
@@ -2368,6 +2369,14 @@ version = "0.17.0"
 dependencies = [
  "filmcraft-testkit",
  "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-mpeg4v"
+version = "0.17.0"
+dependencies = [
+ "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
 

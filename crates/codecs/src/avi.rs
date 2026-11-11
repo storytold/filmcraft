@@ -1,9 +1,10 @@
 //! AVI media source (`filmcraft-avi` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! Video: Motion JPEG (frames without their own Huffman tables get the standard ones), H.264 and
-//! HEVC (Annex B byte streams, our decoders), and uncompressed RGB / YUV ([`RawFormat`]). A frame
-//! slot with an empty chunk (a "drop frame") repeats the picture before it. MPEG-4 Part 2
-//! (DivX / Xvid) and DV have no decoder yet: their streams are listed and report the codec.
+//! HEVC (Annex B byte streams, our decoders), MPEG-4 Part 2 (DivX / Xvid, with B-VOPs in stream
+//! order or packed into one chunk), and uncompressed RGB / YUV ([`RawFormat`]). A frame slot with
+//! an empty chunk (a "drop frame") repeats the picture before it. MS-MPEG4 (DivX 3) and DV have no
+//! decoder yet: their streams are listed and report the codec.
 //!
 //! Audio: PCM (integer and float) straight from the chunks; MPEG audio (MP3, MP2) and AC-3 frames,
 //! which AVI chunks need not follow, are found again across chunk boundaries
@@ -32,6 +33,7 @@ enum VCodec {
     Jpeg,
     H264,
     Hevc,
+    Mpeg4,
     Raw(RawFormat),
     /// No decoder: the codec's name.
     Unsupported(String),
@@ -53,9 +55,15 @@ fn video_codec(b: &BitmapInfo) -> (VCodec, String) {
         b"MJPG" | b"AVRN" | b"LJPG" | b"JPGL" | b"DMB1" | b"JPEG" | b"MJPA" => (VCodec::Jpeg, "Motion JPEG".into()),
         b"H264" | b"X264" | b"AVC1" | b"DAVC" | b"VSSH" => (VCodec::H264, "H.264".into()),
         b"HEVC" | b"H265" | b"HEV1" | b"HVC1" | b"X265" => (VCodec::Hevc, "HEVC".into()),
-        b"DIVX" | b"DX50" | b"XVID" | b"FMP4" | b"MP4V" | b"M4S2" | b"3IV2" | b"DIV3" | b"MP43" | b"MP42" => {
-            (VCodec::Unsupported("MPEG-4 Part 2 (DivX / Xvid)".into()), "MPEG-4 Part 2 (DivX / Xvid)".into())
+        b"DIVX" | b"DX50" | b"XVID" | b"XVIX" | b"FMP4" | b"MP4V" | b"MP4S" | b"M4S2" | b"3IV2" | b"RMP4" | b"SEDG" | b"DM4V" => {
+            (VCodec::Mpeg4, "MPEG-4 Part 2 (DivX / Xvid)".into())
         }
+        // the Microsoft precursors of MPEG-4 Part 2: another bitstream
+        b"DIV3" | b"DIV4" | b"DIV5" | b"DIV6" | b"MP43" | b"MPG3" | b"AP41" | b"COL0" | b"COL1" => {
+            (VCodec::Unsupported("MS-MPEG4 (DivX 3)".into()), "MS-MPEG4 (DivX 3)".into())
+        }
+        b"MP42" | b"DIV2" => (VCodec::Unsupported("MS-MPEG4 v2".into()), "MS-MPEG4 v2".into()),
+        b"MP41" | b"MPG4" | b"DIV1" => (VCodec::Unsupported("MS-MPEG4 v1".into()), "MS-MPEG4 v1".into()),
         b"DVSD" | b"DV25" | b"DV50" | b"DVHD" | b"DVSL" | b"CDVC" | b"DVCP" | b"DVPP" => (VCodec::Unsupported("DV".into()), "DV".into()),
         _ => {
             let name = fourcc_text(b.compression);
@@ -141,6 +149,10 @@ pub struct AviSource {
     vslots: i64,
     rate: FrameRate,
     bottom_up: bool,
+    /// Codec setup after the stream format (`strf`): an MPEG-4 layer header can live here.
+    vextra: Vec<u8>,
+    /// MPEG-4 Part 2 "packed bitstream": a B-VOP shares the chunk of the anchor stored before it.
+    packed: bool,
     video: GopCache,
     audios: Vec<AviAudio>,
 }
@@ -152,6 +164,58 @@ fn random_access(data: &[u8], hevc: bool) -> bool {
         Some(h) => h & 0x1F == 5,
         None => false,
     })
+}
+
+/// Enough of an MPEG-4 chunk to hold its layer header (with quantiser matrices) and first VOP's
+/// type.
+const MPEG4_HEAD: usize = 1024;
+
+/// The first `n` bytes of a chunk of stream `vs`.
+fn read_head(bytes: &crate::Src, vs: &filmcraft_avi::Stream, chunk: usize, n: usize) -> Option<Vec<u8>> {
+    let c = vs.chunks.get(chunk)?;
+    filmcraft_media::reader::read_range(&*bytes.0, c.offset, (c.size as usize).min(n)).ok()
+}
+
+/// Puts an MPEG-4 Part 2 stream's pictures in presentation order and returns whether it is packed.
+///
+/// AVI has no timestamps, and MPEG-4 stores an anchor before the B-VOPs shown ahead of it. With the
+/// packed bitstream DivX and Xvid keep one picture per slot: an anchor shares its chunk with the
+/// first B-VOP after it and a not-coded VOP stands in the anchor's slot, so slots are right as
+/// they are. Otherwise the pictures keep the slots they occupy, shown in display order: a B-VOP at
+/// once, an anchor when the next anchor arrives. A first look at the start of the stream decides
+/// (reading every chunk's head is the cost of a reordering stream only).
+fn mpeg4_reorder(vframes: &mut [VFrame], read: impl Fn(&VFrame, usize) -> Option<Vec<u8>>) -> bool {
+    use filmcraft_mpeg4v::{VopType, vop_types};
+    let mut b_vops = false;
+    for f in vframes.iter().take(300) {
+        let types = read(f, 1 << 20).map(|d| vop_types(&d)).unwrap_or_default();
+        if types.len() > 1 {
+            return true;
+        }
+        b_vops |= types.first() == Some(&VopType::B);
+    }
+    if !b_vops {
+        return false;
+    }
+    let is_b: Vec<bool> = vframes.iter().map(|f| read(f, MPEG4_HEAD).is_some_and(|d| vop_types(&d).first() == Some(&VopType::B))).collect();
+    let mut slots: Vec<i64> = vframes.iter().map(|f| f.pts).collect();
+    slots.sort_unstable();
+    let mut order = Vec::with_capacity(vframes.len());
+    let mut anchor = None;
+    for (k, b) in is_b.iter().enumerate() {
+        if *b {
+            order.push(k);
+        } else {
+            order.extend(anchor.replace(k));
+        }
+    }
+    order.extend(anchor);
+    for (k, slot) in order.into_iter().zip(slots) {
+        if let Some(f) = vframes.get_mut(k) {
+            f.pts = slot;
+        }
+    }
+    false
 }
 
 /// The packets of a framed audio stream: every frame header found in the stream of chunks, and
@@ -258,12 +322,15 @@ impl AviSource {
         // video: frame slots, pictures and key frames
         let (mut vcodec, mut vframes, mut vslots, mut rate, mut bottom_up, mut video) =
             (VCodec::Unsupported(String::new()), Vec::new(), 0i64, FrameRate::new(25, 1), false, None);
+        let (mut vextra, mut packed) = (Vec::new(), false);
         if let Some(vs) = vstream.and_then(|i| file.streams.get(i)) {
             let b = vs.video.clone().unwrap_or_default();
             let (codec, label) = video_codec(&b);
             rate = FrameRate::new(i64::from(vs.rate), i64::from(vs.scale));
             bottom_up = b.height > 0;
-            let (w, h) = (b.width.unsigned_abs(), b.height.unsigned_abs());
+            let (mut w, mut h) = (b.width.unsigned_abs(), b.height.unsigned_abs());
+            let (mut par, mut pixel_format) = ((1, 1), String::new());
+            vextra = b.extra.clone();
             for (k, c) in vs.chunks.iter().enumerate() {
                 if c.size == 0 {
                     continue;
@@ -272,7 +339,10 @@ impl AviSource {
                     VCodec::H264 | VCodec::Hevc if !vs.keyframes_known => {
                         file.read_chunk(&bytes, vstream.unwrap_or(0), k).is_ok_and(|d| random_access(&d, codec == VCodec::Hevc))
                     }
-                    VCodec::H264 | VCodec::Hevc => c.key,
+                    VCodec::Mpeg4 if !vs.keyframes_known => {
+                        read_head(&bytes, vs, k, MPEG4_HEAD).is_some_and(|d| filmcraft_mpeg4v::vop_types(&d).first() == Some(&filmcraft_mpeg4v::VopType::I))
+                    }
+                    VCodec::H264 | VCodec::Hevc | VCodec::Mpeg4 => c.key,
                     _ => true,
                 };
                 vframes.push(VFrame { pts: i64::from(vs.start) + k as i64, chunk: k, key });
@@ -310,6 +380,18 @@ impl AviSource {
                     }
                 }
             }
+            if codec == VCodec::Mpeg4 {
+                // the layer header says the real size and aspect (in `strf`, or in the first chunk)
+                let first = vframes.first().and_then(|f| read_head(&bytes, vs, f.chunk, MPEG4_HEAD)).unwrap_or_default();
+                if let Some(i) = filmcraft_mpeg4v::probe(&vextra).or_else(|| filmcraft_mpeg4v::probe(&first)) {
+                    (w, h) = (i.width, i.height);
+                    if i.sar.0 > 0 && i.sar.1 > 0 {
+                        par = i.sar;
+                    }
+                    pixel_format = "YUV 4:2:0 8-bit, progressive".into();
+                }
+                packed = mpeg4_reorder(&mut vframes, |f, n| read_head(&bytes, vs, f.chunk, n));
+            }
             let secs = vslots as f64 / rate.as_f64().max(1e-9);
             // The rate the pictures play at: a writer that kept a fine time base (ffmpeg copying an
             // MP4's 1/600) fills the slots between pictures with empty chunks, every 20th slot
@@ -328,9 +410,9 @@ impl AviSource {
                 width: w,
                 height: h,
                 frame_rate: shown,
-                par: (1, 1),
+                par,
                 codec: label,
-                pixel_format: String::new(),
+                pixel_format,
                 color: crate::stream_color::resolve(w, h, &[]),
                 has_alpha: false,
                 bitrate,
@@ -419,7 +501,23 @@ impl AviSource {
         let mut vorder: Vec<usize> = (0..vframes.len()).collect();
         vorder.sort_by_key(|&i| vframes.get(i).map_or(0, |f| f.pts));
         let vorder_pts = vorder.iter().map(|&i| vframes.get(i).map_or(0, |f| f.pts)).collect();
-        Ok(Self { info, bytes, file, vstream, vcodec, vframes, vorder, vorder_pts, vslots, rate, bottom_up, video: GopCache::new(None), audios })
+        Ok(Self {
+            info,
+            bytes,
+            file,
+            vstream,
+            vcodec,
+            vframes,
+            vorder,
+            vorder_pts,
+            vslots,
+            rate,
+            bottom_up,
+            vextra,
+            packed,
+            video: GopCache::new(None),
+            audios,
+        })
     }
 
     fn read(&self, stream: usize, chunk: usize) -> crate::Result<Vec<u8>> {
@@ -485,6 +583,17 @@ struct AviVideo<'a> {
     stream: usize,
 }
 
+impl AviVideo<'_> {
+    /// Whether slot `i` of a packed stream shows a B-VOP of the open GOP of key chunk `key`: one
+    /// packed behind the I-VOP or stored right after it. Those are predicted from the GOP before,
+    /// and the I-VOP itself shows in the slot after them.
+    fn leading_b_vops(&self, key: usize, i: usize) -> bool {
+        use filmcraft_mpeg4v::{VopType, vop_types};
+        let types = |k: usize| self.read(k).map(|d| vop_types(&d)).unwrap_or_default();
+        types(key).contains(&VopType::B) && (key + 1..=i).all(|k| types(k).first() == Some(&VopType::B))
+    }
+}
+
 impl VideoSamples for AviVideo<'_> {
     fn count(&self) -> usize {
         self.src.vframes.len()
@@ -494,7 +603,11 @@ impl VideoSamples for AviVideo<'_> {
     }
     fn sync_before(&self, i: usize) -> usize {
         let i = i.min(self.src.vframes.len().saturating_sub(1));
-        self.src.vframes.get(..=i).and_then(|f| f.iter().rposition(|f| f.key)).unwrap_or(0)
+        let key = self.src.vframes.get(..=i).and_then(|f| f.iter().rposition(|f| f.key)).unwrap_or(0);
+        if self.src.packed && key > 0 && self.leading_b_vops(key, i) {
+            return self.src.vframes.get(..key).and_then(|f| f.iter().rposition(|f| f.key)).unwrap_or(0);
+        }
+        key
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
         // the picture shown in slot `t`: the last one at or before it (empty chunks repeat it)
@@ -515,6 +628,7 @@ impl VideoSamples for AviVideo<'_> {
             VCodec::Jpeg => make_video_decoder(&SampleEntry::jpeg(w, h)),
             VCodec::H264 => Ok(Box::new(crate::video::H264Decoder::annexb())),
             VCodec::Hevc => Ok(Box::new(crate::video::HevcDecoder::annexb())),
+            VCodec::Mpeg4 => Ok(Box::new(crate::video::Mpeg4Decoder::new(&self.src.vextra))),
             VCodec::Raw(f) => Ok(Box::new(RawVideoDecoder::new(*f, v.width, v.height, self.src.bottom_up)?)),
             VCodec::Unsupported(name) => Err(CodecError::Unsupported(format!("no decoder for {name} video"))),
         }

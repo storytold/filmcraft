@@ -195,7 +195,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   from white.
 - **Missing:** free-format MPEG audio, E-AC-3 adaptive hybrid
   transform, enhanced coupling and the extra channels of 7.1 dependent substreams (played as the
-  5.1 core), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, camera RAW (R3D
+  5.1 core), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2 outside AVI, MS-MPEG4, camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
   settings; DNG frames and folders import since #1065); stills: PSD layers (Merged Layers, Individual Layers, layers as a sequence) and PSB / CMYK / Lab / indexed / 32-bit / ZIP-compressed documents, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
