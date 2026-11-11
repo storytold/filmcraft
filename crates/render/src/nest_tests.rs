@@ -437,7 +437,10 @@ fn a_fan_out_of_nests_is_bounded_by_the_visit_budget() {
         calls.fetch_add(1, Ordering::Relaxed);
         map.0.get(&item).cloned()
     };
+    let refused = refused_renders();
     let _ = render_sequence(&r.p, below, Tick::ZERO, RenderOptions::default(), &counting);
+    // the spent budget is reported, so a caller that stores the render can refuse the incomplete one
+    assert!(refused_renders() > refused);
     let n = calls.load(Ordering::Relaxed);
     assert!(n <= 8 * nest_budget::MAX_NESTED_VISITS as usize, "{n} source lookups");
 }

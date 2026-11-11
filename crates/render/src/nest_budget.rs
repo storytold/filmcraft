@@ -4,10 +4,24 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Most sequence renders and mixes one outermost call may start (a frame has tens at most).
 pub(crate) const MAX_NESTED_VISITS: u32 = 1024;
+
+static REFUSED: AtomicU64 = AtomicU64::new(0);
+
+/// How many renders and mixes have been refused for an exhausted budget since the process started.
+/// A caller that stores a render (the preview job) compares it before and after: if it grew, the
+/// picture or sound it got is incomplete and must not be kept.
+pub fn refused_renders() -> u64 {
+    REFUSED.load(Ordering::Relaxed)
+}
+
+/// Records that a render or mix returned nothing because the budget was spent.
+pub(crate) fn note_refused() {
+    REFUSED.fetch_add(1, Ordering::Relaxed);
+}
 
 /// The visits counted so far by one outermost call, shared by the threads working for it.
 pub(crate) type Count = Arc<AtomicU32>;

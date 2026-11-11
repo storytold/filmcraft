@@ -725,7 +725,14 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 sdr: true,
                 ..Default::default()
             };
+            let refused = filmcraft_render::refused_renders();
             match filmcraft_export::export(&project, seq, &settings, &provider, &prog) {
+                // a frame left out for a spent nest budget makes the file incomplete: never register it
+                Ok(_) if filmcraft_render::refused_renders() != refused => {
+                    let _ = std::fs::remove_file(&part);
+                    outcome = Err("a segment is too deeply nested to be previewed".into());
+                    break;
+                }
                 Ok(r) => {
                     bytes += r.bytes;
                     done_frames += r.frames;
@@ -816,6 +823,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             static PART: AtomicU64 = AtomicU64::new(0);
             let part = dir.join(format!("{}.wav.{}-{}.part", g.hash, std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
             let fin = dir.join(audio_name(&g.hash));
+            let refused = filmcraft_render::refused_renders();
             let written = (|| -> std::io::Result<Option<u64>> {
                 use std::io::Write;
                 let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
@@ -838,6 +846,9 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
                     prog.done.fetch_add(n as u64, Ordering::Relaxed);
                 }
                 file.flush()?;
+                if filmcraft_render::refused_renders() != refused {
+                    return Err(std::io::Error::other("an audio segment is too deeply nested to be previewed"));
+                }
                 Ok(Some(header.len() as u64 + g.samples as u64 * 8))
             })();
             let data_len = match written {

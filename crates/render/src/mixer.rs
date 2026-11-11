@@ -865,6 +865,7 @@ pub(crate) fn mix_graph_at(
     let sr = seq.settings.sample_rate.max(1);
     let visit = crate::nest_budget::Visit::enter();
     if visit.exhausted() {
+        crate::nest_budget::note_refused();
         return AudioBuffer::silence(sr, 2, frames);
     }
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();

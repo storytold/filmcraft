@@ -27,6 +27,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 mod nest_budget;
+pub use nest_budget::refused_renders;
 pub mod offline;
 pub mod plan;
 pub mod preview;
@@ -234,6 +235,9 @@ fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Canvas::new(w, h);
     let visit = nest_budget::Visit::enter();
+    if visit.exhausted() {
+        nest_budget::note_refused();
+    }
     if opts.depth > MAX_NEST_DEPTH || visit.exhausted() {
         return canvas;
     }
