@@ -421,5 +421,18 @@ fn a_sequence_too_deeply_nested_to_preview_is_not_reported_up_to_date() {
     let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
     assert_eq!(v["segments"], 0);
     assert!(v["skipped"].as_u64().unwrap() >= 1, "{v}");
+    // a range that only reaches a plain clip after the nest does not count the nest's segment
+    let mut p = (*s.project).clone();
+    let tail = p.make_track_item(matte, TrackKind::Video, r.tick_of(20), TimeRange::new(r.tick_of(20), r.tick_of(10)), r).unwrap();
+    let q = p.sequence_mut(below).unwrap();
+    q.video_tracks[0].items.push(tail);
+    q.mark_in = Some(r.tick_of(20));
+    q.mark_out = Some(r.tick_of(29));
+    s.project = Arc::new(p);
+    let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    assert_eq!(v["segments"], 1, "{v}");
+    job_ok(&s, &v);
+    let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+    assert_eq!(v["skipped"], 0, "{v}");
     let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }

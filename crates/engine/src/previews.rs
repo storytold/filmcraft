@@ -658,7 +658,18 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         // segments a nest budget left uncacheable are not "up to date": say they cannot be previewed
         let skipped = segs
             .iter()
-            .filter(|g| !g.cacheable && mode.renders(g.need) && (mode != RenderMode::Selection || g.clips.iter().any(|c| selection.contains(c))))
+            .filter(|g| {
+                !g.cacheable
+                    && mode.renders(g.need)
+                    && match mode {
+                        // only segments the request reaches, as for the queued work above
+                        RenderMode::EffectsInToOut | RenderMode::InToOut => {
+                            let (a, b) = rel_range(g, rate, &range);
+                            a < b
+                        }
+                        RenderMode::Selection => g.clips.iter().any(|c| selection.contains(c)),
+                    }
+            })
             .count();
         s.toast(if skipped > 0 {
             format!("Nothing to render: {skipped} segment{} too deeply nested to be previewed", if skipped == 1 { " is" } else { "s are" })
