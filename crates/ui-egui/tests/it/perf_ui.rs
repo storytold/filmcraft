@@ -387,4 +387,7 @@ fn sequence_thumbnails_wait_for_edits_to_stop() {
         assert!(!ready || waited >= 0.5, "the edited thumbnail was rendered {waited:.2} s after the edit, before the edits settled");
         ready
     });
+    assert!(thumb(&mut d).is_some());
+    let name = format!("thumb-{}-0-64", seq.0);
+    assert_eq!(d.harness.state().texture_key(&name), Some(key), "the thumbnail shows the edited frame once it is ready");
 }
