@@ -294,6 +294,9 @@ impl VideoEncoder for ApvEncoder {
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// Converts `f` into the profile's planes (4:4:4 at full chroma resolution, 4:2:2, or 4:0:0
+    /// luma only), BT.709 for SDR and the signal's matrix for HDR, and codes one access unit.
+    /// A picture buffer shorter than `width` x `height` is an error.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         use filmcraft_apv::ChromaFormat as Cf;
         let (w, h) = (f.width as usize, f.height as usize);

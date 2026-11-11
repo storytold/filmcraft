@@ -613,6 +613,7 @@ mod apv_chroma {
     use super::*;
     use crate::encoders::apv_factory;
 
+    /// Encodes one frame with an APV encoder for `profile` and decodes it back.
     fn encode_apv(profile: &str, w: u32, h: u32, signal: ColorSignal, rgba: &[u8], hdr: Option<&[f32]>) -> Result<filmcraft_apv::Frame> {
         let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), signal, ..Default::default() };
         let mut enc = apv_factory(Format::Apv, w, h, FrameRate::FPS_24, &s).unwrap()?;
@@ -630,6 +631,7 @@ mod apv_chroma {
         i32::from(plane[i]) >> (fr.bit_depth - 10)
     }
 
+    /// Asserts adjacent red and blue columns of every row keep their own chroma.
     fn assert_stripes(fr: &filmcraft_apv::Frame, w: usize, h: usize, what: &str) {
         for row in 0..h {
             let i = row * w;
@@ -641,6 +643,7 @@ mod apv_chroma {
         }
     }
 
+    /// Every 4:4:4 profile keeps one-pixel colour stripes apart, and alpha stays opaque.
     #[test]
     fn apv_444_profiles_keep_full_resolution_chroma() {
         let (w, h) = (16usize, 8usize);
@@ -656,6 +659,7 @@ mod apv_chroma {
         }
     }
 
+    /// HDR float input keeps full chroma resolution; it carries no alpha, so alpha is opaque.
     #[test]
     fn apv_hdr_4444_keeps_full_resolution_chroma_and_opaque_alpha() {
         let (w, h) = (16usize, 8usize);
@@ -667,6 +671,7 @@ mod apv_chroma {
         assert!(a.len() == w * h && a.iter().all(|&v| v == max));
     }
 
+    /// 4:2:2 and 4:0:0 still code the expected luma, and 4:0:0 HDR uses the signal's matrix.
     #[test]
     fn apv_422_and_monochrome_still_encode() {
         let (w, h) = (16usize, 8usize);
@@ -686,6 +691,7 @@ mod apv_chroma {
         assert!(fr.y.iter().all(|&v| (i32::from(v) >> (fr.bit_depth - 10)).abs_diff(want) <= 2), "want {want}, got {:?}", &fr.y[..4]);
     }
 
+    /// A picture buffer shorter than the frame size is an encode error, not a panic.
     #[test]
     fn apv_short_input_is_an_error_not_a_panic() {
         for profile in ["422-10", "444-10", "4444-10", "400-10"] {
