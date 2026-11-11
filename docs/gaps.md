@@ -245,8 +245,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   `.aac`; #814); MP3 (`.mp3`, our own Layer III encoder, CBR 32-320 kbit/s, 16-48 kHz, mono /
   joint stereo; #977); ProRes 4444 / 4444 XQ in the export UI (#342).
   AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, MP3 audio,
-  interlaced encoding, smart render, HEVC software encoder (HEVC exists only where a hardware
-  encoder does).
+  interlaced encoding, general smart render (see the narrow [H.264 packet-copy path](../crates/export/README.md#strict-h264-packet-copy-joins-4516)),
+  HEVC software encoder (HEVC exists only where a hardware encoder does).
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
   (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342); H.264

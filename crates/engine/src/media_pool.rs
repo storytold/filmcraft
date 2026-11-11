@@ -483,6 +483,16 @@ impl PoolProvider {
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn copy_file(&self, item: ItemId, max_bytes: u64) -> Option<std::io::Result<std::fs::File>> {
+        let (_, media, _) = self.project.resolve_media(item)?;
+        if !self.full_res || media.offline || self.pool.offline_status(item).is_some() {
+            return None;
+        }
+        let MediaRef::File { path } = &media.media else { return None };
+        let file = self.pool.follow(path).ok()?;
+        self.services.copy_file(&file, max_bytes)
+    }
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         if let Some(used) = &self.used {
             used.lock().unwrap_or_else(PoisonError::into_inner).insert(item);

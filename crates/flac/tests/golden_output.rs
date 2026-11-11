@@ -65,13 +65,8 @@ fn signal(kind: &str, n: usize, bps: u8, seed: u64) -> Vec<i32> {
                 }
                 // low 3 bits always zero (wasted bits) on a quiet sine
                 "wasted" => (sine[i] / 8) * 8,
-                "click" => {
-                    if i == n / 2 {
-                        max
-                    } else {
-                        0
-                    }
-                }
+                "click" if i == n / 2 => max,
+                "click" => 0,
                 // a silent stretch between two noisy ones
                 "gap" => {
                     if (n / 3..2 * n / 3).contains(&i) {

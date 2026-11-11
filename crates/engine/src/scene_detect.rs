@@ -193,6 +193,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
             None => {
                 *lock(&out) = Some(found);
                 Ok(filmcraft_export::Report {
+                    copied_video_frames: 0,
                     path: String::new(),
                     frames: done,
                     seconds: secs,
