@@ -2032,6 +2032,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-time",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -2149,6 +2150,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "web-time",
 ]
@@ -2260,6 +2262,7 @@ dependencies = [
  "log",
  "pollster 1.0.1",
  "rayon",
+ "tempfile",
  "wgpu",
 ]
 
@@ -2425,6 +2428,7 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "tempfile",
  "windows 0.62.2",
 ]
 
