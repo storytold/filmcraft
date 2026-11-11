@@ -94,6 +94,20 @@ fn project_is_named_after_its_file() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A Save As that cannot write its file leaves the project's name as it was.
+#[test]
+fn failed_save_as_keeps_the_project_name() {
+    let d = temp_dir("name-failed");
+    let mut s = demo();
+    let (name, root) = (s.project.name.clone(), s.project.root.name.clone());
+    let missing = d.join("no such folder").join("Renamed.fcproj").to_string_lossy().to_string();
+    assert!(s.execute("file.saveAs", json!({"path": missing})).is_err());
+    assert_eq!(s.project.name, name);
+    assert_eq!(s.project.root.name, root);
+    assert_eq!(s.path, None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// #1545: `file.newProject` answers with the project it made (name and revision, as
 /// `project_inspect` reports them) instead of `null`.
 #[test]
