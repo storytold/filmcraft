@@ -141,3 +141,19 @@ OMF carries no video at all.
   instead of overflowing (an EDL with a record-out timecode of 2147483647 hours and an `M2` speed change panicked).
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+
+## FCPXML multicam import
+
+`media/multicam` resources import as native multicamera source sequences. Segmented
+`mc-angle` sources retain their offsets and gaps; `mc-clip/mc-source` selections map
+external angle IDs to native camera indices independently for video and audio.
+Original resource and angle IDs are retained in source-item metadata as
+`fcpxml.mediaID` and `fcpxml.angleID.<index>`. Connected audio keeps its own duration,
+including a master mix longer than its parent video cut.
+
+Missing, duplicate and unknown angle IDs produce report warnings. An `mc-clip` with
+an invalid, missing or nonpositive duration is warned and skipped. Its connected
+clips keep their own valid timing, including a continuous master mix. Layered video
+within one angle is reported and skipped rather than collapsed into the wrong
+camera. Resource recursion is bounded. This adds import support; it does not add
+multicam FCPXML export or flatten imported multicam edits.

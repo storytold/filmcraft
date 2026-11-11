@@ -2,6 +2,8 @@
 //!
 //! Run `filmcraft-cli help` for the full reference (also in docs/agents.md).
 
+// ExportRenderer wraps wgpu handles with deep Send/Sync auto-trait bounds.
+#![recursion_limit = "256"]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 /// `println!` that doesn't panic when stdout is closed (`filmcraft-cli commands | head`) with

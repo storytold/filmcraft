@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
 use filmcraft_project::{
-    BinId, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence, TrackItem, TrackKind, Transition,
-    TransitionAlign, TransitionId, effect::find_effect_by_name,
+    BinId, Camera, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, MulticamAudio, MulticamSel, MulticamSource, Param, ParamValue, Project,
+    Sequence, TrackItem, TrackKind, Transition, TransitionAlign, TransitionId, effect::find_effect_by_name,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::Node;
@@ -59,16 +59,20 @@ pub(crate) fn parse_time(s: &str) -> Option<Tick> {
         if b == 0 {
             return None;
         }
-        let n = a * TICKS_PER_SECOND as i128;
-        // Exact for every broadcast rate; round to the nearest tick otherwise.
-        let q = n.div_euclid(b);
-        let r = n.rem_euclid(b);
-        return Some(Tick((if 2 * r >= b.abs() { q + 1 } else { q }) as i64));
+        let n = a.checked_mul(TICKS_PER_SECOND as i128)?;
+        let (n, b) = if b < 0 { (n.checked_neg()?, b.checked_neg()?) } else { (n, b) };
+        // Exact for broadcast rates; round to the nearest tick without overflowing input sizes.
+        let q = n.checked_div_euclid(b)?;
+        let r = n.checked_rem_euclid(b)?;
+        let rounded = if r >= b.checked_sub(r)? { q.checked_add(1)? } else { q };
+        return i64::try_from(rounded).ok().map(Tick);
     }
     if let Ok(i) = s.parse::<i64>() {
-        return Some(Tick(i * TICKS_PER_SECOND));
+        return i.checked_mul(TICKS_PER_SECOND).map(Tick);
     }
-    s.parse::<f64>().ok().map(Tick::from_seconds_f64)
+    let seconds = s.parse::<f64>().ok()?;
+    let ticks = seconds * TICKS_PER_SECOND as f64;
+    (ticks.is_finite() && ticks >= i64::MIN as f64 && ticks < i64::MAX as f64).then(|| Tick::from_seconds_f64(seconds))
 }
 
 /// Format ticks as an FCPXML rational time, frame-based at `rate` when the value is on a frame.
@@ -138,6 +142,7 @@ struct Imp<'a, 'i, 'r> {
     media_items: HashMap<String, ItemId>,
     media_active: HashSet<String>,
     effects: HashMap<String, String>,
+    angle_ids: HashMap<ItemId, HashMap<String, u32>>,
 }
 
 /// Where an element's keyframe times start, the media time it starts at and its playback speed.
@@ -187,6 +192,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         media_items: HashMap::new(),
         media_active: HashSet::new(),
         effects: HashMap::new(),
+        angle_ids: HashMap::new(),
     };
     if let Some(res) = child(root, "resources") {
         for r in elements(res) {
@@ -308,19 +314,95 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if let Some(i) = self.media_items.get(id) {
             return Some(*i);
         }
-        let n = *self.media_nodes.get(id)?;
-        let s = child(n, "sequence")?;
-        if !self.media_active.insert(id.into()) {
-            self.report.warn(format!("recursive FCPXML media resource {id:?} ignored"));
+        if self.media_active.len() >= 64 || !self.media_active.insert(id.to_string()) {
+            self.report.warn(format!("recursive FCPXML media {id}: cyclic reference or nesting limit exceeded"));
             return None;
         }
-        // Mark the resource before descending: a compound clip can reference itself through a
-        // ref-clip before a completed sequence is available to cache.
-        let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
-        let item = self.sequence(s, &name, None);
+        let item = self.resolve_media(id);
         self.media_active.remove(id);
-        self.media_items.insert(id.into(), item);
+        if let Some(item) = item {
+            self.media_items.insert(id.into(), item);
+        }
+        item
+    }
+
+    fn resolve_media(&mut self, id: &str) -> Option<ItemId> {
+        let Some(n) = self.media_nodes.get(id).copied() else {
+            self.report.warn(format!("FCPXML media {id} was not found"));
+            return None;
+        };
+        let name = n.attribute("name").unwrap_or("Compound Clip");
+        if let Some(s) = child(n, "sequence") {
+            return Some(self.sequence(s, name, None));
+        }
+        let mc = child(n, "multicam")?;
+        let (rate, w, h) = mc.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
+        let settings = settings_for(rate, w, h, mc.attribute("tcFormat") == Some("DF"));
+        let item = self.b.reserve_sequence(name, settings.clone(), None);
+        let mut seq = empty_sequence(settings);
+        let origin = attr_time(mc, "tcStart").unwrap_or(Tick::ZERO);
+        seq.start_timecode = rate.frame_at(origin);
+        let ctx = Ctx { seq_rate: rate, frame: (w, h) };
+        let mut ids = HashMap::new();
+        let mut cameras = Vec::new();
+        for angle in children(mc, "mc-angle") {
+            let Some(angle_id) = angle.attribute("angleID").filter(|id| !id.is_empty()) else {
+                self.report.warn("FCPXML mc-angle without angleID was skipped");
+                continue;
+            };
+            if ids.contains_key(angle_id) {
+                self.report.warn(format!("FCPXML duplicate angleID {angle_id} was skipped"));
+                continue;
+            }
+            let Ok(index) = u32::try_from(cameras.len()) else { break };
+            if cameras.len() >= MAX_IMPORTED_TRACKS {
+                self.report.warn("FCPXML multicam exceeds the supported angle count; remaining angles were skipped");
+                break;
+            }
+            // Import each angle in isolation so connected audio cannot be assigned to another camera.
+            let mut tracks = empty_sequence(seq.settings.clone());
+            self.storyline(&mut tracks, &ctx, angle, -origin, 0, false);
+            if tracks.video_tracks.len() > 1 {
+                self.report.warn(format!("FCPXML angle {angle_id} has layered video; angle was skipped"));
+                continue;
+            }
+            if seq.audio_tracks.len().saturating_add(tracks.audio_tracks.len()) > MAX_IMPORTED_TRACKS {
+                self.report.warn(format!("FCPXML angle {angle_id} exceeds the audio track limit; angle was skipped"));
+                continue;
+            }
+            let video_track = tracks.video_tracks.first().map(|t| t.id);
+            let audio_tracks = tracks.audio_tracks.iter().filter(|t| !t.items.is_empty()).map(|t| t.id).collect();
+            seq.video_tracks.extend(tracks.video_tracks);
+            seq.audio_tracks.extend(tracks.audio_tracks);
+            ids.insert(angle_id.to_string(), index);
+            cameras.push(Camera { name: angle.attribute("name").unwrap_or(angle_id).to_string(), video_track, audio_tracks, enabled: true, source: None });
+        }
+        seq.multicam = Some(MulticamSource { cameras, audio: MulticamAudio::SwitchAudio, sync: "fcpxml".into() });
+        if let Some(project_item) = self.b.p.item_mut(item) {
+            project_item.metadata.insert("fcpxml.mediaID".into(), id.into());
+            for (external_id, index) in &ids {
+                project_item.metadata.insert(format!("fcpxml.angleID.{index}"), external_id.clone());
+            }
+        }
+        self.angle_ids.insert(item, ids);
+        self.b.put_sequence(item, seq);
         Some(item)
+    }
+
+    fn multicam_selection(&mut self, el: Node, item: ItemId, kind: TrackKind) -> Option<MulticamSel> {
+        let wanted = if kind == TrackKind::Video { "video" } else { "audio" };
+        let source = children(el, "mc-source").find(|s| {
+            let enabled = s.attribute("srcEnable").unwrap_or("all");
+            enabled == "all" || enabled == wanted
+        });
+        let id = source.and_then(|s| s.attribute("angleID"));
+        let angle = id.and_then(|id| self.angle_ids.get(&item)?.get(id)).copied();
+        if let Some(angle) = angle {
+            Some(MulticamSel { enabled: true, angle })
+        } else {
+            self.report.warn(format!("FCPXML mc-clip has missing or unknown {wanted} angleID {}; {wanted} was skipped", id.unwrap_or("(missing)")));
+            None
+        }
     }
 
     fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>) -> ItemId {
@@ -408,7 +490,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
     fn element(&mut self, seq: &mut Sequence, ctx: &Ctx, el: Node<'a, 'i>, t0: Tick, lane: i32, primary: bool) -> (Tick, Option<filmcraft_project::ClipId>) {
         let tag = el.tag_name().name();
-        let dur = attr_time(el, "duration").unwrap_or(Tick::ZERO);
+        let duration = attr_time(el, "duration");
+        if tag == "mc-clip" && duration.is_none_or(|d| d <= Tick::ZERO) {
+            self.report.warn("FCPXML <mc-clip> has an invalid or missing duration; clip was skipped");
+        }
+        let dur = duration.unwrap_or(Tick::ZERO);
         let local_start = attr_time(el, "start").unwrap_or(Tick::ZERO);
         let mut vclip = None;
         let mut placed: Vec<(TrackKind, filmcraft_project::ClipId)> = Vec::new();
@@ -447,8 +533,14 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 let tc = self.b.p.sequence(item).map(|s| s.settings.frame_rate.tick_of(s.start_timecode)).unwrap_or(Tick::ZERO);
                 Some((item, tc, true, self.b.p.sequence(item).is_some_and(|s| s.audio_tracks.iter().any(|t| !t.items.is_empty()))))
             }),
+            "mc-clip" => el.attribute("ref").and_then(|r| {
+                let item = self.media(r)?;
+                let source = self.b.p.sequence(item)?;
+                let origin = source.settings.frame_rate.tick_of(source.start_timecode);
+                Some((item, origin, true, source.audio_tracks.iter().any(|t| !t.items.is_empty())))
+            }),
             "gap" => None,
-            "title" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
+            "title" | "audio" | "sync-clip" | "live-drawing" => {
                 self.report.warn(format!("FCPXML <{tag}> elements are not supported and were skipped"));
                 None
             }
@@ -468,6 +560,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     continue;
                 }
                 let mut ti = self.b.clip(item, kind, &name, t0, dur, src_in.max(Tick::ZERO));
+                if tag == "mc-clip" {
+                    let Some(selection) = self.multicam_selection(el, item, kind) else { continue };
+                    ti.multicam = Some(selection);
+                }
                 ti.speed = speed;
                 ti.reverse = reverse;
                 if hold {
@@ -1250,6 +1346,23 @@ fn marker_xml(m: &Marker, local: Tick, rate: FrameRate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_rational_times_are_rejected_without_overflow() {
+        for value in [
+            "170141183460469231731687303715884105727/1s",
+            "1/-170141183460469231731687303715884105728s",
+            "9223372036854775807s",
+            "1/0s",
+            "NaNs",
+            "infs",
+            "1e300s",
+        ] {
+            assert_eq!(parse_time(value), None, "{value}");
+        }
+        assert_eq!(parse_time("1/-2s"), Some(Tick(-TICKS_PER_SECOND / 2)));
+        assert_eq!(parse_time("-1/-2s"), Some(Tick(TICKS_PER_SECOND / 2)));
+    }
 
     #[test]
     fn rational_times_are_exact() {

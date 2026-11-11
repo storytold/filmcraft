@@ -240,14 +240,103 @@ fn rgba_input_refuses_what_does_not_fit() {
     let _ = calm("flush", || rgb.flush());
 }
 
+const HW_CANCEL_EXERCISED: &str = "FILMCRAFT_HW_CANCEL_STATUS=EXERCISED";
+const HW_CANCEL_UNAVAILABLE: &str = "FILMCRAFT_HW_CANCEL_STATUS=UNAVAILABLE";
+const REQUIRE_HW_CANCEL_ENCODER: &str = "FILMCRAFT_REQUIRE_HW_CANCEL_ENCODER";
+const FORCE_HW_CANCEL_UNAVAILABLE: &str = "FILMCRAFT_HW_CANCEL_TEST_FORCE_UNAVAILABLE";
+
+fn isolated_run_passed(result: &std::process::Output) -> bool {
+    result.status.success() && String::from_utf8_lossy(&result.stdout).lines().any(|line| line.starts_with("test result: ok. 1 passed; 0 failed;"))
+}
+
+fn hardware_status(result: &std::process::Output, marker: &str) -> bool {
+    String::from_utf8_lossy(&result.stdout).lines().any(|line| line.trim() == marker)
+}
+
+fn isolated_hardware_test_passed(result: &std::process::Output) -> bool {
+    isolated_run_passed(result) && hardware_status(result, HW_CANCEL_EXERCISED) && !hardware_status(result, HW_CANCEL_UNAVAILABLE)
+}
+
+fn run_without_encoder(require_hardware: bool) -> std::process::Output {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", "hardware_encode::rate_conversion_and_cancel_then_export_again", "--test-threads=1", "--nocapture"])
+        .env_remove("FILMCRAFT_HW_CANCEL_TEST_ISOLATED")
+        .env(FORCE_HW_CANCEL_UNAVAILABLE, "1");
+    if require_hardware {
+        child.env(REQUIRE_HW_CANCEL_ENCODER, "1");
+    } else {
+        child.env_remove(REQUIRE_HW_CANCEL_ENCODER);
+    }
+    child.output().unwrap()
+}
+
+#[test]
+fn isolated_hardware_runner_reports_unavailable_without_claiming_coverage() {
+    let result = run_without_encoder(false);
+    assert!(isolated_run_passed(&result), "optional unavailable path should remain a reported skip");
+    assert!(hardware_status(&result, HW_CANCEL_UNAVAILABLE));
+    assert!(!isolated_hardware_test_passed(&result), "a skip is not hardware validation");
+}
+
+#[test]
+fn isolated_hardware_runner_rejects_unavailable_encoder_when_required() {
+    let result = run_without_encoder(true);
+    assert!(!result.status.success(), "required hardware qualification must fail when the encoder is unavailable");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("hardware qualification requires an available encoder"));
+    assert!(!isolated_hardware_test_passed(&result));
+}
+
+/// An unmatched exact filter exits successfully but executes no test. Never accept that as
+/// validation of the hardware cancellation path if its module or test name changes.
+#[test]
+fn isolated_hardware_runner_rejects_an_unmatched_filter() {
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "__filmcraft_intentionally_nonexistent_hardware_test__", "--test-threads=1", "--nocapture"])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "libtest's zero-test result must exercise the false-success case");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("0 passed; 0 failed;"));
+    assert!(!isolated_hardware_test_passed(&result), "a successful zero-test child must be rejected");
+}
+
 /// An export at another frame rate than the sequence's (frames are repeated or dropped on the way) and
 /// a cancelled export followed by a complete one in the same process: the hardware path must give the
 /// asked-for frame count, release its sessions and start clean again.
 #[test]
 fn rate_conversion_and_cancel_then_export_again() {
+    // This test asserts that a process-wide decline counter is unchanged. Other tests
+    // intentionally decline encoders, so run this one alone without weakening the assertion.
+    const ISOLATED: &str = "FILMCRAFT_HW_CANCEL_TEST_ISOLATED";
+    if std::env::var_os(ISOLATED).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "hardware_encode::rate_conversion_and_cancel_then_export_again", "--test-threads=1", "--nocapture"])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        if isolated_run_passed(&result) && hardware_status(&result, HW_CANCEL_UNAVAILABLE) {
+            assert!(
+                std::env::var(REQUIRE_HW_CANCEL_ENCODER).as_deref() != Ok("1"),
+                "hardware qualification requires an available encoder; child reported UNAVAILABLE"
+            );
+            println!("\n{HW_CANCEL_UNAVAILABLE}");
+            eprintln!("SKIPPED: hardware cancellation was not exercised; this is not hardware coverage");
+            return;
+        }
+        assert!(
+            isolated_hardware_test_passed(&result),
+            "isolated hardware cancellation test must run and pass exactly one test: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("\n{HW_CANCEL_EXERCISED}");
+        return;
+    }
     filmcraft_platform::register();
     let probe = ExportSettings { include_audio: false, ..hardware_settings() };
-    if hardware(&probe, W, H).is_none() {
+    // Fault injection belongs to this test only; it exercises no-encoder behavior on real Macs too.
+    if std::env::var(FORCE_HW_CANCEL_UNAVAILABLE).as_deref() == Ok("1") || hardware(&probe, W, H).is_none() {
+        println!("\n{HW_CANCEL_UNAVAILABLE}");
         return;
     }
     let (frames, (p, seq, m)) = (60i64, project(60));
@@ -289,6 +378,7 @@ fn rate_conversion_and_cancel_then_export_again() {
     let after = hw_encode_stats();
     assert!(after.sessions >= before.sessions + 2, "both exports opened a hardware session");
     assert_eq!(after.declined, before.declined, "nothing was declined to the software encoder");
+    println!("\n{HW_CANCEL_EXERCISED}");
 }
 
 #[test]

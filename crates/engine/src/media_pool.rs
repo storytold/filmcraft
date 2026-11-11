@@ -119,7 +119,16 @@ pub fn open_image_sequence(first: &str, services: &dyn Services, rate: filmcraft
 /// The frames of the image sequence starting at `first` (see [`open_image_sequence`]).
 pub fn image_sequence_frames(first: &str, services: &dyn Services) -> Result<Vec<Option<String>>, MediaError> {
     use filmcraft_media::sequence::{Numbered, sequence_frames};
-    let n = Numbered::parse(first).ok_or_else(|| MediaError::Unsupported(format!("{first}: not a numbered still image")))?;
+    let mut n = Numbered::parse(first).ok_or_else(|| MediaError::Unsupported(format!("{first}: not a numbered still image")))?;
+    if let Some(disk_name) = services.disk_file_name(first)
+        && let Some(disk) = Numbered::parse(&disk_name)
+        && disk.number == n.number
+        && disk.digits == n.digits
+    {
+        // Keep the caller's directory/path identity, but match read_dir's actual file spelling.
+        n.prefix = disk.prefix;
+        n.suffix = disk.suffix;
+    }
     let io = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(format!("{first}: {e}")) } else { MediaError::Io(format!("{first}: {e}")) }
     };
