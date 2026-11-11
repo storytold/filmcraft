@@ -605,7 +605,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
             let tc = "";
             let cx = crate::effects::FxCtx {
                 t: mt,
-                px_scale,
+                // as the CPU path: effect sizes are capped, mask outlines use the true ratio
+                px_scale: px_scale.min(crate::MAX_EFFECT_PX_SCALE),
                 mask_scale: px_scale,
                 seconds: (t - item.start).seconds(),
                 timecode: tc,
