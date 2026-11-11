@@ -94,7 +94,7 @@ impl Bridge {
     /// does not repeat a state it already reported).
     pub fn sync(&self, session: &Session) {
         self.flush_saves(session);
-        self.host.post_dirty(session.is_dirty());
+        self.host.post_dirty(session.has_unsaved_changes());
     }
 
     pub fn post_ready(&self) {

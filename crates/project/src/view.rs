@@ -277,19 +277,22 @@ fn lenient_timeline_ui<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Timelin
         return Ok(TimelineUiSettings::default());
     };
     let default = TimelineUiSettings::default();
+    fn read_field<T: serde::de::DeserializeOwned + Clone>(values: &serde_json::Map<String, serde_json::Value>, name: &str, default: &T) -> T {
+        match values.get(name) {
+            Some(value) => match serde_json::from_value::<T>(value.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    log::warn!("invalid timeline UI setting `{name}`; using its default: {error}");
+                    default.clone()
+                }
+            },
+            None => default.clone(),
+        }
+    }
     macro_rules! read {
-        ($field:ident, $ty:ty) => {{
-            match values.get(stringify!($field)) {
-                Some(value) => match serde_json::from_value::<$ty>(value.clone()) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        log::warn!("invalid timeline UI setting `{}`; using its default: {error}", stringify!($field));
-                        default.$field
-                    }
-                },
-                None => default.$field,
-            }
-        }};
+        ($field:ident, $ty:ty) => {
+            read_field::<$ty>(values, stringify!($field), &default.$field)
+        };
     }
     Ok(TimelineUiSettings {
         smooth_animations: read!(smooth_animations, bool),
