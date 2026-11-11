@@ -3,7 +3,7 @@
 pub mod color_picker;
 
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use filmcraft_time::{FrameRate, Tick, parse_timecode};
+use filmcraft_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
@@ -91,8 +91,10 @@ fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: 
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     arrows_start_from_the_end(ui, edit_id, buf);
+    // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
+    let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
-    let mut out = None;
+    let mut out = stepped;
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
         let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
@@ -123,6 +125,68 @@ fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: 
         }
     }
     (r, out)
+}
+
+/// Up/Down in a hot number's text field step the typed value as Premiere does: by 1, or by the last
+/// shown digit when the range is narrow (Exposure steps 0.01); Shift is x10 and Command x0.1, the
+/// drag multipliers. The new value replaces the text, stays selected (typing still replaces it) and
+/// is returned to be applied. The keys are consumed so the `TextEdit` does not move its caret.
+/// Call before drawing the `TextEdit` with id `edit_id` that holds `buf`.
+fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, range: (f64, f64), suffix: &str) -> Option<f64> {
+    let mut direction = 0.0;
+    let mut mult = 1.0;
+    ui.input_mut(|i| {
+        // Shift wins over Command, as in the drag. The modifiers are those of the key press
+        // itself, so a Shift+Command press is consumed and gets the Shift multiplier.
+        for (key, dir) in [(egui::Key::ArrowUp, 1.0), (egui::Key::ArrowDown, -1.0)] {
+            let mods = i
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or(i.modifiers);
+            let m = if mods.shift {
+                10.0
+            } else if mods.command {
+                0.1
+            } else {
+                1.0
+            };
+            if direction == 0.0 && i.consume_key(mods, key) {
+                direction = dir;
+                mult = m;
+            }
+        }
+    });
+    if direction == 0.0 {
+        return None;
+    }
+    let typed = if suffix.trim().is_empty() { buf.trim().to_owned() } else { buf.trim().replace(suffix.trim(), "") };
+    let current = crate::calc::eval(&typed, value).filter(|v| v.is_finite())?;
+    // the last shown digit: of a plain typed number as typed; of a calculation, of its result
+    let shown = if typed.trim().parse::<f64>().is_ok() {
+        typed.trim().split_once('.').map_or(0, |(_, f)| f.chars().filter(char::is_ascii_digit).count()).min(6)
+    } else {
+        let r = format!("{current:.6}");
+        r.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len())
+    };
+    let narrow = (range.1 - range.0).abs() <= 10.0;
+    let base = if narrow { 10f64.powi(-(shown as i32)) } else { 1.0 };
+    let step = base * mult;
+    // the step is a power of ten; up to seven digits, so Command keeps a tenth of a sixth digit
+    let step_digits = (-step.log10()).round().clamp(0.0, 7.0) as usize;
+    let decimals = shown.max(step_digits);
+    let text = format!("{:.decimals$}", (current + direction * step).clamp(range.0, range.1));
+    let new = text.parse::<f64>().ok()?;
+    let len = text.chars().count();
+    *buf = text;
+    let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len))));
+    st.store(ui.ctx(), edit_id);
+    // at the edge of the range the value does not change: nothing to apply
+    ((new - value).abs() > f64::EPSILON).then_some(new)
 }
 
 /// Whether a field has keyboard focus, also while the window is in the background: `has_focus` is
@@ -225,6 +289,7 @@ pub fn timecode_field(
     min: Tick,
     rate: FrameRate,
     drop_frame: bool,
+    display: TimeDisplay,
     color: Color32,
 ) -> Option<Result<Tick, String>> {
     let editing_id = id.with("editing");
@@ -239,7 +304,7 @@ pub fn timecode_field(
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 return None;
             }
-            let typed = parse_timecode(&buf, rate, drop_frame, rate.frame_at(time));
+            let typed = parse_time_display(&buf, rate, drop_frame, display, rate.frame_at(time));
             return Some(typed.map(|f| rate.tick_of(f).max(min)).map_err(|e| e.to_string()));
         }
         // select the whole value once the field has focus: egui collapses a selection to a caret
@@ -338,7 +403,7 @@ pub fn revert_drag_on_escape<T: Clone + Send + Sync + 'static>(ctx: &egui::Conte
     }
 }
 
-/// A twirl-down section header (Effect Controls / Lumetri style). Returns open state.
+/// A twirl-down section header (Effect Controls / Color Grading style). Returns open state.
 pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &Tokens, bold: bool) -> (Response, bool) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
