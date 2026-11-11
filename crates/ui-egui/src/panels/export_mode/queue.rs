@@ -1,4 +1,4 @@
-use super::{Align2, CUSTOM, Color32, FilmcraftApp, Rect, Reg, Tokens, Value, json, pos2, vec2};
+use super::{Align2, CUSTOM, Color32, FilmcraftApp, MEDIA_FILE, Rect, Reg, Sense, Tokens, Value, YOUTUBE, json, pos2, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // left: destinations + queue
@@ -7,14 +7,51 @@ use super::{Align2, CUSTOM, Color32, FilmcraftApp, Rect, Reg, Tokens, Value, jso
 pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut reg = Reg::default();
-    let p = ui.painter();
-    p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, tl!("Destinations"), Tokens::semibold(13.0), t.text);
+    ui.painter().text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, tl!("Destinations"), Tokens::semibold(13.0), t.text);
+    // Media File, and YouTube where this build can publish: a click shows a destination's
+    // settings in the middle, YouTube's box says whether Export uploads too
+    let youtube = super::youtube::available(app);
+    let on_youtube = youtube && app.ui.export.destination == YOUTUBE;
+    let fill = |selected: bool, hovered: bool| {
+        if selected {
+            t.row_selected
+        } else if hovered {
+            t.hover
+        } else {
+            Color32::TRANSPARENT
+        }
+    };
     let mf = Rect::from_min_size(rect.min + vec2(8.0, 38.0), vec2(rect.width() - 16.0, 26.0));
-    p.rect_filled(mf, 4.0, t.row_selected);
-    p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
+    let r = ui.interact(mf, egui::Id::unique("export-destination-media"), Sense::click());
+    ui.painter().rect_filled(mf, 4.0, fill(!on_youtube, r.hovered()));
+    ui.painter().text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
-    let qtop = mf.max.y + 18.0;
+    if r.clicked() {
+        app.ui.export.destination = MEDIA_FILE.into();
+    }
+    let mut qtop = mf.max.y + 18.0;
+    if youtube {
+        let yt = mf.translate(vec2(0.0, mf.height() + 4.0));
+        let r = ui.interact(yt, egui::Id::unique("export-destination-youtube"), Sense::click());
+        ui.painter().rect_filled(yt, 4.0, fill(on_youtube, r.hovered()));
+        let cb = Rect::from_min_size(pos2(yt.min.x + 6.0, yt.center().y - 9.0), vec2(18.0, 18.0));
+        let mut on = app.ui.export.youtube.enabled;
+        let c = crate::widgets::accessible_name(ui.put(cb, egui::Checkbox::without_text(&mut on)), tl!("Upload to YouTube"));
+        reg.add("export.destination.youtube.enabled", c.rect, "Upload to YouTube");
+        ui.painter().text(pos2(cb.max.x + 8.0, yt.center().y), Align2::LEFT_CENTER, tl!("YouTube"), Tokens::ui(12.5), t.text);
+        reg.add("export.destination.youtube", yt, "YouTube");
+        if c.changed() {
+            app.ui.export.youtube.enabled = on;
+            if on {
+                app.ui.export.destination = YOUTUBE.into();
+            }
+        } else if r.clicked() {
+            app.ui.export.destination = YOUTUBE.into();
+        }
+        qtop = yt.max.y + 18.0;
+    }
     let n = app.session.export_queue.items.len();
+    let p = ui.painter();
     p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
