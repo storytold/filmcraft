@@ -524,10 +524,20 @@ enum ScrubCmd {
 
 impl CpalScrubOut {
     pub fn new(hw: &AudioHardwarePrefs, document_rate: Option<u32>) -> Self {
+        Self::spawn(scrub_rate(hw, document_rate), hw.clone(), document_rate, open_scrub)
+    }
+
+    /// The output at mix rate `rate`, with `open` opening its stream on the scrub thread. The
+    /// tests pass one that never touches a device: cpal's WASAPI device enumerator lives in the
+    /// COM apartment of the thread that first used it, and a test's thread ends with its test.
+    fn spawn<S>(
+        rate: u32,
+        hw: AudioHardwarePrefs,
+        document_rate: Option<u32>,
+        open: impl FnMut(&AudioHardwarePrefs, Option<u32>, Fill) -> Result<(S, Arc<Mutex<Fill>>), String> + Send + 'static,
+    ) -> Self {
         let (tx, rx) = channel();
-        let rate = scrub_rate(hw, document_rate);
-        let hw = hw.clone();
-        if let Err(e) = std::thread::Builder::new().name("filmcraft-scrub".into()).spawn(move || run_scrub(rx, hw, document_rate)) {
+        if let Err(e) = std::thread::Builder::new().name("filmcraft-scrub".into()).spawn(move || run_scrub(rx, hw, document_rate, open)) {
             log::warn!("the scrub audio thread could not start: {e}");
         }
         Self { tx, rate }
@@ -565,8 +575,13 @@ impl ScrubOut for CpalScrubOut {
 
 /// The scrub thread: owns the stream (cpal's `Stream` is `!Send`) and closes it once nothing has
 /// played for [`SCRUB_KEEP`].
-fn run_scrub(rx: Receiver<ScrubCmd>, mut hw: AudioHardwarePrefs, mut document_rate: Option<u32>) {
-    let mut stream: Option<cpal::Stream> = None;
+fn run_scrub<S>(
+    rx: Receiver<ScrubCmd>,
+    mut hw: AudioHardwarePrefs,
+    mut document_rate: Option<u32>,
+    mut open: impl FnMut(&AudioHardwarePrefs, Option<u32>, Fill) -> Result<(S, Arc<Mutex<Fill>>), String>,
+) {
+    let mut stream: Option<S> = None;
     // the mixer the open stream's callback runs: a new grain swaps in the current one
     let mut slot: Option<Arc<Mutex<Fill>>> = None;
     loop {
@@ -590,7 +605,7 @@ fn run_scrub(rx: Receiver<ScrubCmd>, mut hw: AudioHardwarePrefs, mut document_ra
             ScrubCmd::Play(fill) => match slot.as_ref() {
                 // the stream is still warm: play this grain's mixer on it
                 Some(slot) => *slot.lock().unwrap_or_else(PoisonError::into_inner) = fill,
-                None => match open_scrub(&hw, document_rate, fill) {
+                None => match open(&hw, document_rate, fill) {
                     Ok((s, f)) => {
                         stream = Some(s);
                         slot = Some(f);
@@ -695,28 +710,73 @@ mod tests {
         assert_eq!(output.played_frames(), None, "no stream, no clock");
     }
 
-    /// #2633: the frame that moves the playhead asks for the scrub output, so the ask must not
-    /// wait for the device (opening a cold WASAPI stream is ~0.6 s on this machine).
-    #[test]
-    fn asking_for_the_scrub_output_hands_the_open_to_its_thread() {
-        let mut out = CpalScrubOut::new(&AudioHardwarePrefs::default(), None);
-        assert!(out.sample_rate() > 0, "the mix rate is known before the stream opens");
-        let t = Instant::now();
-        out.play(Box::new(|buf: &mut [f32], _| buf.fill(0.0)));
-        let took = t.elapsed();
-        assert!(took < Duration::from_millis(100), "play waited {took:?} for the device");
-        out.stop();
+    /// A stand-in for a device stream that reports when it is dropped. The scrub tests never touch
+    /// a real device: cpal's WASAPI device enumerator lives in the COM apartment of the thread that
+    /// first used it, and libtest's per-test threads end with their test, so the next test to use
+    /// it on Windows read freed memory (STATUS_ACCESS_VIOLATION).
+    struct FakeStream(Sender<&'static str>);
+
+    impl Drop for FakeStream {
+        fn drop(&mut self) {
+            let _ = self.0.send("closed");
+        }
     }
 
-    /// Giving the scrub device back for playback answers at once when nothing is open, and never
-    /// waits longer than [`RELEASE_WAIT`].
+    /// A scrub output whose stream takes `open_ms` to open (a cold WASAPI engine took ~0.6 s), and
+    /// the events it reports: "opened" and "closed".
+    fn fake_scrub_output(open_ms: u64) -> (CpalScrubOut, Receiver<&'static str>) {
+        let (log, events) = channel();
+        let open = move |_: &AudioHardwarePrefs, _: Option<u32>, fill: Fill| {
+            std::thread::sleep(ms(open_ms));
+            let _ = log.send("opened");
+            Ok((FakeStream(log.clone()), Arc::new(Mutex::new(fill))))
+        };
+        (CpalScrubOut::spawn(48_000, AudioHardwarePrefs::default(), None, open), events)
+    }
+
+    fn silence() -> Fill {
+        Box::new(|buf: &mut [f32], _| buf.fill(0.0))
+    }
+
+    /// #2633: the frame that moves the playhead asks for the scrub output, so the ask must not
+    /// wait for the device, however long the open takes on the scrub thread. A grain on the open
+    /// stream opens nothing more.
     #[test]
-    fn releasing_the_scrub_output_answers_promptly() {
-        let mut out = CpalScrubOut::new(&AudioHardwarePrefs::default(), None);
+    fn asking_for_the_scrub_output_hands_the_open_to_its_thread() {
+        let (mut out, events) = fake_scrub_output(600);
+        assert_eq!(out.sample_rate(), 48_000, "the mix rate is known before the stream opens");
+        let t = Instant::now();
+        out.play(silence());
+        let took = t.elapsed();
+        assert!(took < ms(100), "play waited {took:?} for the device");
+        assert_eq!(events.recv_timeout(ms(5_000)), Ok("opened"), "the scrub thread opened it");
+        out.play(silence());
+        out.release();
+        assert_eq!(events.recv_timeout(ms(5_000)), Ok("closed"), "the second grain reused the stream");
+    }
+
+    /// Playback gives the scrub device back first: `release` returns once an open stream is
+    /// closed, at once when none is open, and after at most [`RELEASE_WAIT`] while one is still
+    /// opening; that one closes as soon as its open finishes.
+    #[test]
+    fn releasing_the_scrub_output_closes_it_and_never_waits_long() {
+        let (mut out, events) = fake_scrub_output(0);
         let t = Instant::now();
         out.release();
+        assert!(t.elapsed() < ms(100), "nothing open, yet release waited {:?}", t.elapsed());
+        out.play(silence());
+        assert_eq!(events.recv_timeout(ms(5_000)), Ok("opened"));
+        out.release();
+        assert_eq!(events.try_recv(), Ok("closed"), "the stream closed before release returned");
+
+        let (mut slow, slow_events) = fake_scrub_output(1_000);
+        slow.play(silence());
+        let t = Instant::now();
+        slow.release();
         let took = t.elapsed();
-        assert!(took < RELEASE_WAIT + Duration::from_millis(100), "release waited {took:?}");
+        assert!(took >= RELEASE_WAIT && took < RELEASE_WAIT + ms(500), "release waited {took:?} for a stream still opening");
+        assert_eq!(slow_events.recv_timeout(ms(5_000)), Ok("opened"));
+        assert_eq!(slow_events.recv_timeout(ms(5_000)), Ok("closed"), "the release closes it once it is open");
     }
 
     fn ms(n: u64) -> Duration {
