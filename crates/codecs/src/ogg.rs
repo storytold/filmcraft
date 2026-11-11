@@ -72,7 +72,9 @@ impl OggSource {
         let st = &file.streams[stream];
         let (kind, rate, channels, codec) = match st.codec {
             Codec::Opus => {
-                let head = craft_audio::opus::OpusHead::parse(&st.headers[0]).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
+                // an oversized first packet is filed as data, leaving an Opus stream without its header
+                let first = st.headers.first().ok_or_else(|| CodecError::Decode("Opus: missing header packet".into()))?;
+                let head = craft_audio::opus::OpusHead::parse(first).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
                 let timing = OpusTiming::of(st, head.pre_skip as u32);
                 let channels = head.channels as u32;
                 (
