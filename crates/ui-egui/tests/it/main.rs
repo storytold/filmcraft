@@ -44,6 +44,7 @@ mod menus_ui;
 mod meters_ui;
 mod mixer_ui;
 mod monitor_geometry;
+mod monitor_wheel_ui;
 mod multicam_ui;
 mod native_dialogs_ui;
 mod native_menu_text_keys;

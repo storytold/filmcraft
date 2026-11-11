@@ -113,6 +113,50 @@ fn limits(min_zoom: f64, max_zoom: f64) -> (f64, f64) {
     if valid(min_zoom) && valid(max_zoom) { (min_zoom.min(max_zoom), min_zoom.max(max_zoom)) } else { (MIN_PPS, MAX_PPS) }
 }
 
+/// Zoom a normalized `0.0..=1.0` time range `current` (`None` = `0.0..=1.0`) by `factor` (> 1 zooms in,
+/// < 1 zooms out) around `cursor_u` (`0.0..=1.0` across the visible bar) or `playhead_f` (`0.0..=1.0`
+/// across the whole clip/sequence when the playhead anchor is active). If the playhead is within the
+/// visible `[s, e]` window, its screen position holds the pivot; otherwise `cursor_u` holds it.
+/// Returns `None` when the zoomed range covers the full `0.0..=1.0` extent.
+pub fn zoom_fraction_range(current: Option<[f64; 2]>, cursor_u: f64, playhead_f: Option<f64>, factor: f64, min_span: f64) -> Option<[f64; 2]> {
+    let (s, e) = match current {
+        Some([a, b]) if a.is_finite() && b.is_finite() && a >= 0.0 && b <= 1.0 && a < b => (a, b),
+        _ => (0.0, 1.0),
+    };
+    let span = (e - s).clamp(1e-9, 1.0);
+    let min_span = if min_span.is_finite() && min_span > 0.0 { min_span.clamp(1e-6, 1.0) } else { 1e-4 };
+    let factor = if valid(factor) { factor } else { 1.0 };
+    let new_span = (span / factor).clamp(min_span, 1.0);
+    if new_span >= 1.0 - 1e-6 {
+        return None;
+    }
+    let cursor_u = if cursor_u.is_finite() { cursor_u.clamp(0.0, 1.0) } else { 0.5 };
+    let u = match playhead_f {
+        Some(pf) if pf.is_finite() && pf >= s - 1e-9 && pf <= e + 1e-9 => ((pf - s) / span).clamp(0.0, 1.0),
+        _ => cursor_u,
+    };
+    let anchor_f = (s + u * span).clamp(0.0, 1.0);
+    let new_s = (anchor_f - u * new_span).clamp(0.0, (1.0 - new_span).max(0.0));
+    let new_e = (new_s + new_span).min(1.0);
+    Some([new_s, new_e])
+}
+
+/// Pan a normalized `0.0..=1.0` time range `current` horizontally by `delta_points` on a bar
+/// `width` points wide. Returns `None` when not zoomed in.
+pub fn pan_fraction_range(current: Option<[f64; 2]>, delta_points: f64, width: f64) -> Option<[f64; 2]> {
+    let [s, e] = current?;
+    if !(s.is_finite() && e.is_finite() && s >= 0.0 && e <= 1.0 && s < e) {
+        return None;
+    }
+    let span = e - s;
+    if span >= 1.0 - 1e-6 || !(width.is_finite() && width > 1.0 && delta_points.is_finite()) {
+        return current;
+    }
+    let df = -delta_points / width * span;
+    let new_s = (s + df).clamp(0.0, (1.0 - span).max(0.0));
+    Some([new_s, (new_s + span).min(1.0)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +335,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fraction_range_zoom_and_pan_keep_pivot_and_bounds() {
+        let z1 = zoom_fraction_range(None, 0.25, None, 2.0, 0.05).unwrap();
+        assert!((z1[1] - z1[0] - 0.5).abs() < 1e-9);
+        assert!((z1[0] + 0.25 * (z1[1] - z1[0]) - 0.25).abs() < 1e-9);
+        // Zooming back out to 1.0 returns None (full range)
+        assert_eq!(zoom_fraction_range(Some(z1), 0.25, None, 0.5, 0.05), None);
+        // Playhead anchor keeps playhead at same relative screen position
+        let z_ph = zoom_fraction_range(None, 0.1, Some(0.6), 2.0, 0.05).unwrap();
+        let u_after = (0.6 - z_ph[0]) / (z_ph[1] - z_ph[0]);
+        assert!((u_after - 0.6).abs() < 1e-9);
+        // Pan stays within 0.0..=1.0
+        let p = pan_fraction_range(Some([0.2, 0.7]), -100.0, 500.0).unwrap();
+        assert!((p[0] - 0.3).abs() < 1e-9 && (p[1] - 0.8).abs() < 1e-9);
     }
 }
