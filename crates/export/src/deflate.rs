@@ -667,18 +667,21 @@ pub(crate) mod tests {
     }
 
     impl<'a> OldMatcher<'a> {
+        /// Tables of its own, sized to `data`.
         fn new(data: &'a [u8]) -> Self {
             let span = data.len().clamp(256, WINDOW).next_power_of_two();
             let bits = span.trailing_zeros().clamp(8, 15);
             OldMatcher { data, head: vec![0; 1 << bits], prev: vec![0; span], bits }
         }
 
+        /// The hash of the three bytes at `p`, None near the end.
         fn hash(&self, p: usize) -> Option<usize> {
             let b = self.data.get(p..p + MIN_MATCH)?;
             let v = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
             Some((v.wrapping_mul(0x9E37_79B1) >> (32 - self.bits)) as usize)
         }
 
+        /// Record position `p` (stored as `p + 1`; 0 = empty).
         fn insert(&mut self, p: usize) {
             let Some(h) = self.hash(p) else { return };
             let mask = self.prev.len() - 1;
@@ -686,6 +689,7 @@ pub(crate) mod tests {
             self.head[h] = p as u32 + 1;
         }
 
+        /// The longest earlier match at `p`: (length, distance), length 0 if none.
         fn longest(&self, p: usize) -> (usize, usize) {
             let Some(h) = self.hash(p) else { return (0, 0) };
             let max = (self.data.len() - p).min(MAX_MATCH);
