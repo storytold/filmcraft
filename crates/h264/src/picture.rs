@@ -161,6 +161,8 @@ impl Frame {
     }
 
     /// MB row `r`, waiting until it has been published.
+    // Without threads, reference rows are decoded in order, so a row is always published before it is used.
+    #[cfg_attr(not(feature = "threads"), allow(clippy::expect_used))]
     #[inline]
     pub fn row(&self, r: usize) -> &FrameRow {
         #[cfg(feature = "threads")]
