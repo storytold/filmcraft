@@ -15,7 +15,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::bits::{BitReader, leb128};
 use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
-use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
+use crate::header::{
+    ColorConfig, FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params,
+};
 use crate::par::Pool;
 use crate::spec_tables::{
     ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME,
@@ -142,6 +144,8 @@ enum Output {
 struct ExistingOutput {
     slot: Arc<FrameSlot>,
     seq: SequenceHeader,
+    /// Plane layout of the reference frame shown.
+    color: ColorConfig,
     width: usize,
     height: usize,
     grain: FilmGrainParams,
@@ -161,7 +165,7 @@ impl Output {
     fn bytes(&self) -> usize {
         match self {
             Output::Decoded(_, n) => *n,
-            Output::Existing(e) => picture_bytes(e.width, e.height, &e.seq.color),
+            Output::Existing(e) => picture_bytes(e.width, e.height, &e.color),
         }
     }
 
@@ -169,7 +173,7 @@ impl Output {
         match self {
             Output::Decoded(s, _) => s.take(),
             Output::Existing(e) => {
-                let ExistingOutput { slot, seq, width, height, grain, apply_film_grain, pts } = *e;
+                let ExistingOutput { slot, seq, color: _, width, height, grain, apply_film_grain, pts } = *e;
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
             }
@@ -229,6 +233,12 @@ pub struct Decoder {
     seq: Option<SequenceHeader>,
     refs: [RefInfo; NUM_REF_FRAMES],
     ref_frames: [Option<Arc<FrameSlot>>; NUM_REF_FRAMES],
+    /// The plane layout each slot's frame was decoded with: a new sequence header can change it, and
+    /// a show_existing_frame copies the reference's planes, not the current sequence's.
+    ref_color: [Option<ColorConfig>; NUM_REF_FRAMES],
+    /// Bytes of the pictures the chunk being parsed has shown so far, and whether one was refused for size.
+    shown_bytes: usize,
+    shown_overflow: bool,
     lf_deltas: LoopFilterDeltas,
     seg_features: SegmentationFeatures,
     prev_gm_params: [[i32; 6]; 8],
@@ -303,16 +313,17 @@ fn picture_bytes(w: usize, h: usize, c: &crate::header::ColorConfig) -> usize {
 
 /// Add a shown picture to a chunk's outputs, refusing the chunk (and dropping everything it showed)
 /// before the list can grow past [`MAX_SHOWN_PER_CHUNK`].
-fn push_shown(out: &mut Vec<(Output, usize, u32)>, item: (Output, usize, u32)) -> Result<()> {
+fn push_shown(out: &mut Vec<(Output, usize, u32)>, shown_bytes: &mut usize, item: (Output, usize, u32)) -> Result<()> {
     if !shown_within_limit(out.len() + 1) {
         out.clear();
         return Err(Error::Invalid("too many pictures shown by one chunk"));
     }
-    let bytes = out.iter().fold(item.0.bytes(), |n, (o, ..)| n.saturating_add(o.bytes()));
+    let bytes = shown_bytes.saturating_add(item.0.bytes());
     if !shown_bytes_within_limit(bytes) {
         out.clear();
         return Err(Error::Invalid("pictures shown by one chunk are too large"));
     }
+    *shown_bytes = bytes;
     out.push(item);
     Ok(())
 }
@@ -335,6 +346,9 @@ impl Decoder {
             seq: None,
             refs: Default::default(),
             ref_frames: Default::default(),
+            ref_color: Default::default(),
+            shown_bytes: 0,
+            shown_overflow: false,
             lf_deltas: LoopFilterDeltas::defaults(),
             seg_features: SegmentationFeatures::default(),
             prev_gm_params: default_gm_params(),
@@ -434,7 +448,12 @@ impl Decoder {
         // Each show_existing_frame costs a few bytes but a full picture copy once it is taken: one
         // chunk may not ask for more displays than any real temporal unit holds (checked as each
         // picture is added, so a malformed OBU after the limit cannot let them through either).
+        self.shown_bytes = 0;
+        self.shown_overflow = false;
         let r = self.parse_obus(data, &mut out);
+        if self.shown_overflow {
+            out.clear();
+        }
         // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
         // highest spatial layer present.
         let scalable = self.seq.as_ref().is_some_and(|s| s.op_idc != 0);
@@ -525,20 +544,20 @@ impl Decoder {
                     let mut r = BitReader::new(payload);
                     let shown = self.frame_header(&mut r, temporal_id, spatial_id)?;
                     if let Some(o) = shown {
-                        push_shown(out, (o, tu, spatial_id))?;
+                        push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                         continue;
                     }
                     if obu_type == OBU_FRAME_T {
                         r.byte_align();
                         let rest = payload.get(r.byte_pos()..).ok_or(Error::Truncated)?;
                         if let Some(o) = self.tile_group(rest)? {
-                            push_shown(out, (o, tu, spatial_id))?;
+                            push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                         }
                     }
                 }
                 OBU_TILE_GROUP_T => {
                     if let Some(o) = self.tile_group(payload)? {
-                        push_shown(out, (o, tu, spatial_id))?;
+                        push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                     }
                 }
                 OBU_METADATA_T | OBU_TILE_LIST_T => {}
@@ -573,6 +592,7 @@ impl Decoder {
             let o = Output::Existing(Box::new(ExistingOutput {
                 slot: slot.clone(),
                 seq: seq.clone(),
+                color: self.ref_color[idx].clone().unwrap_or_else(|| seq.color.clone()),
                 width: info.upscaled_width as usize,
                 height: info.frame_height as usize,
                 grain: fh.film_grain.clone(),
@@ -586,6 +606,7 @@ impl Decoder {
                 for i in 0..NUM_REF_FRAMES {
                     self.refs[i] = info.clone();
                     self.ref_frames[i] = Some(slot.clone());
+                    self.ref_color[i] = self.ref_color[idx].clone();
                 }
             }
             return Ok(Some(o));
@@ -676,6 +697,15 @@ impl Decoder {
             return Err(Error::Invalid("frame is missing tile coverage"));
         }
         self.seen_frame_header = false;
+        // A picture past the chunk's byte budget is never built (decoding the frame as a reference
+        // still happens, so the reference slots stay as the stream says), and the chunk is refused.
+        let bytes = picture_bytes(job.fh.upscaled_width as usize, job.fh.frame_height as usize, &job.seq.color);
+        if job.picture.is_some() && !shown_bytes_within_limit(self.shown_bytes.saturating_add(bytes)) {
+            job.picture = None;
+            self.shown_overflow = true;
+            self.submit(job);
+            return Err(Error::Invalid("pictures shown by one chunk are too large"));
+        }
         Ok(self.submit(job))
     }
 
@@ -703,6 +733,7 @@ impl Decoder {
                 ri.seg_features = fh.seg.features;
                 ri.grain = fh.film_grain.clone();
                 self.ref_frames[i] = Some(job.slot.clone());
+                self.ref_color[i] = Some(job.seq.color.clone());
             }
         }
         let output =
@@ -840,7 +871,8 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         saved_ref_frames: mf_refs,
         saved_mvs: mf_mvs,
     });
-    let pic = fh.show_frame.then(|| {
+    // job.picture is None for a shown frame refused for its size (see tile_group)
+    let pic = job.picture.is_some().then(|| {
         let mut p = output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts);
         p.draft = job.draft;
         p
