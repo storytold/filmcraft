@@ -79,8 +79,11 @@ pub struct ClipScenes {
     pub name: String,
     /// The clip's media item (a subclip's parent).
     pub media_item: ItemId,
-    /// Media range the clip shows.
+    /// Media range the clip shows. When the analysis was capped (`unanalysed` set) it reaches the
+    /// clip's end, so the last subclip covers the tail too.
     pub media_range: TimeRange,
+    /// The clip is longer than the analysis cap: its tail was not analysed, and no cut was looked for there.
+    pub unanalysed: bool,
     /// (timeline time, media time) of the first frame of each new shot.
     pub cuts: Vec<(Tick, Tick)>,
 }
@@ -111,6 +114,27 @@ struct Work {
     scale: f32,
     /// (timeline time, media time) of every sequence frame of the clip.
     frames: Vec<(Tick, Tick)>,
+    /// Media time at the clip's end when the schedule was capped short of it.
+    tail: Option<Tick>,
+}
+
+/// The media range of an analysed clip: the scheduled frames from `a` to `b` (`fdm` long each),
+/// stretched to `tail`, the clip's own end, when the schedule stopped short of it.
+fn analysed_range(a: Tick, b: Tick, fdm: Tick, tail: Option<Tick>) -> TimeRange {
+    let (mut lo, mut hi) = (a.min(b), a.max(b) + fdm);
+    if let Some(t) = tail {
+        lo = lo.min(t);
+        hi = hi.max(t);
+    }
+    TimeRange::from_bounds(lo, hi)
+}
+
+/// What to tell the user about clips whose tail was not analysed.
+fn unanalysed_warning(results: &[ClipScenes]) -> Option<String> {
+    let names: Vec<&str> = results.iter().filter(|r| r.unanalysed).map(|r| r.name.as_str()).collect();
+    (!names.is_empty()).then(|| {
+        format!("The tail of {} was not analysed (longer than {MAX_ANALYSED_FRAMES} frames); its last scene extends to the clip end", names.join(", "))
+    })
 }
 
 fn detect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -145,13 +169,15 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         // The schedule is built here, before the job can be cancelled; a project can store any
         // clip duration, so it is capped (a day at 60 fps) rather than trusted.
         let n = scheduled_frames(it.duration, fd, &mut remaining)?;
+        let capped = it.duration.0 / fd.0.max(1) > n;
+        let tail = capped.then(|| it.source_time_at(it.end()));
         let frames: Vec<(Tick, Tick)> = (0..n)
             .map(|j| {
                 let t = it.start + Tick(fd.0 * j);
                 (t, it.source_time_at(t))
             })
             .collect();
-        work.push(Work { clip: c, name: it.name.clone(), media_item, src, scale: (ANALYSIS_WIDTH / v.width.max(1) as f64).min(1.0) as f32, frames });
+        work.push(Work { clip: c, name: it.name.clone(), media_item, src, scale: (ANALYSIS_WIDTH / v.width.max(1) as f64).min(1.0) as f32, frames, tail });
     }
     if work.is_empty() {
         return Err(EngineError::Other("none of the selected clips is a video clip with media to analyse".into()));
@@ -196,7 +222,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                 clip: w.clip,
                 name: w.name.clone(),
                 media_item: w.media_item,
-                media_range: TimeRange::from_bounds(a.min(b), a.max(b) + fdm),
+                media_range: analysed_range(a, b, fdm, w.tail),
+                unanalysed: w.tail.is_some(),
                 cuts,
             });
         }
@@ -272,9 +299,14 @@ pub fn poll(s: &mut Session) {
 
 fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Vec<ClipScenes>) -> Result<Value> {
     let n_cuts: usize = results.iter().map(|r| r.cuts.len()).sum();
+    let warning = unanalysed_warning(&results);
+    let warnings: Vec<&String> = warning.iter().collect();
     if n_cuts == 0 {
         s.toast("Scene Edit Detection found no cut points");
-        return Ok(json!({"cuts": 0}));
+        if let Some(w) = &warning {
+            s.toast(w.clone());
+        }
+        return Ok(json!({"cuts": 0, "warnings": warnings}));
     }
     let media = s.media.clone();
     s.edit("Scene Edit Detection", move |pr, _| {
@@ -339,7 +371,10 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
         Ok(())
     })?;
     s.toast(format!("Scene Edit Detection: {n_cuts} cut point(s)"));
-    Ok(json!({"cuts": n_cuts}))
+    if let Some(w) = &warning {
+        s.toast(w.clone());
+    }
+    Ok(json!({"cuts": n_cuts, "warnings": warnings}))
 }
 
 #[cfg(test)]
