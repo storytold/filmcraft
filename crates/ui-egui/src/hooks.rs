@@ -21,6 +21,11 @@ pub trait AudioOut {
     /// that starting the clock costs nothing on the UI thread (opening a stream took 20-30 ms,
     /// dropping the first frame of a play). A no-op where opening is cheap.
     fn prepare(&mut self) {}
+    /// Called before a scrub grain plays on the separate scrub output: close a stream kept open
+    /// between plays, so a device that takes one stream at a time (a raw ALSA `hw:` device) is
+    /// free for the scrub. Nothing while a play sounds. The next play opens it again in
+    /// [`Self::prepare`].
+    fn release_idle(&mut self) {}
     /// Hosts and devices that can be chosen in Settings ▸ Audio Hardware.
     fn devices(&self) -> AudioDevices {
         AudioDevices::default()
