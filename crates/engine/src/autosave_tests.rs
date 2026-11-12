@@ -9,6 +9,53 @@ fn demo() -> Session {
     s
 }
 
+#[test]
+fn a_changed_playhead_advances_the_project_view_epoch_once_per_position() {
+    let mut s = demo();
+    let before = s.view_epoch;
+    let one_frame = s.sequence_rate().frame_duration();
+    s.set_playhead(one_frame);
+    assert_eq!(s.view_epoch, before.wrapping_add(1));
+    s.set_playhead(one_frame);
+    assert_eq!(s.view_epoch, before.wrapping_add(1));
+}
+
+#[test]
+fn new_projects_start_with_aligned_saved_view_epochs() {
+    let mut s = demo();
+    s.view_epoch = 4;
+    s.saved_view_epoch = 1;
+    s.execute("file.newProject", json!({"name": "Fresh"})).unwrap();
+    assert_eq!((s.view_epoch, s.saved_view_epoch), (0, 0));
+
+    s.view_epoch = 5;
+    s.saved_view_epoch = 2;
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert_eq!((s.view_epoch, s.saved_view_epoch), (0, 0));
+}
+
+#[test]
+fn project_timeline_settings_restore_when_tab_restoration_is_disabled() {
+    let mut s = demo();
+    let dir = TempDirGuard(temp_dir("restore-timeline-settings"));
+    let path = dir.0.join("settings.fcproj");
+    s.state.timeline_ui.smooth_animations = true;
+    s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    s.prefs.timeline.restore_open_sequences = false;
+    s.state.timeline_ui.smooth_animations = false;
+
+    s.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    assert!(s.state.timeline_ui.smooth_animations);
+}
+
+struct TempDirGuard(std::path::PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

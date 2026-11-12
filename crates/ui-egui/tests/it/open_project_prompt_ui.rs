@@ -18,6 +18,15 @@ use serde_json::{Value, json};
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    _test_dirs: Vec<TestDirGuard>,
+}
+
+struct TestDirGuard(PathBuf);
+
+impl Drop for TestDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Driver {
@@ -27,7 +36,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
+        let mut d = Driver { harness, tx, _test_dirs: Vec::new() };
         d.frames(4);
         d
     }
@@ -123,6 +132,7 @@ fn projects(d: &mut Driver, test: &str) -> (PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!("fc-open-project-prompt-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    d._test_dirs.push(TestDirGuard(dir.clone()));
     let current = dir.join("current.fcproj").to_string_lossy().into_owned();
     let other = dir.join("other.fcproj").to_string_lossy().into_owned();
     d.exec("file.saveAs", json!({"path": other}));
@@ -144,6 +154,23 @@ fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
     // the change was written to the project it was made in
     d.exec("file.open", json!({"path": current}));
     assert_eq!(d.label(clip), Label::Yellow);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn opening_a_project_prompts_for_unsaved_timeline_view_changes() {
+    let mut d = Driver::new();
+    let (dir, current, other) = projects(&mut d, "viewOnly");
+    let pps = d.app().ui.timeline.pps * 1.25;
+    d.ok("ui.set", json!({"timeline": {"pps": pps}}));
+    d.frames(4);
+    assert!(!d.app().session.is_dirty(), "Timeline zoom does not dirty project content");
+    assert!(d.app().session.is_view_dirty(), "Timeline zoom is unsaved project view state");
+    d.open_project(&other);
+    assert!(d.has("openProject.save"), "opening another project asks before discarding the Timeline view");
+    d.click("openProject.cancel");
+    assert_eq!(d.path(), Some(current));
+    assert!(d.app().session.is_view_dirty(), "Cancel leaves the unsaved view in place");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
