@@ -93,7 +93,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             let last = rate.frame_at(duration) - 1;
             app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, last);
             // (only while the project stands still: see `Playback::preroll_revision`)
-            let unchanged = *app.playback.preroll_revision.get_or_insert(key.revision) == key.revision;
+            let unchanged = stands_still(app.playback.preroll_revision.replace(key.revision), key.revision);
             app.playback.preroll_pending = !app.playback.preroll_ready && unchanged && app.frames.preroll_pending(key, app.playback.speed, last);
         }
     } else {
@@ -615,6 +615,12 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
 /// 1 when playing forward, -1 backward.
 fn play_direction(speed: f64) -> i64 {
     if speed < 0.0 { -1 } else { 1 }
+}
+
+/// Whether the project stood still since the preroll's pass before this one (`before`: the
+/// revision that pass saw, None on the first): see `Playback::preroll_revision`.
+fn stands_still(before: Option<u64>, revision: u64) -> bool {
+    before.is_none_or(|r| r == revision)
 }
 
 /// Whether showing `stand_in` in place of the frame `due` would take a playing monitor's picture
@@ -1422,6 +1428,18 @@ mod tests {
         assert!(transport_is_lit("media.toggleProxies", true, false));
 
         assert!(!transport_is_lit("playback.toggle", true, true));
+    }
+
+    /// A value dragged while the preroll waits makes a revision per pass: no pass finds the
+    /// project standing still, so the preroll does not hold the picture for frames that are
+    /// never ready. After one edit the passes that follow wait again.
+    #[test]
+    fn the_preroll_waits_again_once_the_project_stands_still() {
+        use super::stands_still;
+        assert!(stands_still(None, 7), "the first pass of a preroll");
+        assert!(stands_still(Some(7), 7));
+        assert!(!stands_still(Some(7), 8), "edited since the pass before");
+        assert!(stands_still(Some(8), 8), "and not since");
     }
 
     /// Playing 50 fps on a 60 Hz display, frame 345 is due for a second refresh and its plan has

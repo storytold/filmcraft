@@ -150,6 +150,10 @@ struct Job {
     /// Queued by playback (the frame due now or a prefetch): sources may decode ahead for the
     /// frames to come and drop one they passed (`filmcraft_media::cancel::with_playing`).
     playing: bool,
+    /// Asked for by a view beside a running play ([`beside_playback`]): a source playback is
+    /// decoding from gives it the frames it holds and nothing else
+    /// (`filmcraft_media::cancel::with_beside_playback`).
+    beside: bool,
     time: Tick,
     /// Output scale relative to the target's frame size.
     scale: f32,
@@ -183,6 +187,9 @@ struct Shared {
     /// for again while playing (the monitor shows the nearest frame); cleared when playback
     /// stops, and a paused request decodes them exactly.
     dropped: Mutex<HashSet<FrameKey>>,
+    /// A monitor is playing ([`FrameServer::schedule_playback`] until
+    /// [`FrameServer::stop_prefetch`]).
+    playing: AtomicBool,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
     /// Uploads GPU plans' frames from the workers (the GPU compositor's, when there is one), so
@@ -533,6 +540,24 @@ struct FrameRequest<'a> {
     catch_up: Option<Tick>,
     due: Option<Instant>,
     playing: bool,
+    beside: bool,
+}
+
+/// Whether a frame asked for at `prio` outside playback scheduling is for a view beside a play
+/// (`play_on`: a monitor is playing): the Video Scopes and the reference monitor following the
+/// playhead, thumbnails. The frame on screen of a paused monitor (`prio` 0) is not: it is
+/// decoded exactly, whatever plays elsewhere.
+fn beside_playback(prio: u32, play_on: bool) -> bool {
+    play_on && prio > 0
+}
+
+/// What a queued job is (`playing`, `beside`) once the same frame is asked for again: the
+/// newest request says whether it is playback (a paused monitor asking for the frame a play
+/// left queued gets it decoded exactly, not dropped as a late playback frame), except that a
+/// view beside the play never changes what the job is.
+fn merged_kind(job: (bool, bool), request: (bool, bool)) -> (bool, bool) {
+    let (playing, beside) = request;
+    (if beside { job.0 } else { playing }, job.1 && beside)
 }
 
 /// Frames queued ahead of the playhead while playing (and how far ahead a queued job may be
@@ -649,6 +674,7 @@ impl FrameServer {
             stop: AtomicBool::new(false),
             dropped: Mutex::new(HashSet::new()),
             uploader: Mutex::new(None),
+            playing: AtomicBool::new(false),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -780,11 +806,12 @@ impl FrameServer {
     /// non-reference pictures, while nearby frames stay decoded (and cached) for scrubbing back.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
         let late = (prio == 0).then(|| Tick::from_seconds_f64(SCRUB_KEEP_S));
-        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late, due: None, playing: false });
+        let beside = beside_playback(prio, self.shared.playing.load(Ordering::Relaxed));
+        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late, due: None, playing: false, beside });
     }
 
     fn request_job(&self, request: FrameRequest<'_>) {
-        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up, due, playing } = request;
+        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up, due, playing, beside } = request;
         let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
         let deferred = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.get(&key).map(|e| e.plan.deferred);
         if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key) || deferred == Some(false) {
@@ -813,6 +840,7 @@ impl FrameServer {
                     catch_up,
                     due,
                     playing,
+                    beside,
                     time,
                     scale,
                     project: project.clone(),
@@ -834,7 +862,7 @@ impl FrameServer {
         if let Some(j) = q.iter_mut().find(|j| j.key == key) {
             j.prio = j.prio.min(prio);
             j.prefetch &= prefetch;
-            j.playing |= playing;
+            (j.playing, j.beside) = merged_kind((j.playing, j.beside), (playing, beside));
             // the playhead only moves on: the newest (smallest) margin
             j.catch_up = match (j.catch_up, catch_up) {
                 (Some(a), Some(b)) => Some(a.min(b)),
@@ -874,6 +902,7 @@ impl FrameServer {
             catch_up,
             due,
             playing,
+            beside,
             time,
             scale,
             project: project.clone(),
@@ -897,6 +926,7 @@ impl FrameServer {
         let step = speed.abs().max(1.0) as i64;
         let fps = rate.as_f64() * speed.abs().max(1.0) / step as f64;
         let (lead, stride) = if preroll { (1, 1) } else { playback_plan(self.render_cost(), fps, self.shared.workers) };
+        self.shared.playing.store(true, Ordering::Relaxed);
         if matches!(key.target, Target::SequencePlan(..)) {
             // the plans this play shows next are the last the plan cache gives up ([`PlayWindow`])
             let ahead = prefetch_depth(speed).saturating_mul(stride).saturating_add(lead).saturating_mul(step);
@@ -914,6 +944,7 @@ impl FrameServer {
                 catch_up: (!preroll && dir > 0).then_some(Tick::ZERO),
                 due: None,
                 playing: true,
+                beside: false,
             });
         }
         // During preroll the clock has not started: only the frames that gate start, not a
@@ -943,6 +974,7 @@ impl FrameServer {
                     catch_up: late,
                     due,
                     playing: true,
+                    beside: false,
                 });
             }
         }
@@ -1001,9 +1033,17 @@ impl FrameServer {
         }
     }
 
+    /// A play starts (Play, or a looping play going round): the frames a source dropped in the
+    /// play before are asked for again. Their keys are the same on every round of a loop, and a
+    /// frame the decoder left out once would otherwise be missing from each round after it.
+    pub fn play_starts(&self) {
+        self.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+
     /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
+        self.shared.playing.store(false, Ordering::Relaxed);
         self.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).window = None;
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
@@ -1248,8 +1288,6 @@ fn worker(
     }
 }
 
-/// Whether a playback job taken from the queue `now` would finish after its frame is `due`, at
-/// the workers' current per-frame `cost`. Workers take the nearest frame first; when that frame
 /// Whether a job's result is the frame and goes into the cache: not when a source gave up on
 /// it (a layer missing, a decode given up or a late frame dropped on purpose), and not when it
 /// was cancelled because the server is stopping. A job cancelled for another reason (playback
@@ -1258,6 +1296,8 @@ fn keep_result(cancelled: bool, gave_up: bool, stopping: bool) -> bool {
     !gave_up && !(cancelled && stopping)
 }
 
+/// Whether a playback job taken from the queue `now` would finish after its frame is `due`, at
+/// the workers' current per-frame `cost`. Workers take the nearest frame first; when that frame
 /// can no longer be on time, starting it only has it cancelled once finished, while a frame
 /// further ahead could still have been ready. Left unchecked, every worker was busy on frames
 /// that were already lost and nothing reached the screen once a picture cost more than the
@@ -1322,31 +1362,33 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         *kept = keep && cancelled;
         keep
     };
-    let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
-        filmcraft_media::cancel::with_playing(job.playing, || {
-            filmcraft_media::cancel::with_catch_up(job.catch_up, || {
-                filmcraft_media::cancel::with_draft(job.key.draft, || {
-                    filmcraft_media::cancel::with_background(is_background(job), || {
-                        if let Target::SequencePlan(seq, caps) = job.key.target {
-                            let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
-                            loading = filmcraft_media::pending::take();
-                            if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
-                                // Upload (or convert) texels here, not on the UI thread when the frame is shown;
-                                // a prefetch far ahead of the playhead waits for its upload ([`UPLOAD_AHEAD`]).
-                                let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                                let now = upload_now(up.is_some(), job.prefetch, job.prio);
-                                let prepared = if now { filmcraft_gpu::prepare_ahead(&plan, up.as_ref(), job.prio) } else { Default::default() };
-                                sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared, deferred: !now });
+    let preview = filmcraft_media::cancel::with_beside_playback(job.beside, || {
+        filmcraft_media::cancel::with_cancel(&job.cancel, || {
+            filmcraft_media::cancel::with_playing(job.playing, || {
+                filmcraft_media::cancel::with_catch_up(job.catch_up, || {
+                    filmcraft_media::cancel::with_draft(job.key.draft, || {
+                        filmcraft_media::cancel::with_background(is_background(job), || {
+                            if let Target::SequencePlan(seq, caps) = job.key.target {
+                                let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                                loading = filmcraft_media::pending::take();
+                                if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
+                                    // Upload (or convert) texels here, not on the UI thread when the frame is shown;
+                                    // a prefetch far ahead of the playhead waits for its upload ([`UPLOAD_AHEAD`]).
+                                    let up = sh.uploader.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                                    let now = upload_now(up.is_some(), job.prefetch, job.prio);
+                                    let prepared = if now { filmcraft_gpu::prepare_ahead(&plan, up.as_ref(), job.prio) } else { Default::default() };
+                                    sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared, deferred: !now });
+                                }
+                                pv
+                            } else {
+                                let (img, pv) = render_job(job, pool, services, previews);
+                                loading = filmcraft_media::pending::take();
+                                if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
+                                    sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
+                                }
+                                pv
                             }
-                            pv
-                        } else {
-                            let (img, pv) = render_job(job, pool, services, previews);
-                            loading = filmcraft_media::pending::take();
-                            if !loading && complete(&job.cancel, &mut kept_late, &mut gave_up) {
-                                sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
-                            }
-                            pv
-                        }
+                        })
                     })
                 })
             })
@@ -1649,6 +1691,48 @@ mod tests {
     }
 
     #[test]
+    fn views_beside_a_play_are_the_ones_that_do_not_show_a_paused_frame() {
+        use super::beside_playback;
+        // the scopes (40 while playing), the reference monitor (3), thumbnails (50)
+        assert!(beside_playback(40, true) && beside_playback(3, true) && beside_playback(50, true));
+        // a paused monitor's frame while another monitor plays
+        assert!(!beside_playback(0, true));
+        // nothing plays: every request is decoded exactly
+        assert!(!beside_playback(40, false) && !beside_playback(0, false));
+    }
+
+    /// (playing, beside) of a queued job after the same frame is asked for again.
+    #[test]
+    fn the_newest_request_says_whether_a_queued_job_is_playback() {
+        use super::merged_kind;
+        // playback stopped with the frame due still queued, and the paused monitor asks for it
+        assert_eq!(merged_kind((true, false), (false, false)), (false, false));
+        // Play pressed while the paused frame was still queued
+        assert_eq!(merged_kind((false, false), (true, false)), (true, false));
+        // a view beside the play asks for a frame playback (or a paused monitor) waits for
+        assert_eq!(merged_kind((true, false), (false, true)), (true, false));
+        assert_eq!(merged_kind((false, false), (false, true)), (false, false));
+        // a frame only views beside the play asked for, until someone else wants it
+        assert_eq!(merged_kind((false, true), (false, true)), (false, true));
+        assert_eq!(merged_kind((false, true), (true, false)), (true, false));
+        assert_eq!(merged_kind((false, true), (false, false)), (false, false));
+    }
+
+    /// A looping play asks again, on its next round, for the frames a source dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_new_play_asks_again_for_the_frames_dropped_in_the_one_before() {
+        use super::{FrameKey, FrameServer};
+        use std::sync::PoisonError;
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let key = FrameKey { target: Target::Item(ItemId(999)), frame: 7, size: 32, revision: 0, draft: false };
+        server.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).insert(key);
+        server.play_starts();
+        assert!(server.shared.dropped.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+    }
+
+    #[test]
     fn only_item_thumbnails_are_background_work() {
         let item = Target::Item(ItemId(1));
         // thumbnails (50) and the Media Browser (40)
@@ -1843,6 +1927,7 @@ mod tests {
             catch_up: None,
             due: None,
             playing: false,
+            beside: false,
             time: filmcraft_time::Tick::ZERO,
             scale: 0.1,
             project: Arc::new(filmcraft_project::Project::new("Frames")),
@@ -1874,6 +1959,7 @@ mod tests {
             catch_up: None,
             due: None,
             playing: false,
+            beside: false,
             time: filmcraft_time::Tick::ZERO,
             scale: 0.1,
             project: Arc::new(filmcraft_project::Project::new("Frames")),

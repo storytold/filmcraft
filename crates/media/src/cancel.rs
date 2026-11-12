@@ -34,6 +34,7 @@ thread_local! {
     static GAVE_UP: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static PLAYING: Cell<bool> = const { Cell::new(false) };
+    static BESIDE_PLAYBACK: Cell<bool> = const { Cell::new(false) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
 }
@@ -106,6 +107,23 @@ pub fn playing() -> bool {
     PLAYING.with(Cell::get)
 }
 
+/// Run `f` as work for a view beside a running play when `on` (restoring the previous setting
+/// after): the Video Scopes following the playhead, a thumbnail drawn meanwhile. A sequential
+/// decoder that playback is decoding from serves it the frames it holds and nothing else: it
+/// neither stops the playback run nor seeks away from the playhead for it ([`give_up`]).
+pub fn with_beside_playback<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let prev = BESIDE_PLAYBACK.with(|c| c.replace(on));
+    let r = f();
+    BESIDE_PLAYBACK.with(|c| c.set(prev));
+    r
+}
+
+/// Whether the work running on this thread is for a view beside a running play
+/// ([`with_beside_playback`]).
+pub fn beside_playback() -> bool {
+    BESIDE_PLAYBACK.with(Cell::get)
+}
+
 /// Run `f` with `flag` as this thread's cancellation flag (restoring the previous one after).
 /// [`gave_up`] starts out false for the scope.
 pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
@@ -157,6 +175,7 @@ pub struct Context {
     gave_up: Option<Arc<AtomicBool>>,
     catch_up: Option<Tick>,
     playing: bool,
+    beside_playback: bool,
     draft: bool,
     background: bool,
 }
@@ -169,6 +188,7 @@ impl Context {
             gave_up: GAVE_UP.with(|g| g.borrow().clone()),
             catch_up: catch_up(),
             playing: playing(),
+            beside_playback: beside_playback(),
             draft: draft(),
             background: background(),
         }
@@ -185,6 +205,7 @@ impl Context {
                 GAVE_UP.with(|g| *g.borrow_mut() = prev.gave_up);
                 CATCH_UP.with(|c| c.set(prev.catch_up));
                 PLAYING.with(|c| c.set(prev.playing));
+                BESIDE_PLAYBACK.with(|c| c.set(prev.beside_playback));
                 DRAFT.with(|c| c.set(prev.draft));
                 BACKGROUND.with(|c| c.set(prev.background));
             }
@@ -194,6 +215,7 @@ impl Context {
         GAVE_UP.with(|g| *g.borrow_mut() = self.gave_up);
         CATCH_UP.with(|c| c.set(self.catch_up));
         PLAYING.with(|c| c.set(self.playing));
+        BESIDE_PLAYBACK.with(|c| c.set(self.beside_playback));
         DRAFT.with(|c| c.set(self.draft));
         BACKGROUND.with(|c| c.set(self.background));
         f()
@@ -232,6 +254,18 @@ mod tests {
         });
         assert!(inner && carried, "the hint holds inside the scope and travels with the context");
         assert!(!playing());
+    }
+
+    #[test]
+    fn beside_playback_is_off_by_default_and_scoped() {
+        assert!(!beside_playback());
+        let (inner, carried) = with_beside_playback(true, || {
+            let ctx = Context::current();
+            let carried = std::thread::scope(|s| s.spawn(|| ctx.run(beside_playback)).join()).unwrap_or(false);
+            (beside_playback(), carried)
+        });
+        assert!(inner && carried, "the hint holds inside the scope and travels with the context");
+        assert!(!beside_playback());
     }
 
     #[test]
