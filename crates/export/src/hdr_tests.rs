@@ -301,3 +301,76 @@ fn high422_export_encodes_sdr_and_hdr_frames() {
     let rgb = vec![0.5f32; 7];
     assert!(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &[], hdr: Some(&rgb), index: 0 }).is_err());
 }
+
+/// High 4:2:2 from SDR (RGBA8) and HDR (PQ R'G'B') frames decodes, through ffmpeg as yuv422p10le,
+/// to the converter's own 10-bit 4:2:2 planes: a pattern whose colour changes on every row and every
+/// column pair catches a 4:2:0-sized, mis-strided or row-shifted chroma plane, which a flat frame
+/// cannot.
+#[test]
+fn high422_export_decodes_to_the_converted_planes() {
+    let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("high422 export decode") else { return };
+    let (w, h, n) = (64usize, 48usize, 3usize);
+    // colour of pixel (x, y): constant over each horizontal pair, so 4:2:2 chroma is exact
+    let rgbf = |x: usize, y: usize| [(y * 5 % 48) as f32 / 47.0, ((x / 2) * 3 % 32) as f32 / 31.0, ((y * 7 + x / 2) % 40) as f32 / 39.0];
+    let dir = std::env::temp_dir().join(format!("filmcraft-high422-decode-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for signal in [ColorSignal::default(), ColorSignal::PQ] {
+        let rgb: Vec<f32> = (0..w * h).flat_map(|i| rgbf(i % w, i / w)).collect();
+        let rgba: Vec<u8> = (0..w * h).flat_map(|i| rgbf(i % w, i / w).map(|c| (c * 255.0).round() as u8).into_iter().chain([255])).collect();
+        let (mut want_y, mut want_u, mut want_v) = (vec![0u16; w * h], vec![0u16; w / 2 * h], vec![0u16; w / 2 * h]);
+        if signal.is_hdr() {
+            let (kr, kb) = signal.kr_kb();
+            rgbf_to_yuv422_10(&rgb, w, h, Matrix::new(kr, kb), &mut want_y, &mut want_u, &mut want_v);
+        } else {
+            rgba_to_yuv422_10(&rgba, w, h, &mut want_y, &mut want_u, &mut want_v);
+        }
+        let s =
+            ExportSettings { format: Format::H264, signal, h264_profile: H264Profile::High422, bitrate_mode: BitrateMode::Crf, crf: 0.0, ..Default::default() };
+        let mut enc = h264_factory(Format::H264, w as u32, h as u32, FrameRate::FPS_24, &s).unwrap().unwrap();
+        let mut packets = Vec::new();
+        for index in 0..n as u64 {
+            let hdr = signal.is_hdr().then_some(&rgb[..]);
+            packets.extend(enc.encode(&EncoderFrame { width: w as u32, height: h as u32, rgba: &rgba, hdr, index }).unwrap());
+        }
+        packets.extend(enc.flush().unwrap());
+        // Annex B from the avcC parameter sets and the length-prefixed packets
+        let e = enc.sample_entry();
+        let filmcraft_isobmff::CodecConfig::Avc(c) = &e.codec else { panic!("{:?}", e.codec) };
+        let ls = c.length_size as usize;
+        let mut stream = Vec::new();
+        for nal in c.sps.iter().chain(&c.pps) {
+            stream.extend([0, 0, 0, 1]);
+            stream.extend(nal);
+        }
+        for p in &packets {
+            let mut d = &p.data[..];
+            while d.len() > ls {
+                let len = d[..ls].iter().fold(0usize, |a, &b| a << 8 | b as usize);
+                stream.extend([0, 0, 0, 1]);
+                stream.extend(&d[ls..ls + len]);
+                d = &d[ls + len..];
+            }
+        }
+        let path = dir.join(format!("{signal:?}.h264"));
+        std::fs::write(&path, &stream).unwrap();
+        let out = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "h264", "-i"])
+            .arg(&path)
+            .args(["-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{signal:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let dec: Vec<i32> = out.stdout.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as i32).collect();
+        let fs = w * h + w * h;
+        assert_eq!(dec.len(), n * fs, "{signal:?}: {n} frames of 64x48 4:2:2");
+        for f in 0..n {
+            let frame = &dec[f * fs..(f + 1) * fs];
+            let (cs, ys) = (w / 2 * h, w * h);
+            for (plane, got, want) in [("Y", &frame[..ys], &want_y), ("Cb", &frame[ys..ys + cs], &want_u), ("Cr", &frame[ys + cs..], &want_v)] {
+                let worst = got.iter().zip(want.iter()).map(|(&g, &w)| (g - w as i32).abs()).max().unwrap_or(0);
+                assert!(worst <= 6, "{signal:?} frame {f} {plane}: off by up to {worst} codes");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

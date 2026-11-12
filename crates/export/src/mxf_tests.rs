@@ -305,37 +305,61 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
     }
 }
 
-/// MXF OP1a carries H.264 High 4:2:2 (#1221 stage 2): a 10-bit 4:2:2 CDCI descriptor (horizontal
-/// subsampling 2, vertical 1) and the High 4:2:2 long-GOP label; ffmpeg decodes it as it decodes
-/// the same essence in a MOV export.
+/// MXF OP1a carries H.264 High 4:2:2 and High 4:2:2 Intra (#1221 stage 2): a 10-bit 4:2:2 CDCI
+/// descriptor (horizontal subsampling 2, vertical 1) and the long-GOP High 4:2:2 or the intra
+/// coding label; ffmpeg decodes it to the source's own 10-bit 4:2:2 codes, as it decodes the same
+/// essence in a MOV export.
 #[test]
 fn op1a_h264_high422() {
     let (p, seq, m) = project();
-    let path = tmp("high422.mxf");
-    let s = ExportSettings { h264_profile: H264Profile::High422, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
-    export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    let mx = craft_media::mxf::open(&bytes).unwrap();
-    assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
-    let v = &mx.tracks[mx.track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
-    assert_eq!(v.samples.len(), 24);
-    let pic = v.picture.as_ref().unwrap();
-    assert_eq!((pic.component_depth, pic.horizontal_subsampling, pic.vertical_subsampling), (10, 2, 1));
-    // RP 2008 coding label: byte 13 0x31 long GOP, byte 14 0x60 High 4:2:2
-    let label = pic.picture_coding.map(|u| u.0).unwrap_or_default();
-    assert_eq!((label[13], label[14]), (0x31, 0x60));
-    let (Some(ffprobe), Some(ffmpeg)) =
-        (filmcraft_testkit::ffprobe_or_skip("MXF High 4:2:2 probe"), filmcraft_testkit::ffmpeg_or_skip("MXF High 4:2:2 decode"))
-    else {
-        return;
-    };
-    let j = ffprobe_json(&ffprobe, &path);
-    let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "video").unwrap().clone();
-    assert_eq!(st["profile"], "High 4:2:2");
-    assert_eq!(st["pix_fmt"], "yuv422p10le");
-    let mov = tmp("high422.mov");
-    let ms = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mov, path: mov.clone(), ..s.clone() };
-    export(&p, seq, &ms, &m, &Progress::default()).unwrap();
-    let raw = ["-f", "rawvideo", "-pix_fmt", "yuv422p10le"];
-    assert!(ffmpeg_raw(&ffmpeg, &path, "0:v:0", &raw) == ffmpeg_raw(&ffmpeg, &mov, "0:v:0", &raw), "MXF and MOV decode differently");
+    let leader = GeneratorSource::new(Generator::CountingLeader, 320, 180, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    for intra in [false, true] {
+        let path = tmp(&format!("high422-{intra}.mxf"));
+        let s = ExportSettings { h264_profile: H264Profile::High422, h264_intra_only: intra, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mx = craft_media::mxf::open(&bytes).unwrap();
+        assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
+        let v = &mx.tracks[mx.track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
+        assert_eq!(v.samples.len(), 24);
+        let pic = v.picture.as_ref().unwrap();
+        assert_eq!((pic.component_depth, pic.horizontal_subsampling, pic.vertical_subsampling), (10, 2, 1));
+        // RP 2008 coding label: byte 13 0x31 long GOP with byte 14 0x60 High 4:2:2, or 0x32 intra
+        let label = pic.picture_coding.map(|u| u.0).unwrap_or_default();
+        if intra {
+            assert_eq!(label[13], 0x32, "intra label {label:02x?}");
+        } else {
+            assert_eq!((label[13], label[14]), (0x31, 0x60));
+        }
+        let (Some(ffprobe), Some(ffmpeg)) =
+            (filmcraft_testkit::ffprobe_or_skip("MXF High 4:2:2 probe"), filmcraft_testkit::ffmpeg_or_skip("MXF High 4:2:2 decode"))
+        else {
+            continue;
+        };
+        let j = ffprobe_json(&ffprobe, &path);
+        let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "video").unwrap().clone();
+        assert_eq!(st["profile"], if intra { "High 4:2:2 Intra" } else { "High 4:2:2" });
+        assert_eq!(st["pix_fmt"], "yuv422p10le");
+        let raw = ["-f", "rawvideo", "-pix_fmt", "yuv422p10le"];
+        let dec = ffmpeg_raw(&ffmpeg, &path, "0:v:0", &raw);
+        // against the source: each frame's 10-bit 4:2:2 conversion of the leader, plane by plane
+        let (w, h) = (320, 180);
+        let (ys, cs) = (w * h, w / 2 * h);
+        let fs = 2 * (ys + 2 * cs);
+        assert_eq!(dec.len(), 24 * fs, "intra {intra}: 24 frames");
+        for f in [0usize, 5, 13, 23] {
+            let rgba = leader.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(f as i64) + Tick(1))).unwrap().to_rgba8();
+            let (mut y, mut u, mut v) = (vec![0u16; ys], vec![0u16; cs], vec![0u16; cs]);
+            rgba_to_yuv422_10(&rgba, w, h, &mut y, &mut u, &mut v);
+            let got: Vec<i32> = dec[f * fs..(f + 1) * fs].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as i32).collect();
+            for (plane, g, want) in [("Y", &got[..ys], &y), ("Cb", &got[ys..ys + cs], &u), ("Cr", &got[ys + cs..], &v)] {
+                let mad = g.iter().zip(want.iter()).map(|(&g, &w)| (g - w as i32).abs() as f64).sum::<f64>() / g.len() as f64;
+                assert!(mad < 1.0, "intra {intra} frame {f} {plane}: mean difference {mad:.2} codes from the source");
+            }
+        }
+        let mov = tmp(&format!("high422-{intra}.mov"));
+        let ms = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mov, path: mov.clone(), ..s.clone() };
+        export(&p, seq, &ms, &m, &Progress::default()).unwrap();
+        assert!(dec == ffmpeg_raw(&ffmpeg, &mov, "0:v:0", &raw), "intra {intra}: MXF and MOV decode differently");
+    }
 }

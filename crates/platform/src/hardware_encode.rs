@@ -328,6 +328,19 @@ mod tests {
         }
     }
 
+    /// The 10-bit H.264 profiles are the built-in encoder's: `config_for` declines High 10 and
+    /// High 4:2:2 by name, so the export falls back to software, while High takes the hardware path.
+    /// Pure settings logic: runs without a hardware encoder.
+    #[test]
+    fn ten_bit_h264_profiles_decline_to_the_built_in_encoder() {
+        let s = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, bitrate_mode: BitrateMode::Vbr1Pass, ..Default::default() };
+        let rate = FrameRate { num: 30, den: 1 };
+        assert!(config_for(W, H, rate, &ExportSettings { h264_profile: H264Profile::High, ..s.clone() }).is_ok());
+        for (profile, why) in [(H264Profile::High10, "High 10"), (H264Profile::High422, "High 4:2:2")] {
+            assert_eq!(config_for(W, H, rate, &ExportSettings { h264_profile: profile, ..s.clone() }).err().as_deref(), Some(why));
+        }
+    }
+
     /// A gradient picture with a bar at `i`.
     fn picture(i: u64) -> Vec<u8> {
         let (w, h) = (W as usize, H as usize);

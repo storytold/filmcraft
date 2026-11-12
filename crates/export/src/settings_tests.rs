@@ -1208,21 +1208,22 @@ fn h264_high422_export() {
         let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
         assert!(summary.contains(if s.h264_intra_only { "High 4:2:2 Intra (10-bit 4:2:2)" } else { "High 4:2:2 (10-bit 4:2:2)" }), "{summary}");
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
-        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
+        // without the oracles (SKIPPED, a failure with FILMCRAFT_REQUIRE_ORACLES=1) the other format still exports
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { continue };
         let st = j["streams"].as_array().unwrap().iter().find(|x| x["codec_type"] == "video").unwrap().clone();
         assert_eq!(st["profile"], if s.h264_intra_only { "High 4:2:2 Intra" } else { "High 4:2:2" }, "{path}");
         assert_eq!(st["pix_fmt"], "yuv422p10le", "{path}");
-        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high422") else { return };
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high422") else { continue };
         let out = std::process::Command::new(ffmpeg)
             // `-v error`: ffmpeg warns that it guesses the layout of any QuickTime PCM track (ProRes too)
             .args(["-v", "error", "-i", &path, "-map", "0:v", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
             .output()
             .unwrap();
         assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
-        // each matte's BT.709 10-bit codes, chroma read at the bottom row of a full-height (160x180)
-        // plane: Y = 64 + 876·Y' with Y' = .2126·R + .7152·G + .0722·B, Cb = 512 + 896·(B − Y')/1.8556,
-        // Cr = 512 + 896·(R − Y')/1.5748 (for G = .6: 534, 687, 320), in presentation order for
-        // every one of the 12 exported frames (B-frames in the MP4, all intra in the preset's MOV)
+        // each matte's BT.709 10-bit codes in a full-height (160x180) chroma plane: Y = 64 + 876·Y'
+        // with Y' = .2126·R + .7152·G + .0722·B, Cb = 512 + 896·(B − Y')/1.8556, Cr = 512 +
+        // 896·(R − Y')/1.5748 (for G = .6: 534, 687, 320), in presentation order for every one of
+        // the 12 exported frames (B-frames in the MP4, all intra in the preset's MOV)
         let at = |o: usize| u16::from_le_bytes([out.stdout[2 * o], out.stdout[2 * o + 1]]) as i32;
         let (ys, cs) = (320 * 180, 160 * 180);
         let fs = ys + 2 * cs;
@@ -1234,12 +1235,12 @@ fn h264_high422_export() {
                 (512.0 + 896.0 * (c[2] - luma) / 1.8556).round() as i32,
                 (512.0 + 896.0 * (c[0] - luma) / 1.5748).round() as i32,
             );
+            // every sample of every plane: a 4:2:0-sized or mis-strided chroma plane leaves rows wrong
             let base = frame * fs;
-            let (y, cb, cr) = (at(base + 90 * 320 + 160), at(base + ys + 179 * 160 + 80), at(base + ys + cs + 179 * 160 + 80));
-            assert!(
-                (y - want.0).abs() <= 3 && (cb - want.1).abs() <= 3 && (cr - want.2).abs() <= 3,
-                "{path}: frame {frame}: Y {y} Cb {cb} Cr {cr}, want {want:?}"
-            );
+            for (plane, start, len, want) in [("Y", base, ys, want.0), ("Cb", base + ys, cs, want.1), ("Cr", base + ys + cs, cs, want.2)] {
+                let bad = (start..start + len).find(|&o| (at(o) - want).abs() > 3);
+                assert!(bad.is_none(), "{path}: frame {frame} {plane} at sample {:?} is {:?}, want {want}", bad.map(|o| o - start), bad.map(at));
+            }
         }
     }
 }

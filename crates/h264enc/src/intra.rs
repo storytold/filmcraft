@@ -299,6 +299,54 @@ pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 16], tl: P, has_
 mod tests {
     use super::*;
 
+    /// 4:2:2 chroma (8x16, `rows` = 16) in all four modes, with expected values worked by hand from
+    /// §8.3.4: DC per 4x4 block at the picture's top and left edges, H, V, and plane with yCF = 4.
+    #[test]
+    fn chroma_8x16_all_modes() {
+        let d = Depth::new(8);
+        // top = tl = 100 (flat, so the plane's H = 0); left[y] = 104 + 4y continues the ramp from p[-1, -1]
+        let top = [100u8; 8];
+        let left: [u8; 16] = std::array::from_fn(|y| 104 + 4 * y as u8);
+        let mut o = [0u8; 128];
+        let at = |o: &[u8; 128], x: usize, y: usize| o[y * 8 + x];
+        // DC, both neighbours: block (0, 0) and the right-hand blocks below the top row use top + left,
+        // (1, 0) top only, the left-hand blocks below the top row left only
+        pred_chroma(0, &top, &left, 100, true, true, d, 16, &mut o);
+        let lsum = |by: usize| (0..4).map(|y| 104 + 4 * (by * 4 + y) as i32).sum::<i32>();
+        assert_eq!(at(&o, 0, 0) as i32, (400 + lsum(0) + 4) >> 3);
+        assert_eq!(at(&o, 7, 0), 100, "block (1, 0): top only");
+        for by in 1..4 {
+            assert_eq!(at(&o, 0, by * 4) as i32, (lsum(by) + 2) >> 2, "block (0, {by}): left only");
+            assert_eq!(at(&o, 7, by * 4 + 3) as i32, (400 + lsum(by) + 4) >> 3, "block (1, {by}): top and left");
+        }
+        // DC at the top picture edge (no top): every block from its own left rows
+        pred_chroma(0, &top, &left, 100, false, true, d, 16, &mut o);
+        for by in 0..4 {
+            assert_eq!(at(&o, 6, by * 4 + 1) as i32, (lsum(by) + 2) >> 2, "no top, block row {by}");
+        }
+        // DC at the left picture edge (no left): every block from the top row
+        pred_chroma(0, &top, &left, 100, true, false, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 100), "no left: all blocks from the top");
+        // DC with neither: mid-grey for all 16 rows
+        pred_chroma(0, &top, &left, 100, false, false, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 128));
+        // horizontal and vertical cover all 16 rows
+        pred_chroma(1, &top, &left, 100, true, true, d, 16, &mut o);
+        assert!((0..16).all(|y| (0..8).all(|x| at(&o, x, y) == left[y])));
+        pred_chroma(2, &top, &left, 100, true, true, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 100));
+        // plane: H = 0; V = sum over y' = 0..7 of (y' + 1)·(p[-1, 8 + y'] − p[-1, 6 − y']) = 8·(1² + … + 8²)
+        // = 1632, c = (5·V + 32) >> 6 = 128, a = 16·(p[-1, 15] + p[7, -1]) = 16·(164 + 100) = 4224,
+        // pred = (a + c·(y − 3 − yCF) + 16) >> 5 = (3344 + 128y) >> 5 = 104 + 4y, the left ramp itself
+        // (4:2:0's yCF = 0 and factor 34 would give a different slope)
+        pred_chroma(3, &top, &left, 100, true, true, d, 16, &mut o);
+        for y in 0..16 {
+            for x in 0..8 {
+                assert_eq!(at(&o, x, y) as usize, 104 + 4 * y, "plane at ({x}, {y})");
+            }
+        }
+    }
+
     #[test]
     fn dc_and_vertical() {
         let e: Edge4<u8> = Edge4 { top: [10, 20, 30, 40, 40, 40, 40, 40], left: [1, 2, 3, 4], tl: 5, has_top: true, has_left: true, has_tl: true };

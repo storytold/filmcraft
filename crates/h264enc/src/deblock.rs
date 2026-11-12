@@ -303,3 +303,52 @@ pub fn deblock_band<'a, P: Pixel>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mbinfo::MbKind;
+
+    /// One intra macroblock with an 8x8 transform, 4:2:0 or 4:2:2: luma rows of a 4-row
+    /// staircase (`step` per 4 rows) in a 16x16 plane, chroma the same in an 8-wide plane of
+    /// 8 or 16 rows. Returns the deblocked (luma, chroma U) planes, unpadded.
+    fn deblock_one(c422: bool) -> (Vec<i32>, Vec<i32>) {
+        let ch = if c422 { 16 } else { 8 };
+        let stair = |y: usize| 100 + 4 * (y / 4) as u8;
+        let mut yp: Vec<u8> = (0..16 * 16).map(|i| stair(i / 16)).collect();
+        let mut up: Vec<u8> = (0..8 * ch).map(|i| stair(i / 8)).collect();
+        let mut vp = up.clone();
+        let mb = MbInfo { kind: MbKind::I8x8, t8x8: true, qp: 30, ..MbInfo::default() };
+        let dp = DeblockParams { alpha_offset: 0, beta_offset: 0, chroma_qp_offset: 0, ref_ids: [0, 0], depth: Depth::new(8), c422 };
+        let mut y = BandPlane { data: &mut yp, stride: 16, pad: 0 };
+        let mut u = BandPlane { data: &mut up, stride: 8, pad: 0 };
+        let mut v = BandPlane { data: &mut vp, stride: 8, pad: 0 };
+        deblock_band(&mut y, &mut u, &mut v, &[mb], 1, 1, &dp);
+        (yp.iter().map(|&s| s as i32).collect(), up.iter().map(|&s| s as i32).collect())
+    }
+
+    /// 4:2:2 filters all four horizontal chroma edges (chroma rows 4, 8, 12) with the bS of the luma
+    /// rows they sit on, including edges 1 and 3, whose luma edges an 8x8 transform leaves unfiltered
+    /// (§8.7); 4:2:0 filters only chroma row 4 (luma edge 2).
+    #[test]
+    fn c422_filters_all_horizontal_chroma_edges_under_8x8_transform() {
+        let stair = |y: usize| 100 + 4 * (y / 4) as i32;
+        let (y, u) = deblock_one(true);
+        // luma: edges 1 and 3 (rows 4, 12) untouched under the 8x8 transform, edge 2 (row 8) filtered
+        for row in [3, 4, 11, 12] {
+            assert_eq!(y[row * 16 + 5], stair(row), "luma row {row} is next to an unfiltered 8x8-internal edge");
+        }
+        assert!(y[7 * 16 + 5] != stair(7) && y[8 * 16 + 5] != stair(8), "luma edge 2 is filtered");
+        // chroma: every internal horizontal edge is filtered (intra, bS 3), so both sides move
+        for edge_row in [4, 8, 12] {
+            for x in 0..8 {
+                let (p0, q0) = (u[(edge_row - 1) * 8 + x], u[edge_row * 8 + x]);
+                assert!(p0 > stair(edge_row - 1) && q0 < stair(edge_row), "chroma edge at row {edge_row}, x {x}: p0 {p0} q0 {q0}");
+            }
+        }
+        // 4:2:0: chroma row 4 is edge 2, the only internal horizontal chroma edge
+        let (_, u420) = deblock_one(false);
+        assert!(u420[3 * 8] > stair(3) && u420[4 * 8] < stair(4), "4:2:0 chroma edge 2 is filtered");
+        assert_eq!(u420.len(), 8 * 8);
+    }
+}

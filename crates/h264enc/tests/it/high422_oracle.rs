@@ -324,13 +324,37 @@ fn length_prefixed_with_avcc() {
     verify("avcc", &Run { stream, packets: run.packets, recon: run.recon }, w, h, n);
 }
 
-/// 4:2:0-sized chroma planes are too short for a 4:2:2 encoder: an error, not a panic or a wrong read.
+/// 4:2:0-sized or short planes are too short for a 4:2:2 encoder, through 16-bit and 8-bit input
+/// alike: an error, not a panic or a wrong read.
 #[test]
 fn rejects_420_sized_chroma_and_bad_settings() {
     let mut enc = Encoder::new(cfg(64, 64, Preset::Speed, 0, RateControl::Qp(26), 1)).unwrap();
     let y = vec![512u16; 64 * 64];
     let c420 = vec![512u16; 32 * 32];
     assert!(matches!(enc.encode16(&YuvFrame16 { y: &y, u: &c420, v: &c420, y_stride: 64, uv_stride: 32 }, 0), Err(Error::BadFrame)));
+    // one chroma row short of 64, a short Cr only, and short luma
+    let short_c = vec![512u16; 32 * 63];
+    let c422_16 = vec![512u16; 32 * 64];
+    let short_y = vec![512u16; 64 * 63];
+    for (what, f) in [
+        ("short chroma", YuvFrame16 { y: &y, u: &short_c, v: &short_c, y_stride: 64, uv_stride: 32 }),
+        ("short Cr", YuvFrame16 { y: &y, u: &c422_16, v: &short_c, y_stride: 64, uv_stride: 32 }),
+        ("short luma", YuvFrame16 { y: &short_y, u: &c422_16, v: &c422_16, y_stride: 64, uv_stride: 32 }),
+        ("chroma stride below the plane width", YuvFrame16 { y: &y, u: &c422_16, v: &c422_16, y_stride: 64, uv_stride: 31 }),
+    ] {
+        assert!(matches!(enc.encode16(&f, 0), Err(Error::BadFrame)), "16-bit {what}");
+    }
+    // the 8-bit path into the same 10-bit 4:2:2 encoder
+    let (y8, short_y8) = (vec![128u8; 64 * 64], vec![128u8; 64 * 63]);
+    let (c420_8, short_c8, c422_8) = (vec![128u8; 32 * 32], vec![128u8; 32 * 63], vec![128u8; 32 * 64]);
+    for (what, f) in [
+        ("4:2:0-sized chroma", YuvFrame { y: &y8, u: &c420_8, v: &c420_8, y_stride: 64, uv_stride: 32 }),
+        ("short chroma", YuvFrame { y: &y8, u: &short_c8, v: &short_c8, y_stride: 64, uv_stride: 32 }),
+        ("short Cr", YuvFrame { y: &y8, u: &c422_8, v: &short_c8, y_stride: 64, uv_stride: 32 }),
+        ("short luma", YuvFrame { y: &short_y8, u: &c422_8, v: &c422_8, y_stride: 64, uv_stride: 32 }),
+    ] {
+        assert!(matches!(enc.encode(&f, 0), Err(Error::BadFrame)), "8-bit {what}");
+    }
     let c422 = vec![512u16; 32 * 64];
     assert!(enc.encode16(&YuvFrame16 { y: &y, u: &c422, v: &c422, y_stride: 64, uv_stride: 32 }, 0).is_ok());
     for bits in [0u8, 7, 11, 16] {

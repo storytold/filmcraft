@@ -447,6 +447,10 @@ impl<P: Pixel> Core<P> {
         let mbh = cfg.height.div_ceil(16) as usize;
         let fps = cfg.fps_num as f64 / cfg.fps_den as f64;
         let cabac = cfg.profile != Profile::Baseline;
+        // CAVLC has only the 4:2:0 chroma DC tables (`cavlc::write_chroma_residual`): 4:2:2 must be CABAC
+        if c422 && !cabac {
+            return Err(Error::InvalidConfig("4:2:2 chroma needs CABAC entropy coding".into()));
+        }
         let high = cfg.profile.high();
         let params = match cfg.preset {
             Preset::Speed => EncParams {
@@ -1256,6 +1260,25 @@ fn jobs_stride_c(mbw: usize, c422: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// High 4:2:2 is always coded with CABAC, whatever the preset, depth or GOP: CAVLC writes only the
+    /// 4:2:0 chroma DC tables, and its 4:2:2 guard is a debug assertion.
+    #[test]
+    fn high422_always_codes_cabac() {
+        for preset in [Preset::Speed, Preset::Balanced, Preset::Quality] {
+            for (bit_depth, intra_only) in [(8, false), (10, false), (10, true)] {
+                let mut cfg = EncoderConfig::new(64, 48, 30, 1);
+                cfg.profile = Profile::High422;
+                cfg.preset = preset;
+                cfg.bit_depth = bit_depth;
+                cfg.intra_only = intra_only;
+                let core = Core::<u16>::new(cfg).unwrap();
+                assert!(core.params.c422 && core.params.cabac, "{preset:?} {bit_depth}-bit intra {intra_only}");
+                // PPS: NAL header, then ue(0) ue(0) entropy_coding_mode_flag = bits 1, 1, 1
+                assert_eq!(core.pps_nal[1] >> 5, 0b111, "{preset:?}: entropy_coding_mode_flag");
+            }
+        }
+    }
 
     /// A recycled `MbInfo` buffer must come back as all-default entries, whatever the previous picture left in it.
     #[test]

@@ -29,7 +29,20 @@ for p in enc.flush() { /* ... */ }
 - Input: planar 4:2:0 8-bit (`YuvFrame` with strides); any even size, non-multiple-of-16 sizes are
   cropped via the SPS frame cropping. `try_encode` returns an error instead of panicking on short planes.
 - High 4:2:2: `cfg.profile = Profile::High422; cfg.bit_depth = 10;` (8 to 10) with chroma planes `width / 2` wide
-  and `height` tall (`uv_stride` per chroma row); `intra_only` gives High 4:2:2 Intra.
+  and `height` tall (`uv_stride` per chroma row); `intra_only` gives High 4:2:2 Intra. 8-bit `YuvFrame`s of the
+  same 4:2:2 shape are also taken and scaled up exactly; 4:2:0-sized or short planes are `Error::BadFrame`:
+
+  ```rust
+  let mut cfg = EncoderConfig::new(w as u32, h as u32, 25, 1);
+  cfg.profile = Profile::High422;
+  cfg.bit_depth = 10;                         // 8 to 10
+  cfg.intra_only = false;                     // true: High 4:2:2 Intra
+  let mut enc = Encoder::new(cfg)?;
+  // 10-bit samples in the low bits of each u16; chroma w / 2 wide and h tall (full height)
+  let (y, u, v) = (vec![512u16; w * h], vec![512u16; w / 2 * h], vec![512u16; w / 2 * h]);
+  let packets = enc.encode16(&YuvFrame16 { y: &y, u: &u, v: &v, y_stride: w, uv_stride: w / 2 }, 0)?;
+  // or 8-bit planes: enc.encode(&YuvFrame { y: &y8, u: &u8, v: &v8, y_stride: w, uv_stride: w / 2 }, 1)?
+  ```
 - High 10: `cfg.profile = Profile::High10; cfg.bit_depth = 10;` (8 to 10) and `enc.encode16(&YuvFrame16 { … })`
   with samples in the low bits of each `u16` (values above the bit depth are clipped); 8-bit `YuvFrame`s are
   also taken and scaled up exactly. `cfg.intra_only = true` codes every picture as an IDR without reference
