@@ -1014,7 +1014,7 @@ mod tests {
         for (k, block) in signs.chunks(1000).enumerate() {
             // sub-stream 0xA0: frame count, first access unit pointer, emphasis, 16-bit 48 kHz mono, dynamic range
             let mut payload = vec![0xA0, 1, 0, 4, 0, 0, 0x80];
-            payload.extend(block.iter().flat_map(|v| (((v * 32767.0) as i16).to_be_bytes())));
+            payload.extend(block.iter().flat_map(|v| ((v * 32767.0) as i16).to_be_bytes()));
             out.extend(pes(0xBD, Some(90_000 + 1875 * k as i64), &payload));
         }
         let source = MpegSource::open("cuts.vob", out.into()).unwrap();
