@@ -254,7 +254,19 @@ impl Pipeline {
     pub fn working_set(&self, f: i64) -> u64 {
         let render = filmcraft_render::working_set::frame_working_set(&self.project, self.seq, self.rate.tick_of(f), self.opts);
         let rendered = self.project.sequence(self.seq).map_or((0, 0), |s| filmcraft_render::output_size(s, self.opts.scale));
-        render.max(place_bytes(&self.geom, rendered))
+        render.max(place_bytes(&self.geom, rendered)).max(self.overlay_bytes())
+    }
+
+    /// Peak bytes [`Pipeline::overlays`] holds: a translucent name or timecode overlay is drawn on
+    /// an output-sized layer of its own while the output frame is alive, two output images in all.
+    fn overlay_bytes(&self) -> u64 {
+        let fx = &self.effects;
+        let name = fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty() && needs_text_layer(&fx.name_overlay);
+        let timecode = fx.timecode_overlay.enabled && needs_text_layer(&fx.timecode_overlay);
+        if !(name || timecode) {
+            return 0;
+        }
+        filmcraft_render::working_set::image_bytes(self.w as usize, self.h as usize).saturating_mul(2)
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
@@ -374,16 +386,23 @@ impl Pipeline {
         let (bw, bh) = (l.bounds[2] - l.bounds[0] + 2.0 * pad, px * 1.1 + 2.0 * pad);
         let (x, y) = anchor(o.placement, o.offset, img.w as f32, img.h as f32, bw, bh);
         let centre = Vec2::new((x + bw / 2.0) as f64, (y + bh / 2.0) as f64);
-        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
-        if op >= 0.999 {
+        if !needs_text_layer(o) {
             filmcraft_render::graphics::burn_text(img, text, family, centre, px, 0.6);
             return;
         }
+        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
         // draw on a transparent layer, then composite it at the overlay's opacity
         let mut layer = Image::new(img.w, img.h);
         filmcraft_render::graphics::burn_text(&mut layer, text, family, centre, px, 0.6);
         composite(img, &layer, 0, 0, op);
     }
+}
+
+/// Whether a text overlay is drawn on a layer of its own and composited at its opacity (anything
+/// short of opaque, a NaN opacity included) instead of straight onto the frame.
+fn needs_text_layer(o: &TextOverlay) -> bool {
+    let op = (o.opacity / 100.0).clamp(0.0, 1.0);
+    op.is_nan() || op < 0.999
 }
 
 /// Top-left of a `bw`×`bh` box placed in a `w`×`h` frame (3 % margin) plus `offset`.
