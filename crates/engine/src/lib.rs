@@ -147,6 +147,12 @@ pub trait Services: Send + Sync {
     fn export_in_memory(&self) -> bool {
         false
     }
+    /// Refuse `path` before a command creates it, when this host confines writes. The default
+    /// allows every path. A derived export name (an AAF mixdown beside the document) is checked
+    /// here, because it is not the path the command was given.
+    fn confine_write(&self, _path: &str) -> std::io::Result<()> {
+        Ok(())
+    }
     /// Entries of a directory with their kind, size and date (the Media Browser). The default
     /// derives them from [`Services::list_dir`] (every name a file).
     fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<media_browser::DirEntry>>> {

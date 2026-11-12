@@ -242,10 +242,22 @@ fn safe_name(s: &str) -> String {
     if n.is_empty() { "audio".into() } else { n }
 }
 
-fn ensure_dir(s: &Session, dir: &str) {
-    if !s.services.export_in_memory() && !dir.is_empty() {
+/// Refuse `path` when the session's services confine writes.
+fn confine_write(s: &Session, path: &str) -> Result<()> {
+    s.services.confine_write(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+}
+
+/// Create `dir` when this host writes the files itself. A confined session refuses a directory
+/// outside the write root and creates nothing.
+fn ensure_dir(s: &Session, dir: &str) -> Result<()> {
+    if dir.is_empty() {
+        return Ok(());
+    }
+    confine_write(s, dir)?;
+    if !s.services.export_in_memory() {
         let _ = std::fs::create_dir_all(dir);
     }
+    Ok(())
 }
 
 fn check_linked_streams(s: &Session, seq: ItemId, plan: &AudioPlan) -> Result<()> {
@@ -364,6 +376,7 @@ fn mixdown(s: &Session, seq: ItemId, path: &str) -> Result<MixdownVideo> {
     if dur <= Tick::ZERO {
         return Err(EngineError::Other("the sequence is empty".into()));
     }
+    confine_write(s, path)?;
     let format = if path.to_ascii_lowercase().ends_with(".mxf") {
         filmcraft_export::Format::from_name("mxf-opatom").unwrap_or(filmcraft_export::Format::DnxHr)
     } else {
@@ -378,7 +391,9 @@ fn mixdown(s: &Session, seq: ItemId, path: &str) -> Result<MixdownVideo> {
         dnx_profile: "hq".into(),
         ..Default::default()
     };
-    if s.services.export_in_memory() {
+    // A confined session checks the mixdown path again as the bytes are written. The native
+    // exporter would otherwise open the file directly and skip that check.
+    if s.services.export_in_memory() || s.files_confined {
         let services = s.services.clone();
         settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |p: &str, d: Vec<u8>| services.write_file(p, &d))));
     }
@@ -413,14 +428,23 @@ pub fn export_aaf(s: &mut Session, p: &Value) -> Result<Value> {
     let (dir, stem) = split(&path);
     let media_dir = join(&dir, &format!("{stem} Media"));
     let mut files = Vec::new();
-    if plan.mode != AudioMode::Embedded || bool_p(p, "mixdownVideo").unwrap_or(false) {
-        ensure_dir(s, &media_dir);
+    let mixdown_on = bool_p(p, "mixdownVideo").unwrap_or(false);
+    let mixdown_path = mixdown_on.then(|| {
+        let ext = if str_p(p, "mixdownFormat") == Some("mxf") { "mxf" } else { "mov" };
+        join(&media_dir, &format!("{} Video Mixdown.{ext}", safe_name(&stem)))
+    });
+    // A directory path is split into its parent and its own name, so `<root> Media` is a sibling
+    // of the write root. Check that file before creating anything.
+    if let Some(mixdown_path) = &mixdown_path {
+        confine_write(s, mixdown_path)?;
+    }
+    if plan.mode != AudioMode::Embedded || mixdown_on {
+        ensure_dir(s, &media_dir)?;
     }
     let (essence, written) = prepare_audio(s, seq, &plan, &media_dir)?;
     files.extend(written);
-    let mixdown_video = if bool_p(p, "mixdownVideo").unwrap_or(false) {
-        let ext = if str_p(p, "mixdownFormat") == Some("mxf") { "mxf" } else { "mov" };
-        let m = mixdown(s, seq, &join(&media_dir, &format!("{} Video Mixdown.{ext}", safe_name(&stem))))?;
+    let mixdown_video = if let Some(mixdown_path) = mixdown_path {
+        let m = mixdown(s, seq, &mixdown_path)?;
         files.push(m.path.clone());
         Some(m)
     } else {
@@ -445,7 +469,7 @@ pub fn export_omf(s: &mut Session, p: &Value) -> Result<Value> {
     let (dir, stem) = split(&path);
     let media_dir = join(&dir, &format!("{stem} Audio Files"));
     if plan.mode == AudioMode::Separate {
-        ensure_dir(s, &media_dir);
+        ensure_dir(s, &media_dir)?;
     }
     let (essence, files) = prepare_audio(s, seq, &plan, &media_dir)?;
     let opts = filmcraft_interchange::omf::OmfOptions {

@@ -95,6 +95,11 @@ impl Services for ConfinedServices {
         self.inner.export_in_memory()
     }
 
+    /// A derived output (an AAF `<stem> Media` mixdown, an OMF audio folder) must sit inside the write root.
+    fn confine_write(&self, path: &str) -> Result<()> {
+        self.check(path, Access::Write)
+    }
+
     /// Allowed inside the read root; a refusal is an error, not `None`.
     fn list_entries(&self, dir: &str) -> Option<Result<Vec<DirEntry>>> {
         if let Err(e) = self.check(dir, Access::Read) {

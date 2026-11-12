@@ -778,3 +778,22 @@ async fn the_bridge_refuses_the_apps_export_queue() {
     assert!(!e.contains("confined"), "{e}");
     let _ = std::fs::remove_dir_all(base);
 }
+
+/// `file.exportAaf` with the write root itself as `path` derives `<name> Media` beside that
+/// directory. The mixdown must not be created there.
+#[tokio::test]
+async fn aaf_mixdown_of_the_write_root_does_not_write_beside_it() {
+    let (base, roots) = roots_base("aaf-mixdown");
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "p"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "s", "width": 16, "height": 16})).unwrap();
+    let m = FilmcraftMcp::headless(s).with_roots(Some(roots)).unwrap();
+    let root = base.join("out");
+    let e = m.run("file.exportAaf", json!({"path": root.to_string_lossy(), "mixdownVideo": true})).await.unwrap_err().to_string();
+    assert!(e.contains("outside the write root"), "{e}");
+    let stem = root.file_name().unwrap().to_string_lossy();
+    let sibling = root.parent().unwrap().join(format!("{stem} Media"));
+    assert!(!sibling.exists(), "mixdown folder was created outside the write root: {}", sibling.display());
+    assert_eq!(file_names(&base), vec!["in".to_string(), "out".to_string(), "outside".to_string()]);
+    let _ = std::fs::remove_dir_all(base);
+}
