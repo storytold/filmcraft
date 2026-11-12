@@ -2158,12 +2158,15 @@ dependencies = [
  "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-oggmux",
+ "filmcraft-opusenc",
  "filmcraft-project",
  "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-vorbis",
  "image",
  "rayon",
  "serde",
@@ -2302,6 +2305,20 @@ dependencies = [
  "rayon",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-oggmux"
+version = "0.20.1"
+dependencies = [
+ "craft-media",
+]
+
+[[package]]
+name = "filmcraft-opusenc"
+version = "0.20.1"
+dependencies = [
+ "craft-audio",
 ]
 
 [[package]]
@@ -2496,6 +2513,13 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "unicode-bidi",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-vorbis"
+version = "0.20.1"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

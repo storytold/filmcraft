@@ -632,3 +632,79 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+/// Opus: an Audio Format choice for MP4 and QuickTime video, the whole codec of the Opus format.
+/// It always codes 48 kHz, so the sample rate is shown, not offered; it has a bit rate instead of a
+/// sample size; and 5.1 is greyed out (Opus export writes mono or stereo).
+#[test]
+fn opus_is_an_audio_format_with_a_bit_rate_and_no_surround() {
+    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format};
+    let mut d = Driver::new("opus");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.click("export.section.video");
+    d.app().ui.export.settings = ExportSettings { format: Format::H264, ..Default::default() };
+    d.frames(4);
+    d.click("export.audio.codec");
+    let e = d.ok("ui.elements", json!({"prefix": "export.audio.codec.option.3"}));
+    assert_eq!(e[0]["label"], json!("Opus"), "{e}");
+    d.click("export.audio.codec.option.3");
+    assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Opus);
+    assert!(!d.has("export.audio.sampleRate"), "Opus is always 48 kHz");
+    assert!(!d.has("export.audio.bits"), "no sample size for a lossy codec");
+    d.click("export.audio.bitrate");
+    let rates: Vec<String> = (0..9)
+        .map(|i| d.ok("ui.elements", json!({"prefix": format!("export.audio.bitrate.option.{i}")}))[0]["label"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(rates.first().map(String::as_str), Some("32 kbps"));
+    assert_eq!(rates.last().map(String::as_str), Some("510 kbps"));
+    d.click("export.audio.bitrate.option.4");
+    assert_eq!(d.app().ui.export.settings.audio.bitrate_kbps, 160);
+    d.snapshot("export-opus-in-mp4");
+    // 5.1 cannot be picked for Opus
+    d.click("export.audio.channels");
+    d.click("export.audio.channels.option.2");
+    assert_eq!(d.app().ui.export.settings.audio.channels, 2, "5.1 is greyed out for Opus");
+    if d.has("export.audio.channels.option.0") {
+        d.click("export.audio.channels");
+    }
+    // a stored 5.1 shows as the stereo Opus writes, and survives drawing
+    d.app().ui.export.settings.audio.channels = 6;
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.audio.channels, 6, "drawing the panel does not change the setting");
+    let e = d.ok("ui.elements", json!({"prefix": "export.audio.channels"}));
+    assert!(e.as_array().unwrap().iter().any(|e| e["id"] == json!("export.audio.channels") && e["label"] == json!("Stereo")), "{e}");
+    d.app().ui.export.settings.audio.channels = 2;
+    // the Opus format: the audio format is fixed, and the summary says what is written
+    d.app().ui.export.settings = ExportSettings { format: Format::Opus, ..Default::default() };
+    d.app().ui.export.settings.audio.bitrate_kbps = 96;
+    d.frames(4);
+    assert!(!d.has("export.audio.codec"), "the Opus format has one audio format");
+    assert!(d.has("export.audio.bitrate"));
+    assert_eq!(
+        d.app().ui.export.settings.summary(1920, 1080, filmcraft_time::FrameRate::FPS_24, 48_000, filmcraft_time::Tick(1)).audio,
+        "Opus, 96 kbps, 48000 Hz, Stereo"
+    );
+    d.snapshot("export-opus");
+}
+
+/// Ogg Vorbis: the audio format is fixed, a quality replaces bit rate and sample size, and the
+/// sample rate and 5.1 stay available.
+#[test]
+fn vorbis_has_a_quality_instead_of_a_bit_rate() {
+    use filmcraft_engine::export::{AudioCodec, ExportSettings, Format};
+    let mut d = Driver::new("vorbis");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.click("export.section.video");
+    d.app().ui.export.settings = ExportSettings { format: Format::Vorbis, ..Default::default() };
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.audio_codec(), AudioCodec::Vorbis);
+    assert!(d.has("export.audio.vorbisQuality"));
+    assert!(!d.has("export.audio.codec") && !d.has("export.audio.bitrate") && !d.has("export.audio.bits"));
+    assert!(d.has("export.audio.sampleRate"));
+    d.click("export.audio.channels");
+    d.click("export.audio.channels.option.2");
+    assert_eq!(d.app().ui.export.settings.audio.channels, 6, "Vorbis takes 5.1");
+    d.snapshot("export-vorbis");
+}

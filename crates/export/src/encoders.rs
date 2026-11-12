@@ -115,6 +115,64 @@ impl AudioEncoder for FlacAudio {
     }
 }
 
+/// Opus (our CELT encoder) in MP4 / QuickTime: one 20 ms packet per access unit; the pre-skip is
+/// the edit list's start, and the last unit is shortened to where the input ends.
+pub(crate) struct OpusAudio {
+    enc: filmcraft_opusenc::Encoder,
+}
+
+impl OpusAudio {
+    pub(crate) fn new(channels: u32, s: &ExportSettings) -> Result<Self> {
+        let ch = usize::try_from(channels).unwrap_or(usize::MAX);
+        let enc = filmcraft_opusenc::Encoder::new(filmcraft_opusenc::EncoderConfig::new(ch, s.opus_bitrate()))
+            .map_err(|e| ExportError::Unsupported(format!("Opus: {e}")))?;
+        Ok(OpusAudio { enc })
+    }
+}
+
+/// The `Opus` sample entry with its `dOps` box (mapping family 0).
+pub(crate) fn opus_sample_entry(head: &filmcraft_opusenc::OpusHead) -> SampleEntry {
+    let cfg = filmcraft_isobmff::OpusConfig {
+        output_channels: head.channels as u8,
+        pre_skip: head.pre_skip,
+        input_sample_rate: head.input_sample_rate,
+        output_gain: head.output_gain,
+        channel_mapping_family: 0,
+        channel_mapping: Vec::new(),
+    };
+    SampleEntry::audio(filmcraft_isobmff::FourCc(*b"Opus"), filmcraft_isobmff::CodecConfig::Opus(cfg), head.channels as u32, 48_000.0, 16)
+}
+
+impl AudioEncoder for OpusAudio {
+    fn sample_entry(&self) -> SampleEntry {
+        opus_sample_entry(&self.enc.head())
+    }
+    fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
+        let mut planar = planar.to_vec();
+        crate::audio_out::finite(&mut planar);
+        let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
+        self.enc.encode(&refs).map_err(|e| ExportError::Encode(format!("Opus: {e}")))
+    }
+    fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.flush_timed()?.into_iter().map(|(au, _)| au).collect())
+    }
+    fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
+        let last = self.enc.finish().map_err(|e| ExportError::Encode(format!("Opus: {e}")))?;
+        // every packet holds 960 samples; the final one is presented only up to the input's end
+        let frame = filmcraft_opusenc::FRAME_SIZE as u64;
+        let total = self.enc.samples_in() + u64::from(filmcraft_opusenc::PRE_SKIP);
+        let tail = (total - (self.enc.packets().saturating_sub(1)) * frame).clamp(1, frame) as u32;
+        let n = last.len();
+        Ok(last.into_iter().enumerate().map(|(i, au)| (au, if i + 1 == n { tail } else { frame as u32 })).collect())
+    }
+    fn priming(&self) -> u32 {
+        u32::from(filmcraft_opusenc::PRE_SKIP)
+    }
+    fn frame_size(&self) -> u32 {
+        filmcraft_opusenc::FRAME_SIZE as u32
+    }
+}
+
 pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
     // AAC caps a frame at 6144 bits per channel (ISO/IEC 14496-3 §4.5.3.2): 6 bits per sample, so
     // 264.6 kbps for stereo at 22.05 kHz; a higher setting is capped instead of refused

@@ -424,11 +424,35 @@ fn verify_audio_preset(name: &str, format: &str, settings: &Value, probe_result:
 fn verify_special_preset(name: &str, format: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
     match format {
         "aac" => verify_aac_preset(name, format_name, output, probe_result, start, end),
+        "opus" => verify_opus_preset(name, format_name, output, probe_result, start, end),
+        "vorbis" => verify_vorbis_preset(name, format_name, output, probe_result, start, end),
         "mp3" => verify_mp3_preset(name, format_name, output, probe_result, start, end),
         "gif" => verify_gif_preset(probe_result),
         "mxf-opatom" => verify_opatom_preset(name, format_name, output, probe_result),
         _ => false,
     }
+}
+
+/// Ogg Opus: one 48 kHz stereo Opus stream, as long as the range to the sample (the last page's
+/// granule position trims the padding).
+fn verify_opus_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    assert!(output.ends_with(".opus"), "{name}: {output}");
+    assert!(format_name.contains("ogg"), "{name}: {format_name}");
+    assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("opus"), Some("48000"), Some(2)), "{name}");
+    assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", probe_result["format"]["duration"]);
+    true
+}
+
+/// Ogg Vorbis: one 48 kHz stereo Vorbis stream, as long as the range (the last granule position).
+fn verify_vorbis_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    assert!(output.ends_with(".ogg"), "{name}: {output}");
+    assert!(format_name.contains("ogg"), "{name}: {format_name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("vorbis"), Some("48000"), Some(2)), "{name}");
+    assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", probe_result["format"]["duration"]);
+    true
 }
 
 fn verify_aac_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
@@ -1137,4 +1161,25 @@ fn max_threads_reaches_the_export_settings() {
     assert_eq!(settings_of(json!({"format": "mjpeg", "path": "out.mov"})).unwrap().max_threads, 0, "all cores unless asked");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
+}
+
+/// `file.exportMedia` takes the Opus and Vorbis settings flat (`audioCodec`, `vorbisQuality`) and
+/// nested (`settings.audio.vorbis_quality`, or `vorbisQuality`), and refuses a codec the format
+/// cannot carry (review of #4481).
+#[test]
+fn export_parameters_take_opus_and_vorbis_settings() {
+    let s = Session::default();
+    let q = |p: serde_json::Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st);
+    let v = q(json!({"path": "a.ogg", "format": "vorbis", "vorbisQuality": 3.5})).unwrap();
+    assert_eq!((v.format, v.vorbis_quality()), (filmcraft_export::Format::Vorbis, 3.5));
+    for key in ["vorbis_quality", "vorbisQuality"] {
+        let v = q(json!({"path": "a.ogg", "format": "vorbis", "settings": {"audio": {key: 2.0}}})).unwrap();
+        assert_eq!(v.vorbis_quality(), 2.0, "{key}");
+    }
+    let o = q(json!({"path": "a.mp4", "format": "h264", "audioCodec": "opus"})).unwrap();
+    assert_eq!(o.audio_codec(), filmcraft_export::AudioCodec::Opus);
+    let e = q(json!({"path": "a.wav", "format": "wav", "audioCodec": "opus"})).unwrap_err().to_string();
+    assert!(e.contains("cannot carry"), "{e}");
+    let e = q(json!({"path": "a.wav", "format": "wav", "audioCodec": "speex"})).unwrap_err().to_string();
+    assert!(e.contains("opus | vorbis"), "{e}");
 }

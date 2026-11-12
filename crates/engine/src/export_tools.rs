@@ -293,7 +293,10 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.h264_intra_only = v;
     }
     if let Some(v) = str_p(p, "audioCodec") {
-        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
+        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac | mp3 | opus | vorbis"))?;
+    }
+    if let Some(v) = f64_p(p, "vorbisQuality") {
+        settings.audio.vorbis_quality = v as f32;
     }
     if let Some(v) = u64_p(p, "flacLevel") {
         settings.audio.flac_level = v.min(8) as u8;

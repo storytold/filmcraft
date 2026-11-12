@@ -23,6 +23,9 @@ filmcraft-vp8 = { path = "crates/vp8" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
+filmcraft-opusenc = { path = "crates/opusenc" }
+filmcraft-oggmux = { path = "crates/oggmux" }
+filmcraft-vorbis = { path = "crates/vorbis" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
@@ -123,6 +126,12 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.craft-video]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vorbis]
+opt-level = 3
+
+[profile.dev.package.filmcraft-opusenc]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.

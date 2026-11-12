@@ -250,6 +250,8 @@ fn format_for(path: &str) -> Option<&'static str> {
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
         "m4a" | "aac" => "aac",
+        "opus" => "opus",
+        "ogg" | "oga" => "vorbis",
         "mp3" => "mp3",
         _ => return None,
     })
@@ -760,6 +762,8 @@ mod format_tests {
     fn export_format_from_extension() {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(super::format_for("a.mov"), Some("prores"));
+        assert_eq!(super::format_for("mix.Opus"), Some("opus"));
+        assert_eq!(super::format_for("mix.ogg"), Some("vorbis"));
         assert_eq!(super::format_for("noext"), None);
     }
 }

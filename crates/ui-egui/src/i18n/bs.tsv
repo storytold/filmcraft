@@ -2929,6 +2929,8 @@
 	32 bit	32-bitno
 	32 bit float	32-bitni pokretni zarez
 	FLAC stores whole-number samples only	FLAC čuva samo cjelobrojne uzorke
+	Opus export writes mono or stereo	Izvoz u Opus zapisuje mono ili stereo
+	-1 smallest, 10 best	-1 najmanje, 10 najbolje
 	MXF export writes integer PCM only	MXF izvoz zapisuje samo cjelobrojni PCM
 	Size / Opacity	Veličina / neprozirnost
 	Image Overlay	Preklop slike

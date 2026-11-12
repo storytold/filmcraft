@@ -283,6 +283,7 @@ impl Exporter {
                 Some(found.ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??)
             }
             (Some(a), AudioCodec::Flac) => Some(Box::new(crate::FlacAudio::new(a.sr, a.channels as u32, &settings)?)),
+            (Some(a), AudioCodec::Opus) => Some(Box::new(crate::OpusAudio::new(a.channels as u32, &settings)?)),
             _ => None,
         };
         let measured = !settings.effects.loudness.enabled || audio.is_none();

@@ -2929,6 +2929,8 @@
 	32 bit	32 位
 	32 bit float	32 位浮点
 	FLAC stores whole-number samples only	FLAC 只能存储整数采样
+	Opus export writes mono or stereo	Opus 导出只写入单声道或立体声
+	-1 smallest, 10 best	-1 最小，10 最佳
 	MXF export writes integer PCM only	MXF 导出仅写入整数 PCM
 	Size / Opacity	大小 / 不透明度
 	Image Overlay	图像叠加

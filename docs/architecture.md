@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · cfb · h264enc · prores · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
+     codecs/containers: isobmff · matroska · cfb · h264enc · prores · dnx · dng · opusenc · oggmux · vorbis · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -51,6 +51,9 @@ and `filmcraft-cli`.
 | `craft-audio` | shared | the audio codecs, from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/audio): AAC-LC decoder and encoder, AC-3 / E-AC-3 decoder, MPEG-1/2 Audio Layer I and II decoder, Opus decoder, FLAC encoder, MPEG-1/2 Layer III (MP3) encoder. They moved there from this repository; fixes go to craft-libs |
 | `craft-media` | shared | containers from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/media): ISO BMFF, Matroska, AVI / OpenDML, MPEG-2 transport and program streams, MXF (OP1a / OP-Atom demux and writer), and the Ogg demuxer with Ogg Opus timing and Vorbis headers |
 | `craft-video` | shared | video codecs from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/video): the H.264, H.265 (Main / Main 10), VP9, AV1 and MPEG-2 / MPEG-1 decoders and the APV decoder and encoder. They moved there from this repository; fixes, their READMEs and their conformance tests are in craft-libs |
+| `opusenc` | L0 | CELT-only Opus encoder (RFC 6716) and the `OpusHead` it writes; decoding is craft-audio's. Moves to craft-libs when its Opus encoder lands ([README](../crates/opusenc/README.md)) |
+| `oggmux` | L0 | Ogg page writer (RFC 3533) and the `OpusTags` / Vorbis comment packets; demuxing is craft-media's ([README](../crates/oggmux/README.md)) |
+| `vorbis` | L0 | Vorbis I encoder: floor 1, residue type 2, our own codebooks ([README](../crates/vorbis/README.md)) |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
@@ -679,6 +682,8 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
+| `vorbis` | `filmcraft-vorbis` (`audio.vorbis_quality` −1 to 10, or the flat `vorbisQuality` parameter; the settings' sample rate, up to 5.1 in Vorbis channel order) | audio only: Ogg Vorbis `.ogg` (`filmcraft-oggmux`; the last granule position trims the padding) |
+| `opus` | `filmcraft-opusenc` (CELT, the audio settings' bitrate, always 48 kHz, mono or stereo) | audio only: Ogg Opus `.opus` (`filmcraft-oggmux` page writer; pre-skip in `OpusHead`, end trimming by the last granule position). `audio.codec: opus` also puts it in MP4 / MOV (`Opus` + `dOps`, pre-skip in an edit list) |
 | `mp3` | `craft_audio::mp3` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`craft_media::mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
@@ -694,7 +699,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
-  maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM / FLAC sample size: `bits` 16, 24 or 32
+  maximum render quality), Audio (codec, sample rate, channels, AAC / Opus bitrate, Vorbis quality, PCM / FLAC sample size: `bits` 16, 24 or 32
   and `float` for 32-bit float PCM in WAV, AIFF and QuickTime — `supports_sample_format` says
   which a codec and container store, and Export mode greys out the rest),
   Multiplexer (audio channels: mono, stereo or 5.1, §5.1.1), Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode

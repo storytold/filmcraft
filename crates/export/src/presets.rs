@@ -247,6 +247,26 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             },
         ),
         p("FLAC 48 kHz 24-bit", "Audio Only", "FLAC, stereo 48 kHz 24-bit, lossless", audio_only(Format::Flac, 24)),
+        p(
+            "Opus 48 kHz 160 kbps",
+            "Audio Only",
+            "Opus (.opus), stereo 48 kHz at 160 kbps",
+            ExportSettings {
+                format: Format::Opus,
+                audio: AudioSettings { codec: AudioCodec::Opus, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 160, bits: 16, ..Default::default() },
+                ..Default::default()
+            },
+        ),
+        p(
+            "Ogg Vorbis 48 kHz quality 6",
+            "Audio Only",
+            "Ogg Vorbis (.ogg), stereo 48 kHz at quality 6",
+            ExportSettings {
+                format: Format::Vorbis,
+                audio: AudioSettings { codec: AudioCodec::Vorbis, sample_rate: Some(48_000), channels: 2, vorbis_quality: 6.0, ..Default::default() },
+                ..Default::default()
+            },
+        ),
     ]
 }
 
