@@ -116,7 +116,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 
     pub(super) fn residual(&mut self) -> Result<()> {
-        let sb_mask = if self.fs.seq.use_128x128_superblock { 31 } else { 15 };
         let ms = self.b.mi_size;
         let width_chunks = (block_width(ms) >> 6).max(1);
         let height_chunks = (block_height(ms) >> 6).max(1);
@@ -126,7 +125,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             for chunk_x in 0..width_chunks {
                 let mi_row_chunk = self.b.mi_row + (chunk_y << 4);
                 let mi_col_chunk = self.b.mi_col + (chunk_x << 4);
-                let _ = (mi_row_chunk & sb_mask, mi_col_chunk & sb_mask);
                 for plane in 0..(1 + 2 * self.b.has_chroma as usize) {
                     let tx_sz = if self.b.lossless { TX_4X4 } else { self.get_tx_size(plane, self.b.tx_size) };
                     let step_x = TX_WIDTH[tx_sz] as usize >> 2;

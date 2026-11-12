@@ -25,6 +25,63 @@ pub trait ByteReader: Send + Sync {
 
 pub type SharedReader = Arc<dyn ByteReader>;
 
+/// Open `path` for reading without blocking on a FIFO that was swapped in after the metadata check
+/// (`O_NONBLOCK`; it changes nothing for a regular file, and the callers check the handle's type).
+/// `O_NONBLOCK` has no std constant (no libc dependency here): it is 0o4000 on most Linux targets,
+/// 0x80 on Linux MIPS, 0x4000 on Linux SPARC and 4 on the BSD family, and the open stays a plain
+/// one on any other target.
+fn open_nonblocking(path: &std::path::Path) -> io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6")
+        ))]
+        o.custom_flags(0x80);
+        #[cfg(all(any(target_os = "linux", target_os = "android"), any(target_arch = "sparc", target_arch = "sparc64")))]
+        o.custom_flags(0x4000);
+        #[cfg(all(
+            any(target_os = "linux", target_os = "android"),
+            not(any(
+                target_arch = "mips",
+                target_arch = "mips32r6",
+                target_arch = "mips64",
+                target_arch = "mips64r6",
+                target_arch = "sparc",
+                target_arch = "sparc64"
+            ))
+        ))]
+        o.custom_flags(0o4000);
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))]
+        o.custom_flags(0x4);
+    }
+    o.open(path)
+}
+
+/// Read a whole regular file. A FIFO, device or folder is refused, checked before opening (a named
+/// pipe with no writer would block the open) and again on the open handle, and at most the length
+/// the handle reports is read: a link to an endless source cannot fill memory, and a file that
+/// grows while it is read is cut at the length it had when opened.
+pub fn read_regular_file(path: &std::path::Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a regular file", path.display()));
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = open_nonblocking(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(not_regular());
+    }
+    let len = meta.len();
+    let mut out = Vec::new();
+    file.take(len).read_to_end(&mut out)?;
+    Ok(out)
+}
+
 fn eof() -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "read past end of byte source")
 }
@@ -139,7 +196,11 @@ impl FileReader {
     }
 
     pub(crate) fn open_in(path: &std::path::Path, pool: &Arc<FilePool>) -> io::Result<Self> {
-        let file = std::fs::File::open(path)?;
+        // checked before opening: opening a named pipe with no writer blocks the caller for good
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file", path.display())));
+        }
+        let file = open_nonblocking(path)?;
         let m = file.metadata()?;
         if !m.is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file", path.display())));
@@ -156,7 +217,7 @@ impl FileReader {
         if let Some(file) = self.pool.get(self.id) {
             return Ok(file);
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = open_nonblocking(&self.path)?;
         let m = file.metadata()?;
         if !m.is_file() || m.len() < self.len {
             return Err(io::Error::other(format!("{} changed since it was opened", self.path.display())));
@@ -243,6 +304,66 @@ pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[Re
     }
     let all = read_range(&*reader, 0, usize::try_from(reader.len()).unwrap_or(usize::MAX)).map_err(|e| MediaError::Io(format!("{name}: {e}")))?;
     crate::open_bytes(name, all.into(), extra)
+}
+
+#[cfg(test)]
+mod regular_file_tests {
+    use super::read_regular_file;
+
+    #[test]
+    fn reads_a_file_and_refuses_a_folder() {
+        let dir = std::env::temp_dir().join(format!("fc-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), [1u8, 2, 3]).unwrap();
+        assert_eq!(read_regular_file(&dir.join("a.bin")).unwrap(), [1, 2, 3]);
+        assert!(read_regular_file(&dir).is_err());
+        assert!(read_regular_file(&dir.join("missing")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A named pipe with no writer would block `open` for good: both readers refuse it first.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("fc-reg-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        if !std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            return; // no mkfifo here
+        }
+        assert!(read_regular_file(&fifo).is_err());
+        assert!(super::FileReader::open(&fifo).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The open itself must not block on a FIFO swapped in after the path check (a FIFO with no writer).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opening_a_fifo_with_no_writer_does_not_block() {
+        let dir = std::env::temp_dir().join(format!("fc-reg-fifo-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        if std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            let f = super::open_nonblocking(&fifo).unwrap();
+            assert!(!f.metadata().unwrap().is_file());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A link to an endless device: the read refuses it instead of reading until memory runs out.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn refuses_a_link_to_an_endless_device() {
+        let dir = std::env::temp_dir().join(format!("fc-reg-dev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero")).unwrap();
+        assert!(read_regular_file(&dir.join("zero")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

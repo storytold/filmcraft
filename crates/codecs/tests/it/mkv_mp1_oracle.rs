@@ -1,6 +1,6 @@
 //! MPEG audio Layer I (MP1) in Matroska (`A_MPEG/L1`, #1402) against ffmpeg's decode. No
 //! installed encoder writes Layer I, so the frames are synthetic (valid random Layer I frames,
-//! as in `crates/mpa/tests/oracle.rs`) and ffmpeg only remuxes them into Matroska and decodes.
+//! as in craft-audio's MP1/MP2 oracle) and ffmpeg only remuxes them into Matroska and decodes.
 
 use crate::common;
 

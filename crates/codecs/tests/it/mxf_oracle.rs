@@ -5,6 +5,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use common::*;
 use filmcraft_codecs::MxfSource;
@@ -23,6 +24,12 @@ fn spec(name: &str) -> Vec<String> {
             V25,
             NOISE,
             &["-t", "2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-ac", "2", "-timecode", "01:00:00:00"],
+        ]),
+        // the same at 720p and a high rate: pictures far longer than the head read for the order
+        "mxf_h264_bf2_720p.mxf" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25"],
+            NOISE,
+            &["-t", "2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-b:v", "12M", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-ac", "2"],
         ]),
         "mxf_h264_2997df.mxf" => cat(&[
             &["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30000/1001"],
@@ -111,6 +118,7 @@ fn spec(name: &str) -> Vec<String> {
 
 pub const ALL: &[&str] = &[
     "mxf_h264_bf2.mxf",
+    "mxf_h264_bf2_720p.mxf",
     "mxf_h264_2997df.mxf",
     "mxf_dnxhr_lb.mxf",
     "mxf_prores.mxf",
@@ -223,6 +231,41 @@ fn h264_long_gop_with_b_frames_bit_exact() {
     assert_eq!(t.samples.iter().filter(|s| s.key).count(), 5, "an IDR every 12 frames over 50");
     check_video(&ff, &f, "yuv420p", (2, 2), 1, 0, 25);
     check_audio_exact(&ff, &f, &[]);
+}
+
+/// Reordering B pictures reads only a short head of every picture, not the pictures.
+#[test]
+fn h264_long_gop_order_needs_only_the_slice_headers() {
+    use std::sync::Mutex;
+
+    /// Remembers the length of every read.
+    struct Counting(filmcraft_media::SharedReader, Arc<Mutex<Vec<usize>>>);
+    impl filmcraft_media::reader::ByteReader for Counting {
+        fn len(&self) -> u64 {
+            self.0.len()
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            self.1.lock().unwrap().push(buf.len());
+            self.0.read_at(offset, buf)
+        }
+    }
+
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "mxf_h264_bf2_720p.mxf");
+    let data = bytes(&f);
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let reader = Arc::new(Counting(Arc::new(filmcraft_media::reader::MemReader(data.clone())), reads.clone()));
+    let src = MxfSource::open_reader("bf2_720p.mxf", reader).unwrap();
+    let t = &src.file().tracks[src.file().track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+    assert!(t.needs_reorder && !t.temporal_offsets);
+    assert!(t.samples.iter().all(|s| s.size > 16 << 10), "the pictures must be longer than the long head read");
+    // one 2 KiB head per picture, and no 16 KiB read (the fallback for a slice header that does
+    // not fit in the short head)
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.iter().filter(|&&n| n == 2 << 10).count(), t.samples.len());
+    assert!(!reads.contains(&(16 << 10)));
+    // the order found from the short heads is the right one
+    check_video(&ff, &f, "yuv420p", (2, 2), 1, 0, 10);
 }
 
 #[test]

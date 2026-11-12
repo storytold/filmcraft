@@ -15,7 +15,7 @@ impl FilmcraftApp {
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
-                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "prfpset"])
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
@@ -25,11 +25,19 @@ impl FilmcraftApp {
                     }
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
                     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
-                    if let Ok(v) = &r
-                        && let Some(errs) = v.get("errors").and_then(Value::as_array)
-                        && !errs.is_empty()
-                    {
-                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                    if let Ok(v) = &r {
+                        if let Some(errs) = v.get("errors").and_then(Value::as_array)
+                            && !errs.is_empty()
+                        {
+                            app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                        } else if let Some(presets) = v.get("presets").and_then(Value::as_array)
+                            && !presets.is_empty()
+                        {
+                            if !app.ui.expanded_fx.contains(&"Presets".to_string()) {
+                                app.ui.expanded_fx.push("Presets".to_string());
+                            }
+                            app.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
+                        }
                     }
                     r
                 })

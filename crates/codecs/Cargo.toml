@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-audio = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
@@ -20,9 +21,7 @@ filmcraft-matroska = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-mpegts = { workspace = true }
 filmcraft-mpeg2v = { workspace = true }
-filmcraft-ac3 = { workspace = true }
-filmcraft-mpa = { workspace = true }
-filmcraft-ogg = { workspace = true }
+craft-media = { workspace = true, features = ["ogg"] }
 filmcraft-bitstream = { workspace = true }
 filmcraft-h264 = { workspace = true }
 filmcraft-hevc = { workspace = true }
@@ -32,8 +31,6 @@ filmcraft-prores = { workspace = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-av1 = { workspace = true }
 filmcraft-apv = { workspace = true }
-filmcraft-aac = { workspace = true }
-filmcraft-opus = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

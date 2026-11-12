@@ -37,10 +37,10 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 const G: &[&str] = &["Graphics and Titles"];

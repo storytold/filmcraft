@@ -28,11 +28,13 @@ const DIST_EXTRA: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7,
 /// Order in which the code-length code's lengths are sent.
 const CL_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
-/// `data` compressed as a zlib stream (CMF 0x78: deflate, 32 KB window).
-pub(crate) fn zlib(data: &[u8]) -> Vec<u8> {
+/// `data` compressed as a zlib stream (CMF 0x78: deflate, 32 KB window). `tables` are the match
+/// finder's hash tables, kept by the caller across the chunks of a picture; the output does not
+/// depend on what they held before.
+pub(crate) fn zlib(data: &[u8], tables: &mut Tables) -> Vec<u8> {
     let mut w = Bits { out: Vec::with_capacity(data.len() / 2 + 64), acc: 0, n: 0 };
     w.out.extend_from_slice(&[0x78, 0x9C]); // (0x78 << 8 | 0x9C) % 31 == 0
-    deflate(data, &mut w);
+    deflate(data, &mut w, tables);
     w.align();
     w.out.extend_from_slice(&adler32(data).to_be_bytes());
     w.out
@@ -97,20 +99,61 @@ fn dist_code(dist: u16) -> usize {
     DIST_BASE.partition_point(|&b| b <= dist).saturating_sub(1)
 }
 
+/// The match finder's hash heads and chains, reused from one input to the next.
+///
+/// A slot holds `base + p + 1` for position `p` of the input that wrote it; anything at or below
+/// the current input's `base` was left by an earlier input and reads as empty. So the tables are
+/// never cleared between inputs: an OpenEXR ZIPS frame is one input per scan line, and zeroing
+/// 256 KiB of tables for each 23 KB UHD line cost more memory traffic than the data itself.
+#[derive(Default)]
+pub(crate) struct Tables {
+    head: Vec<u32>,
+    prev: Vec<u32>,
+    /// Bytes compressed through these tables since they were last cleared.
+    base: u32,
+}
+
 /// LZ77 match finder: hash heads and chains over the window.
 struct Matcher<'a> {
     data: &'a [u8],
-    head: Vec<u32>,
-    prev: Vec<u32>,
+    head: &'a mut [u32],
+    prev: &'a mut [u32],
     bits: u32,
+    /// `prev` slots used by this input, minus one (a power of two minus one).
+    mask: usize,
+    base: u32,
 }
 
 impl<'a> Matcher<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        // tables sized to the input, so short chunks (single scan lines) stay cheap
+    /// A matcher over `data` (shorter than `u32::MAX` bytes), or None when it is not.
+    fn new(data: &'a [u8], t: &'a mut Tables) -> Option<Self> {
+        // hash width and chain span follow the input's size, as they did when every input had
+        // tables of its own (the output depends on them), so short chunks stay cheap to hash
         let span = data.len().clamp(256, WINDOW).next_power_of_two();
         let bits = span.trailing_zeros().clamp(8, 15);
-        Matcher { data, head: vec![0; 1 << bits], prev: vec![0; span], bits }
+        let n = u32::try_from(data.len()).ok().filter(|&n| n < u32::MAX)?;
+        if t.base.checked_add(n).and_then(|b| b.checked_add(1)).is_none() {
+            // positions would no longer fit after `base`: start over from empty tables
+            t.head.fill(0);
+            t.prev.fill(0);
+            t.base = 0;
+        }
+        // grown slots are 0, which is never above `base`, so they read as empty
+        if t.head.len() < 1 << bits {
+            t.head.resize(1 << bits, 0);
+        }
+        if t.prev.len() < span {
+            t.prev.resize(span, 0);
+        }
+        let base = t.base;
+        t.base += n;
+        let (head, prev) = (t.head.get_mut(..1 << bits)?, t.prev.get_mut(..span)?);
+        Some(Matcher { data, head, prev, bits, mask: span - 1, base })
+    }
+
+    /// Position `p` of this input from a stored slot, or None for an empty or earlier input's slot.
+    fn pos(&self, slot: u32) -> Option<usize> {
+        slot.checked_sub(self.base)?.checked_sub(1).map(|p| p as usize)
     }
 
     fn hash(&self, p: usize) -> Option<usize> {
@@ -122,44 +165,51 @@ impl<'a> Matcher<'a> {
     /// Record position `p` (stored as `p + 1`; 0 = empty).
     fn insert(&mut self, p: usize) {
         let Some(h) = self.hash(p) else { return };
-        let mask = self.prev.len() - 1;
-        self.prev[p & mask] = self.head[h];
-        self.head[h] = p as u32 + 1;
+        let (Some(head), Ok(p32)) = (self.head.get(h).copied(), u32::try_from(p)) else { return };
+        if let Some(slot) = self.prev.get_mut(p & self.mask) {
+            *slot = head;
+        }
+        if let Some(slot) = self.head.get_mut(h) {
+            // `new` reserved `base + len + 1` within u32
+            *slot = self.base + p32 + 1;
+        }
     }
 
     /// The longest earlier match at `p`: (length, distance), length 0 if none.
     fn longest(&self, p: usize) -> (usize, usize) {
         let Some(h) = self.hash(p) else { return (0, 0) };
-        let max = (self.data.len() - p).min(MAX_MATCH);
-        let here = &self.data[p..p + max];
-        let mask = self.prev.len() - 1;
+        let max = self.data.len().saturating_sub(p).min(MAX_MATCH);
+        let Some(here) = self.data.get(p..p + max) else { return (0, 0) };
         let (mut best, mut best_dist) = (0, 0);
-        let mut cand = self.head[h] as usize;
+        let mut cand = self.head.get(h).and_then(|&s| self.pos(s));
         for _ in 0..MAX_CHAIN {
-            let Some(c) = cand.checked_sub(1) else { break };
+            let Some(c) = cand else { break };
             if c >= p || p - c > WINDOW {
                 break;
             }
-            let l = self.data[c..].iter().zip(here).take_while(|(a, b)| a == b).count();
-            if l > best {
-                (best, best_dist) = (l, p - c);
-                if l == max {
-                    break;
+            // a candidate that differs at `best` cannot be longer than `best`: skip comparing it
+            if best == 0 || self.data.get(c + best) == here.get(best) {
+                let l = self.data.get(c..).unwrap_or_default().iter().zip(here).take_while(|(a, b)| a == b).count();
+                if l > best {
+                    (best, best_dist) = (l, p - c);
+                    if l == max {
+                        break;
+                    }
                 }
             }
-            let next = self.prev[c & mask] as usize;
+            let Some(next) = self.prev.get(c & self.mask).and_then(|&s| self.pos(s)) else { break };
             // chains only go back; anything else is a stale slot
-            if next == 0 || next > c {
+            if next >= c {
                 break;
             }
-            cand = next;
+            cand = Some(next);
         }
         (best, best_dist)
     }
 }
 
 /// The deflate blocks of `data`, the last one final.
-fn deflate(data: &[u8], w: &mut Bits) {
+fn deflate(data: &[u8], w: &mut Bits, tables: &mut Tables) {
     if data.is_empty() {
         // a final fixed-Huffman block holding only end-of-block (code 0000000)
         w.put(1, 1);
@@ -168,7 +218,7 @@ fn deflate(data: &[u8], w: &mut Bits) {
         return;
     }
     // positions are kept in u32; longer inputs (never an OpenEXR chunk) go out stored
-    let mut m = (data.len() < u32::MAX as usize).then(|| Matcher::new(data));
+    let mut m = Matcher::new(data, tables);
     let mut toks = Vec::with_capacity(BLOCK_TOKENS.min(data.len()) + 1);
     let (mut start, mut i) = (0, 0);
     while i < data.len() {
@@ -571,14 +621,14 @@ pub(crate) mod tests {
         }
         cases.push(fib);
         for (k, data) in cases.iter().enumerate() {
-            let z = zlib(data);
+            let z = zlib(data, &mut Tables::default());
             assert_eq!(inflate(&z).as_deref(), Some(data.as_slice()), "case {k}");
             // worst case: stored overhead only
             assert!(z.len() <= data.len() + (data.len().div_ceil(BLOCK_TOKENS) + 1) * 5 + 6, "case {k}: {} > {}", z.len(), data.len());
         }
         // repetitive data actually compresses
-        assert!(zlib(&cases[4]).len() < 2_000);
-        assert!(zlib(&cases[8]).len() < 20_000);
+        assert!(zlib(&cases[4], &mut Tables::default()).len() < 2_000);
+        assert!(zlib(&cases[8], &mut Tables::default()).len() < 20_000);
     }
 
     #[test]
@@ -605,5 +655,141 @@ pub(crate) mod tests {
         // the classic test vector for "Wikipedia"
         assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
         assert_eq!(adler32(&[]), 1);
+    }
+
+    /// The match finder before #4659: tables of its own per input, every chain candidate compared
+    /// from its first byte.
+    struct OldMatcher<'a> {
+        data: &'a [u8],
+        head: Vec<u32>,
+        prev: Vec<u32>,
+        bits: u32,
+    }
+
+    impl<'a> OldMatcher<'a> {
+        /// Tables of its own, sized to `data`.
+        fn new(data: &'a [u8]) -> Self {
+            let span = data.len().clamp(256, WINDOW).next_power_of_two();
+            let bits = span.trailing_zeros().clamp(8, 15);
+            OldMatcher { data, head: vec![0; 1 << bits], prev: vec![0; span], bits }
+        }
+
+        /// The hash of the three bytes at `p`, None near the end.
+        fn hash(&self, p: usize) -> Option<usize> {
+            let b = self.data.get(p..p + MIN_MATCH)?;
+            let v = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            Some((v.wrapping_mul(0x9E37_79B1) >> (32 - self.bits)) as usize)
+        }
+
+        /// Record position `p` (stored as `p + 1`; 0 = empty).
+        fn insert(&mut self, p: usize) {
+            let Some(h) = self.hash(p) else { return };
+            let mask = self.prev.len() - 1;
+            self.prev[p & mask] = self.head[h];
+            self.head[h] = p as u32 + 1;
+        }
+
+        /// The longest earlier match at `p`: (length, distance), length 0 if none.
+        fn longest(&self, p: usize) -> (usize, usize) {
+            let Some(h) = self.hash(p) else { return (0, 0) };
+            let max = (self.data.len() - p).min(MAX_MATCH);
+            let here = &self.data[p..p + max];
+            let mask = self.prev.len() - 1;
+            let (mut best, mut best_dist) = (0, 0);
+            let mut cand = self.head[h] as usize;
+            for _ in 0..MAX_CHAIN {
+                let Some(c) = cand.checked_sub(1) else { break };
+                if c >= p || p - c > WINDOW {
+                    break;
+                }
+                let l = self.data[c..].iter().zip(here).take_while(|(a, b)| a == b).count();
+                if l > best {
+                    (best, best_dist) = (l, p - c);
+                    if l == max {
+                        break;
+                    }
+                }
+                let next = self.prev[c & mask] as usize;
+                if next == 0 || next > c {
+                    break;
+                }
+                cand = next;
+            }
+            (best, best_dist)
+        }
+    }
+
+    /// Inputs shaped like OpenEXR chunks (predicted half-float scan lines, single and 16-line)
+    /// and the awkward cases: empty, tiny, incompressible, long runs, few symbols.
+    fn chunk_cases() -> Vec<Vec<u8>> {
+        let line: Vec<u8> = (0..23_040_u32).map(|i| (128 + ((i / 3) % 7) as i32 - 3 + (i % 5 == 0) as i32) as u8).collect();
+        let mut cases = vec![line.clone(), line.iter().rev().copied().collect(), vec![], vec![9], b"abcabcabcabd".to_vec()];
+        cases.push(line.iter().cycle().take(16 * 23_040).copied().collect()); // ZIP: 16 lines, longer than the window
+        cases.push(noise(23_040, 4));
+        cases.push(noise(70_000, 3).iter().map(|b| b % 4).collect());
+        cases.push(vec![0; 300_000]);
+        cases.push(line.clone());
+        cases.push(noise(300, 7));
+        cases
+    }
+
+    /// The matcher's greedy parse of `data`: what `deflate` codes.
+    fn parse<F: FnMut(usize) -> (usize, usize), G: FnMut(usize)>(data: &[u8], mut longest: F, mut insert: G) -> Vec<(usize, usize)> {
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < data.len() {
+            let (len, dist) = longest(i);
+            let step = if len >= MIN_MATCH { len } else { 1 };
+            out.push(if len >= MIN_MATCH { (len, dist) } else { (0, 0) });
+            for p in i..i + step {
+                insert(p);
+            }
+            i += step;
+        }
+        out
+    }
+
+    /// Shared tables and the candidate skip find exactly the matches the previous matcher found.
+    #[test]
+    fn shared_tables_find_the_matches_the_old_per_chunk_tables_found() {
+        let mut tables = Tables::default();
+        for (k, data) in chunk_cases().iter().enumerate() {
+            let old = std::cell::RefCell::new(OldMatcher::new(data));
+            let want = parse(data, |p| old.borrow().longest(p), |p| old.borrow_mut().insert(p));
+            let new = std::cell::RefCell::new(Matcher::new(data, &mut tables).expect("fits"));
+            let got = parse(data, |p| new.borrow().longest(p), |p| new.borrow_mut().insert(p));
+            assert!(got == want, "chunk {k}: the parse differs");
+        }
+    }
+
+    /// Shared tables compress to the bytes fresh ones give, also when positions run out and they start over.
+    #[test]
+    fn shared_tables_give_the_bytes_of_fresh_ones() {
+        let mut shared = Tables::default();
+        for (k, data) in chunk_cases().iter().enumerate() {
+            let z = zlib(data, &mut shared);
+            assert!(z == zlib(data, &mut Tables::default()), "chunk {k}");
+            assert_eq!(inflate(&z).as_deref(), Some(data.as_slice()), "chunk {k}");
+        }
+        // positions about to run past u32: the tables start over and the bytes stay the same
+        for gap in [0_u32, 1, 2, 23_040, 23_041, 1 << 20] {
+            shared.base = u32::MAX - gap;
+            for (k, data) in chunk_cases().iter().enumerate() {
+                assert!(zlib(data, &mut shared) == zlib(data, &mut Tables::default()), "gap {gap}, chunk {k}");
+            }
+        }
+    }
+
+    /// Later chunks use the same tables instead of allocating new ones.
+    #[test]
+    fn the_tables_are_reused_across_chunks() {
+        let mut tables = Tables::default();
+        let line = &chunk_cases()[0];
+        zlib(line, &mut tables);
+        let (head, prev) = (tables.head.as_ptr(), tables.prev.as_ptr());
+        for _ in 0..4 {
+            zlib(line, &mut tables);
+            assert!(tables.head.as_ptr() == head && tables.prev.as_ptr() == prev, "a chunk allocated new tables");
+        }
+        assert_eq!(tables.base as usize, 5 * line.len());
     }
 }

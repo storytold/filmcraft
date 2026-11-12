@@ -245,7 +245,7 @@ fn gaussian_blur() -> Scene {
     b.at(12)
 }
 
-/// Lumetri Color basic correction: temperature, exposure, contrast, highlights/shadows, saturation.
+/// Color Grading basic correction: temperature, exposure, contrast, highlights/shadows, saturation.
 fn lumetri_basic() -> Scene {
     let mut b = Builder::new(1);
     let bg = b.demo(DemoScene::OceanSunset);
@@ -459,7 +459,7 @@ fn hdr_tone_map() -> Scene {
     b.at(12)
 }
 
-/// HDR grading: Rec. 2100 PQ footage in a PQ sequence, graded by Lumetri in the PQ signal
+/// HDR grading: Rec. 2100 PQ footage in a PQ sequence, graded by Color Grading in the PQ signal
 /// (exposure, contrast over HDR White, HDR Specular pulling the speculars in), shown tone mapped.
 fn lumetri_hdr_pq() -> Scene {
     let mut b = Builder::new(1);
@@ -615,7 +615,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("transform_opacity", "Motion transform and opacity", transform_opacity),
         ("blend_modes", "Blend modes (Multiply, Screen, Overlay, Difference)", blend_modes),
         ("gaussian_blur", "Gaussian Blur effect", gaussian_blur),
-        ("lumetri_basic", "Lumetri Color basic correction", lumetri_basic),
+        ("lumetri_basic", "Color Grading basic correction", lumetri_basic),
         ("crop", "Crop effect", crop),
         ("transition_cross_dissolve", "Cross Dissolve at 50%", || transition("cross_dissolve", 24)),
         ("transition_dip_to_black", "Dip to Black at 25%", || transition("dip_to_black", 21)),
@@ -627,7 +627,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("graphic_rich_text", "Per-character text styles and a box pinned around the text", graphic_rich_text),
         ("log_to_rec709", "Colour management: S-Log3/S-Gamut3.Cine footage to Rec. 709 (tone mapped)", log_to_rec709),
         ("hdr_tone_map", "Colour management: Rec. 2100 PQ footage tone mapped into a Rec. 709 sequence", hdr_tone_map),
-        ("lumetri_hdr_pq", "Lumetri grading in a Rec. 2100 PQ sequence (HDR White, HDR Specular), tone mapped", lumetri_hdr_pq),
+        ("lumetri_hdr_pq", "Color Grading in a Rec. 2100 PQ sequence (HDR White, HDR Specular), tone mapped", lumetri_hdr_pq),
         ("mask_blur", "Masks: Gaussian Blur inside a feathered ellipse mask", mask_blur),
         ("mask_color", "Masks: Black & White inside an expanded polygon minus a feathered Bezier mask", mask_color),
         ("mask_inverted", "Masks: Mosaic outside an inverted ellipse mask at 80% opacity", mask_inverted),
@@ -708,7 +708,7 @@ goldens!(
     vfx_stylize
 );
 
-/// Effects panel ▸ Lumetri Presets thumbnail grid: every built-in preset graded by our Lumetri on
+/// Effects panel ▸ Color Grading Presets thumbnail grid: every built-in preset graded by our Color Grading on
 /// the procedural preview picture (`filmcraft_render::lumetri_presets`).
 #[test]
 fn lumetri_presets_grid() {
@@ -716,7 +716,8 @@ fn lumetri_presets_grid() {
     let img = lp::grid(&lp::presets(), 6, 96, 54);
     let rgba = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
     let name = "lumetri_presets_grid";
-    let d = assert_golden(&golden_path(name), &rgba, Tolerance::RENDER, "Lumetri Presets thumbnail grid", &format!("crates/golden/tests/golden.rs ({name})"));
+    let d =
+        assert_golden(&golden_path(name), &rgba, Tolerance::RENDER, "Color Grading Presets thumbnail grid", &format!("crates/golden/tests/golden.rs ({name})"));
     eprintln!("{name}: {d}");
 }
 
@@ -773,7 +774,7 @@ fn gpu_matches_cpu_on_golden_scenes() {
         let s = make();
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), c.caps(), &s.sources);
         let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
         c.composite(&plan);
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
@@ -847,7 +848,7 @@ fn gpu_blend_modes_match_cpu_render() {
         let s = b.at(12);
         let t = RATE.tick_of(s.frame);
         let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), filmcraft_render::plan::DeviceCaps::ALL, &s.sources);
         let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
             failures.push(format!("{mode}: planned as a CPU image"));
             continue;
@@ -884,7 +885,14 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     }
     b.transition(1, "cross_dissolve", ca, cb, 24, 12);
     let s = b.at(22);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(
+        &s.project,
+        s.seq,
+        RATE.tick_of(s.frame),
+        RenderOptions::default(),
+        filmcraft_render::plan::DeviceCaps::ALL,
+        &s.sources,
+    );
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
@@ -938,7 +946,14 @@ fn gpu_effect_chains_match_cpu_render() {
     b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
     b.effect(v5, "emboss", &[]);
     let mut s = b.at(12);
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(
+        &s.project,
+        s.seq,
+        RATE.tick_of(s.frame),
+        RenderOptions::default(),
+        filmcraft_render::plan::DeviceCaps::ALL,
+        &s.sources,
+    );
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert_eq!(layers.len(), 5);
     for (i, l) in layers.iter().take(4).enumerate() {
@@ -953,7 +968,7 @@ fn gpu_effect_chains_match_cpu_render() {
     let mut failures = Vec::new();
     for frame in [0, 12, 30] {
         s.frame = frame;
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources);
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), c.caps(), &s.sources);
         c.composite(&plan);
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
@@ -971,7 +986,7 @@ fn gpu_effect_chains_match_cpu_render() {
     }
     // ½ playback resolution: the working images (and the effects' pixel radii) shrink with it
     let opts = RenderOptions { scale: 0.5, ..RenderOptions::default() };
-    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, c.caps(), &s.sources);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("½: planned as a CPU image") };
     assert!(layers.iter().take(4).all(|l| l.fx.is_some()));
     c.composite(&plan);

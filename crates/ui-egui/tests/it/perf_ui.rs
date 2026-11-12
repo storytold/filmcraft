@@ -198,7 +198,7 @@ fn a_newer_revision_keeps_the_frame_being_rendered() {
     let d = Driver::demo();
     let app = d.harness.state();
     let idle = || wait_for("the frame queue to empty", Duration::from_micros(50), || app.frames.queue_len() == 0);
-    // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
+    // the clip with Color Grading at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();
     let rate = app.session.active_sequence().unwrap().settings.frame_rate;
     let frame = rate.frame_at(filmcraft_time::Tick::from_seconds_f64(15.0));
@@ -339,7 +339,7 @@ fn playback_at_a_newer_revision_keeps_the_frame_being_rendered() {
         }
         panic!("the frame queue never emptied");
     };
-    // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
+    // the clip with Color Grading at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();
     let rate = app.session.active_sequence().unwrap().settings.frame_rate;
     let frame = rate.frame_at(filmcraft_time::Tick::from_seconds_f64(15.0));

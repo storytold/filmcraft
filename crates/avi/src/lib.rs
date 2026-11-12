@@ -591,4 +591,15 @@ impl AviFile {
         let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
         read(src, c.offset, u64::from(c.size))
     }
+
+    /// `len` bytes of chunk `i` of stream `stream`, from `off` bytes into it (only those bytes are read).
+    pub fn read_chunk_range<S: ByteSource + ?Sized>(&self, src: &S, stream: usize, i: usize, off: usize, len: usize) -> Result<Vec<u8>> {
+        let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
+        let end = off
+            .checked_add(len)
+            .filter(|&e| e as u64 <= u64::from(c.size))
+            .ok_or_else(|| Error::Invalid(format!("range outside chunk {i} of stream {stream}")))?;
+        let at = c.offset.checked_add(off as u64).ok_or_else(|| Error::Invalid(format!("chunk {i} offset overflows")))?;
+        read(src, at, (end - off) as u64)
+    }
 }

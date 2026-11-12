@@ -62,6 +62,7 @@ libloading = "0.8"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+tempfile = "3"
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }

@@ -19,19 +19,22 @@ pub struct FxCtx<'a> {
     pub t: Tick,
     /// Working-image pixels per full-resolution clip pixel.
     pub px_scale: f32,
+    /// [`px_scale`](Self::px_scale) without the cap on effect sizes: mask outlines are placed in the
+    /// working image by the true ratio, however far the stored width is off the decoded one.
+    pub mask_scale: f32,
     /// Seconds since the clip start (for animated generators such as Noise/Strobe).
     pub seconds: f64,
     /// Formatted sequence timecode (for the Timecode effect).
     pub timecode: &'a str,
     pub clip_name: &'a str,
-    /// The project (LUT library for Lumetri); `None` in isolated effect tests.
+    /// The project (LUT library for Color Grading); `None` in isolated effect tests.
     pub project: Option<&'a filmcraft_project::Project>,
     /// The clip's surroundings (other frames, other tracks, sequence geometry) for temporal,
     /// track-reading and reframing effects; `None` in isolated tests and adjustment layers.
     pub env: Option<&'a dyn crate::vfx::FxEnv>,
     /// Sequence frame rate (shutter-angle motion blur); also known where `env` is `None`.
     pub frame_rate: f64,
-    /// The sequence's working colour space: Lumetri grades HDR (PQ / HLG) working spaces in their
+    /// The sequence's working colour space: Color Grading grades HDR (PQ / HLG) working spaces in their
     /// own signal, normalised to HDR White ([`filmcraft_color::GradeSpace`]).
     pub working: filmcraft_color::WorkingSpace,
 }
@@ -630,7 +633,7 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
-/// The luma (encoded, 0..1) down to which the Lumetri highlight / shadow lift scales a pixel by
+/// The luma (encoded, 0..1) down to which the Color Grading highlight / shadow lift scales a pixel by
 /// `new luma / luma`, preserving its hue exactly as it always has; below it the scale is held at
 /// this luma's and the rest of the lift is added equally to the channels, so a trace of chroma in
 /// a near-black pixel is not multiplied into a speck (#2094). About 5/255 in sRGB. Mirrored in
@@ -958,6 +961,7 @@ mod tests {
         FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "00:00:01:00",
             clip_name: "x",
@@ -1275,7 +1279,7 @@ pub fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     Some(lut[n - 1..2 * n - 1].to_vec())
 }
 
-/// Lumetri's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
+/// Color Grading's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
 /// points, like the hue curves, but over a straight 0..1 axis. Black and white are not neighbours,
 /// so the curve does not wrap; it stays flat beyond its outermost points.
 pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
@@ -1447,7 +1451,7 @@ fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft:
     mh * ms * ml
 }
 
-/// Lumetri ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
+/// Color Grading ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
 /// then correct inside it (or show the mask).
 ///
 /// - **Denoise** removes speckle from the key: a median filter (radius 1–3 px at full
@@ -1769,6 +1773,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",
@@ -1801,7 +1806,7 @@ mod lumetri_cpu_parity_tests {
         }
     }
 
-    /// #719: positive Roundness rounds the Lumetri vignette (it used to be ignored), +100
+    /// #719: positive Roundness rounds the Color Grading vignette (it used to be ignored), +100
     /// is a circle and negative values widen the oval, on the CPU path and the GPU op alike.
     #[test]
     fn lumetri_vignette_roundness_shapes_the_vignette() {
@@ -1809,6 +1814,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",

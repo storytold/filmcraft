@@ -714,7 +714,13 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
             Err(e) => json!({"ok": false, "error": e}),
         };
     }
-    let path = path.map(str::to_string).unwrap_or_else(|| filmcraft_engine::temp_dir().join("filmcraft-screenshot.png").to_string_lossy().to_string());
+    let path = match path {
+        Some(p) => p.to_string(),
+        None => match filmcraft_engine::private_temp_dir() {
+            Ok(d) => d.join("filmcraft-screenshot.png").to_string_lossy().to_string(),
+            Err(e) => return json!({"ok": false, "error": format!("no private temporary folder: {e}")}),
+        },
+    };
     match encode_png(&rgba, cw as u32, ch as u32) {
         Ok(png) => match std::fs::write(&path, png) {
             Ok(()) => json!({"ok": true, "result": {"path": path, "width": cw, "height": ch}}),

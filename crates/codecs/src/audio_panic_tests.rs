@@ -165,3 +165,13 @@ fn standalone_mutated_headers_never_unwind() {
         }
     }
 }
+
+#[test]
+fn a_latm_payload_length_beyond_the_frame_is_refused_before_it_is_reserved() {
+    // useSameStreamMux, then a run of 255s that claims far more payload than the 24-byte frame holds
+    let mut frame = vec![0x56, 0xE0, 0x00];
+    frame.extend([0xFF; 20]);
+    frame.push(0x7F);
+    let mut last = Some(LatmConfig { asc: vec![0x11, 0x90], sample_rate: 48_000, channels: 2 });
+    assert_eq!(latm_split(&frame, &mut last), None);
+}

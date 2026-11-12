@@ -692,9 +692,14 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
             if pkg.reference(tag::SOURCE_PACKAGE_DESCRIPTOR).is_none() {
                 continue;
             }
+            // A package that names one track many times would otherwise build (and retain) its sample tables per mention.
+            let mut seen = std::collections::HashSet::new();
             for r in pkg.references(tag::PACKAGE_TRACKS) {
                 let Some(t) = md.get(&r) else { continue };
                 let id = t.u(tag::TRACK_ID).unwrap_or(0) as u32;
+                if !seen.insert(id) {
+                    continue;
+                }
                 if let Some(tr) = file_track(pkg, None, Some(id), 0, None, None) {
                     out.push(tr);
                 }
@@ -1247,5 +1252,39 @@ mod aes3_read_tests {
     fn aes3_read_rejects_more_than_eight_channels() {
         let (file, data) = aes3_file(10, 10, 9);
         assert!(file.read_pcm(&data, 0, 0, 4).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fallback_tracks_tests {
+    use super::*;
+
+    fn set(kind: u8, uid: u8, props: &[(u16, Vec<u8>)]) -> Set {
+        let mut key = [0x06, 0x0E, 0x2B, 0x34, 0x02, 0x53, 0x01, 0x01, 0x0D, 0x01, 0x01, 0x01, 0x01, 0x01, kind, 0x00];
+        key[15] = 0;
+        let mut s = Set { key: Ul(key), instance_uid: [uid; 16], ..Default::default() };
+        s.props.extend(props.iter().cloned());
+        s
+    }
+
+    fn batch(uids: &[u8]) -> Vec<u8> {
+        let mut v = (uids.len() as u32).to_be_bytes().to_vec();
+        v.extend(16u32.to_be_bytes());
+        for u in uids {
+            v.extend([*u; 16]);
+        }
+        v
+    }
+
+    #[test]
+    fn a_track_named_many_times_resolves_once() {
+        let mut md = Metadata::default();
+        let picture = Ul([0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x01, 0x01, 0x03, 0x02, 0x02, 0x01, 0x00, 0x00, 0x00]);
+        md.push(set(st::SOURCE_PACKAGE, 1, &[(tag::PACKAGE_TRACKS, batch(&[2; 500])), (tag::SOURCE_PACKAGE_DESCRIPTOR, vec![3; 16])]));
+        md.push(set(st::TIMELINE_TRACK, 2, &[(tag::TRACK_ID, vec![0, 0, 0, 1]), (tag::TRACK_SEQUENCE, vec![4; 16])]));
+        md.push(set(st::GENERIC_PICTURE_DESCRIPTOR, 3, &[]));
+        md.push(set(st::SEQUENCE, 4, &[(tag::DATA_DEFINITION, picture.0.to_vec())]));
+        let (tracks, _, _) = resolve_tracks(&md, &mut Vec::new());
+        assert_eq!(tracks.len(), 1);
     }
 }

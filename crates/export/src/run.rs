@@ -3,7 +3,7 @@ use super::output::{AudioWriter, Out, SharedBuf, write_output};
 use super::still_encode::encode_still_with;
 use super::{
     Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
-    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped,
+    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, mp3_out, pcm, pipeline, stepped,
 };
 
 /// The range to export (settings → In/Out → whole sequence).
@@ -95,6 +95,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Aac => aac_out::export(project, seq, settings, range, sources, progress)?,
+        Format::Mp3 => mp3_out::export(project, seq, settings, range, sources, progress)?,
         Format::Wav | Format::Aiff | Format::Flac => {
             let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             let (ch, sr, fmt) = (a.channels as u16, a.sr, settings.audio.sample_format());
@@ -102,16 +103,16 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
             // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
             let mut writer = match settings.format {
                 Format::Flac => {
-                    let mut cfg = filmcraft_flac::EncoderConfig::new(sr, ch as u8, fmt.bits() as u8);
+                    let mut cfg = craft_audio::flac::EncoderConfig::new(sr, ch as u8, fmt.bits() as u8);
                     cfg.level = settings.audio.flac_level.min(8);
-                    AudioWriter::Flac(Box::new(filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?))
+                    AudioWriter::Flac(Box::new(craft_audio::flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?))
                 }
                 Format::Wav => AudioWriter::Pcm(pcm::PcmContainer::Wav),
                 _ => AudioWriter::Pcm(pcm::PcmContainer::Aiff),
             };
             let head = match &writer {
                 AudioWriter::Pcm(c) => pcm::header(*c, ch, sr, fmt, frames).map_err(ExportError::Unsupported)?,
-                AudioWriter::Flac(enc) => enc.header(),
+                AudioWriter::Flac(enc) => enc.header(&[]),
             };
             // one second per chunk: memory stays flat however long the range is
             let chunk = i64::from(sr.max(1));
@@ -149,7 +150,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                     out.write_all(&enc.finish()).map_err(io)?;
                     // the frame sizes and MD5 are known now: fill them into STREAMINFO
                     use std::io::{Seek, SeekFrom};
-                    out.seek(SeekFrom::Start(filmcraft_flac::STREAMINFO_OFFSET)).map_err(io)?;
+                    out.seek(SeekFrom::Start(craft_audio::flac::STREAMINFO_OFFSET)).map_err(io)?;
                     out.write_all(&enc.streaminfo()).map_err(io)?;
                     out.seek(SeekFrom::End(0)).map_err(io)?;
                 }

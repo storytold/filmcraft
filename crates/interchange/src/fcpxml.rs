@@ -1097,7 +1097,7 @@ impl Exp<'_, '_> {
             }
         }
         for e in standard_effects(it) {
-            let n = e.def().map(|d| d.name).unwrap_or(&e.effect).to_string();
+            let n = e.def().map(|d| filmcraft_project::interchange_name(d).to_string()).unwrap_or_else(|| e.effect.clone());
             let r = self.effect(&n, &e.effect);
             let tag = if kind == TrackKind::Video { "filter-video" } else { "filter-audio" };
             let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape_attr(&n));

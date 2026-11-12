@@ -938,7 +938,8 @@ fn assemble_mi(strips: &mut [Strip], mi_rows: usize, mi_cols: usize, pools: &Poo
         let s = &mut strips[0];
         return (MiGrid { cols: mi_cols, rows: mi_rows, mi: std::mem::take(&mut s.mi) }, std::mem::take(&mut s.seg_ids));
     }
-    let mut mi = pools.mi.take(mi_rows * mi_cols, MiInfo::default());
+    // Every position is copied from a strip below.
+    let mut mi = pools.mi.take_any(mi_rows * mi_cols, MiInfo::default());
     let mut seg = vec![0u8; mi_rows * mi_cols];
     for s in strips.iter_mut() {
         let mw = s.mi_col_end - s.mi_col_start;

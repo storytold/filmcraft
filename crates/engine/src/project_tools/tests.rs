@@ -607,3 +607,16 @@ fn deleting_media_used_on_the_timeline_makes_it_offline() {
     assert_eq!(r["offline"], 0);
     assert!(s.project.item(ItemId(unused)).is_none());
 }
+
+#[test]
+fn project_subset_drops_source_graphics_of_items_left_behind() {
+    let mut p = filmcraft_project::Project::new("P");
+    let kept = p.new_sequence("kept", filmcraft_project::SequenceSettings::default(), 1, 0, None);
+    let dropped = p.new_sequence("dropped", filmcraft_project::SequenceSettings::default(), 1, 0, None);
+    for id in [kept, dropped] {
+        p.source_graphics.insert(id, filmcraft_project::SourceGraphic::default());
+    }
+    let sub = crate::project_tools::project_subset(&p, &[kept].into_iter().collect());
+    assert!(sub.source_graphics.contains_key(&kept));
+    assert!(!sub.source_graphics.contains_key(&dropped));
+}
