@@ -1,11 +1,14 @@
 //! Text and vector graphics drawn with `filmcraft-text`: the Timecode / Clip Name burn-ins and
 //! (see below) graphic clips' text and shape layers.
 
+use std::sync::Arc;
+
 use filmcraft_color::srgb_to_linear;
 use filmcraft_geom::Vec2;
-use filmcraft_text::{Align, Mask, ParagraphStyle, TextStyle, layout, render};
+use filmcraft_text::{Align, Layout, Mask, ParagraphStyle, Path, TextStyle, Xform, layout, render};
 use rayon::prelude::*;
 
+use crate::graphic_clip::LayerRaster;
 use crate::image::Image;
 
 /// Effect text is metadata-controlled; do not let its measured bounds allocate an unbounded mask.
@@ -70,35 +73,85 @@ pub fn paint_mask(img: &mut Image, m: &Mask, x0: i32, y0: i32, color: [f32; 4], 
 /// Draw `text` centred on `pos` (layer pixels) at `px` pixels in white over a black box of
 /// `box_alpha` (the Timecode and Clip Name effects).
 pub fn burn_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, box_alpha: f32) {
-    if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() || !px.is_finite() || px <= 0.0 {
-        return;
+    if let Some(burn) = BurnText::new(text, family, pos, px) {
+        burn.paint(img, (0, 0), box_alpha);
     }
-    let st = TextStyle { family: family.into(), style: "Regular".into(), size: px, ..Default::default() };
-    let l = layout(text, &st, &ParagraphStyle { align: Align::Center, ..Default::default() });
-    let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(family, "Regular").face).metrics(px);
-    // centre the cap height on pos
-    let (bx, by) = (pos.x as f32, pos.y as f32 + vm.cap_height / 2.0);
-    let pad = px * 0.25;
-    let b = l.bounds;
-    let boxp = filmcraft_text::Path::rect(bx + b[0] - pad, by - vm.cap_height - pad, bx + b[2] + pad, by + vm.descent * 0.6 + pad);
-    if let Some(bb) = boxp.bounds() {
-        let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
-        if let Some((w, h)) = bounded_raster_size(bb.2 - x0 as f32, bb.3 - y0 as f32) {
-            let m = filmcraft_text::raster::fill(&boxp, w, h, -x0 as f32, -y0 as f32);
-            paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
+}
+
+/// Rasterise the visible part of a burn-in for compositing the text and box at one opacity.
+pub fn burn_text_layer(canvas: (usize, usize), text: &str, family: &str, pos: Vec2, px: f32, box_alpha: f32) -> Option<LayerRaster> {
+    let burn = BurnText::new(text, family, pos, px)?;
+    let (left, top, right, bottom) = burn.box_path.bounds()?;
+    // rasterize() includes a one-pixel fringe around the glyph bounds. Multiline text
+    // and overhanging glyphs can both extend beyond the backing box.
+    let [gx0, gy0, gx1, gy1] = render::device_bounds(&burn.layout, &burn.transform);
+    let x = (left.floor().min(gx0.floor() - 1.0).max(0.0) as usize).min(canvas.0);
+    let y = (top.floor().min(gy0.floor() - 1.0).max(0.0) as usize).min(canvas.1);
+    let end_x = (right.ceil().max(gx1.ceil() + 1.0).max(0.0) as usize).min(canvas.0);
+    let end_y = (bottom.ceil().max(gy1.ceil() + 1.0).max(0.0) as usize).min(canvas.1);
+    if x >= end_x || y >= end_y {
+        return None;
+    }
+    let mut img = Image::new(end_x - x, end_y - y);
+    let (x, y) = (i32::try_from(x).ok()?, i32::try_from(y).ok()?);
+    burn.paint(&mut img, (x, y), box_alpha);
+    Some(LayerRaster { x, y, img })
+}
+
+struct BurnText {
+    layout: Arc<Layout>,
+    transform: Xform,
+    box_path: Path,
+}
+
+impl BurnText {
+    fn new(text: &str, family: &str, pos: Vec2, px: f32) -> Option<Self> {
+        if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() || !px.is_finite() || px <= 0.0 {
+            return None;
         }
+        let st = TextStyle { family: family.into(), style: "Regular".into(), size: px, ..Default::default() };
+        let layout = layout(text, &st, &ParagraphStyle { align: Align::Center, ..Default::default() });
+        let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(family, "Regular").face).metrics(px);
+        // centre the cap height on pos
+        let (bx, by) = (pos.x as f32, pos.y as f32 + vm.cap_height / 2.0);
+        let pad = px * 0.25;
+        let b = layout.bounds;
+        let box_path = Path::rect(bx + b[0] - pad, by - vm.cap_height - pad, bx + b[2] + pad, by + vm.descent * 0.6 + pad);
+        Some(Self { layout, transform: render::at(bx, by.round()), box_path })
     }
-    let bounds = l.bounds;
-    if bounded_raster_size(bounds[2] - bounds[0], bounds[3] - bounds[1]).is_none() {
-        return;
+
+    fn paint(&self, img: &mut Image, origin: (i32, i32), box_alpha: f32) {
+        if let Some(bb) = self.box_path.bounds() {
+            let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
+            if let Some((w, h)) = bounded_raster_size(bb.2 - x0 as f32, bb.3 - y0 as f32) {
+                let m = filmcraft_text::raster::fill(&self.box_path, w, h, -(x0 as f32), -(y0 as f32));
+                paint_mask(img, &m, x0.saturating_sub(origin.0), y0.saturating_sub(origin.1), [0.0, 0.0, 0.0, 1.0], box_alpha);
+            }
+        }
+        let bounds = self.layout.bounds;
+        if bounded_raster_size(bounds[2] - bounds[0], bounds[3] - bounds[1]).is_none() {
+            return;
+        }
+        let (m, x0, y0) = render::rasterize(&self.layout, &self.transform);
+        paint_mask(img, &m, x0.saturating_sub(origin.0), y0.saturating_sub(origin.1), [1.0; 4], 1.0);
     }
-    let (m, x0, y0) = render::rasterize(&l, &render::at(bx, by.round()));
-    paint_mask(img, &m, x0, y0, [1.0, 1.0, 1.0, 1.0], 1.0);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn burn_in_layer_only_allocates_the_visible_text_region() {
+        let layer_at = |pos| burn_text_layer((3840, 2160), "01:02:03:12", filmcraft_text::fonts::DEFAULT_FAMILY, pos, 24.0, 0.6);
+        let layer = layer_at(Vec2::new(1920.25, 1080.5)).unwrap();
+        assert!(layer.x > 0 && layer.y > 0);
+        assert!((1..512).contains(&layer.img.w) && (1..128).contains(&layer.img.h));
+        let clipped = layer_at(Vec2::new(0.25, 0.5)).unwrap();
+        assert_eq!((clipped.x, clipped.y), (0, 0));
+        assert!(clipped.img.w < layer.img.w && clipped.img.h < layer.img.h);
+        assert!(layer_at(Vec2::new(-1000.0, 0.0)).is_none());
+    }
 
     #[test]
     fn burn_in_raster_budget_rejects_huge_and_non_finite_bounds() {
