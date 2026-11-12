@@ -426,3 +426,23 @@ fn max_threads_is_a_setting_of_the_json_interface() {
     assert_eq!(ExportSettings::default().max_threads, 0, "all cores unless asked");
     assert_eq!(serde_json::to_value(&s).unwrap()["maxThreads"], serde_json::json!(2));
 }
+
+#[test]
+fn the_working_set_counts_fitting_a_full_quality_render_into_a_smaller_frame() {
+    let (p, seq, _) = project();
+    // Maximum Render Quality draws the 320 x 180 sequence at full size, then resamples it to 160 x 90
+    let s = ExportSettings {
+        format: Format::ProRes,
+        path: tmp("ws-place.mov"),
+        frame_size: Some((160, 90)),
+        max_render_quality: true,
+        include_audio: false,
+        ..Default::default()
+    };
+    let prog = Progress::default();
+    let ex = Exporter::new(p, seq, &s, &prog).unwrap();
+    let img = |w: u64, h: u64| w * h * 16;
+    // far past the clip the render holds only its canvas; placing it holds the canvas, the
+    // 160 x 180 intermediate and the 160 x 90 result
+    assert_eq!(ex.working_set(1 << 20), img(320, 180) + img(160, 180) + img(160, 90));
+}
