@@ -771,7 +771,7 @@ impl GopCache {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
         let current = CACHE_BUDGET.load(Ordering::Relaxed);
         let limit = if self.budget < current && self.budget != FRAME_CACHE_CEILING { self.budget } else { current };
-        limit.min(FRAME_CACHE_CEILING).max(reserve)
+        if limit == 0 { reserve } else { limit.min(FRAME_CACHE_CEILING) }
     }
 
     /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).

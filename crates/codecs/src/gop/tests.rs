@@ -1219,3 +1219,13 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
 }
+
+#[test]
+fn low_configured_budget_is_not_enlarged_by_large_frame_reserve() {
+    let mut c = GopCache::new(None);
+    let low_budget = 32 << 20;
+    c.budget = low_budget;
+    let eight_mib = 8 << 20;
+    assert!(c.cache_budget(eight_mib) <= low_budget);
+    assert_eq!(c.cache_budget(eight_mib), low_budget);
+}
