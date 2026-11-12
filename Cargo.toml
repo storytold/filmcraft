@@ -62,9 +62,12 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6", default-features = false }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "opus-decode", "flac-encode", "mp3-encode"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "opus-decode", "flac-encode"] }
 # The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "mpeg2", "apv", "threads"] }
+# Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6", features = ["serde"] }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "df469bb2bd2cc026ad25a34f65954ccbb46909d6" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
