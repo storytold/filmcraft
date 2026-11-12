@@ -572,7 +572,8 @@ impl PreviewStore {
 #[cfg(any(unix, windows))]
 pub(crate) fn open_preview_file(_pool: &MediaPool, name: &str, path: &std::path::Path) -> Option<SharedSource> {
     let reader = filmcraft_media::reader::FileReader::open(path).ok()?;
-    filmcraft_media::reader::open_reader_within(name, std::sync::Arc::new(reader), &filmcraft_codecs::reader_openers(), &[], 0).ok()
+    let src = filmcraft_media::reader::open_reader_within(name, std::sync::Arc::new(reader), &filmcraft_codecs::reader_openers(), &[], 0).ok()?;
+    crate::media_pool::checked_source(src).ok()
 }
 
 #[cfg(not(any(unix, windows)))]

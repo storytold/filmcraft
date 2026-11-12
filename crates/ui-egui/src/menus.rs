@@ -208,6 +208,8 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
 
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // A preceding command or dialog may have replaced the pool before this batch's next play.
+    app.sync_pool();
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -672,7 +674,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return app.file_dialog(id, &params);
     }
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
-    let r = app.session.execute(id, params).map_err(|e| e.to_string());
+    let r = app.execute_engine(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }

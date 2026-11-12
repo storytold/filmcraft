@@ -157,6 +157,14 @@ impl FilmcraftApp {
         self
     }
 
+    /// Complete an engine command and retire any replaced pool before its next observer.
+    pub(crate) fn execute_engine(&mut self, id: &str, params: Value) -> filmcraft_engine::Result<Value> {
+        self.sync_pool();
+        let result = self.session.execute(id, params);
+        self.sync_pool();
+        result
+    }
+
     pub fn services(&self) -> Arc<dyn Services> {
         self.session.services.clone()
     }
@@ -184,8 +192,17 @@ impl FilmcraftApp {
     }
 
     /// Rebuild the frame server if the session's media pool was replaced (e.g. project opened).
-    fn sync_pool(&mut self) {
+    pub(crate) fn sync_pool(&mut self) {
         if !Arc::ptr_eq(&self.frames.pool, &self.session.media) || !Arc::ptr_eq(&self.frames.previews, &self.session.previews) {
+            // Stop old-pool playback and request scrub release without waiting for a UI pass.
+            // Recording commands must not commit the previous document's pass into its replacement.
+            self.stop_source();
+            self.stop_playback_outputs();
+            self.release_scrub_output();
+            self.session.voiceover.discard();
+            self.session.mixrec = Default::default();
+            self.session.mcrec = Default::default();
+            self.session.previews.live.clear_all();
             self.frames = Arc::new(FrameServer::new(
                 self.session.media.clone(),
                 self.session.services.clone(),
@@ -198,6 +215,13 @@ impl FilmcraftApp {
             // the new frame server needs the Memory settings
             self.applied_prefs = None;
         }
+    }
+
+    /// Refresh the status timeout; ongoing conditions call this again while still present.
+    pub fn keep_status_visible(&mut self, s: impl Into<String>, now: f64) {
+        let status = s.into();
+        self.status_seen = (status.clone(), now);
+        self.ui.status = status;
     }
 
     pub fn status(&mut self, s: impl Into<String>) {

@@ -138,6 +138,7 @@ pub struct WebApp {
     pub autosave: recovery::Autosave,
     rejected_recovery: Option<RejectedRecovery>,
     recovery_unavailable: Option<String>,
+    active_recovery_warning: Option<String>,
     browser_recovery_initialized: bool,
     media_entry_limit: bool,
     /// The host bridge in host mode (`?host=parent` / `data-host="page"`): written files go to
@@ -156,6 +157,7 @@ impl WebApp {
             autosave: recovery::Autosave::default(),
             rejected_recovery: None,
             recovery_unavailable: None,
+            active_recovery_warning: None,
             browser_recovery_initialized: false,
             media_entry_limit: false,
             host: None,
@@ -210,18 +212,43 @@ impl eframe::App for WebApp {
             a.pump();
         }
         if self.browser_recovery_initialized && self.host.is_none() && self.rejected_recovery.is_none() && self.recovery_unavailable.is_none() {
-            self.autosave.tick(&self.app.session, ctx);
+            if let Some(error) = self.autosave.tick(&self.app.session, ctx) {
+                if recovery_policy::should_show_warning(&self.app.ui.status, self.active_recovery_warning.as_deref()) {
+                    self.app.keep_status_visible(error.clone(), ctx.input(|i| i.time));
+                }
+                self.active_recovery_warning = Some(error);
+            } else if let Some(previous_warning) = self.active_recovery_warning.take()
+                && self.app.ui.status == previous_warning
+            {
+                self.app.ui.status.clear();
+            }
         }
         self.app.finish_ime_reset_logic(ctx);
     }
 
     /// Draw recovery holds and warnings only after the shared UI has installed its fonts.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let Self { app, rejected_recovery, recovery_unavailable, media_entry_limit, .. } = self;
+        let Self { app, rejected_recovery, recovery_unavailable, active_recovery_warning, media_entry_limit, .. } = self;
         app.ui_with_host_overlays(ui, frame, |app, ui| {
             // These host dialogs use FilmCraft's named fonts after the app installs them.
             if !app.host_overlays_ready() {
                 return;
+            }
+            if !app.ui.show_status_bar
+                && let Some(warning) = active_recovery_warning.as_ref()
+            {
+                let window = recovery_window(
+                    i18n::t("Recovery paused"),
+                    ui.ctx(),
+                    |window| window.resizable(false).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0)),
+                    |ui| {
+                        let response = ui.label(warning);
+                        app.auto.add_response("browserRecovery.paused", &response, warning);
+                    },
+                );
+                if let Some(response) = window {
+                    app.auto.add_response("browserRecovery.pausedWindow", &response, i18n::t("Recovery paused"));
+                }
             }
             if let Some(error) = recovery_unavailable.as_ref()
                 && rejected_recovery.is_none()

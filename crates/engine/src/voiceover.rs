@@ -193,6 +193,15 @@ impl VoiceOver {
     pub fn recording(&self) -> bool {
         self.rec.is_some()
     }
+    /// Retire an abandoned take without writing audio or editing the current document.
+    pub fn discard(&mut self) {
+        if let Some(input) = self.input.as_mut() {
+            input.stop();
+        }
+        self.rec = None;
+        self.pending_stop = None;
+        self.captured.clear();
+    }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
     }
@@ -448,18 +457,12 @@ pub(crate) fn unique_wav_path(s: &Session, dir: &str, base: &str) -> Result<Stri
 fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     let rec = s.voiceover.rec.clone().ok_or_else(|| bad("audio.voiceover.stop", "no voice-over is recording"))?;
     if bool_p(p, "discard").unwrap_or(false) {
-        s.voiceover.input().stop();
-        s.voiceover.rec = None;
-        s.voiceover.pending_stop = None;
-        s.voiceover.captured.clear();
+        s.voiceover.discard();
         return Ok(json!({"recording": false, "placed": false}));
     }
     if rec.epoch != s.document_epoch {
         // another project was installed since the take started: its ids name other tracks now
-        s.voiceover.input().stop();
-        s.voiceover.rec = None;
-        s.voiceover.pending_stop = None;
-        s.voiceover.captured.clear();
+        s.voiceover.discard();
         return Err(bad("audio.voiceover.stop", "the project was replaced; the take was not placed"));
     }
     let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));

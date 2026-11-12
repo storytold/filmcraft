@@ -798,6 +798,68 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     app.ui.clip_dialog = Some(d);
 }
 
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Input(Arc<AtomicBool>);
+    impl filmcraft_engine::voiceover::AudioInput for Input {
+        fn devices(&self) -> Vec<String> {
+            vec!["Test input".into()]
+        }
+        fn channels(&self, _: &str) -> u16 {
+            1
+        }
+        fn start(&mut self, _: &str, sample_rate: u32) -> Result<filmcraft_engine::voiceover::InputFormat, String> {
+            self.0.store(true, Ordering::Relaxed);
+            Ok(filmcraft_engine::voiceover::InputFormat { sample_rate, channels: 1 })
+        }
+        fn read(&mut self, _: usize) -> Vec<Vec<f32>> {
+            vec![vec![]]
+        }
+        fn discard(&mut self) {}
+        fn stop(&mut self) {
+            self.0.store(false, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn hidden_pool_replacement_dialog_retires_capture_before_later_panel_callbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replacement.fcproj");
+        let mut replacement = filmcraft_engine::Session::default();
+        replacement.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+        replacement.set_playhead(filmcraft_time::Tick::from_seconds_f64(10.0));
+        replacement.execute("file.saveAs", json!({"path":path})).unwrap();
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+        let capturing = Arc::new(AtomicBool::new(false));
+        session.voiceover.input = Some(Box::new(Input(capturing.clone())));
+        session.execute("audio.voiceover.start", json!({"track":"A1","time":0,"preroll":0})).unwrap();
+        session.voiceover.rec.as_mut().unwrap().punch_out = Some(filmcraft_time::Tick::from_seconds_f64(1.0));
+        session.mixrec.seq = session.state.active_sequence;
+        session.mcrec.seq = session.state.active_sequence;
+        let mut app = FilmcraftApp::new(session);
+        app.play(1.0);
+        let prompt = ClipDialogDraft { command: "file.open".into(), params: json!({"path":path}), info: json!({}), error: String::new() };
+        leave(&mut app, &egui::Context::default(), &prompt);
+        assert_eq!(app.session.path.as_deref(), path.to_str());
+        assert!(!capturing.load(Ordering::Relaxed), "confirmed Open retained old capture before panel callbacks");
+        assert!(!app.session.voiceover.recording());
+        assert!(!app.session.mixrec.active());
+        assert!(!app.session.mcrec.active());
+        let project = app.session.project.clone();
+        let revision = app.session.revision;
+        // A later panel's normal stop must have no old recording left to commit.
+        app.stop();
+        assert!(Arc::ptr_eq(&project, &app.session.project));
+        assert_eq!(app.session.revision, revision);
+    }
+}
+
 /// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
 /// then for Quit close the window; for Open open the chosen project instead of closing.
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
@@ -818,7 +880,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     if command == "file.open"
         && let Some(path) = prompt.params["path"].as_str()
     {
-        match app.session.execute("file.open", json!({"path": path})) {
+        match app.execute_engine("file.open", json!({"path": path})) {
             Ok(_) => edit_after_open(app, prompt),
             Err(e) => app.ui.status = e.to_string(),
         }

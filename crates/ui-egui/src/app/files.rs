@@ -70,7 +70,7 @@ impl FilmcraftApp {
                 if let Some(asked) = crate::panels::clip_dialogs::ask_before_open(app, &path) {
                     return asked;
                 }
-                app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+                app.execute_engine("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();

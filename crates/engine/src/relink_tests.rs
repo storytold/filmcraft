@@ -331,6 +331,60 @@ fn jobs_list_reports_an_exports_offline_media() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Stepped exports retain job-owned rejection diagnostics on completion, cancellation and write errors.
+#[test]
+fn stepped_exports_retain_job_owned_offline_diagnostics() {
+    use filmcraft_render::SourceProvider;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    for outcome in ["done", "cancel", "error"] {
+        let root = tmp_dir("stepped-export-offline");
+        let (path, items) = saved_project(&root);
+        let mut session = open(&path);
+        let mut rejected = b"YUV4MPEG2 W32768 H8193 Cmono\n".to_vec();
+        rejected.resize(64, 128);
+        std::fs::write(root.join("Media/a.mov"), rejected).unwrap();
+        let provider = session.media.full_res_provider(session.project.clone(), session.services.clone()).own_sources().recording();
+        provider.source(items[0]).unwrap();
+        let expected = provider.offline_used();
+        assert_eq!(expected.len(), 1);
+        assert!(expected[0].error.contains("Y4M frames larger than 268 million pixels"));
+        let progress = Arc::new(filmcraft_export::Progress::default());
+        let result = Arc::new(std::sync::Mutex::new(None));
+        let settings = filmcraft_export::ExportSettings {
+            format: filmcraft_export::Format::Mjpeg,
+            path: if outcome == "error" { root.clone() } else { root.join("stepped.mov") }.to_string_lossy().into_owned(),
+            range: Some(filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+            include_audio: false,
+            ..Default::default()
+        };
+        let mut exporter = filmcraft_export::Exporter::new(session.project.clone(), session.state.active_sequence.unwrap(), &settings, &progress).unwrap();
+        exporter.set_batch(1);
+        exporter.set_overlap(false);
+        if outcome == "cancel" {
+            progress.cancel.store(true, Ordering::Relaxed);
+        }
+        session.jobs.push(crate::Job { id: 1, label: "Stepped regression".into(), progress: progress.clone(), result: result.clone() });
+        session.stepped.push(crate::SteppedJob { job: 1, exporter, provider, progress, result: result.clone() });
+        for _ in 0..20 {
+            if !session.pump_jobs(std::time::Duration::ZERO) {
+                break;
+            }
+        }
+        assert!(session.stepped.is_empty(), "{outcome}");
+        {
+            let result = result.lock().unwrap();
+            assert_eq!(result.as_ref().unwrap().is_ok(), outcome == "done", "{outcome}: {result:?}");
+        }
+        let jobs = session.execute("jobs.list", json!({})).unwrap();
+        let job = jobs.as_array().unwrap().iter().find(|job| job["id"] == 1).unwrap();
+        assert_eq!(job["offlineMedia"], serde_json::to_value(&expected).unwrap(), "{outcome}: {job}");
+        assert!(session.media.offline_status(items[0]).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[test]
 fn deleting_bin_keeps_subclip_source_but_removes_unused_media() {
     let root = tmp_dir("delete-bin-used-media");

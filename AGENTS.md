@@ -183,6 +183,10 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 - **Browser media identity invariant:** imports made before durable media names are verified use
   a namespace disjoint from restored media, including hosted and custom runners. A saved project
   may require relinking those session files after reload; it must never bind unrelated retained bytes.
+- **Presentation handoff invariant:** a changed media pool or preview store stops Program and
+  Source playback and requests scrub release during logic, including hidden-window ticks.
+  Synchronize at the shared command boundary before later playback/capture requests. Discard old
+  capture and recorder state directly; teardown must not commit a take or recording edits into the replacement.
 
 **Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
 The core move operation rejects repeated ids before mutation or id allocation; placing one identity

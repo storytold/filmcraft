@@ -48,6 +48,7 @@ enum Outcome {
 pub struct Autosave {
     policy: Policy,
     outcomes: Rc<RefCell<Vec<Outcome>>>,
+    warning: crate::recovery_policy::ValidationWarning,
     /// Monotonic host clock. Web `logic` may run for hidden tabs; egui's input time is stale there.
     clock: web_time::Instant,
 }
@@ -55,16 +56,17 @@ pub struct Autosave {
 impl Default for Autosave {
     /// Default policy with a monotonic host clock, so hidden-tab logic never uses a stale egui input time.
     fn default() -> Self {
-        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now() }
+        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now(), warning: Default::default() }
     }
 }
 
 impl Autosave {
-    /// Process completed writes and schedule recovery snapshots or clean metadata.
-    pub fn tick(&mut self, s: &Session, ctx: &egui::Context) {
+    /// Process completed writes and schedule validated recovery updates; return any persistent dimension warning.
+    pub fn tick(&mut self, s: &Session, ctx: &egui::Context) -> Option<String> {
         if !opfs::available() {
-            return;
+            return None;
         }
+        self.warning.refresh(s.revision, || filmcraft_format::validate_project_dimensions(&s.project));
         let now = self.clock.elapsed().as_secs_f64();
         for o in self.outcomes.borrow_mut().drain(..) {
             match o {
@@ -72,11 +74,19 @@ impl Autosave {
                 Outcome::Clean { ok } => self.policy.cleaned(ok, now),
             }
         }
-        let action = self.policy.tick(now, s.revision, s.saved_revision);
+        let action = match self.policy.tick_checked(now, s.revision, s.saved_revision, || filmcraft_format::validate_project_dimensions(&s.project)) {
+            Ok(action) => action,
+            Err(error) => {
+                log::warn!("browser recovery kept the previous snapshot, if any: {error}");
+                self.warning.reject(s.revision, error.to_string());
+                return self.warning_message();
+            }
+        };
         match action {
             Action::Nothing => {}
             Action::WakeAfter(secs) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs)),
             Action::WriteSnapshot(revision) => {
+                self.warning.clear();
                 // A failed dirty-meta write must not replace the previous snapshot.
                 let bytes = filmcraft_format::encode(&s.project, false);
                 let meta = json!({"dirty": true, "name": crate::recovery_policy::recovery_display_name(&s.project.name), "revision": s.revision});
@@ -96,6 +106,7 @@ impl Autosave {
                 opfs::write_then(META.into(), meta.to_string().into_bytes(), Some(after_meta));
             }
             Action::WriteClean => {
+                self.warning.clear();
                 let (out, ctx) = (self.outcomes.clone(), ctx.clone());
                 let done: opfs::Done = Box::new(move |ok| {
                     out.borrow_mut().push(Outcome::Clean { ok });
@@ -104,6 +115,17 @@ impl Autosave {
                 opfs::write_then(META.into(), json!({"dirty": false}).to_string().into_bytes(), Some(done));
             }
         }
+        self.warning_message()
+    }
+
+    /// Localize the active validation warning without changing the retained snapshot.
+    fn warning_message(&self) -> Option<String> {
+        self.warning.message().map(|error| {
+            filmcraft_ui_egui::i18n::fmt(
+                filmcraft_ui_egui::i18n::t("Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume."),
+                &[("error", error)],
+            )
+        })
     }
 }
 
