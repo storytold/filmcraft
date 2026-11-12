@@ -39,7 +39,7 @@ pub(crate) fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: 
 
 /// AAC-LC (our encoder), 320 kbps stereo by default.
 struct AacEncoder {
-    enc: filmcraft_aac::Encoder,
+    enc: craft_audio::aac::Encoder,
     rate: u32,
     channels: u32,
 }
@@ -70,7 +70,7 @@ impl AudioEncoder for AacEncoder {
 
 /// FLAC (our encoder) in MP4 / QuickTime: one frame of 4096 samples per access unit.
 pub(crate) struct FlacAudio {
-    enc: filmcraft_flac::Encoder,
+    enc: craft_audio::flac::Encoder,
     format: SampleFormat,
     /// Samples of the frame `flush` returns (shorter than a full block).
     tail: u32,
@@ -80,9 +80,9 @@ impl FlacAudio {
     pub(crate) fn new(sample_rate: u32, channels: u32, s: &ExportSettings) -> Result<Self> {
         let format = s.audio.sample_format();
         let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("FLAC: too many audio channels".into()))?;
-        let mut cfg = filmcraft_flac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
+        let mut cfg = craft_audio::flac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
         cfg.level = s.audio.flac_level.min(8);
-        let enc = filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?;
+        let enc = craft_audio::flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?;
         Ok(FlacAudio { enc, format, tail: 0 })
     }
 }
@@ -121,7 +121,7 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
     let max = (6 * sample_rate as u64 * channels.max(1) as u64).min(u32::MAX as u64) as u32;
     let bps = (s.audio.bitrate_kbps.clamp(32, 512) * 1000).min(max);
     Some(
-        filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
+        craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
             .map(|enc| Box::new(AacEncoder { enc, rate: sample_rate, channels }) as Box<dyn AudioEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )

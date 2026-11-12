@@ -181,7 +181,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let previews = s.path.as_deref().map(crate::previews::dir_for_project).filter(|d| include_previews && d.is_dir());
     if let Some(d) = &previews {
-        let b = dir_size(d);
+        let b = dir_size(d).map_err(|e| EngineError::Other(format!("{}: {e}", d.display())))?;
         original_bytes += b;
         result_bytes += b;
     }
@@ -342,20 +342,52 @@ fn estimate_bytes(m: &filmcraft_project::MediaClip, dur: Tick, pr: &Preset) -> u
     (mbps * 1e6 / 8.0 * secs + audio) as u64
 }
 
-fn dir_size(d: &Path) -> u64 {
-    std::fs::read_dir(d)
-        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| if e.path().is_dir() { dir_size(&e.path()) } else { e.metadata().map_or(0, |m| m.len()) }).sum())
-        .unwrap_or(0)
+/// How deep the folder walks below go (a preview folder is one level, or a few).
+const MAX_DIR_DEPTH: u32 = 32;
+
+fn dir_size(d: &Path) -> std::io::Result<u64> {
+    dir_size_at(d, 0)
+}
+
+/// Bytes under `d`, not following symbolic links (a link back to an ancestor would otherwise
+/// repeat the walk over and over).
+fn dir_size_at(d: &Path, depth: u32) -> std::io::Result<u64> {
+    if depth > MAX_DIR_DEPTH {
+        // same limit as copy_dir, so a dry run reports what the job would fail on
+        return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
+    }
+    let Ok(rd) = std::fs::read_dir(d) else { return Ok(0) };
+    let mut n = 0;
+    for e in rd.filter_map(|e| e.ok()) {
+        n += match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size_at(&e.path(), depth + 1)?,
+            // a link to a file counts as the file (copy_dir copies it); links to folders are not followed
+            Ok(t) if t.is_symlink() => std::fs::metadata(e.path()).map_or(0, |m| if m.is_file() { m.len() } else { 0 }),
+            _ => e.metadata().map_or(0, |m| m.len()),
+        };
+    }
+    Ok(n)
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<u64> {
+    copy_dir_at(from, to, 0)
+}
+
+/// Copy the files under `from` (not through symbolic links to folders, which could loop).
+fn copy_dir_at(from: &Path, to: &Path, depth: u32) -> std::io::Result<u64> {
+    if depth > MAX_DIR_DEPTH {
+        return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
+    }
     std::fs::create_dir_all(to)?;
     let mut n = 0;
     for e in std::fs::read_dir(from)? {
         let e = e?;
         let p = e.path();
-        if p.is_dir() {
-            n += copy_dir(&p, &to.join(e.file_name()))?;
+        let t = e.file_type()?;
+        if t.is_dir() {
+            n += copy_dir_at(&p, &to.join(e.file_name()), depth + 1)?;
+        } else if t.is_symlink() && p.is_dir() {
+            continue;
         } else {
             n += std::fs::copy(&p, to.join(e.file_name()))?;
         }
@@ -373,5 +405,47 @@ pub fn commands() -> Vec<CommandSpec> {
         enabled: |s| if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) },
         run,
         journal: false,
+        named: crate::commands::NamedKeys::NONE,
     }]
+}
+
+#[cfg(all(test, unix))]
+mod folder_walk_tests {
+    use super::*;
+
+    #[test]
+    fn links_back_to_an_ancestor_are_not_walked() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/f.bin"), [0u8; 10]).unwrap();
+        for i in 0..8 {
+            std::os::unix::fs::symlink(&dir, dir.join(format!("a/loop{i}"))).unwrap();
+            std::os::unix::fs::symlink(&dir, dir.join(format!("a/b/loop{i}"))).unwrap();
+        }
+        assert_eq!(dir_size(&dir).unwrap(), 10);
+        let out = dir.join("copy-out");
+        assert_eq!(copy_dir(&dir.join("a"), &out).unwrap(), 10);
+        assert!(out.join("b/f.bin").exists() && !out.join("loop0").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_links_count_and_a_too_deep_folder_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-walk2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("f.bin"), [0u8; 10]).unwrap();
+        std::os::unix::fs::symlink(dir.join("f.bin"), dir.join("a/link.bin")).unwrap();
+        assert_eq!(dir_size(&dir.join("a")).unwrap(), 10);
+        let mut deep = dir.join("deep");
+        for _ in 0..=MAX_DIR_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("f.bin"), [0u8; 1]).unwrap();
+        assert!(dir_size(&dir.join("deep")).is_err());
+        assert!(copy_dir(&dir.join("deep"), &dir.join("out")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
