@@ -69,7 +69,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G3. 10-bit and 4:2:2 camera media needs hardware
 
-- **Missing:** our H.264 decoder is 8-bit 4:2:0 only (`crates/h264/README.md`: no High 10, High
+- **Missing:** our H.264 decoder is 8-bit 4:2:0 only (craft-libs `crates/video/src/h264/decode/README.md`: no High 10, High
   4:2:2, 4:4:4, lossless, interlaced field / MBAFF); HEVC has no 4:2:2 / RExt. Most mirrorless and
   cinema cameras record exactly these (Sony XAVC S-I / XAVC HS 4:2:2 10-bit, Panasonic, Canon
   XF-AVC, Fujifilm).
@@ -86,10 +86,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
-  (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
-  the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
-  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
-  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  (Windows) or the integrated GPU (Linux, #2553), then a software adapter (WARP, lavapipe,
+  llvmpipe) with CPU compositing, and keeps the mode that works; a start-up error wgpu reports
+  moves on in the same process, and a wgpu panic before the app exists saves the next mode and
+  starts FilmCraft again in it, once. A fallback mode shows a notice with Use Default Graphics;
+  `--graphics default|dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND`
+  stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
   instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.

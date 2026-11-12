@@ -594,6 +594,7 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
     let cx = filmcraft_render::effects::FxCtx {
         t: filmcraft_time::Tick::ZERO,
         px_scale: 1.0,
+        mask_scale: 1.0,
         seconds: 0.0,
         timecode: "",
         clip_name: "",

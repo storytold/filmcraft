@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use filmcraft_captions::{Document, Format, WriteOptions};
+use filmcraft_captions::{Document, Format};
 use filmcraft_edit as edit;
 use filmcraft_edit::Edge;
 use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, ClipId, SequenceSettings, TrackId};
@@ -137,7 +137,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: O
             next += 1;
             v
         };
-        let mut track = filmcraft_captions::track_from_document(&doc, tid, &track_name, format.track_format(), &mut alloc);
+        let mut track = filmcraft_captions::track_from_document(&doc, tid, &track_name, filmcraft_captions::track_format(format), &mut alloc);
         if let Some(language) = language {
             track.language = language.to_string();
         }
@@ -269,7 +269,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) };
+    let opts = filmcraft_captions::write_options(df, Some(seq.settings.frame_rate));
     let bytes = filmcraft_captions::write(&doc, format, opts);
     let warnings = filmcraft_captions::charset_warnings(&doc, format, opts);
     let n = doc.cues.len();

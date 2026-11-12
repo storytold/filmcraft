@@ -1,7 +1,7 @@
 use super::*;
 
 const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Software];
-const LINUX: &[Mode] = &[Mode::Default, Mode::Software];
+const LINUX: &[Mode] = &[Mode::Default, Mode::LowPower, Mode::Software];
 const MACOS: &[Mode] = &[Mode::Default];
 
 fn configured(mode: Mode, backend_override: Option<Backends>, windows: bool) -> (Backends, bool) {
@@ -18,7 +18,7 @@ fn no_mode_validates_indirect_calls() {
     if std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_some() {
         return;
     }
-    for mode in [Mode::Default, Mode::Dx12, Mode::Software] {
+    for mode in [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software] {
         let mut options = NativeOptions::default();
         apply_for(&mut options, mode, None, false);
         let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
@@ -69,6 +69,14 @@ fn fallback_modes_leave_out_the_crashing_backends() {
     // Software on Windows is WARP (DX12), never GL (atio6axx.dll, #477).
     assert_eq!(configured(Mode::Software, None, true), (Backends::DX12, true));
     assert_eq!(configured(Mode::Software, None, false), (Backends::VULKAN | Backends::GL, true));
+    // The integrated GPU: every backend, wgpu's choice of adapter, low power (#2553).
+    let mut options = NativeOptions::default();
+    apply_for(&mut options, Mode::LowPower, None, false);
+    let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
+        panic!("default native options must create a wgpu instance");
+    };
+    assert_eq!(create.power_preference, wgpu::PowerPreference::LowPower);
+    assert!(create.native_adapter_selector.is_none());
     // Off Windows the default is eframe's own.
     let WgpuSetup::CreateNew(eframe_default) = NativeOptions::default().wgpu_options.wgpu_setup else {
         panic!("default native options must create a wgpu instance");
@@ -102,7 +110,9 @@ fn two_failed_starts_in_a_row_move_on_to_the_next_mode_and_keep_it() {
     // the second in a row moves on: DX12, then software
     assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
     assert_eq!(mode_after(saved(Mode::Dx12, 1), &[dead(Mode::Dx12)], WINDOWS), (Mode::Software, 0, true));
-    assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::Software, 0, true));
+    // on Linux the integrated GPU comes before software
+    assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::LowPower, 0, true));
+    assert_eq!(mode_after(saved(Mode::LowPower, 1), &[dead(Mode::LowPower)], LINUX), (Mode::Software, 0, true));
     // two dead instances found at once count as two
     assert_eq!(mode_after(None, &[dead(Mode::Default), dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
     // a saved mode is kept
@@ -281,7 +291,7 @@ fn corrupt_huge_or_foreign_files_start_with_the_default() {
     let mut start = GraphicsStart::begin_at(Some(&file), false, None, NOW, 52);
     assert_eq!(start.mode(), Mode::Default);
     start.confirm();
-    let _ = start.step_down();
+    let _ = start.step_down("test failure");
     assert!(start.reset_to_default().is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -347,7 +357,7 @@ fn an_explicit_backend_leaves_the_data_folder_alone() {
     let mut start = GraphicsStart::begin_at(Some(&dir), true, None, NOW, 90);
     assert_eq!(start.mode(), Mode::Default);
     start.confirm();
-    let _ = start.step_down();
+    let _ = start.step_down("test failure");
     assert_eq!(start.reset_to_default(), Ok(()));
     assert_eq!(state_of(&dir), saved(Mode::Software, 1));
     assert_eq!(attempt_files(&dir), 0);
@@ -365,12 +375,12 @@ fn step_down_walks_the_ladder_and_saves_each_mode_at_once() {
     let dir = temp_dir("step");
     let mut start = launch(&dir, ME, NOW);
     for expected in LADDER.iter().skip(1) {
-        assert!(start.step_down());
+        assert!(start.step_down("test failure"));
         assert_eq!(start.mode(), *expected);
         assert_eq!(state_of(&dir), saved(*expected, 0));
         assert_eq!(attempt_files(&dir), 1, "one attempt file per process");
     }
-    assert!(!start.step_down(), "nothing after the last mode");
+    assert!(!start.step_down("test failure"), "nothing after the last mode");
     start.finish();
     assert_eq!(attempt_files(&dir), 0);
     let _ = std::fs::remove_dir_all(&dir);
@@ -392,4 +402,82 @@ fn the_software_selector_only_picks_a_software_adapter() {
         }
     }
     assert!(pick_software(&[], None).is_err());
+}
+
+#[test]
+fn a_failed_fallback_goes_back_up_to_a_mode_not_tried() {
+    // #2581: a saved software mode where no software adapter exists tries the default next.
+    assert_eq!(next_untried(LINUX, Mode::Software, &[Mode::Software]), Some(Mode::Default));
+    assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Software]), Some(Mode::Default));
+    // down the ladder first, as before
+    assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Default]), Some(Mode::Dx12));
+    assert_eq!(next_untried(WINDOWS, Mode::Dx12, &[Mode::Dx12]), Some(Mode::Software));
+    // a saved DirectX 12 that fails, then software that fails, ends at the default
+    assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Dx12, Mode::Software]), Some(Mode::Default));
+    // every mode tried: nothing left
+    assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Dx12, Mode::Software, Mode::Default]), None);
+    assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::Default]), Some(Mode::LowPower));
+    assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::LowPower, Mode::Default]), None);
+    assert_eq!(next_untried(MACOS, Mode::Default, &[Mode::Default]), None);
+}
+
+#[test]
+fn a_saved_fallback_that_fails_goes_back_to_the_default_and_saves_it() {
+    let dir = temp_dir("back-up");
+    let last = LADDER.last().copied().unwrap_or(Mode::Default);
+    let _ = write_atomic(&dir.join(STATE_FILE), &state_json(Saved { mode: last, failures: 0 }));
+    let mut start = launch(&dir, ME, NOW);
+    assert_eq!(start.mode(), last);
+    if LADDER.len() > 1 {
+        assert!(start.step_down("no software graphics adapter (WARP, lavapipe, llvmpipe) among 3 adapters"));
+        assert_eq!(start.mode(), Mode::Default, "back up to the default, not the end of the start");
+        assert_eq!(state_of(&dir), saved(Mode::Default, 0));
+        assert_eq!(start.failed().len(), 1);
+    }
+    // every other mode fails too: the start ends, with each failure kept for the message
+    while start.step_down("still failing") {}
+    assert_eq!(start.failed().len(), LADDER.len());
+    start.finish();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_failure_message_lists_each_mode_how_to_choose_one_and_the_log() {
+    let failed = vec![
+        (Mode::Default, "Adapter selection failed: no adapter".to_string()),
+        (Mode::Software, "no software graphics adapter (WARP, lavapipe, llvmpipe) among 3 adapters".to_string()),
+    ];
+    let log = PathBuf::from("/data/Logs/filmcraft.log");
+    let msg = failure_message_for("wgpu error: no software graphics adapter", &failed, Some(&log), LINUX);
+    assert!(msg.starts_with("FilmCraft could not start its window: wgpu error"), "{msg}");
+    assert!(msg.contains("• default graphics (--graphics default): Adapter selection failed: no adapter"), "{msg}");
+    assert!(msg.contains("• software rendering (--graphics software): no software graphics adapter"), "{msg}");
+    assert!(msg.contains("start FilmCraft with --graphics default, --graphics low-power, --graphics software."), "{msg}");
+    assert!(msg.contains(env!("CARGO_PKG_VERSION")), "{msg}");
+    assert!(msg.contains(&log.display().to_string()), "{msg}");
+    // macOS has one mode: no choice to offer, and no list when nothing was tried
+    let mac = failure_message_for("no display", &[], None, MACOS);
+    assert!(!mac.contains("--graphics"), "{mac}");
+    assert!(!mac.contains("Graphics modes tried"), "{mac}");
+    // a very long error is cut, on a character boundary
+    let long = "é".repeat(MAX_ERROR_SHOWN * 2);
+    let cut = failure_message_for(&long, &[], None, LINUX);
+    assert!(cut.contains('…') && cut.chars().filter(|c| *c == 'é').count() == MAX_ERROR_SHOWN, "{cut}");
+}
+
+/// The fallback each platform actually uses, so a mode added to one is in its ladder (#2553).
+#[test]
+fn each_platform_ladder_has_its_modes() {
+    let expected = if cfg!(target_os = "windows") {
+        WINDOWS
+    } else if cfg!(target_os = "macos") {
+        MACOS
+    } else {
+        LINUX
+    };
+    assert_eq!(LADDER, expected);
+    for mode in LADDER {
+        assert_eq!(Mode::parse(mode.name()), Some(*mode));
+    }
+    assert_eq!(Mode::parse("low-power"), Some(Mode::LowPower));
 }
