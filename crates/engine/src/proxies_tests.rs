@@ -451,3 +451,31 @@ fn an_item_changed_since_the_job_started_is_not_the_same_source() {
     assert!(!crate::proxies::unchanged_since_start(&s.project, items[0], &started));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A job that finishes after another project was installed must not apply its outputs: its item ids
+/// may name unrelated items there.
+#[test]
+fn a_finished_job_of_a_replaced_project_applies_nothing() {
+    let root = tmp_dir("proxy-epoch");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::OceanSunset, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let before = s.project.item(items[0]).unwrap().as_media().unwrap().media.clone();
+    let out = root.join("copy.mov");
+    make_movie(&out, DemoScene::Aurora, W, H, 12);
+    let pending = |epoch| crate::proxies::PendingJob {
+        job: u64::MAX,
+        on_done: crate::proxies::OnDone::ReplaceMedia,
+        outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![(items[0], out.to_string_lossy().into_owned())])),
+        source_durations: Default::default(),
+        started_from: Vec::new(),
+        epoch,
+    };
+    s.media_jobs.push(pending(s.document_epoch.wrapping_sub(1)));
+    crate::proxies::poll(&mut s);
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().media, before, "a stale job changed the project");
+    // the same job of the current project does apply
+    s.media_jobs.push(pending(s.document_epoch));
+    crate::proxies::poll(&mut s);
+    assert_ne!(s.project.item(items[0]).unwrap().as_media().unwrap().media, before);
+}
