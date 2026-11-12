@@ -190,24 +190,28 @@ pub fn route_work_area_delete(app: &mut FilmcraftApp, ctx: &egui::Context, id: &
     if id != "sequence.deleteWorkAreaRenderFiles" || !params.as_object().is_none_or(|m| m.is_empty()) {
         return None;
     }
-    if app.session.active_sequence().and_then(|q| q.work_area).is_none() {
+    let Some(work_area) = app.session.active_sequence().and_then(|q| q.work_area) else {
         return Some(Err("enable the Work Area Bar before deleting its render files".into()));
-    }
-    let sequence = app.session.state.active_sequence;
-    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_WORK_AREA), sequence));
+    };
+    let target: WorkAreaTarget = (app.session.state.active_sequence, work_area);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_WORK_AREA), target));
     Some(Ok(serde_json::json!({"dialog": "deleteWorkAreaRenderFiles"})))
 }
 
+/// The sequence and work area a Delete Work Area Render Files confirmation was opened for.
+type WorkAreaTarget = (Option<filmcraft_engine::project::ItemId>, filmcraft_time::TimeRange);
+
 /// The Delete Work Area Render Files confirmation (automation ids
 /// `sequence.deleteWorkAreaRenderFiles.cancel` and `sequence.deleteWorkAreaRenderFiles.ok`). It
-/// closes by itself when another sequence becomes active.
+/// closes by itself when another sequence becomes active or the work area moves, so OK deletes
+/// only the range the confirmation was opened for.
 pub fn work_area_delete_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let key = egui::Id::unique(CONFIRM_DELETE_WORK_AREA);
-    let Some(sequence) = ctx.data(|d| d.get_temp::<Option<filmcraft_engine::project::ItemId>>(key)) else {
+    let Some((sequence, work_area)) = ctx.data(|d| d.get_temp::<WorkAreaTarget>(key)) else {
         return;
     };
-    if sequence != app.session.state.active_sequence {
-        ctx.data_mut(|d| d.remove::<Option<filmcraft_engine::project::ItemId>>(key));
+    if sequence != app.session.state.active_sequence || app.session.active_sequence().and_then(|q| q.work_area) != Some(work_area) {
+        ctx.data_mut(|d| d.remove::<WorkAreaTarget>(key));
         return;
     }
     let mut close = false;
@@ -234,7 +238,7 @@ pub fn work_area_delete_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
         });
     if close || crate::widgets::escape_closes(ctx) {
-        ctx.data_mut(|d| d.remove::<Option<filmcraft_engine::project::ItemId>>(key));
+        ctx.data_mut(|d| d.remove::<WorkAreaTarget>(key));
     }
 }
 

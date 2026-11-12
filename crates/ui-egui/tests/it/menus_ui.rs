@@ -531,6 +531,27 @@ fn work_area_delete_dialog_closes_when_the_active_sequence_changes() {
 }
 
 #[test]
+fn work_area_delete_dialog_closes_when_the_work_area_moves() {
+    let mut d = Driver::new();
+    d.exec("sequence.workAreaBar", json!({"show": true}));
+    let frame = d.app().session.sequence_rate().frame_duration();
+    d.exec("sequence.setWorkArea", json!({"start": 0, "end": frame.0}));
+    d.exec("sequence.renderEntireWorkArea", json!({"wait": true}));
+    let count = d.app().session.previews.count();
+    assert!(count > 0);
+    assert_eq!(d.menu("sequence.deleteWorkAreaRenderFiles")["dialog"], "deleteWorkAreaRenderFiles");
+    assert!(d.has("sequence.deleteWorkAreaRenderFiles.ok"));
+    d.exec("sequence.setWorkArea", json!({"start": 0, "end": frame.0 * 2}));
+    d.frames(2);
+    assert!(!d.has("sequence.deleteWorkAreaRenderFiles.ok"), "the confirmation named the work area it was opened for");
+    assert_eq!(d.app().session.previews.count(), count, "moving the work area does not leave OK deleting a different range");
+    d.exec("sequence.setWorkArea", json!({"start": 0, "end": frame.0}));
+    d.frames(2);
+    assert!(!d.has("sequence.deleteWorkAreaRenderFiles.ok"), "moving the work area back does not reopen the confirmation");
+    let _ = std::fs::remove_dir_all(d.app().session.previews.dir().unwrap());
+}
+
+#[test]
 fn saving_the_project_says_where_in_the_status_bar() {
     let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
