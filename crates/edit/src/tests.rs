@@ -1392,3 +1392,84 @@ fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
         assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
+
+/// Trims, razor cuts, rolls and slides that move a clip's source In keep its source Out where it
+/// was, at speeds where a frame is not a whole number of source ticks. Each edit used to add its own
+/// rounded share to the source In, so the Out could end up a tick past the end of the media, and an
+/// Out trim then shortened the clip by a tick instead of stopping at the media end.
+#[test]
+fn edits_that_move_the_source_in_keep_the_source_out() {
+    fn set(fx: &mut Fx, c: ClipId, speed: f64, reverse: bool, source_in: Tick) {
+        let it = fx.seq.find_item_mut(c).unwrap().1;
+        (it.speed, it.reverse, it.source_in) = (speed, reverse, source_in);
+    }
+    fn out(fx: &Fx, c: ClipId) -> Tick {
+        fx.seq.find_item(c).unwrap().1.source_out()
+    }
+    for speed in [12.0 / 11.0, 156.0 / 155.0, 25.0 / 23.976, 1.0 / 1.1] {
+        // a forward clip whose Out is the end of its media, trimmed at its In edge
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let c = fx.put(v1, 100, 200, 0);
+        set(&mut fx, c, speed, false, f(1000) - src_of(f(200), speed));
+        for k in 1..=40 {
+            let mut n = fx.next;
+            assert_eq!(trim(&mut fx.seq, c, Edge::In, TrimMode::Regular, f(1), &mut Fx::ctx(&mut n)).unwrap(), f(1));
+            assert_eq!(out(&fx, c), f(1000), "speed {speed}: In trim {k}");
+            let got = trim(&mut fx.seq, c, Edge::Out, TrimMode::Regular, f(5), &mut Fx::ctx(&mut n)).unwrap();
+            assert_eq!(got, Tick::ZERO, "speed {speed}: an Out trim after In trim {k} stops at the media end");
+        }
+        // extending the In as far as the media allows keeps both ends inside the media
+        let mut n = fx.next;
+        trim(&mut fx.seq, c, Edge::In, TrimMode::Ripple, -f(5000), &mut Fx::ctx(&mut n)).unwrap();
+        let it = fx.seq.find_item(c).unwrap().1;
+        assert!(it.source_in >= Tick::ZERO, "speed {speed}: source In {:?} before the media start", it.source_in);
+        assert_eq!(it.source_out(), f(1000), "speed {speed}: extended In");
+
+        // a razor cut anywhere in the clip: the right piece keeps the Out, and the cut stays a
+        // through edit
+        for k in 1..200 {
+            let mut fx = Fx::new();
+            let v1 = fx.v(0);
+            let c = fx.put(v1, 100, 200, 0);
+            set(&mut fx, c, speed, false, f(1000) - src_of(f(200), speed));
+            let source_in = fx.seq.find_item(c).unwrap().1.source_in;
+            // `put` used `fx.next` for the clip, so the right piece's id starts after it
+            let mut n = fx.next + 1;
+            let new = razor(&mut fx.seq, &[], f(100 + k), &mut Fx::ctx(&mut n));
+            assert_eq!(new.len(), 1, "speed {speed}: cut at {k}");
+            assert_ne!(new[0], c, "speed {speed}: cut at {k}");
+            let (left, right) = (fx.seq.find_item(c).unwrap().1, fx.seq.find_item(new[0]).unwrap().1);
+            assert_eq!((left.source_in, right.source_out()), (source_in, f(1000)), "speed {speed}: cut at {k}");
+            assert!(through::is_through_edit(left, right), "speed {speed}: cut at {k}");
+        }
+
+        // a roll between a reversed clip, which grows at its Out edge, and a forward one, which
+        // gives up frames at its In edge
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let (a, b) = (fx.put(v1, 0, 200, 0), fx.put(v1, 200, 200, 0));
+        set(&mut fx, a, speed, true, f(500));
+        set(&mut fx, b, speed, false, f(1000) - src_of(f(200), speed));
+        let outs = (out(&fx, a), out(&fx, b));
+        for k in 1..=40 {
+            let mut n = fx.next;
+            assert_eq!(roll(&mut fx.seq, a, b, f(1), &mut Fx::ctx(&mut n)).unwrap(), f(1));
+            assert_eq!((out(&fx, a), out(&fx, b)), outs, "speed {speed}: roll {k}");
+        }
+
+        // a slide between the same two kinds of neighbour
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let (p, m, q) = (fx.put(v1, 0, 200, 0), fx.put(v1, 200, 100, 0), fx.put(v1, 300, 200, 0));
+        set(&mut fx, p, speed, true, f(500));
+        set(&mut fx, q, speed, false, f(1000) - src_of(f(200), speed));
+        let outs = (out(&fx, p), out(&fx, q));
+        for k in 1..=40 {
+            let mut n = fx.next;
+            assert_eq!(slide(&mut fx.seq, m, f(1), &mut Fx::ctx(&mut n)).unwrap(), f(1));
+            assert_eq!((out(&fx, p), out(&fx, q)), outs, "speed {speed}: slide {k}");
+        }
+        fx.seq.check().unwrap();
+    }
+}
