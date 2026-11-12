@@ -245,7 +245,8 @@ pub fn unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[Str
     loop {
         let name = if n == 1 { format!("{stem}{suffix}.{ext}") } else { format!("{stem}{suffix} {n}.{ext}") };
         let p = dir.join(name);
-        if !p.exists() && !taken.contains(&p.to_string_lossy().into_owned()) {
+        // a dangling symbolic link is taken too: writing through it would create the file where it points
+        if std::fs::symlink_metadata(&p).is_err() && !taken.contains(&p.to_string_lossy().into_owned()) {
             return p;
         }
         n += 1;
