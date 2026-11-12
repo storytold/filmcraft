@@ -333,6 +333,7 @@ impl FilmcraftApp {
         self.logic_command_inbox(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
+        self.idle_audio(ctx);
         self.poll_jobs(ctx);
         capture::drain(self, ctx);
         capture::request_hidden_paint(self, ctx);

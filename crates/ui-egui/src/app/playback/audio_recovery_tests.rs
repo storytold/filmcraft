@@ -534,3 +534,45 @@ fn playback_gives_the_scrub_device_back_before_it_opens_its_stream() {
     assert!(!app.scrub.is_open(), "the scrub stream counts as closed");
     app.stop();
 }
+
+/// A playback output that counts the idle passes it is told of and asks to be called back.
+struct IdleDevice(Arc<std::sync::Mutex<u32>>);
+
+impl AudioOut for IdleDevice {
+    fn sample_rate(&self) -> u32 {
+        48000
+    }
+    fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        Ok(48000)
+    }
+    fn stop(&mut self) {}
+    fn played_frames(&self) -> Option<u64> {
+        Some(0)
+    }
+    fn idle(&mut self) -> Option<std::time::Duration> {
+        *self.0.lock().unwrap() += 1;
+        Some(std::time::Duration::from_secs(7))
+    }
+}
+
+/// With nothing playing, every pass lets the playback output close the stream it kept open
+/// since the last play, and the UI comes back when the output says that is due; while a monitor
+/// plays the output is left alone.
+#[test]
+fn an_idle_pass_lets_the_playback_output_close_its_stream() {
+    let mut app = FilmcraftApp::new(Session::default());
+    let passes = Arc::new(std::sync::Mutex::new(0));
+    app.audio = Some(Box::new(IdleDevice(passes.clone())));
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.idle_audio(ui.ctx()));
+    output.textures_delta.clear();
+    assert_eq!(*passes.lock().unwrap(), 1);
+    let delay = output.viewport_output.values().map(|v| v.repaint_delay).min().unwrap_or(std::time::Duration::MAX);
+    assert!(delay <= std::time::Duration::from_secs(7), "the UI comes back for the close: {delay:?}");
+    app.playback.playing = true;
+    app.idle_audio(&ctx);
+    app.playback.playing = false;
+    app.source_playback.clock.playing = true;
+    app.idle_audio(&ctx);
+    assert_eq!(*passes.lock().unwrap(), 1, "left alone while a monitor plays");
+}

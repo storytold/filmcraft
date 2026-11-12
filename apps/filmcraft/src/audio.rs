@@ -36,6 +36,9 @@ pub struct CpalOut {
     fill: Arc<Mutex<Fill>>,
     /// A playback's mixer is in `fill`.
     playing: bool,
+    /// When (on `epoch`) the idle mixer went into `fill`: an open stream closes [`IDLE_CLOSE`]
+    /// later ([`AudioOut::idle`]).
+    idle_since: Option<Duration>,
     /// Settings changed since the stream opened: the next start (or prepare) reopens it.
     stale: bool,
     played: Arc<AtomicU64>,
@@ -260,6 +263,7 @@ impl CpalOut {
             stream: None,
             fill: Arc::new(Mutex::new(idle_fill())),
             playing: false,
+            idle_since: None,
             stale: false,
             played: Arc::new(AtomicU64::new(0)),
             health: Arc::new(Health::default()),
@@ -335,7 +339,21 @@ impl CpalOut {
         *slot = fill;
         self.played.store(0, Ordering::SeqCst);
         self.playing = playing;
+        self.idle_since = (!playing).then(|| self.epoch.elapsed());
     }
+}
+
+/// How long the stream stays open with nothing playing. Open, it saves the next play the 20 to
+/// 30 ms of opening it (which [`AudioOut::prepare`] spends during that play's preroll anyway),
+/// but a stream that renders silence keeps the device powered and, on Windows, holds a power
+/// request that keeps the system from going to sleep by itself: an editor left open overnight
+/// would keep the machine awake. Half a minute covers stopping and playing again while editing.
+const IDLE_CLOSE: Duration = Duration::from_secs(30);
+
+/// How long a stream idle since `since` stays open at `now` (both on one clock): zero when it
+/// is time to close it. None when it is not idle.
+fn idle_left(since: Option<Duration>, now: Duration) -> Option<Duration> {
+    since.map(|since| IDLE_CLOSE.saturating_sub(now.saturating_sub(since)))
 }
 
 /// What the audio thread reports to the UI thread.
@@ -516,6 +534,17 @@ impl AudioOut for CpalOut {
         if !self.playing {
             self.stream = None;
         }
+    }
+    fn idle(&mut self) -> Option<Duration> {
+        if self.playing || self.stream.is_none() {
+            return None;
+        }
+        let left = idle_left(self.idle_since, self.epoch.elapsed())?;
+        if left.is_zero() {
+            self.stream = None;
+            return None;
+        }
+        Some(left)
     }
     fn recover(&mut self) {
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
@@ -904,6 +933,19 @@ mod tests {
         assert_eq!(w.check(ms(20), 0, false, true), Verdict::GiveUp);
         // sporadic failures far apart keep being recovered
         assert_eq!(w.check(ms(10_006), 0, false, true), Verdict::Restart);
+    }
+
+    /// The stream kept open between plays closes half a minute after the last one stopped:
+    /// open, it keeps the device powered and the system awake.
+    #[test]
+    fn an_idle_stream_closes_after_a_while() {
+        let s = Duration::from_secs;
+        assert_eq!(idle_left(None, s(100)), None, "playing: nothing to close");
+        assert_eq!(idle_left(Some(s(100)), s(100)), Some(IDLE_CLOSE));
+        assert_eq!(idle_left(Some(s(100)), s(110)), Some(IDLE_CLOSE - s(10)));
+        assert_eq!(idle_left(Some(s(100)), s(100) + IDLE_CLOSE), Some(Duration::ZERO), "due");
+        assert_eq!(idle_left(Some(s(100)), s(100_000)), Some(Duration::ZERO));
+        assert_eq!(idle_left(Some(s(100)), s(50)), Some(IDLE_CLOSE), "a clock that went back closes nothing early");
     }
 
     /// Between plays the stream stays open on the idle mixer: silence, whatever was in the buffer.
