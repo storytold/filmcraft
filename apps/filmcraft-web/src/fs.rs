@@ -39,6 +39,8 @@ enum Entry {
 #[derive(Default)]
 struct Fs {
     entries: HashMap<String, Entry>,
+    /// Recovery media keep their durable names even when skipped or unreadable during restoration.
+    reserved_paths: HashSet<String>,
     blobs: HashMap<u32, web_sys::Blob>,
     next_id: u32,
     chunks: HashMap<(u32, u64), (Arc<[u8]>, u64)>,
@@ -71,6 +73,14 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Reserve a recovery media name without loading or exposing the file in this session.
+pub fn reserve_blob_name(name: &str) {
+    let clean: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
+    FS.with(|fs| {
+        fs.borrow_mut().reserved_paths.insert(format!("/files/{clean}"));
+    });
+}
+
 /// Register a browser `File` (or named `Blob`) at an unused virtual path; collisions get numbered names.
 /// Name + size do not identify content: replacing an occupied path changes every project item referencing it.
 pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
@@ -85,7 +95,7 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
         let mut n = 1;
         let path = loop {
             let p = if n == 1 { format!("/files/{clean}") } else { format!("/files/{stem} ({n}){ext}") };
-            if !fs.entries.contains_key(&p) {
+            if !fs.entries.contains_key(&p) && !fs.reserved_paths.contains(&p) {
                 break p;
             }
             n += 1;
@@ -101,7 +111,12 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
 
 /// Put bytes at a path (no download).
 pub fn put(path: &str, data: Vec<u8>) {
-    FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
+    put_shared(path, data.into());
+}
+
+/// Register shared bytes without copying a recovery file that must also be held for download.
+pub fn put_shared(path: &str, data: Arc<[u8]>) {
+    FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data)));
 }
 
 /// The in-memory bytes written at `path` (saved projects and exports are held here; host mode
@@ -345,7 +360,11 @@ impl Services for WebServices {
         filmcraft_media::reader::read_range(&*r, 0, r.len() as usize)
     }
 
+    /// Store an engine write in memory; permitted `/opfs/` paths also schedule persistence, and other paths invoke the host/download hook.
     fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
+        if !crate::recovery_policy::engine_opfs_write_allowed(path) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{path}: browser recovery storage is reserved")));
+        }
         if let Some(rel) = path.strip_prefix("/opfs/") {
             crate::opfs::write(rel.to_string(), data.to_vec());
         }
@@ -368,7 +387,7 @@ impl Services for WebServices {
         }
         let hook = FS.with(|fs| {
             let mut fs = fs.borrow_mut();
-            if fs.entries.contains_key(path) {
+            if fs.entries.contains_key(path) || fs.reserved_paths.contains(path) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
             fs.entries.insert(path.to_owned(), Entry::Mem(Arc::from(data)));
@@ -434,6 +453,39 @@ impl Services for WebServices {
     }
 }
 
+/// Start a direct download when the recovery button is activated, before a new snapshot may replace
+/// the rejected one. A single explicit download does not need export-burst pacing.
+pub fn download_bytes_now(bytes: &[u8], name: &str) -> Result<(), wasm_bindgen::JsValue> {
+    let blob = bytes_to_blob(bytes, "application/octet-stream")?;
+    download_blob_now(&blob, name)
+}
+
+/// Start a download from an OPFS-backed File without copying it into wasm memory.
+pub fn download_blob_now(blob: &web_sys::Blob, name: &str) -> Result<(), wasm_bindgen::JsValue> {
+    let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let a: web_sys::HtmlAnchorElement = doc.create_element("a")?.dyn_into()?;
+    a.set_download(file_name(name));
+    a.style().set_property("display", "none")?;
+    let url = web_sys::Url::create_object_url_with_blob(blob)?;
+    a.set_href(&url);
+    let Some(body) = doc.body() else {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return Err(wasm_bindgen::JsValue::from_str("no body"));
+    };
+    if let Err(error) = body.append_child(&a) {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return Err(error);
+    }
+    a.click();
+    wasm_bindgen_futures::spawn_local(async move {
+        // Give the browser time to start the download before removing its hidden anchor.
+        sleep(60_000).await;
+        a.remove();
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
+    Ok(())
+}
+
 thread_local! {
     static DOWNLOAD_CLOCK: web_time::Instant = web_time::Instant::now();
 }
@@ -443,11 +495,11 @@ thread_local! {
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let blob = bytes_to_blob(data, "application/octet-stream")?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
     let a: web_sys::HtmlAnchorElement = doc.create_element("a")?.dyn_into()?;
-    a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    a.set_href(&url);
     let now_ms = DOWNLOAD_CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0);
     let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(now_ms));
     let name = name.to_owned();

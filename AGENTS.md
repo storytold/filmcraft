@@ -176,6 +176,11 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
+- **Failed-save identity invariant:** stage project-name and path adoption with the serialized output;
+  install them only after `Services::write_file` returns success. If that writer returns an error,
+  Save and Save As must preserve the live project, path and saved revision. Save a Copy never
+  adopts its destination; asynchronous host durability remains the service's responsibility.
+
 **Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
 The core move operation rejects repeated ids before mutation or id allocation; placing one identity
 on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids
