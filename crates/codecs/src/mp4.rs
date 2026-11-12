@@ -490,6 +490,9 @@ impl VideoSamples for Mp4Video<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read(self.track, i)
     }
+    fn sample_size(&self, i: usize) -> Option<u64> {
+        Some(u64::from(self.src.file.tracks.get(self.track)?.samples.get(i)?.size))
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         make_video_decoder(&self.src.file.tracks[self.track].entries[0])
     }
@@ -610,7 +613,7 @@ fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(
         return Some((rate, channels));
     }
     let data = t.samples.first().and_then(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, s.size as usize).ok());
-    let h = filmcraft_ac3::parse_header(data.as_deref()?).ok()?;
+    let h = craft_audio::ac3::parse_header(data.as_deref()?).ok()?;
     // A dependent E-AC-3 substream doesn't describe the full program; report only if the first
     // packet is the primary independent substream.
     let is_primary = if let CodecConfig::Eac3 { .. } = &entry.codec { h.is_primary() } else { true };
@@ -738,7 +741,7 @@ pub(crate) fn codec_label(c: &CodecConfig) -> String {
         // the editing codec of iMovie and Final Cut; no decoder here reads it (#3646)
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"icod" => "Apple Intermediate Codec".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
-        CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
+        CodecConfig::Apv(a) => match craft_video::apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -783,7 +786,8 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
 /// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
 /// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
 fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
-    let from_sps = a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| craft_video::h264::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     if let Some(sps) = from_sps {
         return Some((sps.chroma_format_idc, sps.bit_depth_luma));
     }
@@ -801,7 +805,8 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
 /// `chroma_format_idc` and luma bit depth of an HEVC track: from its first SPS, which is what the
 /// decoder decodes, else the `hvcC` record's own fields (which a muxer may leave at 0, i.e. "4:0:0").
 fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
-    let from_sps = h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| filmcraft_hevc::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| craft_video::hevc::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     match from_sps {
         Some(sps) => (sps.chroma_format_idc, sps.bit_depth_luma),
         None => (h.chroma_format_idc as u32, h.bit_depth_luma as u32),
@@ -824,7 +829,7 @@ fn pixfmt_label(c: &CodecConfig) -> String {
             format!("YUV {sub} {}-bit", c.bit_depth.max(8))
         }
         CodecConfig::Apv(a) => {
-            let chroma = filmcraft_apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(filmcraft_apv::ChromaFormat::Yuv422);
+            let chroma = craft_video::apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(craft_video::apv::ChromaFormat::Yuv422);
             crate::apv::apv_pixfmt_label(chroma, a.bit_depth_minus8.saturating_add(8))
         }
         // 4444 until the first frame header says whether it codes alpha (`open_reader`)
@@ -1016,7 +1021,7 @@ mod he_aac_tests {
         let core = 22_050u32;
         let n = core as usize * 2;
         let tone: Vec<f32> = (0..n).map(|i| 0.25 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / core as f32).sin()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(core, 2, 64_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(core, 2, 64_000)).unwrap();
         let mut aus = enc.encode(&[&tone, &tone]);
         aus.extend(enc.flush());
         // AOT 5, core 22.05 kHz, stereo, extension 44.1 kHz, core AOT 2
@@ -1045,7 +1050,7 @@ mod he_aac_tests {
         use filmcraft_isobmff::Edit;
         let rate = 32_000u32;
         let tone: Vec<f32> = (0..rate as usize / 2).map(|i| 0.25 * (i as f32 * 0.05).sin()).collect();
-        let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
         let mut aus = enc.encode(&[&tone]);
         aus.extend(enc.flush());
         // AOT 2 (AAC-LC), 32 kHz (index 5), mono
@@ -1117,7 +1122,7 @@ mod corrupt_audio_tests {
     fn failed_aac_packet_silences_overlap_independent_of_request_boundary() {
         let rate = 48_000u32;
         let tone: Vec<f32> = (0..8192).map(|i| 0.3 * (i as f32 * 0.13).sin()).collect();
-        let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut encoder = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
         let mut units = encoder.encode(&[&tone]);
         units.extend(encoder.flush());
         assert!(units.len() >= 2);

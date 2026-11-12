@@ -1401,7 +1401,8 @@ impl Exp<'_, '_> {
             return;
         };
         let media = if kind == TrackKind::Video { "video" } else { "audio" };
-        self.open_effect(def.name, def.id, def.category.get(1).copied().unwrap_or("Filter"), "filter", media, e.enabled);
+        // the name an export has always written, so a UI rename does not change the file
+        self.open_effect(filmcraft_project::interchange_name(def), def.id, def.category.get(1).copied().unwrap_or("Filter"), "filter", media, e.enabled);
         for pd in &def.params {
             let Some(p) = e.params.get(pd.id) else { continue };
             match &p.value {

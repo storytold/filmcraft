@@ -40,7 +40,7 @@ only). "Tested" names the evidence.
 | MXF OP1a / OP-Atom | read + write (XDCAM, AVC-Intra, P2, AS-10 / AS-11, JPEG 2000, DNx) | yes (AVC, DNx, ProRes, MPEG-2, PCM / AES3, timecode) | OP1a (DNxHR, ProRes, H.264), OP-Atom | index-table seeking tests | 70% |
 | MPEG TS / PS (AVCHD `.mts`, `.m2ts`, `.ts`, `.mpg`, `.vob`, `.mod`) | read; write MPEG-2 / Blu-ray / DVD | yes | **no** | fixtures | 65% |
 | Matroska / WebM | read (limited) | yes (H.264, HEVC, VP8 (#1064, fixes the black WebM of #432), VP9, AV1, ProRes, MJPEG + AAC, Opus, FLAC, MP3, Vorbis, PCM); MKV multi-audio (#601) | no | fixtures; audio sample-aligned with the encoded signal (#790) | 75% |
-| AVI | read + write | yes: AVI 1.0 and OpenDML (`crates/avi`, #650); Motion JPEG, H.264, HEVC, uncompressed RGB / YUV with PCM, MP3, MP2 or AC-3; no DivX / Xvid or DV | no | `cargo test -p filmcraft-avi` (hand-built index paths, truncation, mutation); `tests/ffmpeg_oracle.rs` (MJPEG, H.264 B-frames, BGR24, YUY2, PCM, MP3 vs ffprobe) | read only |
+| AVI | read + write | yes: AVI 1.0 and OpenDML (`craft_media::avi`, #650); Motion JPEG, H.264, HEVC, uncompressed RGB / YUV with PCM, MP3, MP2 or AC-3; no DivX / Xvid or DV | no | craft-libs `cargo test -p craft-media --features avi` (hand-built index paths, truncation, mutation; MJPEG, H.264 B-frames, BGR24, YUY2, PCM, MP3 vs ffprobe) | read only |
 | WMV / ASF | read; write on Windows | no | no | — | 0% |
 | FLV / F4V | read + write | no | no | — | 0% |
 | DCP | write (Wraptor) | no | no | — | 0% |
@@ -68,7 +68,7 @@ only). "Tested" names the evidence.
 |---|---|---|---|---|
 | WAV / BWF (timecode, iXML partial) | read + write | yes | yes | 90% |
 | AIFF / AIFC | read + write | yes | yes | 95% |
-| MP3 | read + write | read | **no** | 60% |
+| MP3 | read + write | read | yes (MP3 format: CBR 32-320 kbit/s, 16-48 kHz, mono / joint stereo, own encoder, #977; no VBR, gapless tag or ID3) | 85% |
 | AAC / M4A | read + write | yes | yes (in MP4 / MOV, and AAC Audio: `.m4a` or ADTS `.aac`, #814) | 95% |
 | FLAC, Ogg, Opus | partial | yes | no | ahead on read |
 | WMA | read (Windows) | no | no | 0% |
