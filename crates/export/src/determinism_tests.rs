@@ -446,3 +446,22 @@ fn the_working_set_counts_fitting_a_full_quality_render_into_a_smaller_frame() {
     // 160 x 180 intermediate and the 160 x 90 result
     assert_eq!(ex.working_set(1 << 20), img(320, 180) + img(160, 180) + img(160, 90));
 }
+
+#[test]
+fn the_working_set_counts_the_layer_of_a_translucent_text_overlay() {
+    let img = |w: u64, h: u64| w * h * 16;
+    let at = |opacity: f32, name: &str| {
+        let (p, seq, _) = project();
+        let mut s = ExportSettings { format: Format::ProRes, path: tmp("ws-overlay.mov"), include_audio: false, ..Default::default() };
+        s.effects.timecode_overlay = TextOverlay { enabled: true, opacity, ..Default::default() };
+        s.effects.name_overlay = TextOverlay { enabled: !name.is_empty(), text: name.into(), opacity, ..Default::default() };
+        let prog = Progress::default();
+        // far past the clip the render holds only its 320 x 180 canvas
+        Exporter::new(p, seq, &s, &prog).unwrap().working_set(1 << 20)
+    };
+    // at half opacity the timecode is drawn on a layer of its own beside the output frame
+    assert_eq!(at(50.0, ""), 2 * img(320, 180));
+    assert_eq!(at(50.0, "Reel 1"), 2 * img(320, 180));
+    // opaque text is burnt straight into the frame
+    assert_eq!(at(100.0, ""), img(320, 180));
+}
