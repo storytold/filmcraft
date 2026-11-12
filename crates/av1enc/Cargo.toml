@@ -20,5 +20,5 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
-filmcraft-av1 = { workspace = true }
+craft-video = { workspace = true }
 filmcraft-isobmff = { workspace = true }

@@ -427,8 +427,8 @@ fn transport_stream_h264_recovery_points() {
     let f = make(&ff, "ts_h264_opengop.ts");
     check_video(&ff, &f, 0, 12);
     let data = bytes(&f);
-    let idx = filmcraft_mpegts::open(&data[..]).unwrap();
-    let vi = idx.streams.iter().position(|s| s.codec == filmcraft_mpegts::Codec::H264).unwrap();
+    let idx = craft_media::mpegts::open(&data[..]).unwrap();
+    let vi = idx.streams.iter().position(|s| s.codec == craft_media::mpegts::Codec::H264).unwrap();
     let keys: Vec<usize> = (0..idx.streams[vi].units.len()).filter(|&i| idx.streams[vi].units[i].key).collect();
     assert!(keys.len() >= 4, "{} key units in {} (IDR only: 1)", keys.len(), idx.streams[vi].units.len());
     // cut at the third random-access point (the packet that starts its PES), keeping the PAT /
@@ -464,8 +464,8 @@ fn transport_stream_h264_intra_refresh_cut_is_refused() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "ts_h264_intra_refresh.ts");
     let data = bytes(&f);
-    let idx = filmcraft_mpegts::open(&data[..]).unwrap();
-    let vi = idx.streams.iter().position(|s| s.codec == filmcraft_mpegts::Codec::H264).unwrap();
+    let idx = craft_media::mpegts::open(&data[..]).unwrap();
+    let vi = idx.streams.iter().position(|s| s.codec == craft_media::mpegts::Codec::H264).unwrap();
     // recovery points with recovery_frame_cnt > 0 are not random access points: only the IDR is key
     let n = idx.streams[vi].units.len();
     let keys: Vec<usize> = (0..n).filter(|&i| idx.streams[vi].units[i].key).collect();

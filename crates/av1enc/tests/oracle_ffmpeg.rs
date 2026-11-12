@@ -99,7 +99,7 @@ fn ffmpeg_decodes_intra_and_inter_residual_stream() {
     assert!(ffmpeg_out.status.success(), "ffmpeg decode failed: {}", String::from_utf8_lossy(&ffmpeg_out.stderr));
 
     // 3. in-tree filmcraft-av1 decoder verification
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut decoded_pics = Vec::new();
     for p in &packets {
         decoded_pics.extend(dec.decode(&p.data).unwrap());

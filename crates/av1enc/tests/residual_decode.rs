@@ -13,7 +13,7 @@ fn test_residual_decode_non_skip_block() {
     let packet = enc.encode(&frame, 0).unwrap();
     assert!(!packet.data.is_empty());
 
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut pics = dec.decode(&packet.data).unwrap();
     pics.extend(dec.flush());
     assert_eq!(pics.len(), 1);
@@ -64,7 +64,7 @@ fn test_raw_non_skip_residual_tile() {
     let tile_bytes = sym.finish();
     tu.extend_from_slice(&obu::write_obu(obu::OBU_TILE_GROUP, &tile_bytes));
 
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut pics = dec.decode(&tu).unwrap();
     pics.extend(dec.flush());
     assert_eq!(pics.len(), 1);
@@ -94,7 +94,7 @@ fn test_raw_non_skip_residual_tile() {
     tu_neg.extend_from_slice(&obu::write_obu(obu::OBU_FRAME_HEADER, &frame_header::write_frame_header(&fh_cfg, &seq_cfg)));
     tu_neg.extend_from_slice(&obu::write_obu(obu::OBU_TILE_GROUP, &tile_bytes_neg));
 
-    let mut dec_neg = filmcraft_av1::Decoder::new();
+    let mut dec_neg = craft_video::av1::decode::Decoder::new();
     let mut pics_neg = dec_neg.decode(&tu_neg).unwrap();
     pics_neg.extend(dec_neg.flush());
     assert_eq!(pics_neg.len(), 1);
@@ -118,7 +118,7 @@ fn test_split_partition_decode() {
     let frame = YuvFrame { y: &y, u: &uv, v: &uv, y_stride: w, uv_stride: w / 2 };
 
     let p = enc.encode(&frame, 0).unwrap();
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut pics = dec.decode(&p.data).unwrap();
     pics.extend(dec.flush());
     assert_eq!(pics.len(), 1);

@@ -1241,7 +1241,7 @@ mod tests {
         let packet2 = enc.encode(&frame, 1).unwrap();
         assert!(!packet2.data.is_empty());
 
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = dec.decode(&packet1.data).unwrap();
         pics.extend(dec.flush());
         assert_eq!(pics.len(), 1);
@@ -1272,7 +1272,7 @@ mod tests {
             let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: 64, uv_stride: 32 };
 
             let p = enc.encode(&frame, 0).unwrap();
-            let mut dec = filmcraft_av1::Decoder::new();
+            let mut dec = craft_video::av1::decode::Decoder::new();
             let mut pics = dec.decode(&p.data).unwrap();
             pics.extend(dec.flush());
             assert_eq!(pics.len(), 1);
@@ -1294,7 +1294,7 @@ mod tests {
         let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
 
         let packet = enc.encode(&frame, 0).unwrap();
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = dec.decode(&packet.data).unwrap();
         pics.extend(dec.flush());
         assert_eq!(pics.len(), 1);
@@ -1317,7 +1317,7 @@ mod tests {
         let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
 
         let packet = enc.encode(&frame, 0).unwrap();
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = dec.decode(&packet.data).unwrap();
         pics.extend(dec.flush());
         assert_eq!(pics.len(), 1);
@@ -1333,7 +1333,7 @@ mod tests {
         let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: 128, uv_stride: 64 };
 
         let packet = enc.encode(&frame, 0).unwrap();
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = dec.decode(&packet.data).unwrap();
         pics.extend(dec.flush());
         assert_eq!(pics.len(), 1);
@@ -1350,7 +1350,7 @@ mod tests {
         let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: 320, uv_stride: 160 };
 
         let packet = enc.encode(&frame, 0).unwrap();
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = dec.decode(&packet.data).unwrap();
         pics.extend(dec.flush());
         assert_eq!(pics.len(), 1);
@@ -1367,7 +1367,7 @@ mod tests {
             let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
 
             let packet = enc.encode(&frame, 0).unwrap();
-            let mut dec = filmcraft_av1::Decoder::new();
+            let mut dec = craft_video::av1::decode::Decoder::new();
             let mut pics = dec.decode(&packet.data).unwrap();
             pics.extend(dec.flush());
             assert_eq!(pics.len(), 1);

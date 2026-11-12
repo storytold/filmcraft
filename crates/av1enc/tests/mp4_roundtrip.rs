@@ -56,7 +56,7 @@ fn test_av1enc_mp4_mux_and_decode() {
     assert_eq!(trk.samples.len(), 5);
 
     // Decode all frames with AV1 decoder
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut decoded_pics = Vec::new();
     for s in &trk.samples {
         let sample_data = &mp4_bytes[s.offset as usize..s.offset as usize + s.size as usize];
@@ -89,7 +89,7 @@ fn test_av1enc_mp4_mux_and_decode_gradient_psnr() {
     let p = enc.encode(&frame, 0).unwrap();
     assert!(!p.data.is_empty());
 
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut pics = dec.decode(&p.data).unwrap();
     pics.extend(dec.flush());
     assert_eq!(pics.len(), 1);
@@ -140,7 +140,7 @@ fn test_av1enc_inter_p_frames_roundtrip() {
     }
 
     // Decode all frames with AV1 decoder
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut decoded = Vec::new();
     for p in &packets {
         decoded.extend(dec.decode(&p.data).unwrap());
@@ -184,7 +184,7 @@ fn test_av1enc_scene_cut_detection() {
     assert!(!p4.keyframe, "Frame 4 must be P-frame referencing Scene B keyframe");
 
     // All frames decode successfully
-    let mut dec = filmcraft_av1::Decoder::new();
+    let mut dec = craft_video::av1::decode::Decoder::new();
     let mut pics = Vec::new();
     for p in [&p0, &p1, &p2, &p3, &p4] {
         pics.extend(dec.decode(&p.data).unwrap());
@@ -214,7 +214,7 @@ fn test_av1enc_non_64_colored_matte_160x96() {
         let v_plane = vec![90u8; ((w / 2) * (h / 2)) as usize];
         let frame = YuvFrame { y: &y_plane, u: &u_plane, v: &v_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
 
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut decoded = Vec::new();
         for i in 0..4 {
             let pkt = enc.encode(&frame, i * 1000).unwrap();
@@ -272,7 +272,7 @@ fn test_av1enc_arbitrary_resolutions_colored_gradients() {
         }
 
         let frame = YuvFrame { y: &y_plane, u: &u_plane, v: &v_plane, y_stride: w as usize, uv_stride: uv_w as usize };
-        let mut dec = filmcraft_av1::Decoder::new();
+        let mut dec = craft_video::av1::decode::Decoder::new();
         let mut pics = Vec::new();
         for i in 0..3 {
             let pkt = enc.encode(&frame, i * 1000).unwrap();
