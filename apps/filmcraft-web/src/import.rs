@@ -31,10 +31,6 @@ pub async fn on_ui<T: 'static>(f: impl FnOnce(&mut crate::WebApp, &egui::Context
     }
 }
 
-fn be32(b: &[u8]) -> u64 {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as u64
-}
-
 /// Load what opening the file will read first: the container index.
 async fn prewarm(path: &str, size: u64) {
     let head_len = size.min(64 << 10);
@@ -49,22 +45,14 @@ async fn prewarm(path: &str, size: u64) {
             }
             fs::prefetch(path, off, off + 16).await;
             let Ok(h) = fs::WebServices.read_range(path, off, 16) else { break };
-            if h.len() < 8 {
-                break;
+            match crate::mp4_walk::step(&h, off, size) {
+                crate::mp4_walk::Step::Moov { end } => {
+                    fs::prefetch(path, off, end).await;
+                    break;
+                }
+                crate::mp4_walk::Step::Next(next) => off = next,
+                crate::mp4_walk::Step::Stop => break,
             }
-            let len = match be32(&h) {
-                1 if h.len() >= 16 => (be32(&h[8..]) << 32) | be32(&h[12..]),
-                0 => size - off,
-                n => n,
-            };
-            if &h[4..8] == b"moov" {
-                fs::prefetch(path, off, off + len).await;
-                break;
-            }
-            if len < 8 {
-                break;
-            }
-            off += len;
         }
     } else if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
         // Matroska: opening scans every cluster header

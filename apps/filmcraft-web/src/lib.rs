@@ -25,6 +25,7 @@ pub mod fs;
 pub mod host;
 pub mod hostmode;
 pub mod import;
+pub mod mp4_walk;
 pub mod opfs;
 pub mod picked_project;
 pub mod recovery;
