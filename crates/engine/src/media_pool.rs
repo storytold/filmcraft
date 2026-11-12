@@ -867,6 +867,7 @@ mod tests {
         assert!(MediaPool::default().open_file(&p, &crate::FsServices).unwrap().info().has_audio());
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
+        drop(r);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

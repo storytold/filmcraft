@@ -50,7 +50,8 @@ fn close_others_keeps_one_tab_and_shows_it() {
 #[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
-    let (revision, steps) = (s.revision, s.history.undo.len());
+    let (revision, view_epoch, steps) = (s.revision, s.view_epoch, s.history.undo.len());
+    let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
     assert_eq!(s.state.active_sequence, Some(c), "moving a tab does not change which is shown");
@@ -59,8 +60,11 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step, not an edit
-    assert_eq!((s.revision, s.history.undo.len()), (revision, steps));
+    // A tab reorder journals the view without invalidating revision-keyed caches.
+    assert_eq!(s.revision, revision, "a tab move is not a content edit");
+    assert_ne!(s.view_epoch, view_epoch, "moving a tab is a persisted view change");
+    assert_eq!(s.history.undo.len(), steps);
+    assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
     assert!(s.execute("sequence.moveTab", json!({"item": b.0, "index": 0})).is_err());
     assert!(s.execute("sequence.moveTab", json!({"item": c.0})).is_err());

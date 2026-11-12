@@ -206,6 +206,8 @@ impl FilmcraftApp {
         };
         if self.timeline_view_of != Some(active) {
             self.timeline_view_of = Some(active);
+            // the zoom ceiling is applied by animate_view with the measured content width --
+            // clamping here (before the first layout) would use the placeholder width
             match stored.and_then(|s| s.checked()) {
                 Some(s) => {
                     show(v, s);
@@ -221,8 +223,13 @@ impl FilmcraftApp {
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
         } else if self.timeline_view_last != Some(shown) {
+            let first_fit = self.timeline_view_last.is_none();
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
+            // The first fit is derived from the sequence and layout, not a user change.
+            if !first_fit {
+                self.session.view_changed();
+            }
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);
             self.timeline_view_last = Some(s);

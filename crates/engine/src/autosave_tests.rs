@@ -9,11 +9,41 @@ fn demo() -> Session {
     s
 }
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+struct TestDir(std::path::PathBuf);
+
+impl TestDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(tag: &str) -> TestDir {
+    TestDir::new(tag)
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
@@ -35,7 +65,7 @@ fn journaled(s: &mut Session) -> u64 {
     s.persistence.as_ref().unwrap().status.journaled_revision
 }
 
-fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
+fn discard_fixture(tag: &str) -> (Session, TestDir) {
     let d = temp_dir(tag);
     let mut s = Session::default();
     start(&mut s, &d);
@@ -242,7 +272,7 @@ fn recovery_preserves_original(tag: &str, block: Option<&str>, journal_enabled: 
     std::fs::write(&original, &bytes).unwrap();
 
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(&*d);
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     s.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": journal_enabled})).unwrap();
@@ -287,7 +317,7 @@ fn recovery_can_retry_after_a_failed_journal_write() {
     let project = (*demo().project).clone();
     std::fs::write(old_dir.join("snapshot.fcproj"), filmcraft_format::encode(&project, false)).unwrap();
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(&*d);
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");

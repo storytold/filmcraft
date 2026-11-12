@@ -221,6 +221,36 @@ fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
 }
 
+#[test]
+fn inverted_controls_reverse_timeline_wheel_and_zoom_bar_drag() {
+    let mut d = Driver::tall();
+    d.app().session.state.timeline_ui.inverted_controls = true;
+    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    assert_eq!(d.view().0, 2.0, "inverted wheel direction moves toward the start");
+
+    d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
+    d.frames(3);
+    let inverted_start = d.view().0;
+    let thumb = d.rect("timeline.zoomBar");
+    let (x, y) = (thumb[0] + thumb[2] / 2.0, thumb[1] + thumb[3] / 2.0);
+    d.press(x, y);
+    d.move_to(x + 10.0, y);
+    d.release(x + 10.0, y);
+    let inverted_zoom = d.view().0;
+
+    let mut normal = Driver::tall();
+    normal.ok("ui.set", json!({"timeline": {"pps": inverted_start, "scroll": 4.0}}));
+    normal.frames(3);
+    let normal_thumb = normal.rect("timeline.zoomBar");
+    let (x, y) = (normal_thumb[0] + normal_thumb[2] / 2.0, normal_thumb[1] + normal_thumb[3] / 2.0);
+    normal.press(x, y);
+    normal.move_to(x + 10.0, y);
+    normal.release(x + 10.0, y);
+    let normal_zoom = normal.view().0;
+    assert!(normal_zoom > inverted_start, "the normal drag zooms in: {normal_zoom}");
+    assert!(inverted_zoom < inverted_start, "the inverted drag zooms out: {inverted_zoom}");
+}
+
 /// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
 /// in view and the scroll bar's thumb sat at the right end whatever was done to it.
 #[test]

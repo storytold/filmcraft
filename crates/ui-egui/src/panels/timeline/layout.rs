@@ -105,6 +105,14 @@ pub fn min_pps(sequence_seconds: f64, width: f32) -> f64 {
     (f64::from(width.max(0.0)) / timeline_extent(sequence_seconds)).clamp(1e-6, 24_000.0)
 }
 
+/// The greatest `pps` the Timeline zooms into: the configured minimum view duration fits `width`.
+/// Invalid dimensions or durations still produce a positive bound no greater than `min_pps`' cap.
+pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
+    let width = if width.is_nan() { 0.0 } else { f64::from(width.max(0.0)) };
+    let seconds = if min_view_secs.is_finite() && min_view_secs > 0.0 { min_view_secs } else { 0.05 };
+    (width / seconds).clamp(1e-6, 24_000.0)
+}
+
 /// The latest time the left edge of a view `width` points wide can show at `pps` points a second.
 pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     if pps <= 0.0 || !pps.is_finite() {
@@ -143,4 +151,16 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_bounds_remain_valid_for_hostile_dimensions_and_durations() {
+        assert_eq!(max_pps(0.0, f64::NAN), 1e-6);
+        assert_eq!(max_pps(f32::INFINITY, 0.4), 24_000.0);
+        assert!(max_pps(f32::NAN, 0.4).is_finite());
+    }
 }
