@@ -853,17 +853,7 @@ impl MediaSource for MpegSource {
             }
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let x = src[c].get(i0).copied().unwrap_or(0.0);
-                let y = src[c].get(i0 + 1).copied().unwrap_or(x);
-                out.channels[c][k] = x + (y - x) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, a.rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -1013,6 +1003,25 @@ mod tests {
         assert_eq!(a0.channels.len(), 2);
         assert_eq!(a1.channels.len(), 2);
         assert!(source.audio_stream(2, 0, 64, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673): 16-bit DVD LPCM at 48 kHz in
+    /// a program stream.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let signs = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 6);
+        let mut out = vec![0, 0, 1, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0xF8];
+        for (k, block) in signs.chunks(1000).enumerate() {
+            // sub-stream 0xA0: frame count, first access unit pointer, emphasis, 16-bit 48 kHz mono, dynamic range
+            let mut payload = vec![0xA0, 1, 0, 4, 0, 0, 0x80];
+            payload.extend(block.iter().flat_map(|v| ((v * 32767.0) as i16).to_be_bytes()));
+            out.extend(pes(0xBD, Some(90_000 + 1875 * k as i64), &payload));
+        }
+        let source = MpegSource::open("cuts.vob", out.into()).unwrap();
+        assert_eq!(source.info().audio().map(|a| (a.sample_rate, a.channels)), Some((48_000, 1)));
+        filmcraft_testkit::cuts::assert_cut_independent("DVD LPCM 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 
     #[test]
