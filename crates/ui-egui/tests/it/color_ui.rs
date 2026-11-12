@@ -192,6 +192,56 @@ fn effect_controls_lut_rows_pick_a_lut() {
 }
 
 #[test]
+fn effect_controls_wheel_rows_edit_x_and_y() {
+    // #4623: Shadows / Midtones / Highlights showed `Vec2(Vec2 { x: 0.0, y: 0.0 })` as read-only text
+    let mut d = Driver::demo();
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    let idx = lumetri_index(&mut d, clip);
+    let name = format!("effectControls.lumetri.{idx}.wheel_shadows.name");
+    // scroll the Shadows row into view, with the pointer over the Input LUT row
+    let lut = d.element("effectControls.lumetri.input_lut").expect("the Input LUT row");
+    let (x, y) = (lut[0] + lut[2] / 2.0, lut[1] + lut[3] / 2.0);
+    for _ in 0..40 {
+        if d.element(&name).is_some() {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": x, "y": y, "dy": -120.0}));
+        d.frames(2);
+    }
+    assert!(d.element(&name).is_some(), "the Shadows row is in view");
+    let ids = d.ids("effectControls.lumetri.wheel_");
+    for id in ["effectControls.lumetri.wheel_shadows.x", "effectControls.lumetri.wheel_shadows.y", "effectControls.lumetri.wheel_midtones.x"] {
+        assert!(ids.iter().any(|i| i == id), "{id} missing from {ids:?}");
+    }
+    let shadows = |d: &mut Driver| {
+        let s = &d.harness.state().session;
+        let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+        match e.param("wheel_shadows").unwrap().value_at(filmcraft_time::Tick::ZERO) {
+            filmcraft_project::ParamValue::Vec2(v) => (v.x, v.y),
+            v => panic!("wheel_shadows is {v:?}"),
+        }
+    };
+    assert_eq!(shadows(&mut d), (0.0, 0.0));
+    // a typed value is set, and kept inside the wheel's −1..1
+    d.click("effectControls.lumetri.wheel_shadows.x");
+    d.ok("ui.type", json!({"text": "0.4"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert_eq!(shadows(&mut d), (0.4, 0.0));
+    d.click("effectControls.lumetri.wheel_shadows.y");
+    d.ok("ui.type", json!({"text": "-3"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert_eq!(shadows(&mut d), (0.4, -1.0));
+}
+
+#[test]
 fn effect_controls_lut_browse_imports_and_sets_in_one_undo_step() {
     // Browse… imports the picked file into the LUT library and sets the row; one undo takes both back
     let dir = std::env::temp_dir().join(format!("fc-lut-browse-{}", std::process::id()));
