@@ -267,7 +267,9 @@ impl QsvSession {
                 // SAFETY: read back sample bytes.
                 let data = unsafe { read_sample_bytes(sample)? };
                 if !data.is_empty() {
-                    let (pts, dts) = self.pending.pop_front().unwrap_or((0, 0));
+                    let (pending_pts, dts) = self.pending.pop_front().unwrap_or((0, 0));
+                    // SAFETY: read back presentation timestamp from sample if available.
+                    let pts = unsafe { sample.GetSampleTime() }.unwrap_or(pending_pts);
                     let key = is_key_frame(self.config.codec, &data);
                     packets.push(Packet { data, key, pts, dts });
                 }
@@ -405,6 +407,7 @@ unsafe fn read_sample_bytes(sample: &IMFSample) -> Result<Vec<u8>, String> {
     Ok(slice)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn is_key_frame(codec: Codec, data: &[u8]) -> bool {
     match codec {
         Codec::H264 => {
