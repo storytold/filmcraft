@@ -136,12 +136,15 @@ impl<'a> TileDecoder<'a> {
         let strip_h = sb_rows * 64;
         let x0 = mi_col_start * 8;
         let uv_len = (strip_w >> ss_x) * (strip_h >> ss_y);
-        let planes = [s.pools.samples.take(strip_w * strip_h, 0), s.pools.samples.take(uv_len, 0), s.pools.samples.take(uv_len, 0)];
+        // Every sample a later stage reads (inside the mode info grid) is predicted before use, so
+        // recycled planes need no clearing.
+        let planes = [s.pools.samples.take_any(strip_w * strip_h, 0), s.pools.samples.take_any(uv_len, 0), s.pools.samples.take_any(uv_len, 0)];
         let mi_w = mi_col_end - mi_col_start;
         let strip = Strip {
             mi_col_start,
             mi_col_end,
-            mi: s.pools.mi.take(mi_w * mi_rows, MiInfo::default()),
+            // Written for every position of the grid before it is read.
+            mi: s.pools.mi.take_any(mi_w * mi_rows, MiInfo::default()),
             seg_ids: vec![0; mi_w * mi_rows],
             planes,
             strides: [strip_w, strip_w >> ss_x, strip_w >> ss_x],

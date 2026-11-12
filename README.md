@@ -255,6 +255,8 @@ The trailer and the grades in these screenshots were built exactly this way, by 
 
 ## Get started
 
+New to editing in FilmCraft? Follow [Getting started: video fades and audio volume keyframes](docs/getting-started-fades.md).
+
 ```sh
 cargo run --release -p filmcraft                           # the desktop app, with a demo project
 cargo run --release -p filmcraft -- --control 9876         # plus the JSON-lines control server

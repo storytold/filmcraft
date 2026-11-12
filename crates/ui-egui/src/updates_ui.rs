@@ -90,22 +90,22 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::None => {}
         }
-        // The dialog answers Help ▸ Check for Updates. A check that finds a release leaves the status
-        // idle and the startup prompt takes over, so the flag ends with the check.
         let rt = &mut app.updates_rt;
+        rt.manual_window_open = result_window_open(rt.manual_window_open, rt.updater.status(), rt.check_requested);
         if rt.manual_window_open {
-            if matches!(rt.updater.status(), Status::Idle) && !rt.check_requested {
-                rt.manual_window_open = false;
-            } else {
-                let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
-                match dialog.show(ctx, rt.updater.status()) {
-                    CheckResultResponse::Close => {
-                        rt.manual_window_open = false;
-                        rt.updater.dismiss_status();
-                    }
-                    CheckResultResponse::CheckAgain => rt.check_requested = true,
-                    CheckResultResponse::None => {}
+            let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
+            match dialog.show(ctx, rt.updater.status()) {
+                CheckResultResponse::Close => {
+                    rt.manual_window_open = false;
+                    rt.updater.dismiss_status();
                 }
+                CheckResultResponse::CheckAgain => rt.check_requested = true,
+                // The next frame's `show_if` asks the window to close once nothing is unsaved.
+                CheckResultResponse::RestartToUpdate => {
+                    rt.updater.restart_to_update();
+                    ctx.request_repaint();
+                }
+                CheckResultResponse::None => {}
             }
         }
     }
@@ -130,6 +130,24 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             app.updates_rt.manual_window_open = false;
         }
     }
+}
+
+/// Whether the check result dialog shows this frame. It answers Help ▸ Check for Updates until the
+/// requested check ends, and it shows whenever the status is not idle: at the first start after an
+/// update, the check at start leaves `Updated` or `InstallFailed`. A check that finds a release
+/// leaves the status idle and the startup prompt takes over, so the dialog closes then.
+#[cfg(not(target_arch = "wasm32"))]
+fn result_window_open(open: bool, status: &Status, check_requested: bool) -> bool {
+    !matches!(status, Status::Idle) || (open && check_requested)
+}
+
+/// Starts an update that waits for the app to exit. Called from `on_exit`; dropping the updater
+/// does the same, and later calls do nothing.
+pub(crate) fn exiting(app: &mut FilmcraftApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    app.updates_rt.updater.start_pending_update();
+    #[cfg(target_arch = "wasm32")]
+    let _ = app;
 }
 
 #[cfg(test)]
@@ -167,5 +185,27 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(app.updates_rt.updater.prompt_open());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn result_window_shows_every_status_but_idle() {
+        let shown = [
+            Status::Checking,
+            Status::UpToDate,
+            Status::Failed("offline".into()),
+            Status::Installing,
+            Status::Ready,
+            Status::Managed,
+            Status::Updated("1.2.3".into()),
+            Status::InstallFailed("access denied".into()),
+        ];
+        for status in &shown {
+            assert!(result_window_open(false, status, false), "{status:?} opens the dialog without a requested check");
+        }
+        assert!(!result_window_open(false, &Status::Idle, false));
+        assert!(!result_window_open(true, &Status::Idle, false), "a check that found a release closes it");
+        assert!(result_window_open(true, &Status::Idle, true), "a queued check keeps it open");
+        assert!(!result_window_open(false, &Status::Idle, true), "a queued check does not open it");
     }
 }

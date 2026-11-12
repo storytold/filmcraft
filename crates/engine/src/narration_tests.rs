@@ -397,6 +397,48 @@ fn natural_voices_are_listed_and_explain_what_is_missing() {
     }
 }
 
+/// Starts `tts.downloadVoices` and cancels it before the 336 MB model lands. Run with
+/// `FILMCRAFT_DATA_DIR` set to a throwaway directory so a cancelled fetch cannot write into a
+/// real user models folder.
+#[cfg(feature = "neural-voices")]
+#[test]
+#[ignore = "starts a real download; run with FILMCRAFT_DATA_DIR in a throwaway directory"]
+fn download_voices_is_accepted_when_the_build_includes_natural_voices() {
+    let data = std::env::var_os("FILMCRAFT_DATA_DIR").expect("set FILMCRAFT_DATA_DIR to a throwaway directory");
+    let _ = std::fs::create_dir_all(&data);
+    let mut s = demo();
+    assert!(crate::narration::natural_voices_available());
+    let v = s.execute("tts.voices", json!({})).unwrap();
+    assert_eq!(v["package"]["available"], true);
+    if v["package"]["installed"].as_bool() == Some(true) {
+        let r = s.execute("tts.downloadVoices", json!({})).unwrap();
+        assert_eq!(r["installed"], true);
+        return;
+    }
+    let r = s.execute("tts.downloadVoices", json!({ "wait": false })).expect("download should be accepted in a neural-voices build");
+    assert_eq!(r["installed"], false, "{r}");
+    let job = r["job"].as_u64().expect("job id");
+    s.execute("jobs.cancel", json!({ "job": job })).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    loop {
+        let done = {
+            let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+            let result = j.result.lock().unwrap();
+            if let Some(Err(e)) = result.as_ref() {
+                assert!(!e.contains("not available in this build"), "{e}");
+                true
+            } else {
+                result.is_some()
+            }
+        };
+        if done {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "download job did not finish after cancel");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn a_project_subset_keeps_only_the_narrations_of_kept_items() {
     let mut s = demo();

@@ -1,9 +1,9 @@
 use super::{
-    Avail, BLK4_XY, Cand, Deadzone, Edge4, Edge8, MbCtx, MbEdges, MbKind, RASTER_TO_BLK4, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, dequant_luma_dc, dequant4,
-    dequant8, fdct4, fdct8, filter8, idct4, idct8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16, quant_luma_dc, quant4, quant8, satd,
+    Avail, BLK4_XY, Cand, Deadzone, Edge4, Edge8, MbCtx, MbEdges, MbKind, Pixel, RASTER_TO_BLK4, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, dequant_luma_dc,
+    dequant4, dequant8, fdct4, fdct8, filter8, idct4, idct8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16, quant_luma_dc, quant4, quant8, satd,
 };
 
-impl<'a, 'b> SliceEnc<'a, 'b> {
+impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ intra
 
     fn pred_intra_mode(&self, mx: usize, my: usize, av: Avail, local: &[i8; 16], bx: usize, by: usize) -> u8 {
@@ -32,7 +32,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Luma I16x16 coding. Returns luma cbp (0 or 15).
-    fn code_i16(&self, src: &[u8; 256], pred: &[u8; 256], qp: u8, c: &mut Cand) -> u8 {
+    fn code_i16(&self, src: &[P; 256], pred: &[P; 256], qp: u8, c: &mut Cand<P>) -> u8 {
         let qt = self.f.qt;
         let mut coefs = [[0i32; 16]; 16];
         let mut dc = [0i32; 16];
@@ -42,7 +42,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             for y in 0..4 {
                 for x in 0..4 {
                     let i = (by * 4 + y) * 16 + bx * 4 + x;
-                    d[y * 4 + x] = src[i] as i32 - pred[i] as i32;
+                    d[y * 4 + x] = src[i].get() - pred[i].get();
                 }
             }
             let mut t = fdct4(&d);
@@ -83,7 +83,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 for y in 0..4 {
                     for x in 0..4 {
                         let i = off + y * 16 + x;
-                        c.ry[i] = (pred[i] as i32 + dcv).clamp(0, 255) as u8;
+                        c.ry[i] = P::clip(pred[i].get() + dcv, self.f.p.depth);
                     }
                 }
             } else {
@@ -93,7 +93,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 for y in 0..4 {
                     for x in 0..4 {
                         let i = off + y * 16 + x;
-                        c.ry[i] = (pred[i] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                        c.ry[i] = P::clip(pred[i].get() + r[y * 4 + x], self.f.p.depth);
                     }
                 }
             }
@@ -101,8 +101,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         if ac_any { 15 } else { 0 }
     }
 
-    fn best_chroma_mode(&self, e: &MbEdges, av: Avail, src: &Src, lam: u32) -> (u8, [u8; 64], [u8; 64]) {
-        let mut best = (u32::MAX, 0u8, [0u8; 64], [0u8; 64]);
+    fn best_chroma_mode(&self, e: &MbEdges<P>, av: Avail, src: &Src<P>, lam: u32) -> (u8, [P; 64], [P; 64]) {
+        let mut best = (u32::MAX, 0u8, [P::default(); 64], [P::default(); 64]);
         for mode in 0..4u8 {
             let ok = match mode {
                 0 => true,
@@ -113,10 +113,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             if !ok {
                 continue;
             }
-            let mut pu = [0u8; 64];
-            let mut pv = [0u8; 64];
-            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, &mut pu);
-            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, &mut pv);
+            let mut pu = [P::default(); 64];
+            let mut pv = [P::default(); 64];
+            pred_chroma(mode, &e.ctop[0], &e.cleft[0], e.ctl[0], av.top, av.left, self.f.p.depth, &mut pu);
+            pred_chroma(mode, &e.ctop[1], &e.cleft[1], e.ctl[1], av.top, av.left, self.f.p.depth, &mut pv);
             let cost = satd(&src.u, 8, &pu, 8, 8, 8) + satd(&src.v, 8, &pv, 8, 8, 8) + ((lam * (1 + 2 * mode as u32)) >> 8);
             if cost < best.0 {
                 best = (cost, mode, pu, pv);
@@ -125,9 +125,9 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         (best.1, best.2, best.3)
     }
 
-    fn edge4(&self, e: &MbEdges, av: Avail, rec: &[u8; 256], bx: usize, by: usize) -> Edge4 {
-        let mut top = [0u8; 8];
-        let mut left = [0u8; 4];
+    fn edge4(&self, e: &MbEdges<P>, av: Avail, rec: &[P; 256], bx: usize, by: usize) -> Edge4<P> {
+        let mut top = [P::default(); 8];
+        let mut left = [P::default(); 4];
         let has_top = by > 0 || av.top;
         let has_left = bx > 0 || av.left;
         let has_tl = if bx > 0 && by > 0 {
@@ -155,7 +155,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         let tl = if !has_tl {
-            0
+            P::default()
         } else if bx > 0 && by > 0 {
             rec[(by * 4 - 1) * 16 + bx * 4 - 1]
         } else if by == 0 && bx > 0 {
@@ -168,10 +168,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         Edge4 { top, left, tl, has_top, has_left, has_tl }
     }
 
-    fn edge8(&self, e: &MbEdges, av: Avail, rec: &[u8; 256], b8: usize) -> Edge8 {
+    fn edge8(&self, e: &MbEdges<P>, av: Avail, rec: &[P; 256], b8: usize) -> Edge8<P> {
         let (x8, y8) = (b8 & 1, b8 >> 1);
-        let mut top = [0u8; 16];
-        let mut left = [0u8; 8];
+        let mut top = [P::default(); 16];
+        let mut left = [P::default(); 8];
         let has_top = y8 > 0 || av.top;
         let has_left = x8 > 0 || av.left;
         let has_tl = match b8 {
@@ -200,7 +200,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             }
         }
         let tl = if !has_tl {
-            0
+            P::default()
         } else {
             match b8 {
                 0 => e.tl,
@@ -213,7 +213,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 4x4 analysis + coding. Returns cost (SATD domain) or None if it exceeded `limit`.
-    fn intra4x4(&self, m: &MbCtx, c: &mut Cand, limit: u64) -> Option<u64> {
+    fn intra4x4(&self, m: &MbCtx<'_, P>, c: &mut Cand<P>, limit: u64) -> Option<u64> {
         let MbCtx { mx, my, qp, av, e, src } = *m;
         let qt = self.f.qt;
         let lam = self.f.lam.sad[qp as usize];
@@ -223,17 +223,17 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let (bx, by) = BLK4_XY[blk];
             let ed = self.edge4(e, av, &c.ry, bx, by);
             let pm = self.pred_intra_mode(mx, my, av, &modes, bx, by);
-            let mut srcb = [0u8; 16];
+            let mut srcb = [P::default(); 16];
             for y in 0..4 {
                 srcb[y * 4..y * 4 + 4].copy_from_slice(&src.y[(by * 4 + y) * 16 + bx * 4..(by * 4 + y) * 16 + bx * 4 + 4]);
             }
-            let mut best = (u32::MAX, 2u8, [0u8; 16]);
+            let mut best = (u32::MAX, 2u8, [P::default(); 16]);
             for mode in 0..9u8 {
                 if !mode_available(mode, ed.has_top, ed.has_left, ed.has_tl) {
                     continue;
                 }
-                let mut p = [0u8; 16];
-                pred4x4(mode, &ed, &mut p);
+                let mut p = [P::default(); 16];
+                pred4x4(mode, &ed, self.f.p.depth, &mut p);
                 let bits = if mode == pm { 1 } else { 4 };
                 let cost = satd(&srcb, 4, &p, 4, 4, 4) + ((lam * bits) >> 8);
                 if cost < best.0 {
@@ -256,7 +256,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             // code block
             let mut d = [0i32; 16];
             for i in 0..16 {
-                d[i] = srcb[i] as i32 - p[i] as i32;
+                d[i] = srcb[i].get() - p[i].get();
             }
             let mut t = fdct4(&d);
             let nz = quant4(&mut t, qt, qp, Deadzone::INTRA, false);
@@ -281,7 +281,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let r = idct4(&t);
                 for y in 0..4 {
                     for x in 0..4 {
-                        c.ry[off + y * 16 + x] = (p[y * 4 + x] as i32 + r[y * 4 + x]).clamp(0, 255) as u8;
+                        c.ry[off + y * 16 + x] = P::clip(p[y * 4 + x].get() + r[y * 4 + x], self.f.p.depth);
                     }
                 }
             }
@@ -301,7 +301,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 8x8 analysis + coding.
-    fn intra8x8(&self, m: &MbCtx, c: &mut Cand, limit: u64) -> Option<u64> {
+    fn intra8x8(&self, m: &MbCtx<'_, P>, c: &mut Cand<P>, limit: u64) -> Option<u64> {
         let MbCtx { mx, my, qp, av, e, src } = *m;
         let qt = self.f.qt;
         let lam = self.f.lam.sad[qp as usize];
@@ -312,17 +312,17 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let ed = self.edge8(e, av, &c.ry, b8);
             let fe = filter8(&ed);
             let pm = self.pred_intra_mode(mx, my, av, &modes, x8 * 2, y8 * 2);
-            let mut srcb = [0u8; 64];
+            let mut srcb = [P::default(); 64];
             for y in 0..8 {
                 srcb[y * 8..y * 8 + 8].copy_from_slice(&src.y[(y8 * 8 + y) * 16 + x8 * 8..(y8 * 8 + y) * 16 + x8 * 8 + 8]);
             }
-            let mut best = (u32::MAX, 2u8, [0u8; 64]);
+            let mut best = (u32::MAX, 2u8, [P::default(); 64]);
             for mode in 0..9u8 {
                 if !mode_available(mode, ed.has_top, ed.has_left, ed.has_tl) {
                     continue;
                 }
-                let mut p = [0u8; 64];
-                pred8x8(mode, &fe, &mut p);
+                let mut p = [P::default(); 64];
+                pred8x8(mode, &fe, self.f.p.depth, &mut p);
                 let bits = if mode == pm { 1 } else { 4 };
                 let cost = satd(&srcb, 8, &p, 8, 8, 8) + ((lam * bits) >> 8);
                 if cost < best.0 {
@@ -346,7 +346,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             };
             let mut d = [0i32; 64];
             for i in 0..64 {
-                d[i] = srcb[i] as i32 - p[i] as i32;
+                d[i] = srcb[i].get() - p[i].get();
             }
             let mut t = fdct8(&d);
             let nz = quant8(&mut t, qt, qp, Deadzone::INTRA);
@@ -368,7 +368,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let r = idct8(&t);
                 for y in 0..8 {
                     for x in 0..8 {
-                        c.ry[off + y * 16 + x] = (p[y * 8 + x] as i32 + r[y * 8 + x]).clamp(0, 255) as u8;
+                        c.ry[off + y * 16 + x] = P::clip(p[y * 8 + x].get() + r[y * 8 + x], self.f.p.depth);
                     }
                 }
             }
@@ -388,14 +388,14 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Full intra analysis; returns the best coded intra candidate. `inter_cost` lets P/B skip expensive modes.
-    pub(super) fn analyse_intra(&self, m: &MbCtx, inter_cost: u64) -> Box<Cand> {
+    pub(super) fn analyse_intra(&self, m: &MbCtx<'_, P>, inter_cost: u64) -> Box<Cand<P>> {
         let MbCtx { mx, my, qp, av, e, src } = *m;
         let lam = self.f.lam.sad[qp as usize];
         let p = self.f.p;
         // I16x16 mode
-        let mut top16 = [0u8; 16];
+        let mut top16 = [P::default(); 16];
         top16.copy_from_slice(&e.top[..16]);
-        let mut b16 = (u32::MAX, 2u8, [0u8; 256]);
+        let mut b16 = (u32::MAX, 2u8, [P::default(); 256]);
         for mode in 0..4u8 {
             let ok = match mode {
                 0 => av.top,
@@ -406,8 +406,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             if !ok {
                 continue;
             }
-            let mut pr = [0u8; 256];
-            pred16x16(mode, &top16, &e.left, e.tl, av.top, av.left, &mut pr);
+            let mut pr = [P::default(); 256];
+            pred16x16(mode, &top16, &e.left, e.tl, av.top, av.left, p.depth, &mut pr);
             let cost = satd(&src.y, 16, &pr, 16, 16, 16);
             if cost < b16.0 {
                 b16 = (cost, mode, pr);
@@ -428,7 +428,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             c.cost = cost16;
             c
         };
-        let mut best: Option<Box<Cand>> = None;
+        let mut best: Option<Box<Cand<P>>> = None;
         let try_nxn = p.i4x4 && (inter_cost == u64::MAX || cost16 < inter_cost + inter_cost / 4 || p.always_intra);
         if !try_nxn {
             return mk16();
@@ -452,7 +452,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let finish = |mut c: Box<Cand>| {
+        let finish = |mut c: Box<Cand<P>>| {
             c.code.chroma_mode = cmode;
             c.info.chroma_mode = cmode;
             let cbpc = self.code_chroma(src, &pu, &pv, qp, true, &mut c);

@@ -1,5 +1,5 @@
-//! Lumetri Color panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
-//! HSL Secondary, Vignette — editing the selected clip's Lumetri effect through engine commands.
+//! Color Grading panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
+//! HSL Secondary, Vignette — editing the selected clip's Color Grading effect through engine commands.
 //!
 //! In an HDR sequence (Rec. 2100 PQ / HLG working space) Basic Correction shows HDR White and
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
@@ -40,7 +40,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
+        if bui.button(tl!("Add Color Grading to clip")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;
@@ -292,6 +292,24 @@ fn open_section(
     open
 }
 
+/// The Color Grading panel's ≡ menu items: Export .cube… saves the grade of the clip the panel
+/// shows (also an Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id
+/// `panel.menu.LumetriColor.exportCube`). It is enabled only when that clip has an enabled
+/// Color Grading, and exports that clip even when another selected clip has one.
+/// True when the menu should close.
+pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let shown = selected(app).filter(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri")).map(|(c, _)| c);
+    let r = ui.add_enabled(shown.is_some(), egui::Button::new(tl!("Export .cube…")));
+    app.auto.add_response("panel.menu.LumetriColor.exportCube", &r, "Export .cube…");
+    if let (true, Some(clip)) = (r.clicked(), shown) {
+        if let Err(e) = crate::menus::invoke(app, ui.ctx(), "lumetri.exportCube", json!({"clip": clip.0})) {
+            app.ui.status = e;
+        }
+        return true;
+    }
+    false
+}
+
 /// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
 fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
@@ -324,7 +342,7 @@ pub(crate) enum LutPick {
 }
 
 /// The LUT combo box for the LUT reference `cur`: None, the built-in input LUTs (`input`) or looks,
-/// the project's LUT library, Browse…. Shared by the Lumetri Color panel and Effect Controls (#1123).
+/// the project's LUT library, Browse…. Shared by the Color Grading panel and Effect Controls (#1123).
 /// The entries get automation ids `<auto_id>.lut.<reference>` (`.lut.none`) and `<auto_id>.browse`.
 pub(crate) fn lut_menu(
     ui: &mut egui::Ui,
