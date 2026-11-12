@@ -11,7 +11,7 @@ use filmcraft_captions::{Document, Format, WriteOptions};
 use filmcraft_edit as edit;
 use filmcraft_edit::Edge;
 use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, ClipId, SequenceSettings, TrackId};
-use filmcraft_time::{Tick, TimeDisplay, format_time};
+use filmcraft_time::{Tick, TimeDisplay, format_time, format_timecode_frames};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
 use crate::{EngineError, Result, Session};
@@ -232,7 +232,7 @@ fn caption_json(s: &Session, c: &filmcraft_project::Caption) -> Value {
         "end": c.end().0,
         "in": tc(c.start),
         "out": tc(c.end()),
-        "duration": tc(c.duration),
+        "duration": format_timecode_frames(rate.frames_between(c.start, c.end()), rate, df),
         "text": c.text,
         "speaker": c.speaker,
         "settings": c.settings,

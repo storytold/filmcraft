@@ -9,7 +9,7 @@
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat};
-use filmcraft_time::{TimeDisplay, format_time};
+use filmcraft_time::{TimeDisplay, format_time, format_timecode_frames};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -539,7 +539,8 @@ pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect)
     }
     bui.horizontal(|ui| {
         ui.add_sized(vec2(70.0, 22.0), egui::Label::new(egui::RichText::new(tl!("Duration")).size(12.0).color(t.text_dim)));
-        ui.label(egui::RichText::new(tc(c.duration)).font(Tokens::mono(11.5)).color(t.text));
+        let duration = format_timecode_frames(rate.frames_between(c.start, c.end()), rate, df);
+        ui.label(egui::RichText::new(duration).font(Tokens::mono(11.5)).color(t.text));
     });
     run(app, ui, actions);
 }
