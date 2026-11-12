@@ -9,6 +9,17 @@ fn demo() -> Session {
     s
 }
 
+#[test]
+fn replacing_a_project_resets_view_epochs() {
+    for (command, params) in [("file.newProject", json!({"name": "New"})), ("file.openDemoProject", json!({})), ("file.closeProject", json!({"force": true}))] {
+        let mut session = Session::default();
+        session.view_epoch = 12;
+        session.saved_view_epoch = 4;
+        session.execute(command, params).unwrap();
+        assert_eq!(session.view_epoch, session.saved_view_epoch, "{command} leaves the replacement view clean");
+    }
+}
+
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
