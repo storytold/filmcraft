@@ -480,8 +480,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, app.session.state.timeline_ui.max_zoom_secs());
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
@@ -610,7 +609,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return r;
         }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
-        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
+        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.has_unsaved_changes() => {
             if app.session.path.is_none() {
                 return Err("the project has not been saved yet".into());
             }

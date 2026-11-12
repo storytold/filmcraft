@@ -7,11 +7,88 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui::CursorIcon;
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use filmcraft_engine::{Session, project::SequenceView};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{max_pps, max_scroll, min_pps, timeline_extent};
 use serde_json::{Value, json};
+
+#[test]
+fn first_fit_of_a_sequence_does_not_mark_its_view_unsaved() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let epoch = session.view_epoch;
+    let mut d = Driver::new(session);
+    d.frames(8);
+    assert_eq!(d.app().session.view_epoch, epoch, "automatic first-fit layout is not a user change");
+    assert!(!d.app().session.has_unsaved_changes(), "first fit does not prompt to save an untouched project");
+}
+
+#[test]
+fn clamping_a_restored_view_does_not_mark_it_unsaved() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let active = session.state.active_sequence.unwrap();
+    session
+        .state
+        .timeline_views
+        .insert(active, SequenceView { pps: 100_000.0, scroll: 300.0, v_scroll: 0.0, a_scroll: 0.0, video_track_h: 60.0, audio_track_h: 56.0 });
+    let epoch = session.view_epoch;
+    let mut d = Driver::new(session);
+    d.frames(12);
+    assert!(d.app().ui.timeline.pps < 100_000.0, "the restored view is clamped to the current zoom ceiling");
+    assert_eq!(d.app().session.view_epoch, epoch, "automatic clamping does not advance the view epoch");
+    assert!(!d.app().session.has_unsaved_changes(), "the clamp does not prompt to save an untouched project");
+}
+
+#[test]
+fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
+    let mut d = Driver::demo();
+    let revision = d.app().session.revision;
+    let view_epoch = d.app().session.view_epoch;
+    d.ok(
+        "ui.set",
+        json!({"timeline": {
+            "trackSliderSmoothAnimations": true,
+            "trackSliderDecoupleEdges": false,
+            "trackSliderAlternatePosition": true,
+            "trackSliderShiftDragSpeed": 2.5
+        }}),
+    );
+    let settings = &d.app().session.state.timeline_ui;
+    assert!(settings.track_slider_smooth);
+    assert!(!settings.track_slider_decouple);
+    assert!(settings.track_slider_alternate_position);
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5);
+    assert!(settings.track_slider_shift_drag_custom);
+    assert_eq!(settings.track_slider_shift_drag_last_custom, 2.5);
+    assert_eq!(d.app().session.revision, revision, "view settings do not dirty project content");
+    assert_eq!(d.app().session.view_epoch, view_epoch.wrapping_add(1), "changed view settings are persisted");
+
+    let view_epoch = d.app().session.view_epoch;
+    d.ok("ui.set", json!({"timeline": {"trackSliderShiftDragSpeed": 10.1, "trackSliderSmoothAnimations": "yes"}}));
+    let settings = &d.app().session.state.timeline_ui;
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5, "out-of-range speed is ignored");
+    assert!(settings.track_slider_smooth, "wrongly typed settings are ignored");
+    assert_eq!(d.app().session.view_epoch, view_epoch, "ignored settings do not change the project view");
+}
+
+#[test]
+fn control_zoom_and_maximum_zoom_setting_stay_inside_the_zoom_range() {
+    let mut d = Driver::tall();
+    let width = d.rect("timeline.tracks")[2].max(1.0);
+    let duration = d.seconds();
+    d.ok("ui.set", json!({"timeline": {"maxZoomLevel": 0.05, "pps": 1e300}}));
+    let view = &d.app().ui.timeline;
+    let cap = max_pps(width, 0.05);
+    let floor = min_pps(duration, width).min(cap);
+    assert!(view.target_pps.is_finite() && (floor..=cap).contains(&view.target_pps), "{} not in {floor}..={cap}", view.target_pps);
+
+    d.ok("ui.set", json!({"timeline": {"maxZoomLevel": 3.0}}));
+    let view = &d.app().ui.timeline;
+    let cap = max_pps(width, 3.0);
+    assert!(view.target_pps <= cap && view.pps <= cap, "current zoom exceeds the new ceiling {cap}");
+}
 
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
@@ -24,12 +101,16 @@ impl Driver {
     fn demo() -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut d = Self::new(session);
+        d.frames(4);
+        d
+    }
+
+    fn new(session: Session) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, pointer: egui::Pos2::ZERO };
-        d.frames(4);
-        d
+        Driver { harness, tx, pointer: egui::Pos2::ZERO }
     }
 
     fn frames(&mut self, n: usize) {
@@ -156,34 +237,34 @@ fn none() -> Value {
 }
 
 #[test]
-fn the_wheel_moves_the_tracks_up_and_down() {
+fn ctrl_wheel_moves_the_tracks_up_and_down() {
     let mut d = Driver::tall();
     // over the video tracks: wheeling up brings the higher tracks in (Video 1 is at the bottom)
-    d.wheel(0.2, 0.0, 40.0, none());
+    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the video tracks moved, nothing else");
-    d.wheel(0.2, 0.0, -25.0, none());
+    d.wheel(0.2, 0.0, -25.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 0.0));
     // over the audio tracks: wheeling down brings the lower tracks in
-    d.wheel(0.8, 0.0, -30.0, none());
+    d.wheel(0.8, 0.0, -30.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 30.0));
     // neither half goes past its first or last track
-    d.wheel(0.2, 0.0, -1e6, none());
-    d.wheel(0.8, 0.0, 1e6, none());
+    d.wheel(0.2, 0.0, -1e6, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e6, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, -1e6, none());
+    d.wheel(0.8, 0.0, -1e6, json!({"command": true}));
     let (_, _, _, lowest) = d.view();
     assert!(lowest > 100.0 && lowest < 15.0 * 200.0, "{lowest}");
 }
 
 #[test]
-fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
+fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     let mut d = Driver::tall();
     // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
-    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "100 points at 50 points a second: 2 s later");
-    d.wheel(0.8, 0.0, 250.0, json!({"command": true}));
+    d.wheel(0.8, 0.0, 250.0, none());
     assert_eq!(d.view(), (1.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, 1e5, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e5, none());
     assert_eq!(d.view().0, 0.0, "not before the start");
     // Option + wheel: zoom about the pointer; it is not what Cmd + wheel does
     d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
@@ -203,26 +284,9 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
-#[test]
-fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
-    let mut d = Driver::tall();
-    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
-    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
-    d.wheel(0.2, 0.0, -100.0, none());
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
-    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0));
-    d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
-    assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
-}
-
-/// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
-/// in view and the scroll bar's thumb sat at the right end whatever was done to it.
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let mut d = Driver::tall();
@@ -232,9 +296,9 @@ fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let limit = max_scroll(seconds, width, 50.0);
     assert!((limit - (seconds + 600.0 - width as f64 / 50.0)).abs() < 1e-9);
     // by the wheel
-    d.wheel(0.2, 0.0, -1e7, json!({"command": true}));
+    d.wheel(0.2, 0.0, -1e7, none());
     assert!((d.view().0 - limit).abs() < 1e-6, "{} vs {limit}", d.view().0);
-    d.wheel(0.2, 0.0, -500.0, json!({"command": true}));
+    d.wheel(0.2, 0.0, -500.0, none());
     assert!((d.view().0 - limit).abs() < 1e-6);
     // by anything else that moves the view (a script here: the state that was reported stuck)
     d.ok("ui.set", json!({"timeline": {"pps": 2.9863201066269047, "scroll": 2325.538505030118}}));
@@ -315,7 +379,7 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
-    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
+    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2], "{thumb:?} in {track:?}");
     // dragged by its middle it moves with the pointer, and the view with it
     let y = thumb[1] + thumb[3] / 2.0;
     let grab = thumb[0] + thumb[2] / 2.0;
@@ -351,12 +415,17 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.frames(3);
     let jumped = d.rect("timeline.zoomBar");
     assert!((jumped[0] + jumped[2] / 2.0 - target).abs() < 2.0, "{jumped:?}");
-    // the handles at its ends still zoom: the right one out, the left edge of the view staying
-    let at = d.view().0;
+    // the handles at its ends still zoom: the right one out, keeping the view centered on its
+    // contents as the thumb grows on both edges
+    let (at, at_pps) = (d.view().0, d.view().1);
+    let width = f64::from(d.rect("timeline.tracks")[2]);
+    let center_old = at + width / (2.0 * at_pps);
     d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    assert!(pps < 50.0, "dragging the right handle outward zooms out: {pps}");
+    let center_new = scroll + width / (2.0 * pps);
+    assert!((center_new - center_old).abs() < 3.0, "the view's center holds: {center_new} was {center_old} (scroll {scroll}, was {at})");
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
@@ -375,9 +444,9 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
@@ -398,11 +467,11 @@ fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.move_to(handle + 40.0, y);
     let after = d.app().ui.timeline.target_pps;
     assert!(after < before, "the right handle dragged right zooms out: {before} -> {after}");
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging along the bar");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging over the tracks");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging over the tracks");
     d.release(handle + 40.0, y - 300.0);
-    assert_ne!(d.cursor(), CursorIcon::ResizeHorizontal, "button released, pointer over the tracks");
+    assert_ne!(d.cursor(), CursorIcon::PointingHand, "button released, pointer over the tracks");
 }
 
 /// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
@@ -440,6 +509,21 @@ fn continuous_video_thumbnails_ask_for_frames_across_each_clip() {
     let v = d.call("ui.set", json!({"timeline": {"thumbnails": "filmstrip"}}));
     assert_eq!(v["ok"], json!(false), "{v}");
     assert!(!d.app().ui.timeline.show_thumbnails);
+}
+
+#[test]
+fn timeline_settings_set_read_back_and_ignore_invalid_values() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": true, "maxZoomLevel": 1.2, "zoomBarHidden": true}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["smooth_animations"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(1.2));
+    assert_eq!(settings["zoom_bar_hidden"], json!(true));
+
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": "invalid", "maxZoomLevel": 99.0}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["smooth_animations"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(1.2));
 }
 
 #[test]

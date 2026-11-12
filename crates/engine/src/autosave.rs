@@ -541,6 +541,15 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
+    /// Whether project content or persistent project-scoped settings were unsaved when this
+    /// snapshot was written. Ordinary clean view changes are not offered as recovery.
+    /// Older journals without the field keep being offered (the default is true).
+    #[serde(default = "journal_dirty_by_default")]
+    pub dirty: bool,
+}
+
+fn journal_dirty_by_default() -> bool {
+    true
 }
 
 /// Unsaved changes left behind by a session that is no longer running.
@@ -593,7 +602,17 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         }
         // Keep the snapshot even when session.json is missing or unreadable: the project
         // is still recoverable. Meta fields fall back to defaults.
-        let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()).unwrap_or_default();
+        let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()).unwrap_or(JournalMeta {
+            // a missing meta must never hide a real recovery
+            dirty: true,
+            ..JournalMeta::default()
+        });
+        if !meta.dirty {
+            // a clean project's view-only journal is not unsaved work: never offered as
+            // recovery, and not left behind either
+            let _ = fs::remove_dir_all(&dir);
+            continue;
+        }
         out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
     }
     out.sort_by(|a, b| b.meta.saved_unix.cmp(&a.meta.saved_unix).then(b.id.cmp(&a.id)));
@@ -634,17 +653,37 @@ pub(crate) struct Sent {
     pub revision: u64,
     pub saved_revision: u64,
     pub path: Option<String>,
+    /// Bumped when stored Timeline view state changes. Tracked separately from `revision` so
+    /// per-frame changes never invalidate revision-keyed caches.
+    pub view_epoch: u64,
+    /// The view counter as of the last save: it must travel in the comparison too, or a save
+    /// that catches the view up sends nothing and leaves the journal behind.
+    pub saved_view_epoch: u64,
+    pub settings_epoch: u64,
+    pub saved_settings_epoch: u64,
 }
 
 struct Snapshot {
     project: Arc<Project>,
+    view: filmcraft_project::ProjectView,
     revision: u64,
+    /// The session's view counter at this snapshot: a view-only change journals again even
+    /// though `revision` is unchanged.
+    view_epoch: u64,
+    settings_epoch: u64,
+    /// Whether project content or persistent project-scoped settings were unsaved when this
+    /// snapshot was taken. Ordinary clean view changes are not sent to the worker.
+    unsaved_dirty: bool,
+    /// Content edits and Timeline settings are independently eligible for automatic saving.
+    content_dirty: bool,
+    settings_dirty: bool,
     path: Option<String>,
 }
 
 enum Msg {
-    /// The project has unsaved changes at this revision.
-    Dirty(Snapshot),
+    /// The project has unsaved changes at this revision. Boxed: the other messages are a few
+    /// words and the enum is sent after every command.
+    Dirty(Box<Snapshot>),
     /// Nothing unsaved (just saved / opened): drop the journal.
     Clean,
     Prefs(AutoSavePrefs),
@@ -675,6 +714,8 @@ pub enum WorkerEvent {
     SavedProject {
         path: String,
         revision: u64,
+        view_epoch: u64,
+        settings_epoch: u64,
     },
     Error(String),
 }
@@ -759,7 +800,10 @@ impl Persistence {
             events: etx,
             latest: None,
             journaled: 0,
+            journaled_view: 0,
+            journaled_dirty: false,
             autosaved: 0,
+            autosaved_settings: 0,
             first_pending: None,
             last_change: Instant::now(),
             next_autosave: Instant::now(),
@@ -787,8 +831,20 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn send_dirty(
+        &self,
+        project: Arc<Project>,
+        view: filmcraft_project::ProjectView,
+        revision: u64,
+        view_epoch: u64,
+        settings_epoch: u64,
+        unsaved_dirty: bool,
+        content_dirty: bool,
+        settings_dirty: bool,
+        path: Option<String>,
+    ) {
+        self.send(Msg::Dirty(Box::new(Snapshot { project, view, revision, view_epoch, settings_epoch, unsaved_dirty, content_dirty, settings_dirty, path })));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -935,9 +991,13 @@ struct Worker {
     events: Sender<WorkerEvent>,
     /// Newest unsaved state (None = clean).
     latest: Option<Snapshot>,
-    /// Revision currently in the journal (0 = none) / last auto-saved revision.
+    /// Revision currently in the journal (0 = none) / last auto-saved revision. The view
+    /// counters sit beside them: a view-only change must journal again at the same revision.
     journaled: u64,
+    journaled_view: u64,
+    journaled_dirty: bool,
     autosaved: u64,
+    autosaved_settings: u64,
     first_pending: Option<Instant>,
     last_change: Instant,
     next_autosave: Instant,
@@ -951,7 +1011,7 @@ impl Worker {
 
     fn journal_due(&self) -> Option<Instant> {
         let s = self.latest.as_ref()?;
-        if !self.prefs.recovery_journal || s.revision == self.journaled {
+        if !self.prefs.recovery_journal || journal_matches(s, self.journaled, self.journaled_view, self.journaled_dirty) {
             return None;
         }
         let max = self.first_pending.unwrap_or(self.last_change) + Duration::from_secs(self.prefs.recovery_interval_seconds as u64);
@@ -977,7 +1037,7 @@ impl Worker {
                     let now = Instant::now();
                     self.first_pending.get_or_insert(now);
                     self.last_change = now;
-                    self.latest = Some(s);
+                    self.latest = Some(*s);
                 }
                 Some(Msg::Clean) => {
                     self.latest = None;
@@ -996,14 +1056,14 @@ impl Worker {
                     }
                 }
                 Some(Msg::AutoSaveNow(reply)) => {
-                    let r = if self.latest.is_some() { self.auto_save() } else { Err(String::new()) };
+                    let r = if self.latest.as_ref().is_some_and(|snapshot| snapshot.unsaved_dirty) { self.auto_save() } else { Err(String::new()) };
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
                     let result = match self.latest.as_ref() {
                         None => Ok(None),
                         Some(_) if !self.prefs.recovery_journal => Err("recovery journal is disabled".to_string()),
-                        Some(s) if s.revision == self.journaled => Ok(Some(self.journaled)),
+                        Some(s) if journal_matches(s, self.journaled, self.journaled_view, self.journaled_dirty) => Ok(Some(self.journaled)),
                         Some(_) => self.write_journal().map(Some),
                     };
                     let _ = ack.send(result);
@@ -1017,7 +1077,9 @@ impl Worker {
                 let _ = self.write_journal();
             }
             if self.prefs.enabled && self.next_autosave <= now {
-                if self.latest.as_ref().is_some_and(|s| s.revision != self.autosaved) {
+                // a view-only snapshot never becomes an auto-save version: there is no unsaved
+                // work in it, and the ring would fill with copies of the saved project
+                if self.latest.as_ref().is_some_and(|s| needs_auto_save(s, self.autosaved, self.autosaved_settings)) {
                     let _ = self.auto_save();
                 }
                 self.next_autosave = now + self.autosave_interval();
@@ -1033,7 +1095,7 @@ impl Worker {
     fn write_journal(&mut self) -> Result<u64, String> {
         let Some(s) = &self.latest else { return Err("no unsaved recovery state to write".into()) };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        let bytes = filmcraft_format::encode_with_view(&s.project, Some(&s.view), false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
@@ -1043,13 +1105,14 @@ impl Worker {
         meta.project_name = s.project.name.clone();
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        meta.dirty = s.unsaved_dirty;
+        let r = write_recovery_pair(&self.session_dir, &bytes, &meta, filmcraft_format::atomic_write);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
                 self.journaled = s.revision;
+                self.journaled_view = s.view_epoch;
+                self.journaled_dirty = s.unsaved_dirty;
                 self.first_pending = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 Ok(s.revision)
@@ -1069,6 +1132,8 @@ impl Worker {
         let _ = fs::remove_file(self.session_dir.join(META));
         let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
         self.journaled = 0;
+        self.journaled_view = 0;
+        self.journaled_dirty = false;
     }
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
@@ -1087,7 +1152,7 @@ impl Worker {
             (None, _) => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
         };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        let bytes = filmcraft_format::encode_with_view(&s.project, Some(&s.view), false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
@@ -1096,13 +1161,19 @@ impl Worker {
         match r {
             Ok(path) => {
                 self.autosaved = s.revision;
+                self.autosaved_settings = s.settings_epoch;
                 let _ = self.events.send(WorkerEvent::AutoSaved { path: path.clone(), revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
                     match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                         Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            let _ = self.events.send(WorkerEvent::SavedProject {
+                                path: p.clone(),
+                                revision: s.revision,
+                                view_epoch: s.view_epoch,
+                                settings_epoch: s.settings_epoch,
+                            });
                         }
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }
@@ -1118,9 +1189,105 @@ impl Worker {
     }
 }
 
+/// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
+/// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
+fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let metadata = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    let meta_path = dir.join(META);
+    let snapshot_path = dir.join(SNAPSHOT);
+    if meta.dirty {
+        write(&meta_path, &metadata)?;
+        write(&snapshot_path, snapshot)
+    } else {
+        write(&snapshot_path, snapshot)?;
+        write(&meta_path, &metadata)
+    }
+}
+
+fn journal_matches(snapshot: &Snapshot, revision: u64, view_epoch: u64, unsaved_dirty: bool) -> bool {
+    snapshot.revision == revision && snapshot.view_epoch == view_epoch && snapshot.unsaved_dirty == unsaved_dirty
+}
+
+fn needs_auto_save(snapshot: &Snapshot, autosaved_revision: u64, autosaved_settings: u64) -> bool {
+    (snapshot.content_dirty && snapshot.revision != autosaved_revision) || (snapshot.settings_dirty && snapshot.settings_epoch != autosaved_settings)
+}
+
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+    use crate::Session;
+    #[test]
+    fn interrupted_dirty_snapshot_is_not_discarded_as_clean() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let snapshot = filmcraft_format::encode(&Project::default(), false);
+        write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: false, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let result = write_recovery_pair(&session, &snapshot, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            filmcraft_format::atomic_write(path, bytes)?;
+            if path.ends_with(SNAPSHOT) { Err(io::Error::other("interrupted")) } else { Ok(()) }
+        });
+        assert!(result.is_err());
+        assert_eq!(scan_candidates(&dir, None).len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_view_settings_keep_auto_save_and_recovery_without_content_revision() {
+        let dir = std::env::temp_dir().join(format!("fc-view-settings-persist-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let revision = session.revision;
+        session.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        session.project_view_changed();
+        assert_eq!(session.revision, revision, "view settings do not invalidate content caches");
+        assert!(!session.is_dirty());
+        assert!(session.has_unsaved_changes());
+        assert!(session.persistence.as_ref().unwrap().auto_save_now().unwrap().is_some());
+        assert!(session.persistence.as_ref().unwrap().flush().unwrap().is_some());
+        let session_dir = session.persistence.as_ref().unwrap().session_dir.clone();
+        assert!(session_dir.join(SNAPSHOT).is_file(), "settings-only changes remain recoverable");
+        let meta: JournalMeta = serde_json::from_slice(&fs::read(session_dir.join(META)).unwrap()).unwrap();
+        assert!(meta.dirty);
+        session.shutdown();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn journal_identity_includes_dirty_state() {
+        let snapshot = Snapshot {
+            project: Arc::new(Project::default()),
+            view: filmcraft_project::ProjectView::default(),
+            revision: 7,
+            view_epoch: 3,
+            settings_epoch: 0,
+            unsaved_dirty: false,
+            content_dirty: false,
+            settings_dirty: false,
+            path: None,
+        };
+        assert!(journal_matches(&snapshot, 7, 3, false));
+        assert!(!journal_matches(&snapshot, 7, 3, true), "a save must clear a previously dirty journal");
+    }
+
+    #[test]
+    fn ordinary_view_changes_do_not_rotate_content_auto_saves() {
+        let snapshot = Snapshot {
+            project: Arc::new(Project::default()),
+            view: filmcraft_project::ProjectView::default(),
+            revision: 7,
+            view_epoch: 4,
+            settings_epoch: 0,
+            unsaved_dirty: true,
+            content_dirty: true,
+            settings_dirty: false,
+            path: None,
+        };
+        assert!(!needs_auto_save(&snapshot, 7, 0), "the content revision was already auto-saved");
+        assert!(needs_auto_save(&snapshot, 6, 0), "new content remains eligible for auto-save");
+    }
 
     #[test]
     fn recovery_keeps_original_when_worker_has_stopped() {

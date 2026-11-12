@@ -366,6 +366,9 @@ impl EffectSel {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
     pub active_sequence: Option<ItemId>,
+    /// Per-project Timeline interaction settings, persisted in `ProjectView` and recovery state.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
     /// Item loaded in the Source monitor and its playhead (media time).
@@ -507,6 +510,19 @@ pub struct Session {
     /// owners) that belongs to the replaced document even if item ids are reused.
     pub document_epoch: u64,
     pub saved_revision: u64,
+    /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
+    /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
+    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
+    /// the autosave journal.
+    pub view_epoch: u64,
+    /// The view counter as of the last successful save: what the project file on disk holds.
+    /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
+    /// unsaved content.
+    pub saved_view_epoch: u64,
+    /// Epoch for project-scoped Timeline settings that need automatic save and recovery. It is
+    /// separate from `revision` so changing UI settings does not invalidate content caches.
+    pub settings_epoch: u64,
+    pub saved_settings_epoch: u64,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -630,6 +646,10 @@ impl Session {
             revision: 1,
             document_epoch: 0,
             saved_revision: 1,
+            view_epoch: 0,
+            saved_view_epoch: 0,
+            settings_epoch: 0,
+            saved_settings_epoch: 0,
             path: None,
             state: EditorState {
                 snapping: true,
@@ -738,14 +758,43 @@ impl Session {
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
-        let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
-        let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
-        if p.last_sent.as_ref() == Some(&cur) {
+        // the worker check and the revision check come first: the project view is a walk over
+        // every sequence and it must not repeat on every command while nothing changed (or when
+        // there is no worker to send it to at all)
+        if self.persistence.is_none() {
             return;
         }
-        if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+        let content_dirty = self.is_dirty();
+        let settings_dirty = self.settings_epoch != self.saved_settings_epoch;
+        let dirty = content_dirty || settings_dirty;
+        let cur = autosave::Sent {
+            revision: self.revision,
+            saved_revision: self.saved_revision,
+            path: self.path.clone(),
+            view_epoch: self.view_epoch,
+            saved_view_epoch: self.saved_view_epoch,
+            settings_epoch: self.settings_epoch,
+            saved_settings_epoch: self.saved_settings_epoch,
+        };
+        if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
+            return;
+        }
+        // Content and project-scoped settings need recovery. Ordinary zoom, scroll and tab-view
+        // changes stay in the explicit save prompt, not in recovery or auto-save snapshots.
+        let view = dirty.then(|| self.project_view());
+        let Some(p) = self.persistence.as_mut() else { return };
+        if let Some(view) = view {
+            p.send_dirty(
+                self.project.clone(),
+                view,
+                self.revision,
+                self.view_epoch,
+                self.settings_epoch,
+                dirty,
+                content_dirty,
+                settings_dirty,
+                self.path.clone(),
+            );
         } else {
             p.send_clean();
         }
@@ -763,10 +812,14 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
-                autosave::WorkerEvent::SavedProject { path, revision }
-                    if self.path.as_deref() == Some(path.as_str()) && revision > self.saved_revision && revision <= self.revision =>
+                autosave::WorkerEvent::SavedProject { path, revision, view_epoch, settings_epoch }
+                    if self.path.as_deref() == Some(path.as_str())
+                        && revision <= self.revision
+                        && (revision > self.saved_revision || settings_epoch > self.saved_settings_epoch) =>
                 {
-                    self.saved_revision = revision;
+                    self.saved_revision = self.saved_revision.max(revision);
+                    self.saved_view_epoch = self.saved_view_epoch.max(view_epoch);
+                    self.saved_settings_epoch = self.saved_settings_epoch.max(settings_epoch);
                 }
                 autosave::WorkerEvent::Error(m) => {
                     self.log.push(panels::Level::Error, "autosave", m.clone());
@@ -820,8 +873,33 @@ impl Session {
         }
     }
 
+    /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
+    /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
+    /// duplicate-marker caches. The epoch keeps unsaved view state visible to save prompts;
+    /// clean view-only changes are not sent to recovery.
+    pub fn view_changed(&mut self) {
+        self.view_epoch = self.view_epoch.wrapping_add(1);
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+
+    /// Whether project-scoped Timeline settings differ from the last saved project file.
+    pub fn is_view_dirty(&self) -> bool {
+        self.view_epoch != self.saved_view_epoch
+    }
+
+    /// Whether closing would discard unsaved content or project-scoped view settings.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty() || self.is_view_dirty()
+    }
+
+    /// Mark a project-file Timeline setting as changed without dirtying content revision.
+    pub fn project_view_changed(&mut self) {
+        self.view_epoch = self.view_epoch.wrapping_add(1);
+        self.settings_epoch = self.settings_epoch.wrapping_add(1);
+        self.sync_persistence();
     }
 
     /// Run a command by id.
@@ -955,6 +1033,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -964,6 +1043,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
