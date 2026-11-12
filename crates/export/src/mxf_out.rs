@@ -1,13 +1,20 @@
 //! MXF output of the stepped exporter: OP1a (one file, frame-wrapped picture + one PCM track) or
 //! OP-Atom (Avid style: the picture in `path`, one mono PCM file per audio channel next to it,
-//! `<stem>_A1.mxf`, `<stem>_A2.mxf`, …), written with [`filmcraft_mxf::MxfWriter`].
+//! `<stem>_A1.mxf`, `<stem>_A2.mxf`, …), written with [`craft_media::mxf::MxfWriter`].
 
-use filmcraft_mxf::{
+use craft_media::mxf::{
     CodedKind, ColorSpace, FrameInfo, MxfWriter, PackageIds, Pattern, PictureCoding, PictureDesc, Rational, SoundDesc, StartTimecode, Timestamp, WriterConfig,
 };
 use filmcraft_time::FrameRate;
 
 use crate::{ColorSignal, EncodedPacket, ExportError, ExportSettings, Format, H264Profile, Out, Result};
+
+/// The identification set FilmCraft's MXF files carry (company, product, version).
+fn named(cfg: &mut WriterConfig) {
+    cfg.company = "FilmCraft".into();
+    cfg.product = "FilmCraft".into();
+    cfg.version = env!("CARGO_PKG_VERSION").into();
+}
 
 /// Paths of the OP-Atom audio files for an export to `path` with `channels` channels.
 pub fn opatom_audio_paths(path: &str, channels: usize) -> Vec<String> {
@@ -115,6 +122,7 @@ impl MxfMux {
         // integers only: `ExportSettings::validate` refuses float PCM in MXF
         let bits = u32::from(settings.audio.sample_format().bits());
         let mut cfg = WriterConfig::new(if atom { Pattern::OpAtom } else { Pattern::Op1a }, rate, ids.clone());
+        named(&mut cfg);
         cfg.picture = Some(picture(settings, s.width, s.height));
         cfg.modified = Timestamp::from_unix((now / 1_000_000_000) as i64);
         cfg.timecode = Some(StartTimecode { frames: s.timecode.0, rate, drop_frame: s.timecode.1 && s.rate.supports_drop_frame() });
@@ -130,11 +138,12 @@ impl MxfMux {
                     rate,
                     PackageIds {
                         material: ids.material,
-                        file: filmcraft_mxf::Umid::from_seed(format!("file:{seed}:A{}", k + 1).as_bytes()),
+                        file: craft_media::mxf::Umid::from_seed(format!("file:{seed}:A{}", k + 1).as_bytes()),
                         material_name: ids.material_name.clone(),
                         file_name: format!("{} A{}", s.name, k + 1),
                     },
                 );
+                named(&mut a);
                 a.first_track_id = 3 + k as u32;
                 a.sound = vec![SoundDesc { sample_rate: sr, channels: 1, bits }];
                 a.timecode = cfg.timecode;
@@ -190,12 +199,12 @@ impl MxfMux {
         if self.atom {
             for (k, (_, w)) in self.audio.iter_mut().enumerate() {
                 if let Some(c) = planar.get(k) {
-                    w.push_sound(0, &filmcraft_mxf::encode_pcm(std::slice::from_ref(c), self.bits)).map_err(io)?;
+                    w.push_sound(0, &craft_media::mxf::encode_pcm(std::slice::from_ref(c), self.bits)).map_err(io)?;
                 }
             }
             Ok(())
         } else {
-            self.video.push_sound(0, &filmcraft_mxf::encode_pcm(planar, self.bits)).map_err(io)
+            self.video.push_sound(0, &craft_media::mxf::encode_pcm(planar, self.bits)).map_err(io)
         }
     }
 

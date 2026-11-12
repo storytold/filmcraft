@@ -433,10 +433,10 @@ pub fn fixed_packet_samples(codec: FixedFrames, first: &[u8], rate: u32) -> Opti
             }
             return i64::try_from(samples).ok().filter(|&n| n > 0);
         }
-        FixedFrames::MpegAudio => filmcraft_mpegts::Codec::MpegAudio,
-        FixedFrames::Ac3 => filmcraft_mpegts::Codec::Ac3,
+        FixedFrames::MpegAudio => craft_media::mpegts::Codec::MpegAudio,
+        FixedFrames::Ac3 => craft_media::mpegts::Codec::Ac3,
     };
-    let f = filmcraft_mpegts::frame_info(&mpegts, first)?;
+    let f = craft_media::mpegts::frame_info(&mpegts, first)?;
     (f.sample_rate == rate && f.samples > 0).then_some(f.samples as i64)
 }
 
