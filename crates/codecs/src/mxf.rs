@@ -1,4 +1,4 @@
-//! MXF media source (`filmcraft-mxf` demux, GOP-aware video via [`crate::gop`]).
+//! MXF media source (`craft_media::mxf` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! - Video: H.264 / AVC-Intra (Annex B byte stream, our decoder), MPEG-2 (D-10 / IMX, XDCAM HD /
 //!   HD422; our decoder), VC-3 (DNxHD/DNxHR) and ProRes through the decoder factories. Other
@@ -12,27 +12,18 @@
 
 use std::sync::Arc;
 
+use craft_media::mxf::{Codec, MxfFile, Timecode, TrackKind};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{FourCc, SampleEntry};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
-use filmcraft_mxf::{Codec, MxfFile, Timecode, TrackKind};
 use filmcraft_time::{FrameRate, Tick};
 
 use crate::gop::{GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
-impl filmcraft_mxf::ByteSource for crate::Src {
-    fn len(&self) -> u64 {
-        self.0.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.0.read_at(offset, buf)
-    }
-}
-
 pub fn sniff(head: &[u8]) -> bool {
-    filmcraft_mxf::sniff(head)
+    craft_media::mxf::sniff(head)
 }
 
 pub struct MxfSource {
@@ -198,7 +189,7 @@ fn start_frames(tc: &Timecode, rate: FrameRate) -> i64 {
 
 /// [`avc_presentation_order`] over the first `cap` bytes of every picture, read lazily one at a
 /// time. A failed read is an error; `Ok(None)` means only that a slice header was unreadable.
-fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[filmcraft_mxf::Sample], cap: usize) -> crate::Result<Option<Vec<i64>>> {
+fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample], cap: usize) -> crate::Result<Option<Vec<i64>>> {
     let mut failed = None;
     let heads = samples.iter().map_while(|s| match filmcraft_media::reader::read_range(r, s.offset, (s.size as usize).min(cap)) {
         Ok(h) => Some(h),
@@ -228,8 +219,8 @@ impl MxfSource {
     /// Open from a random-access reader: only the KLV headers, metadata and index are read now.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_mxf::open(&bytes).map_err(|e| match e {
-            filmcraft_mxf::Error::Unsupported(s) => CodecError::Unsupported(format!("MXF: {s}")),
+        let file = craft_media::mxf::open(&bytes).map_err(|e| match e {
+            craft_media::mxf::Error::Unsupported(s) => CodecError::Unsupported(format!("MXF: {s}")),
             other => CodecError::Container(other.to_string()),
         })?;
         for w in &file.warnings {
@@ -240,7 +231,7 @@ impl MxfSource {
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.kind == TrackKind::Sound && !t.chunks.is_empty() && t.sound_format != filmcraft_mxf::SoundFormat::Other)
+            .filter(|(_, t)| t.kind == TrackKind::Sound && !t.chunks.is_empty() && t.sound_format != craft_media::mxf::SoundFormat::Other)
             .map(|(i, _)| i)
             .collect();
         if vtrack.is_none() && atracks.is_empty() {
@@ -592,7 +583,7 @@ mod tests {
 
     #[test]
     fn failed_picture_head_read_is_an_error() {
-        let samples = [filmcraft_mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false }];
+        let samples = [craft_media::mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false }];
         let e = avc_order_from_samples(&Failing, &samples, AVC_ORDER_HEAD).unwrap_err();
         assert!(matches!(e, CodecError::Container(ref m) if m.contains("disk gone")), "{e}");
     }

@@ -18,8 +18,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-matroska = { workspace = true }
-filmcraft-mxf = { workspace = true }
-craft-media = { workspace = true, features = ["avi", "mpegts", "ogg"] }
+craft-media = { workspace = true, features = ["avi", "mpegts", "mxf", "ogg"] }
 filmcraft-bitstream = { workspace = true }
 filmcraft-vp8 = { workspace = true }
 filmcraft-prores = { workspace = true }
