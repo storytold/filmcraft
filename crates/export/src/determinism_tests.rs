@@ -207,6 +207,50 @@ fn hdr_with_audio_is_the_same_file_when_the_memory_budget_caps_the_batch() {
     }
 }
 
+#[test]
+fn the_render_budget_caps_the_batch_by_what_its_frames_hold_and_the_file_is_the_same() {
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4")] {
+        // `render_budget(ws)`: a budget sized from the first frame's estimated working set `ws`
+        let run = |name: &str, overlap: bool, render_budget: Option<&(dyn Fn(u64) -> u64 + Sync)>| {
+            let (p, seq, m) = project();
+            let s = ExportSettings { format, path: tmp(&format!("{name}.{ext}")), include_audio: false, ..Default::default() };
+            pool(3).install(|| {
+                let prog = Progress::default();
+                let mut ex = Exporter::new(p, seq, &s, &prog).unwrap();
+                ex.set_batch(16);
+                ex.set_overlap(overlap);
+                let ws = ex.working_set(0);
+                assert!(ws > 0, "a frame with a clip has a working set");
+                if let Some(b) = render_budget {
+                    ex.set_render_budget(b(ws));
+                }
+                let mut first_ahead = None;
+                loop {
+                    let step = ex.step(&m, &prog).unwrap();
+                    first_ahead.get_or_insert(ex.frames_ahead());
+                    if matches!(step, Step::Done(_)) {
+                        break;
+                    }
+                }
+                (std::fs::read(&s.path).unwrap(), first_ahead.unwrap_or(0))
+            })
+        };
+        let (reference, _) = run(&format!("wscap-{}-ref", format.id()), false, None);
+        // room for three frames being drawn (and a little over): batches of 3, not 16
+        let (capped, ahead) = run(&format!("wscap-{}-3", format.id()), true, Some(&|ws| 3 * ws + ws / 2));
+        assert_eq!(ahead, 3, "{}: the batch was not capped to 3 frames", format.label());
+        assert!(reference == capped, "{}: a batch capped by its working set gives a different file", format.label());
+        // a budget below one frame still renders, one frame at a time
+        let (one, ahead) = run(&format!("wscap-{}-1", format.id()), true, Some(&|_| 1));
+        assert_eq!(ahead, 1);
+        assert!(reference == one, "{}: one-frame batches give a different file", format.label());
+        // the default budget leaves these small frames alone: 24 frames in batches of 16 leave 8
+        let (full, ahead) = run(&format!("wscap-{}-16", format.id()), true, None);
+        assert_eq!(ahead, 8, "{}: the default budget capped a 320 x 180 batch", format.label());
+        assert!(reference == full);
+    }
+}
+
 /// Bytes of one HDR frame of the test project (320 x 180, three f32 per pixel).
 fn frame_bytes_for_test() -> u64 {
     320 * 180 * 12

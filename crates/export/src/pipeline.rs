@@ -246,6 +246,12 @@ impl Pipeline {
         })
     }
 
+    /// Estimated peak bytes a CPU render of output frame `f` holds while it is drawn
+    /// ([`filmcraft_render::working_set`]).
+    pub fn working_set(&self, f: i64) -> u64 {
+        filmcraft_render::working_set::frame_working_set(&self.project, self.seq, self.rate.tick_of(f), self.opts)
+    }
+
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
