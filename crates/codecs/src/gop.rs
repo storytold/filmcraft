@@ -210,6 +210,14 @@ struct State {
     /// A request with time to spare (paused, scrubbing, an export) waits for playback decoding
     /// to stop: it stops at the next sample and does not start again until that request is done.
     pump_stop: bool,
+    /// The request whose thread decodes ahead has its own answer (its frame, or the run went
+    /// past it) and decodes on for the requests to come. It returns that answer only when the
+    /// run ends: see `pump_pass`.
+    pump_served: bool,
+    /// A playing request for a picture on its way waits to take the run over, so that the
+    /// request decoding ahead returns its frame: the run ends at the next sample and the waiting
+    /// request starts the next one, with the decoder where it is.
+    pump_pass: bool,
     /// The latest playing request, which playback decoding follows.
     play: Option<Play>,
     /// Frames (by pts) requests are waiting for in [`GopCache::await_pump`], with how many:
@@ -723,6 +731,8 @@ impl GopCache {
                 out_max: i64::MIN,
                 pump: false,
                 pump_stop: false,
+                pump_served: false,
+                pump_pass: false,
                 play: None,
                 waiting: BTreeMap::new(),
                 frames: BTreeMap::new(),
@@ -1060,8 +1070,11 @@ impl GopCache {
     /// Another thread decodes ahead for playback ([`Self::pump`]): a playing request gets its
     /// frame when produced, is dropped when the decoder passed it, and otherwise returns at once
     /// as pending (`filmcraft_media::pending`: the frame server asks again next refresh), so
-    /// it does not hold a worker while the picture is in the decoder's pipeline. Any other
-    /// request waits for playback decoding to stop (it has, by setting `play` to None).
+    /// it does not hold a worker while the picture is in the decoder's pipeline. Once the thread
+    /// decoding ahead has its own frame, the request takes the run over instead (it waits for
+    /// the sample being decoded, then decodes on itself): that thread's frame is due, and it
+    /// can only return it when its run ends. Any other request waits for playback decoding to
+    /// stop (it has, by setting `play` to None).
     fn await_pump<'a>(
         &self,
         st: MutexGuard<'a, State>,
@@ -1087,10 +1100,12 @@ impl GopCache {
                 }
                 // the decoder will produce it (the pump follows this request): asked again later
                 let coming = st.start <= i && decode_start(s, i) <= st.next.saturating_add(CONTINUE_THROUGH);
-                if coming {
+                if coming && !st.pump_served {
                     filmcraft_media::pending::mark();
                     break Err(CodecError::Cancelled);
                 }
+                // (served: this request takes the run over when it ends, at the next sample)
+                st.pump_pass |= coming;
                 // out of the run's reach: the pump stops for it (it is the latest request)
             }
             let (guard, _) = self.shared.cv.wait_timeout(st, Duration::from_millis(20)).unwrap_or_else(PoisonError::into_inner);
@@ -1112,8 +1127,9 @@ impl GopCache {
     /// a sample decodes (cache hits and the requests waiting for the pictures get through),
     /// skipping the non-reference samples of frames the latest playing request says are late,
     /// until that request stops coming ([`PUMP_IDLE`]), asks for a frame outside this run, or
-    /// is [`PUMP_AHEAD`] samples behind. Positioned by [`Self::position`]; `State::pump` is set.
-    /// Returns the wanted frame, dropped if the run passed it meanwhile.
+    /// is [`PUMP_AHEAD`] samples behind, or until another playing request takes the run over
+    /// (`State::pump_pass`) once the wanted frame is ready. Positioned by [`Self::position`];
+    /// `State::pump` is set. Returns the wanted frame, dropped if the run passed it meanwhile.
     fn pump(&self, s: &dyn VideoSamples, i: usize, want_pts: i64, draft: bool) -> crate::Result<Taken> {
         /// Ends the run when it does not reach its own end (a decoder panicked): `State::pump`
         /// left set would keep every later request for an uncached frame waiting for a run that
@@ -1131,6 +1147,8 @@ impl GopCache {
                 let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 st.pump = false;
                 st.pump_stop = false;
+                st.pump_served = false;
+                st.pump_pass = false;
                 if st.decoder.is_none() {
                     // taken out for the sample that panicked and dropped with it
                     self.shared.pool.decoders.fetch_sub(1, Ordering::Relaxed);
@@ -1154,6 +1172,7 @@ impl GopCache {
                 own = st.cached(want_pts, draft).cloned().map(|frame| Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
             }
             let done = own.is_some() || (i < st.next && want_pts <= st.out_max);
+            st.pump_served = done;
             let reach = play.i >= st.start && decode_start(s, play.i) <= st.next.saturating_add(CONTINUE_THROUGH);
             // enough frames past the request for the cache to hold (more would evict them)
             let full = {
@@ -1163,7 +1182,7 @@ impl GopCache {
                 ahead.saturating_add(1).saturating_mul(frame_bytes) >= self.cache_budget(frame_bytes, true)
             };
             let over = done && (play.at.elapsed() > PUMP_IDLE || st.next > play.i.saturating_add(PUMP_AHEAD) || full);
-            if st.pump_stop || st.next >= n || !reach || over || (!done && st.next > i.saturating_add(64)) {
+            if st.pump_stop || st.next >= n || !reach || over || (done && st.pump_pass) || (!done && st.next > i.saturating_add(64)) {
                 break Ok(());
             }
             let k = st.next;
@@ -1207,6 +1226,8 @@ impl GopCache {
         }
         st.pump = false;
         st.pump_stop = false;
+        st.pump_served = false;
+        st.pump_pass = false;
         run.ended = true;
         self.shared.cv.notify_all();
         result?;

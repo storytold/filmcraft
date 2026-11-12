@@ -1443,3 +1443,80 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
 }
+
+/// A decoder that takes a few milliseconds for each sample: playback's requests stay ahead of it.
+struct SlowDec(Box<dyn VideoDecoder>);
+
+impl VideoDecoder for SlowDec {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        std::thread::sleep(Duration::from_millis(4));
+        self.0.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.0.flush()
+    }
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn name(&self) -> &str {
+        "slow"
+    }
+}
+
+struct SlowSamples(Samples);
+
+impl VideoSamples for SlowSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(SlowDec(self.0.make_decoder()?)))
+    }
+}
+
+/// The request that starts a run decodes ahead on its own thread. With a decoder no faster than
+/// playback the requests to come stay ahead of the run, which then never ends by itself: the
+/// request used to return its frame only when playback stopped, long after the frame was due.
+/// Once its frame is ready, the next request for a picture on its way takes the run over.
+#[test]
+fn the_request_that_decodes_ahead_returns_its_frame_when_another_takes_the_run_over() {
+    let s = SlowSamples(samples(300, 250, 0, false));
+    let c = GopCache::new(None);
+    let ask = |i: usize| filmcraft_media::cancel::with_playing(true, || c.frame_late(&s, i as i64 * 1000, Some(0)).map(|f| index_of(&f)));
+    let fed = || s.0.decodes.load(Ordering::Relaxed);
+    let (first, at_return) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            let r = ask(5);
+            (r, fed())
+        });
+        // playback asking on, always a few frames ahead of the decoder, for 60 frames
+        scope.spawn(|| {
+            let until = Instant::now() + Duration::from_secs(20);
+            // (once the first request's run has begun: it is the one that decodes ahead)
+            while fed() == 0 && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            while fed() < 60 && Instant::now() < until {
+                let _ = ask(fed() + 3);
+                filmcraft_media::pending::take();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        first.join().unwrap_or((Ok(0), usize::MAX))
+    });
+    assert_eq!(first.expect("frame"), 5);
+    assert!(at_return <= 5 + 12, "frame 5 came back after {at_return} samples were decoded");
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), 1, "one run of the decoder, taken over without a restart");
+}
