@@ -348,6 +348,7 @@ impl Nvenc {
         };
         let ring = if let Some(la) = cfg.lookahead
             && la > 0
+            && !cfg.cqp
         {
             (la.min(64) as usize + 8).max(RING)
         } else {

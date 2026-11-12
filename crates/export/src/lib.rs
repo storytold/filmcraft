@@ -19,6 +19,7 @@ mod aac_out;
 mod audio_out;
 mod deflate;
 mod job;
+mod mp3_out;
 mod mxf_out;
 mod pace;
 mod pcm;
@@ -62,7 +63,7 @@ use encoders::{aac_factory, h264_factory};
 pub use encoders::{apv_profile, dnx_profile, prores_profile};
 pub use format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use output::Out;
-pub use output::OutputSink;
+pub use output::{OutputSink, path_is_file};
 pub(crate) use registry::build_frame_renderer;
 #[cfg(test)]
 pub(crate) use registry::reset_frame_renderers_for_tests;

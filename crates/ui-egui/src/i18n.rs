@@ -507,3 +507,66 @@ mod bcp47_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod feature_name_tests {
+    #[test]
+    fn renamed_feature_labels_have_translations_in_every_catalog() {
+        let catalogs = [
+            ("bs", include_str!("i18n/bs.tsv")),
+            ("cs", include_str!("i18n/cs.tsv")),
+            ("de", include_str!("i18n/de.tsv")),
+            ("es", include_str!("i18n/es.tsv")),
+            ("fr", include_str!("i18n/fr.tsv")),
+            ("id", include_str!("i18n/id.tsv")),
+            ("it", include_str!("i18n/it.tsv")),
+            ("ja", include_str!("i18n/ja.tsv")),
+            ("ko", include_str!("i18n/ko.tsv")),
+            ("pl", include_str!("i18n/pl.tsv")),
+            ("pt-br", include_str!("i18n/pt-br.tsv")),
+            ("ru", include_str!("i18n/ru.tsv")),
+            ("sv", include_str!("i18n/sv.tsv")),
+            ("tr", include_str!("i18n/tr.tsv")),
+            ("uk", include_str!("i18n/uk.tsv")),
+            ("zh-cn", include_str!("i18n/zh-cn.tsv")),
+        ];
+        for (language, catalog) in catalogs {
+            let (entries, errors) = super::catalog::parse_entries(catalog);
+            assert!(errors.is_empty(), "{language}: {errors:?}");
+            assert!(
+                entries.iter().all(|(_, source, translated)| !source.contains("Lumetri") && !translated.contains("Lumetri")),
+                "{language}: old display mark"
+            );
+            for key in [
+                "List Color Grading Presets",
+                "Apply Color Grading Preset",
+                "Color Grading Preset Thumbnails",
+                "Toggle Color Grading Section",
+                "Color Grading Section",
+                "Read Video Scopes",
+                "Color Grading",
+                "Video Scopes",
+                "Color Grading Presets",
+                "Add Color Grading to clip",
+                "For color management parameters, go to the Settings tab in the Color Grading panel.",
+                "Ultra Key",
+                "Warp Stabilizer",
+                "Morph Cut",
+                "Enable External Video Output",
+            ] {
+                assert_eq!(
+                    entries.iter().filter(|(context, source, _)| context.is_empty() && source == key).count(),
+                    1,
+                    "{language}: duplicate or missing {key}"
+                );
+                assert!(
+                    catalog.lines().any(|line| {
+                        let mut fields = line.split('\t');
+                        fields.next() == Some("") && fields.next() == Some(key) && fields.next().is_some_and(|text| !text.is_empty())
+                    }),
+                    "{language}: missing {key}"
+                );
+            }
+        }
+    }
+}
