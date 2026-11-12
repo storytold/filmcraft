@@ -387,6 +387,58 @@ fn set_style_font_style() {
     assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.font_style, "SemiBold");
 }
 
+/// `captions.export {"everyFrame": true}` writes an MCC packet on every frame to the end of the
+/// sequence, for SDI and frame-wrapped MXF (#4024).
+#[test]
+fn caption_export_writes_an_mcc_packet_on_every_frame_on_request() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-mcc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cc.mcc").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("sequence.settings", json!({"fps": 29.97})).unwrap();
+    s.execute("captions.add", json!({"text": "First", "seconds": 1.0, "durationSeconds": 1.0})).unwrap();
+    s.execute("captions.add", json!({"text": "Last", "seconds": 3.0, "durationSeconds": 1.0})).unwrap();
+    let data_lines = |s: &mut Session, p: serde_json::Value| {
+        s.execute("captions.export", p).unwrap();
+        std::fs::read_to_string(&path).unwrap().lines().filter(|l| l.contains('\t')).count()
+    };
+    let sparse = data_lines(&mut s, json!({"path": path}));
+    // the frames at 29.97 fps that start before the sequence ends
+    let end = s.active_sequence().unwrap().duration();
+    let rate = filmcraft_captions::mcc::RATE;
+    let frames = usize::try_from(rate.frame_at(end) + i64::from(rate.tick_of(rate.frame_at(end)) < end)).unwrap();
+    assert!(sparse < frames, "{sparse} lines, {frames} frames");
+    assert_eq!(data_lines(&mut s, json!({"path": path, "everyFrame": true})), frames);
+    // a sequence longer than an MCC time code's day is refused, not cut short
+    s.execute("captions.add", json!({"text": "Late", "seconds": 25.0 * 3600.0})).unwrap();
+    let err = s.execute("captions.export", json!({"path": path, "everyFrame": true})).unwrap_err();
+    assert!(err.to_string().contains("24 hours"), "{err}");
+    assert!(s.execute("captions.export", json!({"path": path})).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MCC is written at 29.97 fps, so `everyFrame` matches the video frames only in a 29.97 fps
+/// sequence and is refused at any other rate. A sparse MCC exports at every rate.
+#[test]
+fn caption_export_every_frame_needs_a_29_97_fps_sequence() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-mcc-rate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cc.mcc").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "First", "seconds": 1.0, "durationSeconds": 1.0})).unwrap();
+    // (sequence fps, everyFrame allowed)
+    for (fps, allowed) in [(23.976, false), (24.0, false), (25.0, false), (29.97, true), (30.0, false), (50.0, false), (59.94, false)] {
+        s.execute("sequence.settings", json!({"fps": fps})).unwrap();
+        let r = s.execute("captions.export", json!({"path": path, "everyFrame": true}));
+        assert_eq!(r.is_ok(), allowed, "{fps} fps: {r:?}");
+        if let Err(e) = r {
+            assert!(e.to_string().contains("needs a 29.97 fps sequence"), "{fps} fps: {e}");
+        }
+        assert!(s.execute("captions.export", json!({"path": path})).is_ok(), "{fps} fps, sparse");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The caption track language reaches TTML, and import can set it (#4025).
 #[test]
 fn caption_track_language_survives_import_and_ttml_export() {
