@@ -14,7 +14,7 @@ impl std::fmt::Debug for OutputSink {
 /// How an audio-only export codes its samples.
 pub(crate) enum AudioWriter {
     Pcm(pcm::PcmContainer),
-    Flac(Box<filmcraft_flac::Encoder>),
+    Flac(Box<craft_audio::flac::Encoder>),
 }
 
 /// An export's output file: on disk, or in memory for an [`OutputSink`].

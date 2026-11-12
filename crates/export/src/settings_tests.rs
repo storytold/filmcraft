@@ -636,7 +636,7 @@ fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, p
     let filmcraft_isobmff::CodecConfig::Aac(cfg) = &t.entries[0].codec else { panic!("not AAC: {:?}", t.entries[0].codec) };
     assert_eq!((cfg.object_type, cfg.sample_rate, cfg.channel_config), (2, 48_000, 2));
     assert!(t.samples.len() >= 48_000 / 1024, "{} access units", t.samples.len());
-    let mut dec = filmcraft_aac::Decoder::new(&cfg.asc).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&cfg.asc).unwrap();
     let mut pcm: Vec<Vec<f32>> = Vec::new();
     for i in 0..t.samples.len() {
         let out = dec.decode(&file.read_sample(&bytes, 0, i).unwrap()).unwrap();
@@ -662,7 +662,7 @@ fn write_and_check_adts_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, 
     export(p, seq, &settings, sources, &Progress::default()).unwrap();
     let b = std::fs::read(path).unwrap();
     // AAC-LC 44.1 kHz (index 4) mono: 00010 0100 0001 000
-    let mut dec = filmcraft_aac::Decoder::new(&[0x12, 0x08]).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&[0x12, 0x08]).unwrap();
     let (mut pos, mut units, mut pcm) = (0usize, 0usize, vec![Vec::new()]);
     while pos < b.len() {
         let h = &b[pos..pos + 7];
@@ -708,7 +708,7 @@ fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
     let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
     let info = src.info().audio_streams[0].clone();
     // the exported second, past the encoder delay
-    let buf = src.audio(i64::from(filmcraft_mp3enc::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    let buf = src.audio(i64::from(craft_audio::mp3::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
     assert_eq!(buf.channels.len(), info.channels as usize);
     (info.sample_rate, buf.channels)
 }
@@ -728,7 +728,7 @@ fn mp3_export_writes_layer_iii_frames() {
     // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
     assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
     // whole 960-byte frames covering the second and the encoder delay
-    assert_eq!(b.len(), 960 * (48_000 + filmcraft_mp3enc::DELAY as usize).div_ceil(1152));
+    assert_eq!(b.len(), 960 * (48_000 + craft_audio::mp3::DELAY as usize).div_ceil(1152));
     let (rate, pcm) = decode_mp3(&path);
     assert_eq!((rate, pcm.len()), (48_000, 2));
     // the -6 dBFS tone (RMS about 0.35) survives the round trip
@@ -1780,11 +1780,12 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         .collect();
     let extremes: Vec<i32> = (0..n).map(|i| if i % 3 == 0 { i32::MAX } else { i32::MIN + 1 }).collect();
     for level in [0u8, 5, 8] {
-        let mut enc = filmcraft_flac::Encoder::new(filmcraft_flac::EncoderConfig { level, ..filmcraft_flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
-        let mut file = enc.header();
+        let mut enc =
+            craft_audio::flac::Encoder::new(craft_audio::flac::EncoderConfig { level, ..craft_audio::flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
+        let mut file = enc.header(&[]);
         file.extend(enc.encode(&[&extremes, &noise]).unwrap());
         file.extend(enc.finish());
-        let at = filmcraft_flac::STREAMINFO_OFFSET as usize;
+        let at = craft_audio::flac::STREAMINFO_OFFSET as usize;
         file[at..at + 34].copy_from_slice(&enc.streaminfo());
         let src = filmcraft_codecs::open_bytes("x.flac", file.into()).unwrap_or_else(|e| panic!("level {level}: {e}"));
         let a = src.audio(0, n, 48_000).unwrap();
