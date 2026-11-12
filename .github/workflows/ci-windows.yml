@@ -43,7 +43,6 @@ jobs:
         crates/engine/src/autosave*
         crates/engine/Cargo.toml
         crates/gpu/*
-        crates/h264/*
         crates/testkit/*
         crates/ui-egui/src/frames.rs
         crates/ui-egui/src/scrub.rs
@@ -72,6 +71,6 @@ jobs:
       # tests of one binary share a process, rayon's global pool included, so one test's work
       # waits behind another's and the timing-bound UI tests fail now and then.
       windows-command: |
-        pkgs=(-p filmcraft -p filmcraft-platform -p filmcraft-media -p filmcraft-engine -p filmcraft-gpu -p filmcraft-h264 -p filmcraft-ui-egui)
+        pkgs=(-p filmcraft -p filmcraft-platform -p filmcraft-media -p filmcraft-engine -p filmcraft-gpu -p filmcraft-ui-egui)
         cargo clippy "${pkgs[@]}" --all-targets --locked --keep-going -- -D warnings
         cargo nextest run "${pkgs[@]}" --locked --lib --bins --tests --no-fail-fast
