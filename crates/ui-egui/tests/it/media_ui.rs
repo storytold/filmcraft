@@ -613,9 +613,9 @@ fn aic_session(root: &Path, name: &str) -> (Session, u64) {
     (s, item)
 }
 
-/// The centres of the rects registered as automation element `id`, once there are `n` of them.
-/// An offline badge appears after a thumbnail decode fails and the media pool marks the item
-/// unreadable.
+/// The centres of the rects registered as automation element `id`, once there are at least `n`
+/// of them. Polls every 5 ms, drawing a frame each time, and panics if there are still fewer
+/// after 120 seconds.
 fn element_centres(d: &mut Driver, id: &str, n: usize) -> Vec<(f64, f64)> {
     let t0 = std::time::Instant::now();
     loop {
@@ -700,6 +700,7 @@ fn unreadable_badge_reason_reaches_screen_readers() {
     let node = || By::new().role(Role::Label).label("Unreadable").predicate(move |n| n.description().as_deref() == Some(why));
     for view in ["icon", "list"] {
         d.exec("project.view.set", json!({"view": view}));
+        // the badge appears once a thumbnail decode fails and the item reads as unreadable
         element_centres(&mut d, &badge, 1);
         // the pointer away from the badge, so no tooltip is involved
         d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
