@@ -243,7 +243,7 @@ impl FilmcraftApp {
 
     /// Close-request handling and control-driven synthetic input, in the original order.
     fn logic_control(&mut self, ctx: &egui::Context) {
-        // Quitting with unsaved changes asks to save them first.
+        // Keep the window open until the user confirms leaving edits or an export behind.
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }

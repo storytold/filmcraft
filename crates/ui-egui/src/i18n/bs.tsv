@@ -811,6 +811,7 @@
 	Always Deinterlace	Uvijek ukloni preplitanje
 	Flicker Removal	Uklanjanje treperenja
 	Save changes to “{project_name}” before closing?	Sačuvati promjene u „{project_name}” prije zatvaranja?
+	Quitting now will interrupt the export.	Ako sada izađete, izvoz će se prekinuti.
 	Don't Save	Nemoj sačuvati
 	All media is online.	Svi mediji su dostupni.
 	{name} (copy)	{name} (kopija)

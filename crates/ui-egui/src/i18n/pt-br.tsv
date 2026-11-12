@@ -803,6 +803,7 @@
 	Always Deinterlace	Sempre desentrelaçar
 	Flicker Removal	Remover cintilação
 	Save changes to “{project_name}” before closing?	Salvar as alterações em “{project_name}” antes de fechar?
+	Quitting now will interrupt the export.	Se você sair agora, a exportação será interrompida.
 	Don't Save	Não salvar
 	All media is online.	Toda a mídia está online.
 	{name} (copy)	{name} (cópia)

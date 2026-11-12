@@ -341,8 +341,7 @@ pub struct FilmcraftApp {
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
-    /// The next close request quits without asking to save (Save / Don't Save was chosen in the
-    /// quit prompt, or the control channel's `app.quit`).
+    /// The user confirmed the quit prompt, or the control channel requested `app.quit`.
     pub quit_confirmed: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,

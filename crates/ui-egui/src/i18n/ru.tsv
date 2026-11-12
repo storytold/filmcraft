@@ -783,6 +783,7 @@
 	Always Deinterlace	Всегда убирать чересстрочность
 	Flicker Removal	Устранение мерцания
 	Save changes to “{project_name}” before closing?	Сохранить изменения в «{project_name}» до закрытия?
+	Quitting now will interrupt the export.	Если выйти сейчас, экспорт прервётся.
 	Don't Save	Не сохранять
 	All media is online.	Все медиафайлы доступны.
 	{name} (copy)	{name} (копия)

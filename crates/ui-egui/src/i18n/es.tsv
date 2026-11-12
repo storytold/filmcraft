@@ -808,6 +808,7 @@
 	Always Deinterlace	Desentrelazar siempre
 	Flicker Removal	Eliminar parpadeo
 	Save changes to “{project_name}” before closing?	¿Guardar los cambios de “{project_name}” antes de cerrar?
+	Quitting now will interrupt the export.	Si sales ahora, se interrumpirá la exportación.
 	Don't Save	No guardar
 	All media is online.	Todos los medios están conectados.
 	{name} (copy)	{name} (copia)

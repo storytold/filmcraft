@@ -790,6 +790,7 @@
 	Always Deinterlace	Her Zaman Taramayı Kaldır
 	Flicker Removal	Kırpışmayı Kaldırma
 	Save changes to “{project_name}” before closing?	Kapatmadan önce “{project_name}” üzerindeki değişiklikler kaydedilsin mi?
+	Quitting now will interrupt the export.	Şimdi çıkarsanız dışa aktarma işlemi yarıda kesilir.
 	Don't Save	Kaydetme
 	All media is online.	Tüm medyalar çevrimiçi.
 	{name} (copy)	{name} (kopya)

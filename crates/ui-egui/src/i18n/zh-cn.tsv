@@ -798,6 +798,7 @@
 	Always Deinterlace	始终去隔行
 	Flicker Removal	闪烁消除
 	Save changes to “{project_name}” before closing?	关闭前是否保存对“{project_name}”的更改？
+	Quitting now will interrupt the export.	现在退出将中断导出。
 	Don't Save	不保存
 	All media is online.	所有媒体均已联机。
 	{name} (copy)	{name}（副本）

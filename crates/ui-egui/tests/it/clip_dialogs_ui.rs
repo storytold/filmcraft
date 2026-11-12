@@ -2,11 +2,12 @@
 //! Subclip, Frame Hold Options, Modify ▸ Audio Channels, the Close Project prompt, and nested
 //! menus (Clip ▸ Video Options ▸ Time Interpolation).
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemKind, Label};
+use filmcraft_engine::{Job, Session};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -106,6 +107,13 @@ impl Driver {
         self.exec("timeline.select", json!({"clips": [c.id.0]}));
         self.menu("edit.label.yellow");
         assert!(self.app().session.is_dirty());
+    }
+
+    /// Keep an export in progress until the test settles it, independent of encoder speed.
+    fn start_export(&mut self) -> Job {
+        let job = Job { id: 1, label: "Export demo.mp4".into(), progress: Default::default(), result: Default::default() };
+        self.app().session.jobs.push(job.clone());
+        job
     }
 }
 
@@ -436,12 +444,20 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "the window must stay open");
     d.frames(2);
     assert!(d.has("quit.save") && d.has("quit.dontSave") && d.has("quit.cancel"));
+    assert!(!d.has("quit.exportWarning"));
     // Cancel keeps the app and the changes
     d.click("quit.cancel");
     assert!(d.app().ui.clip_dialog.is_none());
     assert!(d.app().session.is_dirty() && !d.app().quit_confirmed);
+    let job = d.start_export();
     d.request_close();
     assert!(d.sent(&egui::ViewportCommand::CancelClose), "asks again");
+    d.frames(2);
+    assert!(d.has("quit.exportWarning"), "warn about the running export as well as unsaved changes");
+    d.click("quit.cancel");
+    assert!(d.app().session.is_dirty() && !d.app().quit_confirmed);
+    assert!(!job.progress.cancel.load(Ordering::Relaxed), "cancelling Quit lets the export continue");
+    d.request_close();
     d.frames(2);
     // Don't Save discards the changes (and their recovery snapshot) and closes the window
     d.click("quit.dontSave");
@@ -449,6 +465,69 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     assert!(d.app().ui.clip_dialog.is_none());
     d.request_close();
     assert!(!d.sent(&egui::ViewportCommand::CancelClose), "the confirmed quit goes through");
+}
+
+#[test]
+fn quit_during_export_of_a_saved_project_requires_confirmation() {
+    let mut d = Driver::new();
+    assert!(!d.app().session.is_dirty());
+    let job = d.start_export();
+
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose));
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose), "another close request cannot bypass confirmation");
+    d.frames(2);
+    assert!(d.has("quit.exportWarning") && d.has("quit.confirm") && d.has("quit.cancel"));
+    assert!(!d.has("quit.save") && !d.has("quit.dontSave"), "a saved project needs no save decision");
+    d.click("quit.cancel");
+    assert!(d.app().ui.clip_dialog.is_none() && !d.app().quit_confirmed);
+    assert!(!job.progress.cancel.load(Ordering::Relaxed));
+
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose), "the export is still running");
+    d.frames(2);
+    d.click("quit.confirm");
+    assert!(d.app().quit_confirmed);
+    d.request_close();
+    assert!(!d.sent(&egui::ViewportCommand::CancelClose));
+}
+
+#[test]
+fn quit_with_no_running_export_and_no_unsaved_changes_goes_through() {
+    let mut d = Driver::new();
+    d.request_close();
+    assert!(!d.sent(&egui::ViewportCommand::CancelClose));
+    let job = d.start_export();
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose));
+    let report = filmcraft_export::Report { path: "demo.mp4".into(), frames: 24, seconds: 1.0, bytes: 256, render_fps: 24.0, extra_files: vec![] };
+    job.progress.finished.store(true, Ordering::Relaxed);
+    *job.result.lock().unwrap() = Some(Ok(report));
+    d.frames(2);
+    assert!(!d.has("quit.exportWarning"), "the warning clears when the export finishes");
+    assert!(d.app().ui.clip_dialog.is_none() && !d.app().quit_confirmed, "the finished export leaves the project open");
+    d.request_close();
+    assert!(!d.sent(&egui::ViewportCommand::CancelClose), "finished jobs in the progress history do not block closing");
+    assert!(d.app().ui.clip_dialog.is_none());
+}
+
+#[test]
+fn quit_warns_when_the_export_queue_is_encoding() {
+    let mut d = Driver::new();
+    d.exec("export.queue.add", json!({"path": "queue.wav", "preset": "Waveform Audio 48 kHz 16-bit"}));
+    d.request_close();
+    assert!(!d.sent(&egui::ViewportCommand::CancelClose), "an idle queue is not exporting");
+
+    let job = Job { id: 1, label: "Queue: Demo → queue.wav".into(), progress: Default::default(), result: Default::default() };
+    let session = &mut d.app().session;
+    session.export_queue.items[0].status = filmcraft_engine::export_tools::QueueStatus::Encoding;
+    session.export_queue.items[0].job = Some(job.id);
+    session.jobs.push(job);
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose));
+    d.frames(2);
+    assert!(d.has("quit.exportWarning") && d.has("quit.confirm"));
 }
 
 /// #1943: the macOS menu bar's Quit (Cmd+Q) sends `app.quit` to the command inbox; with unsaved
@@ -478,6 +557,7 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     let mut d = Driver::new();
     d.app().session.path = None;
     d.edit();
+    let job = d.start_export();
     let picked = path.to_string_lossy().into_owned();
     let mut answers = vec![None, Some(picked)];
     d.app().hooks.pick_save = Some(Box::new(move |_| if answers.is_empty() { None } else { answers.remove(0) }));
@@ -486,6 +566,7 @@ fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_as
     // the Save dialog is cancelled: back to the prompt, nothing quits
     d.click("quit.save");
     assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed);
+    assert!(d.has("quit.exportWarning") && !job.progress.cancel.load(Ordering::Relaxed), "cancelling Save As keeps the export running");
     // saved: the project is written and the window closes
     d.click("quit.save");
     assert!(d.app().quit_confirmed && !d.app().session.is_dirty());
