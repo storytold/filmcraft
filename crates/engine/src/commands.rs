@@ -5398,8 +5398,12 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
-    if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
-        s.restore_project_view(view);
+    if let Some(view) = loaded.view {
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        } else {
+            s.state.timeline_ui = view.timeline_ui.checked();
+        }
     }
     // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {

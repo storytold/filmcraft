@@ -23,6 +23,20 @@ fn view(pps: f64, scroll: f64) -> SequenceView {
     SequenceView { pps, scroll, v_scroll: 12.0, a_scroll: 7.0, video_track_h: 90.0, audio_track_h: 40.0 }
 }
 
+#[test]
+fn timeline_settings_roundtrip_through_the_project_view() {
+    let mut s = Session::default();
+    let expected = filmcraft_project::TimelineUiSettings { inverted_controls: true, max_zoom_seconds: 0.2, ..Default::default() };
+    s.state.timeline_ui = expected.clone();
+
+    let saved = s.project_view();
+    assert_eq!(saved.timeline_ui, expected);
+
+    s.state.timeline_ui = filmcraft_project::TimelineUiSettings::default();
+    s.restore_project_view(saved);
+    assert_eq!(s.state.timeline_ui, expected.checked());
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("filmcraft-tabs-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -73,6 +87,7 @@ fn a_saved_project_reopens_with_its_tabs_and_their_views() {
     s.execute("sequence.open", json!({"item": b.0})).unwrap();
     s.state.timeline_views.insert(main, view(12.5, 3.0));
     s.state.timeline_views.insert(b, view(400.0, 0.25));
+    s.state.timeline_ui.smooth_animations = true;
     let dir = temp_dir("reopen");
     let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
     s.execute("file.saveAs", json!({"path": path})).unwrap();
@@ -94,6 +109,7 @@ fn a_saved_project_reopens_with_its_tabs_and_their_views() {
     assert_eq!(u.state.open_sequences, [main]);
     assert_eq!(u.state.active_sequence, Some(main));
     assert!(u.state.timeline_views.is_empty());
+    assert!(u.state.timeline_ui.smooth_animations, "project Timeline settings restore independently of sequence tabs");
 
     // saved with every tab closed (or by a session that never showed a sequence): the project
     // opens on its first sequence, not on an empty Timeline, and still knows the views

@@ -366,6 +366,9 @@ impl EffectSel {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
     pub active_sequence: Option<ItemId>,
+    /// Project-scoped Timeline interaction settings, persisted in `ProjectView`.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
     /// Item loaded in the Source monitor and its playhead (media time).
@@ -955,6 +958,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -964,6 +968,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
