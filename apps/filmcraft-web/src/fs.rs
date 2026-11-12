@@ -387,7 +387,7 @@ impl Services for WebServices {
         }
         let hook = FS.with(|fs| {
             let mut fs = fs.borrow_mut();
-            if fs.entries.contains_key(path) {
+            if fs.entries.contains_key(path) || fs.reserved_paths.contains(path) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
             fs.entries.insert(path.to_owned(), Entry::Mem(Arc::from(data)));

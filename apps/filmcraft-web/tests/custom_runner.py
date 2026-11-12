@@ -38,10 +38,10 @@ dist.mkdir(exist_ok=True)
 subprocess.run(["wasm-bindgen", "--target", "web", "--no-typescript", "--out-dir", str(dist), str(target / "wasm32-unknown-unknown/debug/custom_runner.wasm")], check=True, cwd=root, env=environment)
 (dist / "index.html").write_text(
     '<!doctype html><canvas id="filmcraft_canvas" style="width:1260px;height:806px"></canvas>'
-    '<script type="module">import init,{start_custom} from "./custom_runner.js";'
+    '<script type="module">import init,{start_custom,probe_exclusive_writes} from "./custom_runner.js";'
     'window.filmcraftLoad={};await init();window.startCustomRunner=async()=>{try{await start_custom();'
     'window.filmcraftLoad.readyMs=performance.now()}catch(error){window.filmcraftLoad.error=String(error);throw error}};'
-    'window.customModuleReady=true;</script>'
+    'window.probeExclusiveWrites=probe_exclusive_writes;window.customModuleReady=true;</script>'
 )
 
 class Quiet(SimpleHTTPRequestHandler):

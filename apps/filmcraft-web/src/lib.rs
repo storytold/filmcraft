@@ -230,7 +230,9 @@ impl eframe::App for WebApp {
                 && rejected_recovery.is_none()
             {
                 egui::Window::new(i18n::t("Recovery unavailable")).collapsible(false).resizable(false).default_width(420.0).show(ui.ctx(), |ui| {
-                    ui.label(recovery_storage_message(error, *media_entry_limit));
+                    let message = recovery_storage_message(error, *media_entry_limit);
+                    let response = ui.label(&message);
+                    app.auto.add_response("browserRecovery.unavailable", &response, &message);
                 });
             }
             if let Some(rejected) = rejected_recovery.as_mut() {
@@ -333,7 +335,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let skip_recovery = query_flag("fresh") || query_flag("norecover");
     let restored = if !in_host_mode && opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
     // Skipped or unreadable media still own the names referenced by the recovery snapshot.
-    let media_protection_error = if !in_host_mode && opfs::available() { recovery::reserve_media_names().await.err() } else { None };
+    let media_protection_error = if in_host_mode {
+        None
+    } else if opfs::available() {
+        recovery::reserve_media_names().await.err()
+    } else {
+        Some("OPFS not available".into())
+    };
     let media_names_ready = !in_host_mode && opfs::available() && media_protection_error.is_none();
     let media_protection_failed = media_protection_error.is_some();
     let media_entry_limit = media_protection_error.as_deref() == Some(opfs::MEDIA_ENTRY_LIMIT_ERROR);

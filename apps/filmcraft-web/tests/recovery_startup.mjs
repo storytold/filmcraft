@@ -100,6 +100,8 @@ async function testCustomRunner() {
       await writer.close();
     }
   })()`);
+  assert.equal(await js("(() => { try { return window.probeExclusiveWrites(); } catch (error) { return String(error); } })()"), true);
+  console.log("exclusive writes reject reserved and occupied paths while preserving new-path writes: PASS");
   await js("window.startCustomRunner()");
   await until(async () => await js("!!window.filmcraftLoad.readyMs"));
   await js("window.filmcraft.execute('file.newSequence',{name:'Custom runner edit'})");
@@ -510,6 +512,10 @@ try {
       assert.equal(readFileSync(join(downloads, "Recovered.fcproj"), "utf8"), "legacy-recovery-test");
       await js("window.filmcraft.request('ui.click',{id:'recovery.continue'})");
       await until(async () => (await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).length === 0);
+      const limitWarning = await js("window.filmcraft.request('ui.elements',{prefix:'browserRecovery.'})");
+      assert.ok(limitWarning.some((element) => element.id === "browserRecovery.unavailable"
+        && element.label.includes("Die Browser-Wiederherstellung enthält mehr als 100000 Medieneinträge.")
+        && !element.label.includes("{limit}")));
       await js("window.filmcraft.execute('file.newSequence',{name:'Editing after directory limit'})");
       await sleep(6500);
       assert.equal(await js(opfsText("snapshot.fcproj")), "legacy-recovery-test");
@@ -518,6 +524,50 @@ try {
       await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: entryLimitSetup.identifier });
     }
     console.log("endless media enumeration is bounded, localized and preserves the downloadable snapshot: PASS");
+
+    const unavailableStorage = await send("Page.addScriptToEvaluateOnNewDocument", {source: `
+      delete StorageManager.prototype.getDirectory;
+    `});
+    try {
+      const previousOrigin = await js("performance.timeOrigin");
+      await send("Page.navigate", {url});
+      await until(async () => await js(`performance.timeOrigin !== ${previousOrigin} && !!window.filmcraftLoad?.readyMs`));
+      assert.equal(await js("window.filmcraft.info().opfs"), false);
+      await until(async () => (await js("window.filmcraft.request('ui.elements',{prefix:'browserRecovery.'})"))
+        .some((element) => element.id === "browserRecovery.unavailable" && element.label.includes("OPFS not available")),
+        5000, "unsupported browser storage must show a persistent recovery warning");
+      await js("window.filmcraft.execute('file.newSequence',{name:'Manual save without OPFS'})");
+      rmSync(join(downloads, "without-opfs.fcproj"), {force:true});
+      await js("window.filmcraft.execute('file.saveCopy',{path:'/exports/without-opfs.fcproj'})");
+      await until(() => readdirSync(downloads).includes("without-opfs.fcproj"));
+      const saved = JSON.parse(readFileSync(join(downloads, "without-opfs.fcproj"), "utf8"));
+      assert.ok(Object.values(saved.project.items).some((item) => item.name === "Manual save without OPFS"));
+      assert.ok((await js("window.filmcraft.request('ui.elements',{prefix:'browserRecovery.'})"))
+        .some((element) => element.id === "browserRecovery.unavailable"));
+      const hostWithoutStorage = await send("Page.addScriptToEvaluateOnNewDocument", {source: `
+        new MutationObserver((_, observer) => {
+          const canvas = document.querySelector("canvas");
+          if (!canvas) return;
+          canvas.setAttribute("data-host", "page");
+          canvas.addEventListener("filmcraft:ready", () => { window.testHostReady = true; });
+          observer.disconnect();
+        }).observe(document, {childList:true,subtree:true});
+      `});
+      try {
+        await send("Page.navigate", {url});
+        await until(async () => await js("!!window.testHostReady && !!window.filmcraftLoad?.readyMs"));
+        assert.equal(await js("window.filmcraft.info().opfs"), false);
+        await js("window.filmcraft.execute('file.newSequence',{name:'Host without browser recovery'})");
+        assert.ok((await js("window.filmcraft.request('ui.elements',{})")).length > 0);
+        assert.deepEqual(await js("window.filmcraft.request('ui.elements',{prefix:'browserRecovery.'})"), []);
+        assert.deepEqual(await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})"), []);
+      } finally {
+        await send("Page.removeScriptToEvaluateOnNewDocument", {identifier:hostWithoutStorage.identifier});
+      }
+    } finally {
+      await send("Page.removeScriptToEvaluateOnNewDocument", {identifier:unavailableStorage.identifier});
+    }
+    console.log("unsupported storage reports unavailable recovery while editing and manual save remain usable: PASS");
   }
 } catch (error) {
   console.error(error);
