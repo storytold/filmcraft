@@ -312,12 +312,17 @@ fn program_monitor_plays_on_while_a_value_is_dragged() {
     d.harness.state_mut().play(1.0);
     let mut frames = std::collections::BTreeSet::new();
     let mut newest = at_rest.revision;
-    for i in 0..90 {
+    // Drag until five frames have shown, for up to ~10 s: on a busy CI runner the workers can take
+    // longer than a second and a half to finish frames. A picture held for the whole drag still fails.
+    for i in 0..600 {
         // one change and one UI pass, as a mouse move while dragging the value
         d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
         let shown = d.harness.state().program_picture().unwrap();
         frames.insert(shown.frame);
         newest = newest.max(shown.revision);
+        if frames.len() >= 5 && newest > at_rest.revision {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");

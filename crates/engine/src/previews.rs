@@ -785,31 +785,59 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
         let mut outcome: std::result::Result<(), String> = Ok(());
         let Some(q) = project.sequence(seq) else { return };
         'segs: for g in &todo {
-            let mut inter = Vec::with_capacity(g.samples as usize * 2);
-            let mut pos = g.first_sample;
-            while pos < g.first_sample + g.samples {
-                if prog.cancel.load(Ordering::Relaxed) {
+            // Streamed to the part file one second at a time: the segment's length comes from the
+            // project, so it must not size a buffer.
+            let Some(header) = u64::try_from(g.samples).ok().and_then(|n| wav_header_f32(n, sr as u32)) else {
+                outcome = Err("an audio segment is too long for a WAV preview".into());
+                break;
+            };
+            // its own part file: two jobs rendering one segment must not share (or remove) each other's
+            static PART: AtomicU64 = AtomicU64::new(0);
+            let part = dir.join(format!("{}.wav.{}-{}.part", g.hash, std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
+            let fin = dir.join(audio_name(&g.hash));
+            let written = (|| -> std::io::Result<Option<u64>> {
+                use std::io::Write;
+                let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
+                file.write_all(&header)?;
+                let mut pos = g.first_sample;
+                let mut chunk = Vec::new();
+                while pos < g.first_sample + g.samples {
+                    if prog.cancel.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    let n = (g.first_sample + g.samples - pos).min(sr) as usize;
+                    let buf = filmcraft_render::audio::mix_sequence(&project, q, pos, n, &provider);
+                    chunk.clear();
+                    for i in 0..n {
+                        chunk.extend_from_slice(&buf.channels[0][i].to_le_bytes());
+                        chunk.extend_from_slice(&buf.channels[buf.channels.len().min(2) - 1][i].to_le_bytes());
+                    }
+                    file.write_all(&chunk)?;
+                    pos += n as i64;
+                    prog.done.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                file.flush()?;
+                Ok(Some(header.len() as u64 + g.samples as u64 * 8))
+            })();
+            let data_len = match written {
+                Ok(Some(len)) => len,
+                Ok(None) => {
+                    let _ = std::fs::remove_file(&part);
                     outcome = Err("cancelled".into());
                     break 'segs;
                 }
-                let n = (g.first_sample + g.samples - pos).min(sr) as usize;
-                let buf = filmcraft_render::audio::mix_sequence(&project, q, pos, n, &provider);
-                for i in 0..n {
-                    inter.push(buf.channels[0][i]);
-                    inter.push(buf.channels[buf.channels.len().min(2) - 1][i]);
+                Err(e) => {
+                    let _ = std::fs::remove_file(&part);
+                    outcome = Err(e.to_string());
+                    break;
                 }
-                pos += n as i64;
-                prog.done.fetch_add(n as u64, Ordering::Relaxed);
-            }
-            let data = write_wav_f32(&inter, sr as u32);
-            let part = dir.join(format!("{}.wav.part", g.hash));
-            let fin = dir.join(audio_name(&g.hash));
-            if let Err(e) = std::fs::write(&part, &data).and_then(|_| std::fs::rename(&part, &fin)) {
+            };
+            if let Err(e) = std::fs::rename(&part, &fin) {
                 let _ = std::fs::remove_file(&part);
                 outcome = Err(e.to_string());
                 break;
             }
-            bytes += data.len() as u64;
+            bytes += data_len;
             store.add_audio(&g.hash);
         }
         let secs = t0.elapsed().as_secs_f64();
@@ -839,22 +867,31 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id, "segments": nseg, "samples": total}))
 }
 
+/// The 44-byte header of a 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT) of `frames` frames, or
+/// None when its data would not fit the format's 32-bit sizes.
+pub(crate) fn wav_header_f32(frames: u64, rate: u32) -> Option<[u8; 44]> {
+    let data_len = u32::try_from(frames.checked_mul(8)?).ok().filter(|&n| n <= u32::MAX - 36)?;
+    let mut v = [0u8; 44];
+    v[0..4].copy_from_slice(b"RIFF");
+    v[4..8].copy_from_slice(&(36 + data_len).to_le_bytes());
+    v[8..16].copy_from_slice(b"WAVEfmt ");
+    v[16..20].copy_from_slice(&16u32.to_le_bytes());
+    v[20..22].copy_from_slice(&3u16.to_le_bytes()); // IEEE float
+    v[22..24].copy_from_slice(&2u16.to_le_bytes());
+    v[24..28].copy_from_slice(&rate.to_le_bytes());
+    v[28..32].copy_from_slice(&rate.wrapping_mul(8).to_le_bytes());
+    v[32..34].copy_from_slice(&8u16.to_le_bytes());
+    v[34..36].copy_from_slice(&32u16.to_le_bytes());
+    v[36..40].copy_from_slice(b"data");
+    v[40..44].copy_from_slice(&data_len.to_le_bytes());
+    Some(v)
+}
+
 /// 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT) from interleaved samples.
 pub fn write_wav_f32(interleaved: &[f32], rate: u32) -> Vec<u8> {
-    let data_len = (interleaved.len() * 4) as u32;
-    let mut v = Vec::with_capacity(44 + data_len as usize);
-    v.extend_from_slice(b"RIFF");
-    v.extend_from_slice(&(36 + data_len).to_le_bytes());
-    v.extend_from_slice(b"WAVEfmt ");
-    v.extend_from_slice(&16u32.to_le_bytes());
-    v.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
-    v.extend_from_slice(&2u16.to_le_bytes());
-    v.extend_from_slice(&rate.to_le_bytes());
-    v.extend_from_slice(&(rate * 8).to_le_bytes());
-    v.extend_from_slice(&8u16.to_le_bytes());
-    v.extend_from_slice(&32u16.to_le_bytes());
-    v.extend_from_slice(b"data");
-    v.extend_from_slice(&data_len.to_le_bytes());
+    let frames = (interleaved.len() / 2) as u64;
+    let mut v = wav_header_f32(frames, rate).map(|h| h.to_vec()).unwrap_or_default();
+    v.reserve(interleaved.len() * 4);
     for s in interleaved {
         v.extend_from_slice(&s.to_le_bytes());
     }
