@@ -336,6 +336,8 @@ impl FilmcraftApp {
                 self.ui.status = e.to_string();
                 return;
             }
+            // (a new round: the frames dropped in the one before are asked for again)
+            self.frames.play_starts();
             let time = self.session.state.source_playhead;
             self.source_playback.shown = time;
             self.source_playback.clock.anchor_tick = time;
