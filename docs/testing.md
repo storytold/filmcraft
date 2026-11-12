@@ -50,7 +50,8 @@ Commit `*.proptest-regressions` files so failing cases are re-run.
 
 ### 32-bit parser regressions
 
-The `hostile_lengths` unit tests in `bitstream`, `vp9` and `av1` cover #2801: NAL and superframe
+The `hostile_lengths` unit tests in `bitstream` (here) and in the VP9 and AV1 decoders (craft-libs'
+`craft-video`, where those decoders now live) cover #2801: NAL and superframe
 offset overflow, tile-size increment overflow and truncating an OBU's LEB128 size to `usize`.
 They also check valid payloads, truncated inputs and bit mutations. The NAL splitter rejects
 prefix widths outside 1–4 bytes with `BitError::InvalidNalLengthSize`, including zero (which
@@ -78,6 +79,9 @@ EOF
 export CARGO_TARGET_WASM32_WASIP1_RUNNER="node /tmp/filmcraft-wasi-runner.cjs"
 cargo test -p filmcraft-bitstream --lib \
   --no-default-features --target wasm32-wasip1 hostile_lengths -- --test-threads=1
+# The VP9 and AV1 cases, in a craft-libs checkout (same runner):
+cargo test -p craft-video --lib --features vp9-decode,av1-decode \
+  --target wasm32-wasip1 hostile_lengths -- --test-threads=1
 # Repeat with --release: wrapping arithmetic is also dangerous without overflow checks.
 ```
 
