@@ -450,6 +450,119 @@ fn a_playing_request_for_a_frame_the_run_passed_is_dropped_not_seeked() {
     assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
 }
 
+/// A request for a view beside the play.
+fn beside(c: &GopCache, s: &Samples, i: usize) -> crate::Result<usize> {
+    filmcraft_media::cancel::with_beside_playback(true, || c.frame(s, i as i64 * 1000).map(|f| index_of(&f)))
+}
+
+/// The Video Scopes (or a thumbnail) ask for the playhead's frame while playback decodes from
+/// the same source: they get the frames the cache holds, and a frame it does not hold is not
+/// decoded for them, which would stop the playback run and restart the decoder behind the
+/// playhead. Once the play is over they are served like any request.
+#[test]
+fn a_view_beside_playback_takes_cached_frames_and_never_moves_the_decoder() {
+    let s = samples(300, 250, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(play(&c, &s, 5, 5).expect("frame"), 5);
+    // the playhead is at 60: the odd samples on the way are skipped
+    assert_eq!(play(&c, &s, 60, 60).expect("frame"), 60);
+    let (decodes, resets) = (s.decodes.load(Ordering::Relaxed), s.resets.load(Ordering::Relaxed));
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (r, gave_up) = filmcraft_media::cancel::with_cancel(&flag, || (beside(&c, &s, 41), filmcraft_media::cancel::gave_up()));
+    assert!(matches!(r, Err(CodecError::Cancelled)), "not decoded for a view beside the play: {r:?}");
+    assert!(gave_up, "its result is not cached as the frame");
+    assert_eq!(beside(&c, &s, 40).expect("cached"), 40);
+    assert_eq!(s.decodes.load(Ordering::Relaxed), decodes, "nothing decoded for it");
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets, "no restart");
+    // playback goes on where it was
+    assert_eq!(play(&c, &s, 62, 62).expect("frame"), 62);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets);
+    // the play is over (no playing request for a while): decoded exactly
+    std::thread::sleep(PUMP_IDLE + Duration::from_millis(100));
+    assert_eq!(beside(&c, &s, 41).expect("frame"), 41);
+}
+
+/// Samples whose decoder panics once, at sample `at`.
+struct Faulty {
+    inner: Samples,
+    at: u8,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct FaultyDec {
+    inner: Box<dyn VideoDecoder>,
+    at: u8,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl VideoDecoder for FaultyDec {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        if sample[0] == self.at && self.armed.swap(false, Ordering::Relaxed) {
+            panic!("injected decoder fault");
+        }
+        self.inner.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.inner.flush()
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &str {
+        "faulty"
+    }
+    fn is_disposable(&self, sample: &[u8]) -> bool {
+        self.inner.is_disposable(sample)
+    }
+}
+
+impl VideoSamples for Faulty {
+    fn count(&self) -> usize {
+        self.inner.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.inner.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.inner.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.inner.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.inner.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(FaultyDec { inner: self.inner.make_decoder()?, at: self.at, armed: self.armed.clone() }))
+    }
+}
+
+/// A decoder that panics while playback decodes ahead (the decoder is out of the cache's state,
+/// the lock released) must not leave the run marked as going: every later request for a frame
+/// the cache does not hold would wait for it for good, and the monitors of that source go blank.
+#[test]
+fn a_decoder_panic_while_decoding_ahead_leaves_the_cache_usable() {
+    let s = Arc::new(Faulty { inner: samples(300, 250, 0, false), at: 8, armed: Arc::new(std::sync::atomic::AtomicBool::new(true)) });
+    let c = Arc::new(GopCache::new(None));
+    let played = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        filmcraft_media::cancel::with_playing(true, || c.frame_late(&*s, 5_000, Some(5_000)).map(|f| index_of(&f)))
+    }));
+    assert!(!matches!(played, Ok(Ok(_))), "the request whose run panicked has no frame");
+    assert!(!s.armed.load(Ordering::Relaxed), "the decoder panicked");
+    // a paused monitor asks for a frame the cache does not hold: it must get it
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (c2, s2) = (c.clone(), s.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send(c2.frame(&*s2, 20_000).map(|f| index_of(&f)));
+    });
+    let got = rx.recv_timeout(Duration::from_secs(20)).expect("a request after the panic never returned");
+    assert_eq!(got.expect("frame"), 20);
+    assert_eq!(c.shared.pool.decoders.load(Ordering::Relaxed), 1, "the lost decoder is not counted");
+    // and playback decodes ahead again
+    let again = filmcraft_media::cancel::with_playing(true, || c.frame_late(&*s, 30_000, Some(30_000)).map(|f| index_of(&f)));
+    assert_eq!(again.expect("frame"), 30);
+}
+
 /// Two playing requests at once: one decodes ahead, the other waits for its picture instead
 /// of restarting the decoder.
 /// A request with time to spare (the monitor paused on the clip) interrupts playback decoding
