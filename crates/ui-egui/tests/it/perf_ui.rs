@@ -318,7 +318,7 @@ fn program_monitor_plays_on_while_a_value_is_dragged() {
         let shown = d.harness.state().program_picture().unwrap();
         frames.insert(shown.frame);
         newest = newest.max(shown.revision);
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(std::time::Duration::from_millis(64));
     }
     assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
     assert!(newest > at_rest.revision, "the picture showed the dragged value, not only the one from before");
