@@ -35,6 +35,7 @@ mod stretch;
 pub mod track;
 pub mod transitions;
 pub mod vfx;
+pub mod working_set;
 
 use std::sync::Arc;
 
@@ -562,8 +563,7 @@ pub(crate) fn item_layer_ex(
     let src_size = source_size(project, item.item)?;
     let motion = motion_matrix(seq, item, src_size, source_par(project, item.item), mt);
     // How many output pixels one source pixel covers → request a reduced frame when possible.
-    let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
-    let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
+    let want = layer_scale(&motion, opts.scale);
     let pi = project.item(item.item)?;
     if matches!(pi.kind, ItemKind::Graphic { .. }) && !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
         // vectors straight to the output: no resampling, crisp at any Motion scale
@@ -813,6 +813,14 @@ pub(crate) fn media_interpolation(item: &TrackItem, t: Tick, src: &SharedSource,
     interpolation_blend(item, t, src.info().frame_rate(), seq_rate)
 }
 
+/// The fraction of its source size a layer placed by `motion` is rendered at, on an output at
+/// `scale`: how many output pixels one source pixel covers along its longer axis, at most 1 and at
+/// least 1/64.
+pub(crate) fn layer_scale(motion: &Affine, scale: f32) -> f32 {
+    let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
+    (lin * scale as f64).clamp(1.0 / 64.0, 1.0) as f32
+}
+
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.
 pub(crate) fn decimation(have_w: f32, target_w: f32) -> usize {
     let mut n = 1usize;
@@ -872,6 +880,10 @@ mod nest_tests;
 #[cfg(test)]
 #[path = "preview_tests.rs"]
 mod preview_tests;
+
+#[cfg(test)]
+#[path = "working_set_tests.rs"]
+mod working_set_tests;
 
 #[cfg(test)]
 #[path = "region_tests.rs"]

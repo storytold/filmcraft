@@ -52,7 +52,9 @@
 //!   ([`overlap_batch`]). A batch never grows over what it was without overlap, so the peak is the
 //!   old peak plus at most the finished frames of the batch being encoded (half the budget,
 //!   256 MiB); a 4K HDR export (100 MB a frame) runs 2-frame batches and 4K SDR 8-frame ones instead of 16. Frames are
-//!   dropped as soon as they are encoded.
+//!   dropped as soon as they are encoded. What the frames hold *while they are drawn* (decoded
+//!   pictures and float layers, sized by the sources, not the output) is capped separately by
+//!   [`RENDER_BUDGET`] ([`working_set_batch`], #1443), on overlapping and sequential exports alike.
 //! * **Two-pass** exports overlap in the analysis pass (encode only) and in the real pass; the
 //!   prefetch never runs past the end of a pass.
 //! * **Timers.** `Render` and `Encode` are wall times of work that now runs at the same time, so
@@ -86,6 +88,22 @@ pub const INTERLEAVE: i64 = 16;
 /// Most bytes of rendered frames an overlapped export keeps in flight (the batch being encoded and
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
+
+/// Most bytes the frames of one batch may hold *while they are drawn*: the decoded pictures and
+/// float layers each worker works on, not the finished frames [`IN_FLIGHT_BUDGET`] counts. Those
+/// follow the sources, not the output: a 3840x2160 clip scaled just over half size onto a 1080-wide
+/// output is drawn as 4K float images (about 365 MB a frame), so twelve workers held over 4 GB and
+/// the export was OOM-killed on a 16 GB machine (#1443). See [`working_set_batch`]. A 1080p export
+/// (at most about 165 MB a frame) still renders 16 frames at once within it.
+pub const RENDER_BUDGET: u64 = 3 << 30;
+
+/// Frames per batch so that `frames * working_set` (the estimated peak of one frame's render)
+/// stays within `budget`: at most `batch`, never below one frame.
+pub(crate) fn working_set_batch(batch: i64, working_set: u64, budget: u64) -> i64 {
+    let want = u64::try_from(batch.max(1)).unwrap_or(1);
+    let fit = budget / working_set.max(1);
+    i64::try_from(fit.min(want)).unwrap_or(1).max(1)
+}
 
 /// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
 type Frame = (Vec<u8>, Vec<f32>);
@@ -165,6 +183,9 @@ pub struct Exporter {
     overlap: bool,
     /// Bytes of frames the overlap may keep in flight ([`IN_FLIGHT_BUDGET`]; tests lower it).
     budget: u64,
+    /// Bytes the frames of one batch may hold while they are drawn ([`RENDER_BUDGET`]; tests
+    /// lower it).
+    render_budget: u64,
     /// The batch starting at `next`, already rendered.
     ahead: Option<Ahead>,
     /// Steps that rendered a batch alongside the encoding of the previous one.
@@ -294,6 +315,7 @@ impl Exporter {
             batch: rayon::current_num_threads().clamp(2, 16) as i64,
             overlap: true,
             budget: IN_FLIGHT_BUDGET,
+            render_budget: RENDER_BUDGET,
             ahead: None,
             overlapped_steps: 0,
             brand,
@@ -340,6 +362,18 @@ impl Exporter {
         self.budget = bytes;
     }
 
+    /// Lower the byte budget of frames being drawn (tests make small frames hit the cap).
+    #[cfg(test)]
+    pub(crate) fn set_render_budget(&mut self, bytes: u64) {
+        self.render_budget = bytes;
+    }
+
+    /// The estimated working set of drawing frame `f` (tests size their budgets to it).
+    #[cfg(test)]
+    pub(crate) fn working_set(&self, f: i64) -> u64 {
+        self.pipe.working_set(f)
+    }
+
     /// Whether steps overlap rendering with encoding now: switched on, a pool with more than one
     /// thread, and not on wasm.
     pub fn overlapping(&self) -> bool {
@@ -356,10 +390,19 @@ impl Exporter {
         self.ahead.as_ref().map_or(0, |a| a.frames.len())
     }
 
-    /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
-    fn batch_len(&self) -> i64 {
+    /// Frames in the batch starting at `first`, bounded before Rayon can steal nested frame tasks:
+    /// by the finished frames two batches keep in flight ([`overlap_batch`]) and by what the frames
+    /// hold while they are drawn ([`working_set_batch`], estimated at the batch's first and last
+    /// frame).
+    fn batch_len(&self, first: i64) -> i64 {
         let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+        let batch = if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch };
+        if batch <= 1 {
+            return batch;
+        }
+        let last = first.saturating_add(batch - 1).min(self.f1.saturating_sub(1)).max(first);
+        let ws = self.pipe.working_set(first).max(self.pipe.working_set(last));
+        working_set_batch(batch, ws, self.render_budget)
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
@@ -552,7 +595,7 @@ impl Exporter {
         let (f, frames) = match self.ahead.take() {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
-                let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
+                let (f, end) = (self.next, self.next.saturating_add(self.batch_len(self.next)).min(self.f1));
                 let pipe = &self.pipe;
                 match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0)) {
                     Some(frames) => (f, frames),
@@ -565,8 +608,8 @@ impl Exporter {
             return Err(ExportError::Encode("internal: an empty batch was rendered".into()));
         }
         // the batch after this one, when the pool can render it while this one is encoded
-        let plan =
-            (end < self.f1 && self.overlapping() && !progress.cancel.load(Ordering::Relaxed)).then(|| (end, end.saturating_add(self.batch_len()).min(self.f1)));
+        let plan = (end < self.f1 && self.overlapping() && !progress.cancel.load(Ordering::Relaxed))
+            .then(|| (end, end.saturating_add(self.batch_len(end)).min(self.f1)));
         let Some((a, b)) = plan else {
             return match self.encode_batch(f, frames, sources)? {
                 Encoded::Pending => Ok(Step::Pending),
@@ -756,6 +799,30 @@ mod tests {
         assert_eq!(frame_bytes(3840, 2160, true), 3840 * 2160 * 12);
         assert_eq!(frame_bytes(u32::MAX, u32::MAX, true), u64::MAX, "saturates");
         assert_eq!(frame_bytes(0, 1080, false), 0);
+    }
+
+    #[test]
+    fn the_working_set_batch_fits_the_render_budget() {
+        const MIB: u64 = 1 << 20;
+        // 1080 x 1920 from a 4K clip at 50 % (about 158 MiB a frame): 16 workers fit
+        assert_eq!(working_set_batch(16, 158 * MIB, RENDER_BUDGET), 16);
+        // the same clip at 55 % is drawn at 4K (about 348 MiB): 8 frames, not 12 or 16 (#1443)
+        assert_eq!(working_set_batch(12, 348 * MIB, RENDER_BUDGET), 8);
+        assert_eq!(working_set_batch(16, 348 * MIB, RENDER_BUDGET), 8);
+        // never raised, never below one frame, no division by zero
+        assert_eq!(working_set_batch(1, 1, RENDER_BUDGET), 1);
+        assert_eq!(working_set_batch(0, 1, RENDER_BUDGET), 1);
+        assert_eq!(working_set_batch(-3, 1, RENDER_BUDGET), 1);
+        assert_eq!(working_set_batch(8, 0, RENDER_BUDGET), 8);
+        assert_eq!(working_set_batch(8, u64::MAX, RENDER_BUDGET), 1);
+        assert_eq!(working_set_batch(8, MIB, 0), 1);
+        for batch in 1..=16 {
+            for ws in [1, MIB, 100 * MIB, 400 * MIB, 3 << 30, u64::MAX] {
+                let n = working_set_batch(batch, ws, RENDER_BUDGET) as u64;
+                assert!(n >= 1 && n <= batch as u64);
+                assert!(n == 1 || n * ws <= RENDER_BUDGET, "batch {batch}, working set {ws}: {n}");
+            }
+        }
     }
 
     #[test]
