@@ -220,6 +220,8 @@ pub fn playback(o: &Opts) -> Vec<Value> {
             let mut bench = new_bench(&s, seconds);
             bench.draft = draft;
             let mut display = Display::new(o.gpu);
+            // (as the app and `bench_playback` do: the workers upload, not the presenting thread)
+            bench.server.set_uploader(display.uploader());
             let path = if display.gpu_available() { "gpu" } else { "cpu" };
             let hw0 = filmcraft_codecs::hw::hw_stats();
             let r = bench.play(&s, seq, &mut display, scale, Tick::ZERO, &format!("{scenario} {res} #{}", rep + 1));
