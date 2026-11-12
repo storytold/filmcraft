@@ -138,7 +138,7 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_with(&why);
             return None;
         }
     };
@@ -149,7 +149,7 @@ pub fn videotoolbox_encoder_factory(
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_with(&why);
             None
         }
     }
@@ -242,6 +242,14 @@ impl HardwareEncoder {
 }
 
 impl VideoEncoder for HardwareEncoder {
+    fn name(&self) -> &'static str {
+        "VideoToolbox"
+    }
+
+    fn id(&self) -> &'static str {
+        "videotoolbox"
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let c = self.vt.config();
         let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);
@@ -352,6 +360,19 @@ mod tests {
         packets.extend(enc.flush().expect("flush"));
         assert_eq!(packets.len(), 3);
         assert!(packets[0].key);
+    }
+
+    /// The encoder says it is VideoToolbox, so the export result names the hardware that wrote
+    /// the file (#4339).
+    #[test]
+    fn the_encoder_names_itself_videotoolbox() {
+        match HardwareEncoder::open(config()) {
+            Ok(enc) => {
+                assert_eq!(enc.name(), "VideoToolbox");
+                assert_eq!(enc.id(), "videotoolbox", "the stable identifier");
+            }
+            Err(why) => eprintln!("SKIPPED: no VideoToolbox hardware encoder ({why})"),
+        }
     }
 
     #[test]

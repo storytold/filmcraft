@@ -78,8 +78,9 @@ use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
-    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
+    GpuRenderStats, HwEncodeStats, Stage, clear_hw_decline_reason, export_lock_wait, gpu_render_stats, hw_decline_reason, hw_encode_stats, note_gpu_fallback,
+    note_gpu_frame, note_hw_encode_declined, note_hw_encode_declined_with, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait,
+    stage_times, timed,
 };
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
@@ -142,7 +143,7 @@ impl Progress {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Report {
     pub path: String,
     pub frames: u64,
@@ -150,12 +151,30 @@ pub struct Report {
     pub bytes: u64,
     pub render_fps: f64,
     /// Further files written besides `path` (MXF OP-Atom audio files).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// What wrote the stream: "software H.264", "NVENC H.264", "Media Foundation H.265",
+    /// "software GIF". An image sequence writes stills, so it leaves this empty.
+    /// A hardware encoder that declined leaves the software encoder to write the file, and
+    /// this says so - the same bytes under a different name are not the same file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoder: String,
+    /// A stable identifier of the encoder that wrote the stream: "software", "nvenc",
+    /// "videotoolbox", "media_foundation". A consumer compares this; `encoder` is the
+    /// readable text. An image sequence, and every report that is not an export, leaves it
+    /// empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoder_id: String,
+    /// Why the hardware encoder declined, when one did and the software encoder took over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declined: Option<String>,
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod encoder_name_tests;
 
 #[cfg(test)]
 mod settings_tests;

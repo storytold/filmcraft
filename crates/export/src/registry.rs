@@ -31,6 +31,23 @@ pub struct EncoderFrame<'a> {
 pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
 
 pub trait VideoEncoder: Send {
+    /// What wrote the stream: "software", or the hardware encoder's name ("NVENC",
+    /// "Media Foundation", "VideoToolbox"). The export result says it, so a file the hardware
+    /// encoder declined, and the software encoder took instead, is visible.
+    fn name(&self) -> &'static str {
+        "software"
+    }
+    /// A stable identifier of the encoder that writes the stream: "software", "nvenc",
+    /// "videotoolbox", "media_foundation". The export result carries it, so a consumer can
+    /// compare it across versions of the app: [`name`](Self::name) is the readable text and
+    /// may be reworded, this is the machine-readable one.
+    ///
+    /// It defaults to "software", the same as [`name`](Self::name), so an encoder that does
+    /// not override either is a software encoder. **An encoder that overrides `name` must
+    /// override this too**, or its hardware export would report the id of a software one.
+    fn id(&self) -> &'static str {
+        "software"
+    }
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
     fn timescale(&self) -> u32;

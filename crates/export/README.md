@@ -50,3 +50,37 @@ Run all export unit tests with `cargo test -p filmcraft-export --lib`.
 `filmcraft-ui-egui`'s `export_ui::gif_export_exposes_binary_alpha_option` uses the control
 channel to select GIF, toggle alpha and inspect the explanatory label. Set
 `FILMCRAFT_UI_SNAPSHOT_DIR` to render its Export-mode screenshot.
+
+## Which encoder wrote the file (#3952, #4339)
+
+The export result says which encoder wrote the stream, and why a hardware encoder did not.
+Three fields, all absent from the JSON when they are empty:
+
+```json
+"encoder":    "NVENC H.264"      // readable text: "{name} {format}"
+"encoder_id": "nvenc"            // stable identifier
+"declined":   "two-pass VBR"     // why the hardware encoder declined, when one did
+```
+
+`encoder` is for people and may be reworded; `encoder_id` is for programs, and its vocabulary is
+fixed: `software`, `nvenc`, `videotoolbox`, `media_foundation`. `VideoEncoder::id` supplies it and
+defaults to `software`, as `VideoEncoder::name` does, so an encoder that overrides neither is a
+software encoder - and an encoder that overrides `name` must override `id` too, or its hardware
+export would report the identifier of a software one. The Media Foundation encoder lives on
+[#2488](https://github.com/jahvari/filmcraft/pull/1)'s branch and answers `media_foundation` there.
+
+A hardware encoder that declines is not an error: the software encoder writes the export instead,
+and `declined` says why the hardware one did not take it. The reason belongs to the export that
+had it - it is cleared per export, and the first reason is the one reported, as with the first
+failure in the registry walk. `declined` is absent when nothing was declined, including when
+Hardware encoding is **Off**, where nothing was asked.
+
+An image sequence writes stills, and so does every report that is not an export (masks, narration,
+previews, proxies, scene detection): they name no encoder and leave all three fields out. `Report`
+is `Deserialize`, so a result written before these fields still reads.
+
+`encoder_name_tests` covers the whole path: a factory that declines one export only (the encoder
+registry is process-wide, so it declines by path) proves the report and the status line; two
+declines keep the first reason; an export with no decline after one reports none; a two-pass export
+reports the encoder of its final pass; and the JSON carries the fields only when they are set.
+

@@ -82,6 +82,14 @@ fn composition_offset(pts: i64, dts: i64, den: i64) -> i32 {
 }
 
 impl VideoEncoder for NvencEncoder {
+    fn name(&self) -> &'static str {
+        "NVENC"
+    }
+
+    fn id(&self) -> &'static str {
+        "nvenc"
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let (sps, pps) = self.enc.parameter_sets();
         // `config` declines sizes above u16::MAX
@@ -250,7 +258,7 @@ fn factory_with(
     }
     let declined = |why: &str| {
         log::info!("hardware encoding declined: {why}");
-        filmcraft_export::note_hw_encode_declined();
+        filmcraft_export::note_hw_encode_declined_with(why);
         None
     };
     let cfg = match config(format, w, h, rate, s) {
@@ -271,7 +279,7 @@ fn factory_with(
 fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     let declined = |why: &str| {
         log::info!("hardware H.265 encoding declined: {why}");
-        filmcraft_export::note_hw_encode_declined();
+        filmcraft_export::note_hw_encode_declined_with(why);
         Some(Err(ExportError::Unsupported(format!("H.265 export with NVENC: {why}"))))
     };
     let cfg = match config(Format::Hevc, w, h, rate, s) {
