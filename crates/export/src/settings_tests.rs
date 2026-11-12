@@ -1973,3 +1973,18 @@ fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error(
     assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
 }
+
+/// MP3 follows Audio ▸ Match Source like the other codecs: a 44.1 kHz mono sequence exports
+/// 44.1 kHz mono with it on, the chosen 48 kHz stereo with it off.
+#[test]
+fn mp3_stream_follows_audio_match_source() {
+    let seq = SequenceSettings { sample_rate: 44_100, audio_master: filmcraft_project::AudioChannels::Mono, ..Default::default() };
+    let mut s = ExportSettings {
+        format: Format::Mp3,
+        audio: AudioSettings { sample_rate: Some(48_000), channels: 2, bitrate_kbps: 192, ..Default::default() },
+        ..Default::default()
+    };
+    assert_eq!(s.mp3_stream(&seq), (48_000, 2, 192));
+    s.audio.match_source = true;
+    assert_eq!(s.mp3_stream(&seq), (44_100, 1, 192));
+}

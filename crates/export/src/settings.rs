@@ -614,12 +614,14 @@ impl ExportSettings {
     }
 
     /// The sample rate, channel count and bit rate (kbit/s) of the MP3 stream these settings
-    /// make from a sequence at `seq_sr`: MP3 carries 16-48 kHz (other rates are resampled to the
+    /// make from a source with `src` audio (the rate and channels [`Self::output_audio`] gives, so
+    /// Audio ▸ Match Source applies): MP3 carries 16-48 kHz (other rates are resampled to the
     /// nearest one above, 48 kHz above 48 kHz), mono or stereo (5.1 is folded to stereo), and the
     /// Layer III bit rate nearest at or below the setting.
-    pub fn mp3_stream(&self, seq_sr: u32) -> (u32, u32, u32) {
-        let rate = filmcraft_mp3enc::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
-        let channels = if self.audio.channels <= 1 { 1 } else { 2 };
+    pub fn mp3_stream(&self, src: impl Into<SourceAudio>) -> (u32, u32, u32) {
+        let (rate, channels) = self.output_audio(src.into());
+        let rate = filmcraft_mp3enc::nearest_sample_rate(rate);
+        let channels = if channels <= 1 { 1 } else { 2 };
         let kbps = filmcraft_mp3enc::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
         (rate, channels, kbps)
     }
@@ -634,7 +636,6 @@ impl ExportSettings {
         }
     }
 
-    /// The audio codec actually used.
     /// The output (sample rate, channels) for a source with `src` audio ([`AudioSettings::resolve`]),
     /// except that AAC, which stores only the 13 MPEG-4 rates up to 96 kHz, takes a source rate it
     /// can't store (a 192 kHz sequence under Match Source or an unset rate) at the nearest of those
@@ -651,13 +652,19 @@ impl ExportSettings {
     /// The sample rate an export that follows a source at `rate` (Match Source, or no rate set)
     /// writes: `rate` itself, except that AAC takes the nearest AAC rate below one it can't carry.
     pub fn source_sample_rate(&self, rate: u32) -> u32 {
-        if self.audio_codec() == AudioCodec::Aac && filmcraft_aac::sample_rate_index(rate).is_none() {
+        if self.audio_codec() == AudioCodec::Aac && craft_audio::aac::sample_rate_index(rate).is_none() {
             // SAMPLE_RATES runs from highest to lowest
-            return filmcraft_aac::SAMPLE_RATES.iter().copied().find(|r| *r <= rate).or_else(|| filmcraft_aac::SAMPLE_RATES.last().copied()).unwrap_or(48_000);
+            return craft_audio::aac::SAMPLE_RATES
+                .iter()
+                .copied()
+                .find(|r| *r <= rate)
+                .or_else(|| craft_audio::aac::SAMPLE_RATES.last().copied())
+                .unwrap_or(48_000);
         }
         rate
     }
 
+    /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
@@ -690,6 +697,7 @@ impl ExportSettings {
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
     pub fn estimate_bytes(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: impl Into<SourceAudio>, duration: Tick) -> u64 {
+        let seq_sr: SourceAudio = seq_sr.into();
         let r = self.resolve(seq_w, seq_h, seq_rate, seq_sr);
         let secs = duration.seconds().max(0.0);
         let fps = r.rate.num as f64 / r.rate.den as f64;
