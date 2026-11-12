@@ -5,14 +5,14 @@
 //! and the record is refused if the SPS says otherwise.
 //!
 //! Nothing in the record is invented: the profile, tier, compatibility flags, level, chroma format,
-//! bit depths and temporal layers come from the SPS (parsed with `filmcraft_hevc`), and the 48
+//! bit depths and temporal layers come from the SPS (parsed with `craft_video::hevc::decode`), and the 48
 //! general constraint flags and `sps_temporal_id_nesting_flag` are read from the SPS bits that carry
 //! them (`parse_ptl` skips the flags and `Sps` does not keep the nesting flag). The array
 //! completeness flags are 1 and the parameter sets are only in the record, never in the samples
 //! (the `hvc1` sample entry).
 
+use craft_video::hevc::decode::params::Sps;
 use filmcraft_bitstream::unescape_rbsp;
-use filmcraft_hevc::params::Sps;
 use filmcraft_isobmff::{HevcConfig, HevcNalArray};
 
 use super::{Codec, nal_type};

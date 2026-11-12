@@ -269,6 +269,7 @@ fn replace_footage_ignores_old_background_proxy_and_ingest_outputs() {
             sources,
             source_durations: Default::default(),
             started_from: Vec::new(),
+            epoch: s.document_epoch,
             outputs: std::sync::Arc::new(std::sync::Mutex::new(items.iter().map(|id| (*id, original.to_string_lossy().into_owned())).collect())),
         });
         crate::proxies::poll(&mut s);
@@ -304,6 +305,7 @@ fn replace_footage_invalidates_pending_jobs_for_the_same_source() {
             sources,
             source_durations: Default::default(),
             started_from: Vec::new(),
+            epoch: s.document_epoch,
             outputs: outputs.clone(),
         });
         // Rejected replacements must not invalidate work that still belongs to this source.
@@ -351,6 +353,7 @@ fn replace_footage_cleans_up_unreferenced_job_outputs() {
             sources,
             source_durations: Default::default(),
             started_from: Vec::new(),
+            epoch: s.document_epoch,
             outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![
                 (items[0], stale.to_string_lossy().into_owned()),
                 (items[1], valid.to_string_lossy().into_owned()),
