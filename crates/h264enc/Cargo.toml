@@ -20,3 +20,7 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+
+[[example]]
+name = "h264enc_bench"
+test = true
