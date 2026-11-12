@@ -83,6 +83,61 @@ pub fn temp_dir() -> std::path::PathBuf {
     if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
 }
 
+/// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
+/// for and the same for the rest of the process (a new one if the cached folder was removed). Use it, not a fixed name in the shared temp folder:
+/// another local user can pre-create that name and plant links in it. An error when no folder could
+/// be created (a missing `TMPDIR`): callers must not fall back to creating the path themselves, which
+/// would make it with the default mode. On wasm32 the virtual filesystem has no owner, so the path is
+/// returned as is.
+pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    // The folder and, on unix, the (device, inode) it was created with.
+    static DIR: std::sync::Mutex<Option<(std::path::PathBuf, Option<(u64, u64)>)>> = std::sync::Mutex::new(None);
+    // Where a folder's identity cannot be read (non-unix) this is `None`, and the check below is only "still a real folder".
+    fn identity(p: &std::path::Path) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = p;
+            None
+        }
+    }
+    let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
+    // A folder removed or swapped since (a temp cleaner, then another user's folder or link at the
+    // same name) is replaced by a new private one, not recreated by a caller with the default mode.
+    // shortcut: this is a check at reuse; a swap between the check and the write needs directory-handle I/O.
+    if let Some((d, _)) =
+        cached.as_ref().filter(|(d, id)| cfg!(target_arch = "wasm32") || (std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()) && identity(d) == *id))
+    {
+        return Ok(d.clone());
+    }
+    let mut last = None;
+    for _ in 0..16 {
+        let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
+        if cfg!(target_arch = "wasm32") {
+            *cached = Some((path.clone(), None));
+            return Ok(path);
+        }
+        let mut dir = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+        // `create` fails when the name exists, so a folder someone else made is never accepted
+        match dir.create(&path) {
+            Ok(()) => {
+                *cached = Some((path.clone(), identity(&path)));
+                return Ok(path);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no private temp folder")))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]
@@ -166,7 +221,7 @@ pub trait Services: Send + Sync {
 pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        std::fs::read(path)
+        filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -198,7 +253,7 @@ impl Services for FsServices {
         Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
-        Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
+        Some(std::sync::Arc::new(|p: &str| filmcraft_media::reader::read_regular_file(std::path::Path::new(p))))
     }
     /// Media are read in place from the open file: a clip costs its index, not its size.
     #[cfg(any(unix, windows))]
@@ -1472,3 +1527,15 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
+
+#[cfg(all(test, unix))]
+mod private_temp_dir_tests {
+    #[test]
+    fn the_private_temp_dir_is_new_owner_only_and_stable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = super::private_temp_dir().unwrap();
+        assert!(d.is_dir());
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(d, super::private_temp_dir().unwrap());
+    }
+}

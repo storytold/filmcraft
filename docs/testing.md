@@ -3,8 +3,8 @@
 ```sh
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo nextest run --workspace                   # the same in parallel processes (doctests: cargo test --doc)
-cargo test -p filmcraft-h264                    # one crate
-cargo test --release -p filmcraft-hevc          # codec tests are much faster in release
+cargo test -p filmcraft-codecs                   # one crate
+cargo test --release -p filmcraft-prores        # codec tests are much faster in release
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
@@ -15,7 +15,7 @@ Integration tests build one binary per crate: a crate with several test files ke
 line in `main.rs`; shared helpers live in `tests/it/common/` or `tests/it/support/`. A test file that
 changes process-wide state (a global switch, pool, panic hook or fault injection) or times a workload
 stays a binary of its own in `tests/`. Select one file's tests with its module path:
-`cargo test -p filmcraft-h264 --test it conformance::`.
+`cargo test -p filmcraft-codecs --test it mxf_oracle::`.
 
 ## 1. Kinds of tests
 
@@ -50,7 +50,8 @@ Commit `*.proptest-regressions` files so failing cases are re-run.
 
 ### 32-bit parser regressions
 
-The `hostile_lengths` unit tests in `bitstream`, `vp9` and `av1` cover #2801: NAL and superframe
+The `hostile_lengths` unit tests in `bitstream` (here) and in the VP9 and AV1 decoders (craft-libs'
+`craft-video`, where those decoders now live) cover #2801: NAL and superframe
 offset overflow, tile-size increment overflow and truncating an OBU's LEB128 size to `usize`.
 They also check valid payloads, truncated inputs and bit mutations. The NAL splitter rejects
 prefix widths outside 1–4 bytes with `BitError::InvalidNalLengthSize`, including zero (which
@@ -76,8 +77,11 @@ const fs = require('node:fs');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 EOF
 export CARGO_TARGET_WASM32_WASIP1_RUNNER="node /tmp/filmcraft-wasi-runner.cjs"
-cargo test -p filmcraft-bitstream -p filmcraft-vp9 -p filmcraft-av1 --lib \
+cargo test -p filmcraft-bitstream --lib \
   --no-default-features --target wasm32-wasip1 hostile_lengths -- --test-threads=1
+# The VP9 and AV1 cases, in a craft-libs checkout (same runner):
+cargo test -p craft-video --lib --features vp9-decode,av1-decode \
+  --target wasm32-wasip1 hostile_lengths -- --test-threads=1
 # Repeat with --release: wrapping arithmetic is also dangerous without overflow checks.
 ```
 
@@ -98,7 +102,7 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
 - If a tool is missing the test prints `SKIPPED (<test>): ffmpeg not found …` and passes. Set
   **`FILMCRAFT_REQUIRE_ORACLES=1`** (CI) to make every such skip a failure. In new tests use
   `let ff = filmcraft_testkit::require_ffmpeg!();` (also `require_ffprobe!`, `require_oracles!`).
-- Some oracles need a recent ffmpeg: the APV tests (`crates/apv/tests/it/oracle.rs`) skip when
+- Some oracles need a recent ffmpeg: the APV tests (craft-libs `crates/video/tests/apv`) skip when
   `ffmpeg -formats` does not list `apv` (ffmpeg ≥ 8.0), naming the detected version.
 - Fixtures are generated on first use into `<workspace>/target/fixtures/<crate>/`
   (`filmcraft_testkit::fixtures_dir`; independent of `CARGO_TARGET_DIR`, so agents with private
@@ -304,13 +308,13 @@ engine behaviour without a window.
 
 | Benchmark | Command |
 |---|---|
-| H.264 decode, 1080p, threads sweep | `cargo test --release -p filmcraft-h264 --test it perf:: -- --ignored --nocapture` |
-| HEVC decode, 1080p / 2160p | `cargo test --release -p filmcraft-hevc --test it perf:: -- --ignored --nocapture` |
+| H.264 decode, 1080p, threads sweep | in craft-libs: `cargo test --release -p craft-video --features h264-decode,threads --test h264_decode perf:: -- --ignored --nocapture` |
+| HEVC decode, 1080p / 2160p | in craft-libs: `cargo test --release -p craft-video --features hevc-decode,threads --test hevc_decode perf:: -- --ignored --nocapture` |
 | ProRes decode/encode | `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture` |
 | Encoder speed / PSNR / bitrate | `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- …` |
 | Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files) | `cargo run --release -p filmcraft-engine --example bench_export -- --runs 7` |
 | Decode a real file through the media stack | `cargo run --release -p filmcraft-cli -- bench-decode file.mp4 --frames 120` |
-| Coding-tool coverage of the fixtures | `cargo test --release -p filmcraft-h264 --test it conformance::coverage_report -- --ignored --nocapture` (same for `hevc`) |
+| Coding-tool coverage of the fixtures | in craft-libs: `cargo test --release -p craft-video --features h264-decode --test h264_decode conformance::coverage_report -- --ignored --nocapture` (same for `hevc`) |
 | **Whole-app suite**: decode fps per codec, playback, scrubbing, timeline UI, export, project save/open, peak RSS | `cargo xtask bench` ([performance.md](performance.md)) |
 
 `cargo xtask bench` (the example `crates/ui-egui/examples/bench/`) runs six sections, each in its
