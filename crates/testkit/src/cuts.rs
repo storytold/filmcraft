@@ -18,6 +18,19 @@ pub fn noise(n: usize, seed: u64) -> Vec<f32> {
         .collect()
 }
 
+/// `n` samples of +1.0 or -1.0 at random. Neighbouring samples then differ by 0 or 2, so any
+/// change of an interpolation weight, however small, changes the interpolated sample.
+pub fn signs(n: usize, seed: u64) -> Vec<f32> {
+    noise(n, seed).into_iter().map(|v| if v < 0.0 { -1.0 } else { 1.0 }).collect()
+}
+
+/// Output rate and frame count for a read that exposes weight rounding: a large ratio and many
+/// frames put source positions in the millions, where one f64 rounding error moves an f32 weight.
+pub const RATE: u32 = 1_999;
+pub const FRAMES: usize = 60_000;
+/// Source samples such a read needs from a 48 kHz or 44.1 kHz source, with room to spare.
+pub const SOURCE_SAMPLES: usize = 1_600_000;
+
 /// Reads `frames` samples from `start` in one request and in every [`CUT_PATTERNS`] cut, through
 /// `read(start, frames) -> planar channels`, and asserts every cut is bit-identical to the single
 /// read. The single read must carry a signal, so silence cannot pass by accident.

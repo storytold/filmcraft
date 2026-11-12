@@ -659,8 +659,10 @@ mod cut_tests {
     /// Resampled audio must not depend on where a read starts (#4673).
     #[test]
     fn resampled_audio_does_not_depend_on_the_read_cuts() {
-        let bytes = float_avi(&filmcraft_testkit::cuts::noise(30_000, 5));
+        let bytes = float_avi(&filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 5));
         let src = AviSource::open("cuts.avi", bytes.into()).unwrap();
-        filmcraft_testkit::cuts::assert_cut_independent("AVI float 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+        filmcraft_testkit::cuts::assert_cut_independent("AVI float 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            src.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 }

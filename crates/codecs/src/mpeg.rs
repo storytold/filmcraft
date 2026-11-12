@@ -1005,17 +1005,23 @@ mod tests {
         assert!(source.audio_stream(2, 0, 64, 48_000).is_err());
     }
 
-    /// Resampled audio must not depend on where a read starts (#4673): MPEG audio (the decoder
-    /// gives full-precision floats) at 48 kHz read at 47 kHz.
+    /// Resampled audio must not depend on where a read starts (#4673): 16-bit DVD LPCM at 48 kHz in
+    /// a program stream.
     #[test]
     fn resampled_audio_does_not_depend_on_the_read_cuts() {
-        let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
-        mux.psi(&[(0x03, 0x1100)]);
-        for k in 0..40u16 {
-            mux.pes(0x1100, &pes(0xC0, Some(90_000 + 2160 * k as i64), &mp2_frame(k as u8)));
+        let signs = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 6);
+        let mut out = vec![0, 0, 1, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0xF8];
+        for (k, block) in signs.chunks(1000).enumerate() {
+            // sub-stream 0xA0: frame count, first access unit pointer, emphasis, 16-bit 48 kHz mono, dynamic range
+            let mut payload = vec![0xA0, 1, 0, 4, 0, 0, 0x80];
+            payload.extend(block.iter().flat_map(|v| (((v * 32767.0) as i16).to_be_bytes())));
+            out.extend(pes(0xBD, Some(90_000 + 1875 * k as i64), &payload));
         }
-        let source = MpegSource::open("cuts.ts", mux.out.into()).unwrap();
-        filmcraft_testkit::cuts::assert_cut_independent("MPEG audio 48 kHz at 47 kHz", 1_000, 20_000, |s, n| source.audio(s, n, 47_000).unwrap().channels);
+        let source = MpegSource::open("cuts.vob", out.into()).unwrap();
+        assert_eq!(source.info().audio().map(|a| (a.sample_rate, a.channels)), Some((48_000, 1)));
+        filmcraft_testkit::cuts::assert_cut_independent("DVD LPCM 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 
     #[test]
