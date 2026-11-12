@@ -113,6 +113,44 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     (timeline_extent(sequence_seconds) - width as f64 / pps).max(0.0)
 }
 
+/// Clamp both animated zoom values and keep each view's center fixed when its zoom must come down.
+pub(crate) fn clamp_zoom_preserving_center(view: &mut TimelineView, sequence_seconds: f64, width: f32, min_view_secs: f64) {
+    let ceiling = max_pps(width, min_view_secs);
+    let floor = min_pps(sequence_seconds, width).min(ceiling);
+    let clamp_one = |scroll: f64, pps: f64| {
+        let old_pps = if pps.is_finite() && pps > 0.0 { pps } else { floor };
+        let new_pps = old_pps.clamp(floor, ceiling);
+        let old_scroll = if scroll.is_finite() { scroll.max(0.0) } else { 0.0 };
+        let center = old_scroll + f64::from(width.max(0.0)) * 0.5 / old_pps;
+        let new_scroll = if new_pps < old_pps { center - f64::from(width.max(0.0)) * 0.5 / new_pps } else { old_scroll };
+        (new_pps, new_scroll.clamp(0.0, max_scroll(sequence_seconds, width, new_pps)))
+    };
+    (view.pps, view.scroll) = clamp_one(view.scroll, view.pps);
+    (view.target_pps, view.target_scroll) = clamp_one(view.target_scroll, view.target_pps);
+}
+
+#[cfg(test)]
+mod zoom_clamp_tests {
+    use super::{clamp_zoom_preserving_center, max_scroll};
+    use crate::state::TimelineView;
+
+    #[test]
+    fn lowering_the_zoom_ceiling_preserves_current_and_target_centers_within_scroll_limits() {
+        let width = 800.0;
+        let sequence_seconds = 600.0;
+        let mut view = TimelineView { pps: 4000.0, scroll: 100.0, target_pps: 8000.0, target_scroll: 200.0, ..TimelineView::default() };
+        let current_center = view.scroll + f64::from(width) * 0.5 / view.pps;
+        let target_center = view.target_scroll + f64::from(width) * 0.5 / view.target_pps;
+
+        clamp_zoom_preserving_center(&mut view, sequence_seconds, width, 0.4);
+
+        assert!((view.scroll + f64::from(width) * 0.5 / view.pps - current_center).abs() < 1e-9);
+        assert!((view.target_scroll + f64::from(width) * 0.5 / view.target_pps - target_center).abs() < 1e-9);
+        assert!(view.scroll <= max_scroll(sequence_seconds, width, view.pps));
+        assert!(view.target_scroll <= max_scroll(sequence_seconds, width, view.target_pps));
+    }
+}
+
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {
@@ -135,10 +173,20 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// The sharpest zoom: `min_view_secs` seconds (the Maximum Zoom Level setting — 0.4 s = 24 frames
+/// at 60 fps by default) fill the whole view width.
+pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
+    let min_view = if min_view_secs.is_finite() && min_view_secs > 0.0 { min_view_secs.clamp(0.05, 3.0) } else { 0.4 };
+    width.max(1.0) as f64 / min_view
+}
+
 /// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;
-    let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
+    // the sharp end is the Maximum Zoom Level setting; the wide end is enforced by animate_view
+    // (its sequence-dependent `min_pps` floor), so no fixed 0.05 floor here: that stopped a long
+    // sequence from ever zooming out to its full extent
+    let new = (old * factor).clamp(1e-6, max_pps(width, min_view_secs));
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;

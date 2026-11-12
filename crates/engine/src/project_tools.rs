@@ -671,7 +671,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
-    if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
+    if s.has_unsaved_changes() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
@@ -693,6 +693,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.media.add_stored(&s.project, Some(path.as_str()));
     s.revision += 1;
     s.saved_revision = s.revision;
+    s.saved_view_epoch = s.view_epoch;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));
