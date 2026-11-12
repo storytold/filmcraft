@@ -63,12 +63,17 @@ struct Driver {
 impl Driver {
     /// The demo project with a new sequence open and `source` in the Source Monitor.
     fn new(source: u64) -> Self {
-        native_host();
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.execute("file.newSequence", json!({"name": "Native", "width": 1280, "height": 720, "fps": 24})).unwrap();
         s.prefs.timeline.clip_mismatch_warning = false;
         s.execute("source.open", json!({"item": source})).unwrap();
+        Self::with_session(s)
+    }
+
+    /// The app on session `s`, with native windows.
+    fn with_session(s: Session) -> Self {
+        native_host();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
@@ -343,4 +348,45 @@ fn a_floating_program_monitor_composes_and_rearms_its_ime_fence() {
     window_frame(&mut d, vec![egui::Event::ImeResetCompleted { request_id: fence }, ime_preedit("が"), ime_commit("が")]);
     let after = text(&mut d);
     assert!(after.as_str().is_some_and(|t| t.contains('が')), "the completed fence admits the commit: {after}");
+}
+
+/// A slow scrub of a value in Effect Controls is one undo step while the Program monitor or
+/// Properties is in its own OS window: those panels run Effect Controls' actions every frame with
+/// the button up in their window, which made each change of the drag its own step (#4577).
+#[test]
+fn a_scrub_in_effect_controls_is_one_undo_step_beside_a_floating_panel() {
+    for panel in ["Program", "Properties"] {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut d = Driver::with_session(s);
+        let seq = d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}));
+        let clip = seq["video"][0]["items"][0]["clip"].as_u64().unwrap();
+        d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+        d.float(panel, [1000.0, 500.0, 400.0, 300.0]);
+        assert!(d.element(&format!("panel.{panel}"))["window"].is_u64(), "{panel} is in its own OS window");
+        d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+        d.frames(3);
+        let scale = |d: &Driver| {
+            let s = &d.app().session;
+            let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap();
+            it.effect("motion").unwrap().param("scale").unwrap().f64_at(it.source_time_at(s.playhead()))
+        };
+        assert_eq!(scale(&d), 100.0);
+        // press on the Scale value (just right of its name), 40 small moves, release
+        let name = rect(&d.element("effectControls.motion.0.scale.name"));
+        let from = egui::pos2(name.max.x + 14.0, name.center().y);
+        let undo = d.app().session.history.undo.len();
+        d.pointer(from, Some(true));
+        let mut to = from;
+        for i in 1..=40 {
+            to = from + egui::vec2(i as f32 * 1.5, 0.0);
+            d.pointer(to, None);
+        }
+        d.pointer(to, Some(false));
+        d.frames(3);
+        assert!(scale(&d) > 100.0, "the scrub changed Scale ({panel} floating)");
+        assert_eq!(d.app().session.history.undo.len(), undo + 1, "the whole scrub is one undo step ({panel} floating)");
+        d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+        assert_eq!(scale(&d), 100.0, "one undo brings back the value from before the press ({panel} floating)");
+    }
 }

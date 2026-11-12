@@ -1322,10 +1322,12 @@ pub(crate) fn row_fill(r: Rect) -> Rect {
 /// its start time. That memory is refreshed on every frame the button stays down — including frames
 /// with no value change — so a Scale scrub that pauses between percents is still one undo (#887). A
 /// change that brings its own `merge` key (a Program monitor handle changing several parameters)
-/// keeps it.
+/// keeps it. The memory is per OS window: the pointer state is, and a panel floated into its own
+/// window (Program, Properties) runs this every frame with the button up there, which must not end
+/// a drag held in another window (#4577).
 pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(String, Value)>) {
     let (down, press) = ctx.input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
-    let key = egui::Id::unique("effect-controls-drag-step");
+    let key = egui::Id::unique(("effect-controls-drag-step", ctx.viewport_id()));
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
