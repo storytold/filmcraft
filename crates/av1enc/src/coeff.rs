@@ -7,7 +7,7 @@ pub const SCAN_4X4: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11,
 pub const INV_SCAN_4X4: [usize; 16] = [0, 1, 5, 6, 2, 4, 7, 12, 3, 8, 11, 13, 9, 10, 14, 15];
 
 /// End-of-block position mapping for 4x4 blocks (multisize 0, eob in 1..=16).
-/// Returns (eob_pt_sym, eob_extra_opt, literal_bits).
+/// Returns `(eob_pt_sym, eob_extra_opt, literal_val, literal_bits)`.
 #[inline(always)]
 pub fn map_eob_to_syntax(eob: usize) -> (usize, Option<usize>, u32, usize) {
     debug_assert!((1..=16).contains(&eob));
@@ -58,15 +58,6 @@ pub fn qindex_to_tier(qindex: u8) -> usize {
     }
 }
 
-/// Default CDF for transform block skip (`txb_skip`, Section 9.3).
-pub static DEFAULT_TXB_SKIP_CDF: [u16; 3] = [31849, 32768, 0];
-
-/// Default CDF for end-of-block pointer for 4x4 blocks (multisize 0).
-pub static DEFAULT_EOB_PT_16_CDF: [u16; 6] = [840, 1039, 1980, 4895, 32768, 0];
-
-/// Default CDF for eob extra bits.
-pub static DEFAULT_EOB_EXTRA_CDF: [u16; 3] = [16384, 32768, 0];
-
 /// Write a transform block skip flag (`txb_skip`) using qindex tier, transform size context, and skip context.
 pub fn write_txb_skip(sym: &mut SymbolEncoder, qindex: u8, tx_sz_ctx: usize, ctx: usize, all_zero: bool) {
     let tier = qindex_to_tier(qindex).min(3);
@@ -74,20 +65,6 @@ pub fn write_txb_skip(sym: &mut SymbolEncoder, qindex: u8, tx_sz_ctx: usize, ctx
     let c_ctx = ctx.min(12);
     if let Some(cdf) = tables::DEFAULT_TXB_SKIP_CDF.get(tier).and_then(|t| t.get(s_ctx)).and_then(|s| s.get(c_ctx)) {
         sym.write_symbol_no_update(if all_zero { 1 } else { 0 }, cdf);
-    }
-}
-
-/// Write EOB syntax for a 4x4 transform block into the symbol stream.
-pub fn write_eob_4x4(sym: &mut SymbolEncoder, eob: usize) {
-    debug_assert!((1..=16).contains(&eob));
-    let (pt_sym, extra_opt, lit_val, lit_bits) = map_eob_to_syntax(eob);
-    sym.write_symbol_no_update(pt_sym, &DEFAULT_EOB_PT_16_CDF);
-    if let Some(extra_sym) = extra_opt {
-        sym.write_symbol_no_update(extra_sym, &DEFAULT_EOB_EXTRA_CDF);
-    }
-    for i in (0..lit_bits).rev() {
-        let bit = ((lit_val >> i) & 1) == 1;
-        sym.write_bool(bit);
     }
 }
 
@@ -243,8 +220,8 @@ mod tests {
     #[test]
     fn test_write_txb_skip_and_eob() {
         let mut sym = SymbolEncoder::new();
+        write_txb_skip(&mut sym, 20, 0, 0, true);
         write_txb_skip(&mut sym, 20, 0, 0, false);
-        write_eob_4x4(&mut sym, 4);
         let bytes = sym.finish();
         assert!(!bytes.is_empty());
     }

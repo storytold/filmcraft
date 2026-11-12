@@ -333,7 +333,6 @@ impl Encoder {
         }
 
         let ref_y_plane = &self.ref_y;
-        let ref_src_y_plane = &self.ref_src_y;
         let has_prev_frame = self.frame_count > 0;
 
         // Row Analysis (Wavefront/Row parallelism):
@@ -350,11 +349,9 @@ impl Encoder {
                 let block_w = 64.min(width.saturating_sub(x0));
 
                 let is_inter = if !is_key && has_prev_frame {
-                    let src_sad = compute_block_sad(frame.y, frame.y_stride, ref_src_y_plane, width, x0, y0, block_w, block_h);
                     let recon_sad = compute_block_sad(frame.y, frame.y_stride, ref_y_plane, width, x0, y0, block_w, block_h);
-                    let src_thresh = ((block_w * block_h) as u64).saturating_mul(2);
                     let recon_thresh = ((block_w * block_h) as u64).saturating_mul(6);
-                    src_sad <= src_thresh || recon_sad <= recon_thresh
+                    recon_sad <= recon_thresh
                 } else {
                     false
                 };

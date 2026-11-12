@@ -516,9 +516,6 @@ impl ExportSettings {
             if self.format == Format::Hevc {
                 return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
             }
-            if self.format == Format::Av1 {
-                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
-            }
             if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
             }

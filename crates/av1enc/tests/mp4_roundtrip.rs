@@ -283,6 +283,12 @@ fn test_av1enc_arbitrary_resolutions_colored_gradients() {
         for pic in &pics {
             assert_eq!(pic.width, w);
             assert_eq!(pic.height, h);
+            let psnr_y = filmcraft_av1enc::compute_psnr_u16(&y_plane, &pic.planes[0]).unwrap();
+            let psnr_u = filmcraft_av1enc::compute_psnr_u16(&u_plane, &pic.planes[1]).unwrap();
+            let psnr_v = filmcraft_av1enc::compute_psnr_u16(&v_plane, &pic.planes[2]).unwrap();
+            assert!(psnr_y > 14.0, "Y PSNR too low for {w}x{h}: {psnr_y}");
+            assert!(psnr_u > 14.0, "U PSNR too low for {w}x{h}: {psnr_u}");
+            assert!(psnr_v > 14.0, "V PSNR too low for {w}x{h}: {psnr_v}");
         }
     }
 }

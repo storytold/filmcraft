@@ -128,4 +128,6 @@ fn test_split_partition_decode() {
     let bottom_left = pics[0].planes[0][32 * 64];
     println!("Top-left pixel (expected ~30): {top_left}");
     println!("Bottom-left pixel (expected ~220): {bottom_left}");
+    assert!(top_left.abs_diff(30) <= 16, "top_left {top_left} should be within 16 of 30");
+    assert!(bottom_left.abs_diff(220) <= 16, "bottom_left {bottom_left} should be within 16 of 220");
 }
