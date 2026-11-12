@@ -130,7 +130,8 @@ pub struct ImageSequenceSource {
 
 impl ImageSequenceSource {
     /// `frames`: path per frame (`None`: missing). The first present frame is decoded now (size,
-    /// alpha); the rest on demand.
+    /// alpha); the rest on demand. Loading, decoding or dimension-validation errors on that frame
+    /// abort construction without trying later frames.
     pub fn new(name: &str, frames: Vec<Option<String>>, rate: FrameRate, loader: FrameLoader) -> Result<Self> {
         let first = frames.iter().flatten().next().ok_or_else(|| MediaError::Offline(format!("{name}: no frames")))?.clone();
         let bytes = loader(&first).map_err(|e| {
@@ -186,6 +187,8 @@ impl ImageSequenceSource {
         self.frames.get(i).and_then(|f| f.as_deref())
     }
 
+    /// Return a cached frame or load, decode and validate it before caching.
+    /// Failed candidates are not cached; a later request for a present path can retry the loader.
     fn decode(&self, i: usize) -> Result<Arc<VideoFrame>> {
         if let Some(f) = self.cache.get(&i) {
             return Ok(f);
