@@ -612,4 +612,32 @@ mod tests {
         let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2, usize::MAX);
         assert!((second[0][0] - whole[0][100]).abs() < 1e-4, "block 2 starts at {}, the whole read has {} there", second[0][0], whole[0][100]);
     }
+
+    #[test]
+    fn a_clip_above_the_speed_cap_reads_its_source_at_the_capped_speed() {
+        // A 1000x clip is read at 100x: timeline sample k reads source sample 100 k, where its block
+        // starts and transition handles put it.
+        let whole = raw_channels(&item(1000.0), &ramp, 0, 200, 48_000, 2, usize::MAX);
+        for k in [0usize, 1, 150, 199] {
+            let want = (100 * k) as f32 / 1e6;
+            assert!((whole[0][k] - want).abs() < 1e-6, "sample {k}: {} vs {want}", whole[0][k]);
+        }
+    }
+
+    #[test]
+    fn a_long_read_at_the_speed_cap_stops_at_what_a_source_returns() {
+        // At 100x, 700 000 samples cover 70 million source samples, more than a two-channel 48 kHz
+        // source returns at once: the read stops at the limit and the clip is silent.
+        let mut it = item(1000.0);
+        it.duration = Tick::from_seconds_f64(20.0);
+        let widest = std::cell::Cell::new(0usize);
+        let refuse = |_: i64, len: usize| -> Option<AudioBuffer> {
+            widest.set(widest.get().max(len));
+            None
+        };
+        let limit = source_read_limit(2, 48_000, 48_000);
+        let out = raw_channels(&it, &refuse, 0, 700_000, 48_000, 2, limit);
+        assert_eq!(widest.get(), limit);
+        assert!(out.iter().all(|c| c.iter().all(|v| *v == 0.0)));
+    }
 }
