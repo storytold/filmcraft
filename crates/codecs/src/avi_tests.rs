@@ -289,6 +289,12 @@ fn a_video_stream_with_pictures_comes_before_an_empty_one() {
 /// Resampled audio must not depend on where a read starts (#4673): 48 kHz PCM read at 44.1 kHz.
 #[test]
 fn resampled_audio_does_not_depend_on_the_read_cuts() {
-    let Some((_, src)) = avi("avi_mjpeg_pcm.avi", &["-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p"], &["-c:a", "pcm_s16le"]) else { return };
-    filmcraft_testkit::cuts::assert_cut_independent("AVI PCM 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+    const WHITE: [&str; 4] = ["-f", "lavfi", "-i", "anoisesrc=color=white:sample_rate=48000:amplitude=0.8:seed=5"];
+    let mut args: Vec<&str> = PIC.to_vec();
+    args.extend_from_slice(&WHITE);
+    args.extend_from_slice(&["-t", "1", "-c:v", "mjpeg", "-q:v", "3", "-pix_fmt", "yuvj420p", "-c:a", "pcm_s16le"]);
+    let Some(path) = fixture_path("avi_mjpeg_white.avi", &args) else { return };
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes("avi_mjpeg_white.avi", bytes).unwrap();
+    filmcraft_testkit::cuts::assert_cut_independent("AVI PCM 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
 }

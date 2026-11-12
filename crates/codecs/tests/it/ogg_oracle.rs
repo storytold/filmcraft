@@ -31,6 +31,9 @@ fn spec(name: &str) -> Vec<&'static str> {
     match name {
         "ogg_opus_music.opus" => [MUSIC, &["-t", "3", "-c:a", "libopus", "-b:a", "160k", "-application", "audio"]].concat(),
         "ogg_opus_trim.ogg" => [MUSIC, &["-t", "1.2345", "-c:a", "libopus", "-b:a", "96k", "-frame_duration", "10"]].concat(),
+        "ogg_opus_white.opus" => {
+            vec!["-f", "lavfi", "-i", "anoisesrc=color=white:sample_rate=48000:amplitude=0.8:seed=5", "-t", "1", "-ac", "1", "-c:a", "libopus", "-b:a", "128k"]
+        }
         "ogg_opus_speech.opus" => {
             vec![
                 "-f",
@@ -228,11 +231,11 @@ fn generate_fixtures() {
     }
 }
 
-/// Resampled audio must not depend on where a read starts (#4673): Opus (48 kHz) read at 44.1 kHz.
+/// Resampled audio must not depend on where a read starts (#4673): Opus (48 kHz) noise read at 47 kHz.
 #[test]
 fn resampled_opus_does_not_depend_on_the_read_cuts() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    let f = make(&ff, "ogg_opus_music.opus");
+    let f = make(&ff, "ogg_opus_white.opus");
     let src = OggSource::open("cuts.opus", bytes(&f)).unwrap();
-    filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+    filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
 }

@@ -67,6 +67,10 @@ fn spec(name: &str) -> Vec<String> {
             ],
         ]),
         "mxf_atom_dnxhr.mxf" => cat(&[V25, &["-t", "1", "-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p", "-f", "mxf_opatom"]]),
+        "mxf_atom_white.mxf" => cat(&[
+            &["-f", "lavfi", "-i", "anoisesrc=color=white:sample_rate=48000:amplitude=0.8:seed=5"],
+            &["-t", "1", "-c:a", "pcm_s16le", "-ac", "1", "-f", "mxf_opatom"],
+        ]),
         "mxf_atom_pcm.mxf" => cat(&[NOISE, &["-t", "1", "-c:a", "pcm_s24le", "-ac", "1", "-f", "mxf_opatom"]]),
         "mxf_d10.mxf" => cat(&[
             &["-f", "lavfi", "-i", "testsrc2=size=720x608:rate=25"],
@@ -435,10 +439,10 @@ fn generate_fixtures() {
     }
 }
 
-/// Resampled audio must not depend on where a read starts (#4673): 48 kHz PCM read at 44.1 kHz.
+/// Resampled audio must not depend on where a read starts (#4673): 48 kHz PCM noise read at 47 kHz.
 #[test]
 fn resampled_audio_does_not_depend_on_the_read_cuts() {
     let ff = filmcraft_testkit::require_ffmpeg!();
-    let src = open(&make(&ff, "mxf_atom_pcm.mxf"));
-    filmcraft_testkit::cuts::assert_cut_independent("MXF PCM 48 kHz at 44.1 kHz", 1_000, 4_800, |s, n| src.audio(s, n, 44_100).unwrap().channels);
+    let src = open(&make(&ff, "mxf_atom_white.mxf"));
+    filmcraft_testkit::cuts::assert_cut_independent("MXF PCM 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
 }

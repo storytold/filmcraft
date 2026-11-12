@@ -384,19 +384,19 @@ mod importable_tests {
     /// A window decoded from any start gives the samples of the whole source, and cuts don't matter.
     #[test]
     fn resampled_window_reads_absolute_positions() {
-        let source: Vec<f32> = (0..20_000).map(|i| (i as f32 * 0.05).sin()).collect();
+        let source = filmcraft_testkit::cuts::noise(40_000, 3);
         let read = |start: i64, frames: usize| {
-            let s0 = (start as f64 * 48_000.0 / 44_100.0).floor() as i64;
-            let need = resample_source_frames(frames, 48_000, 44_100).unwrap() + 2;
+            let s0 = (start as f64 * 48_000.0 / 47_000.0).floor() as i64;
+            let need = resample_source_frames(frames, 48_000, 47_000).unwrap() + 2;
             let window = vec![source[s0 as usize..(s0 as usize + need).min(source.len())].to_vec()];
             let mut out = vec![vec![0.0; frames]];
-            resample_window_into(&window, s0, 48_000, start, 44_100, &mut out);
+            resample_window_into(&window, s0, 48_000, start, 47_000, &mut out);
             out
         };
-        filmcraft_testkit::cuts::assert_cut_independent("window", 1_000, 4_800, read);
-        let mut whole = vec![vec![0.0; 4_800]];
-        resample_window_into(std::slice::from_ref(&source), 0, 48_000, 1_000, 44_100, &mut whole);
-        assert_eq!(whole, read(1_000, 4_800));
+        filmcraft_testkit::cuts::assert_cut_independent("window", 1_000, 20_000, read);
+        let mut whole = vec![vec![0.0; 20_000]];
+        resample_window_into(std::slice::from_ref(&source), 0, 48_000, 1_000, 47_000, &mut whole);
+        assert_eq!(whole, read(1_000, 20_000));
         // outside the window: silence, never a panic; a zero output rate leaves the buffer alone
         let mut out = vec![vec![7.0; 4]];
         resample_window_into(&[vec![1.0; 4]], 100, 48_000, i64::MIN, 44_100, &mut out);
