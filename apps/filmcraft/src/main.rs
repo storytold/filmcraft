@@ -80,6 +80,8 @@ fn tell(text: &str, error: bool) {
 }
 
 fn main() -> eframe::Result {
+    // Linux/glibc: start again with two malloc arenas, before any thread exists (see the module)
+    filmcraft_engine::malloc_arenas::limit_and_restart();
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
     if let Some(result) = craft_update::self_update::finish(&filmcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
