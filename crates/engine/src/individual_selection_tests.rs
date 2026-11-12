@@ -220,6 +220,43 @@ fn a_copied_half_of_a_linked_pair_is_not_linked() {
     }
 }
 
+/// A pair copied together pastes as a pair: the pasted picture and sound share one link, a new
+/// one, so they follow each other and not the originals.
+#[test]
+fn a_pair_copied_together_pastes_with_one_new_link() {
+    for how in ["paste", "paste insert"] {
+        let (mut s, [(v0, _), _]) = paired_sequence();
+        s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+        assert_eq!(s.state.selection.len(), 2, "{how}: Linked Selection selects the pair");
+        let end = s.active_sequence().unwrap().duration();
+        s.execute("edit.copy", json!({})).unwrap();
+        s.set_playhead(end);
+        s.execute(if how == "paste" { "edit.paste" } else { "edit.pasteInsert" }, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let pasted = |t: &filmcraft_project::Track| t.items.iter().filter(|i| i.start >= end).map(|i| i.link).collect::<Vec<_>>();
+        let (picture, sound) = (pasted(&q.video_tracks[0]), pasted(&q.audio_tracks[0]));
+        assert_eq!((picture.len(), sound.len()), (1, 1), "{how}: the picture and the sound were pasted");
+        assert!(picture[0].is_some() && picture[0] == sound[0], "{how}: the pasted pair shares one link");
+        assert_ne!(picture[0], q.find_item(v0).unwrap().1.link, "{how}: a new link, not the originals'");
+    }
+}
+
+/// A pasted clip whose linked partner finds no track of its kind is not linked: a pair pasted into
+/// a sequence without audio tracks places its picture alone.
+#[test]
+fn a_pasted_clip_whose_partner_finds_no_track_is_not_linked() {
+    let (mut s, [(v0, _), _]) = paired_sequence();
+    s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "No audio tracks", "video": 1, "audio": 0})).unwrap();
+    assert!(s.active_sequence().unwrap().audio_tracks.is_empty(), "the new sequence has no audio track");
+    s.set_playhead(Tick::ZERO);
+    s.execute("edit.paste", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].items.len(), 1, "the picture was pasted");
+    assert_eq!(q.video_tracks[0].items[0].link, None, "its sound found no track, so it has no partner to follow");
+}
+
 /// Toggling a partly selected group flips the whole group one way: the requested clip decides
 /// add or remove once, instead of each member flipping its own state.
 #[test]
