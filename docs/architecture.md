@@ -383,14 +383,6 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 
 ### 5.1 Audio mixer
 
-**Playback queue invariant:** desktop Program and Source playback share `ui-egui::play_ahead`.
-Its device callback expires every requested frame, including underrun silence. Ring positions
-remain absolute device-sample positions: a worker publishing after an underrun cannot replay
-expired samples. The worker catches up before mixing its next block. Keep this protocol shared
-and the callback free of decoding, allocations and locks; a separate resettable skip counter
-cannot close the publication/underrun race. Deterministic ring tests cover partial and complete
-expiry, channel alignment, wraparound and recovery.
-
 ```text
 clip: gain → clip effects → Volume / Channel Volume / Panner (clip keyframes, media time)
       → audio transitions → summed per track                           render::audio::track_input

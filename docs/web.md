@@ -24,13 +24,13 @@ cargo xtask web --serve 8765    # build, then serve dist on http://127.0.0.1:876
 should be. Any static server works (`python3 -m http.server -d target/web/dist 8765`); it must
 serve `.wasm` as `application/wasm` for streaming compilation.
 
-The web crate is empty on non-wasm targets, so `cargo test --workspace` and clippy are
-unaffected; `cargo xtask wasm` (part of `cargo xtask ci`) checks it, with `filmcraft-ui-egui`, for
+The library is wasm-only; native workspace tests and Clippy also cover the recovery-policy
+integration tests. `cargo xtask wasm` (part of `cargo xtask ci`) checks the library, with `filmcraft-ui-egui`, for
 `wasm32-unknown-unknown`.
 
 URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project;
 a dirty copy stays available for download before new recovery writes), `?fresh` (also don't restore
-media kept in OPFS, with the same dirty-copy hold), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
+media kept in OPFS, with the same dirty-copy hold; the kept media names stay reserved, so new imports cannot replace them; unreadable storage pauses persistence while editing remains available), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
 the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (decode with
 FilmCraft's own decoders only), `?host=parent` (host mode: a same-origin page embedding the app
 hands it files and takes its saves back instead of downloads; `data-host="page"` on the canvas

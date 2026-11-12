@@ -10,7 +10,7 @@
 /// Seconds between snapshots of a changing project.
 pub const INTERVAL_S: f64 = 5.0;
 
-/// Engine exports may write user files in OPFS, but Autosave owns its recovery directory.
+/// Engine exports may write user files in OPFS, but browser recovery owns snapshots and persisted media.
 pub fn engine_opfs_write_allowed(path: &str) -> bool {
     let Some(relative) = path.strip_prefix("/opfs/") else { return true };
     let mut first = None;
@@ -22,7 +22,7 @@ pub fn engine_opfs_write_allowed(path: &str) -> bool {
             first = Some(segment);
         }
     }
-    first.is_some() && first != Some("recovery")
+    first.is_some() && !matches!(first, Some("recovery" | "media"))
 }
 
 /// A skipped recovery file is held as an OPFS Blob so `?fresh` does not load its contents.

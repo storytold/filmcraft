@@ -157,32 +157,62 @@ pub async fn store_blob(rel: &str, blob: &web_sys::Blob) -> Result<(), JsValue> 
     Ok(())
 }
 
-/// The files in an OPFS directory: (name, File).
+pub(crate) const MAX_MEDIA_DIRECTORY_ENTRIES: usize = 100_000;
+pub(crate) const MEDIA_ENTRY_LIMIT_ERROR: &str = "browser recovery media directory entry limit exceeded";
+
+async fn file_handles_in_result(dir_rel: &str) -> Result<Vec<FileSystemFileHandle>, JsValue> {
+    let mut dir = root().await?;
+    for part in dir_rel.split('/').filter(|part| !part.is_empty()) {
+        dir = match JsFuture::from(dir.get_directory_handle(part)).await {
+            Ok(handle) => handle.dyn_into()?,
+            Err(error) if not_found(&error) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+    }
+    let mut files = Vec::new();
+    let values: js_sys::Function = js_sys::Reflect::get(&dir, &"values".into())?.dyn_into()?;
+    let entries = values.call0(&dir)?;
+    let next_entry: js_sys::Function = js_sys::Reflect::get(&entries, &"next".into())?.dyn_into()?;
+    for count in 0..=MAX_MEDIA_DIRECTORY_ENTRIES {
+        let next = next_entry.call0(&entries)?;
+        let next = JsFuture::from(js_sys::Promise::resolve(&next)).await?;
+        let done = js_sys::Reflect::get(&next, &"done".into())?;
+        if !done.is_undefined() && done.as_bool().is_none() {
+            return Err("invalid OPFS iterator completion flag".into());
+        }
+        if done.as_bool().unwrap_or(false) {
+            return Ok(files);
+        }
+        if count == MAX_MEDIA_DIRECTORY_ENTRIES {
+            return Err(MEDIA_ENTRY_LIMIT_ERROR.into());
+        }
+        let handle: web_sys::FileSystemHandle = js_sys::Reflect::get(&next, &"value".into())?.dyn_into()?;
+        if handle.kind() == web_sys::FileSystemHandleKind::File {
+            files.push(handle.dyn_into()?);
+        }
+    }
+    Err("browser recovery media enumeration did not finish".into())
+}
+
+/// List file names without reading file contents; a missing directory is empty, other errors are preserved.
+pub async fn file_names_in_result(dir_rel: &str) -> Result<Vec<String>, JsValue> {
+    Ok(file_handles_in_result(dir_rel).await?.into_iter().map(|handle| handle.name()).collect())
+}
+
+/// The readable files in an OPFS directory: (name, File). Enumeration errors return an empty list.
 pub async fn files_in(dir_rel: &str) -> Vec<(String, web_sys::File)> {
     let mut out = Vec::new();
-    let Ok(dir) = (async {
-        let mut d = root().await?;
-        for p in dir_rel.split('/').filter(|p| !p.is_empty()) {
-            d = JsFuture::from(d.get_directory_handle(p)).await?.dyn_into()?;
-        }
-        Ok::<_, JsValue>(d)
-    })
-    .await
-    else {
-        return out;
-    };
-    let it = dir.values();
-    while let Ok(next) = it.next() {
-        let Ok(r) = JsFuture::from(next).await else { break };
-        let r: js_sys::IteratorNext = r.unchecked_into();
-        if r.done() {
-            break;
-        }
-        let Ok(h) = r.value().dyn_into::<FileSystemFileHandle>() else { continue };
-        if let Ok(f) = JsFuture::from(h.get_file()).await
-            && let Ok(f) = f.dyn_into::<web_sys::File>()
+    let Ok(files) = file_handles_in_result(dir_rel).await else { return out };
+    for handle in files {
+        let read = (|| {
+            let get_file: js_sys::Function = js_sys::Reflect::get(&handle, &"getFile".into())?.dyn_into()?;
+            get_file.call0(&handle)
+        })();
+        let Ok(read) = read else { continue };
+        if let Ok(file) = JsFuture::from(js_sys::Promise::resolve(&read)).await
+            && let Ok(file) = file.dyn_into::<web_sys::File>()
         {
-            out.push((f.name(), f));
+            out.push((file.name(), file));
         }
     }
     out

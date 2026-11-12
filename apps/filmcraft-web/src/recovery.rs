@@ -6,9 +6,10 @@
 //! - Imported media are copied to `media/<name>` (the browser streams the copy; nothing goes
 //!   through wasm memory), so the snapshot's `/files/<name>` references resolve after a reload.
 //! - At start-up a dirty snapshot is reopened. `?norecover` skips opening it, and `?fresh` also
-//!   skips the media; both hold the snapshot for download before this tab can replace it.
+//!   skips the media; their names remain reserved so new imports cannot replace the held media.
+//!   Both hold the snapshot for download before this tab can replace it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use filmcraft_engine::Session;
@@ -24,6 +25,15 @@ const MAX_META_BYTES: u64 = 1 << 20;
 const MAX_SNAPSHOT_BYTES: u64 = 256 << 20;
 /// Media larger than this are not copied to OPFS.
 const KEEP_MAX: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
+
+thread_local! {
+    static MEDIA_NAMES_READY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Media copies are safe only after standalone startup reserves existing durable names.
+pub(crate) fn set_media_names_ready(ready: bool) {
+    MEDIA_NAMES_READY.with(|state| state.set(ready));
+}
 
 /// A finished OPFS write, reported back to the next [`Autosave::tick`].
 enum Outcome {
@@ -162,7 +172,7 @@ pub async fn load_raw_snapshot_blob() -> Result<Option<web_sys::Blob>, String> {
 
 /// Keep a copy of an imported file in OPFS (background).
 pub fn keep_media(path: &str, file: &web_sys::File) {
-    if !opfs::available() || file.size() > KEEP_MAX {
+    if !MEDIA_NAMES_READY.with(Cell::get) || !opfs::available() || file.size() > KEEP_MAX {
         return;
     }
     let Some(name) = path.strip_prefix("/files/").map(str::to_string) else { return };
@@ -172,6 +182,21 @@ pub fn keep_media(path: &str, file: &web_sys::File) {
             log::warn!("keeping {name} in OPFS: {e:?}");
         }
     });
+}
+
+/// Protect recovery media from same-name imports, including files skipped or unreadable during restoration.
+pub async fn reserve_media_names() -> Result<(), String> {
+    let names = opfs::file_names_in_result("media").await.map_err(|error| {
+        js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|message| message.as_string())
+            .or_else(|| error.as_string())
+            .unwrap_or_else(|| format!("{error:?}"))
+    })?;
+    for name in names {
+        crate::fs::reserve_blob_name(&name);
+    }
+    Ok(())
 }
 
 /// Register the media kept in OPFS under their `/files/` paths; returns how many.

@@ -9,6 +9,7 @@ fn supported_recovery_locales_cover_browser_messages() {
         "Recover Unsaved Changes",
         "Could not inspect the browser recovery file: {error}",
         "Recovery unavailable",
+        "Browser recovery exceeds {limit} media entries. Automatic snapshots and copies of imported media remain paused. Save current work manually and reduce retained media before reloading.",
         "Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.",
         "The file is still in this browser. New recovery snapshots are paused until you preserve it.",
         "Download recovery file",

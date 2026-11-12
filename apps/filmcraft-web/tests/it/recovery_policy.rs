@@ -63,6 +63,9 @@ fn engine_exports_cannot_replace_browser_recovery_files() {
     for path in [
         "/opfs/recovery/snapshot.fcproj",
         "/opfs/recovery/meta.json",
+        "/opfs/media/take.wav",
+        "/opfs//media/take.wav",
+        "/opfs/projects/../media/take.wav",
         "/opfs//recovery/snapshot.fcproj",
         "/opfs/./recovery/snapshot.fcproj",
         "/opfs/projects/../recovery/snapshot.fcproj",
@@ -97,7 +100,7 @@ fn failed_snapshot_write_is_retried_without_another_edit() {
     assert_eq!(p.tick(20.0, 3, 0), Action::Nothing);
 }
 
-/// A failure reported for an older revision doesn't make the newer one be written again.
+/// At most two snapshots may wait for OPFS; later revisions wait for a completion.
 #[test]
 fn a_third_snapshot_waits_for_one_in_flight() {
     let mut p = Policy::default();
@@ -109,6 +112,7 @@ fn a_third_snapshot_waits_for_one_in_flight() {
     assert_eq!(p.tick(3.0 * INTERVAL_S + 0.5, 3, 0), Action::WriteSnapshot(3));
 }
 
+/// A failure reported for an older revision doesn't make the newer one be written again.
 #[test]
 fn stale_failure_is_ignored() {
     let mut p = Policy::default();

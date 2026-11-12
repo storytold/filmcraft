@@ -39,6 +39,8 @@ enum Entry {
 #[derive(Default)]
 struct Fs {
     entries: HashMap<String, Entry>,
+    /// Recovery media keep their durable names even when skipped or unreadable during restoration.
+    reserved_paths: HashSet<String>,
     blobs: HashMap<u32, web_sys::Blob>,
     next_id: u32,
     chunks: HashMap<(u32, u64), (Arc<[u8]>, u64)>,
@@ -71,6 +73,14 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Reserve a recovery media name without loading or exposing the file in this session.
+pub fn reserve_blob_name(name: &str) {
+    let clean: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
+    FS.with(|fs| {
+        fs.borrow_mut().reserved_paths.insert(format!("/files/{clean}"));
+    });
+}
+
 /// Register a browser `File` (or named `Blob`) at an unused virtual path; collisions get numbered names.
 /// Name + size do not identify content: replacing an occupied path changes every project item referencing it.
 pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
@@ -85,7 +95,7 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
         let mut n = 1;
         let path = loop {
             let p = if n == 1 { format!("/files/{clean}") } else { format!("/files/{stem} ({n}){ext}") };
-            if !fs.entries.contains_key(&p) {
+            if !fs.entries.contains_key(&p) && !fs.reserved_paths.contains(&p) {
                 break p;
             }
             n += 1;

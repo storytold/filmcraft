@@ -14,6 +14,7 @@
 	The browser recovery file “{name}” was skipped by a launch option.	由于启动选项，已跳过浏览器恢复文件“{name}”。
 	Recovery paused	恢复已暂停
 	Could not inspect the browser recovery file: {error}	无法检查浏览器恢复文件：{error}
+	Browser recovery exceeds {limit} media entries. Automatic snapshots and copies of imported media remain paused. Save current work manually and reduce retained media before reloading.	浏览器恢复数据超过 {limit} 个媒体条目。自动快照和导入媒体的副本仍处于暂停状态。请手动保存当前工作，减少保留的媒体后再重新加载。
 	Recovery unavailable	恢复不可用
 	Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.	无法读取浏览器恢复存储：{error}。新的恢复快照已暂停。请手动保存当前工作，然后重新加载此页面重试。
 	The file is still in this browser. New recovery snapshots are paused until you preserve it.	文件仍保存在此浏览器中。保存该文件之前，新的恢复快照已暂停。
