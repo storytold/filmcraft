@@ -369,6 +369,11 @@ impl Uploader {
                 Ok(mut map) => {
                     // (write-only memory: exact ranges, sliced per row when rows are padded)
                     let total = map.len();
+                    // a plane shorter than the texture leaves rows unwritten: zero, not what the
+                    // buffer's last upload left there (a new buffer is zeroed, a reused one is not)
+                    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) < row.saturating_mul(u64::from(h)) {
+                        map.slice(..).fill(0);
+                    }
                     if padded == row {
                         let n = bytes.len().min(total);
                         if let Some(src) = bytes.get(..n) {
@@ -1373,6 +1378,12 @@ impl GpuCompositor {
     /// the longest so far (a preroll that ended with the clocks still low leaves it alone).
     pub fn wake_done(&mut self) {
         self.wake_ref = Some(self.wake_ref.map_or(self.wake_iterations, |r| r.max(self.wake_iterations)));
+        self.wake_warm = false;
+    }
+
+    /// The preroll was cancelled (Stop before the play began): the next preroll wakes the GPU
+    /// itself. Unlike [`Self::wake_done`] the interrupted preroll's loop length is no reference.
+    pub fn wake_cancelled(&mut self) {
         self.wake_warm = false;
     }
 

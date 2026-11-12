@@ -134,7 +134,12 @@ impl FilmcraftApp {
         self.playback.tts_preview = false;
         self.playback.stop_at = None;
         self.playback.rest_at = None;
-        self.playback.preroll = None;
+        if self.playback.preroll.take().is_some()
+            && let Some(g) = self.gpu.as_mut()
+        {
+            // (a preroll that Stop interrupts must not leave the GPU marked awake for the next)
+            g.compositor.wake_cancelled();
+        }
         self.playback.meter.finish();
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {

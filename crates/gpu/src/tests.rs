@@ -87,12 +87,38 @@ fn padded_and_short_planes_upload() {
     let (_, _, gpu) = c.read_output().expect("readback");
     let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
     assert!(error <= 2, "GPU differs from the CPU by up to {error} codes");
-    // short planes: the rows that exist go up, the rest stay zero
+    // short planes: the rows that exist go up, the rest stay zero, also in staging buffers
+    // that held the full frame before (mapped again by now: the readback waited for the GPU)
     let short = frame(y[..y.len() / 2].to_vec(), cb[..7].to_vec(), Vec::new());
+    let staging = up.created().1;
     let prep = prepare(&short, Some(&up));
+    assert_eq!(up.created().1, staging, "the short frame reuses the full frame's staging buffers");
     assert!(prep.layers[0].as_ref().is_some_and(Prepared::uploaded));
     c.composite_prepared(&short, Some(&prep));
-    assert!(c.read_output().is_some());
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let zero_padded =
+        frame([&y[..y.len() / 2], &vec![0; y.len() - y.len() / 2][..]].concat(), [&cb[..7], &vec![0; cb.len() - 7][..]].concat(), vec![0; cr.len()]);
+    let reference = execute_cpu(&zero_padded).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    // (zero is below the 10-bit video range, which the CPU and the GPU clip a few codes apart;
+    // rows left over from the full frame differ by the whole range)
+    assert!(error <= 4, "a short plane differs from its zero-padded frame by up to {error} codes");
+}
+
+/// A preroll that Stop interrupts leaves no "GPU is awake" behind for the next preroll, and its
+/// loop length is not taken as the reference.
+#[test]
+fn a_cancelled_preroll_leaves_the_gpu_to_be_woken_again() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.wake_warm = true;
+    let reference = c.wake_ref;
+    c.wake_cancelled();
+    assert!(!c.wake_warm());
+    assert_eq!(c.wake_ref, reference);
 }
 
 /// A frame worker records its uploads and submits nothing; the compositor submits them before
@@ -670,11 +696,20 @@ fn prepared_upload_matches_inline_conversion() {
         a.composite(&plan);
         let inline = a.read_output().expect("readback");
         let mut b = GpuCompositor::new(&dev, &q);
-        let prep = prepare(&plan, None);
-        assert!(prep.bytes() > 0);
-        b.composite_prepared(&plan, Some(&prep));
-        let prepared = b.read_output().expect("readback");
-        assert!(inline == prepared, "prepared upload differs");
+        let up = b.uploader();
+        // Uploaded by a worker, the planes have the formats of the inline upload: the same
+        // picture exactly. Converted without an uploader, 16-bit planes are half floats, while
+        // the inline upload takes normalised 16-bit textures where the device has them: the
+        // picture is then within one code (seen on Apple GPUs), and exact where it has not.
+        for (name, uploader, codes) in [("uploaded by a worker", Some(&up), 0), ("converted beforehand", None, u8::from(up.norm16()))] {
+            let prep = prepare(&plan, uploader);
+            assert!(uploader.is_some() || prep.bytes() > 0, "{name}");
+            b.composite_prepared(&plan, Some(&prep));
+            let prepared = b.read_output().expect("readback");
+            assert_eq!((inline.0, inline.1), (prepared.0, prepared.1), "{name}");
+            let error = inline.2.iter().zip(&prepared.2).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(error <= codes, "{name}: prepared upload differs by up to {error} codes");
+        }
     }
 }
 
