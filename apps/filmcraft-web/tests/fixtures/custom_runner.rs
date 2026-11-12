@@ -7,6 +7,9 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn probe_exclusive_writes() -> Result<bool, JsValue> {
     let services = filmcraft_web::fs::WebServices;
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = writes.clone();
+    filmcraft_web::fs::set_on_write(move |_, _| observed.set(observed.get() + 1));
     filmcraft_web::fs::reserve_blob_name("reserved-probe.wav");
     match services.write_file_new("/files/reserved-probe.wav", b"replacement") {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -14,6 +17,18 @@ pub fn probe_exclusive_writes() -> Result<bool, JsValue> {
     }
     if filmcraft_web::fs::mem_bytes("/files/reserved-probe.wav").is_some() {
         return Err("reserved recovery media must remain absent from the file table".into());
+    }
+    match services.write_file("/files/reserved-probe.wav", b"replacement") {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        _ => return Err("normal writes must reject reserved recovery media".into()),
+    }
+    if filmcraft_web::fs::mem_bytes("/files/reserved-probe.wav").is_some() || writes.get() != 0 {
+        return Err("reserved write rejection must preserve the file table and skip write callbacks".into());
+    }
+    services.write_file("/exports/normal-probe.bin", b"first").map_err(|error| JsValue::from_str(&error.to_string()))?;
+    services.write_file("/exports/normal-probe.bin", b"second").map_err(|error| JsValue::from_str(&error.to_string()))?;
+    if filmcraft_web::fs::mem_bytes("/exports/normal-probe.bin").as_deref() != Some(b"second".as_slice()) || writes.get() != 2 {
+        return Err("ordinary non-reserved overwrites must still work".into());
     }
     services.write_file_new("/exports/exclusive-probe.bin", b"original").map_err(|error| JsValue::from_str(&error.to_string()))?;
     match services.write_file_new("/exports/exclusive-probe.bin", b"replacement") {

@@ -27,6 +27,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let socket;
 let nextId = 0;
 const pending = new Map();
+const consoleMessages = [];
 
 async function connect() {
   for (let tries = 0; tries < 100; tries++) {
@@ -45,6 +46,7 @@ async function connect() {
         await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
         socket.onmessage = ({ data }) => {
           const message = JSON.parse(data);
+          if (message.method === "Runtime.consoleAPICalled") consoleMessages.push(JSON.stringify(message.params.args));
           if (!message.id || !pending.has(message.id)) return;
           pending.get(message.id)(message);
           pending.delete(message.id);
@@ -228,11 +230,39 @@ try {
       catch (error) { if (error.name === "NotFoundError") return false; throw error; }
     })()`), 15000, "metadata-only startup must resume autosave");
     console.log("metadata-only startup resumes autosave: PASS");
+    const opfsText = (name) => `(async () => {\n      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("recovery");\n      return (await (await dir.getFileHandle(${JSON.stringify(name)})).getFile()).text();\n    })()`;
     const validSnapshot = await js(`(async () => {
       const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("recovery");
       return (await (await dir.getFileHandle("snapshot.fcproj")).getFile()).text();
     })()`);
     assert.ok(JSON.parse(validSnapshot).project, "resumed autosave must write a serialized project");
+    const privateMarker = "PRIVATE_RECOVERY_NEXT_ID_TEST_MARKER";
+    const privateProject = JSON.parse(validSnapshot);
+    assert.ok(Object.hasOwn(privateProject.project, "next_id"), "privacy fixture must change a real typed field");
+    privateProject.project.next_id = privateMarker;
+    const privateSnapshot = JSON.stringify(privateProject);
+    await js(`(async () => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("recovery", {create:true});
+      for (const [name, data] of [
+        ["snapshot.fcproj", ${JSON.stringify(privateSnapshot)}],
+        ["meta.json", JSON.stringify({dirty:true,name:"Private recovery diagnostics",revision:8,time:1})],
+      ]) {
+        const writer = await (await dir.getFileHandle(name, {create:true})).createWritable();
+        await writer.write(data);
+        await writer.close();
+      }
+    })()`);
+    const privateOrigin = await js("performance.timeOrigin");
+    await send("Page.navigate", {url});
+    await until(async () => await js(`performance.timeOrigin !== ${privateOrigin} && !!window.filmcraftLoad?.readyMs`));
+    await until(async () => (await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})"))
+      .some((element) => element.id === "recovery.reason" && element.label.includes(privateMarker)),
+      15000, "private recovery diagnostic must remain available on screen");
+    assert.equal(await js(opfsText("snapshot.fcproj")), privateSnapshot);
+    assert.ok(!consoleMessages.some((message) => message.includes(privateMarker)),
+      "recovery console log exposed the private project diagnostic");
+    assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null);
+    console.log("private recovery diagnostics stay on screen and out of console logs: PASS");
     const invalidSnapshot = '{"project":';
     const openError = await js(`window.filmcraft.openProject(new File([${JSON.stringify(invalidSnapshot)}], "truncated-project.fcproj"))
       .then(() => null, (error) => String(error))`);
@@ -299,16 +329,11 @@ try {
     assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null, "recovery overlay must not render before its fonts exist");
     await js("window.filmcraft.inspect()");
     let elements = await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})");
-    assert.deepEqual(elements.map((element) => element.id), ["recovery.download"]);
+    assert.deepEqual(elements.map((element) => element.id), ["recovery.reason", "recovery.download"]);
 
     await js("window.filmcraft.execute('file.openDemoProject',{})");
     await js("window.filmcraft.execute('file.newSequence',{name:'Held unsaved edit'})");
     await sleep(6500);
-    const opfsText = (name) => `
-      (async () => {
-        const dir=await (await navigator.storage.getDirectory()).getDirectoryHandle('recovery');
-        return (await (await dir.getFileHandle(${JSON.stringify(name)})).getFile()).text();
-      })()`;
     assert.equal(await js(opfsText("snapshot.fcproj")), invalidSnapshot, "an unsaved edit must not replace the held recovery file");
     assert.equal(await js(opfsText("meta.json")), JSON.stringify({dirty:true,name:"Unreadable project",revision:7,time:1}), "the held dirty marker must remain intact");
 
@@ -381,7 +406,7 @@ try {
         }
         assert.equal(await js("window.downloadUrls.size"), 0, `${failure} must not leak an object URL`);
         assert.equal(await js("window.downloadUrlCreates"), createsBefore + (failure === "append" ? 1 : 0));
-        assert.deepEqual((await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).map((element) => element.id), ["recovery.download"]);
+        assert.deepEqual((await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).map((element) => element.id), ["recovery.reason", "recovery.download"]);
         assert.equal(await js(opfsText("snapshot.fcproj")), invalidSnapshot);
       } finally {
         await js("window.restoreDownloadSetup()");
@@ -467,7 +492,15 @@ try {
     assert.equal(await js(opfsText("snapshot.fcproj")), "legacy-recovery-test");
     console.log("fresh startup reserves recovery media names and preserves original bytes: PASS");
 
-    await assert.rejects(() => js("window.filmcraft.execute(\'file.saveCopy\',{path:\'/opfs/media/take.wav\'})"), /reserved/);
+    const beforeVirtualSave = await js("window.filmcraft.execute('project.inspect',{})");
+    const beforeVirtualFiles = await js("window.filmcraft.files()");
+    for (const command of ["file.saveAs", "file.saveCopy"]) {
+      await assert.rejects(() => js(`window.filmcraft.execute(${JSON.stringify(command)},{path:'/files/take.wav'})`), /reserved/);
+      assert.deepEqual(await js("window.filmcraft.execute('project.inspect',{})"), beforeVirtualSave);
+      assert.deepEqual(await js("window.filmcraft.files()"), beforeVirtualFiles,
+        "rejected writes must not materialize or replace reserved media");
+    }
+    await assert.rejects(() => js("window.filmcraft.execute('file.saveCopy',{path:'/opfs/media/take.wav'})"), /reserved/);
     const beforeRejectedSave = await js("window.filmcraft.execute('project.inspect',{})");
     await assert.rejects(() => js("window.filmcraft.execute('file.saveAs',{path:'/opfs/recovery/snapshot.fcproj'})"), /reserved/);
     assert.deepEqual(await js("window.filmcraft.execute('project.inspect',{})"), beforeRejectedSave,

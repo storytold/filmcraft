@@ -11,6 +11,8 @@ Build with `cargo xtask web [--serve PORT]`. Toolchain, architecture and the API
 checks rejected snapshots, download failures and same-name imports after skipped or unreadable
 recovery media. Startup reserves existing media names before accepting imports; media-enumeration errors
 or more than 100,000 media-directory entries pause snapshots and imported-media persistence.
+Normal and exclusive writes must reject reserved recovery-media paths before changing file entries or invoking write callbacks.
+Startup recovery warnings use fixed console messages; detailed project/storage errors remain in the recovery UI.
 Other recovery-read failures keep snapshots paused while a copy is held or storage remains unavailable.
 Confirmed absence of a snapshot lets autosave resume; media copies remain allowed when names are protected.
 Imports made without verified durable names use `/session-files/`, including hosted/custom runners.

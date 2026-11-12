@@ -379,6 +379,9 @@ impl Services for WebServices {
         if !crate::recovery_policy::engine_opfs_write_allowed(path) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{path}: browser recovery storage is reserved")));
         }
+        if FS.with(|fs| fs.borrow().reserved_paths.contains(path)) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{path}: browser recovery media name is reserved")));
+        }
         if let Some(rel) = path.strip_prefix("/opfs/") {
             crate::opfs::write(rel.to_string(), data.to_vec());
         }

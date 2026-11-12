@@ -247,22 +247,23 @@ impl eframe::App for WebApp {
                     ui.ctx(),
                     |window| window,
                     |ui| {
-                        match &rejected.reason {
-                            RecoveryHoldReason::OpenFailed(error) => ui.label(i18n::fmt(
-                                i18n::t("Could not open the browser recovery file “{name}”: {error}"),
-                                &[("name", &rejected.name), ("error", error)],
-                            )),
+                        let message = match &rejected.reason {
+                            RecoveryHoldReason::OpenFailed(error) => {
+                                i18n::fmt(i18n::t("Could not open the browser recovery file “{name}”: {error}"), &[("name", &rejected.name), ("error", error)])
+                            }
                             RecoveryHoldReason::SkippedByLaunchOption => {
-                                ui.label(i18n::fmt(i18n::t("The browser recovery file “{name}” was skipped by a launch option."), &[("name", &rejected.name)]))
+                                i18n::fmt(i18n::t("The browser recovery file “{name}” was skipped by a launch option."), &[("name", &rejected.name)])
                             }
                             RecoveryHoldReason::StorageReadFailed(error) => {
-                                ui.label(i18n::fmt(i18n::t("Could not inspect the browser recovery file: {error}"), &[("error", error)]))
+                                i18n::fmt(i18n::t("Could not inspect the browser recovery file: {error}"), &[("error", error)])
                             }
                             RecoveryHoldReason::StorageUnavailable => {
                                 let error = recovery_unavailable.as_deref().unwrap_or(i18n::t("Recovery unavailable"));
-                                ui.label(recovery_storage_message(error, *media_entry_limit))
+                                recovery_storage_message(error, *media_entry_limit)
                             }
                         };
+                        let response = ui.label(&message);
+                        app.auto.add_response("recovery.reason", &response, &message);
                         if let Some(error) = recovery_unavailable.as_deref()
                             && !matches!(&rejected.reason, RecoveryHoldReason::StorageUnavailable)
                         {
@@ -375,7 +376,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
             Err(error) => match recovery_policy::recovery_read_fallback(recovery::load_raw_snapshot_blob().await) {
                 recovery_policy::RecoveryReadFallback::Hold(blob) => Some(StartupRecovery::Unreadable(error, blob)),
                 recovery_policy::RecoveryReadFallback::Proceed => {
-                    log::warn!("browser recovery metadata ignored because no snapshot exists: {error}");
+                    log::warn!("browser recovery metadata ignored because no snapshot exists");
                     None
                 }
                 recovery_policy::RecoveryReadFallback::Unavailable(fallback_error) => Some(StartupRecovery::Unavailable(format!("{error}; {fallback_error}"))),
@@ -451,7 +452,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                                 toast = Some(format!("Recovered unsaved changes to {name}"));
                             }
                             Err(e) => {
-                                log::warn!("recovery failed: {e}");
+                                log::warn!("browser recovery project could not be opened");
                                 rejected_recovery = Some(RejectedRecovery {
                                     name,
                                     download: RecoveryDownload::Bytes(bytes),
@@ -477,7 +478,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     Some(StartupRecovery::Unavailable(error)) => {
                         // Keep both diagnostics visible when snapshot storage also failed.
                         media_entry_limit = false;
-                        log::warn!("browser recovery unavailable: {error}");
+                        log::warn!("browser recovery storage is unavailable");
                         recovery_unavailable = Some(match recovery_unavailable.take() {
                             Some(media_error) => format!("{media_error}; {error}"),
                             None => error,
