@@ -1,12 +1,12 @@
 //! Bounded raw AC-3/E-AC-3 import, retaining raw-stream priming and final frame padding.
 use craft_audio::ChannelLayout;
-use craft_audio::ac3::{ProgrammeDecoder, parse_header};
+use craft_audio::ac3::{Decoder, ProgrammeDecoder, parse_header};
 
 use crate::{CodecError, Result};
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<(u32, Vec<Vec<f32>>)> {
     let first = parse_header(bytes).map_err(|e| CodecError::Decode(e.to_string()))?;
-    let mut legacy = filmcraft_ac3::Decoder::new();
+    let mut legacy = Decoder::new();
     let mut programme = ProgrammeDecoder::new(ChannelLayout::SURROUND_7_1);
     let mut expected_channels = None;
     let mut position = 0usize;

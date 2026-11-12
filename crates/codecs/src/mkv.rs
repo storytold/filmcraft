@@ -105,7 +105,7 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
 /// Starts are accumulated from each packet's TOC duration, resynchronising to the timestamp only
 /// across real gaps (more than two ticks off). Pre-skip is the exact `CodecDelay` (or the header's
 /// pre-skip when it is absent).
-fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
+fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &craft_audio::opus::OpusHead, rate: i64) -> Vec<i64> {
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
     let skip = if t.codec_delay_ns > 0 { codec_delay_samples(t, rate) } else { head.pre_skip as i64 };
     let at = stamp_to_samples(t, rate, skip);
@@ -209,9 +209,9 @@ fn own_stamp(s: &filmcraft_matroska::Sample) -> bool {
 }
 
 /// The parsed `OpusHead` of an `A_OPUS` track.
-fn opus_head(c: &Codec) -> Option<filmcraft_opus::OpusHead> {
+fn opus_head(c: &Codec) -> Option<craft_audio::opus::OpusHead> {
     match c {
-        Codec::Opus { head } => filmcraft_opus::OpusHead::parse(head).ok(),
+        Codec::Opus { head } => craft_audio::opus::OpusHead::parse(head).ok(),
         _ => None,
     }
 }
@@ -327,7 +327,7 @@ fn codec_label(c: &Codec) -> String {
         Codec::Vp8 => "VP8".into(),
         Codec::Vp9 { .. } => "VP9".into(),
         Codec::Av1 { .. } => "AV1".into(),
-        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| filmcraft_apv::Profile::from_idc(a.profile_idc)) {
+        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| craft_video::apv::Profile::from_idc(a.profile_idc)) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -514,7 +514,7 @@ impl MkvSource {
         use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
         match c {
             Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
-            Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
+            Codec::Opus { head } => PacketDecoder::opus(craft_audio::opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
             Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
             Codec::Mp1 => PacketDecoder::mpeg_audio(1, rate),
@@ -616,6 +616,10 @@ impl VideoSamples for MkvVideo<'_> {
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read(self.track, i)
+    }
+    fn sample_size(&self, i: usize) -> Option<u64> {
+        // the size `read` returns: the stored size plus the header-stripping or ProRes prefix
+        self.src.file.tracks.get(self.track)?.sample_size(i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let Some(e) = &self.src.ventry else {
