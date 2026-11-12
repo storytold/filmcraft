@@ -508,7 +508,7 @@ async fn cli_export(a: &Args) {
         let mut q = p.clone();
         q["start"] = json!(true);
         b.exec("export.queue.add", q).await.and_then(|v| {
-            let failed: Vec<&Value> = v["items"].as_array().map(|i| i.iter().filter(|x| x["status"] != "done").collect()).unwrap_or_default();
+            let failed: Vec<&Value> = added_items(&v).into_iter().filter(|x| x["status"] != "done").collect();
             if failed.is_empty() { Ok(v) } else { Err(format!("queue: {}", Value::Array(failed.into_iter().cloned().collect()))) }
         })
     } else {
@@ -563,8 +563,8 @@ async fn cli_mcp(a: &Args) {
     }
 }
 
-/// The files an export wrote, from its result: `path` of a direct export, or each queued item's
-/// `path` (the format may have changed the extension: `out.mp4` exported as APV is `out.mp4.mov`).
+/// The files an export wrote, from its result: `path` of a direct export, or the `path` of each
+/// queued item it added (the format may have changed the extension: `out.mp4` exported as APV is `out.mp4.mov`).
 /// `requested` when the result names none.
 fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
@@ -573,22 +573,23 @@ fn written_paths(result: &Value, requested: &str) -> Vec<String> {
             Some(last) => format!("{p} to {last}"),
             None => p.to_string(),
         }],
-        None => result
-            .get("items")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|i| i.get("path").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect(),
+        None => added_items(result).into_iter().filter_map(|i| i.get("path").and_then(Value::as_str)).map(str::to_string).collect(),
     };
     if paths.is_empty() { vec![requested.to_string()] } else { paths }
 }
 
+/// The queue items an `export.queue.add` result says this call queued (`added`). It answers with
+/// the whole queue, and with `--bridge` the app's queue can hold items queued earlier: whether those
+/// failed, drew offline media or what they wrote is not this export's.
+fn added_items(result: &Value) -> Vec<&Value> {
+    let added: Vec<&Value> = result.get("added").and_then(Value::as_array).into_iter().flatten().collect();
+    result.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| i.get("id").is_some_and(|id| added.contains(&id))).collect()
+}
+
 /// The offline items an export result reports (`offlineMedia` of a direct export, or of each
-/// queued item), once each.
+/// queued item it added), once each.
 fn offline_media(result: &Value) -> Vec<Value> {
-    let lists = std::iter::once(result).chain(result.get("items").and_then(Value::as_array).into_iter().flatten());
+    let lists = std::iter::once(result).chain(added_items(result));
     let mut out: Vec<Value> = Vec::new();
     for o in lists.filter_map(|r| r.get("offlineMedia").and_then(Value::as_array)).flatten() {
         if !out.iter().any(|x| x.get("item") == o.get("item")) {
@@ -699,8 +700,11 @@ mod format_tests {
         use serde_json::json;
         let direct = json!({"job": 1, "path": "out-apv.mp4.mov", "result": {"path": "out-apv.mp4.mov"}});
         assert_eq!(super::written_paths(&direct, "out-apv.mp4"), ["out-apv.mp4.mov"]);
-        let queued = json!({"added": [1, 2], "items": [{"path": "a.mp4.mov"}, {"path": "b.wav"}]});
+        let queued = json!({"added": [1, 2], "items": [{"id": 1, "path": "a.mp4.mov"}, {"id": 2, "path": "b.wav"}]});
         assert_eq!(super::written_paths(&queued, "a.mp4"), ["a.mp4.mov", "b.wav"]);
+        // `export.queue.add` answers with the whole queue: an item queued earlier wrote its own file
+        let after_older = json!({"added": [2], "items": [{"id": 1, "path": "older.wav"}, {"id": 2, "path": "b.wav"}]});
+        assert_eq!(super::written_paths(&after_older, "b.wav"), ["b.wav"]);
         assert_eq!(super::written_paths(&json!({}), "x.mov"), ["x.mov"]);
         assert_eq!(super::written_paths(&json!({"items": []}), "x.mov"), ["x.mov"]);
     }
@@ -711,8 +715,11 @@ mod format_tests {
         let a = json!({"item": 8, "name": "a.mp4", "path": "/m/a.mp4", "status": "missing", "error": ""});
         let b = json!({"item": 9, "name": "b.mov", "path": "/m/b.mov", "status": "offline", "error": ""});
         assert_eq!(super::offline_media(&json!({"path": "x.mp4", "offlineMedia": [a]})), std::slice::from_ref(&a));
-        let queued = json!({"items": [{"offlineMedia": [a, b]}, {"offlineMedia": [a]}, {"offlineMedia": []}]});
+        let queued = json!({"added": [1, 2, 3], "items": [{"id": 1, "offlineMedia": [a, b]}, {"id": 2, "offlineMedia": [a]}, {"id": 3, "offlineMedia": []}]});
         assert_eq!(super::offline_media(&queued), [a.clone(), b.clone()]);
+        // an item queued earlier drew its own placeholders, not this export's
+        let after_older = json!({"added": [2], "items": [{"id": 1, "offlineMedia": [a]}, {"id": 2, "offlineMedia": []}]});
+        assert!(super::offline_media(&after_older).is_empty());
         assert!(super::offline_media(&json!({"path": "x.mp4"})).is_empty());
         let w = super::offline_warning(&[a, b]);
         assert!(w.contains("2 offline media item(s)") && w.contains("item 8 a.mp4 (missing): /m/a.mp4") && w.contains("item 9 b.mov (offline)"), "{w}");
