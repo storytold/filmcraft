@@ -780,7 +780,8 @@ async fn the_bridge_refuses_the_apps_export_queue() {
 }
 
 /// `file.exportAaf` with the write root itself as `path` derives `<name> Media` beside that
-/// directory. The mixdown must not be created there.
+/// directory. That path is refused before anything is created. A file inside the write root is
+/// not refused: an empty sequence fails later, after the check, and its Media folder stays inside.
 #[tokio::test]
 async fn aaf_mixdown_of_the_write_root_does_not_write_beside_it() {
     let (base, roots) = roots_base("aaf-mixdown");
@@ -794,6 +795,10 @@ async fn aaf_mixdown_of_the_write_root_does_not_write_beside_it() {
     let stem = root.file_name().unwrap().to_string_lossy();
     let sibling = root.parent().unwrap().join(format!("{stem} Media"));
     assert!(!sibling.exists(), "mixdown folder was created outside the write root: {}", sibling.display());
-    assert_eq!(file_names(&base), vec!["in".to_string(), "out".to_string(), "outside".to_string()]);
+    let inside = root.join("edit.aaf");
+    let e = m.run("file.exportAaf", json!({"path": inside.to_string_lossy(), "mixdownVideo": true})).await.unwrap_err().to_string();
+    assert!(e.contains("the sequence is empty"), "{e}");
+    assert!(root.join("edit Media").is_dir(), "the checked mixdown folder was not created inside the write root");
+    assert!(!sibling.exists(), "the outside mixdown folder appeared after the in-root export");
     let _ = std::fs::remove_dir_all(base);
 }

@@ -391,9 +391,9 @@ fn mixdown(s: &Session, seq: ItemId, path: &str) -> Result<MixdownVideo> {
         dnx_profile: "hq".into(),
         ..Default::default()
     };
-    // A confined session checks the mixdown path again as the bytes are written. The native
-    // exporter would otherwise open the file directly and skip that check.
-    if s.services.export_in_memory() || s.files_confined {
+    // `confine_write` already accepted `path`. The native exporter streams to that file.
+    // Buffering the mixdown for a second check would hold the whole movie in memory.
+    if s.services.export_in_memory() {
         let services = s.services.clone();
         settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |p: &str, d: Vec<u8>| services.write_file(p, &d))));
     }
