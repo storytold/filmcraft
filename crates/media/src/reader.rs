@@ -229,14 +229,8 @@ pub fn open_reader(name: &str, reader: SharedReader, reader_openers: &[ReaderOpe
 /// Media Browser's properties and thumbnails, #157): reading a multi-gigabyte AVI into
 /// memory to show its duration, or to find out it isn't supported, thrashes the disk.
 pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[ReaderOpener], extra: &[Opener], max_whole: u64) -> Result<SharedSource> {
-    let head = read_range(&*reader, 0, HEAD_LEN).map_err(|e| MediaError::Io(format!("{name}: {e}")))?;
-    for o in reader_openers {
-        if let Some(r) = o(name, &head, &reader) {
-            return r;
-        }
-    }
-    if crate::wav::sniff(&head) {
-        return Ok(Arc::new(crate::wav::WavSource::open(name, reader)?));
+    if let Some(source) = open_streaming_reader(name, reader.clone(), reader_openers)? {
+        return Ok(source);
     }
     if reader.len() > max_whole {
         return Err(MediaError::Unsupported(format!("{name}: no streaming reader for this format, and it is too large to read whole here")));
@@ -245,9 +239,36 @@ pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[Re
     crate::open_bytes(name, all.into(), extra)
 }
 
+/// Open a recognized streaming format without falling back to a whole-file read.
+/// `Ok(None)` means no streaming opener accepted the format; a recognized but invalid
+/// file returns its error so callers do not mistake rejection for a reusable cached source.
+pub fn open_streaming_reader(name: &str, reader: SharedReader, reader_openers: &[ReaderOpener]) -> Result<Option<SharedSource>> {
+    let head = read_range(&*reader, 0, HEAD_LEN).map_err(|e| MediaError::Io(format!("{name}: {e}")))?;
+    for opener in reader_openers {
+        if let Some(result) = opener(name, &head, &reader) {
+            return result.map(Some);
+        }
+    }
+    if crate::wav::sniff(&head) {
+        return Ok(Some(Arc::new(crate::wav::WavSource::open(name, reader)?)));
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recognized rejection is an error; only an unrecognized format permits sharing a cached source.
+    #[test]
+    fn streaming_probe_distinguishes_rejection_from_no_matching_opener() {
+        fn reject(_name: &str, _head: &[u8], _reader: &SharedReader) -> Option<Result<SharedSource>> {
+            Some(Err(MediaError::Unsupported("invalid dimensions".into())))
+        }
+        let reader: SharedReader = Arc::new(MemReader(Arc::from(&b"test"[..])));
+        assert!(open_streaming_reader("test", reader.clone(), &[]).unwrap().is_none());
+        assert!(matches!(open_streaming_reader("test", reader, &[reject]), Err(MediaError::Unsupported(error)) if error == "invalid dimensions"));
+    }
 
     #[test]
     fn mem_reader_reads_ranges_and_reports_eof() {

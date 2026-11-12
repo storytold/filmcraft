@@ -265,6 +265,8 @@ struct JobEnv<'a> {
     services: &'a dyn crate::Services,
 }
 
+/// Copy or consolidate planned media, then validate and write the resulting project.
+/// Cancellation and I/O failures return an error; already written media may remain on disk.
 fn execute(
     mut proj: Project,
     work: Vec<Work>,

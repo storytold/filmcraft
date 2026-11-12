@@ -106,6 +106,7 @@ pub fn write_then(rel: String, data: Vec<u8>, done: Option<Done>) {
     });
 }
 
+/// Recognize a missing OPFS entry without hiding other storage or permission errors.
 fn not_found(error: &JsValue) -> bool {
     js_sys::Reflect::get(error, &"name".into()).ok().and_then(|name| name.as_string()).as_deref() == Some("NotFoundError")
 }

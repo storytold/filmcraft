@@ -47,7 +47,7 @@ impl Default for Autosave {
 }
 
 impl Autosave {
-    /// Called every frame.
+    /// Process completed writes and schedule validated recovery updates; return any persistent dimension warning.
     pub fn tick(&mut self, s: &Session, ctx: &egui::Context) -> Option<String> {
         if !opfs::available() {
             return None;
@@ -104,6 +104,7 @@ impl Autosave {
         self.warning_message()
     }
 
+    /// Localize the active validation warning without changing the retained snapshot.
     fn warning_message(&self) -> Option<String> {
         self.warning.message().map(|error| {
             filmcraft_ui_egui::i18n::fmt(
@@ -114,6 +115,7 @@ impl Autosave {
     }
 }
 
+/// Read the dirty marker and sanitize its suggested filename; report unreadable or inconsistent metadata.
 async fn dirty_snapshot_name() -> Result<Option<String>, String> {
     if !opfs::available() {
         return Ok(None);
@@ -131,7 +133,7 @@ async fn dirty_snapshot_name() -> Result<Option<String>, String> {
         Some(true) => {}
         None => return Err("recovery metadata has no dirty flag".into()),
     }
-    let name = meta.get("name").and_then(Value::as_str).unwrap_or("Recovered");
+    let name = crate::recovery_policy::recovery_display_name(meta.get("name").and_then(Value::as_str).unwrap_or("Recovered"));
     Ok(Some(format!("{name}.fcproj")))
 }
 

@@ -398,6 +398,7 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A rejected revision retains the readable snapshot, reports once, and resumes after repair.
 #[test]
 fn invalid_live_dimensions_cannot_replace_the_last_reopenable_recovery_snapshot() {
     let dir = temp_dir("invalid-journal");
@@ -440,6 +441,7 @@ fn invalid_live_dimensions_cannot_replace_the_last_reopenable_recovery_snapshot(
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The maximum recovery interval starts at the first repaired edit, even without a quiet debounce.
 #[test]
 fn repaired_dimensions_keep_the_journal_deadline_during_continuous_edits() {
     let dir = temp_dir("repaired-journal-deadline");
@@ -480,6 +482,7 @@ fn repaired_dimensions_keep_the_journal_deadline_during_continuous_edits() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Loading reports the rejected item and snapshot path without consuming the original bytes.
 #[test]
 fn unsupported_recovery_dimensions_leave_the_original_snapshot_for_repair() {
     let dir = temp_dir("invalid-recovery");

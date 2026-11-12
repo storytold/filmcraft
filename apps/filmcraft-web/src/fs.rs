@@ -350,6 +350,7 @@ impl Services for WebServices {
         filmcraft_media::reader::read_range(&*r, 0, r.len() as usize)
     }
 
+    /// Store an engine write in memory; permitted `/opfs/` paths also schedule persistence, and other paths invoke the host/download hook.
     fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
         if !crate::recovery_policy::engine_opfs_write_allowed(path) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{path}: browser recovery storage is reserved")));
@@ -452,11 +453,11 @@ pub fn download_bytes_now(bytes: &[u8], name: &str) -> Result<(), wasm_bindgen::
 /// Start a download from an OPFS-backed File without copying it into wasm memory.
 pub fn download_blob_now(blob: &web_sys::Blob, name: &str) -> Result<(), wasm_bindgen::JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
     let a: web_sys::HtmlAnchorElement = doc.create_element("a")?.dyn_into()?;
-    a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
+    let url = web_sys::Url::create_object_url_with_blob(blob)?;
+    a.set_href(&url);
     let Some(body) = doc.body() else {
         let _ = web_sys::Url::revoke_object_url(&url);
         return Err(wasm_bindgen::JsValue::from_str("no body"));
@@ -484,11 +485,11 @@ thread_local! {
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let blob = bytes_to_blob(data, "application/octet-stream")?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
     let a: web_sys::HtmlAnchorElement = doc.create_element("a")?.dyn_into()?;
-    a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    a.set_href(&url);
     let now_ms = DOWNLOAD_CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0);
     let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(now_ms));
     let name = name.to_owned();

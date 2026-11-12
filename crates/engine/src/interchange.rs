@@ -28,6 +28,7 @@ fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
     matches!(&item.kind, ItemKind::Media(m) if matches!(m.media, MediaRef::File { .. }))
 }
 
+/// Reject invalid interchange dimensions before merging the fragment or extracting its audio.
 fn validate_fragment_project(path: &str, project: &filmcraft_project::Project) -> Result<()> {
     filmcraft_format::validate_project_dimensions(project).map_err(|error| EngineError::Other(format!("{path}: {error}")))
 }

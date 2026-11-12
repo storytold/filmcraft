@@ -80,6 +80,7 @@ fn a_file_still_being_written_is_tried_again() {
     assert!(s.media.offline_status(items[0]).is_none());
 }
 
+/// A changed invalid file uses a slate with prior dimensions until a valid replacement is observed.
 #[test]
 fn oversized_replacement_does_not_refresh_media_to_unreopenable_dimensions() {
     let root = tmp_dir("watch-oversized-y4m");

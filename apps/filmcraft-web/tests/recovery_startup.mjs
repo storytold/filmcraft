@@ -164,6 +164,65 @@ try {
   assert.equal(await js(opfsText("snapshot.fcproj")), "invalid-fcproj-test", "an unsaved edit must not replace the held recovery file");
   assert.equal(await js(opfsText("meta.json")), JSON.stringify({dirty:true,name:"Unsafe dimensions",revision:7,time:1}), "the held dirty marker must remain intact");
 
+  await js(`(() => {
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    window.downloadUrls = new Set();
+    window.downloadUrlCreates = 0;
+    URL.createObjectURL = (blob) => {
+      const url = create(blob);
+      window.downloadUrls.add(url);
+      window.downloadUrlCreates++;
+      return url;
+    };
+    URL.revokeObjectURL = (url) => { window.downloadUrls.delete(url); return revoke(url); };
+  })()`);
+  for (const failure of ["anchor", "style", "append"]) {
+    await js(`(() => {
+      const create = Document.prototype.createElement;
+      const style = CSSStyleDeclaration.prototype.setProperty;
+      const append = Node.prototype.appendChild;
+      window.injectedDownloadFailures = 0;
+      Document.prototype.createElement = function(name, ...args) {
+        if (${JSON.stringify(failure)} === "anchor" && name === "a") {
+          window.injectedDownloadFailures++;
+          throw new Error("injected anchor creation failure");
+        }
+        return create.call(this, name, ...args);
+      };
+      CSSStyleDeclaration.prototype.setProperty = function(name, value, ...args) {
+        if (${JSON.stringify(failure)} === "style" && name === "display" && value === "none") {
+          window.injectedDownloadFailures++;
+          throw new Error("injected anchor styling failure");
+        }
+        return style.call(this, name, value, ...args);
+      };
+      Node.prototype.appendChild = function(node) {
+        if (${JSON.stringify(failure)} === "append" && node.tagName === "A") {
+          window.injectedDownloadFailures++;
+          throw new Error("injected anchor append failure");
+        }
+        return append.call(this, node);
+      };
+      window.restoreDownloadSetup = () => {
+        Document.prototype.createElement = create;
+        CSSStyleDeclaration.prototype.setProperty = style;
+        Node.prototype.appendChild = append;
+      };
+    })()`);
+    const createsBefore = await js("window.downloadUrlCreates");
+    try {
+      await js("window.filmcraft.request('ui.click',{id:'recovery.download'})");
+      assert.equal(await js("window.injectedDownloadFailures"), 1, `${failure} must reach the injected failure`);
+      assert.equal(await js("window.downloadUrls.size"), 0, `${failure} must not leak an object URL`);
+      assert.equal(await js("window.downloadUrlCreates"), createsBefore + (failure === "append" ? 1 : 0));
+      assert.deepEqual((await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).map((element) => element.id), ["recovery.download"]);
+      assert.equal(await js(opfsText("snapshot.fcproj")), "invalid-fcproj-test");
+    } finally {
+      await js("window.restoreDownloadSetup()");
+    }
+  }
+  console.log("failed recovery download setup preserves the snapshot and releases object URLs: PASS");
   await js("window.filmcraft.request('ui.click',{id:'recovery.download'})");
   await until(async () => (await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).some((element) => element.id === "recovery.continue"));
   await until(async () => readdirSync(downloads).some((name) => name.endsWith(".fcproj")));
@@ -175,6 +234,31 @@ try {
   await until(async () => await js(opfsText("snapshot.fcproj")) !== "invalid-fcproj-test", 15000);
   assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null);
   console.log("recovery startup, held snapshot, download, and resumed autosave: PASS");
+
+  for (const name of ["", "   ", "folder/name", "folder\\name", "bad\nname", "x".repeat(513)]) {
+    for (const file of readdirSync(downloads)) rmSync(join(downloads, file));
+    await js(`(async () => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("recovery", {create:true});
+      for (const [fileName, data] of [
+        ["snapshot.fcproj", "legacy-recovery-test"],
+        ["meta.json", JSON.stringify({dirty:true,name:${JSON.stringify(name)},revision:7})],
+      ]) {
+        const writer = await (await dir.getFileHandle(fileName, {create:true})).createWritable();
+        await writer.write(data);
+        await writer.close();
+      }
+    })()`);
+    const oldOrigin = await js("performance.timeOrigin");
+    await send("Page.reload", { ignoreCache: true });
+    await until(async () => await js(`performance.timeOrigin !== ${oldOrigin} && !!window.filmcraftLoad?.readyMs`));
+    await until(async () => (await js("window.filmcraft.request('ui.elements',{prefix:'recovery.'})")).some((element) => element.id === "recovery.download"));
+    await js("window.filmcraft.request('ui.click',{id:'recovery.download'})");
+    await until(async () => readdirSync(downloads).includes("Recovered.fcproj"));
+    assert.equal(readFileSync(join(downloads, "Recovered.fcproj"), "utf8"), "legacy-recovery-test");
+    assert.equal(await js(opfsText("snapshot.fcproj")), "legacy-recovery-test");
+    assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null);
+  }
+  console.log("legacy recovery names are sanitized on read and download: PASS");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

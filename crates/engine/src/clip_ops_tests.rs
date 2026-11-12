@@ -326,6 +326,7 @@ fn new_sequence_from_clip_bin_from_selection_and_offline_file() {
     assert!(s.execute("file.newOfflineFile", json!({"video": false, "audio": false})).is_err());
 }
 
+/// Hostile dimension types and bounds return command-specific errors without a project edit or panic.
 #[test]
 fn offline_file_rejects_unbounded_dimensions_without_changing_the_project() {
     let mut session = demo();
@@ -363,6 +364,7 @@ fn audio_only_offline_file_ignores_unused_video_dimensions() {
     assert!(media.info.has_audio());
 }
 
+/// Unknown video size keeps default sequence dimensions while retaining the source frame rate.
 #[test]
 fn unknown_video_dimensions_make_a_reopenable_sequence_from_clip() {
     let d = tmp_dir("unknown-video-sequence");
@@ -387,6 +389,7 @@ fn unknown_video_dimensions_make_a_reopenable_sequence_from_clip() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+/// Every video generator rejects invalid dimensions before replacing the project's shared state.
 #[test]
 fn generated_video_rejects_unbounded_dimensions_without_changing_the_project() {
     let mut session = Session::default();
@@ -409,6 +412,7 @@ fn generated_video_rejects_unbounded_dimensions_without_changing_the_project() {
     session.execute("file.newBlackVideo", json!({"width": 32_768, "height": 1})).unwrap();
 }
 
+/// Destination-bin placement survives dimension validation; rejected sizes leave undo and redo intact.
 #[test]
 fn generated_video_validates_dimensions_and_keeps_the_requested_bin() {
     let mut session = Session::default();
@@ -427,6 +431,7 @@ fn generated_video_validates_dimensions_and_keeps_the_requested_bin() {
     }
 }
 
+/// Command-created metadata at the total-pixel boundary remains valid for the project loader.
 #[test]
 fn created_media_at_the_dimension_limit_saves_and_reopens() {
     let dir = tmp_dir("created-size-roundtrip");

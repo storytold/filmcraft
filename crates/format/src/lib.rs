@@ -439,6 +439,7 @@ mod tests {
         assert_eq!(SCHEMA_VERSION, 17);
     }
 
+    /// Invalid known sizes are corrupt, unknown sizes remain valid, and mutated input must not panic.
     #[test]
     fn damaged_media_dimensions_are_rejected_before_preview() {
         use filmcraft_media::{Generator, MediaSource};
@@ -492,6 +493,7 @@ mod tests {
         }
     }
 
+    /// Artwork uses the same per-axis and total-pixel bounds as media before any rendering begins.
     #[test]
     fn damaged_graphic_and_adjustment_layer_dimensions_are_rejected_before_rendering() {
         use filmcraft_project::{ItemKind, Label};

@@ -186,6 +186,7 @@ fn close_commands_and_templates() {
     assert!(s.path.is_none() && !s.is_dirty());
 }
 
+/// Template and selection writes preserve prior bytes; Project Manager rejects before creating output.
 #[test]
 fn alternate_project_writers_reject_unreopenable_dimensions_without_overwriting_files() {
     let mut session = demo();

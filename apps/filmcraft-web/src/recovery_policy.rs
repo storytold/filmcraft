@@ -32,6 +32,7 @@ pub enum StartupRecoveryMode {
     HoldForDownload,
 }
 
+/// Choose whether startup opens a snapshot or retains it for an explicit download.
 pub fn startup_recovery_mode(skip_recovery: bool) -> StartupRecoveryMode {
     if skip_recovery { StartupRecoveryMode::HoldForDownload } else { StartupRecoveryMode::Open }
 }
@@ -45,6 +46,7 @@ pub enum RecoveryReadFallback<T> {
     Unavailable(String),
 }
 
+/// Translate a raw snapshot lookup into a hold, confirmed absence, or storage error.
 pub fn recovery_read_fallback<T>(raw: Result<Option<T>, String>) -> RecoveryReadFallback<T> {
     match raw {
         Ok(Some(snapshot)) => RecoveryReadFallback::Hold(snapshot),
@@ -53,9 +55,9 @@ pub fn recovery_read_fallback<T>(raw: Result<Option<T>, String>) -> RecoveryRead
     }
 }
 
-/// Keep recovery metadata small without changing the project name stored in the snapshot.
+/// Bound recovery filenames and reject blank names, path separators and control characters without renaming the stored project.
 pub fn recovery_display_name(name: &str) -> &str {
-    if name.len() <= 512 && !name.chars().any(|c| c.is_control() || c == '/' || c == '\\') { name } else { "Recovered" }
+    if !name.trim().is_empty() && name.len() <= 512 && !name.chars().any(|c| c.is_control() || c == '/' || c == '\\') { name } else { "Recovered" }
 }
 
 /// Keep a recovery warning visible without hiding a different status from the current action.
@@ -71,10 +73,12 @@ pub struct ValidationWarning {
 }
 
 impl ValidationWarning {
+    /// Retain the validation error and the revision that produced it.
     pub fn reject(&mut self, revision: u64, error: String) {
         self.rejected = Some((revision, error));
     }
 
+    /// Revalidate a later revision, retaining its error or clearing the warning when it is valid.
     pub fn refresh<E: std::fmt::Display>(&mut self, revision: u64, validate: impl FnOnce() -> Result<(), E>) {
         if self.rejected.as_ref().is_some_and(|(rejected, _)| *rejected != revision) {
             match validate() {
@@ -84,10 +88,12 @@ impl ValidationWarning {
         }
     }
 
+    /// Retire the warning after a validated recovery update.
     pub fn clear(&mut self) {
         self.rejected = None;
     }
 
+    /// Borrow the retained validation error for display.
     pub fn message(&self) -> Option<&str> {
         self.rejected.as_ref().map(|(_, error)| error.as_str())
     }

@@ -9,6 +9,7 @@ use super::{
 // File
 // ---------------------------------------------------------------------------------------------
 
+/// Create a sequence from selected clips after validating the first clip's derived settings.
 pub(super) fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = items_p(s, p).into_iter().filter(|i| is_clip_item(&s.project, *i)).collect();
     let first = *items.first().ok_or_else(|| bad("file.newSequenceFromClip", "select a clip in the Project panel"))?;
@@ -130,6 +131,8 @@ fn bin_names(b: &filmcraft_project::Bin, out: &mut Vec<String>) {
     }
 }
 
+/// Add an offline media placeholder, validating requested video dimensions before the edit.
+/// Audio-only placeholders do not use the supplied width or height.
 pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
     let has_v = bool_p(p, "video").unwrap_or(true);

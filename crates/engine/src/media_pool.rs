@@ -148,6 +148,7 @@ fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+/// Reject unsafe known video dimensions while retaining sources with unknown `(0, 0)` size.
 pub(crate) fn checked_source(src: SharedSource) -> Result<SharedSource, MediaError> {
     if let Some(video) = &src.info().video
         && (video.width, video.height) != (0, 0)
@@ -386,14 +387,16 @@ impl MediaPool {
     /// A copy of `item`'s file for a background job: the file opened again through the host's
     /// reader, with decoders and decoded frames of its own, closed when the job drops it. None
     /// when the item shares the pool's source instead: not a file (a generator), made offline, an
-    /// image sequence, a host without a reader (the browser), a format that would be read whole,
-    /// or a file that does not open or that the pool last saw offline (the pool's source renders
-    /// the slate and says why, so the job shows what the monitors show). Rejected dimensions use a
-    /// job-owned slate; returning None there would fall back to the pool's stale reader.
+    /// image sequence, a host without a reader, a format that would be read whole,
+    /// or a file whose host reader cannot open or that the pool last saw offline. A recognized
+    /// streaming format that fails to reopen uses a job-owned slate and diagnostic; returning
+    /// None there would fall back to the pool's stale reader. Pending reads remain retryable.
     pub fn own_source(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
         self.own_source_with_status(p, item, services).map(|owned| owned.source)
     }
 
+    /// Reopen eligible streaming media for a job, keeping decoder and dimension rejection local to it.
+    /// Unrecognized streaming formats share the pool source; recognized failures retain their diagnostics.
     fn own_source_with_status(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<OwnedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let MediaRef::File { path } = &m.media else { return None };
@@ -402,9 +405,13 @@ impl MediaPool {
         }
         let file = self.follow_media(path).ok()?;
         let reader = services.reader(&file)?.ok()?;
-        let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let src = filmcraft_media::reader::open_reader_within(&file_name(&file), reader, &filmcraft_codecs::reader_openers(), &openers, 0).ok()?;
-        match checked_source(src) {
+        let src = match filmcraft_media::reader::open_streaming_reader(&file_name(&file), reader, &filmcraft_codecs::reader_openers()) {
+            Ok(Some(src)) => checked_source(src),
+            Ok(None) => return None,
+            Err(_) if filmcraft_media::pending::is_set() => return None,
+            Err(error) => Err(error),
+        };
+        match src {
             Ok(src) => Some(OwnedSource { source: self.unsupported_as_slate(item, path, src), offline: None }),
             Err(error) => Some(OwnedSource {
                 source: Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::Unreadable)),
@@ -522,6 +529,8 @@ impl PoolProvider {
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
+    /// Resolve an item through this snapshot, recording use and caching job-owned sources.
+    /// Pending host reads remain retryable instead of becoming a cached fallback decision.
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         if let Some(used) = &self.used {
             used.lock().unwrap_or_else(PoisonError::into_inner).insert(item);
@@ -748,6 +757,7 @@ mod tests {
     use super::*;
     use filmcraft_project::ItemKind;
 
+    /// An opener's metadata alone enforces the pixel limit, without allocating a boundary-sized frame.
     #[test]
     fn byte_media_probe_enforces_total_pixel_boundary_without_decoding_a_large_frame() {
         fn dimension_probe(_name: &str, bytes: Arc<[u8]>) -> Option<filmcraft_media::Result<SharedSource>> {
@@ -773,6 +783,7 @@ mod tests {
         assert!(matches!(rejected, Err(MediaError::Unsupported(message)) if message.contains("32768x8193")));
     }
 
+    /// A job retains its rejection slate and diagnostics after the live reader is repaired.
     #[test]
     fn job_owned_readers_reject_changed_files_with_invalid_dimensions() {
         let dir = crate::media_test_util::tmp_dir("job-frame-size");
@@ -816,6 +827,36 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Decoder-side size rejection must retain its diagnostic instead of rendering a cached valid frame.
+    #[test]
+    fn job_owned_readers_retain_container_dimension_errors() {
+        use filmcraft_render::SourceProvider;
+        let dir = crate::media_test_util::tmp_dir("job-container-frame-size");
+        let path = dir.join("camera.y4m");
+        let mut bytes = b"YUV4MPEG2 W16 H1 Cmono\nFRAME\n".to_vec();
+        bytes.extend([128; 16]);
+        std::fs::write(&path, bytes).unwrap();
+        let mut session = crate::Session::default();
+        let result = session.execute("file.import", serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+        let item = ItemId(result["items"][0].as_u64().unwrap());
+        let cached = session.media.cached(item).unwrap();
+        let mut rejected = b"YUV4MPEG2 W32768 H8193 Cmono\n".to_vec();
+        rejected.resize(64, 128);
+        std::fs::write(&path, rejected).unwrap();
+        let provider = session.media.full_res_provider(session.project.clone(), session.services.clone()).own_sources().recording();
+        let source = provider.source(item).unwrap();
+        let frame = source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        assert_eq!((frame.width, frame.height), (16, 2));
+        assert_eq!(frame.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 2, "camera.y4m", OfflineReason::Unreadable));
+        let used = provider.offline_used();
+        assert_eq!(used.len(), 1);
+        assert!(used[0].error.contains("Y4M frames larger than 268 million pixels"));
+        assert!(Arc::ptr_eq(&cached, &session.media.cached(item).unwrap()));
+        assert!(session.media.offline_status(item).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A delayed invalid job read must not replace a newer valid reader in the live pool.
     #[test]
     fn rejected_job_reader_cannot_overwrite_a_concurrent_refresh() {
         use filmcraft_render::SourceProvider;
@@ -876,6 +917,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The size limit applies to import and forced relink before either changes project metadata.
     #[test]
     fn oversized_media_import_and_relink_preserve_project_metadata() {
         use serde_json::json;
@@ -906,6 +948,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Save validation leaves the previous file byte-identical and readable by a fresh session.
     #[test]
     fn saving_invalid_dimensions_preserves_the_last_reopenable_project_file() {
         use serde_json::json;
@@ -931,6 +974,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Offline metadata is validated before file.open can discard the current project instance.
     #[test]
     fn opening_a_project_with_oversized_offline_media_keeps_the_current_project() {
         use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef};

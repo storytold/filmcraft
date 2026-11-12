@@ -1059,6 +1059,8 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
+/// Validate opened media metadata before adding a project item and caching its source.
+/// Unknown `(0, 0)` dimensions remain supported; known sizes must satisfy project bounds.
 fn import_source(
     s: &mut Session,
     path: &str,
@@ -1117,6 +1119,8 @@ fn bin_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<filmcraft_project::
     Ok(Some(id))
 }
 
+/// Add a generator to the requested bin after checking its parameters.
+/// Video dimensions default to the active sequence; audio tones ignore width and height.
 fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value, cmd: &str) -> Result<Value> {
     let bin = bin_p(s, p, cmd)?;
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
@@ -1610,6 +1614,8 @@ struct ImportedFiles {
     pending_presets: Vec<String>,
 }
 
+/// Import supported input kinds and collect their item IDs, reports and per-file errors.
+/// Replacement imports reject any input error and defer preset-library writes until validation.
 fn import_inputs(s: &mut Session, p: &Value, replacing: bool) -> Result<ImportedFiles> {
     let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
     let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
@@ -1699,6 +1705,8 @@ fn import_inputs(s: &mut Session, p: &Value, replacing: bool) -> Result<Imported
     Ok(ImportedFiles { ids, errors, sequences, reports, image_sequences, preset_names, pending_presets })
 }
 
+/// Import files into this document or stage a replacement before changing the live editor.
+/// After import, report optional transcription and ingest failures alongside imported items.
 fn import_files(s: &mut Session, p: &Value) -> Result<Value> {
     let imported = if bool_p(p, "replace").unwrap_or(false) {
         // Import into a separate document so any rejected input leaves the live editor intact.
@@ -5394,6 +5402,7 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
     p.name = name;
 }
 
+/// Validate and write the project with its view state before marking an adopted path saved.
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
     filmcraft_format::validate_project_dimensions(&s.project).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

@@ -40,6 +40,7 @@ fn import_replace_starts_from_an_empty_project() {
     assert!(merge.project.items.len() > demo_items);
 }
 
+/// A later rejected input must preserve the live document identity, media pool, view and redo history.
 #[test]
 fn rejected_replacement_import_preserves_live_document_and_history() {
     let dir = tmp_dir("import-replace-rollback");

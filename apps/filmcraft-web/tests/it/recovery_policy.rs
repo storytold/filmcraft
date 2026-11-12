@@ -27,6 +27,11 @@ fn unreadable_raw_storage_keeps_recovery_unavailable() {
 #[test]
 fn recovery_metadata_name_is_bounded_without_changing_the_project() {
     assert_eq!(recovery_display_name("An ordinary project"), "An ordinary project");
+    assert_eq!(recovery_display_name(""), "Recovered");
+    assert_eq!(recovery_display_name(" \t\u{2003}"), "Recovered");
+    assert_eq!(recovery_display_name(&"x".repeat(512)), "x".repeat(512));
+    assert_eq!(recovery_display_name(&"é".repeat(257)), "Recovered");
+    assert_eq!(recovery_display_name("folder\\name"), "Recovered");
     assert_eq!(recovery_display_name(&"x".repeat(65_536)), "Recovered");
     assert_eq!(recovery_display_name("folder/name"), "Recovered");
     assert_eq!(recovery_display_name("bad\nname"), "Recovered");

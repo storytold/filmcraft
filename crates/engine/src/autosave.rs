@@ -953,6 +953,7 @@ impl Worker {
         Duration::from_secs(self.prefs.interval_minutes as u64 * 60)
     }
 
+    /// The next journal deadline, excluding already journaled or rejected revisions and disabled journals.
     fn journal_due(&self) -> Option<Instant> {
         let s = self.latest.as_ref()?;
         if !self.prefs.recovery_journal || s.revision == self.journaled || self.invalid_revision == Some(s.revision) {
@@ -962,6 +963,8 @@ impl Worker {
         Some((self.last_change + self.debounce).min(max))
     }
 
+    /// Process snapshot messages and due writes until shutdown or channel disconnection.
+    /// A new revision clears a prior dimension rejection and starts a fresh journal deadline.
     fn run(mut self, rx: Receiver<Msg>) {
         loop {
             let due = [self.journal_due(), self.prefs.enabled.then_some(self.next_autosave)].into_iter().flatten().min();
@@ -1041,6 +1044,9 @@ impl Worker {
         let _ = self.events.send(WorkerEvent::Error(e));
     }
 
+    /// Validate the latest revision before replacing its recovery snapshot and metadata.
+    /// Dimension failures preserve the previous journal and suppress retries for that revision;
+    /// storage failures report an error and move the next attempt to a later deadline.
     fn write_journal(&mut self) -> Result<u64, String> {
         let Some(s) = &self.latest else { return Err("no unsaved recovery state to write".into()) };
         if self.invalid_revision == Some(s.revision) {
@@ -1092,6 +1098,8 @@ impl Worker {
         self.journaled = 0;
     }
 
+    /// Write a numbered auto-save only after the latest project's dimensions validate.
+    /// Returns its path, or reports a validation or storage error through the worker event channel.
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
         if let Err(error) = filmcraft_format::validate_project_dimensions(&s.project) {

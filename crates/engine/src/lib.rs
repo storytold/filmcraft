@@ -625,7 +625,11 @@ impl Session {
         export_tools::pump_queue(self, false);
         let t0 = web_time::Instant::now();
         while let Some(j) = self.stepped.first_mut() {
-            match j.exporter.step(&j.provider, &j.progress) {
+            let step = j.exporter.step(&j.provider, &j.progress);
+            if matches!(&step, Ok(filmcraft_export::Step::Done(_)) | Err(_)) {
+                *self.export_offline.entry(j.job).or_default().lock().unwrap_or_else(|error| error.into_inner()) = j.provider.offline_used();
+            }
+            match step {
                 Ok(filmcraft_export::Step::Progress) => {}
                 Ok(filmcraft_export::Step::Pending) => return true,
                 Ok(filmcraft_export::Step::Done(r)) => {

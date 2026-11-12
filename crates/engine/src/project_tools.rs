@@ -627,6 +627,8 @@ pub fn templates_dir(s: &Session) -> Option<std::path::PathBuf> {
     s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Templates"))
 }
 
+/// Save a renamed project copy as a template without changing the current document.
+/// Validate its dimensions before writing the destination file.
 fn save_as_template(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| s.project.name.clone());
     let path = match str_p(p, "path") {
@@ -795,6 +797,8 @@ pub fn project_subset(p: &Project, keep: &BTreeSet<ItemId>) -> Project {
     out
 }
 
+/// Export selected project items and their dependencies as a separate project.
+/// Reject an empty selection or invalid dimensions before writing the destination.
 fn export_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.exportSelectionProject", "need `path`"))?.to_string();
     let roots = match p.get("items").and_then(Value::as_array) {

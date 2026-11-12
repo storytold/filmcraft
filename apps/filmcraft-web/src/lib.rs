@@ -166,6 +166,7 @@ impl eframe::App for WebApp {
         self.app.finish_ime_reset_logic(ctx);
     }
 
+    /// Draw recovery holds and warnings only after the shared UI has installed its fonts.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let Self { app, rejected_recovery, recovery_unavailable, active_recovery_warning, .. } = self;
         app.ui_with_host_overlays(ui, frame, |app, ui| {
