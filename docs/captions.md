@@ -24,7 +24,7 @@ version 2; version 1 projects open with no caption tracks).
 |---|---|---|---|
 | SubRip `.srt` | ✓ | ✓ | Forgiving reader (BOM, UTF-16, Windows-1252, CRLF, missing indexes, `,`/`.` ms, missing hours). |
 | WebVTT `.vtt` | ✓ | ✓ | Keeps cue ids, cue settings, `<v Speaker>`, STYLE/REGION/NOTE blocks. `line:N%` and `align:` are honoured when drawing. |
-| Scenarist SCC `.scc` | ✓ | ✓ | CEA-608 at 29.97 fps. Reads pop-on, roll-up and paint-on; writes pop-on with drop-frame (default) or non-drop timecode. |
+| Scenarist SCC `.scc` | ✓ | ✓ | CEA-608 at 29.97 fps. Reads pop-on, roll-up and paint-on; writes pop-on with drop-frame (default) or non-drop timecode, counting from the sequence's start timecode with its label kept (01:00:00:00 at 25 fps is 01:00:00;00). Import counts them back from it when the file starts at or after it (MCC too). |
 
 `File ▸ Import` (or dropping a file) recognises caption files by extension and content and adds a
 new caption track to the open sequence (a sequence is created when none is open). Cue times are

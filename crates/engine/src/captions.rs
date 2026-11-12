@@ -125,7 +125,18 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: O
             id
         }
     };
-    let rate = s.project.sequence(seq_id).map(|q| q.settings.frame_rate).unwrap_or_default();
+    let q = s.project.sequence(seq_id);
+    let rate = q.map(|q| q.settings.frame_rate).unwrap_or_default();
+    // SCC and MCC time codes are the sequence's own: count them from its start timecode, as
+    // `captions.export` writes them. A file that starts before it keeps its times.
+    if let Some(q) = q
+        && q.start_timecode > 0
+        && doc.labels.is_some()
+        && !doc.count_from(start_label(q))
+    {
+        let start = filmcraft_time::format_timecode_frames(q.start_timecode, rate, q.settings.drop_frame);
+        doc.warnings.push(format!("the file's time codes start before the sequence's start timecode {start}, so they count from 00:00:00:00"));
+    }
     doc.snap_to_frames(rate);
     let n = doc.cues.len();
     let warnings = doc.warnings.clone();
@@ -260,6 +271,12 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
     })
 }
 
+/// `q`'s start timecode label read as a time ([`filmcraft_captions::label_time`]): what SCC and MCC
+/// time codes count from on export, and are counted back from on import.
+pub(crate) fn start_label(q: &filmcraft_project::Sequence) -> Tick {
+    filmcraft_captions::label_time(q.start_timecode, q.settings.frame_rate, q.settings.drop_frame)
+}
+
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("captions.export", "need `path`"))?.to_string();
     let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -267,7 +284,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let tid = track_param(s, p).ok_or_else(|| bad("captions.export", "no caption track"))?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
-    let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
+    let mut doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
+    doc.start_timecode = start_label(seq); // SCC / MCC count from it
     let df = bool_p(p, "dropFrame").unwrap_or(true);
     let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) };
     let bytes = filmcraft_captions::write(&doc, format, opts);

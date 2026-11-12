@@ -489,9 +489,20 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
     let format = filmcraft_captions::Format::from_name(kind).ok_or_else(|| bad("export", format!("caption sidecar `{kind}`: srt | vtt")))?;
     let range = filmcraft_export::export_range(project, seq, settings).map_err(|e| EngineError::Other(e.to_string()))?;
-    let mut doc = filmcraft_captions::document_from_track(track, range.start);
+    // SCC / MCC carry the master's time codes: their cues keep their sequence times and count from
+    // the sequence's start timecode, as `captions.export` writes them, so a ranged sidecar agrees
+    // with it frame for frame and with an MXF export's time codes. Other formats count from the
+    // first exported frame.
+    let timecoded = matches!(format, filmcraft_captions::Format::Scc | filmcraft_captions::Format::Mcc);
+    let offset = if timecoded { Tick::ZERO } else { range.start };
+    let mut doc = filmcraft_captions::document_from_track(track, offset);
+    if timecoded {
+        doc.start_timecode = crate::captions::start_label(q);
+    }
+    let (first, end) = (range.start - offset, range.end() - offset);
     doc.cues.retain_mut(|cue| {
-        cue.end = cue.end.min(range.duration);
+        cue.start = cue.start.max(first);
+        cue.end = cue.end.min(end);
         cue.start < cue.end
     });
     let bytes =
