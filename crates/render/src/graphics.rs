@@ -11,7 +11,7 @@ use crate::image::Image;
 /// Effect text is metadata-controlled; do not let its measured bounds allocate an unbounded mask.
 const MAX_BURN_TEXT_PIXELS: usize = 16 << 20;
 
-fn bounded_raster_size(w: f32, h: f32) -> Option<(usize, usize)> {
+pub(crate) fn bounded_raster_size(w: f32, h: f32) -> Option<(usize, usize)> {
     if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
         return None;
     }
