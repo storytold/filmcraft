@@ -27,8 +27,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.floatPanel", "Undock Panel", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
     uic!("app.language.english", "English", ["Edit", "Language"], None),
-    // Alphabetical by the language's own name after English; Cyrillic, then CJK names follow
-    // the Latin ones. Settings ▸ General ▸ Interface Language lists them the same way.
+    uic!("app.language.arabic", "العربية", ["Edit", "Language"], None),
+    // Arabic is listed after English; remaining names follow the existing Latin, Cyrillic and CJK order.
+    // Settings ▸ General ▸ Interface Language lists them the same way.
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
     uic!("app.language.bosnian", "Bosanski", ["Edit", "Language"], None),
     uic!("app.language.czech", "Čeština", ["Edit", "Language"], None),
@@ -258,6 +259,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.polish"
             | "app.language.swedish"
             | "app.language.turkish"
+            | "app.language.arabic"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -288,6 +290,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.polish" => crate::i18n::Language::Pl,
             "app.language.swedish" => crate::i18n::Language::Sv,
             "app.language.turkish" => crate::i18n::Language::Tr,
+            "app.language.arabic" => crate::i18n::Language::Ar,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -954,6 +957,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.arabic" => it.checked = Some(app.ui.language == crate::i18n::Language::Ar),
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {
