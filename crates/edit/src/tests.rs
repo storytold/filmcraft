@@ -997,6 +997,40 @@ fn speed_on_a_linked_group_ripples_once() {
     assert_eq!(fx.seq, before);
 }
 
+/// A reversed clip plays from its source Out. Slowed down and reversed without ripple, a picture
+/// with a clip right after it kept its source In and lost the media it plays first, while its sound
+/// had room and kept all of it: the two started on different source frames. The media a reversed
+/// clip plays last is what goes, so both start on the same frame.
+#[test]
+fn a_reversed_speed_change_without_room_keeps_the_media_it_plays_first() {
+    // V1: the picture [0,10) from source 100, another clip at 10. A1: the sound [0,10) alone.
+    for speed in [0.5, 0.75, 1.0 / 3.0] {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        let picture = fx.put(v1, 0, 10, 100);
+        fx.put(v1, 10, 10, 0);
+        let sound = fx.put(a1, 0, 10, 100);
+        let mut n = fx.next;
+        set_speed_group(&mut fx.seq, &[picture, sound], speed, true, false, &mut Fx::ctx(&mut n)).unwrap();
+        let (_, p) = fx.seq.find_item(picture).unwrap();
+        let (_, s) = fx.seq.find_item(sound).unwrap();
+        assert_eq!(p.duration, f(10), "{speed}: no room after the picture");
+        assert!(s.duration > f(10), "{speed}: room after the sound");
+        assert_eq!((p.source_out(), s.source_out()), (f(110), f(110)), "{speed}: both start on the last source frame");
+        assert!(p.source_in > f(100) && s.source_in == f(100), "{speed}: the picture loses the media it plays last");
+        fx.seq.check().unwrap();
+    }
+    // forward, the picture keeps its source In and loses the end as before
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let picture = fx.put(v1, 0, 10, 100);
+    fx.put(v1, 10, 10, 0);
+    let mut n = fx.next;
+    set_speed_group(&mut fx.seq, &[picture], 0.5, false, false, &mut Fx::ctx(&mut n)).unwrap();
+    let (_, p) = fx.seq.find_item(picture).unwrap();
+    assert_eq!((p.duration, p.source_in, p.source_out()), (f(10), f(100), f(105)));
+}
+
 #[test]
 fn move_with_insert_and_overwrite() {
     let mut fx = Fx::new();
