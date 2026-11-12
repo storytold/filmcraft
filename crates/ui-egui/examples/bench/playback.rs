@@ -138,6 +138,11 @@ impl Display {
         self.gpu.is_some()
     }
 
+    /// The compositor's uploader, for the frame workers (`FrameServer::set_uploader`).
+    pub fn uploader(&self) -> Option<filmcraft_gpu::Uploader> {
+        self.gpu.as_ref().map(|(c, _)| c.uploader())
+    }
+
     fn target(&self, seq: ItemId) -> Target {
         match &self.gpu {
             Some((c, _)) => Target::SequencePlan(seq, c.caps()),
@@ -859,7 +864,7 @@ pub fn cli_main() {
                 let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), args.workers);
                 server.set_profiling(true);
                 let mut display = Display::new(args.gpu);
-                server.set_uploader(display.gpu.as_ref().map(|(c, _)| c.uploader()));
+                server.set_uploader(display.uploader());
                 let bench = Bench { trace: args.trace.clone(), server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 if args.gpu && display.gpu.is_none() {
                     eprintln!("no GPU adapter; using the CPU path");
