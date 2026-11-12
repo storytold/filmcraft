@@ -209,7 +209,9 @@ fn playhead_set_during_playback_continues_from_the_new_position() {
     run(0.5, &mut app);
     // The command runs between egui passes, so `invoke` sees the previous pass's 0.5 s time.
     // It moves the playhead through the same command path the control channel uses.
+    let starts_before_set = starts.load(Ordering::Relaxed);
     let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 5.0})).unwrap();
+    assert!(starts.load(Ordering::Relaxed) > starts_before_set, "playhead.set restarts the active audio stream");
     let want = Tick(r["time"].as_i64().expect("the set time"));
     assert!(want > Tick::from_seconds_f64(4.9), "the playhead moved to the requested second: {want:?}");
     assert_eq!(app.session.playhead(), want);
@@ -423,6 +425,7 @@ fn only_a_running_transport_has_something_to_stop() {
         punch_out: None,
         format: filmcraft_engine::voiceover::InputFormat { sample_rate: 48_000, channels: 1 },
         channel: 0,
+        epoch: app.session.document_epoch,
     });
     assert!(app.transport_running(), "a voice-over take runs one");
     app.session.voiceover.rec = None;
@@ -466,4 +469,101 @@ fn a_scrub_stops_a_text_to_speech_preview_but_not_an_idle_output() {
     assert_eq!(stops.load(Ordering::Relaxed), before + 1, "the preview ends when the playhead moves");
     app.stop_for_scrub();
     assert_eq!(stops.load(Ordering::Relaxed), before + 1, "and a second seek has nothing left to stop");
+}
+
+/// What a recording scrub output was asked to do, next to the playback output's starts.
+#[derive(Clone, Default)]
+struct ScrubLog {
+    rates: Arc<std::sync::Mutex<Vec<Option<u32>>>>,
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+struct RecordingScrubOut(ScrubLog);
+
+impl crate::scrub::ScrubOut for RecordingScrubOut {
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn play(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) {
+        self.0.events.lock().unwrap().push("scrub play");
+    }
+    fn stop(&mut self) {
+        self.0.events.lock().unwrap().push("scrub stop");
+    }
+    fn release(&mut self) {
+        self.0.events.lock().unwrap().push("scrub release");
+    }
+    fn configure(&mut self, _: &filmcraft_engine::settings::AudioHardwarePrefs, document_rate: Option<u32>) {
+        self.0.rates.lock().unwrap().push(document_rate);
+    }
+}
+
+/// A playback output that logs its starts into the scrub output's log.
+struct LoggedDevice(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl AudioOut for LoggedDevice {
+    fn sample_rate(&self) -> u32 {
+        48000
+    }
+    fn channels(&self) -> usize {
+        2
+    }
+    fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        self.0.lock().unwrap().push("playback start");
+        Ok(48000)
+    }
+    fn stop(&mut self) {}
+    fn played_frames(&self) -> Option<u64> {
+        Some(0)
+    }
+}
+
+/// #2633: the scrub output follows the sequence's sample rate, not only the audio settings.
+/// Settings ▸ Sequence (and opening another project or sequence) changes it without touching
+/// them, and `apply_prefs` returns early then, so the output kept the rate it was built with.
+#[test]
+fn the_scrub_output_follows_the_sequence_sample_rate() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    let log = ScrubLog::default();
+    app.scrub_out = Some(Box::new(RecordingScrubOut(log.clone())));
+    app.apply_prefs(&ctx);
+    let first = app.session.active_sequence().unwrap().settings.sample_rate;
+    assert_eq!(*log.rates.lock().unwrap(), vec![Some(first)], "the first frame configures it");
+    app.apply_prefs(&ctx);
+    assert_eq!(log.rates.lock().unwrap().len(), 1, "the same rate is not configured again");
+    app.session.execute("sequence.settings", json!({"sampleRate": 44100})).unwrap();
+    app.apply_prefs(&ctx);
+    assert_eq!(*log.rates.lock().unwrap(), vec![Some(first), Some(44_100)], "the sequence's new rate reaches it");
+}
+
+/// #2633: the scrub stream lingers for a few seconds after the last grain, so playback gives its
+/// device back before opening its own stream: a device that takes one stream at a time (a raw ALSA
+/// `hw:` device, an exclusive-mode output) would refuse playback's otherwise.
+#[test]
+fn playback_gives_the_scrub_device_back_before_it_opens_its_stream() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    app.session.prefs.audio.scrub_audio = true;
+    let log = ScrubLog::default();
+    app.scrub_out = Some(Box::new(RecordingScrubOut(log.clone())));
+    app.audio = Some(Box::new(LoggedDevice(log.events.clone())));
+    // A scrub: the playhead moves under a held button, and a grain plays on the scrub output.
+    app.scrub_tick(0.0, true);
+    app.session.set_playhead(filmcraft_time::Tick::from_seconds_f64(2.0));
+    assert!(app.scrub_tick(0.02, true), "the scrub stream is open");
+    app.play(1.0);
+    app.end_preroll(0.0);
+    let events = log.events.lock().unwrap().clone();
+    let pos = |e: &str| events.iter().position(|x| *x == e);
+    let (Some(release), Some(start)) = (pos("scrub release"), pos("playback start")) else {
+        panic!("expected a release and a playback start: {events:?}");
+    };
+    assert!(pos("scrub play").is_some_and(|p| p < release), "{events:?}");
+    assert!(release < start, "the scrub device is given back before playback opens: {events:?}");
+    assert!(!app.scrub.is_open(), "the scrub stream counts as closed");
+    app.stop();
 }
