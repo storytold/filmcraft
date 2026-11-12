@@ -37,6 +37,7 @@ pub const SOURCE_SAMPLES: usize = 1_600_000;
 pub fn assert_cut_independent(what: &str, start: i64, frames: usize, mut read: impl FnMut(i64, usize) -> Vec<Vec<f32>>) {
     let whole = read(start, frames);
     assert!(whole.iter().flatten().any(|v| *v != 0.0), "{what}: the single read is silent");
+    assert!(whole.iter().all(|c| c.len() == frames), "{what}: the single read is not {frames} samples per channel");
     for pattern in CUT_PATTERNS {
         let mut cut: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); whole.len()];
         let mut done = 0;

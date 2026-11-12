@@ -112,8 +112,9 @@ pub fn resample_source_frames(frames: usize, source_rate: u32, output_rate: u32)
 /// output sample `start + k` at `output_rate`. Each output position is computed from its absolute
 /// index, `(start + k) * source_rate / output_rate`, so a sample gets the same value however the
 /// caller cuts the timeline into requests (the mixer relies on that). Source samples outside the
-/// window read as silence, and a missing right neighbour repeats the left one. A zero output rate
-/// leaves `out` untouched.
+/// window read as silence (each neighbour is looked up on its own, so a left sample before the
+/// window still blends with an in-window right one), and a missing right neighbour repeats the left
+/// one. A zero output rate leaves `out` untouched.
 pub fn resample_window_into(window: &[Vec<f32>], window_start: i64, source_rate: u32, start: i64, output_rate: u32, out: &mut [Vec<f32>]) {
     if output_rate == 0 {
         return;
@@ -124,9 +125,10 @@ pub fn resample_window_into(window: &[Vec<f32>], window_start: i64, source_rate:
             let pos = start.saturating_add(i64::try_from(k).unwrap_or(i64::MAX)) as f64 * ratio;
             let base = pos.floor();
             let f = (pos - base) as f32;
-            let at = usize::try_from((base as i64).saturating_sub(window_start)).ok();
-            let a = at.and_then(|i| s.get(i)).copied().unwrap_or(0.0);
-            let b = at.and_then(|i| i.checked_add(1)).and_then(|i| s.get(i)).copied().unwrap_or(a);
+            let left = (base as i64).saturating_sub(window_start);
+            let at = |i: i64| usize::try_from(i).ok().and_then(|i| s.get(i)).copied();
+            let a = at(left).unwrap_or(0.0);
+            let b = at(left.saturating_add(1)).unwrap_or(a);
             *d = a + (b - a) * f;
         }
     }
@@ -402,7 +404,12 @@ mod importable_tests {
         let mut out = vec![vec![7.0; 4]];
         resample_window_into(&[vec![1.0; 4]], 100, 48_000, i64::MIN, 44_100, &mut out);
         assert_eq!(out, vec![vec![0.0; 4]]);
+        let mut out = vec![vec![7.0; 4]];
         resample_window_into(&[vec![1.0; 4]], 0, 48_000, 0, 0, &mut out);
-        assert_eq!(out, vec![vec![0.0; 4]]);
+        assert_eq!(out, vec![vec![7.0; 4]]);
+        // a left neighbour before the window still blends with the in-window right one
+        let mut edge = vec![vec![0.0; 1]];
+        resample_window_into(&[vec![1.0]], 1, 1, 1, 2, &mut edge);
+        assert_eq!(edge, vec![vec![0.5]]);
     }
 }
