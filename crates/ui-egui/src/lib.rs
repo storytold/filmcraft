@@ -184,6 +184,9 @@ pub struct Playback {
     /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
     /// frame shown.
     smooth_playhead: Option<(Tick, f64)>,
+    /// The time between this play's latest passes (s, the newest last), which tells a pass that
+    /// came late from a display slower than the frame rate (`app/playback.rs`, `no_skip`).
+    pass_intervals: std::collections::VecDeque<f64>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain

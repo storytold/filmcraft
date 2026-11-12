@@ -26,6 +26,14 @@ pub trait AudioOut {
     /// free for the scrub. Nothing while a play sounds. The next play opens it again in
     /// [`Self::prepare`].
     fn release_idle(&mut self) {}
+    /// Called every pass while nothing plays: close a stream kept open since the last play once
+    /// it has been idle for a while (an open stream keeps the device powered and can keep the
+    /// system from sleeping). Returns how long until that is due, for the caller to come back
+    /// then; None when there is nothing to close. The next play opens the stream again in
+    /// [`Self::prepare`].
+    fn idle(&mut self) -> Option<std::time::Duration> {
+        None
+    }
     /// Hosts and devices that can be chosen in Settings ▸ Audio Hardware.
     fn devices(&self) -> AudioDevices {
         AudioDevices::default()

@@ -2098,7 +2098,9 @@ impl GpuCompositor {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..6, 0..1);
         }
-        self.submit(enc.finish());
+        // (it reads the canvas and the stage's own textures, no frame's planes: no upload is
+        // needed, and the others wait for room in the pass's budget like anywhere else)
+        Self::submit_on(&self.uploader, &self.queue, enc.finish(), Some(&[]), self.upload_budget, None);
         Some(())
     }
 

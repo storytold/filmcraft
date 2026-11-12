@@ -41,6 +41,7 @@ impl FilmcraftApp {
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
         self.playback.smooth_playhead = None;
+        self.playback.pass_intervals.clear();
         self.playback.preroll = Some(-1.0);
         self.playback.preroll_ready = false;
         self.playback.preroll_pending = false;
@@ -264,11 +265,24 @@ impl FilmcraftApp {
         Tick::from_seconds_f64(next)
     }
 
+    /// With nothing playing, let the audio output close the stream it kept open since the last
+    /// play ([`AudioOut::idle`]), and come back when that is due: an idle UI does not repaint
+    /// by itself.
+    pub(super) fn idle_audio(&mut self, ctx: &egui::Context) {
+        if self.playback.playing || self.source_playback.clock.playing {
+            return;
+        }
+        if let Some(wait) = self.audio.as_mut().and_then(|a| a.idle()) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
     /// is lost or stalls.
     pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             self.playback.smooth_playhead = None;
+            self.playback.pass_intervals.clear();
             return;
         }
         let now = self.now();
@@ -363,6 +377,13 @@ impl FilmcraftApp {
             self.stop();
         } else {
             let smooth = self.smooth_playhead(t, now);
+            if let Some((_, at)) = self.playback.smooth_playhead {
+                // (the rhythm of the passes: see `no_skip`)
+                if self.playback.pass_intervals.len() >= PASS_INTERVALS {
+                    self.playback.pass_intervals.pop_front();
+                }
+                self.playback.pass_intervals.push_back(now - at);
+            }
             self.session.set_playhead(self.no_skip(smooth, rate));
             self.playback.smooth_playhead = Some((smooth, now));
         }
@@ -378,9 +399,14 @@ impl FilmcraftApp {
     /// invisible where skipped is a hitch. Three or more frames on, the display cannot catch up
     /// a frame at a time: the clock wins and the frames are dropped. Forward play up to normal
     /// speed only; the first pass of a play (nothing shown yet) and a clock that is not moving
-    /// forward show the clock's frame.
+    /// forward show the clock's frame. So does a display with no refreshes to spare
+    /// ([`refresh_interval`]: 60 fps shown at 30 Hz is two frames on at every pass, and a frame
+    /// in between would turn its even steps of two into steps of one and three).
     fn no_skip(&self, clock: Tick, rate: filmcraft_time::FrameRate) -> Tick {
         if !(0.0 < self.playback.speed && self.playback.speed <= 1.0) || self.playback.smooth_playhead.is_none() {
+            return clock;
+        }
+        if refresh_interval(&self.playback.pass_intervals).is_some_and(|s| s > rate.frame_duration().seconds() * SPARE_REFRESH) {
             return clock;
         }
         // the frame on screen (the Program monitor's last picture, a stand-in included), else
@@ -389,6 +415,26 @@ impl FilmcraftApp {
         let due = rate.frame_at(clock);
         if due == on_screen.saturating_add(2) { rate.tick_of(on_screen.saturating_add(1)) } else { clock }
     }
+}
+
+/// How many of a play's latest pass intervals [`refresh_interval`] looks at.
+const PASS_INTERVALS: usize = 9;
+
+/// The display has refreshes to spare for showing a frame late ([`FilmcraftApp::no_skip`]) when
+/// its passes come at most this part of a frame apart: 50 fps at 60 Hz (0.83) has, 60 fps at
+/// 60 Hz (1.0) has not, since a picture one frame late there would stay late.
+const SPARE_REFRESH: f64 = 0.95;
+
+/// The usual time between a play's passes, which is the display's refresh interval while the UI
+/// keeps up (seconds): the median of the latest, so that neither a late pass nor a quick extra
+/// one moves it. None until there are three.
+fn refresh_interval(recent: &std::collections::VecDeque<f64>) -> Option<f64> {
+    if recent.len() < 3 {
+        return None;
+    }
+    let mut sorted: Vec<f64> = recent.iter().copied().filter(|s| s.is_finite()).collect();
+    sorted.sort_by(f64::total_cmp);
+    sorted.get(sorted.len() / 2).copied()
 }
 
 /// The most the smoothed playback clock catches up with (or waits for) the device clock in one
@@ -596,6 +642,35 @@ mod smooth_playhead_tests {
         app.set_now_for_test(frame * 6.5);
         app.advance_playback(&ctx);
         assert_eq!(rate.frame_at(app.session.playhead()), 6, "three frames on at once: the clock wins");
+    }
+
+    /// A display slower than the frame rate (60 fps shown at 30 Hz) is two frames on at every
+    /// pass. Taking that for a late pass showed the frame in between at every other pass: steps
+    /// of one and three frames in place of even steps of two. Once the rhythm of the passes is
+    /// known, the clock's frame is shown.
+    #[test]
+    fn a_display_slower_than_the_frame_rate_keeps_the_clocks_frames() {
+        let mut app = playing_at(0.0);
+        let rate = app.session.sequence_rate();
+        let frame = rate.frame_duration().seconds();
+        let ctx = egui::Context::default();
+        let shown: Vec<i64> = (1..=7)
+            .map(|pass| {
+                app.set_now_for_test(frame * (2.0 * f64::from(pass) + 0.5));
+                app.advance_playback(&ctx);
+                rate.frame_at(app.session.playhead())
+            })
+            .collect();
+        assert_eq!(shown.get(3..), Some(&[8, 10, 12, 14][..]), "{shown:?}");
+    }
+
+    #[test]
+    fn the_usual_pass_interval_ignores_a_late_pass_and_a_quick_one() {
+        use std::collections::VecDeque;
+        let of = |s: &[f64]| refresh_interval(&s.iter().copied().collect::<VecDeque<f64>>());
+        assert_eq!(of(&[0.0167, 0.0167]), None, "too few to tell");
+        assert_eq!(of(&[0.0167, 0.0333, 0.0167, 0.0167, 0.002]), Some(0.0167));
+        assert_eq!(of(&[0.0333, 0.0333, 0.0167]), Some(0.0333));
     }
 
     /// The frame due at the last pass was not ready and the monitor drew the one before it

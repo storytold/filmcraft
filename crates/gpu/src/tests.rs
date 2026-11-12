@@ -1028,6 +1028,16 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         if !stage {
             c.fx = None;
         }
+        // Another frame's upload is pending and the pass has no budget left: the adjustment
+        // step's own submit, which draws no frame's planes, leaves it for a pass with room.
+        let up = c.uploader();
+        let other = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
+        let waiting = prepare(&other, Some(&up));
+        assert_eq!(up.pending_copies(), 1);
+        c.set_upload_budget(0);
+        c.composite_prepared(&plan, Some(&prepare(&plan, None)));
+        assert_eq!(up.pending_copies(), 1, "stage {stage}: the frame took an upload it does not draw");
+        drop(waiting);
         // the Program monitor's path (sRGB over black)
         c.composite_prepared(&plan, Some(&prepare(&plan, None)));
         if stage {
@@ -1058,7 +1068,7 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         assert!(worst < 0.02, "stage {stage}: export render of the adjustment step differs by {worst}");
         let i = (30 * w + 55) * 4;
         assert_eq!(px.get(i..i + 4), Some(&[0.0, 0.0, 1.0, 1.0][..]), "the layer above the adjustment layer is untouched");
-        let want = if stage { (3, 0) } else { (0, 2) };
+        let want = if stage { (4, 0) } else { (0, 3) };
         assert_eq!((c.gpu_adjustments, c.cpu_adjustments), want, "stage {stage}");
     }
 }

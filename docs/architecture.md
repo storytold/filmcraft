@@ -387,8 +387,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   pictures (`VideoDecoder::set_draft`), the GOP cache serves those draft frames to draft
   requests only (a paused frame, render or export decodes them again exactly), and draft plans
   hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
-  GPU plans reach the UI thread with their frames already on the device: the frame workers upload
-  them through the compositor's `filmcraft_gpu::Uploader` (`filmcraft_gpu::prepare`), 10-bit planes
+  GPU plans reach the UI thread with their frames' textures made and their texels in mapped
+  staging buffers: the frame workers write them there through the compositor's
+  `filmcraft_gpu::Uploader` (`filmcraft_gpu::prepare`) and record the copies into the textures,
+  which the UI thread, the device's only submitter, submits before the composite that draws them
+  (and ahead of that within a per-pass budget). 10-bit planes go
   as 16-bit codes (`R16Unorm`) where the device has the format, and the textures are pooled by size
   so a frame's planes are reused instead of created and freed per frame. Uploading and freeing cost
   about 10 ms per 4K frame on the UI thread, half its budget at 50 fps.
