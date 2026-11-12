@@ -74,6 +74,7 @@ impl std::fmt::Display for InvalidSlateSize {
 impl std::error::Error for InvalidSlateSize {}
 
 /// Draw the slate at `w`×`h` (premultiplied linear-light, opaque).
+/// Returns an error before allocating when either side is zero or exceeds the side or area limit.
 pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Result<Image, InvalidSlateSize> {
     let valid = w > 0
         && h > 0
@@ -132,6 +133,7 @@ pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Resu
 }
 
 /// The slate as straight sRGB RGBA8 (what offline sources hand to the compositor).
+/// Rejects the same invalid dimensions as [`slate`] before generating either pixel representation.
 pub fn slate_rgba8(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Result<Vec<u8>, InvalidSlateSize> {
     Ok(slate(w, h, file_name, reason)?.to_rgba8())
 }

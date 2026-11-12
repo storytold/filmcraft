@@ -662,6 +662,7 @@ fn list_templates(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(Value::Array(v))
 }
 
+/// Load and rename a template into a fresh document with media paths rooted at the template file.
 fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let t = str_p(p, "template").ok_or_else(|| bad("file.newProjectFromTemplate", "need `template`"))?;
     let path = if t.ends_with(".fcproj") || t.contains('/') || t.contains('\\') {

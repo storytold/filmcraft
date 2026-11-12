@@ -215,6 +215,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": id.0}))
 }
 
+/// Close the document after the unsaved-work check, giving the replacement document its own media pool.
 pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));

@@ -502,6 +502,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, setting
     spawn_export_with_media(s, media, project, seq, settings, label, wait)
 }
 
+/// Export the supplied project through its pool; services and job bookkeeping come from the session.
 fn spawn_export_with_media(
     s: &mut Session,
     media: Arc<crate::MediaPool>,
@@ -808,6 +809,7 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
     s.export_queue.items.iter().position(|i| i.id == id).ok_or_else(|| bad(cmd, format!("no queued export {id}")))
 }
 
+/// Resolve queue requests and capture their project, initial pool and reader-free retry context as one batch.
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
     let (preset, settings) = settings_from_params(s, p, cmd)?;
@@ -901,6 +903,7 @@ fn queue_stop(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"running": false, "items": queue_list_json(s)}))
 }
 
+/// Request cancellation of an active job or release the captured pool of an item that has not started.
 fn cancel_item(s: &mut Session, i: usize) {
     let it = &mut s.export_queue.items[i];
     match it.status {

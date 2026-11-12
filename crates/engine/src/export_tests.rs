@@ -683,6 +683,7 @@ fn queue_orders_cancels_and_retries() {
     assert!(queue(&mut s).is_empty());
 }
 
+/// Verify a queue item releases its captured pool when export setup fails before a job starts.
 #[test]
 fn queued_export_releases_its_media_pool_when_start_fails() {
     let mut s = demo();
@@ -696,6 +697,7 @@ fn queued_export_releases_its_media_pool_when_start_fails() {
     assert!(s.export_queue.items[0].media.is_none(), "a failed queue start must release its captured pool");
 }
 
+/// Verify document transitions detach media pools while existing readers retain their original path context.
 #[test]
 fn project_changes_isolate_media_pools() {
     let mut s = demo();
@@ -719,6 +721,7 @@ fn project_changes_isolate_media_pools() {
     }
 }
 
+/// Compare queued and retried WAV output with the original document after switching and closing documents.
 #[test]
 fn queued_export_keeps_its_media_pool_after_a_project_switch() {
     use filmcraft_media::DemoScene;

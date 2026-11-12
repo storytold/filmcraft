@@ -172,6 +172,7 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (format!("file:{path}"), src));
     }
 
+    /// Attach a bounded offline source to this pool's current slate-cache generation.
     fn slate_source(&self, info: MediaInfo, name: &str, reason: OfflineReason) -> SlateSource {
         let cache = self.slate_cache.read().unwrap_or_else(PoisonError::into_inner).clone();
         SlateSource::with_cache(info, name, reason, cache)
@@ -546,10 +547,12 @@ pub struct SlateSource {
 }
 
 impl SlateSource {
+    /// Create an offline source with its own cache and a filtered display name, preserving source metadata.
     pub fn new(info: MediaInfo, name: &str, reason: OfflineReason) -> Self {
         Self::with_cache(info, name, reason, Arc::default())
     }
 
+    /// Share generated placeholders within a cache generation while retaining this source's metadata.
     fn with_cache(info: MediaInfo, name: &str, reason: OfflineReason, cache: Arc<SharedSlateCache>) -> Self {
         Self { info, name: filmcraft_render::offline::slate_display_name(name).into(), reason, cache }
     }
@@ -574,15 +577,18 @@ struct SlateFrameCache {
 }
 
 impl SlateFrameCache {
+    /// Count pixel payload bytes per cached entry, excluding spare capacity and shared-buffer deduplication.
     fn frame_bytes(frame: &VideoFrame) -> usize {
         frame.byte_size()
     }
 
+    /// Advance the wrapping access clock used to age retained frames.
     fn next_tick(&mut self) -> u64 {
         self.clock = self.clock.wrapping_add(1);
         self.clock
     }
 
+    /// Clone a retained frame and refresh its access age without copying its pixel buffer.
     fn get(&mut self, key: &SlateKey) -> Option<VideoFrame> {
         let tick = self.next_tick();
         self.entries.get_mut(key).map(|(last, frame)| {
@@ -591,6 +597,8 @@ impl SlateFrameCache {
         })
     }
 
+    /// Admit a frame within both budgets, evicting stale entries while preserving a recently used hot set.
+    /// A frame that still does not fit is dropped here; the caller keeps its own copy.
     fn insert(&mut self, key: SlateKey, frame: VideoFrame) {
         let cost = Self::frame_bytes(&frame);
         if cost > MAX_OFFLINE_SLATE_CACHE_BYTES || key.0.len() > 4096 {
@@ -631,6 +639,7 @@ struct SharedSlateCache {
     flights: Mutex<HashMap<SlateKey, Weak<SlateFlight>>>,
 }
 
+/// Reuse a retained frame or join one shared render for overlapping requests of the same key.
 fn cached_slate_frame(
     cache: &SharedSlateCache,
     key: SlateKey,
@@ -639,6 +648,8 @@ fn cached_slate_frame(
     cached_slate_frame_with_admission_hook(cache, key, make, || {})
 }
 
+/// Enroll a cache miss atomically, serialize cold renders and convert render panics into media errors.
+/// The hook observes the miss while flight enrollment is locked so tests can verify that ordering.
 fn cached_slate_frame_with_admission_hook(
     cache: &SharedSlateCache,
     key: SlateKey,
@@ -680,6 +691,7 @@ fn cached_slate_frame_with_admission_hook(
         .clone()
 }
 
+/// Scale metadata into a nonzero placeholder within the side and area limits; unknown sizes use 2×2.
 fn slate_dimensions(width: u32, height: u32, scale: f32) -> (u32, u32) {
     if width == 0 || height == 0 {
         return (2, 2);
@@ -861,6 +873,7 @@ mod tests {
     use filmcraft_frame::PixelData;
     use filmcraft_project::ItemKind;
 
+    /// Check bounded placeholders for large, malformed and extreme-aspect metadata while retaining the original dimensions.
     #[test]
     fn offline_slate_bounds_hostile_and_large_valid_dimensions() {
         let mut info = filmcraft_media::generators::GeneratorSource::new(
@@ -917,6 +930,7 @@ mod tests {
         }
     }
 
+    /// Verify filtered names share both their bounded notice and the generated pixel storage.
     #[test]
     fn hostile_slate_names_share_the_bounded_notice_and_cached_frame() {
         let info = filmcraft_media::generators::GeneratorSource::new(
@@ -938,6 +952,7 @@ mod tests {
         assert!(matches!((&a.data, &b.data), (PixelData::Rgba8(x), PixelData::Rgba8(y)) if Arc::ptr_eq(x, y)), "equal notices should reuse the cached pixels");
     }
 
+    /// Verify clearing selects a distinct, empty cache generation that subsequent slate sources use.
     #[test]
     fn clearing_a_project_starts_a_fresh_slate_cache() {
         let pool = MediaPool::default();
@@ -973,6 +988,7 @@ mod tests {
         assert_eq!(next.frames.lock().unwrap_or_else(PoisonError::into_inner).entries.len(), 1);
     }
 
+    /// Check scaled dimensions, request timestamps and retained-cache limits.
     #[test]
     fn offline_slate_scales_and_uses_a_bounded_shared_cache() {
         let info = filmcraft_media::generators::GeneratorSource::new(
@@ -995,6 +1011,7 @@ mod tests {
         assert!(cache.entries.len() <= MAX_OFFLINE_SLATE_CACHE_ENTRIES);
     }
 
+    /// Exercise entry-count-triggered stale eviction while checking the retained-byte bound.
     #[test]
     fn slate_cache_evicts_old_frames_by_bytes_and_entry_count() {
         let mut cache = SlateFrameCache::default();
@@ -1019,6 +1036,7 @@ mod tests {
         assert!(cache.get(&first).is_none(), "inactive slates must eventually be evicted");
     }
 
+    /// Verify float-backed frames consume their actual byte size in the cache budget.
     #[test]
     fn slate_cache_counts_float_frames_toward_its_byte_budget() {
         let mut cache = SlateFrameCache::default();
@@ -1028,6 +1046,7 @@ mod tests {
         assert_eq!(cache.bytes, 16 * std::mem::size_of::<f32>() + 16, "RGBA8 cache cost is bytes, not pixels");
     }
 
+    /// Verify five float-frame admission attempts retain only four payloads within the byte budget.
     #[test]
     fn slate_cache_rejects_a_frame_that_exceeds_the_remaining_byte_budget() {
         let mut cache = SlateFrameCache::default();
@@ -1039,6 +1058,7 @@ mod tests {
         assert_eq!(cache.bytes, 4 * 1280 * 720 * 4 * std::mem::size_of::<f32>());
     }
 
+    /// Verify different uncached keys cannot run their render closures concurrently.
     #[test]
     fn distinct_cold_slates_render_one_at_a_time() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1084,6 +1104,7 @@ mod tests {
         assert_eq!(maximum.load(Ordering::SeqCst), 1, "generation must stay serialized for every worker");
     }
 
+    /// Verify repeated requests for nine maximum-area slates reuse their rendered frames.
     #[test]
     fn nine_full_sized_slates_remain_hot_within_the_bounded_cache() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1106,6 +1127,7 @@ mod tests {
         assert_eq!(cache.entries.len(), 9);
     }
 
+    /// Verify a one-entry overflow does not repeatedly regenerate the retained hot set.
     #[test]
     fn slate_cache_does_not_thrash_when_one_more_slate_than_fits_is_rendered_per_frame() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1128,6 +1150,7 @@ mod tests {
         assert!(cache.entries.len() <= MAX_OFFLINE_SLATE_CACHE_ENTRIES);
     }
 
+    /// Verify a cached frame remains readable while an unrelated render is blocked.
     #[test]
     fn a_cold_slate_does_not_block_an_unrelated_cached_frame() {
         use std::sync::mpsc::channel;
@@ -1160,6 +1183,7 @@ mod tests {
         assert!(arrived.unwrap(), "a cache hit waited for an unrelated slate render");
     }
 
+    /// Verify a caller cannot observe a miss outside the flight-enrollment lock.
     #[test]
     fn cache_miss_and_flight_enrollment_are_atomic() {
         use std::sync::mpsc::channel;
@@ -1188,6 +1212,7 @@ mod tests {
         assert!(admission_is_locked, "no caller may observe a cache miss before joining a flight");
     }
 
+    /// Verify overlapping requests share a render even when its result cannot enter the full cache.
     #[test]
     fn concurrent_callers_share_an_overflow_slate_render() {
         use std::sync::Barrier;
@@ -1238,6 +1263,7 @@ mod tests {
         assert_eq!(cache.frames.lock().unwrap().entries.len(), MAX_OFFLINE_SLATE_CACHE_ENTRIES);
     }
 
+    /// Verify a panicking render becomes a media error and a later request can generate the frame.
     #[test]
     fn failed_slate_flight_returns_an_error_and_can_retry() {
         let cache = SharedSlateCache::default();
@@ -1249,6 +1275,7 @@ mod tests {
         assert_eq!(recovered.to_rgba8(), vec![7; 16]);
     }
 
+    /// Verify concurrent requests for the same cold slate generate once and share pixels; overlap is not enforced.
     #[test]
     fn offline_slate_serializes_concurrent_misses() {
         use std::sync::Barrier;
@@ -1289,6 +1316,7 @@ mod tests {
         assert!(frames.iter().skip(1).all(|frame| matches!((first, &frame.data), (PixelData::Rgba8(a), PixelData::Rgba8(b)) if Arc::ptr_eq(a, b))));
     }
 
+    /// Verify unknown source dimensions can still produce a visible offline pixel through item rendering.
     #[test]
     fn render_item_decodes_an_unknown_size_slate() {
         use filmcraft_project::{Label, MediaClip, MediaRef};
