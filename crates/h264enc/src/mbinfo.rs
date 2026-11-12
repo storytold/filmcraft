@@ -98,6 +98,7 @@ pub struct MbInfo {
 }
 
 impl Default for MbInfo {
+    /// An unavailable macroblock: no type, no coded coefficients.
     fn default() -> Self {
         MbInfo {
             kind: MbKind::None,

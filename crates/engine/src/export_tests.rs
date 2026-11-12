@@ -494,6 +494,7 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     }
 }
 
+/// Check an exported H.264 preset: MP4, the profile and pixel format its settings name, and its audio.
 fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
     assert!(format_name.contains("mp4"), "{name}: {format_name}");
     assert_eq!(video["codec_name"], "h264", "{name}");

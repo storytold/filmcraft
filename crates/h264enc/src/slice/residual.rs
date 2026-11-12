@@ -14,6 +14,7 @@ fn level_bits(table: &[f64; 256], v: i16) -> f64 {
     }
 }
 
+/// Estimated bits to code a coefficient level of magnitude 0..=255, built once.
 fn level_bits_table() -> &'static [f64; 256] {
     static T: std::sync::OnceLock<[f64; 256]> = std::sync::OnceLock::new();
     T.get_or_init(|| std::array::from_fn(|a| if a == 0 { 0.4 } else { 3.0 + 2.0 * (a as f64).log2() }))

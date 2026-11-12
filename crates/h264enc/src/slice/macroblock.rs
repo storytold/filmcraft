@@ -3,6 +3,7 @@ use super::{BitWriter, CMB, CabacEstimator, Cand, MbCtx, MbKind, NbCtx, Pixel, S
 impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ macroblock
 
+    /// Analyse, choose and code macroblock (`mx`, `my`), then write its reconstruction back into the band.
     pub(super) fn encode_mb(&mut self, mx: usize, my: usize) {
         let f = self.f;
         let mbw = f.p.mbw;
@@ -37,6 +38,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         self.commit(mx, my, qp, *best);
     }
 
+    /// Write candidate `c`'s reconstruction, motion and coding state for macroblock (`mx`, `my`) and emit its syntax.
     fn commit(&mut self, mx: usize, my: usize, qp: u8, mut c: Cand<P>) {
         let (px, py) = (mx * 16, my * 16);
         // reconstruction
@@ -143,6 +145,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         }
     }
 
+    /// Rate-distortion cost of candidate `c`: luma and chroma SSD plus lambda times the estimated bits.
     pub(super) fn rd_cost(&self, mx: usize, my: usize, c: &Cand<P>, src: &Src<P>, qp: u8) -> u64 {
         let ch = self.f.p.ch();
         let d = ssd(&src.y, 16, &c.ry, 16, 16, 16) + ssd(&src.u, 8, &c.ru, 8, 8, ch) + ssd(&src.v, 8, &c.rv, 8, 8, ch);

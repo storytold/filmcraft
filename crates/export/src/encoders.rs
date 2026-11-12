@@ -337,6 +337,7 @@ impl VideoEncoder for ApvEncoder {
     }
 }
 
+/// The APV encoder for `format` (`None` for other formats), configured from the export settings.
 pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::Apv).then(|| {
         let profile = apv_profile(&s.apv_profile);
@@ -422,6 +423,7 @@ fn h264_input10(f: &EncoderFrame, signal: ColorSignal, c422: bool, y: &mut Vec<u
 }
 
 impl H264Encoder {
+    /// Whether the stream is coded above 8 bits (High 10, High 4:2:2), so frames convert to 16-bit planes.
     fn deep(&self) -> bool {
         self.enc.config().bit_depth > 8
     }
@@ -494,6 +496,7 @@ impl VideoEncoder for H264Encoder {
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         self.enc.pass_stats()
     }
+    /// Converts 8-bit 4:2:0 frames on the render threads ahead of `encode`; `None` for deep streams, which convert in `encode`.
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
         // High 10 and High 4:2:2 convert in `encode`: the planes prepared ahead are 8-bit 4:2:0
         if self.deep() {
@@ -515,6 +518,7 @@ pub(crate) fn h264_slices(height: u32) -> usize {
     (height.div_ceil(16) as usize).div_ceil(4).max(1)
 }
 
+/// The built-in H.264 encoder for `format` (`None` for other formats): profile, bit depth, chroma format, GOP, slices and rate control from the export settings.
 pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;

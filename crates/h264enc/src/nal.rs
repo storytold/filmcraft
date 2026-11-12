@@ -50,6 +50,7 @@ pub struct Sps {
 }
 
 impl Sps {
+    /// The SPS RBSP (§7.3.2.1.1), with chroma_format_idc and bit depths for the High profiles.
     pub fn rbsp(&self) -> Vec<u8> {
         let mut w = BitWriter::new();
         w.write_bits(self.profile_idc as u32, 8);

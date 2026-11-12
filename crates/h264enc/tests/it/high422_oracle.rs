@@ -32,10 +32,12 @@ fn synth422(w: usize, h: usize, t: usize, bits: u8) -> Yuv16 {
     Yuv16 { w, h, y: down(b.y), u: down(u), v: down(v) }
 }
 
+/// A borrowed 16-bit 4:2:2 encoder frame over `f`'s planes.
 fn frame(f: &Yuv16) -> YuvFrame16<'_> {
     YuvFrame16 { y: &f.y, u: &f.u, v: &f.v, y_stride: f.w, uv_stride: f.w / 2 }
 }
 
+/// A 10-bit High 4:2:2 configuration with the given preset, B-frames, rate control and slices.
 fn cfg(w: usize, h: usize, preset: Preset, bframes: u8, rate: RateControl, slices: usize) -> EncoderConfig {
     let mut c = EncoderConfig::new(w as u32, h as u32, 30, 1);
     c.profile = Profile::High422;
@@ -54,6 +56,7 @@ struct Run {
     recon: Vec<ReconFrame>,
 }
 
+/// Flush `enc` and gather the stream, its packets and the reconstruction in presentation order.
 fn finish(mut enc: Encoder, mut packets: Vec<Packet>) -> Run {
     packets.extend(enc.flush());
     let mut recon = enc.take_recon();
@@ -62,6 +65,7 @@ fn finish(mut enc: Encoder, mut packets: Vec<Packet>) -> Run {
     Run { stream, packets, recon }
 }
 
+/// Encode `frames` with `c`, capturing the reconstruction.
 fn encode(c: EncoderConfig, frames: &[Yuv16]) -> Run {
     let eight = c.bit_depth == 8;
     let mut enc = Encoder::new(c).unwrap();
@@ -100,6 +104,7 @@ fn verify_as(name: &str, run: &Run, w: usize, h: usize, n: usize, pix_fmt: &str,
     dec
 }
 
+/// Decode `run` with ffmpeg as 10-bit 4:2:2 and check it matches the encoder's reconstruction.
 fn verify(name: &str, run: &Run, w: usize, h: usize, n: usize) -> Vec<u8> {
     verify_as(name, run, w, h, n, "yuv422p10le", 2)
 }
@@ -120,6 +125,7 @@ fn mean_psnr(dec: &[u8], frames: &[Yuv16]) -> (f64, f64) {
     (py / n, pc / n)
 }
 
+/// The ffprobe `entries` of the first video stream in `path`.
 fn probe(path: &std::path::Path, entries: &str) -> String {
     let out = Command::new(ffprobe().unwrap())
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", entries, "-of", "default=noprint_wrappers=1"])

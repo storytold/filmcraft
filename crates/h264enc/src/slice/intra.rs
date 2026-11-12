@@ -101,6 +101,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         if ac_any { 15 } else { 0 }
     }
 
+    /// The intra chroma mode (DC, horizontal, vertical, plane) with the lowest SATD cost, and its Cb and Cr predictions.
     fn best_chroma_mode(&self, e: &MbEdges<P>, av: Avail, src: &Src<P>, lam: u32) -> (u8, [P; CMB], [P; CMB]) {
         let rows = self.f.p.ch();
         let mut best = (u32::MAX, 0u8, [P::default(); CMB], [P::default(); CMB]);

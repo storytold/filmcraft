@@ -32,6 +32,7 @@ pub enum FieldOrder {
 }
 
 impl FieldOrder {
+    /// The name the Export panel shows for this field order.
     pub fn label(self) -> &'static str {
         match self {
             FieldOrder::Progressive => "Progressive",
@@ -60,6 +61,7 @@ pub enum H264Profile {
 }
 
 impl H264Profile {
+    /// The name the Export panel and summary show for this profile.
     pub fn label(self) -> &'static str {
         match self {
             H264Profile::Baseline => "Baseline",

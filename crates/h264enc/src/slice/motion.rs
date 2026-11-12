@@ -249,6 +249,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         (mvs, mvps, total)
     }
 
+    /// Choose the best P macroblock (skip, 16x16 to 8x8 partitions or intra) for (`mx`, `my`) at `qp`.
     pub(super) fn analyse_p(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // P slices always have a reference; without one the macroblock is coded intra.

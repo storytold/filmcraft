@@ -437,6 +437,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
+/// The Video section of Export mode: frame size, rate, field order, aspect, codec profile (H.264 High 10 / High 4:2:2), bitrate and keyframes.
 fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();

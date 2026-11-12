@@ -33,6 +33,7 @@ pub struct MbCode {
 }
 
 impl Default for MbCode {
+    /// No macroblock type, no prediction, no residual.
     fn default() -> Self {
         MbCode {
             kind: MbKind::None,
@@ -70,6 +71,7 @@ impl MbCode {
             },
         }
     }
+    /// Whether partition `part` predicts from reference list `list` (0 or 1).
     pub fn uses_list(&self, part: usize, list: usize) -> bool {
         match self.kind {
             MbKind::PInter => list == 0,

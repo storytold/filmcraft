@@ -252,6 +252,7 @@ impl<P: Pixel> RefPic<P> {
         }
     }
 
+    /// Quarter-sample luma prediction (§8.4.2.2.1) of `blk` displaced by `mv`, from the interpolated half-sample planes.
     #[inline(always)]
     fn mc_luma_w(&self, blk: McBlock, mv: Mv, out: &mut [P], ostride: usize) {
         let McBlock { x, y, w, h } = blk;

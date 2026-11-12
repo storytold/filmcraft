@@ -71,6 +71,7 @@ impl EncParams {
     pub fn sub_h(&self) -> usize {
         if self.c422 { 1 } else { 2 }
     }
+    /// Padding columns on each side of a chroma row for this chroma format.
     #[inline]
     pub fn cpad(&self) -> usize {
         chroma_pad(self.c422)
@@ -119,6 +120,7 @@ impl Lambdas {
 }
 
 impl Default for Lambdas {
+    /// The same tables as [`Lambdas::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -178,6 +180,7 @@ struct Cand<P> {
 }
 
 impl<P: Pixel> Cand<P> {
+    /// An empty candidate with an infinite cost, so any real mode beats it.
     fn new() -> Box<Cand<P>> {
         Box::new(Cand {
             code: MbCode::default(),
@@ -309,11 +312,14 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     fn ry(&self, x: usize, y: usize) -> usize {
         (y - self.y0 * 16) * self.band.ys + LUMA_PAD + x
     }
+    /// Index in the band's chroma planes of chroma sample (`x`, `y`) in picture coordinates.
     #[inline]
     fn rc(&self, x: usize, y: usize) -> usize {
         (y - self.y0 * self.f.p.ch()) * self.band.cs + self.f.p.cpad() + x
     }
 
+    /// The reconstructed neighbours of macroblock (`mx`, `my`) for intra prediction, luma and
+    /// chroma (8 or 16 chroma rows), mid-grey where a neighbour is unavailable.
     fn edges(&self, mx: usize, my: usize, av: Avail) -> MbEdges<P> {
         let (px, py) = (mx * 16, my * 16);
         let m = P::of(self.f.p.depth.mid);

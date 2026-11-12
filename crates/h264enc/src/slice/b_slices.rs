@@ -153,6 +153,7 @@ impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
         Some(c)
     }
 
+    /// Choose the best B macroblock (direct, skip, L0/L1/bi-predicted partitions or intra) for (`mx`, `my`) at `qp`.
     pub(super) fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // B slices always have both references; without them the macroblock is coded intra.

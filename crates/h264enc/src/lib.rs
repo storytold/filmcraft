@@ -198,6 +198,7 @@ pub struct EncoderConfig {
 }
 
 impl EncoderConfig {
+    /// A High-profile 8-bit 4:2:0 configuration at `width`×`height` and `fps_num`/`fps_den`: CRF 23, the balanced preset, a keyframe every 250 frames.
     pub fn new(width: u32, height: u32, fps_num: u32, fps_den: u32) -> Self {
         EncoderConfig {
             width,
@@ -419,6 +420,7 @@ impl<P: Pixel> Core<P> {
         )
     }
 
+    /// An encoder for `cfg`, or an error for zero, odd or oversized dimensions, a zero frame rate, or settings the profile does not allow (bit depth, B-frames, chroma format).
     pub fn new(mut cfg: EncoderConfig) -> Result<Self, Error> {
         if cfg.width == 0 || cfg.height == 0 || !cfg.width.is_multiple_of(2) || !cfg.height.is_multiple_of(2) || cfg.width > 16384 || cfg.height > 16384 {
             return Err(Error::InvalidDimensions(cfg.width, cfg.height));
@@ -766,6 +768,7 @@ impl<P: Pixel> Core<P> {
         }
     }
 
+    /// Copy a source frame (8- or 16-bit planes, 4:2:0 or 4:2:2 chroma) into a padded internal frame, rejecting planes too short for their strides.
     fn import(&mut self, f: Source) -> Result<Frame<P>, Error> {
         let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
         let (cw, ch) = (w / 2, if self.params.c422 { h } else { h / 2 });
@@ -811,6 +814,7 @@ impl<P: Pixel> Core<P> {
         Ok(fr)
     }
 
+    /// A frame from the pool, or a new macroblock-aligned one with the stream's chroma height.
     fn new_frame(&mut self) -> Frame<P> {
         self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16, self.params.c422))
     }
@@ -1244,6 +1248,7 @@ fn jobs_stride_y(mbw: usize) -> usize {
     mbw * 16 + 2 * LUMA_PAD
 }
 
+/// Row stride of a padded chroma plane: 8 samples per macroblock plus the padding on both sides.
 fn jobs_stride_c(mbw: usize, c422: bool) -> usize {
     mbw * 8 + 2 * picture::chroma_pad(c422)
 }
