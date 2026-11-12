@@ -377,6 +377,26 @@ fn rich_roundtrip() {
     assert_eq!(structure(&imp2.project, imp2.sequences[0], TrackKind::Video), structure(&p, s, TrackKind::Video));
 }
 
+/// #1868: renaming the panel does not change an export. FCP7 XML and FCPXML keep writing the
+/// effect name other applications read back, so a file exported today matches one exported before.
+#[test]
+fn grading_keeps_its_interchange_name() {
+    let (mut p, s) = rich_project();
+    let first = p.sequence(s).unwrap().video_tracks[0].items[0].id;
+    let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(first).unwrap();
+    it.effects.push(filmcraft_project::find_effect("lumetri").unwrap().instance());
+    let (fcp7, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    let fcp7 = String::from_utf8(fcp7).unwrap();
+    assert!(fcp7.contains("<name>Lumetri Color</name>"), "{fcp7}");
+    assert!(!fcp7.contains("Color Grading"), "{fcp7}");
+    let (fcpxml, _) = export(&p, s, Format::Fcpxml, &ExportOptions::default()).unwrap();
+    let fcpxml = String::from_utf8(fcpxml).unwrap();
+    assert!(fcpxml.contains("name=\"Lumetri Color\""), "{fcpxml}");
+    assert!(!fcpxml.contains("Color Grading"), "{fcpxml}");
+    // the label the user sees is the current one
+    assert_eq!(filmcraft_project::find_effect("lumetri").unwrap().name, "Color Grading");
+}
+
 #[test]
 fn version_5_and_generators() {
     let (mut p, s) = rich_project();
@@ -720,4 +740,20 @@ fn absurd_start_timecode_is_bounded() {
         assert_eq!(imported.project.sequence(*seq).map(|s| s.start_timecode), Some(0));
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
+}
+
+#[test]
+fn a_huge_link_group_does_not_write_quadratic_links() {
+    let r = FrameRate::FPS_29_97;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "Main", r, true);
+    let ids: Vec<_> = (0..300).map(|i| clip(&mut p, s, TrackKind::Audio, 0, a, 0..10, i * 10)).collect();
+    link(&mut p, s, &ids);
+    // the truncation warning is reported by the export, so it is the export's report that is checked
+    let (bytes, rep) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+    let text = String::from_utf8(bytes).expect("utf-8");
+    // only the first 64 clips are linked, each to the 64 members: the other 236 stay unlinked
+    assert_eq!(text.matches("<linkclipref>").count(), 64 * 64);
+    assert!(rep.has_warnings(), "{rep}");
 }

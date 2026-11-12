@@ -15,7 +15,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::bits::{BitReader, leb128};
 use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
-use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
+use crate::header::{
+    ColorConfig, FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params,
+};
 use crate::par::Pool;
 use crate::spec_tables::{
     ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME,
@@ -56,7 +58,6 @@ pub(crate) struct RefFrame {
     pub segment_ids: Vec<u8>,
     pub mi_cols: usize,
     pub mi_rows: usize,
-    pub film_grain_present: bool,
     pub color: (u8, u8, u8, bool),
     /// SavedRefFrames / SavedMvs (MfRefFrames / MfMvs of 7.19), mi units.
     pub saved_ref_frames: Vec<i8>,
@@ -132,7 +133,8 @@ struct FrameJob {
 
 /// A shown picture in output order.
 enum Output {
-    Decoded(Arc<Slot<Picture>>),
+    /// The picture and the bytes of its `u16` sample planes.
+    Decoded(Arc<Slot<Picture>>, usize),
     /// show_existing_frame: built from the reference slot when it is finished.
     Existing(Box<ExistingOutput>),
 }
@@ -141,6 +143,8 @@ enum Output {
 struct ExistingOutput {
     slot: Arc<FrameSlot>,
     seq: SequenceHeader,
+    /// Plane layout of the reference frame shown.
+    color: ColorConfig,
     width: usize,
     height: usize,
     grain: FilmGrainParams,
@@ -151,16 +155,24 @@ struct ExistingOutput {
 impl Output {
     fn is_ready(&self) -> bool {
         match self {
-            Output::Decoded(s) => s.is_set(),
+            Output::Decoded(s, _) => s.is_set(),
             Output::Existing(e) => e.slot.is_set(),
+        }
+    }
+
+    /// Bytes the picture holds once handed out.
+    fn bytes(&self) -> usize {
+        match self {
+            Output::Decoded(_, n) => *n,
+            Output::Existing(e) => picture_bytes(e.width, e.height, &e.color),
         }
     }
 
     fn take(self) -> Result<Picture> {
         match self {
-            Output::Decoded(s) => s.take(),
+            Output::Decoded(s, _) => s.take(),
             Output::Existing(e) => {
-                let ExistingOutput { slot, seq, width, height, grain, apply_film_grain, pts } = *e;
+                let ExistingOutput { slot, seq, color: _, width, height, grain, apply_film_grain, pts } = *e;
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
             }
@@ -220,6 +232,12 @@ pub struct Decoder {
     seq: Option<SequenceHeader>,
     refs: [RefInfo; NUM_REF_FRAMES],
     ref_frames: [Option<Arc<FrameSlot>>; NUM_REF_FRAMES],
+    /// The plane layout each slot's frame was decoded with: a new sequence header can change it, and
+    /// a show_existing_frame copies the reference's planes, not the current sequence's.
+    ref_color: [Option<ColorConfig>; NUM_REF_FRAMES],
+    /// Bytes of the pictures the chunk being parsed has shown so far, and whether one was refused for size.
+    shown_bytes: usize,
+    shown_overflow: bool,
     lf_deltas: LoopFilterDeltas,
     seg_features: SegmentationFeatures,
     prev_gm_params: [[i32; 6]; 8],
@@ -231,7 +249,6 @@ pub struct Decoder {
     pub apply_film_grain: bool,
     draft: bool,
     stats: Arc<Mutex<DecodeStats>>,
-    threads: usize,
     pool: Pool,
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     workers: Option<Workers>,
@@ -270,6 +287,45 @@ impl Default for Decoder {
     }
 }
 
+/// Most pictures one `decode` chunk may show (a temporal unit shows one per spatial layer).
+const MAX_SHOWN_PER_CHUNK: usize = 256;
+
+fn shown_within_limit(n: usize) -> bool {
+    n <= MAX_SHOWN_PER_CHUNK
+}
+
+/// Most bytes of pictures one `decode` chunk may show together. The count limit alone allows 256
+/// copies of one 4K reference (about 6.4 GB) from a few hundred bytes of show_existing_frame headers.
+const MAX_SHOWN_BYTES_PER_CHUNK: usize = 1 << 30;
+
+fn shown_bytes_within_limit(bytes: usize) -> bool {
+    bytes <= MAX_SHOWN_BYTES_PER_CHUNK
+}
+
+/// Bytes of the `u16` sample planes of a `w` × `h` picture.
+fn picture_bytes(w: usize, h: usize, c: &crate::header::ColorConfig) -> usize {
+    let plane = |n: usize, shift: u8| n.saturating_add(usize::from(shift)) >> shift;
+    let chroma = if c.num_planes > 1 { plane(w, c.subsampling_x).saturating_mul(plane(h, c.subsampling_y)).saturating_mul(2) } else { 0 };
+    w.saturating_mul(h).saturating_add(chroma).saturating_mul(2)
+}
+
+/// Add a shown picture to a chunk's outputs, refusing the chunk (and dropping everything it showed)
+/// before the list can grow past [`MAX_SHOWN_PER_CHUNK`].
+fn push_shown(out: &mut Vec<(Output, usize, u32)>, shown_bytes: &mut usize, item: (Output, usize, u32)) -> Result<()> {
+    if !shown_within_limit(out.len() + 1) {
+        out.clear();
+        return Err(Error::Invalid("too many pictures shown by one chunk"));
+    }
+    let bytes = shown_bytes.saturating_add(item.0.bytes());
+    if !shown_bytes_within_limit(bytes) {
+        out.clear();
+        return Err(Error::Invalid("pictures shown by one chunk are too large"));
+    }
+    *shown_bytes = bytes;
+    out.push(item);
+    Ok(())
+}
+
 impl Decoder {
     /// A decoder using all available cores (with the `threads` feature).
     pub fn new() -> Decoder {
@@ -288,6 +344,9 @@ impl Decoder {
             seq: None,
             refs: Default::default(),
             ref_frames: Default::default(),
+            ref_color: Default::default(),
+            shown_bytes: 0,
+            shown_overflow: false,
             lf_deltas: LoopFilterDeltas::defaults(),
             seg_features: SegmentationFeatures::default(),
             prev_gm_params: default_gm_params(),
@@ -297,7 +356,6 @@ impl Decoder {
             apply_film_grain: true,
             draft: false,
             stats,
-            threads,
             pool,
             #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
             workers,
@@ -384,7 +442,15 @@ impl Decoder {
     fn parse(&mut self, data: &[u8]) -> Result<()> {
         // (output, temporal unit, spatial_id)
         let mut out: Vec<(Output, usize, u32)> = Vec::new();
+        // Each show_existing_frame costs a few bytes but a full picture copy once it is taken: one
+        // chunk may not ask for more displays than any real temporal unit holds (checked as each
+        // picture is added, so a malformed OBU after the limit cannot let them through either).
+        self.shown_bytes = 0;
+        self.shown_overflow = false;
         let r = self.parse_obus(data, &mut out);
+        if self.shown_overflow {
+            out.clear();
+        }
         // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
         // highest spatial layer present.
         let scalable = self.seq.as_ref().is_some_and(|s| s.op_idc != 0);
@@ -475,20 +541,20 @@ impl Decoder {
                     let mut r = BitReader::new(payload);
                     let shown = self.frame_header(&mut r, temporal_id, spatial_id)?;
                     if let Some(o) = shown {
-                        out.push((o, tu, spatial_id));
+                        push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                         continue;
                     }
                     if obu_type == OBU_FRAME_T {
                         r.byte_align();
                         let rest = payload.get(r.byte_pos()..).ok_or(Error::Truncated)?;
                         if let Some(o) = self.tile_group(rest)? {
-                            out.push((o, tu, spatial_id));
+                            push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                         }
                     }
                 }
                 OBU_TILE_GROUP_T => {
                     if let Some(o) = self.tile_group(payload)? {
-                        out.push((o, tu, spatial_id));
+                        push_shown(out, &mut self.shown_bytes, (o, tu, spatial_id))?;
                     }
                 }
                 OBU_METADATA_T | OBU_TILE_LIST_T => {}
@@ -523,6 +589,7 @@ impl Decoder {
             let o = Output::Existing(Box::new(ExistingOutput {
                 slot: slot.clone(),
                 seq: seq.clone(),
+                color: self.ref_color[idx].clone().unwrap_or_else(|| seq.color.clone()),
                 width: info.upscaled_width as usize,
                 height: info.frame_height as usize,
                 grain: fh.film_grain.clone(),
@@ -536,6 +603,7 @@ impl Decoder {
                 for i in 0..NUM_REF_FRAMES {
                     self.refs[i] = info.clone();
                     self.ref_frames[i] = Some(slot.clone());
+                    self.ref_color[i] = self.ref_color[idx].clone();
                 }
             }
             return Ok(Some(o));
@@ -626,6 +694,15 @@ impl Decoder {
             return Err(Error::Invalid("frame is missing tile coverage"));
         }
         self.seen_frame_header = false;
+        // A picture past the chunk's byte budget is never built (decoding the frame as a reference
+        // still happens, so the reference slots stay as the stream says), and the chunk is refused.
+        let bytes = picture_bytes(job.fh.upscaled_width as usize, job.fh.frame_height as usize, &job.seq.color);
+        if job.picture.is_some() && !shown_bytes_within_limit(self.shown_bytes.saturating_add(bytes)) {
+            job.picture = None;
+            self.shown_overflow = true;
+            self.submit(job);
+            return Err(Error::Invalid("pictures shown by one chunk are too large"));
+        }
         Ok(self.submit(job))
     }
 
@@ -653,9 +730,11 @@ impl Decoder {
                 ri.seg_features = fh.seg.features;
                 ri.grain = fh.film_grain.clone();
                 self.ref_frames[i] = Some(job.slot.clone());
+                self.ref_color[i] = Some(job.seq.color.clone());
             }
         }
-        let output = job.picture.clone().map(Output::Decoded);
+        let output =
+            job.picture.clone().map(|p| Output::Decoded(p, picture_bytes(job.fh.upscaled_width as usize, job.fh.frame_height as usize, &job.seq.color)));
         #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
         if let Some(w) = &self.workers
             && let Some(tx) = &w.tx
@@ -784,12 +863,12 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         segment_ids: std::mem::take(&mut fs.mi.segment_id),
         mi_cols: fs.mi.cols,
         mi_rows: fs.mi.rows,
-        film_grain_present: seq.film_grain_params_present,
         color: (seq.color.color_primaries, seq.color.transfer_characteristics, seq.color.matrix_coefficients, seq.color.color_range),
         saved_ref_frames: mf_refs,
         saved_mvs: mf_mvs,
     });
-    let pic = fh.show_frame.then(|| {
+    // job.picture is None for a shown frame refused for its size (see tile_group)
+    let pic = job.picture.is_some().then(|| {
         let mut p = output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts);
         p.draft = job.draft;
         p
@@ -1171,5 +1250,50 @@ mod tests {
         assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
         assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
         assert!(!frame_size_allowed(65536, 65536));
+    }
+}
+
+#[cfg(test)]
+mod shown_limit_tests {
+    use super::*;
+
+    fn shown(bytes: usize) -> (Output, usize, u32) {
+        (Output::Decoded(Slot::new(), bytes), 0, 0)
+    }
+
+    #[test]
+    fn push_shown_refuses_a_chunk_past_either_limit_and_drops_what_it_showed() {
+        let (mut out, mut bytes) = (Vec::new(), 0usize);
+        push_shown(&mut out, &mut bytes, shown(10)).unwrap();
+        assert_eq!((out.len(), bytes), (1, 10));
+        // past the byte budget
+        assert!(push_shown(&mut out, &mut bytes, shown(MAX_SHOWN_BYTES_PER_CHUNK)).is_err());
+        assert!(out.is_empty(), "the refused chunk shows nothing");
+        // past the count limit
+        let (mut out, mut bytes) = (Vec::new(), 0usize);
+        for _ in 0..MAX_SHOWN_PER_CHUNK {
+            push_shown(&mut out, &mut bytes, shown(0)).unwrap();
+        }
+        assert!(push_shown(&mut out, &mut bytes, shown(0)).is_err());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_chunk_may_show_a_bounded_number_of_pictures() {
+        assert!(shown_within_limit(0) && shown_within_limit(MAX_SHOWN_PER_CHUNK));
+        assert!(!shown_within_limit(MAX_SHOWN_PER_CHUNK + 1));
+    }
+
+    #[test]
+    fn a_chunk_may_show_a_bounded_number_of_bytes() {
+        let c = crate::header::ColorConfig { num_planes: 3, subsampling_x: 1, subsampling_y: 1, ..Default::default() };
+        // 4K 4:2:0, u16 samples: about 25 MB; 256 of them is far past the limit, a few are fine
+        let one = picture_bytes(3840, 2160, &c);
+        assert_eq!(one, (3840 * 2160 + 2 * 1920 * 1080) * 2);
+        assert!(shown_bytes_within_limit(4 * one));
+        assert!(!shown_bytes_within_limit(MAX_SHOWN_PER_CHUNK * one));
+        let mono = crate::header::ColorConfig { num_planes: 1, ..Default::default() };
+        assert_eq!(picture_bytes(10, 5, &mono), 100);
+        assert_eq!(picture_bytes(usize::MAX, 2, &c), usize::MAX);
     }
 }

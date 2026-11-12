@@ -97,11 +97,19 @@ fn exec_inspect_and_describe() {
     assert_eq!(bad.status.code(), Some(1));
 }
 
+/// A new folder only this user can enter, never one that already existed in the shared temp dir.
+fn private_dir(prefix: &str) -> std::path::PathBuf {
+    let mut b = tempfile::Builder::new();
+    b.prefix(prefix);
+    // tempfile creates with 0777 before the umask, so ask for owner-only
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    b.tempdir().unwrap().keep()
+}
+
 /// A project in a new folder of its own.
 fn lock_test_project(tag: &str) -> (std::path::PathBuf, String) {
-    let dir = std::env::temp_dir().join(format!("fc-cli-lock-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir(&format!("fc-cli-lock-{tag}"));
     let proj = dir.join("p.fcproj").to_str().unwrap().to_string();
     json_out(&cli(&["--demo", "--save-as", &proj, "exec", "file.newBin", "name=start"]));
     (dir, proj)
@@ -229,17 +237,26 @@ fn runs_that_do_not_save_in_place_ignore_the_lock() {
 fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let (dir, _) = lock_test_project("missing");
     let gone = dir.join("gone.fcproj").to_str().unwrap().to_string();
-    let o = cli(&["--project", &gone, "--save", "exec", "file.newBin", "name=copy-only"]);
-    assert_eq!(o.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("gone.fcproj"), "{}", String::from_utf8_lossy(&o.stderr));
+    let plain = cli(&["--project", &gone, "inspect", "project"]);
+    assert_eq!(plain.status.code(), Some(1));
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    // saving in place, saving elsewhere, or not saving: the error is the one opening gives
+    for save in [&["--save"][..], &["--save-as", gone.as_str()], &["--save-as", other.as_str()], &[]] {
+        let args = [&["--project", gone.as_str()][..], save, &["exec", "file.newBin", "name=copy-only"]].concat();
+        let o = cli(&args);
+        assert_eq!(o.status.code(), Some(1), "{save:?}");
+        assert_eq!(String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&plain.stderr), "{save:?}");
+    }
     assert!(!dir.join(".gone.fcproj.lock").exists());
+    assert!(!dir.join("other.fcproj").exists());
+    // --project with --bridge stays a usage error.
+    assert_eq!(cli(&["--bridge", "127.0.0.1:1", "--project", &gone, "--save", "exec", "file.newBin", "name=copy-only"]).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn exec_save_as_then_reopen() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli");
     let proj = dir.join("p.fcproj");
     let p = proj.to_str().unwrap();
     json_out(&cli(&["--demo", "exec", "file.newBin", "name=CLI Selects", "--save-as", p]));
@@ -280,8 +297,7 @@ fn run_keep_going_reports_failures() {
 
 #[test]
 fn export_wav_waits_for_job() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-x-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-x");
     let out = dir.join("still.wav");
     let o = cli(&["--demo", "export", out.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -292,8 +308,7 @@ fn export_wav_waits_for_job() {
 #[test]
 fn run_waits_for_an_export_on_its_last_line() {
     // #2342: `file.exportMedia` as the last line of a script is written before `run` exits
-    let dir = std::env::temp_dir().join(format!("fc-cli-run-x-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-run-x");
     let out = dir.join("last.wav");
     // `"wait": null` waits too: only an explicit `false` doesn't
     let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
@@ -310,8 +325,7 @@ fn run_waits_for_an_export_on_its_last_line() {
 /// from `--data-dir`, `--list-presets`, `--queue`, and a clean failure for an unknown preset.
 #[test]
 fn single_frame_in_out_export_warns_in_json_and_stderr() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-single-frame-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-single-frame");
     let project = dir.join("marked.fcproj");
     let script = dir.join("marks.jsonl");
     std::fs::write(&script, "{\"id\":\"markers.markIn\",\"params\":{\"frame\":12}}\n{\"id\":\"markers.markOut\",\"params\":{\"frame\":12}}\n").unwrap();
@@ -425,6 +439,29 @@ fn export_with_presets() {
     let written = v["items"][0]["path"].as_str().unwrap().to_string();
     assert!(written.ends_with("queued-apv.mp4.mov"), "{v}");
     assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("exported {written} in ")), "{}", String::from_utf8_lossy(&o.stderr));
+    // an image sequence writes numbered stills: the result and the message name the first and
+    // the last, not the path given (#4009)
+    let stills = dir.join("a.png");
+    let o = cli(&[
+        "--demo",
+        "--data-dir",
+        data_s,
+        "export",
+        stills.to_str().unwrap(),
+        "--format",
+        "png",
+        "--start",
+        "0",
+        "--end",
+        "0.05",
+        "--no-audio",
+        "--scale",
+        "0.125",
+    ]);
+    let v = json_out(&o);
+    let (first, last) = (v["path"].as_str().unwrap().to_string(), v["lastPath"].as_str().unwrap().to_string());
+    assert!(first.ends_with("a000.png") && std::path::Path::new(&first).exists() && std::path::Path::new(&last).exists() && !stills.exists(), "{v}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("exported {first} to {last} in ")), "{}", String::from_utf8_lossy(&o.stderr));
     // unknown preset: exit status 1 and a message naming it
     let bad = cli(&["--demo", "--data-dir", data_s, "export", dir.join("x.mp4").to_str().unwrap(), "--preset", "No Such Preset"]);
     assert_eq!(bad.status.code(), Some(1));
@@ -461,8 +498,7 @@ fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
 
 #[test]
 fn closed_stdout_still_runs_the_script_and_saves() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-pipe-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-pipe");
     let proj = dir.join("p.fcproj");
     let p = proj.to_str().unwrap();
     let script = b"{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped One\"}}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped Two\"}}\n";
@@ -486,9 +522,7 @@ fn closed_stdout_still_runs_the_script_and_saves() {
 /// writes nothing, instead of silently rendering frame 0 at full scale.
 #[test]
 fn render_rejects_bad_numbers() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-render-nan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-render-nan");
     let still = dir.join("s.png").to_str().unwrap().to_string();
     for (opt, bad) in
         [("--seconds", "1s"), ("--seconds", "1,5"), ("--seconds", "abc"), ("--seconds", "NaN"), ("--seconds", "inf"), ("--scale", "xyz"), ("--scale", "NaN")]
@@ -508,9 +542,7 @@ fn render_rejects_bad_numbers() {
 /// placeholder frames; then it still warns.
 #[test]
 fn export_with_missing_media_fails_unless_allowed() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-1054-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-1054");
     let f = |n: &str| dir.join(n).to_str().unwrap().to_string();
     let (still, proj) = (f("still.png"), f("p.fcproj"));
     let o = cli(&["--demo", "render", "--seconds", "1", "--scale", "0.1", "--out", &still]);
