@@ -709,18 +709,18 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     });
     // Match Source (#2700): sample rate and channels follow the sequence; the greyed controls show
-    // what the export will use. Turning it off starts from those values, as the video's does.
+    // what the export will write (for MP3 after its resampling and stereo fold). Turning it off starts from those values, as the video's does.
     row(ui, t, "", |ui| {
-        let (rate, channels) = s.output_audio(seq_audio);
+        let (rate, channels) = s.written_audio(seq_audio);
         if check(ui, reg, "export.audio.matchSource", &mut s.audio.match_source, tl!("Match Source")) && !s.audio.match_source {
             (s.audio.sample_rate, s.audio.channels) = (Some(rate), channels);
         }
     });
     let matched = s.audio.match_source;
-    let (out_sr, out_channels) = s.output_audio(seq_audio);
+    let (out_sr, out_channels) = s.written_audio(seq_audio);
     // the "Match Source" entry (an unset rate) names the rate it exports at: a 192 kHz sequence
-    // exports AAC at 96 kHz
-    let seq_sr = s.source_sample_rate(seq_sr);
+    // exports AAC at 96 kHz, and MP3 at 48 kHz
+    let seq_sr = s.written_source_rate(seq_sr);
     row(ui, t, tl!("Sample Rate"), |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));

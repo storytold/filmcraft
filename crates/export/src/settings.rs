@@ -626,6 +626,24 @@ impl ExportSettings {
         (rate, channels, kbps)
     }
 
+    /// The (sample rate, channels) the file is written with for a source with `src` audio: what
+    /// [`Self::output_audio`] gives, except MP3's, which [`Self::mp3_stream`] gives (resampled to an
+    /// MP3 rate, 5.1 folded to stereo). The export panel shows and seeds these.
+    pub fn written_audio(&self, src: SourceAudio) -> (u32, u32) {
+        if self.audio_codec() == AudioCodec::Mp3 {
+            let (rate, channels, _) = self.mp3_stream(src);
+            return (rate, channels);
+        }
+        self.output_audio(src)
+    }
+
+    /// The sample rate an export that follows a source at `rate` writes, as the export panel names
+    /// it: [`Self::source_sample_rate`], and for MP3 the MP3 rate it is resampled to.
+    pub fn written_source_rate(&self, rate: u32) -> u32 {
+        let rate = self.source_sample_rate(rate);
+        if self.audio_codec() == AudioCodec::Mp3 { filmcraft_mp3enc::nearest_sample_rate(rate) } else { rate }
+    }
+
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
     /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC and MP3 none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {

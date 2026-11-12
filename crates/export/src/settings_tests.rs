@@ -1988,3 +1988,17 @@ fn mp3_stream_follows_audio_match_source() {
     s.audio.match_source = true;
     assert_eq!(s.mp3_stream(&seq), (44_100, 1, 192));
 }
+
+/// The export panel shows and seeds what the file is written with: a 96 kHz 5.1 sequence under
+/// Match Source writes MP3 at 48 kHz stereo (the panel used to show 96 kHz 5.1), AAC at 96 kHz 5.1.
+#[test]
+fn written_audio_is_what_the_mp3_stream_carries() {
+    let seq = SequenceSettings { sample_rate: 96_000, audio_master: filmcraft_project::AudioChannels::Surround51, ..Default::default() };
+    let mut s =
+        ExportSettings { format: Format::Mp3, audio: AudioSettings { match_source: true, bitrate_kbps: 192, ..Default::default() }, ..Default::default() };
+    assert_eq!(s.written_audio(SourceAudio::from(&seq)), (48_000, 2));
+    assert_eq!(s.written_source_rate(96_000), 48_000);
+    s.format = Format::Aac;
+    assert_eq!(s.written_audio(SourceAudio::from(&seq)), s.output_audio(SourceAudio::from(&seq)));
+    assert_eq!(s.written_source_rate(96_000), 96_000);
+}
