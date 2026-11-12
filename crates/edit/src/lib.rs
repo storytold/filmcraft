@@ -601,6 +601,21 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(())
 }
 
+/// Clear the link of each copy in `placed` that no other copy in `placed` carries: its linked
+/// partner was not copied, so it has nothing to follow. Option-drag copies ([`copy_items`]) and
+/// pasted clips both go through it.
+pub fn unlink_lone_copies(placed: &mut [(TrackId, TrackItem)]) {
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for l in placed.iter().filter_map(|(_, it)| it.link) {
+        *counts.entry(l).or_default() += 1;
+    }
+    for (_, it) in placed.iter_mut() {
+        if it.link.is_some_and(|l| counts.get(&l).copied().unwrap_or(0) < 2) {
+            it.link = None;
+        }
+    }
+}
+
 /// Copy items to (track, time) with overwrite or insert semantics, leaving the originals where
 /// they are (Option-drag). `moves`: (item, destination track, start of the copy). The copies get
 /// new ids; copies of linked clips are linked to each other, not to the originals, and the
@@ -637,15 +652,7 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         }
     }
     // a copy whose linked partner is not copied is not linked
-    let mut counts: HashMap<u64, usize> = HashMap::new();
-    for l in placed.iter().filter_map(|(_, it)| it.link) {
-        *counts.entry(l).or_default() += 1;
-    }
-    for (_, it) in &mut placed {
-        if it.link.is_some_and(|l| counts.get(&l).copied().unwrap_or(0) < 2) {
-            it.link = None;
-        }
-    }
+    unlink_lone_copies(&mut placed);
     let out = if insert_mode { insert(&mut work, placed, ctx)? } else { overwrite(&mut work, placed, ctx)? };
     for (dest, mut tr) in carried {
         tr.id = TransitionId(ctx.alloc());

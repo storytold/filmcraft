@@ -4423,16 +4423,8 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
             placements.push((t.id, it));
         }
         // a pasted clip whose linked partner was not copied (or found no track) has nothing to
-        // follow, so it is not linked, as in `edit::copy_items`
-        let mut members: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-        for l in placements.iter().filter_map(|(_, it)| it.link) {
-            *members.entry(l).or_default() += 1;
-        }
-        for (_, it) in &mut placements {
-            if it.link.is_some_and(|l| members.get(&l).copied().unwrap_or(0) < 2) {
-                it.link = None;
-            }
-        }
+        // follow, so it is not linked, as an Option-drag copy is not
+        edit::unlink_lone_copies(&mut placements);
         let end = placements.iter().map(|p| p.1.end()).max().unwrap_or(at);
         let ids = if insert { edit::insert(q, placements, ctx)? } else { edit::overwrite(q, placements, ctx)? };
         // the copied transitions go onto the pasted clips, on the track those clips landed on
