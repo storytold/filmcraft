@@ -457,6 +457,32 @@ impl AudioOut for LoggedDevice {
     fn played_frames(&self) -> Option<u64> {
         Some(0)
     }
+    fn release_idle(&mut self) {
+        self.0.lock().unwrap().push("playback idle release");
+    }
+}
+
+/// The playback output keeps its stream open between plays. Before a scrub grain opens the scrub
+/// output it gives the device back, as playback does the other way round: a device that takes
+/// one stream at a time would refuse the scrub's stream and the grain would be silent.
+#[test]
+fn a_scrub_takes_the_device_from_the_idle_playback_stream_first() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    app.session.prefs.audio.scrub_audio = true;
+    let log = ScrubLog::default();
+    app.scrub_out = Some(Box::new(RecordingScrubOut(log.clone())));
+    app.audio = Some(Box::new(LoggedDevice(log.events.clone())));
+    app.scrub_tick(0.0, true);
+    app.session.set_playhead(filmcraft_time::Tick::from_seconds_f64(2.0));
+    assert!(app.scrub_tick(0.02, true), "the scrub stream is open");
+    let events = log.events.lock().unwrap().clone();
+    let pos = |e: &str| events.iter().position(|x| *x == e);
+    let (Some(release), Some(play)) = (pos("playback idle release"), pos("scrub play")) else {
+        panic!("expected the idle release and a scrub grain: {events:?}");
+    };
+    assert!(release < play, "{events:?}");
 }
 
 /// #2633: the scrub output follows the sequence's sample rate, not only the audio settings.

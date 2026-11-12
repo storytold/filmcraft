@@ -512,6 +512,11 @@ impl AudioOut for CpalOut {
             log::debug!("audio output not opened ahead of playback ({e}); it opens when playback starts");
         }
     }
+    fn release_idle(&mut self) {
+        if !self.playing {
+            self.stream = None;
+        }
+    }
     fn recover(&mut self) {
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
             return;
