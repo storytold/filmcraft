@@ -120,3 +120,25 @@ fn hostile_sizes_saturate_instead_of_overflowing() {
     let bad = RenderOptions { scale: f32::NAN, ..Default::default() };
     let _ = frame_working_set(&p, s, Tick::ZERO, bad);
 }
+
+#[test]
+fn an_effect_on_a_nested_sequence_counts_its_working_copy() {
+    let at = |effect: bool| {
+        let (mut p, _) = project((3840, 2160), 100.0);
+        let settings = SequenceSettings { width: 1080, height: 1920, frame_rate: FPS, ..Default::default() };
+        // an empty nested sequence: its render is its canvas alone, smaller than canvas plus copy
+        let inner = p.new_sequence("inner", settings.clone(), 1, 0, None);
+        let outer = p.new_sequence("outer", settings, 1, 0, None);
+        let mut ti = p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(60)), FPS).unwrap();
+        if effect {
+            ti.effects.push(filmcraft_project::effect::find_effect("gaussian_blur").unwrap().instance());
+        }
+        p.sequence_mut(outer).unwrap().video_tracks[0].items.push(ti);
+        frame_working_set(&p, outer, Tick::ZERO, RenderOptions::default())
+    };
+    let canvas = img(1080, 1920);
+    // the outer canvas, the nested canvas (handed back as the layer) and its placement
+    assert_eq!(at(false), canvas + canvas + canvas);
+    // the blur works on a copy of the nested canvas, as it does on a media layer
+    assert_eq!(at(true), canvas + 2 * canvas + canvas);
+}

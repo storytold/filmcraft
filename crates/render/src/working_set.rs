@@ -31,7 +31,8 @@ const IMAGE_PX: u64 = 16;
 /// Bytes of one source pixel as decoded, at most (16-bit 4:2:0 Y'CbCr is 3, 8-bit RGBA 4).
 const DECODED_PX: u64 = 4;
 
-fn image_bytes(w: usize, h: usize) -> u64 {
+/// Bytes of one `w` x `h` working image (premultiplied linear `f32` RGBA), saturating.
+pub fn image_bytes(w: usize, h: usize) -> u64 {
     u64::try_from(w).unwrap_or(u64::MAX).saturating_mul(u64::try_from(h).unwrap_or(u64::MAX)).saturating_mul(IMAGE_PX)
 }
 
@@ -93,7 +94,13 @@ fn item_bytes(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, depth: opts.depth.saturating_add(1), ..opts };
-            sequence_bytes(project, nested, item.source_time_at(t), sub).saturating_add(placed)
+            // The nested render hands back its canvas as the layer. Its effects then work on a copy
+            // of that canvas, after everything else the nested render held has gone back to the pool.
+            let rendered = sequence_bytes(project, nested, item.source_time_at(t), sub);
+            let (nw, nh) = output_size(nested, want);
+            let worked = (opts.effects && item.has_standard_effects()) || item.has_opacity_masks();
+            let with_copy = if worked { image_bytes(nw, nh).saturating_mul(2) } else { 0 };
+            rendered.max(with_copy).saturating_add(placed)
         }
         ItemKind::Graphic { .. } => {
             let (gw, gh) = (((sw as f32 * want).ceil() as usize).max(1), ((sh as f32 * want).ceil() as usize).max(1));
