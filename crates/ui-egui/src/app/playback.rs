@@ -36,6 +36,7 @@ impl FilmcraftApp {
             self.playback.meter.start(speed);
         }
         self.playback.playing = true;
+        self.frames.play_starts();
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends

@@ -977,6 +977,14 @@ impl GopCache {
             return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
+        if filmcraft_media::cancel::beside_playback() && !filmcraft_media::cancel::playing() && (st.pump || st.play.is_some_and(|p| p.at.elapsed() < PUMP_IDLE))
+        {
+            // A view beside the play (the scopes, a thumbnail) asked for a frame that playback's
+            // decoder does not hold: it goes without. Decoding it would stop the playback run and
+            // seek the decoder away from the playhead, and every frame after it would come late.
+            filmcraft_media::cancel::give_up();
+            return Err(CodecError::Cancelled);
+        }
         if !background {
             st.background = false;
         } else if st.decoder.is_none() {
@@ -1107,6 +1115,35 @@ impl GopCache {
     /// is [`PUMP_AHEAD`] samples behind. Positioned by [`Self::position`]; `State::pump` is set.
     /// Returns the wanted frame, dropped if the run passed it meanwhile.
     fn pump(&self, s: &dyn VideoSamples, i: usize, want_pts: i64, draft: bool) -> crate::Result<Taken> {
+        /// Ends the run when it does not reach its own end (a decoder panicked): `State::pump`
+        /// left set would keep every later request for an uncached frame waiting for a run that
+        /// no longer exists, and the monitors of this source blank. The decoder, lost or in an
+        /// unknown state, is given up: the next request makes a new one.
+        struct Unfinished<'a> {
+            shared: &'a Shared,
+            ended: bool,
+        }
+        impl Drop for Unfinished<'_> {
+            fn drop(&mut self) {
+                if self.ended {
+                    return;
+                }
+                let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                st.pump = false;
+                st.pump_stop = false;
+                if st.decoder.is_none() {
+                    // taken out for the sample that panicked and dropped with it
+                    self.shared.pool.decoders.fetch_sub(1, Ordering::Relaxed);
+                }
+                let released = st.release_decoder(&self.shared.pool);
+                drop(st);
+                self.shared.cv.notify_all();
+                // (off the lock: dropping a decoder can block)
+                drop(released);
+            }
+        }
+        // declared before the lock guard: on a panic the lock is released before this ends the run
+        let mut run = Unfinished { shared: &self.shared, ended: false };
         let n = s.count();
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         // the wanted frame, held once produced: the cache may evict it before the run ends
@@ -1170,6 +1207,7 @@ impl GopCache {
         }
         st.pump = false;
         st.pump_stop = false;
+        run.ended = true;
         self.shared.cv.notify_all();
         result?;
         if let Some(t) = own {
