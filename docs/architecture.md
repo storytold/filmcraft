@@ -690,6 +690,12 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   (`INTERLEAVE` in `crates/export/src/job.rs`), each followed by its audio, and H.264 uses one slice
   per four macroblock rows instead of one per core. MXF files are the exception: their UMIDs and
   modification date come from the clock, as SMPTE ST 330 / ST 377 expect.
+- **Encoded audio in MPEG-4.** In MP4, QuickTime and `.m4a` exports, an AAC or FLAC track has one
+  edit that skips the encoder's priming (none for FLAC) and ends on the last rendered sample, so the
+  padding AAC adds to fill its last frame is not played and does not lengthen the movie
+  (`encoded_audio_edits` in `crates/export/src/audio_out.rs`). These files use the audio sample
+  rate as the movie timescale, so the edit can end on that sample; video-only exports and movies
+  with PCM audio keep a movie timescale of 1000.
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
