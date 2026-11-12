@@ -33,6 +33,185 @@ impl AudioOut for Device {
     }
 }
 
+type HeldFill = Arc<std::sync::Mutex<Option<Box<dyn FnMut(&mut [f32], usize) + Send>>>>;
+
+struct HeldDevice {
+    fill: HeldFill,
+    stops: Arc<AtomicUsize>,
+}
+
+impl AudioOut for HeldDevice {
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn start(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        *self.fill.lock().unwrap() = Some(fill);
+        Ok(48_000)
+    }
+    fn stop(&mut self) {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+        self.fill.lock().unwrap().take();
+    }
+    fn played_frames(&self) -> Option<u64> {
+        Some(0)
+    }
+}
+
+struct HeldScrub(HeldFill);
+impl crate::scrub::ScrubOut for HeldScrub {
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn play(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) {
+        *self.0.lock().unwrap() = Some(fill);
+    }
+    fn stop(&mut self) {
+        // A device may retain its callback during its normal scrub linger.
+    }
+    fn release(&mut self) {
+        self.0.lock().unwrap().take();
+    }
+}
+
+#[test]
+fn hidden_pool_replacement_retires_program_and_scrub_callbacks() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let item = session.execute("file.newColorMatte", json!({"width":16,"height":16,"seconds":60})).unwrap()["item"].as_u64().unwrap();
+    session.execute("timeline.place", json!({"item":item,"videoTrack":"V1","seconds":0})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let fill: HeldFill = Arc::default();
+    let scrub: HeldFill = Arc::default();
+    let stops = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(HeldDevice { fill: fill.clone(), stops: stops.clone() }));
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert!(fill.lock().unwrap().is_some());
+    app.scrub_out = Some(Box::new(HeldScrub(scrub.clone())));
+    app.scrub_out.as_mut().unwrap().play(Box::new(|_, _| {}));
+    let stops_before = stops.load(Ordering::Relaxed);
+    let project = app.session.project.clone();
+    let revisions = (app.session.revision, app.session.saved_revision);
+    app.session.media = Arc::new(filmcraft_engine::MediaPool::default());
+    app.set_now_for_test(0.1);
+    let _ = egui::Context::default().run_logic(&egui::RawInput::default(), |ctx| app.logic_inner(ctx));
+    assert!(fill.lock().unwrap().is_none(), "hidden handoff retained the previous pool's audio callback");
+    assert!(scrub.lock().unwrap().is_none(), "hidden handoff retained a lingering scrub callback");
+    assert!(stops.load(Ordering::Relaxed) > stops_before);
+    assert!(!app.playback.playing);
+    assert!(!app.playback.audio_clock);
+    assert!(app.playback.preroll.is_none());
+    assert!(Arc::ptr_eq(&project, &app.session.project), "presentation teardown must not edit the replacement project");
+    assert_eq!((app.session.revision, app.session.saved_revision), revisions);
+}
+
+#[test]
+fn hidden_pool_replacement_retires_source_callback() {
+    let mut session = Session::default();
+    let samples = vec![0.0_f32; 48_000 * 2 * 2];
+    let bytes: Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&samples, 48_000).into();
+    let item = filmcraft_engine::commands::import_bytes(&mut session, "/pool-source.wav", bytes, None).unwrap();
+    session.execute("source.open", json!({"item":item.0})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let fill: HeldFill = Arc::default();
+    let stops = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(HeldDevice { fill: fill.clone(), stops: stops.clone() }));
+    app.play_source().unwrap();
+    assert!(fill.lock().unwrap().is_some());
+    assert!(app.source_playback.clock.playing);
+    let before = stops.load(Ordering::Relaxed);
+    let project = app.session.project.clone();
+    let revisions = (app.session.revision, app.session.saved_revision);
+    app.session.media = Arc::new(filmcraft_engine::MediaPool::default());
+    app.set_now_for_test(0.1);
+    let _ = egui::Context::default().run_logic(&egui::RawInput::default(), |ctx| app.logic_inner(ctx));
+    assert!(fill.lock().unwrap().is_none(), "hidden handoff retained the previous pool's Source callback");
+    assert!(stops.load(Ordering::Relaxed) > before);
+    assert!(!app.source_playback.clock.playing);
+    assert!(!app.source_playback.clock.audio_clock);
+    assert!(Arc::ptr_eq(&project, &app.session.project));
+    assert_eq!((app.session.revision, app.session.saved_revision), revisions);
+}
+
+struct CaptureInput(Arc<AtomicBool>);
+impl filmcraft_engine::voiceover::AudioInput for CaptureInput {
+    fn devices(&self) -> Vec<String> {
+        vec!["Test input".into()]
+    }
+    fn channels(&self, _: &str) -> u16 {
+        1
+    }
+    fn start(&mut self, _: &str, sample_rate: u32) -> Result<filmcraft_engine::voiceover::InputFormat, String> {
+        self.0.store(true, Ordering::Relaxed);
+        Ok(filmcraft_engine::voiceover::InputFormat { sample_rate, channels: 1 })
+    }
+    fn read(&mut self, _: usize) -> Vec<Vec<f32>> {
+        vec![vec![]]
+    }
+    fn discard(&mut self) {}
+    fn stop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+fn replacement_timeline() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("replacement.otio");
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let item = s.execute("file.newColorMatte", json!({"width":16,"height":16,"seconds":60})).unwrap()["item"].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item":item,"videoTrack":"V1","seconds":0})).unwrap();
+    let (bytes, _) =
+        filmcraft_interchange::export(&s.project, s.state.active_sequence.unwrap(), filmcraft_interchange::Format::Otio, &Default::default()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    (dir, path)
+}
+
+#[test]
+fn hidden_pool_replacement_stops_voiceover_capture_without_placing_a_take() {
+    let (_dir, path) = replacement_timeline();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let capturing = Arc::new(AtomicBool::new(false));
+    s.voiceover.input = Some(Box::new(CaptureInput(capturing.clone())));
+    s.execute("audio.voiceover.start", json!({"track":"A1","time":0,"preroll":0})).unwrap();
+    let mut app = FilmcraftApp::new(s);
+    app.play(1.0);
+    assert!(capturing.load(Ordering::Relaxed));
+    app.session.mixrec.seq = app.session.state.active_sequence;
+    app.session.mcrec.seq = app.session.state.active_sequence;
+    app.session.execute("file.import", json!({"paths":[path],"replace":true})).unwrap();
+    let project = app.session.project.clone();
+    let revisions = (app.session.revision, app.session.saved_revision);
+    app.set_now_for_test(0.1);
+    let _ = egui::Context::default().run_logic(&egui::RawInput::default(), |ctx| app.logic_inner(ctx));
+    assert!(!capturing.load(Ordering::Relaxed), "hidden handoff retained voice-over input capture");
+    assert!(!app.session.voiceover.recording());
+    assert!(!app.session.mixrec.active());
+    assert!(!app.session.mcrec.active());
+    assert!(Arc::ptr_eq(&project, &app.session.project), "old take must not be placed into the replacement");
+    assert_eq!((app.session.revision, app.session.saved_revision), revisions);
+}
+
+#[test]
+fn hidden_pool_replacement_keeps_playback_requested_later_in_the_same_control_batch() {
+    let (_dir, path) = replacement_timeline();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
+    let (import, imported) = crate::control::ControlRequest::new("engine.execute", json!({"command":"file.import","params":{"paths":[path],"replace":true}}));
+    let (play, played) = crate::control::ControlRequest::new("engine.execute", json!({"command":"playback.toggle","params":{"target":"program"}}));
+    tx.send(import).unwrap();
+    tx.send(play).unwrap();
+    app.set_now_for_test(0.1);
+    let _ = egui::Context::default().run_logic(&egui::RawInput::default(), |ctx| app.logic_inner(ctx));
+    let reply = imported.try_recv().unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let reply = played.try_recv().unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(app.playback.playing, "deferred handoff canceled an accepted replacement's play command");
+    assert!(Arc::ptr_eq(&app.frames.pool, &app.session.media));
+}
+
 #[test]
 fn forward_shuttle_playback_keeps_audio_enabled() {
     assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));

@@ -4,7 +4,10 @@
 #[path = "../../src/recovery_policy.rs"]
 mod policy;
 
-use policy::{Action, INTERVAL_S, Policy, StartupRecoveryMode, engine_opfs_write_allowed, recovery_display_name, startup_recovery_mode};
+use policy::{
+    Action, INTERVAL_S, Policy, StartupRecoveryMode, ValidationWarning, engine_opfs_write_allowed, recovery_display_name, should_show_warning,
+    startup_recovery_mode,
+};
 
 #[test]
 fn missing_snapshot_after_read_error_does_not_hold_recovery() {
@@ -35,6 +38,21 @@ fn recovery_metadata_name_is_bounded_without_changing_the_project() {
 }
 
 #[test]
+fn rejected_dimension_warning_stays_visible_until_a_later_revision_validates() {
+    let mut warning = ValidationWarning::default();
+    warning.reject(7, "invalid dimensions".into());
+    warning.refresh(7, || -> Result<(), &str> { panic!("same revision should not revalidate") });
+    assert_eq!(warning.message(), Some("invalid dimensions"));
+    warning.refresh(8, || Err("still invalid"));
+    assert_eq!(warning.message(), Some("still invalid"));
+    warning.refresh(9, || Ok::<(), &str>(()));
+    assert_eq!(warning.message(), None);
+    warning.reject(10, "new invalid state".into());
+    warning.clear();
+    assert_eq!(warning.message(), None);
+}
+
+#[test]
 fn skipped_dirty_snapshot_is_held_for_download_without_opening_it() {
     assert_eq!(startup_recovery_mode(true), StartupRecoveryMode::HoldForDownload);
     assert_eq!(startup_recovery_mode(false), StartupRecoveryMode::Open);
@@ -57,6 +75,15 @@ fn engine_exports_cannot_replace_browser_recovery_files() {
     }
     assert!(engine_opfs_write_allowed("/opfs/projects/copy.fcproj"));
     assert!(engine_opfs_write_allowed("/exports/copy.fcproj"));
+}
+
+#[test]
+fn recovery_warning_yields_to_command_errors_and_resumes_after_they_expire() {
+    let warning = "Recovery paused for invalid dimensions";
+    assert!(should_show_warning("", None));
+    assert!(should_show_warning(warning, Some(warning)));
+    assert!(!should_show_warning("Could not import media", Some(warning)));
+    assert!(should_show_warning("", Some(warning)));
 }
 
 /// #197: a snapshot write that fails is retried after the interval without another edit.
@@ -153,4 +180,73 @@ fn edit_during_clean_write_keeps_meta_owned() {
     assert_eq!(p.tick(30.0, 2, 2), Action::Nothing);
     p.written(2, true, 30.1);
     assert_eq!(p.tick(30.2, 2, 2), Action::WriteClean);
+}
+
+/// An invalid live revision cannot replace a valid browser recovery snapshot, and a repair resumes writes.
+#[test]
+fn invalid_dimensions_keep_last_browser_snapshot_until_repair() {
+    use filmcraft_project::{ItemKind, Label, Project};
+    use filmcraft_time::FrameRate;
+
+    let mut project = Project::new("Browser recovery");
+    let graphic = project.add_item("Oversized graphic", Label::Iris, ItemKind::Graphic { width: 64, height: 36, rate: FrameRate::FPS_24 }, None);
+    let mut p = Policy::default();
+    assert!(matches!(p.tick_checked(0.0, 1, 0, || filmcraft_format::validate_project_dimensions(&project)), Ok(Action::WriteSnapshot(1))));
+    p.written(1, true, 0.1);
+
+    if let Some(item) = project.item_mut(graphic)
+        && let ItemKind::Graphic { width, height, .. } = &mut item.kind
+    {
+        (*width, *height) = (1_000_000, 1_000_000);
+    }
+    let error = p.tick_checked(INTERVAL_S, 2, 0, || filmcraft_format::validate_project_dimensions(&project));
+    assert!(error.is_err_and(|e| e.to_string().contains("Oversized graphic")));
+    assert!(matches!(
+        p.tick_checked(INTERVAL_S + 1.0, 2, 0, || -> Result<(), filmcraft_format::FormatError> { panic!("same rejected revision was revalidated") }),
+        Ok(Action::Nothing)
+    ));
+
+    if let Some(item) = project.item_mut(graphic)
+        && let ItemKind::Graphic { width, height, .. } = &mut item.kind
+    {
+        (*width, *height) = (64, 36);
+    }
+    assert!(matches!(p.tick_checked(INTERVAL_S + 2.0, 3, 0, || filmcraft_format::validate_project_dimensions(&project)), Ok(Action::WriteSnapshot(3))));
+    p.written(3, true, INTERVAL_S + 2.1);
+    assert!(matches!(
+        p.tick_checked(INTERVAL_S + 3.0, 3, 0, || -> Result<(), filmcraft_format::FormatError> { panic!("already journaled") }),
+        Ok(Action::Nothing)
+    ));
+}
+
+/// A structurally invalid live project must not retire this session's last valid snapshot.
+#[test]
+fn invalid_dimensions_cannot_mark_a_browser_snapshot_clean() {
+    use filmcraft_project::{ItemKind, Label, Project};
+    use filmcraft_time::FrameRate;
+
+    let mut project = Project::new("Browser recovery");
+    let graphic = project.add_item("Oversized graphic", Label::Iris, ItemKind::Graphic { width: 64, height: 36, rate: FrameRate::FPS_24 }, None);
+    let mut policy = Policy::default();
+    assert!(matches!(policy.tick_checked(0.0, 1, 0, || filmcraft_format::validate_project_dimensions(&project)), Ok(Action::WriteSnapshot(1))));
+    policy.written(1, true, 0.1);
+
+    if let Some(item) = project.item_mut(graphic)
+        && let ItemKind::Graphic { width, height, .. } = &mut item.kind
+    {
+        (*width, *height) = (1_000_000, 1_000_000);
+    }
+    let rejected = policy.tick_checked(1.0, 1, 1, || filmcraft_format::validate_project_dimensions(&project));
+    assert!(rejected.is_err_and(|error| error.to_string().contains("Oversized graphic")));
+    assert!(matches!(
+        policy.tick_checked(1.1, 1, 1, || -> Result<(), filmcraft_format::FormatError> { panic!("same rejected revision was revalidated") }),
+        Ok(Action::Nothing)
+    ));
+
+    if let Some(item) = project.item_mut(graphic)
+        && let ItemKind::Graphic { width, height, .. } = &mut item.kind
+    {
+        (*width, *height) = (64, 36);
+    }
+    assert!(matches!(policy.tick_checked(2.0, 2, 2, || filmcraft_format::validate_project_dimensions(&project)), Ok(Action::WriteClean)));
 }

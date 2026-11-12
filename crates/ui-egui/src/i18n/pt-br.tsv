@@ -21,6 +21,7 @@
 # Browser recovery when a snapshot cannot be opened.
 	Could not open the browser recovery file “{name}”: {error}	Não foi possível abrir o arquivo de recuperação do navegador “{name}”: {error}
 	The browser recovery file “{name}” was skipped by a launch option.	O arquivo de recuperação do navegador “{name}” foi ignorado por uma opção de inicialização.
+	Recovery paused	Recuperação pausada
 	Could not inspect the browser recovery file: {error}	Não foi possível examinar o arquivo de recuperação do navegador: {error}
 	Browser recovery exceeds {limit} media entries. Automatic snapshots and copies of imported media remain paused. Save current work manually and reduce retained media before reloading.	A recuperação do navegador excede {limit} entradas de mídia. Os instantâneos automáticos e as cópias de mídia importada permanecem pausados. Salve o trabalho atual manualmente e reduza a mídia retida antes de recarregar.
 	Recovery unavailable	Recuperação indisponível
@@ -30,6 +31,7 @@
 	I saved the recovery file	Salvei o arquivo de recuperação
 	Could not download recovery file: {error}	Não foi possível baixar o arquivo de recuperação: {error}
 	After the file has been saved, continue. Editing a new project may replace the browser recovery copy.	Depois de salvar o arquivo, continue. Editar um novo projeto pode substituir a cópia de recuperação do navegador.
+	Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.	Recuperação pausada para alterações não salvas: {error}. Corrija as dimensões inválidas para retomar.
 	About FilmCraft	Sobre o FilmCraft
 	Add Audio Submix Track	Adicionar faixa de submixagem de áudio
 	Add Caption at Playhead	Adicionar legenda no cursor de reprodução

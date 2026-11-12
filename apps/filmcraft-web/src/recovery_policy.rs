@@ -60,6 +60,45 @@ pub fn recovery_display_name(name: &str) -> &str {
     if !name.trim().is_empty() && name.len() <= 512 && !name.chars().any(|c| c.is_control() || c == '/' || c == '\\') { name } else { "Recovered" }
 }
 
+/// Keep a recovery warning visible without hiding a different status from the current action.
+pub fn should_show_warning(current_status: &str, previous_warning: Option<&str>) -> bool {
+    current_status.is_empty() || previous_warning == Some(current_status)
+}
+
+/// A dimension warning persists for the rejected revision and clears only after a later
+/// revision validates. Saving the same invalid revision does not dismiss the warning.
+#[derive(Clone, Debug, Default)]
+pub struct ValidationWarning {
+    rejected: Option<(u64, String)>,
+}
+
+impl ValidationWarning {
+    /// Retain the validation error and the revision that produced it.
+    pub fn reject(&mut self, revision: u64, error: String) {
+        self.rejected = Some((revision, error));
+    }
+
+    /// Revalidate a later revision, retaining its error or clearing the warning when it is valid.
+    pub fn refresh<E: std::fmt::Display>(&mut self, revision: u64, validate: impl FnOnce() -> Result<(), E>) {
+        if self.rejected.as_ref().is_some_and(|(rejected, _)| *rejected != revision) {
+            match validate() {
+                Ok(()) => self.rejected = None,
+                Err(error) => self.reject(revision, error.to_string()),
+            }
+        }
+    }
+
+    /// Retire the warning after a validated recovery update.
+    pub fn clear(&mut self) {
+        self.rejected = None;
+    }
+
+    /// Borrow the retained validation error for display.
+    pub fn message(&self) -> Option<&str> {
+        self.rejected.as_ref().map(|(_, error)| error.as_str())
+    }
+}
+
 /// What the caller should do this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
@@ -72,7 +111,7 @@ pub enum Action {
     WakeAfter(f64),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Policy {
     /// Revision whose snapshot was last written or is being written.
     last_revision: Option<u64>,
@@ -87,9 +126,34 @@ pub struct Policy {
     snapshots_at_clean: u64,
     /// Clean metadata must wait until every earlier snapshot callback has finished.
     pending_snapshots: u64,
+    /// A rejected revision is checked again only after the revision changes.
+    rejected_revision: Option<u64>,
 }
 
 impl Policy {
+    /// Validate a due snapshot before changing policy state, preserving the previous snapshot on rejection.
+    pub fn tick_checked<E>(&mut self, now: f64, revision: u64, saved_revision: u64, validate: impl FnOnce() -> Result<(), E>) -> Result<Action, E> {
+        if self.rejected_revision == Some(revision) {
+            return Ok(Action::Nothing);
+        }
+        let mut next = self.clone();
+        let action = next.tick(now, revision, saved_revision);
+        let due_revision = match action {
+            Action::WriteSnapshot(due_revision) => Some(due_revision),
+            Action::WriteClean => Some(revision),
+            Action::Nothing | Action::WakeAfter(_) => None,
+        };
+        if let Some(due_revision) = due_revision {
+            if let Err(error) = validate() {
+                self.rejected_revision = Some(due_revision);
+                return Err(error);
+            }
+            next.rejected_revision = None;
+        }
+        *self = next;
+        Ok(action)
+    }
+
     /// Called every frame with the session's revisions and the time in seconds.
     pub fn tick(&mut self, now: f64, revision: u64, saved_revision: u64) -> Action {
         if revision != saved_revision {

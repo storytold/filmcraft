@@ -5,6 +5,7 @@ fn supported_recovery_locales_cover_browser_messages() {
     let recovery = [
         "Could not open the browser recovery file “{name}”: {error}",
         "The browser recovery file “{name}” was skipped by a launch option.",
+        "Recovery paused",
         "Recover Unsaved Changes",
         "Could not inspect the browser recovery file: {error}",
         "Recovery unavailable",
@@ -15,6 +16,7 @@ fn supported_recovery_locales_cover_browser_messages() {
         "I saved the recovery file",
         "Could not download recovery file: {error}",
         "After the file has been saved, continue. Editing a new project may replace the browser recovery copy.",
+        "Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.",
     ];
     for language in [Language::De, Language::Es, Language::Fr, Language::Ja, Language::PtBr, Language::ZhCn] {
         for en in recovery {

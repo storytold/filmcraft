@@ -22,6 +22,8 @@ The editor remains usable for manual saves while the recovery warning asks for a
 If the browser does not support OPFS, reload alone cannot enable recovery; use manual saves or
 an OPFS-capable browser. Run `node apps/filmcraft-web/tests/recovery_startup.mjs URL [CHROME]`
 against the built app to exercise malformed-project recovery with an isolated browser profile.
+The `dimensions` mode (`URL CHROME dimensions`) repeats the recovery journeys with a real
+zero-width project and requires a dimension-specific rejection before preserving its bytes.
 
 Custom eframe runners construct the wrapper with `WebApp::new(app)`, then set any audio or host
 bridge and call `set_context` from their app creator. Custom runners do not write automatic

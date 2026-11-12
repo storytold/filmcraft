@@ -263,11 +263,18 @@ try {
       "recovery console log exposed the private project diagnostic");
     assert.equal(await js("window.filmcraftLoad.fatal ?? null"), null);
     console.log("private recovery diagnostics stay on screen and out of console logs: PASS");
-    const invalidSnapshot = '{"project":';
-    const openError = await js(`window.filmcraft.openProject(new File([${JSON.stringify(invalidSnapshot)}], "truncated-project.fcproj"))
+    const dimensionCase = process.argv[4] === "dimensions";
+    const invalidProject = JSON.parse(validSnapshot);
+    if (dimensionCase) {
+      const sequence = Object.values(invalidProject.project.items).find((item) => item.kind.Sequence)?.kind.Sequence;
+      assert.ok(sequence, "dimension regression needs a real serialized sequence");
+      sequence.settings.width = 0;
+    }
+    const invalidSnapshot = dimensionCase ? JSON.stringify(invalidProject) : '{"project":';
+    const openError = await js(`window.filmcraft.openProject(new File([${JSON.stringify(invalidSnapshot)}], ${JSON.stringify(dimensionCase ? "invalid-dimensions.fcproj" : "truncated-project.fcproj")}))
       .then(() => null, (error) => String(error))`);
-    assert.match(openError, /EOF|parse|JSON|invalid|project/i,
-      "the truncated fixture must be rejected before testing recovery preservation");
+    assert.match(openError, dimensionCase ? /sequence.*(?:dimension|frame|width|size)/i : /EOF|parse|JSON|invalid|project/i,
+      "the selected invalid fixture must be rejected before testing recovery preservation");
 
     await js(`(async () => {
       const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("recovery", {create:true});
