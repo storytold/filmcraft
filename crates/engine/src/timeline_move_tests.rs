@@ -466,6 +466,32 @@ fn a_partner_whose_position_does_not_change_is_left_alone() {
     assert_eq!(state(&s, a.id).1 - a.start, later - v.start);
 }
 
+/// An insert opens its gap on every sync-locked track. With the sound left out of an insert move
+/// of its picture to the same time, that gap pushed the sound one clip length later, out of sync.
+/// The sound now goes back in at its own time, on its own track, with the picture.
+#[test]
+fn an_insert_move_to_the_same_time_keeps_the_partner_in_sync() {
+    let mut s = demo();
+    let (v_track, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let v2 = s.active_sequence().unwrap().video_tracks[1].id;
+    for to_track in [v2, v_track] {
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        let r = s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": to_track.0, "time": v.start.0}], "insert": true})).unwrap();
+        assert_eq!(state(&s, v.id), (to_track, v.start));
+        assert_eq!(state(&s, a.id), (a_track, a.start), "the sound stays under its picture");
+        assert_eq!(r["moved"], json!([v.id.0, a.id.0]));
+        assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+        s.active_sequence().unwrap().check().unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, *before);
+    }
+    // an overwrite move still leaves the unchanged sound alone
+    let r = s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": v2.0, "time": v.start.0}]})).unwrap();
+    assert_eq!(r["moved"], json!([v.id.0]));
+    assert_eq!(state(&s, a.id), (a_track, a.start));
+}
+
 /// When a clip would start before the sequence start, every clip of the call lands later by the
 /// same amount: a split edit keeps its offset and several listed clips keep their spacing.
 #[test]

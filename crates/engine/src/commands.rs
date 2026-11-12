@@ -518,7 +518,8 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
 /// `timeline.move`: move the listed clips to (track, time). With Linked Selection on (or
 /// `linked: true`) the linked partners of a listed clip that are not listed themselves follow by
 /// the same time offset on their own tracks, so picture and sound stay in sync; a partner on a
-/// locked track, or one whose position would not change, stays as it is. Nothing moves before the sequence start: when a clip would,
+/// locked track stays as it is, and so does one whose position would not change unless the move inserts (the
+/// insert's gap would push it away from its clip). Nothing moves before the sequence start: when a clip would,
 /// every clip of the call lands later by the same amount, so the spacing asked for is kept.
 /// `overwritten` lists every clip the move covered without being asked to move it: its length
 /// before and after (ticks) and the clips what is left of it now lives on as (none = removed; a
@@ -602,18 +603,21 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
         }
         _ => Tick::ZERO,
     };
+    let ins = bool_p(p, "insert").unwrap_or(false);
+    let copy = bool_p(p, "copy").unwrap_or(false);
     let mut moves: Vec<(ClipId, TrackId, Tick, bool)> = Vec::with_capacity(plan.len());
     for (clip, track, start, was, new_track) in plan {
         // a partner that ends up where it is does not move (its listed clip only changed track):
-        // re-placing it would drop the transitions at its edges
-        if was == Some(start + late) {
+        // re-placing it would drop the transitions at its edges. An insert opens its gap on every
+        // sync-locked track and would push a partner left out of the move away from its clip, so
+        // an insert move places the partner again at its own time (a copy keeps the original pair
+        // together, so it still skips the partner).
+        if was == Some(start + late) && (!ins || copy) {
             continue;
         }
         let start = i64::try_from(start + late).ok().map(Tick).filter(|t| *t <= Tick::MAX).ok_or_else(|| bad(CMD, "`time` is out of range"))?;
         moves.push((clip, track, start, new_track));
     }
-    let ins = bool_p(p, "insert").unwrap_or(false);
-    let copy = bool_p(p, "copy").unwrap_or(false);
     // every clip on the sequence now: id -> (track, start, end, project item)
     let spots = |s: &Session| -> Vec<(u64, TrackId, Tick, Tick, ItemId)> {
         let q = s.active_sequence();
