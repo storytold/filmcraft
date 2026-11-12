@@ -122,9 +122,10 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
         let lock_r = small(49.0, hrect.center().y);
-        let lresp = crate::widgets::icon_toggle(
+        let lresp = crate::widgets::icon_toggle_clipped(
             ui,
-            lock_r.intersect(visible),
+            lock_r,
+            visible,
             if tr.locked { Icon::Lock } else { Icon::Unlock },
             true,
             t,
@@ -165,8 +166,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         if hrect.height() >= 40.0 {
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
-        // resize track height by dragging the header's bottom edge, or the outer edge of the top video
-        // track or the last audio track, which also reaches into the empty space past it
+        // Keep header-edge resizing available until the side track sliders replace it.
         let header_column = Rect::from_min_max(pos2(hrect.min.x, clip_rect.min.y), pos2(hrect.max.x, clip_rect.max.y));
         let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
         let bottom = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0));
@@ -231,7 +231,7 @@ fn header_line_buttons(
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =
-        crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
+        crate::widgets::icon_toggle_clipped(ui, sr, visible, Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
     app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
     if sresp.clicked() {
         actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
@@ -239,9 +239,10 @@ fn header_line_buttons(
     x += 24.0;
     if r.kind == TrackKind::Video {
         let er = small(x, upper_y);
-        let eresp = crate::widgets::icon_toggle(
+        let eresp = crate::widgets::icon_toggle_clipped(
             ui,
-            er.intersect(visible),
+            er,
+            visible,
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
             true,
             t,

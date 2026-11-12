@@ -87,7 +87,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // the thumb's middle: scroll, the thumb staying under the pointer
             0 => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    v.target_scroll = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    let dx = (pos.x - grab) as f64;
+                    let dx = if app.session.state.timeline_ui.inverted_controls { -dx } else { dx };
+                    v.target_scroll = (start + dx * per_point).clamp(0.0, range);
                     v.scroll = v.target_scroll;
                 }
             }
