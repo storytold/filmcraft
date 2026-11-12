@@ -81,17 +81,14 @@ impl Label {
             Label::Yellow => [0x6e, 0x66, 0x28],
         }
     }
-    /// Marker colours (Markers panel chips).
+    /// Marker and clip defaults share the same sixteen preset colors.
     pub fn marker_rgb(self) -> [u8; 3] {
-        match self {
-            Label::Rose | Label::Magenta => [0xc1, 0x3c, 0x3d],
-            Label::Purple | Label::Violet | Label::Lavender => [0xa9, 0x8c, 0xaf],
-            Label::Mango | Label::Brown | Label::Tan => [0xda, 0x76, 0x39],
-            Label::Yellow => [0xc9, 0xa3, 0x44],
-            Label::Blue | Label::Iris | Label::Cerulean => [0x56, 0x8b, 0xf4],
-            Label::Teal | Label::Caribbean => [0x72, 0xf0, 0xd7],
-            _ => [0x75, 0x85, 0x42],
-        }
+        self.rgb()
+    }
+    /// Alternate user-facing color names resolve to presets, not additional swatches.
+    pub const COLOR_ALIASES: [(&'static str, Label); 4] = [("Red", Label::Rose), ("Orange", Label::Mango), ("Cyan", Label::Teal), ("Pink", Label::Magenta)];
+    pub fn from_color_name(name: &str) -> Option<Label> {
+        Self::from_name(name).or_else(|| Self::COLOR_ALIASES.iter().find(|(alias, _)| alias.eq_ignore_ascii_case(name)).map(|(_, label)| *label))
     }
     pub fn from_name(s: &str) -> Option<Label> {
         Self::ALL.iter().copied().find(|l| l.name().eq_ignore_ascii_case(s))

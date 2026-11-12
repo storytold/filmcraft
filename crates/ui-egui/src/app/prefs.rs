@@ -57,6 +57,32 @@ impl FilmcraftApp {
         zoom
     }
 
+    /// Point the scrub output at the sequence that is active now (#2633).
+    /// [`FilmcraftApp::apply_prefs`] carries the sequence's sample rate to the output, but it
+    /// returns early while the settings stay the same, and Settings ▸ Sequence, opening another
+    /// project or switching sequences change what the next grain needs without changing them. A
+    /// stale rate mixes the grain at the wrong speed; and a stream that is still open keeps the
+    /// fill it was opened with, which mixes the sequence that was active then, so another sequence
+    /// needs it opened again even at the same rate.
+    fn sync_scrub_output(&mut self) {
+        let rate = self.session.active_sequence().map(|q| q.settings.sample_rate);
+        let sequence = self.session.state.active_sequence;
+        if rate == self.scrub_rate && sequence == self.scrub_sequence {
+            return;
+        }
+        let rate_changed = rate != self.scrub_rate;
+        self.scrub_rate = rate;
+        self.scrub_sequence = sequence;
+        if rate_changed {
+            let hw = self.session.prefs.audio_hardware.clone();
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+                out.configure(&hw, rate);
+            }
+        }
+        self.scrub.device_stopped();
+    }
+
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
@@ -75,6 +101,9 @@ impl FilmcraftApp {
             ctx.global_style_mut(|s| s.animation_time = animation);
         }
         if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
+            // A sequence can ask the device for another sample rate without touching the
+            // preferences: Settings ▸ Sequence, opening another project, switching sequences.
+            self.sync_scrub_output();
             return;
         }
         let p = self.session.prefs.clone();
@@ -119,6 +148,13 @@ impl FilmcraftApp {
                 a.stop();
                 a.configure(&p.audio_hardware, rate);
             }
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+                out.configure(&p.audio_hardware, rate);
+            }
+            self.scrub.device_stopped();
+            self.scrub_rate = rate;
+            self.scrub_sequence = self.session.state.active_sequence;
         }
         if (hardware_changed || pitch_changed) && self.playback.playing && self.playback.preroll.is_none() {
             self.playback.anchor_tick = self.session.playhead();

@@ -79,6 +79,11 @@ pub enum Compression {
         restart_lines: usize,
         pt: u8,
     },
+    /// Baseline (lossy) JPEG at `quality` 1–100 (8-bit samples; one sample per pixel as a
+    /// greyscale JPEG, three as a colour one, which the encoder stores as YCbCr).
+    LossyJpeg {
+        quality: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,9 +130,31 @@ impl Default for Options {
     }
 }
 
+/// Add `extra` to `base`; an entry replaces any earlier one with the same tag (the last of
+/// several in `extra` wins). One pass: scanning `base` for every extra tag was quadratic.
+fn merge_tags(base: &mut Vec<(u16, Value)>, extra: &[(u16, Value)]) {
+    // inserted one at a time: collecting would reserve `extra.len()` entries up front, and there are at most 65 536 distinct tags
+    let mut last: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+    for (i, e) in extra.iter().enumerate() {
+        last.insert(e.0, i);
+    }
+    base.retain(|e| !last.contains_key(&e.0));
+    for (i, (t, v)) in extra.iter().enumerate() {
+        if last.get(t) == Some(&i) {
+            base.push((*t, v.clone()));
+        }
+    }
+}
+
 /// Pack `rows` rows of `per_row` samples of `bits` bits (8/16-bit in byte order `be`, other
 /// depths most significant bit first, each row starting on a byte boundary).
+///
+/// Samples are 16 bits wide, so a depth outside 1..=16 packs nothing (it would shift past the
+/// accumulator, or emit bytes per sample without end).
 pub fn pack(samples: &[u16], per_row: usize, bits: u32, be: bool) -> Vec<u8> {
+    if !(1..=16).contains(&bits) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for row in samples.chunks(per_row.max(1)) {
         match bits {
@@ -318,6 +345,29 @@ fn write_entropy(out: Vec<u8>, coded: &[Coded], tables: &[HuffTable], restart_li
     out
 }
 
+/// Encode `w` × `h` × `spp` 8-bit samples (1 or 3 per pixel) as a baseline JPEG. An error says
+/// why the encoder refuses them (an unsupported sample count, a size past the JPEG limit).
+pub fn lossy_jpeg(samples: &[u16], w: usize, h: usize, spp: usize, quality: u8) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+    let color = match spp {
+        1 => image::ExtendedColorType::L8,
+        3 => image::ExtendedColorType::Rgb8,
+        n => return Err(format!("lossy JPEG needs 1 or 3 samples per pixel, not {n}")),
+    };
+    let dim = |v: usize| u32::try_from(v).ok().filter(|&v| v <= u32::from(u16::MAX));
+    let (Some(wd), Some(ht)) = (dim(w), dim(h)) else {
+        return Err(format!("a {w} × {h} chunk is past the JPEG size limit of {}", u16::MAX));
+    };
+    if samples.len() != w * h * spp {
+        return Err(format!("{} samples for a {w} × {h} × {spp} chunk", samples.len()));
+    }
+    let bytes: Vec<u8> = samples.iter().map(|&v| v.min(255) as u8).collect();
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+    enc.write_image(&bytes, wd, ht, color).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 /// Encode `samples` (`width` × `height` × `comps`, interleaved) as lossless JPEG.
 pub fn lj92(samples: &[u16], params: &Lj92Params) -> Vec<u8> {
     let p = Lj92Params { comps: params.comps.clamp(1, 4), ..*params };
@@ -372,7 +422,7 @@ fn put_ifd(buf: &mut Vec<u8>, mut entries: Vec<(u16, Value)>, be: bool) -> u32 {
 }
 
 /// Encode the strips or tiles of `samples`, appending them to `buf`; returns (offsets, counts).
-fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec<u32>) {
+fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> Result<(Vec<u32>, Vec<u32>), String> {
     let spp = o.samples_per_pixel;
     let (cw, ch) = match o.layout {
         Layout::Strips { rows } => (o.width, rows.max(1)),
@@ -401,6 +451,7 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
                     let params = Lj92Params { width: cw * spp / comps, height: rows, comps, precision: o.bits as u8, predictor, restart_lines, pt };
                     lj92(&chunk, &params)
                 }
+                Compression::LossyJpeg { quality } => lossy_jpeg(&chunk, cw, rows, spp, quality)?,
             };
             if buf.len() % 2 == 1 {
                 buf.push(0);
@@ -410,20 +461,45 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
             buf.extend(data);
         }
     }
-    (offs, counts)
+    Ok((offs, counts))
 }
 
 /// Write a DNG holding `samples` (`width` × `height` × `samples_per_pixel`, interleaved).
+///
+/// # Panics
+/// On options [`try_write`] refuses. This is a test-file helper; use `try_write` to get the error.
+#[allow(clippy::panic)]
 pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
+    try_write(samples, o).unwrap_or_else(|e| panic!("cannot write the DNG: {e}"))
+}
+
+/// [`write`], returning an error for options the format cannot hold: `bits` outside 1..=16, or a lossy JPEG DNG, which needs
+/// 8-bit LinearRaw (`bits` 8, `cfa` `None`) with 1 or 3 samples per pixel, and a chunk the JPEG
+/// encoder refuses is an error too.
+pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
+    // the samples are 16 bits wide: a file with empty or wrong raw strips must not be returned as if it were written
+    if !(1..=16).contains(&o.bits) {
+        return Err(format!("{} bits per sample is outside 1..=16", o.bits));
+    }
+    if matches!(o.compression, Compression::LossyJpeg { .. }) && (o.bits != 8 || o.cfa.is_some()) {
+        return Err("a lossy JPEG DNG needs bits 8 and cfa None (LinearRaw)".into());
+    }
     let be = o.big_endian;
     let mut buf = if be { b"MM\0*\0\0\0\0".to_vec() } else { b"II*\0\0\0\0\0".to_vec() };
-    let (offs, counts) = put_chunks(&mut buf, samples, o);
+    let (offs, counts) = put_chunks(&mut buf, samples, o)?;
     let mut raw = vec![
         (tags::NEW_SUBFILE_TYPE, Value::Long(vec![0])),
         (tags::IMAGE_WIDTH, Value::Long(vec![o.width as u32])),
         (tags::IMAGE_LENGTH, Value::Long(vec![o.height as u32])),
         (tags::BITS_PER_SAMPLE, Value::Short(vec![o.bits as u16; o.samples_per_pixel])),
-        (tags::COMPRESSION, Value::Short(vec![if o.compression == Compression::None { 1 } else { 7 }])),
+        (
+            tags::COMPRESSION,
+            Value::Short(vec![match o.compression {
+                Compression::None => 1,
+                Compression::LosslessJpeg { .. } => 7,
+                Compression::LossyJpeg { .. } => 34892,
+            }]),
+        ),
         (tags::SAMPLES_PER_PIXEL, Value::Short(vec![o.samples_per_pixel as u16])),
         (tags::PLANAR_CONFIGURATION, Value::Short(vec![1])),
     ];
@@ -449,13 +525,7 @@ pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
         None => raw.push((tags::PHOTOMETRIC, Value::Short(vec![34892]))),
     }
     // later entries replace earlier ones with the same tag
-    let merge = |base: &mut Vec<(u16, Value)>, extra: &[(u16, Value)]| {
-        for (t, v) in extra {
-            base.retain(|e| e.0 != *t);
-            base.push((*t, v.clone()));
-        }
-    };
-    merge(&mut raw, &o.raw_tags);
+    merge_tags(&mut raw, &o.raw_tags);
     let mut main = vec![(tags::DNG_VERSION, Value::Byte(vec![1, 4, 0, 0])), (tags::UNIQUE_CAMERA_MODEL, Value::Ascii("FilmCraft Synthetic".into()))];
     let ifd0 = if o.preview {
         let raw_at = put_ifd(&mut buf, raw, be);
@@ -479,14 +549,47 @@ pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
             (tags::SUB_IFDS, Value::Long(vec![raw_at])),
         ];
         p.append(&mut main);
-        merge(&mut p, &o.main_tags);
+        merge_tags(&mut p, &o.main_tags);
         put_ifd(&mut buf, p, be)
     } else {
         raw.append(&mut main);
-        merge(&mut raw, &o.main_tags);
+        merge_tags(&mut raw, &o.main_tags);
         put_ifd(&mut buf, raw, be)
     };
     let off = if be { ifd0.to_be_bytes() } else { ifd0.to_le_bytes() };
     buf[4..8].copy_from_slice(&off);
-    buf
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn tags_merge_last_wins_in_one_pass() {
+        let mut base = vec![(1u16, Value::Short(vec![1])), (2, Value::Short(vec![2])), (3, Value::Short(vec![3]))];
+        let extra = [(2u16, Value::Short(vec![20])), (4, Value::Short(vec![4])), (2, Value::Short(vec![21]))];
+        merge_tags(&mut base, &extra);
+        let tags: Vec<u16> = base.iter().map(|e| e.0).collect();
+        assert_eq!(tags, [1, 3, 4, 2], "replaced entries move to the end, in the order of their last mention");
+        assert!(matches!(&base[3].1, Value::Short(v) if v == &[21]));
+        // many distinct tags merge without a scan per tag
+        let many: Vec<(u16, Value)> = (0..60_000u32).map(|i| ((i % 65_000) as u16, Value::Byte(vec![]))).collect();
+        merge_tags(&mut Vec::new(), &many);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 1..=16")]
+    fn write_rejects_a_depth_outside_one_to_sixteen() {
+        write(&[0; 4], &Options { width: 2, height: 2, bits: 17, compression: Compression::None, ..Default::default() });
+    }
+
+    #[test]
+    fn pack_refuses_a_depth_outside_one_to_sixteen() {
+        assert!(pack(&[1, 2, 3], 3, 0, false).is_empty());
+        assert!(pack(&[1, 2, 3], 3, 17, false).is_empty());
+        assert!(pack(&[1, 2, 3], 3, u32::MAX, false).is_empty());
+        assert_eq!(pack(&[0xAB, 0xCD], 2, 8, false), [0xAB, 0xCD]);
+        assert_eq!(pack(&[1], 1, 12, false).len(), 2);
+    }
 }
