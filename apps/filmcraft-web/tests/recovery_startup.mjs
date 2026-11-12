@@ -109,7 +109,7 @@ async function testCustomRunner() {
     new Uint8Array([82,73,70,70,38,0,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,128,187,0,0,0,119,1,0,2,0,16,0,100,97,116,97,2,0,0,0,0,0])
   ],"take.wav",{type:"audio/wav"})])`);
   assert.deepEqual(imported.errors, []);
-  assert.deepEqual(imported.paths, ["/files/take.wav"]);
+  assert.deepEqual(imported.paths, ["/session-files/take.wav"]);
   await sleep(6500);
   const persisted = await js(`(async () => {
     const root = await navigator.storage.getDirectory();
@@ -271,7 +271,7 @@ try {
       new Uint8Array([82,73,70,70,38,0,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,128,187,0,0,0,119,1,0,2,0,16,0,100,97,116,97,2,0,0,0,0,0])
     ],"host-import.wav",{type:"audio/wav"})])`);
     assert.deepEqual(hostImport.errors, []);
-    assert.deepEqual(hostImport.paths, ["/files/host-import.wav"]);
+    assert.deepEqual(hostImport.paths, ["/session-files/host-import.wav"]);
     await sleep(6500);
     assert.equal(await js(`(async () => {
       try {
@@ -522,6 +522,15 @@ try {
 
     await send("Emulation.setDeviceMetricsOverride", {width:520,height:620,deviceScaleFactor:1,mobile:false});
     const heldMeta = await js(opfsText("meta.json"));
+    const retainedWaveBytes = [...waveBytes];
+    retainedWaveBytes[retainedWaveBytes.length - 1] = 1;
+    await js(`(async () => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("media");
+      const writer = await (await dir.getFileHandle("take.wav")).createWritable();
+      await writer.write(new Uint8Array(${JSON.stringify(retainedWaveBytes)}));
+      await writer.close();
+    })()`);
+    const degradedCopies = [];
     const failedEnumeration = await send("Page.addScriptToEvaluateOnNewDocument", { source: `
       const values = FileSystemDirectoryHandle.prototype.values;
       window.injectedEnumerationFailures = 0;
@@ -555,24 +564,45 @@ try {
           new File([new Uint8Array(${JSON.stringify(waveBytes)})], "take.wav", {type:"audio/wav"})
         ])`);
         assert.deepEqual(manualImport.errors, []);
+        assert.ok(manualImport.paths[0].startsWith("/session-files/"),
+          "unverified import names must be disjoint from retained media paths");
+        assert.deepEqual(await js(`(async () => Array.from(await window.filmcraft.readFile(${JSON.stringify(manualImport.paths[0])})))()`), waveBytes);
+        const browser = await js("window.filmcraft.execute('mediaBrowser.list',{})");
+        assert.equal(browser.dir, "/session-files");
+        assert.ok(browser.entries.some((entry) => entry.path === manualImport.paths[0]));
         await sleep(6500);
         assert.equal(await js(opfsText("snapshot.fcproj")), "legacy-recovery-test");
         assert.equal(await js(opfsText("meta.json")), heldMeta);
-        assert.equal(await js(`(async () => {
+        assert.deepEqual(await js(`(async () => {
           const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("media");
-          return (await (await dir.getFileHandle("take.wav")).getFile()).text();
-        })()`), "original recovery media");
+          return Array.from(new Uint8Array(await (await (await dir.getFileHandle("take.wav")).getFile()).arrayBuffer()));
+        })()`), retainedWaveBytes);
         rmSync(join(downloads, "manual.fcproj"), {force:true});
         await js("window.filmcraft.execute('file.saveCopy',{path:'/exports/manual.fcproj'})");
         await until(() => readdirSync(downloads).includes("manual.fcproj"));
-        const manual = JSON.parse(readFileSync(join(downloads, "manual.fcproj"), "utf8"));
+        const manualText = readFileSync(join(downloads, "manual.fcproj"), "utf8");
+        degradedCopies.push({text:manualText, path:manualImport.paths[0]});
+        const manual = JSON.parse(manualText);
         assert.ok(Object.values(manual.project.items).some((item) => item.name === "Editing after storage failure"));
       }
     } finally {
       await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: failedEnumeration.identifier });
     }
     await send("Emulation.setDeviceMetricsOverride", {width:1260,height:806,deviceScaleFactor:1,mobile:false});
-    console.log("normal and fresh storage failures preserve reachable actions for long diagnostics, pause persistence and permit manual save: PASS");
+    const reopenOrigin = await js("performance.timeOrigin");
+    await send("Page.navigate", {url});
+    await until(async () => await js(`performance.timeOrigin !== ${reopenOrigin} && !!window.filmcraftLoad?.readyMs`));
+    assert.deepEqual(await js("(async () => Array.from(await window.filmcraft.readFile('/files/take.wav')))()"), retainedWaveBytes);
+    for (const copy of degradedCopies) {
+      const opened = await js(`window.filmcraft.openProject(new File([${JSON.stringify(copy.text)}],"manual-reopened.fcproj"))`);
+      assert.equal(opened.missingMedia, 1);
+      const missing = await js("window.filmcraft.execute('media.findMissing',{})");
+      assert.ok(missing.missing.some((item) => item.path === copy.path));
+      const status = await js("window.filmcraft.execute('media.status',{})");
+      assert.equal(status.find((item) => item.path === copy.path)?.status, "missing",
+        "a manual save must never bind a session import to older retained media");
+    }
+    console.log("normal and fresh storage failures preserve reachable actions, isolate imports across save/reopen, pause persistence and permit manual save: PASS");
 
     const entryLimitSetup = await send("Page.addScriptToEvaluateOnNewDocument", { source: `
       const values = FileSystemDirectoryHandle.prototype.values;

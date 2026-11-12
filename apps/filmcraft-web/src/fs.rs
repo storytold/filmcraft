@@ -1,7 +1,8 @@
 //! Browser-backed host services: a virtual file table and the engine's [`Services`].
 //!
 //! - Media the user opens (`<input type=file>`, drag-and-drop, File System Access pickers, files
-//!   kept in OPFS) are registered as `File`/`Blob` entries under a virtual path (`/files/<name>`).
+//!   kept in OPFS) are registered as `File`/`Blob` entries under a virtual path. Verified durable
+//!   names use `/files/<name>`; imports without name protection use `/session-files/<name>`.
 //!   They are never copied whole: [`BlobReader`] serves the demuxers' range reads from a cache of
 //!   1 MiB chunks (LRU, [`CACHE_BUDGET`]), fetched asynchronously with `Blob.slice().arrayBuffer()`.
 //!   A read whose chunks are not cached yet starts the fetch (plus read-ahead) and fails with
@@ -84,6 +85,19 @@ pub fn reserve_blob_name(name: &str) {
 /// Register a browser `File` (or named `Blob`) at an unused virtual path; collisions get numbered names.
 /// Name + size do not identify content: replacing an occupied path changes every project item referencing it.
 pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
+    register_blob_in(import_directory(), name, blob)
+}
+
+/// Restored durable files always keep their recorded paths, independently of import readiness.
+pub(crate) fn register_recovery_blob(name: &str, blob: web_sys::Blob) -> String {
+    register_blob_in("/files", name, blob)
+}
+
+fn import_directory() -> &'static str {
+    if crate::recovery::media_names_ready() { "/files" } else { "/session-files" }
+}
+
+fn register_blob_in(directory: &str, name: &str, blob: web_sys::Blob) -> String {
     let size = blob.size() as u64;
     let clean: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
     FS.with(|fs| {
@@ -94,7 +108,7 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
         };
         let mut n = 1;
         let path = loop {
-            let p = if n == 1 { format!("/files/{clean}") } else { format!("/files/{stem} ({n}){ext}") };
+            let p = if n == 1 { format!("{directory}/{clean}") } else { format!("{directory}/{stem} ({n}){ext}") };
             if !fs.entries.contains_key(&p) && !fs.reserved_paths.contains(&p) {
                 break p;
             }
@@ -415,7 +429,7 @@ impl Services for WebServices {
         true
     }
 
-    /// The Media Browser lists the virtual file table: picked and dropped files under `/files`.
+    /// The Media Browser lists both protected durable files and isolated session imports.
     fn list_entries(&self, dir: &str) -> Option<io::Result<Vec<filmcraft_engine::media_browser::DirEntry>>> {
         use filmcraft_engine::media_browser::DirEntry;
         let prefix = if dir.ends_with('/') { dir.to_string() } else { format!("{dir}/") };
@@ -449,7 +463,7 @@ impl Services for WebServices {
     }
 
     fn home_dir(&self) -> Option<String> {
-        Some("/files".into())
+        Some(import_directory().into())
     }
 }
 

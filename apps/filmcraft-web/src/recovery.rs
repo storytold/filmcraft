@@ -35,6 +35,10 @@ pub(crate) fn set_media_names_ready(ready: bool) {
     MEDIA_NAMES_READY.with(|state| state.set(ready));
 }
 
+pub(crate) fn media_names_ready() -> bool {
+    MEDIA_NAMES_READY.with(Cell::get)
+}
+
 /// A finished OPFS write, reported back to the next [`Autosave::tick`].
 enum Outcome {
     Snapshot { revision: u64, ok: bool },
@@ -182,7 +186,7 @@ pub async fn restore_media() -> usize {
     let files = opfs::files_in("media").await;
     let n = files.len();
     for (name, f) in files {
-        crate::fs::register_blob(&name, f.into());
+        crate::fs::register_recovery_blob(&name, f.into());
     }
     n
 }

@@ -180,6 +180,9 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
   install them only after `Services::write_file` returns success. If that writer returns an error,
   Save and Save As must preserve the live project, path and saved revision. Save a Copy never
   adopts its destination; asynchronous host durability remains the service's responsibility.
+- **Browser media identity invariant:** imports made before durable media names are verified use
+  a namespace disjoint from restored media, including hosted and custom runners. A saved project
+  may require relinking those session files after reload; it must never bind unrelated retained bytes.
 
 **Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
 The core move operation rejects repeated ids before mutation or id allocation; placing one identity

@@ -13,6 +13,9 @@ recovery media. Startup reserves existing media names before accepting imports; 
 or more than 100,000 media-directory entries pause snapshots and imported-media persistence.
 Other recovery-read failures keep snapshots paused while a copy is held or storage remains unavailable.
 Confirmed absence of a snapshot lets autosave resume; media copies remain allowed when names are protected.
+Imports made without verified durable names use `/session-files/`, including hosted/custom runners.
+Use the returned import paths. Those files remain usable for the session, but reopening a manual save
+requires relinking them; they cannot silently resolve to unrelated retained `/files/` media.
 The editor remains usable for manual saves while the recovery warning asks for a reload/retry.
 If the browser does not support OPFS, reload alone cannot enable recovery; use manual saves or
 an OPFS-capable browser. Run `node apps/filmcraft-web/tests/recovery_startup.mjs URL [CHROME]`
