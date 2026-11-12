@@ -319,6 +319,8 @@ impl Nvenc {
         // pictures is simply written without B-frames (H.264 keeps declining those, to the software encoder)
         let room_for_bframes = codec == Codec::H264 || cfg.keyint > 2;
         let bframes = u32::from(cfg.bframes && cfg.profile != Profile::Baseline && caps.max_bframes >= 1 && room_for_bframes);
+        let max_lookahead = 31u32.saturating_sub(bframes);
+        let lookahead = cfg.lookahead.filter(|&la| la > 0).map(|la| la.clamp(1, max_lookahead));
         let ten_bit = cfg.profile == Profile::HevcMain10;
         let params = Params {
             codec,
@@ -332,7 +334,7 @@ impl Nvenc {
             qp: cfg.qp,
             multipass: cfg.multipass,
             spatial_aq: cfg.spatial_aq,
-            lookahead: cfg.lookahead,
+            lookahead,
             gop: cfg.keyint.max(1),
             profile: match cfg.profile {
                 Profile::Baseline => 0,
@@ -346,11 +348,10 @@ impl Nvenc {
             sar: cfg.sar,
             bframes,
         };
-        let ring = if let Some(la) = cfg.lookahead
-            && la > 0
+        let ring = if let Some(la) = lookahead
             && !cfg.cqp
         {
-            (la.min(64) as usize + 8).max(RING)
+            (la as usize + 8).max(RING)
         } else {
             RING
         };

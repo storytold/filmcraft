@@ -398,8 +398,9 @@ impl Session {
                     rc.flags |= RC_ENABLE_AQ;
                 }
                 if let Some(la) = p.lookahead {
+                    let max_la = 31u32.saturating_sub(p.bframes);
                     rc.flags |= RC_ENABLE_LOOKAHEAD;
-                    rc.lookaheadDepth = la.clamp(1, 64) as u16;
+                    rc.lookaheadDepth = la.clamp(1, max_la) as u16;
                 }
                 if p.multipass {
                     rc.multiPass = 2;

@@ -546,7 +546,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 // a hardware encoder has one pass and no constant-quality mode: H.265 / AV1 offer neither
                 let cqp_supported = (hevc || s.hardware_encoding == HardwareEncoding::Auto)
                     && filmcraft_engine::export::cqp_available(s.format)
-                    && !(s.format == Format::H264 && (s.h264_profile == filmcraft_engine::export::H264Profile::High10 || s.h264_intra_only));
+                    && !(s.format == Format::H264
+                        && (s.h264_profile == filmcraft_engine::export::H264Profile::High10 || s.h264_intra_only || (seq_hdr && !s.sdr)));
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf, BitrateMode::Cqp];
                 let labels: Vec<(String, bool)> = o
                     .iter()
@@ -633,9 +634,17 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                         s.lookahead = on.then_some(16);
                     }
                     if let Some(la) = s.lookahead.as_mut() {
-                        let mut v = *la as f64;
-                        drag(ui, reg, "export.video.lookaheadFrames", &mut v, DragOptions { range: 1.0..=64.0, speed: 1.0, suffix: " frames", decimals: 0 });
-                        *la = v as u32;
+                        let has_bframes = if hevc { s.keyframe_distance.is_none_or(|k| k > 2) } else { s.h264_profile != H264Profile::Baseline };
+                        let max_la = if has_bframes { 30 } else { 31 };
+                        let mut v = (*la).min(max_la) as f64;
+                        drag(
+                            ui,
+                            reg,
+                            "export.video.lookaheadFrames",
+                            &mut v,
+                            DragOptions { range: 1.0..=f64::from(max_la), speed: 1.0, suffix: " frames", decimals: 0 },
+                        );
+                        *la = (v as u32).clamp(1, max_la);
                     }
                 });
             }
