@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-fn rate(r: filmcraft_mxf::Rational) -> String {
+fn rate(r: craft_media::mxf::Rational) -> String {
     format!("{}/{}", r.num, r.den)
 }
 
@@ -28,7 +28,7 @@ fn mxf_details(src: &filmcraft_codecs::MxfSource) -> Value {
                 "startPosition": t.start_position,
                 "duration": t.duration,
             });
-            if t.kind == filmcraft_mxf::TrackKind::Picture {
+            if t.kind == craft_media::mxf::TrackKind::Picture {
                 v["pictures"] = json!(t.samples.len());
                 v["keyFrames"] = json!(t.samples.iter().filter(|s| s.key).count());
                 v["indexed"] = json!(t.indexed);
@@ -91,8 +91,8 @@ fn mpeg_details(src: &filmcraft_codecs::MpegSource) -> Value {
         .enumerate()
         .map(|(i, s)| {
             let id = match s.id {
-                filmcraft_mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
-                filmcraft_mpegts::StreamId::Ps { stream_id, sub_id } => {
+                craft_media::mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
+                craft_media::mpegts::StreamId::Ps { stream_id, sub_id } => {
                     json!({"streamId": format!("0x{stream_id:02x}"), "subStreamId": sub_id.map(|x| format!("0x{x:02x}"))})
                 }
             };
@@ -156,7 +156,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
     let bytes: Arc<[u8]> = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?.into();
     let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let head = &bytes[..bytes.len().min(70_000)];
-    if filmcraft_mxf::sniff(head) {
+    if craft_media::mxf::sniff(head) {
         let src = filmcraft_codecs::MxfSource::open(&name, bytes).map_err(|e| format!("{path}: {e}"))?;
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();
         v["mxf"] = mxf_details(&src);

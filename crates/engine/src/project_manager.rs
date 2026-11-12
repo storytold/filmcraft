@@ -200,7 +200,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_p(p, "dryRun").unwrap_or(false) {
         return Ok(summary);
     }
-    if Path::new(&project_path).exists() && !bool_p(p, "overwrite").unwrap_or(false) {
+    if std::fs::symlink_metadata(&project_path).is_ok() && !bool_p(p, "overwrite").unwrap_or(false) {
         return Err(EngineError::Other(format!("{project_path} already exists")));
     }
     std::fs::create_dir_all(&dest_dir).map_err(|e| EngineError::Other(format!("{dest}: {e}")))?;
@@ -361,8 +361,8 @@ fn dir_size_at(d: &Path, depth: u32) -> std::io::Result<u64> {
     for e in rd.filter_map(|e| e.ok()) {
         n += match e.file_type() {
             Ok(t) if t.is_dir() => dir_size_at(&e.path(), depth + 1)?,
-            // a link to a file counts as the file (copy_dir copies it); links to folders are not followed
-            Ok(t) if t.is_symlink() => std::fs::metadata(e.path()).map_or(0, |m| if m.is_file() { m.len() } else { 0 }),
+            // links are not followed (copy_dir skips them): the tree is the project's own previews
+            Ok(t) if t.is_symlink() => 0,
             _ => e.metadata().map_or(0, |m| m.len()),
         };
     }
@@ -373,10 +373,14 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<u64> {
     copy_dir_at(from, to, 0)
 }
 
-/// Copy the files under `from` (not through symbolic links to folders, which could loop).
+/// Copy the files under `from`, following no symbolic links (to folders they could loop, to files they could read from anywhere).
 fn copy_dir_at(from: &Path, to: &Path, depth: u32) -> std::io::Result<u64> {
     if depth > MAX_DIR_DEPTH {
         return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
+    }
+    // the root is not a link either: a link there would read some other folder into the project
+    if std::fs::symlink_metadata(from)?.file_type().is_symlink() {
+        return Ok(0);
     }
     std::fs::create_dir_all(to)?;
     let mut n = 0;
@@ -386,7 +390,8 @@ fn copy_dir_at(from: &Path, to: &Path, depth: u32) -> std::io::Result<u64> {
         let t = e.file_type()?;
         if t.is_dir() {
             n += copy_dir_at(&p, &to.join(e.file_name()), depth + 1)?;
-        } else if t.is_symlink() && p.is_dir() {
+        } else if t.is_symlink() {
+            // previews are files this program wrote: a link was put there, and its target is not ours to copy
             continue;
         } else {
             n += std::fs::copy(&p, to.join(e.file_name()))?;
@@ -431,13 +436,20 @@ mod folder_walk_tests {
     }
 
     #[test]
-    fn file_links_count_and_a_too_deep_folder_is_an_error() {
+    fn file_links_are_skipped_and_a_too_deep_folder_is_an_error() {
         let dir = std::env::temp_dir().join(format!("fc-pm-walk2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::write(dir.join("f.bin"), [0u8; 10]).unwrap();
         std::os::unix::fs::symlink(dir.join("f.bin"), dir.join("a/link.bin")).unwrap();
-        assert_eq!(dir_size(&dir.join("a")).unwrap(), 10);
+        // a link to a file is not followed: it could name any file the user can read
+        assert_eq!(dir_size(&dir.join("a")).unwrap(), 0);
+        assert_eq!(copy_dir(&dir.join("a"), &dir.join("a-out")).unwrap(), 0);
+        assert!(!dir.join("a-out/link.bin").exists());
+        // nor is a link standing for the folder itself
+        std::os::unix::fs::symlink(&dir, dir.join("root-link")).unwrap();
+        assert_eq!(copy_dir(&dir.join("root-link"), &dir.join("root-out")).unwrap(), 0);
+        assert!(!dir.join("root-out").exists());
         let mut deep = dir.join("deep");
         for _ in 0..=MAX_DIR_DEPTH + 1 {
             deep.push("d");
@@ -446,6 +458,22 @@ mod folder_walk_tests {
         std::fs::write(deep.join("f.bin"), [0u8; 1]).unwrap();
         assert!(dir_size(&dir.join("deep")).is_err());
         assert!(copy_dir(&dir.join("deep"), &dir.join("out")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod dangling_link_tests {
+    #[test]
+    fn a_dangling_link_in_the_destination_is_a_taken_name() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-dangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("elsewhere.mov");
+        std::os::unix::fs::symlink(&victim, dir.join("clip.mov")).unwrap();
+        let p = crate::proxies::unique_path(&dir, "clip", "", "mov", &[]);
+        assert_eq!(p, dir.join("clip 2.mov"), "the name behind a dangling link is not free");
+        assert!(!victim.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
