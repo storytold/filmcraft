@@ -153,7 +153,9 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, PLAYING_LOOK_BACK))
+            // (like the monitor, never a stand-in older than the picture shown: the bench plays forward)
+            let goes_on = |k: &FrameKey| self.last.is_none_or(|l| l.target != k.target || k.frame >= l.frame);
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, PLAYING_LOOK_BACK).filter(|(k, _)| goes_on(k)))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
@@ -807,7 +809,12 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             s.state.active_sequence?
         }
         n if n.starts_with("media:") => {
-            let a = import(&mut s, Path::new(&n[6..]));
+            let path = Path::new(&n[6..]);
+            if !path.is_file() {
+                eprintln!("{name}: no such file");
+                return None;
+            }
+            let a = import(&mut s, path);
             let r = s.execute("file.newSequenceFromClip", json!({ "items": [a.0] })).ok()?;
             ItemId(r["sequence"].as_u64()?)
         }
