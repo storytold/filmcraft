@@ -3584,6 +3584,7 @@
 	The default graphics are used from the next start.	Графика по умолчанию будет использоваться при следующем запуске.
 	DirectX 12 only	Только DirectX 12
 	software rendering	программная визуализация
+	integrated GPU	встроенный GPU
 	Label Color Presets	Пресеты цвета меток
 	{name} (Modified)	{name} (изменён)
 	Revert to the preset's colors and names	Вернуть цвета и имена пресета

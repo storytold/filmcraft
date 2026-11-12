@@ -1,0 +1,15 @@
+[package]
+name = "filmcraft-oggmux"
+description = "Clean-room Ogg (RFC 3533) page writer with the Ogg Opus (RFC 7845) and Ogg Vorbis comment headers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+craft-media = { workspace = true, features = ["ogg"] }

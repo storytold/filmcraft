@@ -636,7 +636,7 @@ fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, p
     let filmcraft_isobmff::CodecConfig::Aac(cfg) = &t.entries[0].codec else { panic!("not AAC: {:?}", t.entries[0].codec) };
     assert_eq!((cfg.object_type, cfg.sample_rate, cfg.channel_config), (2, 48_000, 2));
     assert!(t.samples.len() >= 48_000 / 1024, "{} access units", t.samples.len());
-    let mut dec = filmcraft_aac::Decoder::new(&cfg.asc).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&cfg.asc).unwrap();
     let mut pcm: Vec<Vec<f32>> = Vec::new();
     for i in 0..t.samples.len() {
         let out = dec.decode(&file.read_sample(&bytes, 0, i).unwrap()).unwrap();
@@ -662,7 +662,7 @@ fn write_and_check_adts_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, 
     export(p, seq, &settings, sources, &Progress::default()).unwrap();
     let b = std::fs::read(path).unwrap();
     // AAC-LC 44.1 kHz (index 4) mono: 00010 0100 0001 000
-    let mut dec = filmcraft_aac::Decoder::new(&[0x12, 0x08]).unwrap();
+    let mut dec = craft_audio::aac::Decoder::new(&[0x12, 0x08]).unwrap();
     let (mut pos, mut units, mut pcm) = (0usize, 0usize, vec![Vec::new()]);
     while pos < b.len() {
         let h = &b[pos..pos + 7];
@@ -708,7 +708,7 @@ fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
     let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
     let info = src.info().audio_streams[0].clone();
     // the exported second, past the encoder delay
-    let buf = src.audio(i64::from(filmcraft_mp3enc::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    let buf = src.audio(i64::from(craft_audio::mp3::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
     assert_eq!(buf.channels.len(), info.channels as usize);
     (info.sample_rate, buf.channels)
 }
@@ -728,7 +728,7 @@ fn mp3_export_writes_layer_iii_frames() {
     // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
     assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
     // whole 960-byte frames covering the second and the encoder delay
-    assert_eq!(b.len(), 960 * (48_000 + filmcraft_mp3enc::DELAY as usize).div_ceil(1152));
+    assert_eq!(b.len(), 960 * (48_000 + craft_audio::mp3::DELAY as usize).div_ceil(1152));
     let (rate, pcm) = decode_mp3(&path);
     assert_eq!((rate, pcm.len()), (48_000, 2));
     // the -6 dBFS tone (RMS about 0.35) survives the round trip
@@ -990,18 +990,18 @@ fn opus_audio_is_an_ogg_opus_file() {
     let bytes = std::fs::read(&opus).unwrap();
 
     // RFC 7845: OpusHead, OpusTags, 20 ms packets of 400 bytes (160 kbps), the end trimmed
-    let ogg = filmcraft_ogg::open(&bytes).unwrap();
+    let ogg = craft_media::ogg::open(&bytes).unwrap();
     assert!(ogg.warnings.is_empty(), "{:?}", ogg.warnings);
     let st = &ogg.streams[0];
-    assert_eq!((st.codec, st.saw_eos), (filmcraft_ogg::Codec::Opus, true));
-    let head = filmcraft_opus::OpusHead::parse(&st.headers[0]).unwrap();
-    assert_eq!((head.channels, head.pre_skip, head.input_sample_rate), (2, filmcraft_opus::PRE_SKIP, 48_000));
+    assert_eq!((st.codec, st.saw_eos), (craft_media::ogg::Codec::Opus, true));
+    let head = craft_audio::opus::OpusHead::parse(&st.headers[0]).unwrap();
+    assert_eq!((head.channels, head.pre_skip, head.input_sample_rate), (2, filmcraft_opusenc::PRE_SKIP, 48_000));
     let tags = String::from_utf8_lossy(&st.headers[1]);
     assert!(tags.starts_with("OpusTags") && tags.contains("TITLE=Opus test") && tags.contains("ARTIST=FilmCraft") && tags.contains("FilmCraft "), "{tags}");
     assert_eq!(st.packets.len(), (72_000 + 120usize).div_ceil(960));
     assert!(st.packets.iter().all(|p| p.size == 400));
     assert_eq!(st.last_granule, Some(120 + 72_000));
-    let timing = filmcraft_ogg::OpusTiming::of(st, 120);
+    let timing = craft_media::ogg::OpusTiming::of(st, 120);
     assert_eq!(timing.total, 72_000);
 
     // FilmCraft's own importer: the same length, and close to the WAV export
@@ -1030,7 +1030,7 @@ fn opus_audio_is_an_ogg_opus_file() {
         assert_eq!(j["format"]["format_name"].as_str(), Some("ogg"));
         // Vorbis comments are stream tags, under their own (upper-case) names
         assert_eq!((a["tags"]["TITLE"].as_str(), a["tags"]["ARTIST"].as_str()), (Some("Opus test"), Some("FilmCraft")));
-        assert_eq!(a["initial_padding"].as_u64(), Some(u64::from(filmcraft_opus::PRE_SKIP)));
+        assert_eq!(a["initial_padding"].as_u64(), Some(u64::from(filmcraft_opusenc::PRE_SKIP)));
     }
 }
 
@@ -1145,11 +1145,11 @@ fn vorbis_audio_is_an_ogg_vorbis_file() {
     let bytes = std::fs::read(&ogg).unwrap();
 
     // Vorbis I §A: three headers, then audio pages; the last granule position is the length
-    let file = filmcraft_ogg::open(&bytes).unwrap();
+    let file = craft_media::ogg::open(&bytes).unwrap();
     assert!(file.warnings.is_empty(), "{:?}", file.warnings);
     let st = &file.streams[0];
-    assert_eq!((st.codec, st.headers.len(), st.saw_eos), (filmcraft_ogg::Codec::Vorbis, 3, true));
-    let info = filmcraft_ogg::VorbisInfo::parse(&st.headers[0]).unwrap();
+    assert_eq!((st.codec, st.headers.len(), st.saw_eos), (craft_media::ogg::Codec::Vorbis, 3, true));
+    let info = craft_media::ogg::VorbisInfo::parse(&st.headers[0]).unwrap();
     assert_eq!((info.channels, info.sample_rate), (2, 48_000));
     assert!(String::from_utf8_lossy(&st.headers[1]).contains("TITLE=Vorbis test"));
     assert_eq!(st.last_granule, Some(72_000));
@@ -1252,7 +1252,7 @@ fn opus_in_mp4_times_every_input_length_exactly() {
     let settings = ExportSettings { format: Format::H264, audio: AudioSettings { codec: AudioCodec::Opus, ..Default::default() }, ..Default::default() };
     for n in [0usize, 1, 959, 960, 961, 1_080, 48_000] {
         let mut enc = OpusAudio::new(2, &settings).unwrap();
-        assert_eq!((enc.priming(), enc.frame_size()), (u32::from(filmcraft_opus::PRE_SKIP), 960));
+        assert_eq!((enc.priming(), enc.frame_size()), (u32::from(filmcraft_opusenc::PRE_SKIP), 960));
         let mut durations: Vec<u32> = Vec::new();
         if n > 0 {
             let x = vec![0.25f32; n];
@@ -1286,8 +1286,8 @@ fn vorbis_51_is_reordered_to_vorbis_channel_order() {
     export(&p, seq, &ExportSettings { format: Format::Wav, path: wav.clone(), range, audio: pcm, ..Default::default() }, &m, &Progress::default()).unwrap();
     let audio = AudioSettings { channels: 6, vorbis_quality: 8.0, ..Default::default() };
     export(&p, seq, &ExportSettings { format: Format::Vorbis, path: ogg.clone(), range, audio, ..Default::default() }, &m, &Progress::default()).unwrap();
-    let file = filmcraft_ogg::open(&std::fs::read(&ogg).unwrap()).unwrap();
-    assert_eq!(filmcraft_ogg::VorbisInfo::parse(&file.streams[0].headers[0]).unwrap().channels, 6);
+    let file = craft_media::ogg::open(&std::fs::read(&ogg).unwrap()).unwrap();
+    assert_eq!(craft_media::ogg::VorbisInfo::parse(&file.streams[0].headers[0]).unwrap().channels, 6);
     let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("vorbis 5.1") else { return };
     let deinterleave = |pcm: Vec<f32>| -> Vec<Vec<f32>> { (0..6).map(|c| pcm.iter().skip(c).step_by(6).copied().collect()).collect() };
     let reference = deinterleave(ffmpeg_f32(&ffmpeg, "pcm_s24le", &wav));
@@ -1318,7 +1318,7 @@ fn ogg_comments_take_any_metadata_and_samples_are_made_finite() {
         let path = dir.path(name);
         let metadata = ExportMetadata { title: title.into(), comment: long.clone(), ..Default::default() };
         export(&p, seq, &ExportSettings { format, path: path.clone(), range, metadata, ..Default::default() }, &m, &Progress::default()).unwrap();
-        let file = filmcraft_ogg::open(&std::fs::read(&path).unwrap()).unwrap();
+        let file = craft_media::ogg::open(&std::fs::read(&path).unwrap()).unwrap();
         let tags = &file.streams[0].headers[1];
         assert!(tags.starts_with(magic));
         let text = String::from_utf8_lossy(tags);
@@ -2161,11 +2161,12 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         .collect();
     let extremes: Vec<i32> = (0..n).map(|i| if i % 3 == 0 { i32::MAX } else { i32::MIN + 1 }).collect();
     for level in [0u8, 5, 8] {
-        let mut enc = filmcraft_flac::Encoder::new(filmcraft_flac::EncoderConfig { level, ..filmcraft_flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
-        let mut file = enc.header();
+        let mut enc =
+            craft_audio::flac::Encoder::new(craft_audio::flac::EncoderConfig { level, ..craft_audio::flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
+        let mut file = enc.header(&[]);
         file.extend(enc.encode(&[&extremes, &noise]).unwrap());
         file.extend(enc.finish());
-        let at = filmcraft_flac::STREAMINFO_OFFSET as usize;
+        let at = craft_audio::flac::STREAMINFO_OFFSET as usize;
         file[at..at + 34].copy_from_slice(&enc.streaminfo());
         let src = filmcraft_codecs::open_bytes("x.flac", file.into()).unwrap_or_else(|e| panic!("level {level}: {e}"));
         let a = src.audio(0, n, 48_000).unwrap();
@@ -2178,4 +2179,30 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
             }
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error() {
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 32, 18, None);
+    let dir = Scratch::new("gif-reserved");
+    let path = dir.path("out.gif");
+    let file = Arc::new(std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap());
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: path.clone(),
+        include_audio: false,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        output_file: Some(file.clone()),
+        ..Default::default()
+    };
+    // the entry still names the reservation: the GIF lands there
+    export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(b"GIF8"), "the reserved file holds the GIF");
+    // the directory entry is replaced after the reservation: no success for a file nobody can reach,
+    // and the replacement is left alone
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"decoy").unwrap();
+    assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
 }

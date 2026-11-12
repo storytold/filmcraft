@@ -22,7 +22,7 @@ fn encode(left: &[f32], right: &[f32]) -> filmcraft_vorbis::Result<(Vec<u8>, Vec
 ```
 
 The comment header (the second of the three) is not this crate's: build it with
-`filmcraft_ogg::vorbis_comment`, a separate crate, as `crates/export` does. This crate has no
+`filmcraft_oggmux::vorbis_comment`, a separate crate, as `crates/export` does. This crate has no
 dependencies (layer L0).
 
 Channels are in Vorbis order (§4.3.9; 5.1 is L, C, R, Ls, Rs, LFE).

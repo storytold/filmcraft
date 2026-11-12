@@ -12,7 +12,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use filmcraft_ogg::{PageWriter, opus_tags, vorbis_comment};
+use filmcraft_oggmux::{PageWriter, opus_tags, vorbis_comment};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
@@ -35,7 +35,7 @@ pub(crate) fn export(
 ) -> Result<(u64, u64)> {
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let mut a = AudioOut::new(project.clone(), seq, settings, range)?;
-    let mut enc = filmcraft_opus::Encoder::new(filmcraft_opus::EncoderConfig::new(a.channels, settings.opus_bitrate()))
+    let mut enc = filmcraft_opusenc::Encoder::new(filmcraft_opusenc::EncoderConfig::new(a.channels, settings.opus_bitrate()))
         .map_err(|e| ExportError::Unsupported(format!("Opus: {e}")))?;
     let frames = a.remaining();
     // one second per chunk: memory stays flat however long the range is
@@ -55,7 +55,7 @@ pub(crate) fn export(
     let tags: Vec<(&str, &str)> = tags.iter().map(|(k, v)| (*k, v.as_str())).collect();
     out.write_all(&pages.header(&opus_tags(&ExportMetadata::vendor(), &tags))).map_err(io)?;
 
-    let frame = filmcraft_opus::FRAME_SIZE as i64;
+    let frame = filmcraft_opusenc::FRAME_SIZE as i64;
     let mut granule = 0i64;
     let mut write = |packets: Vec<Vec<u8>>, out: &mut Out| -> Result<()> {
         for p in packets {
@@ -77,7 +77,7 @@ pub(crate) fn export(
     }
     write(enc.finish().map_err(|e| ExportError::Encode(format!("Opus: {e}")))?, &mut out)?;
     // RFC 7845 §4.4: the last page's granule position ends the stream at the last real sample
-    let end = i64::from(filmcraft_opus::PRE_SKIP).saturating_add(i64::try_from(enc.samples_in()).unwrap_or(i64::MAX));
+    let end = i64::from(filmcraft_opusenc::PRE_SKIP).saturating_add(i64::try_from(enc.samples_in()).unwrap_or(i64::MAX));
     out.write_all(&pages.finish(Some(end))).map_err(io)?;
     let n = out.finish(settings)?;
     if settings.part_of_batch {
