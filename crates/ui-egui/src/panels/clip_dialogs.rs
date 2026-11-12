@@ -255,7 +255,10 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let (tc, tape) = it
                 .map(|(it, m)| {
                     let f = m.info.start_timecode.unwrap_or(0);
-                    (filmcraft_time::format_timecode_frames(f, m.frame_rate(), false), it.metadata.get("Tape Name").cloned().unwrap_or_default())
+                    (
+                        filmcraft_time::format_timecode_frames(f, m.frame_rate(), m.info.drop_frame_timecode),
+                        it.metadata.get("Tape Name").cloned().unwrap_or_default(),
+                    )
                 })
                 .unwrap_or_else(|| ("00:00:00:00".into(), String::new()));
             (json!({"timecode": tc, "tapeName": tape}), Value::Null)

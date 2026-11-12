@@ -281,6 +281,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 (n.attribute("audioRate").and_then(parse_audio_rate).unwrap_or(48_000), n.attribute("audioChannels").and_then(|c| c.parse().ok()).unwrap_or(2))
             }),
             start_tc: (start != Tick::ZERO).then(|| rate.frame_at(start)),
+            drop_frame: false,
             kind: None,
         };
         let item = match src {

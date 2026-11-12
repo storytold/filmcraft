@@ -222,6 +222,18 @@ fn rtmd_start_timecode_is_read() {
     assert_eq!(filmcraft_time::format_timecode_frames(tc, rate, false), "03:37:12:34");
 }
 
+/// A drop-frame `rtmd` timecode is the drop-frame count, and the media says it counts drop-frame.
+#[test]
+fn rtmd_drop_frame_flag_is_kept() {
+    let file = file_with_rtmd(&rtmd_sample(1, 0, 0, 0, 1));
+    let src = filmcraft_codecs::open_bytes("df.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!((src.info().start_timecode, src.info().drop_frame_timecode), (Some(215_784), true));
+    assert_eq!(filmcraft_time::format_timecode_frames(215_784, FrameRate::new(60000, 1001), true), "01;00;00;00");
+    let file = file_with_rtmd(&rtmd_sample(1, 0, 0, 0, 0));
+    let src = filmcraft_codecs::open_bytes("ndf.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!((src.info().start_timecode, src.info().drop_frame_timecode), (Some(216_000), false));
+}
+
 #[test]
 fn rtmd_without_usable_sample_is_ignored() {
     // Too short to carry the timecode block: no start timecode, and no panic.

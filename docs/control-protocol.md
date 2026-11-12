@@ -210,6 +210,10 @@ Annotations, argument checking, errors and export progress / cancellation:
 [agents.md § Conventions](agents.md#conventions).
 
 Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.
+A `timecode` that sets a media file's own start (`clip.modifyTimecode`, `file.newOfflineFile`) is read
+in that file's count: drop-frame when the clip counts drop-frame, and for a new offline file when the
+label uses `;` at 29.97 or 59.94 fps. A field that overflows carries into the next one first, so
+`01;00;00;30` is `01;00;01;00`.
 
 ## Panel docking commands
 

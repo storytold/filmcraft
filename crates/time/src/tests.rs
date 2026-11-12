@@ -229,6 +229,21 @@ fn parse_forms() {
     assert!(parse_timecode("abc", r, false, 0).is_err());
 }
 
+/// Overflowing fields carry into the next one before drop-frame counting, so `01;00;00;30` is the
+/// frame `01;00;01;00` names rather than a non-drop count; non-drop overflow is counted as before.
+#[test]
+fn overflowing_drop_frame_fields_carry_before_counting() {
+    let df = FrameRate::FPS_29_97;
+    // (typed, the label it reads as)
+    let cases = [("01;00;00;30", "01;00;01;00"), ("00;09;59;45", "00;10;00;15"), ("00;00;90;00", "00;01;30;00"), ("01;75;00;02", "02;15;00;02")];
+    for (typed, label) in cases {
+        let f = parse_timecode(typed, df, true, 0).unwrap();
+        assert_eq!((f, format_timecode_frames(f, df, true)), (parse_timecode(label, df, true, 0).unwrap(), label.to_string()), "{typed}");
+    }
+    assert_eq!(parse_timecode("00:00:00:90", FrameRate::FPS_25, false, 0).unwrap(), 90);
+    assert_eq!(parse_timecode("00:00:00:90", df, false, 0).unwrap(), 90);
+}
+
 #[test]
 fn signed_field_rejected() {
     let r = FrameRate::FPS_25;

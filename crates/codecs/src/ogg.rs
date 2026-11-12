@@ -106,6 +106,7 @@ impl OggSource {
             audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: channels.max(1), codec: codec.into(), bits_per_sample: None }],
             container: "Ogg".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.0.len()),
         };
         Ok(Self { info, bytes, file, stream, kind })

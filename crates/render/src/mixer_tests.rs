@@ -60,6 +60,7 @@ fn audio_clips_from_one_container_mix_distinct_streams() {
         audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM".into(), bits_per_sample: Some(16) }],
         container: "MOV".into(),
         start_timecode: None,
+        drop_frame_timecode: false,
         file_size: None,
     };
     info.audio_streams.push(info.audio_streams[0].clone());
@@ -661,6 +662,7 @@ fn nested_tone(inner_rate: u32) -> (Project, ItemId, SourceMap, Arc<Tone>) {
         audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "test".into(), bits_per_sample: Some(32) }],
         container: "test".into(),
         start_timecode: None,
+        drop_frame_timecode: false,
         file_size: None,
     };
     let media = p.add_item(

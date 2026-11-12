@@ -394,9 +394,11 @@ impl MxfSource {
             audio_streams: audio.into_iter().collect(),
             container: format!("MXF {}", file.operational_pattern.name()),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.0.len()),
         };
         info.start_timecode = file.timecode.as_ref().map(|tc| start_frames(tc, info.frame_rate()));
+        info.drop_frame_timecode = file.timecode.as_ref().is_some_and(|tc| tc.drop_frame) && info.frame_rate().supports_drop_frame();
         Ok(Self {
             info,
             bytes,
