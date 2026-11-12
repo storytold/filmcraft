@@ -1003,16 +1003,16 @@ mod multi_audio_tests {
         let rate = 44_100u32;
         for media_time in [None, Some(441)] {
             let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-            let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
+            let entry = SampleEntry::pcm(PcmConfig { bits: 32, float: true, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
             let mut cfg = TrackConfig::new(entry, rate);
             if let Some(media_time) = media_time {
                 cfg.edits = vec![filmcraft_isobmff::Edit { segment_duration: 1000, media_time, media_rate: 0x10000 }];
             }
             let track = mux.add_track(cfg).unwrap();
-            let data: Vec<u8> = filmcraft_testkit::cuts::noise(rate as usize, 2).into_iter().flat_map(|v| ((v * 30_000.0) as i16).to_le_bytes()).collect();
+            let data: Vec<u8> = filmcraft_testkit::cuts::noise(rate as usize, 2).into_iter().flat_map(f32::to_le_bytes).collect();
             mux.write_sample(track, WriteSample { data: &data, duration: rate, composition_offset: 0, is_sync: true }).unwrap();
             let source = super::Mp4Source::open("tone.mov", mux.finish().unwrap().into_inner().into()).unwrap();
-            let what = format!("mov 44.1 kHz at 48 kHz, edit {media_time:?}");
+            let what = format!("mov 44.1 kHz float at 48 kHz, edit {media_time:?}");
             filmcraft_testkit::cuts::assert_cut_independent(&what, 1_000, 20_000, |s, n| source.audio(s, n, 48_000).unwrap().channels);
         }
     }

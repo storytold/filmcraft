@@ -1005,6 +1005,19 @@ mod tests {
         assert!(source.audio_stream(2, 0, 64, 48_000).is_err());
     }
 
+    /// Resampled audio must not depend on where a read starts (#4673): MPEG audio (the decoder
+    /// gives full-precision floats) at 48 kHz read at 47 kHz.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
+        mux.psi(&[(0x03, 0x1100)]);
+        for k in 0..40u16 {
+            mux.pes(0x1100, &pes(0xC0, Some(90_000 + 2160 * k as i64), &mp2_frame(k as u8)));
+        }
+        let source = MpegSource::open("cuts.ts", mux.out.into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("MPEG audio 48 kHz at 47 kHz", 1_000, 20_000, |s, n| source.audio(s, n, 47_000).unwrap().channels);
+    }
+
     #[test]
     fn presentation_drops_leading_pictures_and_orders_by_key() {
         // decode order I(2) B(0) B(1) P(5) B(3) B(4): the leading B pictures are not presented

@@ -142,11 +142,6 @@ fn spec(name: &str) -> Vec<String> {
             NOISE,
             &["-t", "1", "-c:v", "mpeg2video", "-bf", "2", "-c:a", "pcm_dvd", "-ac", "2", "-f", "vob"],
         ]),
-        "ps_mpeg2_lpcm_white.vob" => cat(&[
-            &["-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25"],
-            &["-f", "lavfi", "-i", "anoisesrc=color=white:sample_rate=48000:amplitude=0.8:seed=5"],
-            &["-t", "1", "-c:v", "mpeg2video", "-c:a", "pcm_dvd", "-sample_fmt", "s16", "-ac", "1", "-f", "vob"],
-        ]),
         "ps_mpeg2_lpcm16.vob" => cat(&[
             &["-f", "lavfi", "-i", "testsrc2=size=352x288:rate=25"],
             NOISE,
@@ -713,12 +708,4 @@ fn generate_fixtures() {
             fixture(&ff, name, &refs)
         });
     }
-}
-
-/// Resampled audio must not depend on where a read starts (#4673): 48 kHz LPCM noise read at 47 kHz.
-#[test]
-fn resampled_audio_does_not_depend_on_the_read_cuts() {
-    let ff = filmcraft_testkit::require_ffmpeg!();
-    let src = open(&make(&ff, "ps_mpeg2_lpcm_white.vob"));
-    filmcraft_testkit::cuts::assert_cut_independent("vob LPCM 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
 }

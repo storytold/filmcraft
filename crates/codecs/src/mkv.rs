@@ -751,10 +751,11 @@ mod multi_audio_tests {
     /// Resampled audio must not depend on where a read starts (#4673).
     #[test]
     fn resampled_audio_does_not_depend_on_the_read_cuts() {
-        let mut t = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
-        t.audio = Some((48_000.0, 1, Some(16)));
+        // 32-bit float samples: a coarser source (16-bit) hides a one-ulp change of a weight
+        let mut t = TrackSpec::new(TrackKind::Audio, "A_PCM/FLOAT/IEEE");
+        t.audio = Some((48_000.0, 1, Some(32)));
         let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![t], MuxOptions::default()).unwrap();
-        let pcm: Vec<u8> = filmcraft_testkit::cuts::noise(30_000, 1).into_iter().flat_map(|v| ((v * 30_000.0) as i16).to_le_bytes()).collect();
+        let pcm: Vec<u8> = filmcraft_testkit::cuts::noise(30_000, 1).into_iter().flat_map(f32::to_le_bytes).collect();
         writer.write_frame(0, 0, true, &pcm, Some(600_000_000)).unwrap();
         let source = super::MkvSource::open("tone.mkv", writer.finish().unwrap().into_inner().into()).unwrap();
         filmcraft_testkit::cuts::assert_cut_independent("mkv 48 kHz at 47 kHz", 1_000, 20_000, |s, n| source.audio(s, n, 47_000).unwrap().channels);

@@ -595,3 +595,72 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
     }
     Some(AviSource::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
 }
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut v = id.to_vec();
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            v.push(0);
+        }
+        v
+    }
+
+    fn list(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut d = kind.to_vec();
+        d.extend_from_slice(body);
+        chunk(b"LIST", &d)
+    }
+
+    /// An audio-only AVI of 32-bit float mono samples at 48 kHz in blocks of 1000 frames.
+    fn float_avi(samples: &[f32]) -> Vec<u8> {
+        let mut avih = vec![0u8; 56];
+        avih[0..4].copy_from_slice(&40_000u32.to_le_bytes());
+        avih[12..16].copy_from_slice(&0x10u32.to_le_bytes());
+        avih[24..28].copy_from_slice(&1u32.to_le_bytes());
+        let mut strh = vec![0u8; 56];
+        strh[..4].copy_from_slice(b"auds");
+        strh[20..24].copy_from_slice(&4u32.to_le_bytes());
+        strh[24..28].copy_from_slice(&192_000u32.to_le_bytes());
+        strh[32..36].copy_from_slice(&(samples.len() as u32).to_le_bytes());
+        strh[44..48].copy_from_slice(&4u32.to_le_bytes());
+        let mut strf = vec![0u8; 18];
+        strf[..2].copy_from_slice(&3u16.to_le_bytes());
+        strf[2..4].copy_from_slice(&1u16.to_le_bytes());
+        strf[4..8].copy_from_slice(&48_000u32.to_le_bytes());
+        strf[8..12].copy_from_slice(&192_000u32.to_le_bytes());
+        strf[12..14].copy_from_slice(&4u16.to_le_bytes());
+        strf[14..16].copy_from_slice(&32u16.to_le_bytes());
+        let mut strl = chunk(b"strh", &strh);
+        strl.extend(chunk(b"strf", &strf));
+        let mut hdrl = chunk(b"avih", &avih);
+        hdrl.extend(list(b"strl", &strl));
+        let mut movi = Vec::new();
+        let mut index = Vec::new();
+        for block in samples.chunks(1000) {
+            let data: Vec<u8> = block.iter().flat_map(|v| v.to_le_bytes()).collect();
+            index.extend_from_slice(b"00wb");
+            index.extend_from_slice(&0x10u32.to_le_bytes());
+            index.extend_from_slice(&(movi.len() as u32 + 4).to_le_bytes());
+            index.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            movi.extend(chunk(b"00wb", &data));
+        }
+        let mut riff = b"AVI ".to_vec();
+        riff.extend(list(b"hdrl", &hdrl));
+        riff.extend(list(b"movi", &movi));
+        riff.extend(chunk(b"idx1", &index));
+        chunk(b"RIFF", &riff)
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673).
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let bytes = float_avi(&filmcraft_testkit::cuts::noise(30_000, 5));
+        let src = AviSource::open("cuts.avi", bytes.into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("AVI float 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+    }
+}

@@ -578,3 +578,26 @@ mod tests {
         assert!(matches!(e, CodecError::Container(ref m) if m.contains("disk gone")), "{e}");
     }
 }
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    /// Resampled audio must not depend on where a read starts (#4673): 24-bit PCM at 48 kHz read
+    /// at 47 kHz, from an OP-Atom file written here.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let samples: Vec<i32> = filmcraft_testkit::cuts::noise(30_000, 4).into_iter().map(|v| (v * 8_000_000.0) as i32).collect();
+        let opts = filmcraft_mxf::OpAtomPcm {
+            sample_rate: 48_000,
+            bits: 24,
+            channels: 1,
+            edit_rate: None,
+            ids: filmcraft_mxf::PackageIds::from_seed("cuts", "cuts"),
+            timecode: None,
+        };
+        let bytes = filmcraft_mxf::write_opatom_pcm(&opts, &samples).unwrap();
+        let src = MxfSource::open("cuts.mxf", bytes.into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("MXF 24-bit 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+    }
+}

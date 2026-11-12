@@ -386,7 +386,8 @@ mod importable_tests {
     fn resampled_window_reads_absolute_positions() {
         let source = filmcraft_testkit::cuts::noise(40_000, 3);
         let read = |start: i64, frames: usize| {
-            let s0 = (start as f64 * 48_000.0 / 47_000.0).floor() as i64;
+            let ratio = 48_000f64 / 47_000f64;
+            let s0 = (start as f64 * ratio).floor() as i64;
             let need = resample_source_frames(frames, 48_000, 47_000).unwrap() + 2;
             let window = vec![source[s0 as usize..(s0 as usize + need).min(source.len())].to_vec()];
             let mut out = vec![vec![0.0; frames]];
