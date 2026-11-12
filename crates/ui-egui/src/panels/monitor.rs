@@ -123,12 +123,9 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
             None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
         }
-    } else if grid {
-        let recent = playing_recent(app, key, dir);
-        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
     } else {
-        let recent = playing_recent(app, key, dir);
-        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+        let play = Play { dir, recent: playing_recent(app, key, dir) };
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, play, display, grid)
     };
     let exact = on_screen == Some(key);
     if which == Which::Program {
@@ -164,9 +161,9 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
         }
         let (reference, _) = if mv.transparency_grid {
-            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], None, DisplayMode::Composite, true)
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], Play::default(), DisplayMode::Composite, true)
         } else {
-            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite)
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], Play::default(), DisplayMode::Composite, false)
         };
         if let Some(tex) = reference {
             ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -642,22 +639,25 @@ fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option
     dir.and_then(|dir| app.frames.recent(key, dir, crate::frames::PLAYING_LOOK_BACK, crate::frames::PLAYING_REVISION_LAG))
 }
 
-/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
-/// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
-/// with the display mode's channel mapping. Returns the texture and the frame it shows.
-fn cpu_texture(
-    app: &mut FilmcraftApp,
-    ctx: &egui::Context,
-    name: &str,
-    key: FrameKey,
-    asked: &[FrameKey],
+/// What a playing monitor's CPU path needs to know of the play (all `None` when stopped).
+#[derive(Clone, Copy, Default)]
+struct Play {
+    /// Which way it plays (see [`play_direction`]).
+    dir: Option<i64>,
+    /// See [`playing_recent`].
     recent: Option<FrameKey>,
-    mode: DisplayMode,
-) -> (Option<egui::TextureId>, Option<FrameKey>) {
-    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false)
 }
 
-/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+/// The cached frames just before `key` that may stand in for it, nearest first: not one that
+/// would take a playing monitor's picture (`shown`) back (see [`steps_back`]).
+fn stand_ins_before(key: FrameKey, shown: Option<FrameKey>, dir: Option<i64>) -> impl Iterator<Item = FrameKey> {
+    (1..=6).map(move |d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).filter(move |k| !steps_back(*k, key, shown, dir))
+}
+
+/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
+/// it, else the newest ready one of `asked` (see [`asked_before`]), else `play.recent` (while
+/// playing), with the display mode's channel mapping, keeping the frame's alpha when `alpha` is
+/// set (the Transparency Grid). Returns the texture and the frame it shows.
 #[allow(clippy::too_many_arguments)]
 fn cpu_texture_as(
     app: &mut FilmcraftApp,
@@ -665,17 +665,19 @@ fn cpu_texture_as(
     name: &str,
     key: FrameKey,
     asked: &[FrameKey],
-    recent: Option<FrameKey>,
+    play: Play,
     mode: DisplayMode,
     alpha: bool,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
+    // (while playing, never a frame older than the picture on screen, as on the GPU path)
+    let before = app.texture_key(name);
     let found = app
         .frames
         .get(&key)
         .map(|img| (key, img))
-        .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
+        .or_else(|| stand_ins_before(key, before, play.dir).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
         .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
-        .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
+        .or_else(|| play.recent.filter(|k| !steps_back(*k, key, before, play.dir)).and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {
         Some((k, img)) => {
             let tex = if mode.is_channel() {
@@ -1467,6 +1469,13 @@ mod tests {
         assert!(steps_back(at(349), at(345), Some(at(345)), Some(-1)));
         assert!(!steps_back(at(341), at(345), Some(at(345)), Some(-1)));
         // hostile frame numbers do not overflow
+        // the CPU path (the Source monitor, the software renderer, the grid, the channel views)
+        // looks up to six frames back: none of them behind the picture on screen
+        let back = |due: i64, shown: Option<i64>, dir| super::stand_ins_before(at(due), shown.map(at), dir).map(|k| k.frame).collect::<Vec<_>>();
+        assert_eq!(back(346, Some(345), forward), [345], "342 to 344 would step back");
+        assert_eq!(back(345, Some(345), forward), Vec::<i64>::new(), "all six lie behind the picture");
+        assert_eq!(back(346, Some(345), None), [345, 344, 343, 342, 341, 340], "stopped: the nearest there is");
+        assert_eq!(back(346, None, forward).len(), 6, "nothing on screen yet");
         assert!(steps_back(at(i64::MIN), at(i64::MAX), Some(at(i64::MAX)), forward));
         assert!(steps_back(at(i64::MAX), at(i64::MIN), Some(at(i64::MIN)), Some(-1)));
     }
