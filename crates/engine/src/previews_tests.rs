@@ -361,15 +361,118 @@ fn float_wav_round_trip() {
     assert_eq!(crate::previews::read_wav_f32(&crate::previews::write_wav_f32(&x, 48_000)).unwrap(), x);
 }
 
-/// Previews composite on the GPU when the host has one, as the monitor does; export settings
-/// default to the CPU.
+/// Settings ▸ Playback ▸ Render previews on the GPU: Off (the default) renders preview parts on the
+/// CPU, Auto composites them on the GPU when the host has one.
 #[test]
-fn previews_render_on_the_gpu_when_available() {
+fn preview_gpu_rendering_follows_the_setting() {
+    use crate::previews::{GPU_VARIANT, segment_settings, variant_for};
+    assert_eq!(crate::autosave::Preferences::default().playback.preview_gpu_rendering, "off");
     let range = TimeRange::from_bounds(Tick::ZERO, FrameRate::FPS_24.tick_of(24));
-    let s = crate::previews::segment_settings(std::path::Path::new("x.part"), range);
-    assert_eq!(s.gpu_rendering, filmcraft_export::GpuRendering::Auto);
-    assert_eq!(s.format, filmcraft_export::Format::ProRes);
-    assert_eq!(s.range, Some(range));
+    let off = segment_settings(std::path::Path::new("x.part"), range, variant_for("off"));
+    assert_eq!(off.gpu_rendering, filmcraft_export::GpuRendering::Off);
+    let auto = segment_settings(std::path::Path::new("x.part"), range, variant_for("auto"));
+    assert_eq!(auto.gpu_rendering, filmcraft_export::GpuRendering::Auto);
+    assert_eq!(variant_for("auto"), GPU_VARIANT);
+    for s in [off, auto] {
+        assert_eq!(s.format, filmcraft_export::Format::ProRes);
+        assert_eq!(s.range, Some(range));
+    }
+}
+
+/// Project name of [`routing_session`]: the counting renderer counts only this project's frames,
+/// since other tests in this process export with it registered too.
+const ROUTED: &str = "preview-routing-test";
+static ROUTED_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A stand-in for the GPU export renderer: the CPU reference picture, counted.
+struct CountingRenderer;
+
+impl filmcraft_export::FrameRenderer for CountingRenderer {
+    fn render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        if project.name == ROUTED {
+            ROUTED_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::NONE
+    }
+}
+
+fn routing_session(name: &str) -> Session {
+    filmcraft_export::register_frame_renderer(|| Some(Box::new(CountingRenderer)));
+    let (mut s, _) = session(name);
+    let mut p = (*s.project).clone();
+    p.name = ROUTED.into();
+    s.project = Arc::new(p);
+    s
+}
+
+fn set_preview_gpu(s: &mut Session, value: &str) {
+    let mut prefs = s.prefs.clone();
+    prefs.playback.preview_gpu_rendering = value.into();
+    s.set_prefs(prefs).unwrap();
+}
+
+/// Preview parts take the registered GPU renderer only with the setting on, and a frame the GPU
+/// path does not composite (a wide-gamut sequence) renders on the CPU even then. One test, so the
+/// frame counter is not shared between tests running at the same time.
+#[test]
+fn preview_parts_take_the_gpu_renderer_only_when_asked() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut s = routing_session("routing");
+    let frames = |s: &mut Session| {
+        let before = ROUTED_FRAMES.load(Relaxed);
+        if s.is_enabled("sequence.deleteRenderFiles") {
+            s.execute("sequence.deleteRenderFiles", json!({})).unwrap();
+        }
+        let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
+        job_ok(s, &v);
+        assert_eq!(v["frames"], 48, "{v}");
+        ROUTED_FRAMES.load(Relaxed) - before
+    };
+    assert_eq!(frames(&mut s), 0, "Off (the default): every preview frame on the CPU");
+    set_preview_gpu(&mut s, "auto");
+    // the plain matte segment plans as layers; the Tint one needs an effect stage this stand-in lacks
+    assert!(frames(&mut s) >= 24, "Auto: the segment the device composites takes the renderer");
+    s.edit_sequence("wide gamut", |q, _, _| {
+        q.settings.color.wide_gamut = true;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(frames(&mut s), 0, "a wide-gamut sequence composites on the CPU");
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+/// Switching the setting shows only previews rendered with it: CPU previews are not shown as GPU
+/// ones (and back), and switching back finds the earlier ones again without rendering.
+#[test]
+fn previews_of_the_other_gpu_setting_are_not_reused() {
+    let (mut s, tint) = session("variant");
+    render_tint(&mut s, tint);
+    assert_eq!(states(&s), vec!["green", "none"]);
+    let seq = s.state.active_sequence.unwrap();
+    assert!(s.previews.frame(&s.media, &s.project, seq, 5, 1.0).is_some());
+    set_preview_gpu(&mut s, "auto");
+    assert_eq!(states(&s), vec!["yellow", "none"], "the CPU preview is not shown for GPU rendering");
+    assert!(s.previews.frame(&s.media, &s.project, seq, 5, 1.0).is_none());
+    let v = render_tint(&mut s, tint);
+    assert_eq!(v["segments"], 1, "the GPU variant renders its own preview");
+    assert_eq!(states(&s), vec!["green", "none"]);
+    assert_eq!(s.previews.count(), 2, "both previews stay on disk");
+    set_preview_gpu(&mut s, "off");
+    assert_eq!(states(&s), vec!["green", "none"], "back to Off: the CPU preview again");
+    let v = s.execute("sequence.renderSelection", json!({"wait": true})).unwrap();
+    assert!(v["job"].is_null(), "nothing left to render: {v}");
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }
 
 #[test]

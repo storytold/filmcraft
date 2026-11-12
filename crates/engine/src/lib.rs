@@ -648,7 +648,12 @@ impl Session {
             prefs_path: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
-            previews: Arc::new(previews::PreviewStore::temp()),
+            previews: {
+                // the default Settings ▸ Playback ▸ Render previews on the GPU, until preferences load
+                let p = previews::PreviewStore::temp();
+                p.set_variant(previews::variant_for(&autosave::PlaybackPrefs::default().preview_gpu_rendering));
+                Arc::new(p)
+            },
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
@@ -711,6 +716,7 @@ impl Session {
         // a restart restores the persisted Selection Follows Playhead toggle (#3089)
         self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
+        self.previews.set_variant(previews::variant_for(&self.prefs.playback.preview_gpu_rendering));
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
@@ -785,6 +791,7 @@ impl Session {
         // the session mirrors the persisted Selection Follows Playhead toggle (#3089)
         self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
+        self.previews.set_variant(previews::variant_for(&self.prefs.playback.preview_gpu_rendering));
         if cache_changed {
             self.apply_media_cache();
         }

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{FrameRequest, SharedSource};
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::preview::{AudioSegment, Need, Segment, segment_at, video_segments};
+use filmcraft_render::preview::{AudioSegment, Need, Segment, segment_at, variant_hash, video_segments};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -100,6 +100,9 @@ pub struct PreviewStore {
     /// Loaded audio previews: interleaved stereo f32 (most recent last).
     audio: Mutex<Vec<(String, Arc<Vec<f32>>)>>,
     memo: Mutex<Vec<Memo>>,
+    /// How video previews are rendered, mixed into their hashes ([`variant_hash`]): empty for the
+    /// CPU renderer, `gpu` for GPU rendering (Settings ▸ Playback ▸ Render previews on the GPU).
+    variant: RwLock<String>,
     audio_memo: Mutex<Vec<AudioMemo>>,
     /// Bumped whenever the set of preview files changes.
     pub generation: AtomicU64,
@@ -478,12 +481,35 @@ impl PreviewStore {
         if let Some((_, _, s)) = memo.iter().find(|(p, q, _)| Arc::ptr_eq(p, project) && *q == seq) {
             return s.clone();
         }
-        let segs = Arc::new(video_segments(project, seq));
+        let variant = self.variant();
+        let mut segs = video_segments(project, seq);
+        for s in &mut segs {
+            s.hash = variant_hash(&s.hash, &variant);
+        }
+        let segs = Arc::new(segs);
         memo.push((project.clone(), seq, segs.clone()));
         if memo.len() > 4 {
             memo.remove(0);
         }
         segs
+    }
+
+    /// The render variant of new and shown video previews (see the `variant` field).
+    pub fn variant(&self) -> String {
+        self.variant.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Switch the render variant: segments are hashed anew, so the render bar shows the previews
+    /// of this variant only (the others stay on disk for switching back).
+    pub fn set_variant(&self, v: &str) {
+        let mut cur = self.variant.write().unwrap_or_else(|e| e.into_inner());
+        if *cur == v {
+            return;
+        }
+        *cur = v.to_string();
+        drop(cur);
+        self.memo.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Green when previews cover the whole segment, else its colour without a preview.
@@ -632,8 +658,17 @@ struct Todo {
     len: i64,
 }
 
-/// Export settings of one preview part: full-resolution ProRes of `range`, video only.
-pub(crate) fn segment_settings(part: &Path, range: TimeRange) -> filmcraft_export::ExportSettings {
+/// The preview variant of Settings ▸ Playback ▸ Render previews on the GPU (`playback.previewGpuRendering`).
+pub fn variant_for(gpu_rendering: &str) -> &'static str {
+    if gpu_rendering == "auto" { GPU_VARIANT } else { "" }
+}
+
+/// The variant of previews composited on the GPU.
+pub const GPU_VARIANT: &str = "gpu";
+
+/// Export settings of one preview part: full-resolution ProRes of `range`, video only, composited
+/// on the GPU when `variant` is [`GPU_VARIANT`].
+pub(crate) fn segment_settings(part: &Path, range: TimeRange, variant: &str) -> filmcraft_export::ExportSettings {
     filmcraft_export::ExportSettings {
         format: filmcraft_export::Format::ProRes,
         path: part.to_string_lossy().to_string(),
@@ -648,7 +683,7 @@ pub(crate) fn segment_settings(part: &Path, range: TimeRange) -> filmcraft_expor
         // previews stand in for the monitor picture: display-referred SDR
         sdr: true,
         // as the monitor composites; frames the GPU can't render go to the CPU
-        gpu_rendering: filmcraft_export::GpuRendering::Auto,
+        gpu_rendering: if variant == GPU_VARIANT { filmcraft_export::GpuRendering::Auto } else { filmcraft_export::GpuRendering::Off },
         ..Default::default()
     }
 }
@@ -662,6 +697,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
     let store = s.previews.clone();
     let dir = store.dir().ok_or_else(|| EngineError::Other("render previews are not available here (no preview folder)".into()))?;
+    // the variant the segment hashes (and so the file names) were made with
+    let variant = store.variant();
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
     let mut todo: Vec<Todo> = Vec::new();
@@ -714,7 +751,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             let part = dir.join(format!("{name}.part"));
             let first = t.seg.first_frame.saturating_add(t.off);
             let range = TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)));
-            let settings = segment_settings(&part, range);
+            let settings = segment_settings(&part, range, &variant);
             match filmcraft_export::export(&project, seq, &settings, &provider, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
