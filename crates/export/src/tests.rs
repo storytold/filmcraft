@@ -614,11 +614,11 @@ mod apv_chroma {
     use crate::encoders::apv_factory;
 
     /// Encodes one frame with an APV encoder for `profile` and decodes it back.
-    fn encode_apv(profile: &str, w: u32, h: u32, signal: ColorSignal, rgba: &[u8], hdr: Option<&[f32]>) -> Result<filmcraft_apv::Frame> {
+    fn encode_apv(profile: &str, w: u32, h: u32, signal: ColorSignal, rgba: &[u8], hdr: Option<&[f32]>) -> Result<craft_video::apv::Frame> {
         let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), signal, ..Default::default() };
         let mut enc = apv_factory(Format::Apv, w, h, FrameRate::FPS_24, &s).unwrap()?;
         let packets = enc.encode(&EncoderFrame { width: w, height: h, rgba, hdr, index: 0 })?;
-        Ok(filmcraft_apv::decode_frame(&packets[0].data).unwrap())
+        Ok(craft_video::apv::decode_frame(&packets[0].data).unwrap())
     }
 
     /// One-pixel red and blue columns: the chroma of each column must survive on its own.
@@ -627,12 +627,12 @@ mod apv_chroma {
     }
 
     /// The decoded samples scaled back to 10 bits.
-    fn at10(fr: &filmcraft_apv::Frame, plane: &[u16], i: usize) -> i32 {
+    fn at10(fr: &craft_video::apv::Frame, plane: &[u16], i: usize) -> i32 {
         i32::from(plane[i]) >> (fr.bit_depth - 10)
     }
 
     /// Asserts adjacent red and blue columns of every row keep their own chroma.
-    fn assert_stripes(fr: &filmcraft_apv::Frame, w: usize, h: usize, what: &str) {
+    fn assert_stripes(fr: &craft_video::apv::Frame, w: usize, h: usize, what: &str) {
         for row in 0..h {
             let i = row * w;
             let (cb0, cb1) = (at10(fr, &fr.cb, i), at10(fr, &fr.cb, i + 1));

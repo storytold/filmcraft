@@ -192,15 +192,6 @@ impl filmcraft_isobmff::ByteSource for Src {
     }
 }
 
-impl filmcraft_avi::ByteSource for Src {
-    fn len(&self) -> u64 {
-        self.0.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.0.read_at(offset, buf)
-    }
-}
-
 /// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
 pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft_media::SharedSource, filmcraft_media::MediaError> {
     filmcraft_media::open_bytes(name, bytes, &openers())

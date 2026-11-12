@@ -39,7 +39,7 @@ pub(crate) fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: 
 
 /// AAC-LC (our encoder), 320 kbps stereo by default.
 struct AacEncoder {
-    enc: filmcraft_aac::Encoder,
+    enc: craft_audio::aac::Encoder,
     rate: u32,
     channels: u32,
 }
@@ -70,7 +70,7 @@ impl AudioEncoder for AacEncoder {
 
 /// FLAC (our encoder) in MP4 / QuickTime: one frame of 4096 samples per access unit.
 pub(crate) struct FlacAudio {
-    enc: filmcraft_flac::Encoder,
+    enc: craft_audio::flac::Encoder,
     format: SampleFormat,
     /// Samples of the frame `flush` returns (shorter than a full block).
     tail: u32,
@@ -80,9 +80,9 @@ impl FlacAudio {
     pub(crate) fn new(sample_rate: u32, channels: u32, s: &ExportSettings) -> Result<Self> {
         let format = s.audio.sample_format();
         let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("FLAC: too many audio channels".into()))?;
-        let mut cfg = filmcraft_flac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
+        let mut cfg = craft_audio::flac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
         cfg.level = s.audio.flac_level.min(8);
-        let enc = filmcraft_flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?;
+        let enc = craft_audio::flac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("FLAC: {e}")))?;
         Ok(FlacAudio { enc, format, tail: 0 })
     }
 }
@@ -121,7 +121,7 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
     let max = (6 * sample_rate as u64 * channels.max(1) as u64).min(u32::MAX as u64) as u32;
     let bps = (s.audio.bitrate_kbps.clamp(32, 512) * 1000).min(max);
     Some(
-        filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
+        craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(sample_rate, channels as usize, bps))
             .map(|enc| Box::new(AacEncoder { enc, rate: sample_rate, channels }) as Box<dyn AudioEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
@@ -258,8 +258,8 @@ pub(crate) fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
 }
 
 /// The APV profile named by [`ExportSettings::apv_profile`].
-pub fn apv_profile(name: &str) -> filmcraft_apv::Profile {
-    use filmcraft_apv::Profile;
+pub fn apv_profile(name: &str) -> craft_video::apv::Profile {
+    use craft_video::apv::Profile;
     match name.to_ascii_lowercase().replace([' ', '_'], "-").trim_start_matches("apv-").trim_start_matches("apv") {
         "422-12" | "42212" => Profile::P422_12,
         "444-10" | "44410" => Profile::P444_10,
@@ -273,8 +273,8 @@ pub fn apv_profile(name: &str) -> filmcraft_apv::Profile {
 
 /// APV encoder (RFC 9924: 10/12-bit 4:2:2 or 4:4:4 intra).
 struct ApvEncoder {
-    enc: filmcraft_apv::Encoder,
-    chroma: filmcraft_apv::ChromaFormat,
+    enc: craft_video::apv::Encoder,
+    chroma: craft_video::apv::ChromaFormat,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -298,7 +298,7 @@ impl VideoEncoder for ApvEncoder {
     /// luma only), BT.709 for SDR and the signal's matrix for HDR, and codes one access unit.
     /// A picture buffer shorter than `width` x `height` is an error.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        use filmcraft_apv::ChromaFormat as Cf;
+        use craft_video::apv::ChromaFormat as Cf;
         let (w, h) = (f.width as usize, f.height as usize);
         let short = |what: &str, got: usize| ExportError::Encode(format!("a {w}x{h} picture needs {what}, got {got}"));
         match f.hdr {
@@ -306,7 +306,7 @@ impl VideoEncoder for ApvEncoder {
             None if !covers(f.rgba.len(), w, h, 4) => return Err(short("w*h*4 bytes", f.rgba.len())),
             _ => {}
         }
-        let mut fr = filmcraft_apv::Frame::new(f.width, f.height, self.chroma, 10, self.chroma == Cf::Yuv4444);
+        let mut fr = craft_video::apv::Frame::new(f.width, f.height, self.chroma, 10, self.chroma == Cf::Yuv4444);
         let (kr, kb) = if f.hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
         let chroma = self.chroma;
         let (cb422, cr422) = (&mut self.cb422, &mut self.cr422);
@@ -345,12 +345,12 @@ impl VideoEncoder for ApvEncoder {
 pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::Apv).then(|| {
         let profile = apv_profile(&s.apv_profile);
-        let mut cfg = filmcraft_apv::EncoderConfig::new(profile, w, h);
+        let mut cfg = craft_video::apv::EncoderConfig::new(profile, w, h);
         if s.signal.is_hdr() {
-            cfg.color = filmcraft_apv::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+            cfg.color = craft_video::apv::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
         }
         let chroma = cfg.chroma;
-        let enc = filmcraft_apv::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let enc = craft_video::apv::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(Box::new(ApvEncoder { enc, chroma, w, h, rate, signal: s.signal, cb422: Vec::new(), cr422: Vec::new() }) as Box<dyn VideoEncoder>)
     })
 }
