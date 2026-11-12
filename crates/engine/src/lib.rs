@@ -1015,11 +1015,30 @@ impl Session {
 
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
+        self.edit_unless(label, f, |_, _| false)
+    }
+
+    /// [`Session::edit`] that records nothing when `unchanged(before, after)` holds: no undo step,
+    /// Redo keeps its steps and the project's saved state stays as it was. The closure's result and
+    /// its editor-state changes (the selection, the playhead) still apply.
+    fn edit_unless<R>(
+        &mut self,
+        label: &str,
+        f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>,
+        unchanged: impl FnOnce(&Project, &Project) -> bool,
+    ) -> Result<R> {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
         self.drop_orphan_transitions(&mut p);
+        let before: &Project = &self.project;
+        if unchanged(before, &p) {
+            self.history.merge_key = None;
+            self.state = st;
+            self.drop_stale_gap();
+            return Ok(r);
+        }
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old, self.command_origin.clone()));
         if self.history.undo.len() > self.history.limit {
@@ -1160,7 +1179,9 @@ impl Session {
         };
         match merge {
             Some(key) => self.edit_merged(label, key, body),
-            None => self.edit(label, body),
+            // an edit that leaves the sequence and the id allocator as they were (a trim already at
+            // the media end, a razor where no clip is) adds no undo step and keeps Redo
+            None => self.edit_unless(label, body, |before, after| before.next_id == after.next_id && before.sequence(seq_id) == after.sequence(seq_id)),
         }
     }
 
@@ -1459,6 +1480,8 @@ mod nest_editing_tests;
 mod nest_fidelity_tests;
 #[cfg(test)]
 mod nesting_tests;
+#[cfg(test)]
+mod noop_edit_tests;
 #[cfg(test)]
 mod panels_tests;
 #[cfg(test)]
