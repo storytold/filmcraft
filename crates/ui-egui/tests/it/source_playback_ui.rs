@@ -286,3 +286,40 @@ fn a_sequence_without_sound_plays_in_the_source_monitor_without_starting_the_out
     assert!(fill.lock().unwrap().is_none(), "no sound, so no output stream");
     h.state_mut().stop_source();
 }
+
+#[test]
+fn source_audio_uses_only_the_first_pair_until_eight_channels_are_assigned() {
+    for interpreted in [false, true] {
+        let mut session = Session::default();
+        let samples: Vec<f32> = (0..48_000).flat_map(|_| [0.05, 0.1, 0.15, 0.0, 0.25, 0.3, 0.35, 0.4]).collect();
+        let bytes: Arc<[u8]> = filmcraft_media::wav::write_wav16(&samples, 8, 48_000).into();
+        let item = filmcraft_engine::commands::import_bytes(&mut session, "/source-eight.wav", bytes, None).unwrap();
+        if interpreted {
+            session.execute("project.select", json!({"items": [item.0]})).unwrap();
+            session.execute("clip.audioChannels", json!({"format": "7.1"})).unwrap();
+        }
+        session.execute("source.open", json!({"item": item.0})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let fill = Arc::new(Mutex::new(None));
+        app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: fill.clone(), stalled: false }));
+        app.play_source().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let heard = loop {
+            let mut buffer = [0.0; 960];
+            if let Some(callback) = fill.lock().unwrap().as_mut() {
+                callback(&mut buffer, 2);
+            }
+            if let Some(pair) = buffer.as_chunks::<2>().0.iter().find(|pair| pair[0].abs() > 0.001) {
+                break [pair[0], pair[1]];
+            }
+            assert!(std::time::Instant::now() < deadline, "Source callback never produced audio");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        app.stop_source();
+        if interpreted {
+            assert!(heard[0] > 0.4 && heard[1] > 0.5, "assigned rear and side channels must fold down: {heard:?}");
+        } else {
+            assert!((heard[0] - 0.05).abs() < 0.001 && (heard[1] - 0.1).abs() < 0.001, "unknown channels use the first pair: {heard:?}");
+        }
+    }
+}

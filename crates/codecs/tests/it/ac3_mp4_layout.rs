@@ -31,6 +31,10 @@ fn test_file(ff: &std::path::Path, codec: &str) -> std::path::PathBuf {
 }
 
 fn rewrap(path: &std::path::Path, codec: &str) -> Vec<u8> {
+    rewrap_with_edits(path, codec, Vec::new())
+}
+
+fn rewrap_with_edits(path: &std::path::Path, codec: &str, edits: Vec<filmcraft_isobmff::Edit>) -> Vec<u8> {
     let data = fs::read(path).unwrap();
     let file = filmcraft_isobmff::open(data.as_slice()).unwrap();
     let track = file.tracks.iter().find(|t| t.kind == filmcraft_isobmff::TrackKind::Audio).unwrap();
@@ -42,12 +46,47 @@ fn rewrap(path: &std::path::Path, codec: &str) -> Vec<u8> {
         dac3.clear();
     }
     let mut mux = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
-    let ti = mux.add_track(TrackConfig::new(entry, track.timescale)).unwrap();
+    let mut config = TrackConfig::new(entry, track.timescale);
+    config.edits = edits;
+    let ti = mux.add_track(config).unwrap();
     for s in &track.samples {
         let au = data[s.offset as usize..s.offset as usize + s.size as usize].to_vec();
         mux.write_sample(ti, WriteSample { data: &au, duration: s.duration, composition_offset: 0, is_sync: true }).unwrap();
     }
     mux.finish().unwrap().into_inner()
+}
+
+#[test]
+fn zero_duration_ac3_edit_keeps_offset_without_endpoint() {
+    use filmcraft_isobmff::Edit;
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for codec in ["ac3", "eac3"] {
+        let path = test_file(&ff, codec);
+        let open = |duration| {
+            let edits = vec![Edit { segment_duration: duration, media_time: 256, media_rate: 0x10000 }];
+            let data = rewrap_with_edits(&path, codec, edits);
+            filmcraft_codecs::open_bytes(&format!("{codec}.mp4"), data.into()).unwrap()
+        };
+        let offset_only = open(0);
+        // The muxer's default movie timescale is 1000: this edit has a real 0.4 s endpoint.
+        let bounded = open(400);
+        for rate in [48_000, 44_100, 44_101] {
+            let expected = bounded.audio(1024, 1024, rate).unwrap();
+            let actual = offset_only.audio(1024, 1024, rate).unwrap();
+            assert!(expected.channels.iter().all(|ch| ch.iter().any(|x| x.abs() > 0.01)), "{codec}/{rate}: audible reference");
+            assert!(actual.channels == expected.channels, "{codec}/{rate}: zero duration must retain offset but not mute audio");
+            let before_zero = offset_only.audio(-16, 32, rate).unwrap();
+            assert!(before_zero.channels.iter().all(|ch| ch[..16].iter().all(|&x| x == 0.0)), "{codec}/{rate}: before presentation zero");
+            // Round up only for this sample index: 44,101 Hz exercises a fractional endpoint.
+            let end = (i64::from(rate) * 2 + 4) / 5;
+            let last = bounded.audio(end - 1, 1, rate).unwrap();
+            assert!(last.channels.iter().flatten().any(|x| x.abs() > 0.001), "{codec}/{rate}: last in-range sample remains audible");
+            let bounded_tail = bounded.audio(end, 16, rate).unwrap();
+            let unbounded_tail = offset_only.audio(end, 16, rate).unwrap();
+            assert!(bounded_tail.channels.iter().flatten().all(|&x| x == 0.0), "{codec}/{rate}: real endpoint still trims padding");
+            assert!(unbounded_tail.channels.iter().flatten().any(|x| x.abs() > 0.01), "{codec}/{rate}: offset-only edit keeps later audio");
+        }
+    }
 }
 
 #[test]

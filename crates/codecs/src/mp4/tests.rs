@@ -2,6 +2,31 @@ use super::*;
 use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use filmcraft_media::FrameRequest;
 
+#[test]
+fn ac3_presentation_trim_skips_an_empty_edit() {
+    const RATE: u32 = 48_000;
+    let entry = SampleEntry::audio(FourCc(*b"ac-3"), CodecConfig::Ac3 { dac3: vec![0x10, 0x11, 0x40] }, 2, f64::from(RATE), 16);
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions { movie_timescale: RATE, ..WriterOptions::new(Brand::Mp4) }).unwrap();
+    let mut config = TrackConfig::new(entry, RATE);
+    config.edits = vec![filmcraft_isobmff::Edit { segment_duration: 1, media_time: -1, media_rate: 0x10000 }];
+    let index = mux.add_track(config).unwrap();
+    // Only track metadata is read. The trimmer receives its PCM independently.
+    mux.write_sample(index, WriteSample { data: &[0], duration: 1536, composition_offset: 0, is_sync: true }).unwrap();
+    let bytes = mux.finish().unwrap().into_inner();
+    let mut file = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
+    let track = &mut file.tracks[0];
+    assert_eq!(track.edits[0].media_time, -1);
+
+    let mut pcm = AudioBuffer { sample_rate: RATE, channels: vec![vec![0.25, 0.5], vec![-0.25, -0.5]] };
+    let original = pcm.channels.clone();
+    trim_ac3_presentation(&mut pcm, 0, track, file.timescale);
+    assert_eq!(pcm.channels, original);
+
+    track.edits[0].media_time = 0;
+    trim_ac3_presentation(&mut pcm, 0, track, file.timescale);
+    assert_eq!(pcm.channels, vec![vec![0.25, 0.0], vec![-0.25, 0.0]]);
+}
+
 /// A one-frame 64×32 ProRes MOV (bright left half, dark right half) whose `tkhd` matrix is
 /// replaced by `matrix` — built here, no media files.
 fn rotated_mov(matrix: [i32; 9]) -> Arc<[u8]> {

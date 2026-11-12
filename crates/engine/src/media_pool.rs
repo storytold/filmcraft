@@ -396,14 +396,43 @@ impl MediaPool {
         }
         match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
             Ok(s) => {
-                // a proxy with fewer audio streams than the original (say one track of an OBS
-                // recording's seven) still stands in for the picture; the audio comes from the
-                // original, so every clip keeps the stream it plays
-                let audio_from = if s.info().audio_streams.len() < m.info.audio_streams.len() {
-                    log::warn!("proxy has fewer audio streams than the original: {path}; audio from full-resolution media");
-                    match &m.media {
+                // The proxy supplies the picture, but must not silently drop audio streams,
+                // channels or speaker assignments while reporting the original's metadata.
+                let original_streams = &m.info.audio_streams;
+                let proxy_streams = &s.info().audio_streams;
+                let shape_matches =
+                    original_streams.len() == proxy_streams.len() && original_streams.iter().zip(proxy_streams).all(|(a, b)| a.channels == b.channels);
+                let compare_speakers = original_streams.iter().any(|a| a.channels == 8);
+                let audio_from = if !shape_matches || compare_speakers {
+                    // MediaInfo stores counts, not masks. Eight-channel audio may be rear+side,
+                    // wide or unordered; other matching layouts retain existing proxy behavior
+                    // without requiring an available original merely to open the proxy.
+                    let original_key = media_key(m);
+                    let cached = self
+                        .sources
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&item)
+                        .filter(|(key, _)| key.is_empty() || *key == original_key)
+                        .map(|(_, source)| source.clone());
+                    let original = cached.or_else(|| match &m.media {
                         MediaRef::File { path: original } if !m.offline => self.follow_media(original).and_then(|file| self.open_file(&file, services)).ok(),
                         _ => None,
+                    });
+                    // Let normal full-resolution resolution report unavailable media rather
+                    // than presenting incompatible proxy audio as the original's channels.
+                    let original = original?;
+                    let masks_match = original_streams.iter().enumerate().all(|(stream, info)| {
+                        let mask = original.audio_channel_mask(stream);
+                        // Two unknown eight-channel layouts do not prove the same speakers
+                        // (rear+side and wide 7.1 have identical channel counts).
+                        mask == s.audio_channel_mask(stream) && (info.channels != 8 || mask.is_some())
+                    });
+                    if shape_matches && masks_match {
+                        None
+                    } else {
+                        log::warn!("proxy audio differs from the original: {path}; audio from full-resolution media");
+                        Some(original)
                     }
                 } else {
                     None
@@ -483,6 +512,19 @@ impl PoolProvider {
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
+    fn audio_channels_are_explicit_71(&self, item: ItemId) -> bool {
+        self.project
+            .resolve_media(item)
+            .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
+            .is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71)
+    }
+
+    fn audio_channel_mask(&self, item: ItemId, stream: usize) -> Option<u32> {
+        let source = self.source(item)?;
+        source.info().audio_streams.get(stream)?;
+        if self.audio_channels_are_explicit_71(item) { Some(filmcraft_media::SPEAKER_MASK_7_1) } else { source.audio_channel_mask(stream) }
+    }
+
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         if let Some(used) = &self.used {
             used.lock().unwrap_or_else(PoisonError::into_inner).insert(item);
@@ -570,6 +612,9 @@ struct UnsupportedAsSlate {
 }
 
 impl MediaSource for UnsupportedAsSlate {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        self.inner.audio_channel_mask(stream)
+    }
     fn info(&self) -> &MediaInfo {
         self.inner.info()
     }
@@ -618,6 +663,9 @@ struct DamagedAsSlate {
 }
 
 impl MediaSource for DamagedAsSlate {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        self.inner.audio_channel_mask(stream)
+    }
     fn info(&self) -> &MediaInfo {
         self.inner.info()
     }
@@ -667,11 +715,14 @@ impl MediaSource for DamagedAsSlate {
 pub struct ProxySource {
     pub proxy: SharedSource,
     pub info: MediaInfo,
-    /// Where audio comes from when the proxy has fewer audio streams than the original.
+    /// Original audio when the proxy differs in stream count, channels or speaker assignments.
     pub audio_from: Option<SharedSource>,
 }
 
 impl MediaSource for ProxySource {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        self.audio_from.as_ref().unwrap_or(&self.proxy).audio_channel_mask(stream)
+    }
     fn info(&self) -> &MediaInfo {
         &self.info
     }
@@ -868,6 +919,216 @@ mod tests {
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    struct LayoutSource {
+        info: MediaInfo,
+        mask: u32,
+    }
+    impl MediaSource for LayoutSource {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+        fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+            (stream == 0).then_some(self.mask)
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(MediaError::NoStream("video"))
+        }
+        fn audio(&self, _: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            Ok(AudioBuffer::silence(sample_rate, 8, frames))
+        }
+    }
+
+    #[test]
+    fn imported_monitored_and_proxied_audio_retains_speaker_mask() {
+        let mut info = GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+            .info()
+            .clone();
+        info.audio_streams = vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 8, codec: "test".into(), bits_per_sample: None }];
+        let source: SharedSource = Arc::new(LayoutSource { info: info.clone(), mask: filmcraft_media::SPEAKER_MASK_7_1 });
+        let pool = MediaPool::default();
+        let item = ItemId(41);
+        pool.insert_file(item, "test.eac3", source.clone());
+        let cached = pool.cached(item).unwrap();
+        assert_eq!(cached.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+        assert_eq!(cached.audio_channel_mask(1), None);
+        assert_eq!(pool.monitor_source(item, cached).audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+        let proxy: SharedSource = Arc::new(LayoutSource { info: info.clone(), mask: 0x3f });
+        let with_original = ProxySource { proxy: proxy.clone(), info: info.clone(), audio_from: Some(source) };
+        assert_eq!(with_original.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+        let proxy_only = ProxySource { proxy, info, audio_from: None };
+        assert_eq!(proxy_only.audio_channel_mask(0), Some(0x3f));
+    }
+
+    #[test]
+    fn speaker_provenance_distinguishes_decoder_labels_from_explicit_assignment() {
+        use filmcraft_render::SourceProvider;
+
+        for explicit in [false, true] {
+            let mut project = Project::new("speaker provenance");
+            let mut info =
+                GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+                    .info()
+                    .clone();
+            info.audio_streams = vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 8, codec: "test".into(), bits_per_sample: None }];
+            let interpret = filmcraft_project::Interpretation {
+                audio_channels: Some(filmcraft_project::AudioChannelMap {
+                    format: if explicit { filmcraft_project::AudioChannels::Surround71 } else { filmcraft_project::AudioChannels::Adaptive },
+                    clips: vec![vec![1, 0, 2, 3, 4, 5, 6, 7]],
+                }),
+                ..Default::default()
+            };
+            let item = project.add_item(
+                "source",
+                filmcraft_project::Label::Iris,
+                ItemKind::Media(Box::new(MediaClip {
+                    media: MediaRef::File { path: "source.eac3".into() },
+                    info: info.clone(),
+                    interpret,
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let pool = MediaPool::default();
+            pool.insert_file(item, "source.eac3", Arc::new(LayoutSource { info, mask: filmcraft_media::SPEAKER_MASK_7_1 }));
+            let provider = Arc::new(pool).provider(Arc::new(project), Arc::new(crate::FsServices));
+            assert_eq!(provider.audio_channel_mask(item, 0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+            assert_eq!(provider.audio_channels_are_explicit_71(item), explicit, "a decoder mask alone does not assign reordered channels");
+        }
+    }
+
+    struct ProxyAudioFixture {
+        info: MediaInfo,
+        mask: Option<u32>,
+        value: f32,
+    }
+    impl MediaSource for ProxyAudioFixture {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+        fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+            (stream == 0).then_some(self.mask).flatten()
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Ok(Arc::new(VideoFrame::rgba8(8, 4, vec![self.value as u8; 8 * 4 * 4])))
+        }
+        fn audio(&self, _: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            Ok(AudioBuffer { sample_rate, channels: vec![vec![self.value; frames]; self.info.audio_streams[0].channels as usize] })
+        }
+    }
+    fn proxy_audio_fixture(_: &str, bytes: Arc<[u8]>) -> Option<filmcraft_media::Result<SharedSource>> {
+        if bytes.len() != 3 {
+            return None;
+        }
+        let mut info = GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+            .info()
+            .clone();
+        info.audio_streams =
+            vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: u32::from(bytes[0]), codec: "test".into(), bits_per_sample: None }];
+        let mask = match bytes[1] {
+            1 => Some(filmcraft_media::SPEAKER_MASK_7_1),
+            2 => Some(0xff),
+            _ => None,
+        };
+        Some(Ok(Arc::new(ProxyAudioFixture { info, mask, value: f32::from(bytes[2]) })))
+    }
+    struct ProxyAudioFiles {
+        proxy: [u8; 3],
+        original_missing: bool,
+    }
+    impl Services for ProxyAudioFiles {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            if path == "original.test" {
+                if self.original_missing { Err(std::io::ErrorKind::NotFound.into()) } else { Ok(vec![8, 1, 1]) }
+            } else {
+                Ok(self.proxy.to_vec())
+            }
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn proxy_audio_falls_back_on_channel_or_speaker_mismatch() {
+        for (proxy, expected_channels, expected_value) in [([2, 0, 2], 8, 1.0), ([8, 2, 2], 8, 1.0), ([8, 0, 2], 8, 1.0), ([8, 1, 2], 8, 2.0)] {
+            let pool = MediaPool::default();
+            pool.register_opener(proxy_audio_fixture);
+            let original = proxy_audio_fixture("original.test", vec![8, 1, 1].into()).unwrap().unwrap();
+            let media = MediaClip {
+                media: MediaRef::File { path: "original.test".into() },
+                info: original.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            };
+            let source = pool.proxy_source(ItemId(42), "proxy.test", &media, &ProxyAudioFiles { proxy, original_missing: false }).unwrap();
+            let audio = source.audio(0, 1, 48_000).unwrap();
+            assert_eq!(audio.channels.len(), expected_channels, "proxy {proxy:?}");
+            assert_eq!(audio.channels[0][0], expected_value, "proxy {proxy:?}");
+            assert_eq!(source.audio_channel_mask(0), Some(filmcraft_media::SPEAKER_MASK_7_1));
+            assert_eq!(source.video_frame(FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap().to_rgba8()[0], 2, "picture stays on proxy");
+        }
+    }
+
+    #[test]
+    fn proxy_layout_check_reuses_cached_original_and_keeps_matching_non_eight_channel_audio_lazy() {
+        for (cached, original_bytes, proxy) in
+            [(false, vec![2, 0, 1], [2, 0, 2]), (false, vec![6, 0, 1], [6, 0, 2]), (true, vec![8, 1, 1], [2, 0, 2]), (true, vec![8, 0, 1], [8, 0, 2])]
+        {
+            let pool = MediaPool::default();
+            pool.register_opener(proxy_audio_fixture);
+            let original = proxy_audio_fixture("original.test", original_bytes.into()).unwrap().unwrap();
+            let media = MediaClip {
+                media: MediaRef::File { path: "original.test".into() },
+                info: original.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            };
+            if cached {
+                pool.insert_file(ItemId(44), "original.test", original);
+            }
+            // Original reads fail: reuse an existing source for eight-channel assignments,
+            // but matching stereo and 5.1 proxies still play with their original unavailable.
+            let source = pool.proxy_source(ItemId(44), "proxy.test", &media, &ProxyAudioFiles { proxy, original_missing: true }).unwrap();
+            let audio = source.audio(0, 1, 48_000).unwrap();
+            assert_eq!(audio.channels.len(), if cached { 8 } else { usize::from(proxy[0]) });
+            assert_eq!(audio.channels[0][0], if cached { 1.0 } else { 2.0 });
+        }
+    }
+
+    #[test]
+    fn incompatible_proxy_does_not_fake_original_audio_when_original_is_missing() {
+        let pool = MediaPool::default();
+        pool.register_opener(proxy_audio_fixture);
+        let original = proxy_audio_fixture("original.test", vec![8, 1, 1].into()).unwrap().unwrap();
+        let media = MediaClip {
+            media: MediaRef::File { path: "original.test".into() },
+            info: original.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        assert!(pool.proxy_source(ItemId(43), "proxy.test", &media, &ProxyAudioFiles { proxy: [2, 0, 2], original_missing: true }).is_none());
     }
 
     /// A file whose first frame decodes and whose later frames need a decoder FilmCraft lacks.

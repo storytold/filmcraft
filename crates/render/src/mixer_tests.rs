@@ -765,7 +765,10 @@ fn a_graph_with_absurd_latency_is_refused_not_allocated() {
     }
     r.track(0).mixer.output = Some(chain[0]);
     // hundreds of limiters of about 26 ms each add up past 10 s of latency at 48 kHz
-    assert_eq!(graph_latency(r.p.sequence(r.seq).unwrap()), 0);
+    let sequence = r.p.sequence(r.seq).unwrap();
+    assert_eq!(graph_latency(sequence), 0);
+    let range = filmcraft_time::TimeRange::new(Tick::ZERO, Tick::from_units(1_000, 48_000));
+    assert!(crate::mixer::audio_source_items(sequence, range).is_empty());
     let [l, _] = r.mix(0, 1_000);
     assert!(l.iter().all(|s| *s == 0.0));
     // the refusal is remembered: the next block is silent too, without building the graph again
@@ -1001,4 +1004,119 @@ fn a_stretched_clip_aligns_on_the_channels_it_plays() {
     let mut both = stretched_clip(0x1684_0502, 1.5, false);
     both.source_channels = vec![0, 1];
     assert!(stretched(&both, &ltc, 60_000, 4_800, 1024)[1].iter().any(|s| s.abs() > 0.5));
+}
+
+fn interpret_71(rig: &mut Rig) {
+    let media_id = rig.track(0).items[0].item;
+    let ItemKind::Media(media) = &mut rig.p.item_mut(media_id).unwrap().kind else { panic!("expected source media") };
+    media.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap::for_format(AudioChannels::Surround71, 8));
+}
+
+#[test]
+fn reordered_adaptive_channels_do_not_inherit_decoder_speaker_positions() {
+    struct Known71(filmcraft_media::SharedSource);
+    impl MediaSource for Known71 {
+        fn info(&self) -> &MediaInfo {
+            self.0.info()
+        }
+        fn audio_channel_mask(&self, _: usize) -> Option<u32> {
+            Some(filmcraft_media::SPEAKER_MASK_7_1)
+        }
+        fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            self.0.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+            self.0.audio(start, frames, sr)
+        }
+    }
+    struct Interpreted<'a> {
+        map: &'a SourceMap,
+        explicit: bool,
+    }
+    impl crate::SourceProvider for Interpreted<'_> {
+        fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
+            self.map.0.get(&item).cloned()
+        }
+        fn audio_channels_are_explicit_71(&self, _: ItemId) -> bool {
+            self.explicit
+        }
+    }
+    for explicit in [false, true] {
+        let mut rig = Rig::with_channels(&[chan_dc], 8);
+        let item = rig.track(0).items[0].item;
+        let source = rig.map.0.get(&item).unwrap().clone();
+        rig.map.0.insert(item, Arc::new(Known71(source)));
+        let selected = vec![1, 0, 2, 3, 4, 5, 6, 7];
+        let ItemKind::Media(media) = &mut rig.p.item_mut(item).unwrap().kind else { panic!("media") };
+        media.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap {
+            format: if explicit { AudioChannels::Surround71 } else { AudioChannels::Adaptive },
+            clips: vec![selected.clone()],
+        });
+        rig.track(0).items[0].source_channels = selected;
+        let mixed = mix_all(&rig, 0, 128);
+        let provider = Interpreted { map: &rig.map, explicit };
+        let clip = &rig.p.sequence(rig.seq).unwrap().audio_tracks[0].items[0];
+        let analysed = crate::audio::clip_signal(clip, 0, 128, SR as u32, &provider).unwrap();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = if explicit { [0.2 + k * 0.3 + 0.5 * (0.5 + 0.7), 0.1 + k * 0.3 + 0.5 * (0.6 + 0.8)] } else { [0.2, 0.1] };
+        for (channel, expected) in expected.into_iter().enumerate() {
+            assert!(close(mixed[channel][31], expected, 1e-6), "explicit={explicit}, channel={channel}: {} vs {expected}", mixed[channel][31]);
+            assert!(close(analysed[channel][31], expected, 1e-6), "analysis must agree: explicit={explicit}, channel={channel}");
+        }
+    }
+}
+
+#[test]
+fn discrete_71_track_preserves_all_speakers_through_mix_and_downmix() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    rig.track(0).channels = AudioChannels::Surround71;
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround71;
+    let mixed = mix_all(&rig, 0, 256);
+    assert_eq!(mixed.len(), 8);
+    for (channel, samples) in mixed.iter().enumerate() {
+        assert!(close(samples[31], (channel + 1) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround51;
+    let mixed = mix_all(&rig, 0, 256);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    assert_eq!(mixed.len(), 6);
+    assert!(close(mixed[4][31], k * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[5][31], k * (0.6 + 0.8), 1e-6));
+    assert!(close(mixed[3][31], 0.4, 1e-6), "LFE stays separate");
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Stereo;
+    let mixed = mix_all(&rig, 0, 256);
+    assert!(close(mixed[0][31], 0.1 + k * 0.3 + 0.5 * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[1][31], 0.2 + k * 0.3 + 0.5 * (0.6 + 0.8), 1e-6));
+}
+
+#[test]
+fn explicit_71_mapping_and_balance_preserve_rear_and_side_identity() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    rig.track(0).channels = AudioChannels::Surround71;
+    rig.track(0).items[0].source_channels = vec![7, 6, 5, 4, 3, 2, 1, 0];
+    rig.p.sequence_mut(rig.seq).unwrap().settings.audio_master = AudioChannels::Surround71;
+    let mixed = mix_all(&rig, 0, 128);
+    for (channel, samples) in mixed.iter().enumerate() {
+        assert!(close(samples[31], (8 - channel) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+    rig.track(0).set_lane_static(LANE_PAN, 100.0);
+    let mixed = mix_all(&rig, 0, 128);
+    for channel in [0, 4, 6] {
+        assert!(close(mixed[channel][31], 0.0, 1e-6));
+    }
+    for channel in [1, 2, 3, 5, 7] {
+        assert!(close(mixed[channel][31], (8 - channel) as f32 * 0.1, 1e-6), "speaker {channel}");
+    }
+}
+
+#[test]
+fn stereo_tracks_fold_all_71_surrounds_instead_of_dropping_them() {
+    let mut rig = Rig::with_channels(&[chan_dc], 8);
+    interpret_71(&mut rig);
+    let mixed = mix_all(&rig, 0, 128);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(close(mixed[0][31], 0.1 + k * 0.3 + 0.5 * (0.5 + 0.7), 1e-6));
+    assert!(close(mixed[1][31], 0.2 + k * 0.3 + 0.5 * (0.6 + 0.8), 1e-6));
 }

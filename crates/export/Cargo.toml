@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-craft-audio = { workspace = true }
+craft-audio = { workspace = true, features = ["ac3-encode", "eac3-encode"] }
 craft-video = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }

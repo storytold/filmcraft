@@ -1722,11 +1722,15 @@ fn sequence_settings_dialog_applies_in_one_undo_step() {
     d.app().ui.sequence_settings.height = 720;
     d.frames(2);
     assert_eq!(d.label("sequenceSettings.aspect"), "16:9");
+    d.click("sequenceSettings.channelFormat");
+    d.click("sequenceSettings.channelFormat.option.7.1");
+    assert_eq!(d.label("sequenceSettings.channels"), "8");
     d.click("sequenceSettings.maxRenderQuality");
     d.click("sequenceSettings.ok");
     assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
     let st = d.app().session.active_sequence().unwrap().settings.clone();
     assert_eq!((st.width, st.height, st.frame_rate), (1280, 720, filmcraft_engine::time::FrameRate::FPS_29_97));
+    assert_eq!(st.audio_master, filmcraft_engine::project::AudioChannels::Surround71);
     assert!(st.drop_frame && st.max_render_quality);
     assert_eq!(st.display, filmcraft_engine::time::TimeDisplay::Feet35);
     let (x1, y1, s1) = motion(&mut d);

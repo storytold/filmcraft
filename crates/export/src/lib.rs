@@ -16,6 +16,7 @@
 use std::io::Write;
 
 mod aac_out;
+mod ac3_out;
 mod audio_out;
 mod deflate;
 mod job;

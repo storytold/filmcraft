@@ -39,6 +39,8 @@ pub(crate) struct AudioOut {
     pub out: i64,
     /// End of the range (samples); input past it is silence.
     end: i64,
+    total: u64,
+    layout_checked: bool,
     pub loudness: Option<LoudnessReport>,
 }
 
@@ -61,12 +63,88 @@ impl AudioOut {
             l
         });
         let latency = limiter.as_ref().map(|l| l.latency() as i64).unwrap_or(0);
-        Ok(AudioOut { project, seq, sr, channels: r.channels as usize, gain: 1.0, limiter, latency, next_in: start, out: start, end, loudness: None })
+        Ok(AudioOut {
+            project,
+            seq,
+            sr,
+            channels: r.channels as usize,
+            gain: 1.0,
+            limiter,
+            latency,
+            next_in: start,
+            out: start,
+            end,
+            total: u64::try_from(end.saturating_sub(start)).unwrap_or(0),
+            layout_checked: false,
+            loudness: None,
+        })
+    }
+
+    /// Refuse unknown eight-channel speaker assignments before writing a 7.1 export.
+    /// Mono/stereo picks and an explicit Modify Audio Channels → 7.1 interpretation are valid.
+    pub fn validate_source_layouts(&mut self, sources: &dyn SourceProvider) -> Result<()> {
+        if self.layout_checked || self.channels != 8 {
+            return Ok(());
+        }
+        fn check(project: &Project, sequence: &Sequence, sources: &dyn SourceProvider, depth: u32, range: filmcraft_time::TimeRange) -> Result<()> {
+            if depth > filmcraft_render::MAX_NEST_DEPTH {
+                return Ok(());
+            }
+            for (item, overlap) in filmcraft_render::mixer::audio_source_items(sequence, range) {
+                if let Some(nested) = project.sequence(item.item) {
+                    if depth >= filmcraft_render::MAX_NEST_DEPTH {
+                        continue;
+                    }
+                    {
+                        let nested = if nested.multicam.is_some() {
+                            std::borrow::Cow::Owned(nested.with_angle_audio(item.multicam_angle(nested)))
+                        } else {
+                            std::borrow::Cow::Borrowed(nested)
+                        };
+                        let source_range = filmcraft_render::audio::nested_audio_source_range(item, overlap, &nested);
+                        check(project, &nested, sources, depth + 1, source_range)?;
+                    }
+                    continue;
+                }
+                let Some(source) = sources.source(item.item) else { continue };
+                let Some(info) = source.info().audio_streams.get(item.audio_stream) else { continue };
+                if info.channels != 8 || matches!(item.source_channels.len(), 1 | 2) {
+                    continue;
+                }
+                let explicit = project
+                    .resolve_media(item.item)
+                    .and_then(|(_, media, _)| media.interpret.audio_channels.as_ref())
+                    .is_some_and(|mapping| mapping.format == filmcraft_project::AudioChannels::Surround71);
+                // A decoder mask labels the original order. Only an explicit 7.1 assignment
+                // gives speaker meaning to a reordered Adaptive selection.
+                let reordered_eight = item.source_channels.len() == 8 && !item.source_channels.iter().copied().eq(0..8);
+                if !explicit && (reordered_eight || source.audio_channel_mask(item.audio_stream) != Some(filmcraft_media::SPEAKER_MASK_7_1)) {
+                    return Err(ExportError::Unsupported(format!(
+                        "{} has eight channels with an unknown speaker layout; choose a 7.1 mapping in Modify Audio Channels before exporting 7.1",
+                        source.info().name
+                    )));
+                }
+            }
+            Ok(())
+        }
+        let range = filmcraft_time::TimeRange::from_bounds(
+            filmcraft_time::Tick::from_units(self.out, i64::from(self.sr)),
+            filmcraft_time::Tick::from_units(self.end, i64::from(self.sr)),
+        );
+        check(&self.project, &self.seq, sources, 0, range)?;
+        // A deferred source has not supplied its topology yet. Cache only a complete pass;
+        // the stepped job observes the pending flag and retries before rendering or writing.
+        self.layout_checked = !filmcraft_media::pending::is_set();
+        Ok(())
     }
 
     /// The loudness pass: measure the integrated loudness of the whole range and set the gain
     /// that brings it to the target. `cancel` is polled between chunks.
     pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<()> {
+        self.validate_source_layouts(sources)?;
+        if filmcraft_media::pending::is_set() {
+            return Ok(());
+        }
         let ln = &settings.effects.loudness;
         if !ln.enabled {
             return Ok(());
@@ -146,7 +224,7 @@ impl AudioOut {
     /// on L and R; 5.1 is in L, R, C, LFE, Ls, Rs order.
     fn mix(&self, pos: i64, n: usize, sources: &dyn SourceProvider) -> Vec<Vec<f32>> {
         let real = (self.end - pos).clamp(0, n as i64) as usize;
-        let out_ch = if self.channels == 6 { 6 } else { 2 };
+        let out_ch = if matches!(self.channels, 6 | 8) { self.channels } else { 2 };
         let mut st = if real > 0 {
             let layout = filmcraft_audio_dsp::channels::Layout::from_channels(out_ch);
             filmcraft_render::audio::mix_sequence_layout(
@@ -195,6 +273,11 @@ impl AudioOut {
         }
         self.out = until;
         Some(buf)
+    }
+
+    /// Total presentation samples, unchanged after mixing has advanced the cursor.
+    pub fn total(&self) -> u64 {
+        self.total
     }
 
     /// Output samples still to come (per channel).

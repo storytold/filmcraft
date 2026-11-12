@@ -49,7 +49,7 @@ pub fn pan51_default(key: &str, channels: crate::AudioChannels) -> Option<f64> {
         LANE_PAN51_X => Some(0.0),
         LANE_PAN51_Y => Some(100.0),
         LANE_PAN51_CENTER => Some(100.0),
-        LANE_PAN51_LFE => Some(if channels == crate::AudioChannels::Surround51 { 0.0 } else { FADER_MIN_DB }),
+        LANE_PAN51_LFE => Some(if matches!(channels, crate::AudioChannels::Surround51 | crate::AudioChannels::Surround71) { 0.0 } else { FADER_MIN_DB }),
         _ => None,
     }
 }
@@ -407,7 +407,10 @@ impl crate::Sequence {
     }
     /// Whether strip `id` pans with the 5.1 panner (it feeds a 5.1 submix or a 5.1 Mix).
     pub fn pans_51(&self, id: TrackId) -> bool {
-        id != MASTER_STRIP && self.output_channels(id) == crate::AudioChannels::Surround51
+        id != MASTER_STRIP
+            && (self.output_channels(id) == crate::AudioChannels::Surround51
+                || (self.output_channels(id) == crate::AudioChannels::Surround71
+                    && self.mix_track(id).is_some_and(|track| track.channels != crate::AudioChannels::Surround71)))
     }
     /// Mix track volume (dB) at sequence time `t` (automation unless the Mix is in Off mode).
     pub fn master_volume_at(&self, t: Tick) -> f64 {

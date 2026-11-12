@@ -776,6 +776,8 @@ fn mp3_settings_and_names() {
     assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s");
     // the bit rate snaps to a Layer III one, the codec setting cannot leak into other formats
     let mut s = ExportSettings { format: Format::Mp3, ..Default::default() };
+    s.audio.codec = AudioCodec::Eac3; // The export panel carries audio settings over on format changes.
+    assert_eq!(s.audio_codec(), AudioCodec::Mp3);
     s.audio.bitrate_kbps = 300;
     s.audio.sample_rate = Some(16_000);
     assert_eq!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio, "MP3, 160 kbps, 16000 Hz, Stereo");
@@ -1416,7 +1418,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 24);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1798,6 +1800,101 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
             }
         }
     }
+}
+
+#[test]
+fn ac3_family_settings_preserve_codec_container_and_channel_intent() {
+    for (format, codec) in [(Format::Ac3, AudioCodec::Ac3), (Format::Eac3, AudioCodec::Eac3)] {
+        assert!(format.is_audio_only());
+        assert!(Format::ALL.contains(&format));
+        assert_eq!(Format::from_name(format.id()), Some(format));
+        let mut settings = ExportSettings { format, ..Default::default() };
+        assert_eq!(settings.audio_codec(), codec);
+        assert!(settings.validate().is_ok());
+        settings.audio.sample_rate = Some(96_000);
+        assert!(settings.validate().is_err());
+        settings.audio.sample_rate = Some(48_000);
+        settings.audio.channels = 3;
+        assert!(settings.validate().is_err(), "unsupported layout must not silently fold to stereo");
+        settings.audio.channels = 8;
+        settings.audio.bitrate_kbps = 640;
+        assert_eq!(settings.validate().is_ok(), codec == AudioCodec::Eac3);
+        assert_eq!(settings.resolve(320, 180, FrameRate::FPS_24, 48_000).channels, 8);
+    }
+    for container in [Format::H264, Format::ProRes] {
+        for codec in [AudioCodec::Ac3, AudioCodec::Eac3] {
+            let settings = ExportSettings { format: container, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+            assert_eq!(settings.audio_codec(), codec, "container must retain the requested codec");
+            assert!(!settings.supports_sample_format(SampleFormat::Int16));
+        }
+    }
+    let settings = ExportSettings { audio: AudioSettings { channels: 8, ..Default::default() }, ..Default::default() };
+    assert!(settings.validate().is_err(), "AAC output must not falsely promise 7.1");
+}
+
+#[test]
+fn inactive_ac3_audio_does_not_block_video_only_export() {
+    let settings = ExportSettings {
+        include_audio: false,
+        audio: AudioSettings { codec: AudioCodec::Ac3, sample_rate: Some(0), channels: 8, bitrate_kbps: 1, float: true, bits: 16, ..Default::default() },
+        ..Default::default()
+    };
+    assert!(settings.validate().is_ok());
+}
+
+#[test]
+fn audio_choice_reconciliation_preserves_compatible_values_and_repairs_dependencies() {
+    let mut settings = ExportSettings {
+        audio: AudioSettings { codec: AudioCodec::Ac3, channels: 8, sample_rate: Some(96_000), bitrate_kbps: 1024, ..Default::default() },
+        ..Default::default()
+    };
+    settings.reconcile_audio_choices(96_000);
+    assert_eq!((settings.audio.channels, settings.audio.sample_rate, settings.audio.bitrate_kbps), (6, Some(48_000), 640));
+    assert!(settings.validate().is_ok());
+    settings.audio.codec = AudioCodec::Eac3;
+    settings.audio.channels = 8;
+    settings.audio.sample_rate = None;
+    settings.audio.bitrate_kbps = 320;
+    settings.reconcile_audio_choices(44_100);
+    assert_eq!((settings.audio.sample_rate, settings.audio.bitrate_kbps), (None, 384));
+    settings.audio.channels = 2;
+    settings.audio.bitrate_kbps = 321;
+    settings.reconcile_audio_choices(44_100);
+    assert_eq!((settings.audio.sample_rate, settings.audio.bitrate_kbps), (None, 321), "preserve valid custom bitrate and Match Source");
+    settings.audio.bitrate_kbps = 1024;
+    settings.audio.sample_rate = Some(32_000);
+    settings.reconcile_audio_choices(48_000);
+    assert_eq!((settings.audio.sample_rate, settings.audio.bitrate_kbps), (Some(32_000), 640), "rate choice repairs frame-size-invalid bitrate");
+    settings.audio.channels = 8;
+    settings.audio.codec = AudioCodec::Aac;
+    settings.audio.bitrate_kbps = 1024;
+    settings.reconcile_audio_choices(48_000);
+    assert_eq!((settings.audio.channels, settings.audio.bitrate_kbps), (6, 320));
+}
+
+#[test]
+fn ac3_settings_and_construction_agree_for_concrete_rates() {
+    for codec in [AudioCodec::Ac3, AudioCodec::Eac3] {
+        for channels in [1, 2, 3, 6, 8] {
+            for rate in [32_000, 44_100, 48_000, 96_000] {
+                for bitrate in [96, 192, 384, 640, 1024] {
+                    let settings = ExportSettings {
+                        audio: AudioSettings { codec, channels, sample_rate: Some(rate), bitrate_kbps: bitrate, ..Default::default() },
+                        ..Default::default()
+                    };
+                    assert_eq!(settings.validate().is_ok(), crate::ac3_out::encoder_config(codec, rate, channels, bitrate).is_ok());
+                }
+            }
+        }
+    }
+    let settings = ExportSettings {
+        audio: AudioSettings { codec: AudioCodec::Eac3, channels: 2, sample_rate: None, bitrate_kbps: 1024, ..Default::default() },
+        ..Default::default()
+    };
+    assert!(settings.validate().is_ok(), "unresolved rate may be valid");
+    assert!(settings.supports_audio_bitrate(1024, 48_000));
+    assert!(!settings.supports_audio_bitrate(1024, 32_000), "actual rate must be validated instead of assuming 48 kHz");
+    assert!(!settings.supports_audio_bitrate(1024, 0), "an unknown source rate is not a usable choice");
 }
 
 #[cfg(unix)]

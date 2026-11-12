@@ -632,3 +632,35 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+#[test]
+fn audio_codec_changes_reconcile_dependent_export_controls() {
+    use filmcraft_engine::export::{AudioCodec, AudioSettings, ExportSettings};
+    let mut d = Driver::new("ac3-dependent-controls");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.click("export.section.video");
+    d.app().ui.export.settings = ExportSettings {
+        audio: AudioSettings { codec: AudioCodec::Eac3, channels: 8, sample_rate: Some(96_000), bitrate_kbps: 1024, ..Default::default() },
+        ..Default::default()
+    };
+    d.frames(4);
+    d.click("export.audio.codec");
+    d.click("export.audio.codec.option.3");
+    let audio = &d.app().ui.export.settings.audio;
+    assert_eq!((audio.codec, audio.channels, audio.sample_rate, audio.bitrate_kbps), (AudioCodec::Ac3, 6, Some(48_000), 640));
+    d.click("export.audio.codec");
+    d.click("export.audio.codec.option.4");
+    d.app().ui.export.settings.audio.bitrate_kbps = 320;
+    d.frames(2);
+    d.click("export.audio.channels");
+    d.click("export.audio.channels.option.3");
+    assert_eq!(d.app().ui.export.settings.audio.bitrate_kbps, 384);
+    d.app().ui.export.settings.audio.channels = 2;
+    d.app().ui.export.settings.audio.bitrate_kbps = 1024;
+    d.frames(2);
+    d.click("export.audio.sampleRate");
+    d.click("export.audio.sampleRate.option.1");
+    assert_eq!(d.app().ui.export.settings.audio.sample_rate, Some(32_000));
+    assert_eq!(d.app().ui.export.settings.audio.bitrate_kbps, 640);
+}

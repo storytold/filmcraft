@@ -298,6 +298,9 @@ fn timed_source<R>(f: impl FnOnce() -> R) -> R {
 struct TimedSource(filmcraft_media::SharedSource);
 
 impl filmcraft_media::MediaSource for TimedSource {
+    fn audio_channel_mask(&self, stream: usize) -> Option<u32> {
+        self.0.audio_channel_mask(stream)
+    }
     fn info(&self) -> &filmcraft_media::MediaInfo {
         self.0.info()
     }

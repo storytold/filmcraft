@@ -213,8 +213,17 @@ impl FrameRequest {
     }
 }
 
+/// WAVE speaker mask for discrete 7.1: FL, FR, FC, LFE, BL, BR, SL, SR.
+pub const SPEAKER_MASK_7_1: u32 = 0x63f;
+
 pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
+    /// WAVE speaker mask for decoded audio stream `stream`, when the source can prove it.
+    /// Channels are ordered by ascending mask bit. `None` means unknown/unordered: a channel
+    /// count alone must not turn 7.1-wide or arbitrary eight-channel audio into rear+side 7.1.
+    fn audio_channel_mask(&self, _stream: usize) -> Option<u32> {
+        None
+    }
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
     /// Like [`video_frame`](Self::video_frame), but a source may leave the container's display
@@ -237,7 +246,7 @@ pub type SharedSource = Arc<dyn MediaSource>;
 
 /// File extensions we recognise at import (the media browser filters on these).
 pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng", "psd"];
-pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus"];
+pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "ac3", "eac3", "ec3", "flac", "ogg", "opus"];
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m", "apv",
 ];

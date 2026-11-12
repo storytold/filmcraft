@@ -611,6 +611,33 @@ pub fn graph_latency(seq: &Sequence) -> usize {
     build_state(&plan, seq.settings.sample_rate).map_or(0, |st| st.latency)
 }
 
+/// Enabled source clips needed for a fresh render of `range`, with each intersecting input span.
+/// Shares the graph's solo/mute/send pruning and latency/preroll instead of guessing audibility
+/// from track mute alone (a muted track can still feed an audible pre-fader send).
+pub fn audio_source_items(seq: &Sequence, range: filmcraft_time::TimeRange) -> Vec<(&filmcraft_project::TrackItem, filmcraft_time::TimeRange)> {
+    let plan = Plan::build(seq, &HashMap::new());
+    let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
+    let Some(state) = build_state(&plan, sr) else { return Vec::new() };
+    let latency = state.latency;
+    let preroll = plan.preroll(range.start, sr).max(latency);
+    let shift = Tick::from_units(latency as i64, i64::from(sr));
+    let lead = Tick::from_units(preroll as i64, i64::from(sr));
+    let input_start = Tick(range.start.0.saturating_add(shift.0).saturating_sub(lead.0));
+    let input_end = Tick(range.end().0.saturating_add(shift.0).min(Tick::MAX.0));
+    let audible: HashSet<_> = plan.strips.iter().filter(|s| s.kind == Kind::Track && !s.silent).map(|s| s.track.id).collect();
+    seq.audio_tracks
+        .iter()
+        .filter(|track| audible.contains(&track.id))
+        .flat_map(|track| &track.items)
+        .filter_map(|item| {
+            let start = item.start.max(input_start);
+            let end = item.end().min(input_end);
+            (item.enabled && !item.essential.as_ref().is_some_and(|e| e.mute) && start < end)
+                .then(|| (item, filmcraft_time::TimeRange::from_bounds(start, end)))
+        })
+        .collect()
+}
+
 // ------------------------------------------------------------------------------------- processing
 
 /// Planar bus signal (2 or 6 channels).
@@ -623,13 +650,18 @@ fn silent(w: usize, n: usize) -> Bus {
 /// Internal bus width of a channel format: 6 for 5.1, 2 otherwise (mono strips carry the same
 /// signal on both channels).
 pub fn width_of(c: AudioChannels) -> usize {
-    if c == AudioChannels::Surround51 { 6 } else { 2 }
+    match c {
+        AudioChannels::Surround51 => 6,
+        AudioChannels::Surround71 => 8,
+        _ => 2,
+    }
 }
 
 /// The layout a strip's signal is positioned as by the 5.1 panner.
 fn source_layout(tr: &Track, width: usize) -> Layout {
     match (width, tr.channels) {
         (6, _) => Layout::Surround51,
+        (8, _) => Layout::Surround71,
         (_, AudioChannels::Mono) => Layout::Mono,
         _ => Layout::Stereo,
     }
@@ -642,8 +674,8 @@ fn convert_width(buf: &Bus, layout: Layout, to: usize) -> Bus {
     }
     let n = buf.first().map_or(0, Vec::len);
     match (layout, to) {
-        (Layout::Mono, 6) => {
-            let mut v = silent(6, n);
+        (Layout::Mono, 6 | 8) => {
+            let mut v = silent(to, n);
             v[chans::C] = buf[0].clone();
             v
         }
@@ -857,8 +889,30 @@ fn run_strip(plan: &Plan, si: usize, st: &mut StripState, mut buf: Bus, run: Str
         return StripOut { routes: outs, meter, out: Some(buf) };
     }
     let out_w = my_routes.iter().find(|(_, r)| r.tap == Tap::Out).map(|(_, r)| plan.strips[r.target].width).unwrap_or(2);
-    if out_w == 6 {
-        buf = pan51(&buf, layout, tr, id, ovs, c_c, sr);
+    if out_w == 8 {
+        // The 5.1 panner cannot position two independent surround pairs. Preserve a 7.1
+        // strip's discrete speaker assignments; lower-width strips use the existing panner
+        // before placing its surrounds on the 7.1 side pair.
+        if layout != Layout::Surround71 {
+            buf = pan51(&buf, layout, tr, id, ovs, c_c, sr);
+            buf = convert_width(&buf, Layout::Surround51, 8);
+        } else {
+            let pan = Lane::new(tr, id, LANE_PAN, ovs);
+            for pair in [[0, 1], [4, 5], [6, 7]] {
+                let mut stereo = vec![std::mem::take(&mut buf[pair[0]]), std::mem::take(&mut buf[pair[1]])];
+                apply_pan(&mut stereo, &pan, c_c, sr, balance, &mut scratch);
+                let mut channels = stereo.into_iter();
+                buf[pair[0]] = channels.next().unwrap_or_default();
+                buf[pair[1]] = channels.next().unwrap_or_default();
+            }
+        }
+    } else if out_w == 6 {
+        if layout == Layout::Surround71 {
+            buf = convert_width(&buf, layout, 6);
+            buf = pan51(&buf, Layout::Surround51, tr, id, ovs, c_c, sr);
+        } else {
+            buf = pan51(&buf, layout, tr, id, ovs, c_c, sr);
+        }
     } else {
         if buf.len() != 2 {
             buf = convert_width(&buf, layout, 2);

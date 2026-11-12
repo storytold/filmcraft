@@ -52,6 +52,8 @@ pub enum AudioChannels {
     #[default]
     Stereo,
     Surround51,
+    /// Discrete WAVE-order 7.1: L, R, C, LFE, Lrs, Rrs, Ls, Rs.
+    Surround71,
     Adaptive,
 }
 

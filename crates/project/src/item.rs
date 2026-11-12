@@ -45,7 +45,7 @@ impl AudioChannelMap {
         let clips = match format {
             AudioChannels::Mono => (0..n).map(|c| vec![c]).collect(),
             AudioChannels::Stereo => (0..n).step_by(2).map(|c| if c + 1 < n { vec![c, c + 1] } else { vec![c] }).collect(),
-            AudioChannels::Surround51 | AudioChannels::Adaptive => vec![(0..n).collect()],
+            AudioChannels::Surround51 | AudioChannels::Surround71 | AudioChannels::Adaptive => vec![(0..n).collect()],
         };
         Self { format, clips }
     }

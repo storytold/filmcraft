@@ -213,6 +213,7 @@ fn collect_needs(
                         let channels = match t.channels {
                             filmcraft_project::AudioChannels::Mono => 1,
                             filmcraft_project::AudioChannels::Surround51 => 6,
+                            filmcraft_project::AudioChannels::Surround71 => 8,
                             _ => 2,
                         };
                         let key = EssenceKey::Clip(c.id);

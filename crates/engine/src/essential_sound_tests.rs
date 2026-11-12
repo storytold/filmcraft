@@ -500,3 +500,51 @@ fn perf_full_dialogue_chain_realtime_factor() {
     assert!(rms(&out[0]) > 0.0);
     println!("full Dialogue chain (9 effects), 60 s stereo 48 kHz: {el:.2} s → {:.1}× realtime", secs_len / el);
 }
+
+/// An ordinary eight-channel WAV has no declared speaker mask. The user's interpretation
+/// must reach analysis through the real media pool, just as it reaches timeline playback.
+fn manually_mapped_surround_session(channel: usize) -> (Session, ClipId, ClipId) {
+    let (mut s, music) = session_with(&[(tone(6.0, 220.0, 0.2), 0.0)]);
+    let signal = speech(6.0, 0.4, |t| (2.0..4.0).contains(&t));
+    let interleaved: Vec<f32> = signal.iter().flat_map(|v| (0..8).map(move |c| if c == channel { *v } else { 0.0 })).collect();
+    let bytes: Arc<[u8]> = filmcraft_media::wav::write_wav16(&interleaved, 8, SR).into();
+    let media = crate::commands::import_bytes(&mut s, "/manual-surround.wav", bytes, None).unwrap();
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let source = filmcraft_render::SourceProvider::source(&provider, media).unwrap();
+    assert_eq!(source.audio_channel_mask(0), None, "the source has no inferred speaker assignment");
+    s.execute("project.select", json!({"items": [media.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"format": "7.1"})).unwrap();
+    let placed = s.execute("timeline.place", json!({"item": media.0, "audioTrack": "A2", "seconds": 0.0})).unwrap();
+    let dialogue = ClipId(placed["clips"][0].as_u64().unwrap());
+    assert_eq!(item(&s, dialogue).source_channels, (0..8).collect::<Vec<u16>>());
+    s.execute("essentialSound.setType", json!({"clips": [dialogue.0], "type": "dialogue"})).unwrap();
+    (s, dialogue, music[0])
+}
+
+#[test]
+fn manual_surround_interpretation_reaches_auto_match() {
+    for channel in [4, 6] {
+        let (mut s, dialogue, _) = manually_mapped_surround_session(channel);
+        let result = s.execute("essentialSound.autoMatch", json!({"clips": [dialogue.0], "target": -23.0})).unwrap();
+        assert!(result["clips"][0]["measuredLufs"].as_f64().unwrap().is_finite());
+        let measured = lufs(&clip_out(&s, dialogue));
+        assert!((measured + 23.0).abs() < 0.5, "channel {channel} was not measured: {measured} LUFS");
+    }
+}
+
+#[test]
+fn manual_surround_interpretation_reaches_ducking() {
+    for channel in [5, 7] {
+        let (mut s, dialogue, music) = manually_mapped_surround_session(channel);
+        s.execute("essentialSound.setType", json!({"clips": [music.0], "type": "music"})).unwrap();
+        s.execute("essentialSound.set", json!({"clips": [music.0], "values": {"ducking.enabled": true, "ducking.reduceDb": -15.0, "ducking.fadeS": 0.8}}))
+            .unwrap();
+        let result = s.execute("essentialSound.generateDucking", json!({"clips": [music.0]})).unwrap();
+        let keyframes = result["clips"][0]["keyframes"].as_array().unwrap();
+        assert!(keyframes.iter().any(|k| k["levelDb"].as_f64() == Some(-15.0)), "channel {channel} did not trigger ducking: {result}");
+        // Removing the dialogue removes the trigger; the music's own signal is not the cause.
+        s.execute("clip.enable", json!({"clips": [dialogue.0]})).unwrap();
+        let result = s.execute("essentialSound.generateDucking", json!({"clips": [music.0]})).unwrap();
+        assert!(result["clips"][0]["keyframes"].as_array().unwrap().iter().all(|k| k["levelDb"].as_f64() != Some(-15.0)));
+    }
+}

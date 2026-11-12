@@ -32,6 +32,7 @@ pub mod mp4;
 pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
+mod raw_ac3;
 mod stream_color;
 pub mod video;
 mod webm_alpha;

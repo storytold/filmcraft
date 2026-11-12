@@ -50,6 +50,18 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+    /// Known WAVE speaker assignments, including project-level media interpretation when
+    /// available. Analysis must use the same speaker meaning as timeline playback.
+    fn audio_channel_mask(&self, item: ItemId, stream: usize) -> Option<u32> {
+        self.source(item)?.audio_channel_mask(stream)
+    }
+    /// Whether the user explicitly assigns the selected channels to rear+side 7.1 speakers.
+    /// A decoder mask alone labels the original order, so it cannot justify applying those
+    /// labels after an arbitrary Adaptive selection. Providers without project interpretation
+    /// return false; callers may still trust a decoder mask for an unchanged channel order.
+    fn audio_channels_are_explicit_71(&self, _item: ItemId) -> bool {
+        false
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {

@@ -268,9 +268,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let src = child(n, "media-rep").and_then(|m| m.attribute("src")).or_else(|| n.attribute("src"));
         let fmt = n.attribute("format").and_then(|f| self.formats.get(f)).copied();
         let mut has_video = flag(n, "hasVideo").unwrap_or(false);
-        let has_audio = flag(n, "hasAudio").unwrap_or(false);
+        let mut has_audio = flag(n, "hasAudio").unwrap_or(false);
         if !has_video && !has_audio {
-            has_video = kind_from_ext(src.unwrap_or(&name)) != MediaKind::AudioOnly;
+            // Inferred audio must populate both the media metadata and timeline placement flags.
+            has_audio = kind_from_ext(src.unwrap_or(&name)) == MediaKind::AudioOnly;
+            has_video = !has_audio;
         }
         let start = attr_time(n, "start").unwrap_or(Tick::ZERO);
         let rate = fmt.map(|f| f.0).unwrap_or_default();

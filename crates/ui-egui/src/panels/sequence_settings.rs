@@ -56,13 +56,14 @@ const TIMEBASES: [(i64, i64); 15] = [
     (120, 1),
 ];
 const SAMPLE_RATES: [u32; 5] = [32_000, 44_100, 48_000, 88_200, 96_000];
-const MIXES: [&str; 4] = ["Stereo", "Mono", "5.1", "Adaptive"];
+const MIXES: [&str; 5] = ["Stereo", "Mono", "5.1", "7.1", "Adaptive"];
 
 fn mix_name(c: AudioChannels) -> &'static str {
     match c {
         AudioChannels::Mono => "Mono",
         AudioChannels::Stereo => "Stereo",
         AudioChannels::Surround51 => "5.1",
+        AudioChannels::Surround71 => "7.1",
         AudioChannels::Adaptive => "Adaptive",
     }
 }
@@ -399,6 +400,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let n = match d.mix.as_str() {
                 "Mono" => "1",
                 "5.1" => "6",
+                "7.1" => "8",
                 "Adaptive" => "—",
                 _ => "2",
             };

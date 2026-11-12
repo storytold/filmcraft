@@ -53,6 +53,8 @@ pub enum Layout {
     Stereo,
     /// 5.1 in L, R, C, LFE, Ls, Rs order.
     Surround51,
+    /// WAVE 7.1 order: L, R, C, LFE, rear L, rear R, side L, side R.
+    Surround71,
 }
 
 impl Layout {
@@ -61,13 +63,16 @@ impl Layout {
             Layout::Mono => 1,
             Layout::Stereo => 2,
             Layout::Surround51 => 6,
+            Layout::Surround71 => 8,
         }
     }
-    /// The layout of a plain channel count (1, 2 or 6; anything else is treated as stereo).
+    /// Layout of an already assigned mixer bus (1, 2, 6 or 8; otherwise stereo).
+    /// This is not a media-layout probe: eight arbitrary source channels are not necessarily 7.1.
     pub fn from_channels(n: usize) -> Layout {
         match n {
             1 => Layout::Mono,
             6 => Layout::Surround51,
+            8 => Layout::Surround71,
             _ => Layout::Stereo,
         }
     }
@@ -77,6 +82,7 @@ impl Layout {
             Layout::Mono => &["M"],
             Layout::Stereo => &["L", "R"],
             Layout::Surround51 => &NAMES_51,
+            Layout::Surround71 => &["L", "R", "C", "LFE", "Lrs", "Rrs", "Ls", "Rs"],
         }
     }
 }
@@ -122,8 +128,38 @@ impl Mixdown {
 pub fn matrix(from: Layout, to: Layout, mixdown: Mixdown) -> Vec<Vec<f32>> {
     let (ni, no) = (from.channels(), to.channels());
     let mut m = vec![vec![0.0f32; ni]; no];
+    // 7.1 is an explicit layout, not the first six channels of an eight-channel buffer.
+    // Fold rear and side surrounds at equal power into the 5.1 surround pair; upmix places
+    // 5.1 surrounds on the sides and leaves the additional rear speakers silent.
+    if from == Layout::Surround71 && to != Layout::Surround71 {
+        let mut fold = vec![vec![0.0; 8]; 6];
+        for (i, row) in fold.iter_mut().enumerate().take(4) {
+            row[i] = 1.0;
+        }
+        fold[LS][4] = K;
+        fold[RS][5] = K;
+        fold[LS][6] = K;
+        fold[RS][7] = K;
+        let next = matrix(Layout::Surround51, to, mixdown);
+        for (o, row) in m.iter_mut().enumerate() {
+            for (i, value) in row.iter_mut().enumerate() {
+                *value = next[o].iter().zip(&fold).map(|(gain, channel)| gain * channel[i]).sum();
+            }
+        }
+        return m;
+    }
+    if to == Layout::Surround71 && from != Layout::Surround71 {
+        let base = matrix(from, Layout::Surround51, mixdown);
+        for (out, input) in [0, 1, 2, 3, 6, 7].into_iter().zip(base) {
+            m[out] = input;
+        }
+        return m;
+    }
     match (from, to) {
-        (Layout::Mono, Layout::Mono) | (Layout::Stereo, Layout::Stereo) | (Layout::Surround51, Layout::Surround51) => {
+        (Layout::Mono, Layout::Mono)
+        | (Layout::Stereo, Layout::Stereo)
+        | (Layout::Surround51, Layout::Surround51)
+        | (Layout::Surround71, Layout::Surround71) => {
             for (i, row) in m.iter_mut().enumerate() {
                 row[i] = 1.0;
             }
@@ -159,6 +195,7 @@ pub fn matrix(from: Layout, to: Layout, mixdown: Mixdown) -> Vec<Vec<f32>> {
                 m[1][LFE] = K;
             }
         }
+        (Layout::Surround71, _) | (_, Layout::Surround71) => {}
     }
     m
 }
@@ -264,6 +301,7 @@ fn offsets(from: Layout) -> &'static [(f32, f32)] {
         Layout::Stereo => &[(-1.0, 0.0), (1.0, 0.0)],
         // L, R, C, LFE (not positioned), Ls, Rs
         Layout::Surround51 => &[(-1.0, 0.0), (1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (-1.0, -2.0), (1.0, -2.0)],
+        Layout::Surround71 => &[(-1.0, 0.0), (1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (-1.0, -2.0), (1.0, -2.0), (-1.0, -1.0), (1.0, -1.0)],
     }
 }
 
@@ -272,7 +310,7 @@ pub fn pan51_matrix(from: Layout, p: Pan51) -> Vec<Vec<f32>> {
     let ni = from.channels();
     let mut m = vec![vec![0.0f32; ni]; 6];
     for (i, (ox, oy)) in offsets(from).iter().enumerate() {
-        if from == Layout::Surround51 && i == LFE {
+        if matches!(from, Layout::Surround51 | Layout::Surround71) && i == LFE {
             m[LFE][i] = p.lfe;
             continue;
         }
@@ -280,7 +318,7 @@ pub fn pan51_matrix(from: Layout, p: Pan51) -> Vec<Vec<f32>> {
         for (o, row) in m.iter_mut().enumerate() {
             row[i] = g[o];
         }
-        if from != Layout::Surround51 {
+        if !matches!(from, Layout::Surround51 | Layout::Surround71) {
             m[LFE][i] = p.lfe / ni as f32;
         }
     }
@@ -298,6 +336,25 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn discrete_71_mapping_preserves_speaker_identity() {
+        let m = matrix(Layout::Surround71, Layout::Surround71, Mixdown::FrontRear);
+        for (output, row) in m.iter().enumerate() {
+            for (input, gain) in row.iter().enumerate() {
+                assert_eq!(*gain, if output == input { 1.0 } else { 0.0 });
+            }
+        }
+        assert_eq!(Layout::Surround71.names(), ["L", "R", "C", "LFE", "Lrs", "Rrs", "Ls", "Rs"]);
+        let up = matrix(Layout::Surround51, Layout::Surround71, Mixdown::FrontRear);
+        assert!(up[4].iter().all(|v| *v == 0.0) && up[5].iter().all(|v| *v == 0.0));
+        assert_eq!(up[6][4], 1.0);
+        assert_eq!(up[7][5], 1.0);
+        let down = matrix(Layout::Surround71, Layout::Surround51, Mixdown::FrontRear);
+        assert_eq!((down[4][4], down[4][6], down[5][5], down[5][7]), (K, K, K, K));
+        let front = matrix(Layout::Surround71, Layout::Stereo, Mixdown::Front);
+        assert!(front.iter().all(|row| row[3..].iter().all(|v| *v == 0.0)));
     }
 
     #[test]

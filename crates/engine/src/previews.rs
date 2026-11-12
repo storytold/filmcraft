@@ -428,7 +428,7 @@ impl PreviewStore {
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
-        let surround = q.settings.audio_master == filmcraft_project::AudioChannels::Surround51;
+        let surround = matches!(q.settings.audio_master, filmcraft_project::AudioChannels::Surround51 | filmcraft_project::AudioChannels::Surround71);
         let previews_ok = layout == Layout::Stereo && (!surround || mixdown == Mixdown::FrontRear);
         // held mixer controls are heard live (rendered previews don't know them)
         if !has_audio || self.live.is_active() || !previews_ok {
