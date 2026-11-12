@@ -94,6 +94,7 @@ pub struct QsvSession {
     _gpu: Arc<IntelGpu>,
     transform: IMFTransform,
     config: Config,
+    out_buf_size: u32,
     emitted: i64,
     pending: VecDeque<(i64, i64)>, // (pts, dts)
 }
@@ -127,9 +128,16 @@ impl QsvSession {
             let _ = transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager_param());
         }
 
-        let session = Self { _gpu: gpu, transform, config: config.clone(), emitted: 0, pending: VecDeque::new() };
+        let mut session = Self { _gpu: gpu, transform, config: config.clone(), out_buf_size: 2 * 1024 * 1024, emitted: 0, pending: VecDeque::new() };
 
         session.configure_media_types(mf_api)?;
+
+        let (w, h) = config.size;
+        let bytes_per_pixel = if config.ten_bit { 3u64 } else { 2u64 };
+        let frame_bound = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bytes_per_pixel).clamp(2 * 1024 * 1024, 64 * 1024 * 1024);
+        // SAFETY: plain COM call to inspect output stream buffer requirements after media types are set.
+        let stream_min = unsafe { session.transform.GetOutputStreamInfo(0) }.map(|info| info.cbSize).unwrap_or(0);
+        session.out_buf_size = stream_min.max(u32::try_from(frame_bound).unwrap_or(u32::MAX));
 
         // SAFETY: notify streaming messages.
         unsafe {
@@ -246,7 +254,7 @@ impl QsvSession {
         loop {
             let mut out_buffer = MFT_OUTPUT_DATA_BUFFER { dwStreamID: 0, ..Default::default() };
             // Create sample for output
-            let empty_buffer = make_empty_buffer(mf_api, 2 * 1024 * 1024)?;
+            let empty_buffer = make_empty_buffer(mf_api, self.out_buf_size)?;
             let sample = make_sample_with_buffer(mf_api, &empty_buffer)?;
             out_buffer.pSample = std::mem::ManuallyDrop::new(Some(sample));
 
@@ -257,10 +265,7 @@ impl QsvSession {
             match hr {
                 Ok(()) => {}
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => break,
-                Err(e) => {
-                    log::debug!("Intel ProcessOutput ended: {e}");
-                    break;
-                }
+                Err(e) => return Err(format!("Intel ProcessOutput failed: {e}")),
             }
 
             if let Some(sample) = out_buffer.pSample.as_ref() {
@@ -457,14 +462,15 @@ fn is_key_frame(codec: Codec, data: &[u8]) -> bool {
                     pos += 1;
                 }
                 let payload_start = if has_size != 0 {
-                    let mut payload_len = 0usize;
-                    let mut shift = 0;
+                    let mut payload_len = 0u64;
                     let mut valid = false;
-                    while pos < data.len() {
+                    for i in 0..8 {
+                        if pos >= data.len() {
+                            break;
+                        }
                         let b = data[pos];
                         pos += 1;
-                        payload_len |= ((b & 0x7F) as usize) << shift;
-                        shift += 7;
+                        payload_len |= u64::from(b & 0x7F) << (7 * i);
                         if (b & 0x80) == 0 {
                             valid = true;
                             break;
@@ -473,6 +479,9 @@ fn is_key_frame(codec: Codec, data: &[u8]) -> bool {
                     if !valid {
                         break;
                     }
+                    let Ok(payload_len) = usize::try_from(payload_len) else {
+                        break;
+                    };
                     let start = pos;
                     pos = pos.saturating_add(payload_len);
                     start
@@ -606,5 +615,8 @@ mod tests {
         // payload: show_existing=0, type=1 -> (1 << 5) = 0x20
         let frame_inter = [0x32, 0x01, 0x20];
         assert!(!is_key_frame(Codec::Av1, &frame_inter));
+        // Overlong LEB128 (> 8 bytes) must be rejected without panic or shift overflow
+        let overlong_leb128 = [0x32, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0x00];
+        assert!(!is_key_frame(Codec::Av1, &overlong_leb128));
     }
 }
