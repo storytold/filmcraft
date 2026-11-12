@@ -8,8 +8,9 @@
 //! `CRAFT_FONTS_DIR` an error.
 //!
 //! Native builds embed every font. The web (wasm32) build embeds only the UI font (BIZ UDPGothic
-//! Regular, ~4.5 MB) and Noto Sans Thai (~0.2 MB, the one script the browser's own fonts may lack
-//! that the UI draws in file names) to stay under the web size budget (Cloudflare serves files up
+//! Regular, ~4.5 MB), Noto Sans Thai (~0.2 MB, the one script the browser's own fonts may lack
+//! that the UI draws in file names) and, when the checkout has it, Noto Sans Tamil (~0.3 MB, for the
+//! Tamil interface) to stay under the web size budget (Cloudflare serves files up
 //! to 25 MiB). [`CRAFT_WASM_FACES`](crate::fonts::CRAFT_WASM_FACES) lists those faces on every target.
 //! Only the local directory is read: no network.
 
@@ -46,9 +47,9 @@ fn main() {
     }
 }
 
-/// The faces the web build embeds: the UI font and the Thai face.
+/// The faces the web build embeds: the UI font, the Thai face and the Tamil interface face.
 fn wasm_keeps(family: &str, style: &str) -> bool {
-    style == "Regular" && matches!(family, "BIZ UDPGothic" | "Noto Sans Thai")
+    style == "Regular" && matches!(family, "BIZ UDPGothic" | "Noto Sans Thai" | "Noto Sans Tamil")
 }
 
 /// One `CraftFont { .. }` initialiser per manifest line, and the `(family, style)` pairs the web

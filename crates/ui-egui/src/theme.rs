@@ -443,10 +443,11 @@ fn craft_font_name(f: &filmcraft_text::fonts::CraftFont) -> String {
 
 /// Append the Japanese craft-fonts (empty unless built with `CRAFT_FONTS_DIR`) as the last fallbacks
 /// of every font family, after the app's own fonts: BIZ UDPGothic first (bold before regular in
-/// the "semibold" and "medium" families), then the other Japanese faces.
+/// the "semibold" and "medium" families), then the other Japanese faces, then the Tamil ones.
 fn add_craft_fonts(fonts: &mut FontDefinitions) {
     let jpan: Vec<_> = filmcraft_text::fonts::craft_japanese().collect();
-    for f in &jpan {
+    let taml: Vec<_> = filmcraft_text::fonts::craft_tamil().collect();
+    for f in jpan.iter().chain(&taml) {
         fonts.font_data.insert(craft_font_name(f), Arc::new(FontData::from_static(f.bytes)));
     }
     for (family, stack) in fonts.families.iter_mut() {
@@ -454,6 +455,7 @@ fn add_craft_fonts(fonts: &mut FontDefinitions) {
         let mut order = jpan.clone();
         order.sort_by_key(|f| (!f.family.contains("Gothic"), (f.style == "Bold") != heavy));
         stack.extend(order.iter().map(|f| craft_font_name(f)));
+        stack.extend(taml.iter().map(|f| craft_font_name(f)));
     }
 }
 
