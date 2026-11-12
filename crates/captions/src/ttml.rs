@@ -109,6 +109,8 @@ fn esc(s: &str) -> String {
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
             '\'' => o.push_str("&apos;"),
+            // XML 1.0 forbids these control characters, even escaped
+            '\u{0}'..='\u{8}' | '\u{B}' | '\u{C}' | '\u{E}'..='\u{1F}' => {}
             c => o.push(c),
         }
     }
