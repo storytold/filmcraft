@@ -206,6 +206,8 @@ impl FilmcraftApp {
         };
         if self.timeline_view_of != Some(active) {
             self.timeline_view_of = Some(active);
+            // the zoom ceiling is applied by animate_view with the measured content width --
+            // clamping here (before the first layout) would use the placeholder width
             match stored.and_then(|s| s.checked()) {
                 Some(s) => {
                     show(v, s);
@@ -223,6 +225,9 @@ impl FilmcraftApp {
         } else if self.timeline_view_last != Some(shown) {
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
+            // the zoom and scroll are part of the saved project view. The view counter keeps
+            // them separate from content edits; recovery journals them only alongside dirty content.
+            self.session.view_changed();
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);
             self.timeline_view_last = Some(s);
