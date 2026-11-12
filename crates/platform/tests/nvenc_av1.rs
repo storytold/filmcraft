@@ -30,7 +30,7 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
         let clip = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -40,7 +40,7 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         let color = filmcraft_color::ColorPipeline { working, ..filmcraft_color::ColorPipeline::REC709 };
@@ -117,7 +117,7 @@ fn main10_encodes_hdr_signal_and_repeated_keyframes() {
     let mut enc = Nvenc::with_signal(&cfg, &signal).expect("AV1 Main10 encoder");
     let config = enc.av1_config().expect("av1C");
     assert!(config.high_bitdepth);
-    let mut dec = filmcraft_av1::Decoder::with_threads(1);
+    let mut dec = craft_video::av1::decode::Decoder::with_threads(1);
     assert!(!config.seq_tier_0);
     dec.decode(&config.config_obus).unwrap();
     let color = &dec.sequence_header().unwrap().color;
@@ -142,7 +142,7 @@ fn main10_encodes_hdr_signal_and_repeated_keyframes() {
     assert!(info.contains("\"max_average\": 400"), "{info}");
     for i in [0, 4, 8] {
         assert!(packets[i].key, "keyframe {i}");
-        assert!(filmcraft_av1::is_key_frame_unit(&packets[i].data), "repeat sequence header {i}");
+        assert!(craft_video::av1::decode::is_key_frame_unit(&packets[i].data), "repeat sequence header {i}");
     }
     let mut pictures = Vec::new();
     for packet in &packets {

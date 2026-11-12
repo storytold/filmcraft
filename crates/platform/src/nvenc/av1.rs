@@ -3,7 +3,7 @@
 //!
 //! Main (8-bit) and Main 10 (10-bit) 4:2:0 profiles are supported.
 
-use filmcraft_av1::SequenceHeader;
+use craft_video::av1::decode::SequenceHeader;
 use filmcraft_isobmff::Av1Config;
 
 /// Extract the Sequence Header OBU from low-overhead AV1 OBUs (as NVENC outputs them).
