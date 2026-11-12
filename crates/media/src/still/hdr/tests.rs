@@ -135,3 +135,11 @@ fn opens_as_a_float_still() {
     let src = crate::open_bytes("a.hdr", file("-Y 2 +X 2", &body).into(), &[]).unwrap();
     assert_eq!(src.info().kind, MediaKind::Still);
 }
+
+#[test]
+fn an_extreme_axis_is_rejected_before_the_scan_line_scratch_exists() {
+    // 2^26 x 1 is within the pixel limit, but would size a 256 MiB validation scan line
+    let f = file("-Y 1 +X 67108864", &vec![0u8; 1 << 16]);
+    let e = decode("a.hdr", &f).unwrap_err().to_string();
+    assert!(e.contains("picture size out of range"), "{e}");
+}

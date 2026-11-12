@@ -8,7 +8,7 @@
 #
 # 净室实现：每条译文均由英文含义直接译出，使用通用的中文视频剪辑术语（剪辑、时间轴、序列、
 #   轨道、关键帧……）。未参考或复制任何专有本地化资源、字符串表或产品界面。产品与技术名称
-#   （FilmCraft、ArtCraft、Lumetri、ProRes、LUFS……）保留原文拼写。
+#   （FilmCraft、ArtCraft、ProRes、LUFS……）保留原文拼写。
 	About FilmCraft	关于 FilmCraft
 	Add Audio Submix Track	添加音频子混音轨道
 	Add Caption at Playhead	在播放头处添加字幕
@@ -197,8 +197,8 @@
 	Refresh Changed Media	刷新已更改的媒体
 	Linked Selection	关联选择
 	Lock Guides	锁定参考线
-	Lumetri Color	Lumetri 颜色
-	Lumetri Scopes	Lumetri 示波器
+	Color Grading	色彩分级
+	Video Scopes	视频示波器
 	Magnification	放大
 	Make Offline…	设为脱机…
 	Make Subclip…	创建子剪辑…
@@ -895,7 +895,7 @@
 	Clip Volume	剪辑音量
 	(no clip selected)	（未选择剪辑）
 	Master · {name}	主 · {name}
-	Add Lumetri Color to clip	向剪辑添加 Lumetri 颜色
+	Add Color Grading to clip	为剪辑添加色彩分级
 	Input LUT	输入 LUT
 	Color	颜色
 	Temperature	色温
@@ -1672,7 +1672,7 @@
 	Elliptical	椭圆
 	Emboss	浮雕
 	Enable HSL Secondary	启用 HSL 辅助
-	Enable Mercury Transmit	启用 Mercury 传输
+	Enable External Video Output	启用外部视频输出
 	Enable ProRes hardware accelerated encoding, if available	如可用，启用 ProRes 硬件加速编码
 	Enable clip and XMP metadata linking	启用剪辑与 XMP 元数据链接
 	Enable developer mode	启用开发者模式
@@ -1740,7 +1740,7 @@
 	Focus Size	焦点大小
 	Fold Motion	折叠运动
 	Foldback	折叠
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	有关色彩管理参数，请前往 Lumetri 颜色面板中的“设置”选项卡。
+	For color management parameters, go to the Settings tab in the Color Grading panel.	有关色彩管理参数，请转到色彩分级面板中的设置选项卡。
 	Format	格式
 	Four Scopes (RGB, 8 bit)	四视图示波器（RGB，8 位）
 	Four Scopes (YUV, float, no clamp)	四视图示波器（YUV，浮点，无钳制）
@@ -2004,7 +2004,7 @@
 	Luma Key	亮度键
 	Luma Source	亮度源
 	Luma and Chroma	亮度与色度
-	Lumetri Presets	Lumetri 预设
+	Color Grading Presets	色彩分级预设
 	Luminance	亮度
 	Luminance Threshold	亮度阈值
 	Luminosity	光度
@@ -2986,6 +2986,9 @@
 	AAC Audio	AAC 音频
 	AAC Audio 48 kHz 320 kbps	AAC 音频 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	MPEG-4 音频 (.m4a)，立体声 48 kHz AAC-LC，320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	MPEG 音频 (.mp3)，联合立体声 48 kHz，320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 位
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF，立体声 48 kHz 16 位 PCM
@@ -3124,7 +3127,6 @@
 	Left align text	文本左对齐
 	Looping GIF, 640×360 at 15 fps	循环 GIF，640×360，15 fps
 	Lower First	下方优先
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR（Avid）
 	MXF OP1a	MXF OP1a
@@ -3590,6 +3592,7 @@
 	The default graphics are used from the next start.	下次启动时将使用默认图形。
 	DirectX 12 only	仅 DirectX 12
 	software rendering	软件渲染
+	integrated GPU	集成 GPU
 	Label Color Presets	标签颜色预设
 	{name} (Modified)	{name}（已修改）
 	Revert to the preset's colors and names	恢复为预设的颜色和名称
@@ -3764,3 +3767,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件
+	List Color Grading Presets	列出色彩分级预设
+	Apply Color Grading Preset	应用色彩分级预设
+	Color Grading Preset Thumbnails	色彩分级预设缩略图
+	Toggle Color Grading Section	切换色彩分级分区
+	Color Grading Section	色彩分级分区
+	Read Video Scopes	读取视频示波器
