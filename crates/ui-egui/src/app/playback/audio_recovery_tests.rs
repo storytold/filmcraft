@@ -429,6 +429,36 @@ fn a_stalled_output_retries_and_follows_the_new_device_clock() {
     }
 }
 
+/// A late retry wraps to Program In before opening, so the replacement stream can play.
+#[test]
+fn a_delayed_program_retry_reopens_at_loop_in() {
+    let (mut app, device) = stalling_output();
+    let ctx = egui::Context::default();
+    app.session.execute("markers.markIn", json!({"seconds": 1.0})).unwrap();
+    app.session.execute("markers.markOut", json!({"seconds": 3.0})).unwrap();
+    let loop_in = app.session.sequence_rate().snap(Tick::from_seconds_f64(1.0));
+    app.playback.looping = true;
+    app.play(1.0);
+    app.end_preroll(0.0);
+    advance_at(&mut app, &ctx, AUDIO_STALL_S);
+
+    let retry_at = AUDIO_STALL_S + AUDIO_RETRY_S + 0.25;
+    advance_at(&mut app, &ctx, retry_at);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 2);
+    assert!(app.playback.audio_clock, "the loop must keep the reopened stream");
+    assert_eq!(app.playback.anchor_tick, loop_in);
+    assert_eq!(app.session.playhead(), loop_in);
+    assert_eq!(app.playback.audio_retry_attempts, 1);
+    assert_eq!(app.playback.audio_retry_at, 0.0);
+
+    device.frames.store(12_000, Ordering::Relaxed);
+    advance_at(&mut app, &ctx, retry_at + 0.5);
+    assert_eq!(app.session.playhead(), app.session.sequence_rate().snap(loop_in + Tick::from_seconds_f64(0.25)));
+    assert_eq!(app.playback.audio_retry_attempts, 0);
+    assert_eq!(device.starts.load(Ordering::Relaxed), 2);
+    app.stop();
+}
+
 #[test]
 fn a_stalled_outputs_failed_reopen_is_retried_and_stop_cancels_it() {
     let (mut app, device) = stalling_output();

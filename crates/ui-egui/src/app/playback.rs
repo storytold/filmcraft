@@ -217,17 +217,30 @@ impl FilmcraftApp {
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
+        let rate = self.session.sequence_rate();
+        let seq = self.session.active_sequence();
+        let dur = seq.map(|q| q.duration()).unwrap_or_default();
+        let (lo, hi) = if self.playback.looping {
+            (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
+        } else {
+            (Tick::ZERO, dur)
+        };
         if self.playback.begin_audio_retry(now) {
             // Catch up from the wall-clock anchor before reopening the mixer. Keep the
             // unsnapped position as the new anchor so retries don't lose partial-frame time.
             let elapsed = (now - self.playback.anchor_time).max(0.0);
             let time = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
-            self.session.set_playhead(time);
-            self.playback.anchor_tick = time;
+            // Reopening past Out would immediately interrupt the fresh stream at the loop boundary.
+            if self.playback.looping && self.playback.speed > 0.0 && time >= hi {
+                self.session.set_playhead(lo);
+                self.playback.anchor_tick = self.session.playhead();
+            } else {
+                self.session.set_playhead(time);
+                self.playback.anchor_tick = time;
+            }
             self.playback.anchor_time = now;
             self.start_audio();
         }
-        let rate = self.session.sequence_rate();
         if self.playback.audio_clock
             && let Some(audio) = self.audio.as_mut()
         {
@@ -270,13 +283,6 @@ impl FilmcraftApp {
             _ => now - self.playback.anchor_time,
         };
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
-        let seq = self.session.active_sequence();
-        let dur = seq.map(|q| q.duration()).unwrap_or_default();
-        let (lo, hi) = if self.playback.looping {
-            (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
-        } else {
-            (Tick::ZERO, dur)
-        };
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
             self.stop();
