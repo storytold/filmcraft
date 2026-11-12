@@ -122,6 +122,64 @@ pub fn insert_metadata(packet: &[u8], metadata: &[u8]) -> Result<Vec<u8>, String
     Err("NVENC AV1 packet has no frame".into())
 }
 
+/// Read `seq_tier[0]` from an AV1 sequence header OBU payload (AV1 spec 5.5.1).
+fn parse_seq_tier_0(payload: &[u8]) -> Option<bool> {
+    let mut bit_pos = 0usize;
+    let total_bits = payload.len().checked_mul(8)?;
+    let read_bits = |pos: &mut usize, n: usize| -> Option<u32> {
+        if n > 32 || pos.checked_add(n)? > total_bits {
+            return None;
+        }
+        let mut val = 0u32;
+        for _ in 0..n {
+            let byte = *payload.get(*pos >> 3)?;
+            let bit = (byte >> (7 - (*pos & 7))) & 1;
+            val = (val << 1) | u32::from(bit);
+            *pos += 1;
+        }
+        Some(val)
+    };
+    let skip_uvlc = |pos: &mut usize| -> Option<()> {
+        let mut leading_zeros = 0usize;
+        while read_bits(pos, 1)? == 0 {
+            leading_zeros += 1;
+            if leading_zeros >= 32 {
+                return Some(());
+            }
+        }
+        let _ = read_bits(pos, leading_zeros)?;
+        Some(())
+    };
+
+    let _seq_profile = read_bits(&mut bit_pos, 3)?;
+    let _still_picture = read_bits(&mut bit_pos, 1)?;
+    let reduced = read_bits(&mut bit_pos, 1)? != 0;
+    if reduced {
+        return Some(false);
+    }
+    let timing_info_present = read_bits(&mut bit_pos, 1)? != 0;
+    if timing_info_present {
+        let _num_units_in_display_tick = read_bits(&mut bit_pos, 32)?;
+        let _time_scale = read_bits(&mut bit_pos, 32)?;
+        let equal_picture_interval = read_bits(&mut bit_pos, 1)? != 0;
+        if equal_picture_interval {
+            skip_uvlc(&mut bit_pos)?;
+        }
+        let decoder_model_info_present = read_bits(&mut bit_pos, 1)? != 0;
+        if decoder_model_info_present {
+            let _buffer_delay_length_minus_1 = read_bits(&mut bit_pos, 5)?;
+            let _num_units_in_decoding_tick = read_bits(&mut bit_pos, 32)?;
+            let _buffer_removal_time_length_minus_1 = read_bits(&mut bit_pos, 5)?;
+            let _frame_presentation_time_length_minus_1 = read_bits(&mut bit_pos, 5)?;
+        }
+    }
+    let _initial_display_delay_present = read_bits(&mut bit_pos, 1)?;
+    let _operating_points_cnt_minus_1 = read_bits(&mut bit_pos, 5)?;
+    let _operating_point_idc_0 = read_bits(&mut bit_pos, 12)?;
+    let seq_level_idx_0 = read_bits(&mut bit_pos, 5)?;
+    if seq_level_idx_0 > 7 { Some(read_bits(&mut bit_pos, 1)? != 0) } else { Some(false) }
+}
+
 /// Build an `av1C` record from the sequence header parameter bytes NVENC wrote.
 pub fn av1_config(sequence_params: &[u8], ten_bit: bool) -> Result<Av1Config, String> {
     if sequence_params.is_empty() {
@@ -130,6 +188,7 @@ pub fn av1_config(sequence_params: &[u8], ten_bit: bool) -> Result<Av1Config, St
     let (full_obu, payload) = extract_sequence_header_obu(sequence_params).ok_or_else(|| "no Sequence Header OBU found in NVENC parameters".to_string())?;
 
     let parsed = SequenceHeader::parse(payload).map_err(|e| format!("parsing AV1 sequence header: {e:?}"))?;
+    let seq_tier_0 = parse_seq_tier_0(payload).ok_or_else(|| "parsing AV1 sequence header tier".to_string())?;
 
     if parsed.color.bit_depth != if ten_bit { 10 } else { 8 } {
         return Err("NVENC AV1 sequence bit depth differs from the input configuration".into());
@@ -138,7 +197,7 @@ pub fn av1_config(sequence_params: &[u8], ten_bit: bool) -> Result<Av1Config, St
     let config = Av1Config {
         seq_profile: parsed.profile,
         seq_level_idx_0: parsed.seq_level_idx.first().copied().unwrap_or(0),
-        seq_tier_0: false,
+        seq_tier_0,
         high_bitdepth,
         twelve_bit: parsed.color.bit_depth == 12,
         monochrome: parsed.color.mono_chrome,
@@ -199,5 +258,60 @@ mod tests {
         let (full, pay) = parsed.unwrap();
         assert_eq!(full, &obu[..]);
         assert_eq!(pay, &payload[..]);
+    }
+
+    #[test]
+    fn av1_config_parses_seq_tier_1() {
+        let mut bits = Vec::new();
+        let mut push = |val: u32, n: usize| {
+            for i in (0..n).rev() {
+                bits.push(((val >> i) & 1) as u8);
+            }
+        };
+        push(0, 3); // seq_profile = 0 (Main)
+        push(0, 1); // still_picture = 0
+        push(0, 1); // reduced_still_picture_header = 0
+        push(0, 1); // timing_info_present_flag = 0
+        push(0, 1); // initial_display_delay_present_flag = 0
+        push(0, 5); // operating_points_cnt_minus_1 = 0
+        push(0, 12); // operating_point_idc[0] = 0
+        push(8, 5); // seq_level_idx[0] = 8 (Level 4.0, > 7 so seq_tier follows)
+        push(1, 1); // seq_tier[0] = 1
+        push(0, 4); // frame_width_bits_minus_1 = 0
+        push(0, 4); // frame_height_bits_minus_1 = 0
+        push(0, 1); // max_frame_width_minus_1 = 0
+        push(0, 1); // max_frame_height_minus_1 = 0
+        push(0, 1); // frame_id_numbers_present_flag = 0
+        push(0, 1); // use_128x128_superblock = 0
+        push(0, 1); // enable_filter_intra = 0
+        push(0, 1); // enable_intra_edge_filter = 0
+        push(0, 1); // enable_interintra_compound = 0
+        push(0, 1); // enable_masked_compound = 0
+        push(0, 1); // enable_warped_motion = 0
+        push(0, 1); // enable_dual_filter = 0
+        push(0, 1); // enable_order_hint = 0
+        push(1, 1); // seq_choose_screen_content_tools = 1
+        push(1, 1); // seq_choose_integer_mv = 1
+        push(0, 1); // enable_superres = 0
+        push(0, 1); // enable_cdef = 0
+        push(0, 1); // enable_restoration = 0
+        push(0, 1); // color_config: high_bitdepth = 0
+        push(0, 1); // mono_chrome = 0
+        push(0, 1); // color_description_present_flag = 0
+        push(0, 1); // color_range = 0
+        push(0, 2); // chroma_sample_position = 0
+        push(0, 1); // separate_uv_delta_q = 0
+        push(0, 1); // film_grain_params_present = 0
+        push(1, 1); // trailing_one_bit
+        while bits.len() % 8 != 0 {
+            bits.push(0);
+        }
+        let payload: Vec<u8> = bits.chunks(8).map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | b)).collect();
+        let mut obu = vec![0x0a, payload.len() as u8];
+        obu.extend_from_slice(&payload);
+
+        let cfg = av1_config(&obu, false).expect("valid AV1 sequence header with tier 1");
+        assert_eq!(cfg.seq_level_idx_0, 8);
+        assert!(cfg.seq_tier_0);
     }
 }
