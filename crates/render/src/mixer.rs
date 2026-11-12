@@ -681,7 +681,10 @@ pub fn effect_tail(seq: &Sequence) -> Tick {
     if tail <= 0.0 {
         return Tick::ZERO;
     }
-    let latency = build_state(&plan, sr).latency;
+    // a refused graph plays silence, so nothing rings on
+    let Some(latency) = build_state(&plan, sr).map(|st| st.latency) else {
+        return Tick::ZERO;
+    };
     Tick::from_seconds_f64(tail) + Tick::from_units(i64::try_from(latency).unwrap_or(0), sr as i64)
 }
 
