@@ -209,7 +209,27 @@ fn decode_tf(tf: &[u8], out: &mut String, italic: &mut bool, underline: &mut boo
 
 /// Caption text → text-field bytes (`<i>`, `<u>` become control codes; other tags dropped).
 fn encode_text(text: &str) -> Vec<u8> {
+    encode_text_noting(text, &mut Vec::new())
+}
+
+/// The characters of `text` that ISO/IEC 6937 has no code for, in order: [`write`] sends each
+/// as `?`.
+pub fn unencodable(text: &str) -> Vec<char> {
+    let mut lost = Vec::new();
+    encode_text_noting(text, &mut lost);
+    lost
+}
+
+/// [`encode_text`], noting in `lost` each character it writes as `?`.
+fn encode_text_noting(text: &str, lost: &mut Vec<char>) -> Vec<u8> {
     let mut out = Vec::new();
+    let mut put = |out: &mut Vec<u8>, ch: char| match encode_6937(ch) {
+        Some(b) => out.extend(b),
+        None => {
+            lost.push(ch);
+            out.push(b'?');
+        }
+    };
     let mut rest = text;
     while let Some(ch) = rest.chars().next() {
         let is_tag_start = ch == '<'
@@ -243,7 +263,7 @@ fn encode_text(text: &str) -> Vec<u8> {
                 if ch == '\n' {
                     out.push(0x8a);
                 } else {
-                    out.extend(encode_6937(ch).unwrap_or_else(|| vec![b'?']));
+                    put(&mut out, ch);
                 }
             }
             break;
@@ -251,7 +271,7 @@ fn encode_text(text: &str) -> Vec<u8> {
         if ch == '\n' {
             out.push(0x8a);
         } else {
-            out.extend(encode_6937(ch).unwrap_or_else(|| vec![b'?']));
+            put(&mut out, ch);
         }
         rest = &rest[ch.len_utf8()..];
     }
@@ -355,12 +375,25 @@ fn put(buf: &mut [u8], at: usize, len: usize, s: &str) {
     }
 }
 
-/// Write `doc` at `rate` (25 fps → `STL25.01`; 29.97 / 30 → `STL30.01`; others are written at 25).
-pub fn write(doc: &Document, rate: Option<FrameRate>) -> Vec<u8> {
-    let (rate, dfc) = match rate {
+/// The frame rate and disk format code [`write`] uses for a sequence at `rate`: 29.97 fps
+/// (`STL30.01`) for 29.97 and 30, else 25 fps (`STL25.01`).
+fn file_rate(rate: Option<FrameRate>) -> (FrameRate, &'static str) {
+    match rate {
         Some(r) if r == FrameRate::FPS_29_97 || r == FrameRate::FPS_30 => (FrameRate::FPS_29_97, "STL30.01"),
         _ => (FrameRate::FPS_25, "STL25.01"),
-    };
+    }
+}
+
+/// The time code [`write`] gives a caption starting at `t` in a sequence at `rate`.
+pub fn timecode(t: Tick, rate: Option<FrameRate>) -> String {
+    let (rate, _) = file_rate(rate);
+    let (_, h, m, s, f) = frames_to_fields(rate.frame_at(rate.snap_nearest(t)), rate, false);
+    format!("{h:02}:{m:02}:{s:02}:{f:02}")
+}
+
+/// Write `doc` at `rate` (25 fps → `STL25.01`; 29.97 / 30 → `STL30.01`; others are written at 25).
+pub fn write(doc: &Document, rate: Option<FrameRate>) -> Vec<u8> {
+    let (rate, dfc) = file_rate(rate);
     // TTI blocks first (the GSI counts them)
     let mut ttis: Vec<[u8; TTI]> = Vec::new();
     let mut n_subs = 0u16;

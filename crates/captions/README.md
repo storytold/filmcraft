@@ -59,11 +59,12 @@ offset for centring, then text; control codes doubled) into non-displayed memory
 Of Caption exactly on the caption's first frame. The load is placed in the latest run of free
 frames before the caption, so back-to-back captions load while the previous one is on screen. An
 Erase Displayed Memory clears the caption at its out point unless the next caption replaces it.
-Text is wrapped at 32 columns, bottom-aligned (last row 15) and centred. Characters come from the
+Text is wrapped at 32 columns, bottom-aligned (last row 15) and centred; text past 15 rows is
+cut. Characters come from the
 608 basic, special and extended sets (extended characters are preceded by a basic fallback
 character, as the standard requires); a few have a close stand-in (’ as ', – as -) and others are
-dropped. `charset_warnings` names each dropped or replaced character, and `captions.export`
-returns them as `warnings`. If there is no room to load a caption
+dropped. `charset_warnings` names each dropped or replaced character and each caption cut to 15
+rows, with how many characters it lost, and `captions.export` returns them as `warnings`. If there is no room to load a caption
 before its in point (for example a caption at 00:00:00:00), it appears as soon as it is loaded.
 
 ### MCC writer
@@ -72,7 +73,9 @@ The writer merges the scheduled CEA-608 and CEA-708 frames in timestamp order. F
 caption data are omitted, including during a displayed caption; its explicit erase/hide command
 still lands at its out point. CDP sequence counters advance per emitted packet, wrapping at 16 bits.
 CEA-708 text uses the G0 and G1 (Latin-1) sets and part of G2 (… ‘ ’ “ ” • ™ and a few more);
-other characters are sent as `?`, and `charset_warnings` names them.
+other characters are sent as `?`, and `charset_warnings` names them. The CEA-708 window holds 12
+rows and the writer loads only those (`mcc::window_rows`), so a longer caption loses its last rows
+there, and `charset_warnings` names it too.
 Export work and output size therefore follow the scheduled caption data, not the time between
 cues or their duration (#2811). Empty-frame insertion is an optional MCC export behavior; see
 [EZTitles' MCC export documentation, "Write empty frames"](https://eztitles.com/Webhelp/EZTitles/export_subtitles_cc_mcc.htm).
@@ -83,6 +86,13 @@ and non-drop timecodes, exact cue round trips, and timestamps near the tick stor
 An external FFmpeg 9.0.2 decode of the two-cue regression fixture preserved text and all four
 timestamps (2.002–4.004 s and 120.120–122.122 s); the combined-stream export has 29 data lines,
 down from 3,614. No media fixtures are committed.
+
+### EBU STL writer
+
+Text is encoded in ISO/IEC 6937 (character code table `00`). Characters it has no code for, such as
+the ellipsis, the em dash, the euro sign and most scripts other than Latin, are written as `?`;
+`charset_warnings` names each one with how often it occurs and the first caption that has it, at the
+STL file's own time code.
 
 ## Burn-in
 
