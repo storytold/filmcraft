@@ -1,6 +1,5 @@
 use super::{FilmcraftApp, Value, json, menus};
 use crate::OsEvent;
-use crate::state::ClipDialogDraft;
 #[cfg(test)]
 use filmcraft_engine::Session;
 
@@ -69,14 +68,12 @@ impl FilmcraftApp {
 
     /// Open the project and import the media the OS asked for, then bring the window forward
     /// (restored if it was minimized): the request came from another app. A project replacing one
-    /// with unsaved changes waits for Save / Don't Save / Cancel, as Close Project asks; the answer
-    /// opens it (`clip_dialogs::leave`).
+    /// with unsaved changes waits for Save / Don't Save / Cancel, as File ▸ Open Recent asks; the
+    /// answer opens it (`clip_dialogs::leave`).
     fn open_os_files(&mut self, ctx: &egui::Context, project: Option<String>, media: Vec<String>) {
-        if project.is_some() && self.session.is_dirty() {
-            let params = json!({"open": {"project": project, "media": media}});
-            self.ui.clip_dialog = Some(ClipDialogDraft { command: "file.closeProject".into(), params, info: Value::Null, error: String::new() });
-        } else {
-            self.open_files(ctx, project, media);
+        match project {
+            Some(path) if self.session.is_dirty() => crate::panels::clip_dialogs::ask_before_os_open(self, &path, &media),
+            project => self.open_files(ctx, project, media),
         }
         if ctx.input(|i| i.viewport().minimized) == Some(true) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));

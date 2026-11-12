@@ -162,6 +162,15 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
+/// The OS asked to open the project at `path` (a Finder double-click) over unsaved changes: the
+/// prompt of [`ask_before_open`], so the open project is replaced only once the chosen one has
+/// loaded and one that can't be opened keeps the changes. The `media` sent with it is imported
+/// once it is open (`leave`).
+pub fn ask_before_os_open(app: &mut FilmcraftApp, path: &str, media: &[String]) {
+    let params = json!({"path": path, "media": media});
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: "file.open".into(), params, info: asked_over(&app.session), error: String::new() });
+}
+
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
@@ -799,9 +808,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
-/// then for Quit close the window; for Open open the chosen project instead of closing; and open
-/// the files the OS asked for while the project had unsaved changes (`params.open`, a Finder
-/// double-click).
+/// then for Quit close the window; for Open open the chosen project instead of closing, and
+/// import the media the OS sent with it (`params.media`, a Finder double-click).
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
     let command = prompt.command.as_str();
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
@@ -821,14 +829,14 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
         && let Some(path) = prompt.params["path"].as_str()
     {
         match app.session.execute("file.open", json!({"path": path})) {
-            Ok(_) => edit_after_open(app, prompt),
+            Ok(_) => {
+                edit_after_open(app, prompt);
+                let media: Vec<String> =
+                    prompt.params["media"].as_array().map(|m| m.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                app.open_files(ctx, None, media);
+            }
             Err(e) => app.ui.status = e.to_string(),
         }
-    }
-    if let Some(open) = prompt.params.get("open") {
-        let project = open["project"].as_str().map(str::to_string);
-        let media = open["media"].as_array().map(|m| m.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
-        app.open_files(ctx, project, media);
     }
 }
 

@@ -143,7 +143,7 @@ fn a_missing_project_is_reported_and_the_open_project_stays() {
 }
 
 /// Opening a project replaces the open one: with unsaved changes, Save / Don't Save / Cancel is
-/// asked first, as Close Project asks, instead of losing them. Don't Save opens it.
+/// asked first, as File ▸ Open Recent asks, instead of losing them. Don't Save opens it.
 #[test]
 fn a_project_opened_from_the_os_asks_before_discarding_unsaved_changes() {
     let dir = tempfile::tempdir().unwrap();
@@ -152,11 +152,11 @@ fn a_project_opened_from_the_os_asks_before_discarding_unsaved_changes() {
     d.edit();
     d.os_event(OsEvent::Open { project: Some(path.clone()), media: vec![] });
     assert!(d.sent(&egui::ViewportCommand::Focus), "the window comes forward to ask");
-    assert_eq!(d.dialog().as_deref(), Some("file.closeProject"));
+    assert_eq!(d.dialog().as_deref(), Some("file.open"));
     assert_eq!(d.app().session.path, None, "nothing is opened before the answer");
     assert!(d.app().session.is_dirty());
     d.frames(2);
-    d.click("closeProject.dontSave");
+    d.click("openProject.dontSave");
     assert_eq!(d.dialog(), None);
     assert_eq!(d.app().session.path.as_deref(), Some(path.as_str()));
     assert!(!d.app().session.is_dirty());
@@ -175,14 +175,14 @@ fn cancel_keeps_the_unsaved_project_and_save_saves_it_before_opening() {
     let media = vec![wav.to_string_lossy().into_owned()];
     d.os_event(OsEvent::Open { project: Some(other.clone()), media: media.clone() });
     d.frames(2);
-    d.click("closeProject.cancel");
+    d.click("openProject.cancel");
     assert_eq!(d.dialog(), None);
     assert_eq!(d.app().session.path.as_deref(), Some(mine.as_str()));
     assert!(d.app().session.is_dirty(), "the changes are still there");
     let before = std::fs::read(&mine).unwrap();
     d.os_event(OsEvent::Open { project: Some(other.clone()), media });
     d.frames(2);
-    d.click("closeProject.save");
+    d.click("openProject.save");
     assert_ne!(std::fs::read(&mine).unwrap(), before, "the changes were saved first");
     assert_eq!(d.app().session.path.as_deref(), Some(other.as_str()));
     assert!(d.app().session.project.items.values().any(|i| i.name.starts_with("Room Tone")), "the media came along");
@@ -201,6 +201,47 @@ fn media_sent_with_a_project_that_fails_to_open_is_not_imported() {
     d.os_event(OsEvent::Open { project: Some(missing.clone()), media: vec![wav.to_string_lossy().into_owned()] });
     assert_eq!(d.app().session.project.items.len(), items);
     assert!(d.app().ui.status.contains(&missing), "status: {}", d.app().ui.status);
+}
+
+/// Don't Save on a project that can't be opened keeps the open project and its unsaved changes:
+/// it is replaced only once the chosen one has loaded, and the media sent along is not imported.
+#[test]
+fn dont_save_on_a_project_that_fails_to_open_keeps_the_unsaved_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("Room Tone.wav");
+    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.0; 4800], 1, 48_000)).unwrap();
+    let missing = dir.path().join("Gone.fcproj").to_string_lossy().into_owned();
+    let mut d = Driver::new(false);
+    d.edit();
+    let name = d.app().session.project.name.clone();
+    let items = d.app().session.project.items.len();
+    d.os_event(OsEvent::Open { project: Some(missing.clone()), media: vec![wav.to_string_lossy().into_owned()] });
+    d.frames(2);
+    d.click("openProject.dontSave");
+    assert_eq!(d.dialog(), None);
+    assert_eq!(d.app().session.project.name, name, "the open project stays");
+    assert!(d.app().session.is_dirty(), "the changes are still unsaved, not discarded");
+    assert_eq!(d.app().session.project.items.len(), items, "its unsaved sequence stays and the media is not imported");
+    assert!(d.app().ui.status.contains(&missing), "status: {}", d.app().ui.status);
+}
+
+/// The prompt is asked over the project that was open: when a script replaces that project, the
+/// prompt closes instead of acting on the new one.
+#[test]
+fn the_prompt_closes_when_another_project_replaces_the_one_it_was_asked_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = saved_project(dir.path());
+    let mut d = Driver::new(false);
+    d.edit();
+    d.os_event(OsEvent::Open { project: Some(path), media: vec![] });
+    assert_eq!(d.dialog().as_deref(), Some("file.open"));
+    d.app().session.execute("file.newProject", json!({"name": "New"})).unwrap();
+    d.app().session.execute("file.newBin", json!({"name": "Changed"})).unwrap();
+    d.frames(2);
+    assert_eq!(d.dialog(), None);
+    assert_eq!(d.app().session.path, None, "the earlier request does not open over the new project");
+    assert_eq!(d.app().session.project.name, "New");
+    assert!(d.app().session.is_dirty(), "the new project's change is kept");
 }
 
 /// The Dock's Quit (and logging out) closes the window like Cmd+Q: with unsaved changes the close
