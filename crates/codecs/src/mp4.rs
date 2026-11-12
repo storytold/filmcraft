@@ -741,7 +741,7 @@ pub(crate) fn codec_label(c: &CodecConfig) -> String {
         // the editing codec of iMovie and Final Cut; no decoder here reads it (#3646)
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"icod" => "Apple Intermediate Codec".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
-        CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
+        CodecConfig::Apv(a) => match craft_video::apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -786,7 +786,8 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
 /// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
 /// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
 fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
-    let from_sps = a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| craft_video::h264::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     if let Some(sps) = from_sps {
         return Some((sps.chroma_format_idc, sps.bit_depth_luma));
     }
@@ -804,7 +805,8 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
 /// `chroma_format_idc` and luma bit depth of an HEVC track: from its first SPS, which is what the
 /// decoder decodes, else the `hvcC` record's own fields (which a muxer may leave at 0, i.e. "4:0:0").
 fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
-    let from_sps = h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| filmcraft_hevc::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| craft_video::hevc::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     match from_sps {
         Some(sps) => (sps.chroma_format_idc, sps.bit_depth_luma),
         None => (h.chroma_format_idc as u32, h.bit_depth_luma as u32),
@@ -827,7 +829,7 @@ fn pixfmt_label(c: &CodecConfig) -> String {
             format!("YUV {sub} {}-bit", c.bit_depth.max(8))
         }
         CodecConfig::Apv(a) => {
-            let chroma = filmcraft_apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(filmcraft_apv::ChromaFormat::Yuv422);
+            let chroma = craft_video::apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(craft_video::apv::ChromaFormat::Yuv422);
             crate::apv::apv_pixfmt_label(chroma, a.bit_depth_minus8.saturating_add(8))
         }
         // 4444 until the first frame header says whether it codes alpha (`open_reader`)

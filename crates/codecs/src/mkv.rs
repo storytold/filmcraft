@@ -327,7 +327,7 @@ fn codec_label(c: &Codec) -> String {
         Codec::Vp8 => "VP8".into(),
         Codec::Vp9 { .. } => "VP9".into(),
         Codec::Av1 { .. } => "AV1".into(),
-        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| filmcraft_apv::Profile::from_idc(a.profile_idc)) {
+        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| craft_video::apv::Profile::from_idc(a.profile_idc)) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },

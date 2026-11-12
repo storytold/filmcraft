@@ -15,7 +15,7 @@ Implemented from the SMPTE documents (editions used):
 | SMPTE ST 378 | 2004 | OP1a |
 | SMPTE ST 390 | 2011 | OP-Atom |
 | SMPTE ST 379-1 / 379-2 | 2009 / 2010 | generic container: content packages, element keys, frame / clip wrapping |
-| SMPTE ST 381-1 | 2005 | MPEG video mapping (MPEG-2 identified, MPEG video descriptor; decoded by `filmcraft-mpeg2v` in `filmcraft-codecs`) |
+| SMPTE ST 381-1 | 2005 | MPEG video mapping (MPEG-2 identified, MPEG video descriptor; decoded by `craft_video::mpeg2` in `filmcraft-codecs`) |
 | SMPTE ST 381-3 | 2013 | AVC byte-stream mapping and AVC sub-descriptor |
 | SMPTE ST 382 | 2007 | AES3 and Broadcast Wave audio mapping (wave / AES3 descriptors) |
 | SMPTE ST 331 | 2011 | element data of 8-channel AES3 sound (D-10) |

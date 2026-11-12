@@ -65,9 +65,9 @@ pub struct MxfSource {
 ///
 /// `heads` is consumed one access unit at a time, so a long stream need not hold every head at once.
 pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>) -> Option<Vec<i64>> {
+    use craft_video::h264::decode::params::{Pps, Sps};
+    use craft_video::h264::decode::slice::{NalHeader, SliceHeader};
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
-    use filmcraft_h264::params::{Pps, Sps};
-    use filmcraft_h264::slice::{NalHeader, SliceHeader};
     let mut spss: Vec<Option<Sps>> = vec![None; 32];
     let mut ppss: Vec<Option<Pps>> = vec![None; 256];
     let (mut prev_msb, mut prev_lsb) = (0i64, 0i64);
@@ -92,8 +92,11 @@ pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>
                 1 | 5 => {
                     let mut sps_of = None;
                     let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
-                        let pps = ppss.get(id as usize).and_then(Option::as_ref).ok_or(filmcraft_h264::Error::MissingParameterSet("PPS".into()))?;
-                        let sps = spss.get(pps.sps_id as usize).and_then(Option::as_ref).ok_or(filmcraft_h264::Error::MissingParameterSet("SPS".into()))?;
+                        let pps = ppss.get(id as usize).and_then(Option::as_ref).ok_or(craft_video::h264::decode::Error::MissingParameterSet("PPS".into()))?;
+                        let sps = spss
+                            .get(pps.sps_id as usize)
+                            .and_then(Option::as_ref)
+                            .ok_or(craft_video::h264::decode::Error::MissingParameterSet("SPS".into()))?;
                         sps_of = Some(sps);
                         Ok((pps, sps))
                     })
@@ -282,7 +285,7 @@ impl MxfSource {
             let mpeg = (t.codec == Codec::Mpeg2)
                 .then(|| file.read_sample(&bytes, vi, 0).ok())
                 .flatten()
-                .and_then(|s| Some((filmcraft_mpeg2v::probe(&s)?, filmcraft_mpeg2v::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
+                .and_then(|s| Some((craft_video::mpeg2::probe(&s)?, craft_video::mpeg2::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
             let (w, h) = match &mpeg {
                 Some((info, _, _)) => (info.width, info.height),
                 None => (p.frame_width(), p.frame_height()),
@@ -323,9 +326,9 @@ impl MxfSource {
                     let pce = pce.as_ref()?;
                     let _ = ph;
                     (!pce.progressive_frame).then_some(if pce.picture_structure == 2 || (pce.picture_structure == 3 && !pce.top_field_first) {
-                        filmcraft_mpeg2v::FieldOrder::BottomFirst
+                        craft_video::mpeg2::FieldOrder::BottomFirst
                     } else {
-                        filmcraft_mpeg2v::FieldOrder::TopFirst
+                        craft_video::mpeg2::FieldOrder::TopFirst
                     })
                 });
                 pixel_format = crate::video::mpeg2_pixel_format(info, fo);

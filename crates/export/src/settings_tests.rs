@@ -708,7 +708,7 @@ fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
     let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
     let info = src.info().audio_streams[0].clone();
     // the exported second, past the encoder delay
-    let buf = src.audio(i64::from(filmcraft_mp3enc::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    let buf = src.audio(i64::from(craft_audio::mp3::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
     assert_eq!(buf.channels.len(), info.channels as usize);
     (info.sample_rate, buf.channels)
 }
@@ -728,7 +728,7 @@ fn mp3_export_writes_layer_iii_frames() {
     // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
     assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
     // whole 960-byte frames covering the second and the encoder delay
-    assert_eq!(b.len(), 960 * (48_000 + filmcraft_mp3enc::DELAY as usize).div_ceil(1152));
+    assert_eq!(b.len(), 960 * (48_000 + craft_audio::mp3::DELAY as usize).div_ceil(1152));
     let (rate, pcm) = decode_mp3(&path);
     assert_eq!((rate, pcm.len()), (48_000, 2));
     // the -6 dBFS tone (RMS about 0.35) survives the round trip

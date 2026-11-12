@@ -91,8 +91,8 @@ fn mpeg_details(src: &filmcraft_codecs::MpegSource) -> Value {
         .enumerate()
         .map(|(i, s)| {
             let id = match s.id {
-                filmcraft_mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
-                filmcraft_mpegts::StreamId::Ps { stream_id, sub_id } => {
+                craft_media::mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
+                craft_media::mpegts::StreamId::Ps { stream_id, sub_id } => {
                     json!({"streamId": format!("0x{stream_id:02x}"), "subStreamId": sub_id.map(|x| format!("0x{x:02x}"))})
                 }
             };

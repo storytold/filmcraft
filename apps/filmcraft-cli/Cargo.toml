@@ -28,8 +28,7 @@ filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }
 filmcraft-mxf = { workspace = true }
-filmcraft-mpegts = { workspace = true }
-craft-media = { workspace = true, features = ["ogg"] }
+craft-media = { workspace = true, features = ["mpegts", "ogg"] }
 filmcraft-automation = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
