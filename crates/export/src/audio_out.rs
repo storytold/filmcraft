@@ -8,7 +8,10 @@
 //!
 //! The measuring passes differ only in gain and limiter, so the range is mixed once: the first
 //! pass streams the folded mix to a temporary [`MixStore`] file and every later mix reads it back.
-//! If the file cannot be created, written or read, that mix is done live, with identical output.
+//! If the file cannot be created, written or read, that mix is done live. Live and stored samples
+//! are identical where the sources do not depend on where a request starts; speed-changed clips,
+//! media resampled by some readers, nested sequences at another rate and lossy decoders primed
+//! after a seek can differ by a rounding step or a fraction of a sample.
 
 use std::sync::Arc;
 
@@ -215,8 +218,8 @@ impl AudioOut {
     /// on L and R; 5.1 is in L, R, C, LFE, Ls, Rs order.
     fn mix(&self, pos: i64, n: usize, sources: &dyn SourceProvider) -> Vec<Vec<f32>> {
         if let Some(store) = &self.store {
-            // the mixer's output does not depend on how requests are chunked, so a failed read
-            // falls back to mixing live for just this call
+            // a failed read falls back to mixing live for just this call (the same samples
+            // wherever the sources do not depend on request boundaries: see the module docs)
             if let Ok(buf) = store.read(pos, n) {
                 return buf;
             }
