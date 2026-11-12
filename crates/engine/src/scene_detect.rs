@@ -95,6 +95,8 @@ pub struct PendingScene {
     pub seq: ItemId,
     pub apply: SceneApply,
     pub results: Arc<Mutex<Option<Vec<ClipScenes>>>>,
+    /// `Session::document_epoch` when the job started: ids mean something else in another project.
+    pub epoch: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -255,7 +257,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone() });
+    s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone(), epoch: s.document_epoch });
     let wait = bool_p(p, "wait").unwrap_or(false);
     let mut out = json!({"job": id, "frames": total});
     if wait || cfg!(target_arch = "wasm32") {
@@ -297,6 +299,10 @@ pub fn poll(s: &mut Session) {
         }
         let pj = s.scene_jobs.remove(i);
         let Some(results) = lock(&pj.results).take().filter(|_| !cancelled) else { continue };
+        if pj.epoch != s.document_epoch {
+            s.error_toast("clip.sceneEditDetection", "Scene Edit Detection: the project was replaced; nothing was changed");
+            continue;
+        }
         if let Err(e) = apply_results(s, pj.seq, pj.apply, results) {
             s.error_toast("clip.sceneEditDetection", format!("Scene Edit Detection: {e}"));
         }
