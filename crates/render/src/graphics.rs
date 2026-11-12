@@ -121,11 +121,18 @@ impl BurnText {
     }
 
     fn paint(&self, img: &mut Image, origin: (i32, i32), box_alpha: f32) {
+        let mut paint = |mask: &Mask, x: i32, y: i32, color, opacity| {
+            // Keep negative offsets so paint_mask clips the corresponding mask pixels.
+            // A difference outside i32 range places the bounded mask entirely off the layer.
+            if let (Some(x), Some(y)) = (x.checked_sub(origin.0), y.checked_sub(origin.1)) {
+                paint_mask(img, mask, x, y, color, opacity);
+            }
+        };
         if let Some(bb) = self.box_path.bounds() {
             let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
             if let Some((w, h)) = bounded_raster_size(bb.2 - x0 as f32, bb.3 - y0 as f32) {
                 let m = filmcraft_text::raster::fill(&self.box_path, w, h, -(x0 as f32), -(y0 as f32));
-                paint_mask(img, &m, x0.saturating_sub(origin.0), y0.saturating_sub(origin.1), [0.0, 0.0, 0.0, 1.0], box_alpha);
+                paint(&m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
             }
         }
         let bounds = self.layout.bounds;
@@ -133,7 +140,7 @@ impl BurnText {
             return;
         }
         let (m, x0, y0) = render::rasterize(&self.layout, &self.transform);
-        paint_mask(img, &m, x0.saturating_sub(origin.0), y0.saturating_sub(origin.1), [1.0; 4], 1.0);
+        paint(&m, x0, y0, [1.0; 4], 1.0);
     }
 }
 
@@ -151,6 +158,28 @@ mod tests {
         assert_eq!((clipped.x, clipped.y), (0, 0));
         assert!(clipped.img.w < layer.img.w && clipped.img.h < layer.img.h);
         assert!(layer_at(Vec2::new(-1000.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn burn_in_clipped_at_top_left_matches_the_full_frame_crop() {
+        let text = "Clip";
+        let family = filmcraft_text::fonts::DEFAULT_FAMILY;
+        let pos = Vec2::new(1.5, 2.25);
+        let burn = BurnText::new(text, family, pos, 20.0).unwrap();
+        let (left, top, right, bottom) = burn.box_path.bounds().unwrap();
+        assert!(left < 0.0 && right > 0.0 && top < 0.0 && bottom > 0.0);
+
+        // Leave room for the full box and glyph masks so the reference never clips them.
+        let mut full = Image::new(160, 128);
+        burn.paint(&mut full, (-64, -64), 0.6);
+        let (w, h) = (64, 48);
+        let layer = burn_text_layer((w, h), text, family, pos, 20.0, 0.6).unwrap();
+        assert_eq!((layer.x, layer.y), (0, 0));
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(layer.img.get_or_clear(x as isize, y as isize), full.get(x + 64, y + 64), "pixel ({x}, {y})");
+            }
+        }
     }
 
     #[test]
