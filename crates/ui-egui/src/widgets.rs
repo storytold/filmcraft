@@ -80,13 +80,61 @@ pub fn hot_number(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: H
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
-        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf);
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, false);
     }
     hot_number_display(ui, id, value, options)
 }
 
+/// As [`hot_number`], but the text editor accepts only digits and one decimal point while typing.
+pub fn hot_number_numeric(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let editing_id = id.with("editing");
+    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    if let Some(buf) = editing.as_mut() {
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, true);
+    }
+    hot_number_display(ui, id, value, options)
+}
+
+/// Normalize decimal commas in numeric hot-number input and reject malformed or oversized text.
+/// Keeping invalid text intact lets the user correct it without silently changing its value.
+fn normalize_hot_number_input(input: &str, allow_negative: bool, suffix: &str) -> Option<String> {
+    const MAX_INPUT_CHARS: usize = 128;
+    let input = input.trim_end();
+    let suffix = suffix.trim();
+    let input = input.strip_suffix(suffix).unwrap_or(input).trim();
+    if input.chars().take(MAX_INPUT_CHARS + 1).count() > MAX_INPUT_CHARS {
+        return None;
+    }
+    let mut normalized = String::with_capacity(input.len());
+    let mut decimal_seen = false;
+    for (index, ch) in input.chars().enumerate() {
+        let ch = if ch == ',' { '.' } else { ch };
+        if ch.is_ascii_digit() {
+            normalized.push(ch);
+        } else if ch == '.' && !decimal_seen {
+            decimal_seen = true;
+            normalized.push(ch);
+        } else if ch == '-' && allow_negative && index == 0 {
+            normalized.push(ch);
+        } else {
+            return None;
+        }
+    }
+    Some(normalized)
+}
+
 /// The single-line text editor shown after a click on a hot number.
-fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: (f64, f64), suffix: &str, buf: &mut String) -> (Response, Option<f64>) {
+#[allow(clippy::too_many_arguments)]
+fn hot_number_editor(
+    ui: &mut Ui,
+    label: &str,
+    id: egui::Id,
+    value: f64,
+    range: (f64, f64),
+    suffix: &str,
+    buf: &mut String,
+    numeric_only: bool,
+) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
@@ -94,11 +142,26 @@ fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: 
     // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
     let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
+    let mut numeric_input_valid = true;
+    if numeric_only {
+        // A decimal comma is a decimal point in many locales. Keep invalid text visible so
+        // characters between two digits are not silently removed and merged into a new value.
+        match normalize_hot_number_input(buf, range.0 < 0.0, suffix) {
+            Some(normalized) => {
+                if normalized != *buf {
+                    *buf = normalized;
+                }
+            }
+            None => numeric_input_valid = false,
+        }
+    }
     let mut out = stepped;
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
-        let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
-        if let Some(v) = crate::calc::eval(&typed, value) {
+        let unit = suffix.trim();
+        let trimmed = buf.trim_end();
+        let typed = trimmed.strip_suffix(unit).unwrap_or(trimmed).trim_end().to_string();
+        if numeric_input_valid && let Some(v) = crate::calc::eval(&typed, value) {
             out = Some(v.clamp(range.0, range.1));
         }
         ui.data_mut(|d| d.remove::<String>(editing_id));
@@ -457,12 +520,33 @@ pub fn letter_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, letter: &str, 
 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, t.hover);
+    icon_toggle_clipped(ui, rect, ui.clip_rect(), icon, on, t, id, on_color)
+}
+
+/// [`icon_toggle`] shown only where `rect` meets `clip`, such as a Timeline track header scrolled
+/// partly out of its half: the button keeps its size and is cut off at the edge (the painter
+/// clips, the layout rectangle is never shortened) and takes clicks only where it shows.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
+    // a degenerate (clipped-away) rect paints nothing and can never blow the icon up: a
+    // negative width would make the shrink below grow the icon instead
+    let rect = if rect.is_positive() { rect } else { Rect::NOTHING };
+    let visible = rect.intersect(clip);
+    let resp = ui.interact(if visible.is_positive() { visible } else { Rect::NOTHING }, id, Sense::click());
+    if rect.is_positive() && visible.is_positive() {
+        let p = ui.painter().with_clip_rect(visible.intersect(ui.clip_rect()));
+        if resp.hovered() {
+            p.rect_filled(rect, 2.0, t.hover);
+        }
+        let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
+        // shrink by a fraction of the SMALLER side: a control clipped to a sliver used to
+        // get a negative-sized inner rect here and blow the icon up over the neighbouring
+        // section
+        let inner = rect.shrink(0.16 * rect.width().min(rect.height()));
+        if inner.is_positive() {
+            icons::paint(&p, inner, icon, col);
+        }
     }
-    let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
-    icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
     resp
 }
 
@@ -654,6 +738,21 @@ pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: 
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    #[test]
+    fn numeric_input_rejects_merged_digits_and_bounds_length() {
+        assert_eq!(normalize_hot_number_input("1,5", false, "x").as_deref(), Some("1.5"));
+        assert_eq!(normalize_hot_number_input("1x5", false, "x"), None);
+        assert_eq!(normalize_hot_number_input("5 s", false, "s").as_deref(), Some("5"));
+        assert_eq!(normalize_hot_number_input(&"1".repeat(129), false, ""), None);
+    }
+
+    #[test]
+    fn signed_numeric_input_only_keeps_a_leading_minus() {
+        assert_eq!(normalize_hot_number_input("-1.5", true, "s").as_deref(), Some("-1.5"));
+        assert_eq!(normalize_hot_number_input("1-5", true, "s"), None);
+        assert_eq!(normalize_hot_number_input("-1", false, "s"), None);
+    }
 
     /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
     /// drawn at the top of the Ui (its centre is at y = 11).
