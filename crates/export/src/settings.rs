@@ -573,9 +573,9 @@ impl ExportSettings {
     /// nearest one above, 48 kHz above 48 kHz), mono or stereo (5.1 is folded to stereo), and the
     /// Layer III bit rate nearest at or below the setting.
     pub fn mp3_stream(&self, seq_sr: u32) -> (u32, u32, u32) {
-        let rate = filmcraft_mp3enc::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
+        let rate = craft_audio::mp3::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
         let channels = if self.audio.channels <= 1 { 1 } else { 2 };
-        let kbps = filmcraft_mp3enc::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
+        let kbps = craft_audio::mp3::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
         (rate, channels, kbps)
     }
 
@@ -642,9 +642,9 @@ impl ExportSettings {
             }
             Format::Apv => {
                 let bpp = match crate::apv_profile(&self.apv_profile) {
-                    filmcraft_apv::Profile::P422_12 => 3.6,
-                    filmcraft_apv::Profile::P444_10 => 4.2,
-                    filmcraft_apv::Profile::P444_12 | filmcraft_apv::Profile::P4444_10 | filmcraft_apv::Profile::P4444_12 => 5.0,
+                    craft_video::apv::Profile::P422_12 => 3.6,
+                    craft_video::apv::Profile::P444_10 => 4.2,
+                    craft_video::apv::Profile::P444_12 | craft_video::apv::Profile::P4444_10 | craft_video::apv::Profile::P4444_12 => 5.0,
                     _ => 3.0,
                 };
                 px * fps * bpp
