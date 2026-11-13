@@ -138,7 +138,7 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_by("VideoToolbox", &why);
             return None;
         }
     };
@@ -149,7 +149,7 @@ pub fn videotoolbox_encoder_factory(
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_by("VideoToolbox", &why);
             None
         }
     }
@@ -305,6 +305,10 @@ impl VideoEncoder for HardwareEncoder {
     fn flush(&mut self) -> filmcraft_export::Result<Vec<EncodedPacket>> {
         let packets = self.vt.flush().map_err(ExportError::Encode)?;
         self.samples(packets)
+    }
+
+    fn hardware(&self) -> Option<&'static str> {
+        Some("VideoToolbox")
     }
 }
 
