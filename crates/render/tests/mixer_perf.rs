@@ -31,7 +31,13 @@ fn perf_24_tracks_3_effects_realtime_factor() {
     });
     let rt = secs / el;
     eprintln!("mixer perf: 24 tracks x 3 inserts + submix, {secs} s of 48 kHz stereo in {el:.3} s of CPU on one core = {rt:.1}x realtime");
-    let min = if cfg!(debug_assertions) { 1.0 } else { 4.0 };
+    let min = if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+        0.5
+    } else if cfg!(debug_assertions) {
+        1.0
+    } else {
+        4.0
+    };
     assert!(rt > min, "realtime factor {rt:.2}");
 }
 

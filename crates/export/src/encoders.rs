@@ -129,8 +129,8 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
 
 /// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
 struct ProResEncoder {
-    enc: filmcraft_prores::Encoder,
-    profile: filmcraft_prores::Profile,
+    enc: craft_video::prores::Encoder,
+    profile: craft_video::prores::Profile,
     /// Code the frames' alpha channel (4444 profiles with Include Alpha Channel).
     alpha: bool,
     w: u32,
@@ -150,10 +150,10 @@ impl VideoEncoder for ProResEncoder {
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let chroma = self.profile.chroma();
-        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, chroma, 10, self.alpha);
+        let mut fr = craft_video::prores::Frame::new(f.width, f.height, chroma, 10, self.alpha).map_err(|e| ExportError::Encode(e.to_string()))?;
         let (w, h) = (f.width as usize, f.height as usize);
         timed(Stage::Convert, || match (chroma, f.hdr) {
-            (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
+            (craft_video::prores::ChromaFormat::Yuv444, hdr) => {
                 let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
                 to_yuv444_10(f.rgba, hdr, w, h, Matrix::new(kr, kb), Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: fr.alpha.as_deref_mut() })
             }
@@ -172,8 +172,8 @@ impl VideoEncoder for ProResEncoder {
 }
 
 /// The ProRes profile named by [`ExportSettings::prores_profile`].
-pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
-    use filmcraft_prores::Profile;
+pub fn prores_profile(name: &str) -> craft_video::prores::Profile {
+    use craft_video::prores::Profile;
     match name.to_ascii_lowercase().as_str() {
         "proxy" => Profile::Proxy,
         "lt" => Profile::Lt,
@@ -187,13 +187,13 @@ pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
 pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::ProRes).then(|| {
         let profile = prores_profile(&s.prores_profile);
-        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
+        let mut cfg = craft_video::prores::EncoderConfig::new(profile, w, h);
         if s.signal.is_hdr() {
-            cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
+            cfg.color = craft_video::prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
         }
         let alpha = s.keeps_alpha();
         cfg.encode_alpha = alpha;
-        let enc = filmcraft_prores::Encoder::with_config(cfg);
+        let enc = craft_video::prores::Encoder::with_config(cfg);
         Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }

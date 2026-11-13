@@ -19,7 +19,6 @@ filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-cfb = { path = "crates/cfb" }
-filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
@@ -61,8 +60,8 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
-# The video codecs (including H.264 encode, APV encode and decoders), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "vp8-decode", "threads"] }
+# The video codecs (including H.264 encode, APV encode, ProRes and decoders), on the same commit as craft-media.
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9", features = ["serde"] }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
@@ -105,9 +104,6 @@ opt-level = 1
 debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
-[profile.dev.package.filmcraft-prores]
-opt-level = 3
-
 [profile.dev.package.filmcraft-dnx]
 opt-level = 3
 
