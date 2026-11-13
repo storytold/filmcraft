@@ -584,18 +584,8 @@ impl MediaSource for Mp4Source {
         }
         // Resample the local window. Its first sample is presentation sample `p0`; the edit list
         // offset is already in `s0` and must not shift the read position a second time.
-        let frac = p0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, p0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -1004,6 +994,30 @@ mod multi_audio_tests {
         assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][50] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 100, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673), with and without an edit
+    /// list that moves presentation away from the first stored sample.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let rate = 44_100u32;
+        for media_time in [None, Some(441)] {
+            let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+            let entry = SampleEntry::pcm(PcmConfig { bits: 32, float: true, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
+            let mut cfg = TrackConfig::new(entry, rate);
+            if let Some(media_time) = media_time {
+                cfg.edits = vec![filmcraft_isobmff::Edit { segment_duration: 36_000, media_time, media_rate: 0x10000 }];
+            }
+            let track = mux.add_track(cfg).unwrap();
+            let samples = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 2);
+            let data: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+            mux.write_sample(track, WriteSample { data: &data, duration: samples.len() as u32, composition_offset: 0, is_sync: true }).unwrap();
+            let source = super::Mp4Source::open("tone.mov", mux.finish().unwrap().into_inner().into()).unwrap();
+            let what = format!("mov 44.1 kHz float at 1999 Hz, edit {media_time:?}");
+            filmcraft_testkit::cuts::assert_cut_independent(&what, 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+                source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+            });
+        }
     }
 }
 

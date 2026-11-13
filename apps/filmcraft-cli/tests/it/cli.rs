@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 fn cli(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).output().expect("spawn filmcraft-cli")
+    crate::filmcraft_command().args(args).output().expect("spawn filmcraft-cli")
 }
 
 fn json_out(o: &Output) -> Value {
@@ -125,7 +125,7 @@ fn hold_lock(dir: &std::path::Path, name: &str) -> std::fs::File {
 /// Start a run that has to wait for a lock this process holds; returns once it says it is waiting.
 fn start_waiting_run(args: &[&str]) -> std::process::Child {
     use std::io::BufRead;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
     let mut line = String::new();
     std::io::BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
     assert!(line.contains("waiting for another run saving"), "{args:?}: {line}");
@@ -139,7 +139,7 @@ fn parallel_saves_keep_every_edit() {
     let names = |writer: usize| (0..300).map(move |i| format!("edit-{writer}-{i}"));
     let mut writers: Vec<_> = (0..4)
         .map(|_| {
-            Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+            crate::filmcraft_command()
                 .args(["--project", &proj, "--save", "run", "-"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
@@ -214,7 +214,7 @@ fn runs_that_do_not_save_in_place_ignore_the_lock() {
         &["--project", &proj, "--save-as", &other, "exec", "file.newBin", "name=copy-only"],
     ];
     for args in cases {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -263,12 +263,7 @@ fn exec_save_as_then_reopen() {
     let tree = json_out(&cli(&["--project", p, "inspect", "project"]));
     assert!(tree.to_string().contains("CLI Selects"), "{tree}");
     // `run` from stdin, editing and saving back in place.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-        .args(["--project", p, "--save", "run", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::filmcraft_command().args(["--project", p, "--save", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"# comment\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Second\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
@@ -280,12 +275,7 @@ fn exec_save_as_then_reopen() {
 
 #[test]
 fn run_keep_going_reports_failures() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-        .args(["--demo", "--keep-going", "run", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"{\"id\":\"no.such\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -312,8 +302,7 @@ fn run_waits_for_an_export_on_its_last_line() {
     let out = dir.join("last.wav");
     // `"wait": null` waits too: only an explicit `false` doesn't
     let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
-    let mut child =
-        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(format!("{script}\n").as_bytes()).unwrap();
     let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
@@ -349,6 +338,44 @@ fn single_frame_in_out_export_warns_in_json_and_stderr() {
             assert!(stderr.contains("--range entire"), "{stderr}");
         }
         assert!(path.exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// #3952: an H.264 export that asks for hardware encoding and gets the software encoder says so, in
+/// its report and on stderr, whether it runs now or through the queue. No hardware encoder takes a
+/// two-pass export, so this holds on every machine. With hardware encoding Off there is nothing to say.
+#[test]
+fn export_says_when_the_software_encoder_ran_instead_of_hardware() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-hw-fallback-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let auto = r#"{"hardwareEncoding":"auto","bitrateMode":"vbr2Pass"}"#;
+    let off = r#"{"bitrateMode":"vbr2Pass"}"#;
+    for (name, queued, settings, report, warned) in [
+        ("direct.mp4", false, auto, "/result", true),
+        ("queued.mp4", true, auto, "/items/0/result", true),
+        ("direct-off.mp4", false, off, "/result", false),
+        ("queued-off.mp4", true, off, "/items/0/result", false),
+    ] {
+        let path = dir.join(name);
+        let mut args = vec!["--demo", "export", path.to_str().unwrap(), "--format", "h264", "--start", "0", "--end", "0.1", "--scale", "0.25", "--no-audio"];
+        args.extend(["--settings", settings]);
+        if queued {
+            args.push("--queue");
+        }
+        let o = cli(&args);
+        let v = json_out(&o);
+        let r = v.pointer(report).unwrap_or_else(|| panic!("{name}: no report in {v}"));
+        assert_eq!(r["encoder"], "software", "{name}: {v}");
+        let warnings: Vec<&str> = r["warnings"].as_array().map(|w| w.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), usize::from(warned), "{name}: {v}");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        for w in warnings {
+            assert!(w.contains("software") && w.ends_with("encoder ran"), "{name}: {w}");
+            assert!(stderr.contains(&format!("filmcraft-cli: warning: {w}")), "{name}: {stderr}");
+        }
+        assert_eq!(stderr.contains("encoder ran"), warned, "{name}: {stderr}");
+        assert!(path.exists(), "{name}");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -475,7 +502,7 @@ fn export_with_presets() {
 fn closed_stdout_ends_quietly() {
     use std::io::Read;
     for args in [&["commands"][..], &["help"], &["--demo", "commands", "--json"]] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let mut first = [0u8; 10];
         child.stdout.as_mut().unwrap().read_exact(&mut first).unwrap();
         drop(child.stdout.take());
@@ -489,8 +516,7 @@ fn closed_stdout_ends_quietly() {
 /// first write fails for sure. The rest of the script and the save still happen, and the exit status
 /// still reports a failing command.
 fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
-    let mut child =
-        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     drop(child.stdout.take());
     child.stdin.take().unwrap().write_all(script).unwrap();
     child.wait_with_output().unwrap()

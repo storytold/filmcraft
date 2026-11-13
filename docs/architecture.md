@@ -281,7 +281,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   exports are otherwise byte-identical from run to run. NVENC (`platform::nvenc`, the driver's
   `nvEncodeAPI64.dll` / `libnvidia-encode.so.1` loaded at run time) then takes RGBA frames, converted to 4:2:0 by the software
   encoder's own conversion, and produces the H.264 samples and `avcC` of an MP4 / MOV. It declines
-  (the software encoder runs, counted in `export.hardware.declined`) two-pass VBR, HDR, MXF,
+  (the software encoder runs, counted in `export.hardware.declined`, and the export's `Report` names
+  the encoder in `encoder` and says why in `warnings`) two-pass VBR, HDR, MXF,
   interlaced output, sizes outside NVENC's limits, and systems without an NVIDIA GPU or driver.
   A failure during an export ends it with an error: the software encoder cannot take over a hardware
   stream. The same NVENC session also encodes H.265 (HEVC Main 8-bit 4:2:0 SDR, or Main 10 HDR: PQ / HLG,

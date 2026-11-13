@@ -123,11 +123,15 @@ pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
             *cached = Some((path.clone(), None));
             return Ok(path);
         }
+        // Owner-only on Unix. Elsewhere there's no mode to set, and a `mut` would be unused.
+        #[cfg(unix)]
+        let dir = {
+            let mut dir = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+            dir
+        };
+        #[cfg(not(unix))]
         let dir = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        let mut dir = dir;
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
         // `create` fails when the name exists, so a folder someone else made is never accepted
         match dir.create(&path) {
             Ok(()) => {
