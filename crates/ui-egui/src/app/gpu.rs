@@ -23,15 +23,62 @@ impl FilmcraftApp {
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
-                self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
+                self.frames.set_uploader(Some(compositor.uploader()));
+                self.gpu = Some(GpuState {
+                    render_state: rs,
+                    compositor,
+                    texture: None,
+                    last_key: None,
+                    size: (0, 0),
+                    last_ms: 0.0,
+                    submitted: false,
+                    broken,
+                    max_texture,
+                });
+                self.gpu_warm_up();
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
+        }
+    }
+
+    /// Ready the compositor for the active sequence's frame size ([`filmcraft_gpu::GpuCompositor::warm_up`])
+    /// when the compositor is up and a sequence is open: on opening one, and on enabling the GPU.
+    pub fn gpu_warm_up(&mut self) {
+        let Some((w, h)) = self.session.active_sequence().map(|q| (q.settings.width, q.settings.height)) else { return };
+        let Some(g) = self.gpu.as_mut() else { return };
+        if w.max(h) > g.max_texture {
+            return;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.warm_up(w, h))).is_err() {
+            self.disable_gpu("compositor panicked");
+        }
+    }
+
+    /// Submit the frame workers' uploads recorded since the last pass
+    /// ([`filmcraft_gpu::GpuCompositor::flush_uploads`]): the UI thread is the device's only submitter.
+    pub fn gpu_flush_uploads(&mut self) {
+        let preroll = self.playback.playing && self.playback.preroll.is_some();
+        let Some(g) = self.gpu.as_mut() else { return };
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if preroll {
+                // Nothing is due on screen yet: every frame the preroll decoded goes up now, and
+                // the GPU gets work so that its driver has raised the clocks by the first frame
+                // ([`filmcraft_gpu::GpuCompositor::wake`]).
+                g.compositor.flush_uploads_within(u64::MAX);
+                g.compositor.wake();
+            } else {
+                g.compositor.flush_uploads();
+            }
+        }));
+        if ran.is_err() {
+            self.disable_gpu("compositor panicked");
         }
     }
 
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
         log::error!("GPU compositor disabled: {why}");
+        self.frames.set_uploader(None);
         if let Some(g) = self.gpu.take()
             && let Some(id) = g.texture
         {
@@ -67,6 +114,7 @@ impl FilmcraftApp {
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        g.submitted = true;
         let mut renderer = g.render_state.renderer.write();
         let id = match g.texture {
             Some(id) => {

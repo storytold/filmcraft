@@ -72,6 +72,8 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             ui_requests: Vec::new(),
             last_ui_time: 0.0,
+            pass_log: std::collections::VecDeque::with_capacity(PASS_LOG),
+            pass_logic_ms: 0.0,
             synthetic: Vec::new(),
             synthetic_pending_step: None,
             synthetic_step_offered: false,
@@ -187,6 +189,7 @@ impl FilmcraftApp {
                 self.session.previews.clone(),
                 FrameServer::default_workers(),
             ));
+            self.frames.set_uploader(self.gpu.as_ref().map(|g| g.compositor.uploader()));
             self.textures.clear();
             self.thumb_used.clear();
             self.tl.reset_media_caches();
@@ -296,6 +299,7 @@ impl FilmcraftApp {
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                    self.gpu_warm_up();
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it
@@ -329,6 +333,7 @@ impl FilmcraftApp {
         self.logic_command_inbox(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
+        self.idle_audio(ctx);
         self.poll_jobs(ctx);
         capture::drain(self, ctx);
         capture::request_hidden_paint(self, ctx);
@@ -497,8 +502,10 @@ impl eframe::App for FilmcraftApp {
     /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
     /// suspend reset state because a logic-only callback is never a UI pass.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let t0 = std::time::Instant::now();
         self.logic_inner(ctx);
         self.finish_ime_reset_logic(ctx);
+        self.pass_logic_ms = t0.elapsed().as_secs_f64() * 1e3;
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
@@ -528,8 +535,38 @@ impl eframe::App for FilmcraftApp {
         if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
             self.suspended_ime_controls(&ctx);
         }
+        let t0 = std::time::Instant::now();
+        self.gpu_flush_uploads();
         self.ui_inner(ui, frame);
         self.finish_ime_reset_ui(&ctx);
+        self.log_pass(t0.elapsed().as_secs_f64() * 1e3);
+    }
+}
+
+/// UI passes kept in [`FilmcraftApp::pass_log`]: 20 s at 60 Hz.
+pub(crate) const PASS_LOG: usize = 1200;
+
+impl FilmcraftApp {
+    /// Append this pass to `pass_log` (see the field).
+    fn log_pass(&mut self, ui_ms: f64) {
+        let submit = match self.gpu.as_mut() {
+            Some(g) if g.submitted => {
+                g.submitted = false;
+                f64::from(g.last_ms)
+            }
+            _ => 0.0,
+        };
+        let gpu_ms = self.gpu.as_ref().map_or(0.0, |g| g.compositor.gpu_ms());
+        let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+        let [flushed, needed, total, left] = self.gpu.as_ref().map_or([0; 4], |g| g.compositor.pass_stats());
+        let wake_ms = self.gpu.as_ref().map_or(0.0, |g| g.compositor.wake_stats().0);
+        let due = self.session.active_sequence().map_or(-1.0, |q| q.settings.frame_rate.frame_at(self.session.playhead()) as f64);
+        let shown = self.program_shown.map_or(-1.0, |k| k.frame as f64);
+        if self.pass_log.len() >= PASS_LOG {
+            self.pass_log.pop_front();
+        }
+        self.pass_log.push_back([self.now(), self.pass_logic_ms + ui_ms, submit, due, shown, gpu_ms, mb(flushed), mb(needed), mb(total), mb(left), wake_ms]);
+        self.pass_logic_ms = 0.0;
     }
 }
 

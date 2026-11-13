@@ -458,6 +458,32 @@ impl AudioOut for LoggedDevice {
     fn played_frames(&self) -> Option<u64> {
         Some(0)
     }
+    fn release_idle(&mut self) {
+        self.0.lock().unwrap().push("playback idle release");
+    }
+}
+
+/// The playback output keeps its stream open between plays. Before a scrub grain opens the scrub
+/// output it gives the device back, as playback does the other way round: a device that takes
+/// one stream at a time would refuse the scrub's stream and the grain would be silent.
+#[test]
+fn a_scrub_takes_the_device_from_the_idle_playback_stream_first() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    app.session.prefs.audio.scrub_audio = true;
+    let log = ScrubLog::default();
+    app.scrub_out = Some(Box::new(RecordingScrubOut(log.clone())));
+    app.audio = Some(Box::new(LoggedDevice(log.events.clone())));
+    app.scrub_tick(0.0, true);
+    app.session.set_playhead(filmcraft_time::Tick::from_seconds_f64(2.0));
+    assert!(app.scrub_tick(0.02, true), "the scrub stream is open");
+    let events = log.events.lock().unwrap().clone();
+    let pos = |e: &str| events.iter().position(|x| *x == e);
+    let (Some(release), Some(play)) = (pos("playback idle release"), pos("scrub play")) else {
+        panic!("expected the idle release and a scrub grain: {events:?}");
+    };
+    assert!(release < play, "{events:?}");
 }
 
 /// #2633: the scrub output follows the sequence's sample rate, not only the audio settings.
@@ -508,4 +534,46 @@ fn playback_gives_the_scrub_device_back_before_it_opens_its_stream() {
     assert!(release < start, "the scrub device is given back before playback opens: {events:?}");
     assert!(!app.scrub.is_open(), "the scrub stream counts as closed");
     app.stop();
+}
+
+/// A playback output that counts the idle passes it is told of and asks to be called back.
+struct IdleDevice(Arc<std::sync::Mutex<u32>>);
+
+impl AudioOut for IdleDevice {
+    fn sample_rate(&self) -> u32 {
+        48000
+    }
+    fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        Ok(48000)
+    }
+    fn stop(&mut self) {}
+    fn played_frames(&self) -> Option<u64> {
+        Some(0)
+    }
+    fn idle(&mut self) -> Option<std::time::Duration> {
+        *self.0.lock().unwrap() += 1;
+        Some(std::time::Duration::from_secs(7))
+    }
+}
+
+/// With nothing playing, every pass lets the playback output close the stream it kept open
+/// since the last play, and the UI comes back when the output says that is due; while a monitor
+/// plays the output is left alone.
+#[test]
+fn an_idle_pass_lets_the_playback_output_close_its_stream() {
+    let mut app = FilmcraftApp::new(Session::default());
+    let passes = Arc::new(std::sync::Mutex::new(0));
+    app.audio = Some(Box::new(IdleDevice(passes.clone())));
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.idle_audio(ui.ctx()));
+    output.textures_delta.clear();
+    assert_eq!(*passes.lock().unwrap(), 1);
+    let delay = output.viewport_output.values().map(|v| v.repaint_delay).min().unwrap_or(std::time::Duration::MAX);
+    assert!(delay <= std::time::Duration::from_secs(7), "the UI comes back for the close: {delay:?}");
+    app.playback.playing = true;
+    app.idle_audio(&ctx);
+    app.playback.playing = false;
+    app.source_playback.clock.playing = true;
+    app.idle_audio(&ctx);
+    assert_eq!(*passes.lock().unwrap(), 1, "left alone while a monitor plays");
 }

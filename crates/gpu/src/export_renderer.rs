@@ -127,7 +127,7 @@ impl ExportRenderer {
                 }
                 let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let (device, queue) = pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -160,7 +160,7 @@ impl ExportRenderer {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
+                let prep = prepare(&plan, Some(&self.compositor.uploader()));
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {

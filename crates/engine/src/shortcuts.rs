@@ -24,7 +24,7 @@
 //! Commands the frontend owns (tools, transport, panels, workspaces) are registered with
 //! [`Shortcuts::register_external`] so they can be listed, bound and resolved here too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -948,6 +948,22 @@ impl Shortcuts {
     /// The shortcut menus show: the first application-wide one.
     pub fn primary(&self, id: &str) -> Option<String> {
         self.bindings.iter().find(|b| same_shortcut_command(&b.command, id) && b.panel.is_none()).map(|b| b.keys.clone())
+    }
+
+    /// [`Shortcuts::primary`] of every bound command at once, for a menu built from hundreds of
+    /// commands: one pass over the bindings instead of one per command (the menu bar is rebuilt
+    /// every UI pass, and that search was a measurable share of the UI thread's time at 60 Hz).
+    pub fn primaries(&self) -> HashMap<&str, &str> {
+        let mut out: HashMap<&str, &str> = HashMap::new();
+        for b in self.bindings.iter().filter(|b| b.panel.is_none()) {
+            out.entry(&b.command).or_insert(&b.keys);
+            if shortcut_twins(&b.command) {
+                for twin in ["file.close", "sequence.close"] {
+                    out.entry(twin).or_insert(&b.keys);
+                }
+            }
+        }
+        out
     }
 
     /// The command a chord runs with `panel` focused (panel shortcuts first).

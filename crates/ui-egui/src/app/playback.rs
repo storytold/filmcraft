@@ -36,14 +36,23 @@ impl FilmcraftApp {
             self.playback.meter.start(speed);
         }
         self.playback.playing = true;
+        self.frames.play_starts();
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
         self.playback.smooth_playhead = None;
+        self.playback.pass_intervals.clear();
         self.playback.preroll = Some(-1.0);
         self.playback.preroll_ready = false;
+        self.playback.preroll_pending = false;
+        self.playback.preroll_revision = None;
+        // The scrub output gives its device back first (#2633): playback's stream opens below, and
+        // waiting for the scrub stream to close belongs here too, not at the moment the clock starts.
+        self.release_scrub_output();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
+            // the device opens now, while the preroll decodes and nothing is due on screen
+            a.prepare();
         }
         self.playback.audio_clock = false;
         self.playback.audio_retry_at = 0.0;
@@ -52,10 +61,18 @@ impl FilmcraftApp {
     /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
     fn end_preroll(&mut self, now: f64) {
         self.playback.preroll = None;
+        if let Some(g) = self.gpu.as_mut() {
+            g.compositor.wake_done();
+        }
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
+        let t0 = web_time::Instant::now();
         self.start_audio(now);
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        if ms > 4.0 {
+            log::info!("audio start took {ms:.1} ms on the UI thread");
+        }
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
@@ -118,7 +135,12 @@ impl FilmcraftApp {
         self.playback.tts_preview = false;
         self.playback.stop_at = None;
         self.playback.rest_at = None;
-        self.playback.preroll = None;
+        if self.playback.preroll.take().is_some()
+            && let Some(g) = self.gpu.as_mut()
+        {
+            // (a preroll that Stop interrupts must not leave the GPU marked awake for the next)
+            g.compositor.wake_cancelled();
+        }
         self.playback.meter.finish();
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
@@ -168,7 +190,10 @@ impl FilmcraftApp {
         let sr = a.sample_rate();
         // Output frames still follow the accelerated timeline. The pitch preference selects
         // either the original rate conversion or pitch-corrected program audio.
-        let Some((mix_rate, mix)) = shuttle::mix(&self.session, seq_id, sr, self.playback.speed) else {
+        let t0 = web_time::Instant::now();
+        let mixed = shuttle::mix(&self.session, seq_id, sr, self.playback.speed);
+        let mix_ms = t0.elapsed().as_secs_f64() * 1e3;
+        let Some((mix_rate, mix)) = mixed else {
             a.stop();
             self.playback.audio_retry_at = 0.0;
             return;
@@ -187,7 +212,13 @@ impl FilmcraftApp {
                 cursor += (buf.len() / ch.max(1)) as i64;
             })
         };
-        match a.start(fill) {
+        let t1 = web_time::Instant::now();
+        let started = a.start(fill);
+        let start_ms = t1.elapsed().as_secs_f64() * 1e3;
+        if mix_ms + start_ms > 4.0 {
+            log::info!("audio: mixer built in {mix_ms:.1} ms, stream started in {start_ms:.1} ms");
+        }
+        match started {
             Ok(_) => {
                 self.playback.audio_clock = true;
                 self.playback.audio_retry_at = 0.0;
@@ -212,9 +243,13 @@ impl FilmcraftApp {
         }
     }
 
-    /// The drawn playhead for a playback clock at `clock`: the last drawn one moved on by the wall
-    /// time since, plus a tenth of how far that is from the clock. It never steps back against
-    /// the direction of play; a jump (loop, seek) more than a quarter second away is taken at once.
+    /// The smoothed playback clock at `clock`: the last one moved on by the wall time since,
+    /// plus a tenth of how far that is from the clock, at most [`SMOOTH_STEP_S`] a pass. It never
+    /// steps back against the direction of play; a jump (loop, seek) more than a quarter second
+    /// away is taken at once. The Timeline draws it, and the frame shown follows it too
+    /// ([`Self::advance_playback`]): the device clock advances in buffer-sized steps (10 ms at
+    /// 512 frames) and stands still while a late callback catches up, and the frame due by it,
+    /// sampled at the display's refresh, was now and then skipped or held.
     fn smooth_playhead(&self, clock: Tick, now: f64) -> Tick {
         let Some((drawn, at)) = self.playback.smooth_playhead else { return clock };
         let speed = self.playback.speed;
@@ -223,9 +258,23 @@ impl FilmcraftApp {
         if !predicted.is_finite() || error.abs() > 0.25 {
             return clock;
         }
-        let next = predicted + error * 0.1;
+        // (capped: a pass that catches up more than that moves the clock past a whole 50 fps
+        // frame in one 60 Hz refresh, and the frame is skipped)
+        let next = predicted + (error * 0.1).clamp(-SMOOTH_STEP_S, SMOOTH_STEP_S);
         let next = if speed >= 0.0 { next.max(drawn.seconds()) } else { next.min(drawn.seconds()) };
         Tick::from_seconds_f64(next)
+    }
+
+    /// With nothing playing, let the audio output close the stream it kept open since the last
+    /// play ([`AudioOut::idle`]), and come back when that is due: an idle UI does not repaint
+    /// by itself.
+    pub(super) fn idle_audio(&mut self, ctx: &egui::Context) {
+        if self.playback.playing || self.source_playback.clock.playing {
+            return;
+        }
+        if let Some(wait) = self.audio.as_mut().and_then(|a| a.idle()) {
+            ctx.request_repaint_after(wait);
+        }
     }
 
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
@@ -233,13 +282,17 @@ impl FilmcraftApp {
     pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             self.playback.smooth_playhead = None;
+            self.playback.pass_intervals.clear();
             return;
         }
         let now = self.now();
         if let Some(since) = self.playback.preroll {
             let since = if since < 0.0 { now } else { since };
             self.playback.preroll = Some(since);
-            if self.playback.preroll_ready || now - since >= frames::PREROLL_TIMEOUT_S {
+            let timeout = if self.playback.preroll_pending { frames::PREROLL_MAX_S } else { frames::PREROLL_TIMEOUT_S };
+            // ... and the GPU's clocks are up, or had their time ([`frames::WAKE_MAX_S`])
+            let gpu_awake = self.gpu.as_ref().is_none_or(|g| g.compositor.wake_warm()) || now - since >= frames::WAKE_MAX_S;
+            if (self.playback.preroll_ready && gpu_awake) || now - since >= timeout {
                 self.end_preroll(now);
             } else {
                 ctx.request_repaint();
@@ -323,12 +376,71 @@ impl FilmcraftApp {
             self.session.set_playhead(Tick::ZERO);
             self.stop();
         } else {
-            self.session.set_playhead(t);
-            self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
+            let smooth = self.smooth_playhead(t, now);
+            if let Some((_, at)) = self.playback.smooth_playhead {
+                // (the rhythm of the passes: see `no_skip`)
+                if self.playback.pass_intervals.len() >= PASS_INTERVALS {
+                    self.playback.pass_intervals.pop_front();
+                }
+                self.playback.pass_intervals.push_back(now - at);
+            }
+            self.session.set_playhead(self.no_skip(smooth, rate));
+            self.playback.smooth_playhead = Some((smooth, now));
         }
         ctx.request_repaint();
     }
+
+    /// The playhead to show for the smoothed clock at `clock`: the clock, except that when a
+    /// pass finds it two frames past the frame on screen (the pass came a refresh late: the
+    /// desktop compositor held the previous frame, or the device clock jumped; or the frame due
+    /// at the last pass was not ready and the one before stood in) the frame in between is
+    /// shown first, one refresh late. Playing 50 fps at 60 Hz every sixth refresh repeats a
+    /// frame, so the picture is back on the clock within a few refreshes; shown late is
+    /// invisible where skipped is a hitch. Three or more frames on, the display cannot catch up
+    /// a frame at a time: the clock wins and the frames are dropped. Forward play up to normal
+    /// speed only; the first pass of a play (nothing shown yet) and a clock that is not moving
+    /// forward show the clock's frame. So does a display with no refreshes to spare
+    /// ([`refresh_interval`]: 60 fps shown at 30 Hz is two frames on at every pass, and a frame
+    /// in between would turn its even steps of two into steps of one and three).
+    fn no_skip(&self, clock: Tick, rate: filmcraft_time::FrameRate) -> Tick {
+        if !(0.0 < self.playback.speed && self.playback.speed <= 1.0) || self.playback.smooth_playhead.is_none() {
+            return clock;
+        }
+        if refresh_interval(&self.playback.pass_intervals).is_some_and(|s| s > rate.frame_duration().seconds() * SPARE_REFRESH) {
+            return clock;
+        }
+        // the frame on screen (the Program monitor's last picture, a stand-in included), else
+        // the one the last pass asked for
+        let on_screen = self.program_shown.map_or_else(|| rate.frame_at(self.session.playhead()), |k| k.frame);
+        let due = rate.frame_at(clock);
+        if due == on_screen.saturating_add(2) { rate.tick_of(on_screen.saturating_add(1)) } else { clock }
+    }
 }
+
+/// How many of a play's latest pass intervals [`refresh_interval`] looks at.
+const PASS_INTERVALS: usize = 9;
+
+/// The display has refreshes to spare for showing a frame late ([`FilmcraftApp::no_skip`]) when
+/// its passes come at most this part of a frame apart: 50 fps at 60 Hz (0.83) has, 60 fps at
+/// 60 Hz (1.0) has not, since a picture one frame late there would stay late.
+const SPARE_REFRESH: f64 = 0.95;
+
+/// The usual time between a play's passes, which is the display's refresh interval while the UI
+/// keeps up (seconds): the median of the latest, so that neither a late pass nor a quick extra
+/// one moves it. None until there are three.
+fn refresh_interval(recent: &std::collections::VecDeque<f64>) -> Option<f64> {
+    if recent.len() < 3 {
+        return None;
+    }
+    let mut sorted: Vec<f64> = recent.iter().copied().filter(|s| s.is_finite()).collect();
+    sorted.sort_by(f64::total_cmp);
+    sorted.get(sorted.len() / 2).copied()
+}
+
+/// The most the smoothed playback clock catches up with (or waits for) the device clock in one
+/// pass ([`FilmcraftApp::smooth_playhead`]): 3 ms, so that a 60 Hz pass never moves it a whole
+/// 50 fps frame (20 ms) on.
+const SMOOTH_STEP_S: f64 = 0.003;
 
 #[cfg(test)]
 mod clock_tests {
@@ -473,5 +585,117 @@ mod smooth_playhead_tests {
         let mut app = playing_at(0.1);
         app.stop();
         assert_eq!(app.shown_playhead(), app.session.playhead());
+    }
+
+    /// The frame shown follows the smoothed clock. A device clock that stands still for a tenth
+    /// of a second (its callback waited for a core) and then catches up at once used to hold the
+    /// picture and then skip a frame or two; the picture now goes on at the clock's rate and no
+    /// frame is skipped.
+    #[test]
+    fn a_stalled_device_clock_skips_no_frame() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let played = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        app.audio = Some(Box::new(BufferedDevice(played.clone())));
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.audio_clock = true;
+        app.playback.anchor_tick = Tick::ZERO;
+        let ctx = egui::Context::default();
+        let rate = app.session.sequence_rate();
+        let mut frames = Vec::new();
+        for pass in 0..180 {
+            let now = pass as f64 / 60.0;
+            // the counter stands still from 1.0 s to 1.1 s, then catches up at once
+            let counted = if (1.0..1.1).contains(&now) { 1.0 } else { now };
+            played.store((counted * 48_000.0 / 512.0).floor() as u64 * 512, std::sync::atomic::Ordering::Relaxed);
+            app.set_now_for_test(now);
+            app.advance_playback(&ctx);
+            frames.push(rate.frame_at(app.session.playhead()));
+        }
+        for w in frames.windows(2) {
+            assert!((0..=1).contains(&(w[1] - w[0])), "the frame shown went {} -> {}", w[0], w[1]);
+        }
+        let last = frames.last().copied().unwrap();
+        let at_end = rate.frame_at(Tick::from_seconds_f64(179.0 / 60.0));
+        assert!((at_end - 2..=at_end).contains(&last), "ended on frame {last} with the clock on {at_end}");
+    }
+
+    /// A pass that comes a refresh late (the desktop compositor held the previous frame) finds
+    /// the clock two frames on. The frame in between is shown first, one refresh late, and the
+    /// picture is back on the clock at the next refresh; the frame is not skipped. Three frames
+    /// on at once, the clock wins.
+    #[test]
+    fn a_late_pass_shows_the_frame_it_would_skip_first() {
+        let mut app = playing_at(0.0);
+        let rate = app.session.sequence_rate();
+        let frame = rate.frame_duration().seconds();
+        let ctx = egui::Context::default();
+        app.set_now_for_test(frame * 2.5);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 1, "frame 1 is shown late rather than never");
+        assert_eq!(rate.frame_at(app.shown_playhead()), 2, "the drawn playhead follows the clock");
+        app.set_now_for_test(frame * 2.9);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 2, "back on the clock at the next refresh");
+        app.set_now_for_test(frame * 6.5);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 6, "three frames on at once: the clock wins");
+    }
+
+    /// A display slower than the frame rate (60 fps shown at 30 Hz) is two frames on at every
+    /// pass. Taking that for a late pass showed the frame in between at every other pass: steps
+    /// of one and three frames in place of even steps of two. Once the rhythm of the passes is
+    /// known, the clock's frame is shown.
+    #[test]
+    fn a_display_slower_than_the_frame_rate_keeps_the_clocks_frames() {
+        let mut app = playing_at(0.0);
+        let rate = app.session.sequence_rate();
+        let frame = rate.frame_duration().seconds();
+        let ctx = egui::Context::default();
+        let shown: Vec<i64> = (1..=7)
+            .map(|pass| {
+                app.set_now_for_test(frame * (2.0 * f64::from(pass) + 0.5));
+                app.advance_playback(&ctx);
+                rate.frame_at(app.session.playhead())
+            })
+            .collect();
+        assert_eq!(shown.get(3..), Some(&[8, 10, 12, 14][..]), "{shown:?}");
+    }
+
+    #[test]
+    fn the_usual_pass_interval_ignores_a_late_pass_and_a_quick_one() {
+        use std::collections::VecDeque;
+        let of = |s: &[f64]| refresh_interval(&s.iter().copied().collect::<VecDeque<f64>>());
+        assert_eq!(of(&[0.0167, 0.0167]), None, "too few to tell");
+        assert_eq!(of(&[0.0167, 0.0333, 0.0167, 0.0167, 0.002]), Some(0.0167));
+        assert_eq!(of(&[0.0333, 0.0333, 0.0167]), Some(0.0333));
+    }
+
+    /// The frame due at the last pass was not ready and the monitor drew the one before it
+    /// again: the next pass shows it first, one refresh late, instead of moving on to the
+    /// frame now due and never showing it.
+    #[test]
+    fn a_frame_that_stood_in_for_is_still_shown_before_the_next() {
+        use crate::frames::{FrameKey, Target};
+        let mut app = playing_at(0.0);
+        let rate = app.session.sequence_rate();
+        let frame = rate.frame_duration().seconds();
+        let ctx = egui::Context::default();
+        app.set_now_for_test(frame * 1.5);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 1);
+        // the monitor drew frame 0 again: frame 1 was not ready
+        let seq = app.session.state.active_sequence.unwrap();
+        let drawn = FrameKey { target: Target::Sequence(seq), frame: 0, size: 1000, revision: 0, draft: false };
+        app.program_shown = Some(drawn);
+        app.set_now_for_test(frame * 2.5);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 1, "frame 1 is shown before frame 2");
+        app.program_shown = Some(FrameKey { frame: 1, ..drawn });
+        app.set_now_for_test(frame * 2.9);
+        app.advance_playback(&ctx);
+        assert_eq!(rate.frame_at(app.session.playhead()), 2, "back on the clock");
     }
 }

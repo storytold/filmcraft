@@ -25,9 +25,22 @@ use filmcraft_ui_egui::{AudioDevices, AudioOut};
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
 
 pub struct CpalOut {
+    /// The device stream. It stays open between plays, playing silence while nothing plays:
+    /// opening one costs 20-30 ms on the UI thread (WASAPI, with the audio engine running),
+    /// which dropped the first frame of every play when it happened as the clock started.
+    /// [`AudioOut::prepare`] opens it during the preroll instead, and `start` only puts the
+    /// mixer in the slot.
     stream: Option<cpal::Stream>,
-    /// The running playback's mixer, shared with the stream so a restarted stream continues it.
-    fill: Option<Arc<Mutex<Fill>>>,
+    /// The running playback's mixer ([`idle_fill`] while nothing plays), shared with the stream
+    /// so a restarted stream continues it and a stream kept open takes the next one.
+    fill: Arc<Mutex<Fill>>,
+    /// A playback's mixer is in `fill`.
+    playing: bool,
+    /// When (on `epoch`) the idle mixer went into `fill`: an open stream closes [`IDLE_CLOSE`]
+    /// later ([`AudioOut::idle`]).
+    idle_since: Option<Duration>,
+    /// Settings changed since the stream opened: the next start (or prepare) reopens it.
+    stale: bool,
     played: Arc<AtomicU64>,
     health: Arc<Health>,
     watchdog: Watchdog,
@@ -90,6 +103,11 @@ fn stream_config(hw: &AudioHardwarePrefs, document_rate: Option<u32>, dev: &cpal
             .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
     });
     Ok(exact.unwrap_or(default))
+}
+
+/// What a stream kept open plays between plays: silence.
+fn idle_fill() -> Fill {
+    Box::new(|buf: &mut [f32], _| buf.fill(0.0))
 }
 
 /// Build the output stream for `config`'s sample format, rendering `fill` into it.
@@ -243,7 +261,10 @@ impl CpalOut {
         };
         Self {
             stream: None,
-            fill: None,
+            fill: Arc::new(Mutex::new(idle_fill())),
+            playing: false,
+            idle_since: None,
+            stale: false,
             played: Arc::new(AtomicU64::new(0)),
             health: Arc::new(Health::default()),
             watchdog: Watchdog::default(),
@@ -262,9 +283,10 @@ impl CpalOut {
         stream_config(&self.hw, self.document_rate, dev)
     }
 
-    /// Open the configured output device and play `fill` on it. `expect` is the (sample rate,
-    /// channels) a restarted stream must keep: the mixer was set up for them.
-    fn open(&mut self, fill: Arc<Mutex<Fill>>, expect: Option<(u32, u16)>) -> Result<(), String> {
+    /// Open the configured output device and play the mixer slot on it. `expect` is the (sample
+    /// rate, channels) a restarted stream must keep: the mixer was set up for them.
+    fn open(&mut self, expect: Option<(u32, u16)>) -> Result<(), String> {
+        let fill = self.fill.clone();
         let host = host(&self.hw.device_class);
         let DeviceChoice { device: dev, fallback } = output_device(&host, &self.hw.default_output, &self.fallback).ok_or("no output device")?;
         self.note = fallback;
@@ -289,18 +311,49 @@ impl CpalOut {
         let stream = stream_for(&dev, &config, cfg.sample_format(), fill, self.played.clone(), self.health.clone())?;
         stream.play().map_err(|e| e.to_string())?;
         self.stream = Some(stream);
+        self.stale = false;
         Ok(())
     }
 
     /// Replace a dropped stream with a new one on the same mixer, clock and format.
     fn restart(&mut self) -> Result<(), String> {
-        let fill = self.fill.clone().ok_or("nothing is playing")?;
+        if !self.playing {
+            return Err("nothing is playing".into());
+        }
         let expect = (self.rate, self.channels);
         // The old stream (and its audio thread) goes first: only one stream ever runs the mixer.
         self.stream = None;
         self.health.clear_errors();
-        self.open(fill, Some(expect))
+        self.open(Some(expect))
     }
+
+    /// Whether the open stream can take the next mixer as it is.
+    fn warm(&self) -> bool {
+        self.stream.is_some() && !self.stale && !self.health.failed.load(Ordering::SeqCst) && !self.health.lost.load(Ordering::SeqCst)
+    }
+
+    /// Put `fill` in the mixer slot and set the clock to zero, together: the device callback
+    /// holds the slot's lock while it mixes.
+    fn set_mixer(&mut self, fill: Fill, playing: bool) {
+        let mut slot = self.fill.lock().unwrap_or_else(PoisonError::into_inner);
+        *slot = fill;
+        self.played.store(0, Ordering::SeqCst);
+        self.playing = playing;
+        self.idle_since = (!playing).then(|| self.epoch.elapsed());
+    }
+}
+
+/// How long the stream stays open with nothing playing. Open, it saves the next play the 20 to
+/// 30 ms of opening it (which [`AudioOut::prepare`] spends during that play's preroll anyway),
+/// but a stream that renders silence keeps the device powered and, on Windows, holds a power
+/// request that keeps the system from going to sleep by itself: an editor left open overnight
+/// would keep the machine awake. Half a minute covers stopping and playing again while editing.
+const IDLE_CLOSE: Duration = Duration::from_secs(30);
+
+/// How long a stream idle since `since` stays open at `now` (both on one clock): zero when it
+/// is time to close it. None when it is not idle.
+fn idle_left(since: Option<Duration>, now: Duration) -> Option<Duration> {
+    since.map(|since| IDLE_CLOSE.saturating_sub(now.saturating_sub(since)))
 }
 
 /// What the audio thread reports to the UI thread.
@@ -383,6 +436,7 @@ impl Watchdog {
 /// panicking mixer plays silence and fails the stream, and a mixer held by another stream (never
 /// expected: a restart drops the old stream first) plays silence without advancing the clock.
 fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU64, health: &Health) {
+    raise_callback_priority();
     let mut guard = match fill.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -399,6 +453,30 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
         return;
     }
     played.fetch_add((buf.len() / channels.max(1)) as u64, Ordering::SeqCst);
+}
+
+thread_local! {
+    /// Whether this device callback thread has been raised ([`raise_callback_priority`]).
+    static RAISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Raise the device callback thread's priority, once per thread (cpal runs a restarted stream on
+/// a new one). cpal leaves it at normal priority, and during 4K playback the decoders and the
+/// frame workers keep every core busy: the callback then waited for a core, the played-frame
+/// clock (which only advances in the callback) stood still for up to 50 ms and jumped, and the
+/// monitor held a frame and skipped one. Audio outranks everything else: a late callback is a
+/// dropout. A system that refuses (no privilege on Linux) leaves the thread as it is; nothing is
+/// reported from here, since the callback must not block or allocate.
+fn raise_callback_priority() {
+    RAISED.with(|raised| {
+        if !raised.replace(true) {
+            #[cfg(windows)]
+            let prio = thread_priority::ThreadPriority::Os(thread_priority::WinAPIThreadPriority::TimeCritical.into());
+            #[cfg(not(windows))]
+            let prio = thread_priority::ThreadPriority::Max;
+            let _ = thread_priority::set_current_thread_priority(prio);
+        }
+    });
 }
 
 fn stream_error(health: &Health, e: cpal::StreamError) {
@@ -421,18 +499,52 @@ fn convert_samples<T: cpal::Sample + cpal::FromSample<f32>>(input: &[f32], outpu
 
 impl AudioOut for CpalOut {
     fn start(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
-        self.stop();
-        self.played.store(0, Ordering::SeqCst);
-        self.health = Arc::new(Health::default());
+        let warm = self.warm();
+        if !warm {
+            self.stream = None;
+            self.health = Arc::new(Health::default());
+        }
+        self.health.clear_errors();
+        self.set_mixer(fill, true);
         self.watchdog.reset(self.epoch.elapsed());
-        let fill = Arc::new(Mutex::new(fill));
-        self.open(fill.clone(), None)?;
-        self.fill = Some(fill);
+        if !warm && let Err(e) = self.open(None) {
+            self.set_mixer(idle_fill(), false);
+            return Err(e);
+        }
         Ok(self.rate)
     }
     fn stop(&mut self) {
+        self.set_mixer(idle_fill(), false);
+        if self.stale || self.health.failed.load(Ordering::SeqCst) {
+            self.stream = None;
+        }
+    }
+    fn prepare(&mut self) {
+        if self.warm() {
+            return;
+        }
         self.stream = None;
-        self.fill = None;
+        self.health = Arc::new(Health::default());
+        self.set_mixer(idle_fill(), false);
+        if let Err(e) = self.open(None) {
+            log::debug!("audio output not opened ahead of playback ({e}); it opens when playback starts");
+        }
+    }
+    fn release_idle(&mut self) {
+        if !self.playing {
+            self.stream = None;
+        }
+    }
+    fn idle(&mut self) -> Option<Duration> {
+        if self.playing || self.stream.is_none() {
+            return None;
+        }
+        let left = idle_left(self.idle_since, self.epoch.elapsed())?;
+        if left.is_zero() {
+            self.stream = None;
+            return None;
+        }
+        Some(left)
     }
     fn recover(&mut self) {
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
@@ -474,6 +586,8 @@ impl AudioOut for CpalOut {
         AudioDevices { hosts: cpal::available_hosts().iter().map(|h| h.name().to_string()).collect(), inputs, outputs, output_channels }
     }
     fn configure(&mut self, hw: &AudioHardwarePrefs, document_rate: Option<u32>) {
+        // an open stream runs on the old settings until the next play (one playing on keeps its sound)
+        self.stale |= self.hw != *hw || self.document_rate != document_rate;
         self.hw = hw.clone();
         self.document_rate = document_rate;
         // the rate playback mixes at must be known before `start`
@@ -819,6 +933,30 @@ mod tests {
         assert_eq!(w.check(ms(20), 0, false, true), Verdict::GiveUp);
         // sporadic failures far apart keep being recovered
         assert_eq!(w.check(ms(10_006), 0, false, true), Verdict::Restart);
+    }
+
+    /// The stream kept open between plays closes half a minute after the last one stopped:
+    /// open, it keeps the device powered and the system awake.
+    #[test]
+    fn an_idle_stream_closes_after_a_while() {
+        let s = Duration::from_secs;
+        assert_eq!(idle_left(None, s(100)), None, "playing: nothing to close");
+        assert_eq!(idle_left(Some(s(100)), s(100)), Some(IDLE_CLOSE));
+        assert_eq!(idle_left(Some(s(100)), s(110)), Some(IDLE_CLOSE - s(10)));
+        assert_eq!(idle_left(Some(s(100)), s(100) + IDLE_CLOSE), Some(Duration::ZERO), "due");
+        assert_eq!(idle_left(Some(s(100)), s(100_000)), Some(Duration::ZERO));
+        assert_eq!(idle_left(Some(s(100)), s(50)), Some(IDLE_CLOSE), "a clock that went back closes nothing early");
+    }
+
+    /// Between plays the stream stays open on the idle mixer: silence, whatever was in the buffer.
+    #[test]
+    fn a_stream_kept_open_between_plays_is_silent() {
+        let (played, health) = (AtomicU64::new(0), Health::default());
+        let fill: Mutex<Fill> = Mutex::new(idle_fill());
+        let mut buf = [1.0_f32; 8];
+        render(&fill, &mut buf, 2, &played, &health);
+        assert_eq!(buf, [0.0; 8]);
+        assert!(!health.failed.load(Ordering::SeqCst));
     }
 
     #[test]

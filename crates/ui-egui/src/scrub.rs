@@ -139,6 +139,10 @@ impl FilmcraftApp {
         let mix = crate::playback_mix(&self.session, seq_id, sr);
         let fill = grain_fill(mix, self.scrub.grain.clone(), ((RAMP_S * sr as f64) as i64).max(1));
         if let Some(out) = self.scrub_out.as_mut() {
+            // (the playback output's stream stays open between plays: it gives the device back first)
+            if let Some(a) = self.audio.as_mut() {
+                a.release_idle();
+            }
             // Opens on the output's own thread: a cold device takes ~0.6 s, too long for this frame.
             self.scrub.open = true;
             out.play(fill);

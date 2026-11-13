@@ -237,7 +237,10 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   own copy of each file they can stream (`MediaPool::own_source`, `PoolProvider::own_sources`),
   so they never take turns with the monitors on one decoder. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
-  every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
+  every frame of the GOP. Sequential playback reuses the decoder. An intra-only stream
+  (`VideoDecoder::intra_only`: ProRes, DNx, Motion JPEG) has no GOP to decode through: the requesting thread
+  decodes the one picture with a decoder of its own, so frame workers decode different pictures
+  at once and a scrub costs one picture, not a pipeline of them. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
   hardware decoder can take precedence. The GOP cache never holds its lock while decoding.
 - **Hardware decoding.** The apps (desktop, CLI / headless MCP, bench) call
@@ -351,20 +354,48 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Every refresh, `schedule_playback` asks for the next frames and drops (or cancels, through
   `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
   replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
-  than the workers can render in real time (CPU effects), it starts only frames that can still be
-  on time and spaces them evenly (`playback_plan`). When decoding is what falls behind, each job
-  tells its sources which frames are already late (`filmcraft_media::cancel::with_catch_up`: the
+  than the workers can finish in real time (CPU effects, or a source that decodes on the worker,
+  as an intra-only stream does), it asks only for frames that can still be on time, spaced evenly
+  (`playback_plan`), and a worker leaves out a queued frame that can no longer be ready when it
+  gets to it (`starts_too_late`) instead of finishing it for nothing: the frame cost that paces
+  this counts the worker's own CPU time inside source calls, not its waits for a decoder's
+  threads. When decoding is what falls behind (a long-GOP decoder is sequential per source), each
+  job tells its sources which frames are already late (`filmcraft_media::cancel::with_catch_up`: the
   playhead's distance, two seconds for a scrubbed-to frame), and the GOP cache skips
   non-reference pictures of late frames on the way (`VideoDecoder::is_disposable`, H.264
   `nal_ref_idc` 0 and HEVC sub-layer non-reference pictures; the wanted frame decodes exactly as
-  before). With Settings ▸ Playback ▸ Draft decoding (off by default), frames played at 1/2
+  before). While playing (`filmcraft_media::cancel::with_playing`), the GOP cache decodes
+  ahead on its own: the first playing request that misses positions the decoder and keeps
+  decoding on the decode pool, with the lock released per sample, until it has run far enough
+  ahead of the playhead for the frame cache to hold (while playing, 40 pictures of the playing
+  source, up to 1.5 GB: the decoder's pictures in flight and the frames prefetched ahead), the playhead
+  stops asking, or a request with time to spare (paused, scrubbing, an export) stops it to
+  decode its frame exactly. Other playing requests are served from the cache, dropped when the
+  decoder already passed their picture (restarting at the sync sample would deliver nothing
+  while the pipeline refills and stall playback again at once; the frame server then stops
+  asking for that frame while playing, `FrameServer::dropped`), and otherwise answered as
+  pending (`filmcraft_media::pending`) so a worker never waits on a picture in the decoder's
+  pipeline: the frame server asks again next refresh. Eviction behind the playhead first, and
+  never a frame a request waits for. A result whose source gave up
+  (`filmcraft_media::cancel::gave_up`) is not cached; a job cancelled after its sources finished
+  has the frame and is. Before the clock starts, playback waits for the first frames
+  (`PREROLL_FRAMES`), longer while they are still being made (`PREROLL_MAX_S`), so a long-GOP
+  decoder's seek and pipeline fill do not leave playback behind from its first frame. The H.264
+  decoder uses at most eight frame threads (`MAX_H264_THREADS`): more adds pipeline latency
+  without throughput. With Settings ▸ Playback ▸ Draft decoding (off by default), frames played at 1/2
   resolution or lower are requested as draft frames (`FrameKey::draft`,
   `filmcraft_media::cancel::with_draft`): the H.264 decoder skips deblocking of non-reference
   pictures (`VideoDecoder::set_draft`), the GOP cache serves those draft frames to draft
   requests only (a paused frame, render or export decodes them again exactly), and draft plans
   hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
-  GPU plans carry their texels already converted for upload (`filmcraft_gpu::prepare`), so the UI
-  thread only copies them.
+  GPU plans reach the UI thread with their frames' textures made and their texels in mapped
+  staging buffers: the frame workers write them there through the compositor's
+  `filmcraft_gpu::Uploader` (`filmcraft_gpu::prepare`) and record the copies into the textures,
+  which the UI thread, the device's only submitter, submits before the composite that draws them
+  (and ahead of that within a per-pass budget). 10-bit planes go
+  as 16-bit codes (`R16Unorm`) where the device has the format, and the textures are pooled by size
+  so a frame's planes are reused instead of created and freed per frame. Uploading and freeing cost
+  about 10 ms per 4K frame on the UI thread, half its budget at 50 fps.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline

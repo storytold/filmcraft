@@ -1,4 +1,5 @@
 use super::*;
+use filmcraft_frame::Chroma;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
@@ -6,7 +7,444 @@ use filmcraft_render::plan::execute_cpu;
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()
+}
+
+/// A 10-bit frame draws the same whether its planes go up as 16-bit codes (`R16Unorm`, on a
+/// device with normalised 16-bit textures) or as half floats, uploaded by a worker's
+/// [`Uploader`] beforehand, converted beforehand, or neither; and the uploader's textures come
+/// back from the pool for the next frame of that size.
+#[test]
+fn yuv16_frames_draw_the_same_however_they_reach_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    eprintln!("normalised 16-bit textures: {}", up.norm16());
+    let (w, h) = (64u32, 8u32);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..w * h).map(|i| (200 + (i / w) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..w * h).map(|i| (800 - (i % w) * 10) as u16).collect();
+    // (a fresh frame each time: the compositor keeps the textures of a frame it has uploaded)
+    let plan = || {
+        let data = PixelData::Yuv16 { planes: [Arc::new(y.clone()), Arc::new(cb.clone()), Arc::new(cr.clone())], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let reference = execute_cpu(&plan()).over_black_rgba8();
+    for (name, uploader, prepared) in [("unprepared", None, false), ("uploaded by a worker", Some(&up), true), ("converted beforehand", None, true)] {
+        let plan = plan();
+        let prep = prepared.then(|| prepare(&plan, uploader));
+        if let Some(p) = &prep {
+            let layer = p.layers[0].as_ref().expect("a 16-bit frame is prepared");
+            assert_eq!(layer.uploaded(), uploader.is_some(), "{name}");
+            assert_eq!(layer.raw16, uploader.is_some_and(Uploader::norm16), "{name}");
+        }
+        c.composite_prepared(&plan, prep.as_ref());
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
+    }
+    // the pool: a frame's three planes return when nothing holds them any more, and the next
+    // frame of that size takes them
+    let pooled0 = up.pooled();
+    drop(prepare(&plan(), Some(&up)));
+    assert_eq!(up.pooled(), pooled0 + 3);
+    let kept = prepare(&plan(), Some(&up));
+    assert_eq!(up.pooled(), pooled0);
+    drop(kept);
+    assert_eq!(up.pooled(), pooled0 + 3);
+}
+
+/// Planes go up through a staging buffer whose rows are padded to the copy alignment: a 10-bit
+/// 4:2:2 frame whose rows are not a multiple of it draws as the CPU does, and a frame whose
+/// planes are shorter than its size (a hostile file) uploads without panicking.
+#[test]
+fn padded_and_short_planes_upload() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    // 1000 * 2 bytes per row: 7.8 copy alignments; chroma rows 500 * 2
+    let (w, h) = (1000u32, 6u32);
+    let (cw, ch) = (w / 2, h);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..cw * ch).map(|i| (200 + (i / cw) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..cw * ch).map(|i| (800 - (i % cw)) as u16).collect();
+    let frame = |y: Vec<u16>, cb: Vec<u16>, cr: Vec<u16>| {
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C422, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let plan = frame(y.clone(), cb.clone(), cr.clone());
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    let prep = prepare(&plan, Some(&up));
+    c.composite_prepared(&plan, Some(&prep));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes");
+    // short planes: the rows that exist go up, the rest stay zero, also in staging buffers
+    // that held the full frame before (mapped again by now: the readback waited for the GPU)
+    let short = frame(y[..y.len() / 2].to_vec(), cb[..7].to_vec(), Vec::new());
+    let staging = up.created().1;
+    let prep = prepare(&short, Some(&up));
+    assert_eq!(up.created().1, staging, "the short frame reuses the full frame's staging buffers");
+    assert!(prep.layers[0].as_ref().is_some_and(Prepared::uploaded));
+    c.composite_prepared(&short, Some(&prep));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let zero_padded =
+        frame([&y[..y.len() / 2], &vec![0; y.len() - y.len() / 2][..]].concat(), [&cb[..7], &vec![0; cb.len() - 7][..]].concat(), vec![0; cr.len()]);
+    let reference = execute_cpu(&zero_padded).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    // (zero is below the 10-bit video range, which the CPU and the GPU clip a few codes apart;
+    // rows left over from the full frame differ by the whole range)
+    assert!(error <= 4, "a short plane differs from its zero-padded frame by up to {error} codes");
+}
+
+/// A preroll that Stop interrupts leaves no "GPU is awake" behind for the next preroll, and its
+/// loop length is not taken as the reference.
+#[test]
+fn a_cancelled_preroll_leaves_the_gpu_to_be_woken_again() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.wake_warm = true;
+    let reference = c.wake_ref;
+    c.wake_cancelled();
+    assert!(!c.wake_warm());
+    assert_eq!(c.wake_ref, reference);
+}
+
+/// A preroll reads the GPU's clocks from its own loads only. The loads of the preroll before ran
+/// with the clocks up, and the GPU may have idled since: read at the next Play, their time
+/// started the play at once, on a GPU whose first composites then took several display frames.
+#[test]
+fn a_preroll_does_not_take_the_one_befores_measurement_for_its_own() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    if c.timer.is_none() {
+        eprintln!("no timestamp queries; skipping");
+        return;
+    }
+    let wake_time = |c: &GpuCompositor| c.timer.as_ref().map(|t| t.last(TIMER_WAKE));
+    let measured = |c: &GpuCompositor, m: (f64, u32)| {
+        if let Some(t) = &c.timer {
+            t.last.lock().unwrap()[usize::from(TIMER_WAKE)] = m;
+        }
+    };
+    // a preroll whose last load ran at the reference length in its time
+    c.wake_ref = Some(4096);
+    c.wake_iterations = 4096;
+    measured(&c, (WAKE_TARGET_MS, 4096));
+    c.wake();
+    assert!(c.wake_warm(), "the clocks are up at the end of the first preroll");
+    c.wake_done();
+    // (the load it submitted last is measured after it ended)
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert_eq!(wake_time(&c), Some((0.0, 0)), "a load of the preroll before is still read");
+    // the next preroll: nothing measured yet, so nothing known of the clocks
+    c.wake();
+    assert!(!c.wake_warm(), "the next preroll took the clocks for up before any of its loads ran");
+    // its own load, once measured, counts
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert!(wake_time(&c).is_some_and(|(ms, n)| ms > 0.0 && n == 4096), "the preroll's own load is not measured");
+    // and a cancelled preroll leaves none behind either
+    c.wake_cancelled();
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert_eq!(wake_time(&c), Some((0.0, 0)));
+}
+
+/// A frame worker records its uploads and submits nothing; the compositor submits them before
+/// its own commands, so the frame is complete when drawn. (wgpu fails a surface reconfigure
+/// when another thread submits during it: the GPU compositor went off on a window resize.)
+#[test]
+fn uploads_from_a_worker_wait_for_the_compositors_submit() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let worker = {
+        let up = up.clone();
+        std::thread::spawn(move || {
+            let (w, h) = (64u32, 8u32);
+            let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+            let cb: Vec<u16> = (0..w * h).map(|i| (300 + (i / w) * 40) as u16).collect();
+            let cr: Vec<u16> = (0..w * h).map(|i| (700 - (i % w)) as u16).collect();
+            let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+            let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+            let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+            let prep = prepare(&plan, Some(&up));
+            (plan, prep)
+        })
+    };
+    let (plan, prep) = worker.join().expect("worker");
+    assert!(prep.layers[0].as_ref().is_some_and(Prepared::uploaded));
+    assert_eq!(up.pending_copies(), 1, "the worker recorded its copies and submitted nothing");
+    c.composite_prepared(&plan, Some(&prep));
+    assert_eq!(up.pending_copies(), 0, "the composite submitted the copies first");
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes");
+    // a flush with nothing pending submits nothing
+    c.flush_uploads();
+    assert_eq!(up.pending_copies(), 0);
+}
+
+/// A pass submits the recorded uploads within its budget, and a composite submits the ones it
+/// draws whatever the budget, in recording order; later uploads wait for a pass with room.
+#[test]
+fn uploads_are_submitted_as_needed_or_within_the_budget() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let (a, b, d) = (plan_for(300), plan_for(600), plan_for(900));
+    let (pa, pb, pd) = (prepare(&a, Some(&up)), prepare(&b, Some(&up)), prepare(&d, Some(&up)));
+    assert_eq!(up.pending_copies(), 3);
+    // no budget: nothing goes
+    c.flush_uploads_within(0);
+    assert_eq!(up.pending_copies(), 3);
+    // a budget for one frame's planes (three 64 x 8 planes of two bytes, rows padded to 256)
+    c.flush_uploads_within(3 * 256 * 8);
+    assert_eq!(up.pending_copies(), 2, "one upload fit the budget");
+    // the budget is the pass's: after a flush that spent it, a composite submits only its needs;
+    // drawing the third frame submits the third, whatever the budget, and the second waits
+    c.set_upload_budget(3 * 256 * 8);
+    c.composite_prepared(&d, Some(&pd));
+    assert_eq!(up.pending_copies(), 1, "the composite submitted the upload it needed and no other");
+    let (e, f) = (plan_for(200), plan_for(400));
+    let (_pe, pf) = (prepare(&e, Some(&up)), prepare(&f, Some(&up)));
+    c.flush_uploads_within(3 * 256 * 8);
+    assert_eq!(up.pending_copies(), 2, "the pass's budget took the oldest of the three");
+    let g = plan_for(100);
+    let pg = prepare(&g, Some(&up));
+    c.composite_prepared(&f, Some(&pf));
+    assert_eq!(up.pending_copies(), 2, "the composite took what it drew and left the others for the next pass");
+    c.flush_uploads();
+    assert_eq!(up.pending_copies(), 1, "the next pass flushed one more, its budget's worth");
+    c.composite_prepared(&g, Some(&pg));
+    assert_eq!(up.pending_copies(), 0, "the composite took the one it drew");
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&g).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame drawn right after its upload differs from the CPU by up to {error} codes");
+    // the earlier frames draw right as well
+    for (plan, prep) in [(&a, &pa), (&b, &pb)] {
+        c.composite_prepared(plan, Some(prep));
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let reference = execute_cpu(plan).over_black_rgba8();
+        let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+        assert!(error <= 2, "an earlier frame differs from the CPU by up to {error} codes");
+    }
+}
+
+/// Measures how fast the GPU copies a 4K 16-bit plane from a mapped staging buffer into a
+/// texture (run by hand: `cargo test -p filmcraft-gpu copy_throughput_probe -- --ignored --no-capture`).
+#[test]
+#[ignore = "a measurement, not a check"]
+fn copy_throughput_probe() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (3840u32, 2160u32);
+    let size = u64::from(w) * 2 * u64::from(h);
+    let tex = dev.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (label, n_bufs) in [("one buffer, 8 copies", 1usize), ("8 buffers, 8 copies", 8usize)] {
+        let bufs: Vec<wgpu::Buffer> = (0..n_bufs)
+            .map(|_| {
+                let b = dev.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                });
+                b.slice(..).get_mapped_range_mut().expect("map").slice(..).copy_from_slice(&vec![0x40u8; size as usize]);
+                b.unmap();
+                b
+            })
+            .collect();
+        for round in 0..3 {
+            let mut enc = dev.create_command_encoder(&Default::default());
+            for i in 0..8 {
+                enc.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &bufs[i % n_bufs],
+                        layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 2), rows_per_image: Some(h) },
+                    },
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+            }
+            dev.poll(wgpu::PollType::wait_indefinitely()).expect("idle");
+            let t0 = std::time::Instant::now();
+            q.submit([enc.finish()]);
+            dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+            let dt = t0.elapsed().as_secs_f64();
+            let mb = 8.0 * size as f64 / 1e6;
+            eprintln!("{label}, round {round}: {mb:.0} MB in {:.1} ms = {:.1} GB/s", dt * 1e3, mb / 1e3 / dt);
+        }
+    }
+}
+
+/// A pass's budget goes to the frames wanted soonest, whatever their order of recording, and a
+/// frame dropped before its upload was submitted takes the upload with it (its textures go back
+/// to the pool for the next frame, which then draws right).
+#[test]
+fn uploads_go_soonest_first_and_a_dropped_frame_cancels_its_upload() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let one_frame = 3 * 256 * 8;
+    // recorded as the frames two, one and zero ahead of the playhead
+    let (far, near, now) = (plan_for(300), plan_for(600), plan_for(900));
+    let p_far = prepare_ahead(&far, Some(&up), 2);
+    let p_near = prepare_ahead(&near, Some(&up), 1);
+    let p_now = prepare_ahead(&now, Some(&up), 0);
+    assert_eq!(up.pending_copies(), 3);
+    c.flush_uploads_within(one_frame);
+    assert_eq!(up.pending_copies(), 2, "the budget took one upload");
+    c.set_upload_budget(one_frame);
+    c.composite_prepared(&now, Some(&p_now));
+    assert_eq!(up.pending_copies(), 2, "the flush took the frame wanted now, so its composite needed no upload");
+    // the far frame is dropped before its upload went: the upload goes with it
+    let before = up.created();
+    drop(p_far);
+    assert_eq!(up.pending_copies(), 1, "the dropped frame's upload was cancelled");
+    // (the readback submits whatever is still pending)
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&now).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame wanted now differs from the CPU by up to {error} codes");
+    // ... and its textures serve the next frame of that size, which draws right
+    let next = plan_for(150);
+    let p_next = prepare_ahead(&next, Some(&up), 0);
+    assert_eq!(up.created(), before, "the next frame reused the dropped frame's textures and staging");
+    c.composite_prepared(&next, Some(&p_next));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&next).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the frame in the reused textures differs from the CPU by up to {error} codes");
+    c.composite_prepared(&near, Some(&p_near));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&near).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(error <= 2, "the near frame differs from the CPU by up to {error} codes");
+}
+
+/// Staging buffers come back after their copies ran: the next frame of the same size reuses
+/// them, and none is created for it. (A buffer per plane per frame had the device's allocator
+/// create and destroy memory blocks through every play start, with the UI thread waiting.)
+#[test]
+fn staging_buffers_are_reused_after_the_submit() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let up = c.uploader();
+    let (w, h) = (64u32, 8u32);
+    let plan_for = |level: u16| {
+        let plane = |n: usize| Arc::new(vec![level; n]);
+        let n = (w * h) as usize;
+        let data = PixelData::Yuv16 { planes: [plane(n), plane(n), plane(n)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+        FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] }
+    };
+    let settle = |dev: &wgpu::Device| {
+        // the maps complete once the device has run the copies
+        dev.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).expect("poll");
+    };
+    let first = plan_for(512);
+    let prep = prepare(&first, Some(&up));
+    assert_eq!(up.created().1, 3, "one staging buffer per plane");
+    assert_eq!(up.free_staging(), 0);
+    c.composite_prepared(&first, Some(&prep));
+    settle(&dev);
+    assert_eq!(up.free_staging(), 3, "the submitted buffers are mapped again");
+
+    let second = plan_for(800);
+    let prep = prepare(&second, Some(&up));
+    assert_eq!(up.created().1, 3, "the second frame created no staging buffer");
+    assert_eq!(up.free_staging(), 0, "it took the three mapped ones");
+    c.composite_prepared(&second, Some(&prep));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let reference = execute_cpu(&second).over_black_rgba8();
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "a frame through reused staging differs from the CPU by up to {error} codes");
+    settle(&dev);
+    assert_eq!(up.free_staging(), 3, "and they came back again");
+}
+
+/// Warming up makes the render targets of the sequence's size and draws each kind of frame
+/// through the pipelines; a degenerate size is ignored, and frames still draw right afterwards.
+#[test]
+fn warm_up_makes_the_targets_and_draws_nothing_wrong() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.warm_up(0, 7);
+    assert!(c.read_output().is_none(), "no targets without a size");
+    c.warm_up(64, 8);
+    let (w, h, _) = c.read_output().expect("targets of the warmed-up size");
+    assert_eq!((w, h), (64, 8));
+    // (4:4:4, where the CPU and the GPU agree to the code; 4:2:0 chroma is interpolated differently)
+    let (w, h) = (64u32, 8u32);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / (w - 1)) as u16).collect();
+    let cb: Vec<u16> = (0..w * h).map(|i| (200 + (i / w) * 80) as u16).collect();
+    let cr: Vec<u16> = (0..w * h).map(|i| (800 - (i % w) * 10) as u16).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() });
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let reference = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let error = reference.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(error <= 2, "GPU differs from the CPU by up to {error} codes after warming up");
 }
 
 #[test]
@@ -78,7 +516,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                 if u == 128 && v == 128 {
                     assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
                 }
-                let prepared = prepare(&plan);
+                let prepared = prepare(&plan, None);
                 prepared_compositor.composite_prepared(&plan, Some(&prepared));
                 assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
                 eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, max error={error}, prepared=inline");
@@ -204,7 +642,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
                     ],
                 };
                 let cpu = execute_cpu(&plan).over_black_rgba8();
-                c.composite_prepared(&plan, Some(&prepare(&plan)));
+                c.composite_prepared(&plan, Some(&prepare(&plan, None)));
                 let (_, _, gpu) = c.read_output().expect("readback");
                 let mut diffs: Vec<u32> =
                     cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
@@ -251,7 +689,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
         height: h,
         steps: vec![PlanStep::Layers(vec![layer(1)]), transition(0.25), PlanStep::Layers(vec![middle]), transition(0.75)],
     };
-    c.composite_prepared(&stacked, Some(&prepare(&stacked)));
+    c.composite_prepared(&stacked, Some(&prepare(&stacked, None)));
     let (_, _, gpu) = c.read_output().expect("stacked readback");
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
@@ -300,11 +738,20 @@ fn prepared_upload_matches_inline_conversion() {
         a.composite(&plan);
         let inline = a.read_output().expect("readback");
         let mut b = GpuCompositor::new(&dev, &q);
-        let prep = prepare(&plan);
-        assert!(prep.bytes() > 0);
-        b.composite_prepared(&plan, Some(&prep));
-        let prepared = b.read_output().expect("readback");
-        assert!(inline == prepared, "prepared upload differs");
+        let up = b.uploader();
+        // Uploaded by a worker, the planes have the formats of the inline upload: the same
+        // picture exactly. Converted without an uploader, 16-bit planes are half floats, while
+        // the inline upload takes normalised 16-bit textures where the device has them: the
+        // picture is then within one code (seen on Apple GPUs), and exact where it has not.
+        for (name, uploader, codes) in [("uploaded by a worker", Some(&up), 0), ("converted beforehand", None, u8::from(up.norm16()))] {
+            let prep = prepare(&plan, uploader);
+            assert!(uploader.is_some() || prep.bytes() > 0, "{name}");
+            b.composite_prepared(&plan, Some(&prep));
+            let prepared = b.read_output().expect("readback");
+            assert_eq!((inline.0, inline.1), (prepared.0, prepared.1), "{name}");
+            let error = inline.2.iter().zip(&prepared.2).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(error <= codes, "{name}: prepared upload differs by up to {error} codes");
+        }
     }
 }
 
@@ -623,12 +1070,22 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         if !stage {
             c.fx = None;
         }
+        // Another frame's upload is pending and the pass has no budget left: the adjustment
+        // step's own submit, which draws no frame's planes, leaves it for a pass with room.
+        let up = c.uploader();
+        let other = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
+        let waiting = prepare(&other, Some(&up));
+        assert_eq!(up.pending_copies(), 1);
+        c.set_upload_budget(0);
+        c.composite_prepared(&plan, Some(&prepare(&plan, None)));
+        assert_eq!(up.pending_copies(), 1, "stage {stage}: the frame took an upload it does not draw");
+        drop(waiting);
         // the Program monitor's path (sRGB over black)
-        c.composite_prepared(&plan, Some(&prepare(&plan)));
+        c.composite_prepared(&plan, Some(&prepare(&plan, None)));
         if stage {
             // the next frame reuses the step's working textures instead of making them again
             let created = c.fx.as_ref().map(fx::FxStage::created);
-            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            c.composite_prepared(&plan, Some(&prepare(&plan, None)));
             assert_eq!(c.fx.as_ref().map(fx::FxStage::created), created, "the second frame made new working textures");
         }
         let (_, _, gpu) = c.read_output().expect("readback");
@@ -646,14 +1103,14 @@ fn gpu_adjustment_step_matches_cpu_between_layers() {
         eprintln!("adjustment step, stage {stage}: p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "adjustment step, stage {stage}: p99 {p99}, mean {mean}");
         // the export's path (linear premultiplied f32, no resolve)
-        let (ew, eh, px) = c.render_export_prepared(&plan, Some(&prepare(&plan))).expect("export render");
+        let (ew, eh, px) = c.render_export_prepared(&plan, Some(&prepare(&plan, None))).expect("export render");
         assert_eq!((ew as usize, eh as usize), (w, h));
         let worst = px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         eprintln!("adjustment step, stage {stage}, export: max |GPU - CPU| {worst}");
         assert!(worst < 0.02, "stage {stage}: export render of the adjustment step differs by {worst}");
         let i = (30 * w + 55) * 4;
         assert_eq!(px.get(i..i + 4), Some(&[0.0, 0.0, 1.0, 1.0][..]), "the layer above the adjustment layer is untouched");
-        let want = if stage { (3, 0) } else { (0, 2) };
+        let want = if stage { (4, 0) } else { (0, 3) };
         assert_eq!((c.gpu_adjustments, c.cpu_adjustments), want, "stage {stage}");
     }
 }

@@ -58,6 +58,11 @@ fn defaults_follow_the_registry_and_the_premiere_audit() {
     assert!(has("playback.playAround", "Shift+K", None));
     assert!(has("source.open", "Shift+O", Some("Project")));
     assert_eq!(sc.primary("trim.applyDefaultTransition").as_deref(), Some("Shift+D"));
+    // the menu's one-pass index agrees with `primary` for every command, twins included
+    let primaries = sc.primaries();
+    for c in sc.bindings.iter().map(|b| b.command.as_str()).chain(["file.close", "sequence.close", "no.such.command"]) {
+        assert_eq!(primaries.get(c).map(|k| k.to_string()), sc.primary(c), "{c}");
+    }
     // no conflicts in any built-in preset (macOS)
     for name in crate::shortcuts::BUILTIN_PRESETS {
         let mut t = Session::default();

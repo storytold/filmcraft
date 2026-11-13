@@ -4,6 +4,10 @@
 //! owns only presentation state ([`state::UiState`]), GPU textures, the playback clock and the
 //! control-channel handlers. Swap it for another toolkit without touching the engine.
 
+// The frame server's shared state carries a `filmcraft_gpu::Uploader` (wgpu device and queue)
+// to its worker threads; proving it `Send + Sync` walks wgpu's types deeper than the default
+// recursion limit of 128 allows.
+#![recursion_limit = "256"]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 /// FilmCraft as craft-update knows it, with its 128 px icon and accent colour: the update
@@ -161,6 +165,13 @@ pub struct Playback {
     /// s; negative = not yet stamped), and whether the Program monitor has them ready.
     pub preroll: Option<f64>,
     pub preroll_ready: bool,
+    /// ... or still being made (the preroll waits longer, [`frames::PREROLL_MAX_S`]).
+    pub preroll_pending: bool,
+    /// The project revision the preroll's last pass saw. A project that changes from pass to pass
+    /// while the preroll waits (a value dragged as Play is pressed makes a revision per UI pass)
+    /// never has its first frames ready at the current revision, so the longer wait would only
+    /// hold the picture; after a single edit the next pass waits for the new revision's frames.
+    pub preroll_revision: Option<u64>,
     /// The window was hidden (occluded/minimized) since the monitor last refreshed.
     pub hidden: bool,
     /// Forward playback stops here (Play In to Out, Play from Playhead to Out Point).
@@ -173,6 +184,9 @@ pub struct Playback {
     /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
     /// frame shown.
     smooth_playhead: Option<(Tick, f64)>,
+    /// The time between this play's latest passes (s, the newest last), which tells a pass that
+    /// came late from a display slower than the frame rate (`app/playback.rs`, `no_skip`).
+    pass_intervals: std::collections::VecDeque<f64>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
@@ -267,6 +281,17 @@ pub struct FilmcraftApp {
     /// Control requests that need a fresh layout/response; processed only in a real UI pass.
     ui_requests: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
+    /// The last [`PASS_LOG`] UI passes, newest last: `[host time (s), logic + ui ms, GPU submit ms
+    /// (0 without a composite), frame due at the playhead, frame on the Program monitor, GPU ms
+    /// of the latest timed composite (lags a pass or two; 0 without timestamp queries), upload MB
+    /// this pass's flush submitted, upload MB its composites had to submit to draw, upload MB
+    /// it submitted in all, upload MB still pending, GPU ms of the latest wake-up load (preroll
+    /// only)]` (`-1` for no sequence / no picture). `perf.stats` reports it as `passes`, so a dropped
+    /// frame can be traced to a late pass, a GPU stall or a picture that was not ready, which the
+    /// playback meter's totals cannot tell apart.
+    pub(crate) pass_log: std::collections::VecDeque<[f64; 11]>,
+    /// Duration of this pass's logic callback (ms), added to the UI callback's in `pass_log`.
+    pass_logic_ms: f64,
     pub(crate) synthetic: Vec<egui::Event>,
     /// One synthetic step handed to `raw_input_hook` but not yet consumed by a real UI pass.
     /// Hidden `run_logic` callbacks do not process raw input: the same step is offered again until
@@ -407,6 +432,8 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
+    /// A composite ran in this UI pass (cleared when the pass is logged).
+    pub submitted: bool,
     /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
     /// device, out of memory). The app then drops it and composites on the CPU.
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,

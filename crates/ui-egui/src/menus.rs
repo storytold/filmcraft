@@ -1019,6 +1019,8 @@ pub fn default_menu_items() -> Vec<MenuItem> {
 /// Menu entries with their live shortcuts and enablement.
 pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     let mut out = Vec::new();
+    let primaries = session.shortcuts.primaries();
+    let primary = |id: &str| primaries.get(id).map(|k| k.to_string());
     for c in filmcraft_engine::command_specs() {
         if c.menu.is_empty() {
             continue;
@@ -1032,7 +1034,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             id: c.id.into(),
             label,
             path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: session.shortcuts.primary(c.id),
+            shortcut: primary(c.id),
             enabled: session.is_enabled(c.id),
             checked: None,
         });
@@ -1045,7 +1047,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             id: c.id.into(),
             label: c.label.into(),
             path: c.menu.iter().map(|s| s.to_string()).collect(),
-            shortcut: session.shortcuts.primary(c.id),
+            shortcut: primary(c.id),
             enabled: true,
             checked: None,
         });
@@ -1055,7 +1057,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
             id: panel_command_id(p),
             label: p.title().into(),
             path: vec!["Window".into()],
-            shortcut: session.shortcuts.primary(&panel_command_id(p)),
+            shortcut: primary(&panel_command_id(p)),
             enabled: true,
             checked: None,
         });
