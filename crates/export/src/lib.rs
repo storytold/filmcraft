@@ -64,15 +64,15 @@ pub use encoders::{apv_profile, dnx_profile, prores_profile};
 pub use format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use output::Out;
 pub use output::{OutputSink, path_is_file};
-pub(crate) use registry::build_frame_renderer;
 #[cfg(test)]
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
     AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
-    register_hdr_probe,
+    encoder_registered, frame_renderer_registered, hdr_available, idle_renderer_count, register_audio_encoder, register_encoder, register_format_probe,
+    register_frame_renderer, register_hdr_probe, release_idle_renderers,
 };
 use registry::{audio_factories, video_factories};
+pub(crate) use registry::{keep_idle_renderers, take_frame_renderer};
 #[cfg(test)]
 use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};

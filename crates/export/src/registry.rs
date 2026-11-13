@@ -4,7 +4,7 @@ use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
-use super::{FrameRate, ItemId, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
+use super::{FrameRate, ItemId, Mutex, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
 
 /// A packet produced by a video encoder.
 pub struct EncodedPacket {
@@ -143,6 +143,8 @@ pub fn register_frame_renderer(f: FrameRendererFactory) {
     let mut g = frame_renderer_factories().write().unwrap_or_else(PoisonError::into_inner);
     if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
         g.insert(0, f);
+        // renderers built by the factories before this one are not what a new export would get
+        release_idle_renderers();
     }
 }
 
@@ -156,6 +158,7 @@ pub fn frame_renderer_registered(f: FrameRendererFactory) -> bool {
 #[cfg(test)]
 pub(crate) fn reset_frame_renderers_for_tests() {
     frame_renderer_factories().write().unwrap_or_else(PoisonError::into_inner).clear();
+    release_idle_renderers();
     GPU_FRAMES.store(0, Ordering::Relaxed);
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
 }
@@ -164,6 +167,47 @@ pub(crate) fn reset_frame_renderers_for_tests() {
 pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
     let g = frame_renderer_factories().read().unwrap_or_else(PoisonError::into_inner);
     g.iter().filter_map(|f| f()).next()
+}
+
+/// The most renderers kept between exports: one export's pool.
+const MAX_IDLE_RENDERERS: usize = 4;
+
+/// Frame renderers of finished exports that are parts of a larger job, kept for the next part.
+/// Building one (a GPU device, its pipelines and shaders) costs far more than a short part
+/// renders: a preview segment of a cut-heavy timeline spent most of its setup on it.
+fn idle_renderers() -> &'static Mutex<Vec<Box<dyn FrameRenderer>>> {
+    static I: OnceLock<Mutex<Vec<Box<dyn FrameRenderer>>>> = OnceLock::new();
+    I.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// A renderer for an export: one kept from an earlier part of the same job, else a new one.
+pub(crate) fn take_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
+    let kept = idle_renderers().lock().unwrap_or_else(PoisonError::into_inner).pop();
+    kept.or_else(build_frame_renderer)
+}
+
+/// Keep `renderers` (a finished part's, all working) for the next part, up to one pool's worth.
+pub(crate) fn keep_idle_renderers(renderers: Vec<Box<dyn FrameRenderer>>) {
+    let mut idle = idle_renderers().lock().unwrap_or_else(PoisonError::into_inner);
+    for r in renderers {
+        if idle.len() >= MAX_IDLE_RENDERERS {
+            break;
+        }
+        idle.push(r);
+    }
+}
+
+/// Free the renderers kept between exports (their GPU devices and memory). A standalone export
+/// does this when it ends, and so does a job of several parts (render previews, proxies)
+/// through the engine's job wrapper; registering a frame renderer factory does it too.
+pub fn release_idle_renderers() {
+    let idle = std::mem::take(&mut *idle_renderers().lock().unwrap_or_else(PoisonError::into_inner));
+    drop(idle);
+}
+
+/// How many renderers are kept between exports (tests).
+pub fn idle_renderer_count() -> usize {
+    idle_renderers().lock().unwrap_or_else(PoisonError::into_inner).len()
 }
 
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
