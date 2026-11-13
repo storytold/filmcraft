@@ -33,6 +33,7 @@ impl FilmcraftApp {
         let ime_active_sequence = session.state.active_sequence;
         Self {
             pending_web_language: None,
+            web_font_request_id: 0,
             pending_web_restore: false,
             session,
             ui: UiState { language, ..UiState::default() },
@@ -202,8 +203,8 @@ impl FilmcraftApp {
     }
 
     /// Complete a web font request only if no later language choice superseded it.
-    pub fn finish_web_language_font(&mut self, ctx: &egui::Context, language: &str, bytes: Vec<u8>) -> Result<(), String> {
-        if self.pending_web_language.as_deref() != Some(language) {
+    pub fn finish_web_language_font(&mut self, ctx: &egui::Context, language: &str, request_id: u64, bytes: Vec<u8>) -> Result<(), String> {
+        if self.pending_web_language.as_deref() != Some(language) || self.web_font_request_id != request_id {
             return Ok(());
         }
         crate::register_web_language_font(ctx, language, bytes)?;

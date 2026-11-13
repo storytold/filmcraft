@@ -235,7 +235,7 @@ fn later_language_choice_cancels_a_pending_web_font() {
     assert!(app.pending_web_language.is_none());
     assert!(!app.pending_web_restore);
     // A late completion is ignored before parsing or installing the response.
-    app.finish_web_language_font(&ctx, "ko", b"not a font".to_vec()).unwrap();
+    app.finish_web_language_font(&ctx, "ko", 0, b"not a font".to_vec()).unwrap();
     assert_eq!(app.ui.language, Language::En);
     set_current(Language::En);
 }
@@ -245,7 +245,11 @@ fn invalid_web_font_does_not_change_language() {
     let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
     app.pending_web_language = Some("ko".into());
-    assert!(app.finish_web_language_font(&ctx, "ko", b"not a font".to_vec()).is_err());
+    app.web_font_request_id = 2;
+    // An older request for the same language must not consume the current request.
+    app.finish_web_language_font(&ctx, "ko", 1, b"not a font".to_vec()).unwrap();
+    assert_eq!(app.pending_web_language.as_deref(), Some("ko"));
+    assert!(app.finish_web_language_font(&ctx, "ko", 2, b"not a font".to_vec()).is_err());
     assert_eq!(app.ui.language, Language::En);
     set_current(Language::En);
 }

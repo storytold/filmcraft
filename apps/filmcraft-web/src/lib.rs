@@ -133,7 +133,7 @@ fn query_flag(name: &str) -> bool {
 }
 
 /// Fetch a language face only when requested; the large fonts are separate from the wasm file.
-fn request_language_font(language: &str) {
+fn request_language_font(language: &str, request_id: u64) {
     let (language, path) = match language {
         "ja" => ("ja", "filmcraft-japanese.ttf"),
         "zh-cn" => ("zh-cn", "filmcraft-cjk-sc.otf"),
@@ -156,10 +156,10 @@ fn request_language_font(language: &str) {
         }
         .await;
         post(move |web, ctx| {
-            if web.app.pending_web_language.as_deref() != Some(language) {
+            if web.app.pending_web_language.as_deref() != Some(language) || web.app.web_font_request_id != request_id {
                 return;
             }
-            let outcome = result.map_err(|e| format!("{e:?}")).and_then(|bytes| web.app.finish_web_language_font(ctx, language, bytes));
+            let outcome = result.map_err(|e| format!("{e:?}")).and_then(|bytes| web.app.finish_web_language_font(ctx, language, request_id, bytes));
             web.app.pending_web_language = None;
             if let Err(error) = outcome {
                 log::warn!("language font: {error}");

@@ -205,6 +205,8 @@ pub struct FilmcraftApp {
     pub ui: UiState,
     /// The latest web font request; a later language choice supersedes it.
     pub pending_web_language: Option<String>,
+    /// Identifies the latest web font fetch, even if the same language is requested again.
+    pub web_font_request_id: u64,
     /// Whether the pending font is for a saved or system language preference.
     pub pending_web_restore: bool,
     pub tokens: Tokens,

@@ -134,7 +134,8 @@ impl FilmcraftApp {
             {
                 self.pending_web_language = Some(language.into());
                 self.pending_web_restore = true;
-                request(language);
+                self.web_font_request_id = self.web_font_request_id.wrapping_add(1);
+                request(language, self.web_font_request_id);
             }
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;

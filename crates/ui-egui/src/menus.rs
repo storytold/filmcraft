@@ -271,7 +271,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             && let Some(request) = app.hooks.request_language_font.as_mut()
         {
             app.pending_web_language = Some(language.into());
-            request(language);
+            app.web_font_request_id = app.web_font_request_id.wrapping_add(1);
+            request(language, app.web_font_request_id);
             app.ui.status = tl!("Loading language font…").into();
             return Ok(json!({"loadingLanguage": language}));
         }

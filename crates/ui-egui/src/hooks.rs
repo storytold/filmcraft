@@ -63,7 +63,7 @@ pub struct HostHooks {
     /// System Language. Without it, System Language is English.
     pub system_languages: Option<Box<dyn Fn() -> Vec<String>>>,
     /// Request a web-delivered interface font; the host completes it asynchronously.
-    pub request_language_font: Option<Box<dyn FnMut(&str)>>,
+    pub request_language_font: Option<Box<dyn FnMut(&str, u64)>>,
     /// Open dialog for a JSON file (shortcut preset import): filter name, extensions → path.
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
