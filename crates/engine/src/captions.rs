@@ -518,13 +518,28 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"start": start.0, "end": end.0}))
             },
         ),
-        spec("captions.trim", "Trim Caption", &[], None, r#"{"caption":id,"edge":"in|out","delta":ticks|"deltaFrames":i64}"#, has_captions, |s, p| {
-            let id = one_caption(s, p, "captions.trim")?;
-            let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
-            let d = delta_p(s, p).ok_or_else(|| bad("captions.trim", "need `delta` or `deltaFrames`"))?;
-            let applied = s.edit_sequence("Trim Caption", |q, ctx, _| Ok(edit::captions::trim_caption(q, id, edge, d, ctx)?))?;
-            Ok(json!({"applied": applied.0}))
-        }),
+        spec(
+            "captions.trim",
+            "Trim Caption",
+            &[],
+            None,
+            r#"{"caption":id,"edge":"in|out","mode":"regular|overwrite","delta":ticks|"deltaFrames":i64}"#,
+            has_captions,
+            |s, p| {
+                let id = one_caption(s, p, "captions.trim")?;
+                let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
+                let overwrite = str_p(p, "mode") == Some("overwrite");
+                let d = delta_p(s, p).ok_or_else(|| bad("captions.trim", "need `delta` or `deltaFrames`"))?;
+                if overwrite {
+                    let (applied, overwritten) =
+                        s.edit_sequence("Overwrite Trim Caption", |q, ctx, _| Ok(edit::captions::trim_caption_overwrite(q, id, edge, d, ctx)?))?;
+                    Ok(json!({"applied": applied.0, "overwritten": overwritten.iter().map(|c| c.0).collect::<Vec<_>>()}))
+                } else {
+                    let applied = s.edit_sequence("Trim Caption", |q, ctx, _| Ok(edit::captions::trim_caption(q, id, edge, d, ctx)?))?;
+                    Ok(json!({"applied": applied.0}))
+                }
+            },
+        ),
         spec("captions.move", "Move Captions", &[], None, r#"{"captions":[id]?,"delta":ticks|"deltaFrames":i64}"#, has_captions, |s, p| {
             let ids = caption_ids(s, p);
             let d = delta_p(s, p).ok_or_else(|| bad("captions.move", "need `delta` or `deltaFrames`"))?;

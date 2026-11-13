@@ -714,7 +714,17 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let side = if edge == filmcraft_edit::Edge::In { SnapSide::Start } else { SnapSide::End };
                 let target = snap_side(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip], side, mods);
-                // stop at the end of the media (or the neighbour), as the trim on release will (#653)
+                // An edge eats its neighbour by default; Alt keeps the old clamped trim (and, as
+                // everywhere else, bypasses snapping), which is the safe way back.
+                let mode = if mode == filmcraft_edit::TrimMode::Ripple {
+                    filmcraft_edit::TrimMode::Ripple
+                } else if mods.alt {
+                    filmcraft_edit::TrimMode::Regular
+                } else {
+                    filmcraft_edit::TrimMode::Overwrite
+                };
+                // stop where the trim on release will: the media end, and the neighbour unless
+                // the edge overwrites it
                 let delta = filmcraft_engine::commands::trim_delta_linked(&app.session, clip, edge, mode, target - base, linked).unwrap_or(target - base);
                 Drag::Trim { clip, edge, mode, delta, from, linked }
             }),
@@ -840,27 +850,51 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     let moves: Vec<Value> = clips
                         .iter()
                         .filter(|c| seen.insert(**c))
-                        .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
+                        .filter_map(|c| {
+                            seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0}))
+                        })
                         .collect();
-                    // Option held while dropping copies (Premiere: Option-drag duplicates)
-                    let copying = copy || mods.alt;
+                    // Option held while dropping copies (Premiere: Option-drag duplicates). Read the
+                    // key at the drop, not on the last drag frame: letting go of Option first then
+                    // makes the drop move, which the Option snap bypass relies on.
+                    let _ = copy;
+                    let copying = mods.alt;
                     let captions = track_select_drag_captions(app, copying, mods.command);
-                    Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
+                    Some(
+                        app.session
+                            .execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})),
+                    )
                 }
                 Drag::Trim { clip, edge, mode, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.trim",
-                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0, "linked": linked}),
+                    json!({
+                        "clip": clip.0,
+                        "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"},
+                        "mode": match mode {
+                            filmcraft_edit::TrimMode::Ripple => "ripple",
+                            filmcraft_edit::TrimMode::Overwrite => "overwrite",
+                            filmcraft_edit::TrimMode::Regular => "regular",
+                        },
+                        "delta": delta.0,
+                        "linked": linked,
+                    }),
                 )),
-                Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}))),
+                Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
+                    "timeline.rateStretch",
+                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}),
+                )),
                 Drag::Remix { clip, delta, .. } if delta != Tick::ZERO => {
                     let d = seq.find_item(clip).map(|(_, it)| it.duration + delta).unwrap_or(Tick::ZERO);
                     Some(app.session.execute("clip.remix", json!({"clip": clip.0, "duration": d.0})))
                 }
-                Drag::Roll { left, right, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0}))),
+                Drag::Roll { left, right, delta, .. } if delta != Tick::ZERO => {
+                    Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0})))
+                }
                 Drag::Slip { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Transition { id, start, duration, .. } => {
-                    let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
+                    let moved =
+                        seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
                 }
                 Drag::WorkArea { start, end, .. } => {

@@ -3395,12 +3395,16 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple|overwrite","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
                 let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
-                let mode = if str_p(p, "mode") == Some("ripple") { TrimMode::Ripple } else { TrimMode::Regular };
+                let mode = match str_p(p, "mode") {
+                    Some("ripple") => TrimMode::Ripple,
+                    Some("overwrite") => TrimMode::Overwrite,
+                    _ => TrimMode::Regular,
+                };
                 let d = p
                     .get("delta")
                     .and_then(Value::as_i64)
@@ -3413,7 +3417,12 @@ fn build() -> Vec<CommandSpec> {
                 if mode == TrimMode::Ripple {
                     s.command_origin = Some(crate::trim::RIPPLE_TRIM_ORIGIN.to_string());
                 }
-                let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
+                let label = match mode {
+                    TrimMode::Ripple => "Ripple Trim",
+                    TrimMode::Overwrite => "Overwrite Trim",
+                    TrimMode::Regular => "Trim",
+                };
+                let (applied, overwritten) = s.edit_sequence(label, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
                     }
@@ -3439,6 +3448,17 @@ fn build() -> Vec<CommandSpec> {
                             };
                             crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
                         }
+                        Ok((dd, Vec::new()))
+                    } else if mode == TrimMode::Overwrite {
+                        // the clip and its linked partners eat their neighbours as one edit; one
+                        // link map keeps neighbours that get split linked to their partners
+                        let group: Vec<ClipId> =
+                            clips.iter().copied().filter(|id| q.find_item(*id).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| !tr.locked))).collect();
+                        if group.is_empty() {
+                            return Err(edit::EditError::Locked.into());
+                        }
+                        let (_, overwritten) = edit::trim_overwrite_group(q, &group, edge, dd, ctx)?;
+                        Ok((dd, overwritten))
                     } else {
                         for c in &clips {
                             match edit::trim(q, *c, edge, mode, dd, ctx) {
@@ -3447,11 +3467,11 @@ fn build() -> Vec<CommandSpec> {
                                 Ok(_) => {}
                             }
                         }
+                        Ok((dd, Vec::new()))
                     }
-                    Ok(dd)
-                });
+                })?;
                 s.command_origin = outer;
-                Ok(json!({"delta": applied?.0}))
+                Ok(json!({"delta": applied.0, "overwritten": overwritten.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
         // ================= Trim mode =================

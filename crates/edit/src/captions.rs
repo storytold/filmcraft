@@ -173,6 +173,62 @@ pub fn trim_caption(seq: &mut Sequence, id: ClipId, edge: Edge, delta: Tick, ctx
     Ok(d)
 }
 
+/// Trim one edge of a caption with overwrite semantics: the edge is not stopped by its neighbours
+/// but eats the captions it lands on (a neighbour is shortened, or removed when nothing is left of
+/// it). Returns the delta applied and the ids of the captions it removed or changed.
+pub fn trim_caption_overwrite(seq: &mut Sequence, id: ClipId, edge: Edge, delta: Tick, ctx: &EditCtx) -> Result<(Tick, Vec<ClipId>)> {
+    let tid = owner(seq, id)?;
+    let min = ctx.min_duration;
+    let tr = track_mut(seq, tid)?;
+    let c = tr.caption_mut(id).ok_or(EditError::NoItem(id))?;
+    let d = match edge {
+        // a caption may eat the one before it, but never runs before the sequence start
+        Edge::In => delta.clamp(-c.start, c.duration - min),
+        Edge::Out => delta.max(min - c.duration),
+    };
+    if d == Tick::ZERO {
+        return Err(EditError::Nothing);
+    }
+    match edge {
+        Edge::In => {
+            c.start += d;
+            c.duration -= d;
+        }
+        Edge::Out => c.duration += d,
+    }
+    let (start, end) = (c.start, c.end());
+    let mut touched = Vec::new();
+    let mut gone = Vec::new();
+    let tr = track_mut(seq, tid)?;
+    for c in &mut tr.captions {
+        if c.id == id || c.end() <= start || c.start >= end {
+            continue;
+        }
+        if c.start < start {
+            // the caption before: its tail is eaten
+            if start - c.start < min {
+                gone.push(c.id);
+            } else {
+                c.duration = start - c.start;
+                touched.push(c.id);
+            }
+        } else {
+            // the caption after: its head is eaten (or all of it, when it sat inside the stretch)
+            let tail = c.end() - end;
+            if tail < min {
+                gone.push(c.id);
+            } else {
+                c.start = end;
+                c.duration = tail;
+                touched.push(c.id);
+            }
+        }
+    }
+    tr.captions.retain(|c| !gone.contains(&c.id));
+    touched.extend(gone.iter().copied());
+    Ok((d, touched))
+}
+
 /// Move captions by `delta`, clamped so they stay at or after zero and do not overlap captions
 /// that are not moving. Returns the delta applied.
 pub fn move_captions(seq: &mut Sequence, ids: &[ClipId], delta: Tick) -> Result<Tick> {

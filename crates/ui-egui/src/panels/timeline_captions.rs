@@ -352,6 +352,8 @@ fn interact_block(
         ctx.data_mut(|dd| dd.remove::<(u64, u8, i64)>(drag_id()));
         // egui ends a drag on Escape: that stop abandons it (#580)
         if d != 0 && !ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // an edge eats its neighbour by default; Alt keeps the old clamped trim
+            let mode = if ctx.input(|i| i.modifiers.alt) { "regular" } else { "overwrite" };
             match g {
                 0 => {
                     let sel: Vec<u64> = if app.session.state.caption_selection.contains(&ClipId(id)) {
@@ -363,8 +365,8 @@ fn interact_block(
                     let cmd = if ctx.input(|i| i.modifiers.alt) { "captions.duplicate" } else { "captions.move" };
                     actions.push((cmd.into(), json!({"captions": sel, "delta": d})));
                 }
-                1 => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "in", "delta": d}))),
-                _ => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "out", "delta": d}))),
+                1 => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "in", "delta": d, "mode": mode}))),
+                _ => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "out", "delta": d, "mode": mode}))),
             }
         }
     }

@@ -154,6 +154,9 @@ step (Track Select Forward / Backward drags use it so subtitles stay with the di
 as far as the clips (they would overlap captions that stay, or one is on a locked track) the call fails and
 nothing moves; it cannot be combined with `copy`, and the result lists them as `captions`.
 
+**Overwrite trimming**: `timeline.trim {clip, edge, mode: "regular"|"ripple"|"overwrite", delta}` — with `overwrite` the edge is not stopped by the neighbours: an Out edge dragged past the cut eats the start of the next clip (which is shortened, or removed when it is fully covered) and an In edge eats the tail of the previous one; the clipped neighbour keeps its media. The clip and its linked partners trim together, in one transaction, so picture and sound stay in sync and one undo step puts everything back; the result adds `overwritten: [ids]` for the neighbours that were removed. `captions.trim {caption, edge, mode: "regular"|"overwrite", delta}` does the same for captions: the following caption starts later, or is removed when covered; the previous one is shortened when the In edge moves left, and the result adds `overwritten`. In the Timeline panel a clip or caption edge overwrites by default; holding Alt sends `mode: "regular"`, which stops the edge at the cut (and bypasses snapping) as before.
+
+
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
 it shows. With Linked Selection on, selecting an edge includes its unlocked linked partners, even

@@ -83,6 +83,9 @@ pub enum Edge {
 pub enum TrimMode {
     Regular,
     Ripple,
+    /// Trim past a neighbour: the edge eats what it lands on (the neighbour is shortened, split or
+    /// removed) as an overwrite edit does, instead of stopping at the neighbour's edge.
+    Overwrite,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -724,6 +727,15 @@ fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
     (prev_end, next_start)
 }
 
+/// The stretch an overwrite trim's moving edge newly covers, if it extends instead of shrinking.
+fn covered_stretch(edge: Edge, d: Tick, old_start: Tick, old_end: Tick) -> Option<TimeRange> {
+    match edge {
+        Edge::In if d < Tick::ZERO => Some(TimeRange::new(old_start + d, -d)),
+        Edge::Out if d > Tick::ZERO => Some(TimeRange::new(old_end, d)),
+        _ => None,
+    }
+}
+
 /// Compute the clamped delta a trim may apply (for UI feedback while dragging).
 pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
     let tid = unlocked_track(seq, clip)?;
@@ -743,7 +755,12 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 (false, _) => head(ctx, it),
             };
             let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
-            let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
+            let lo = match mode {
+                TrimMode::Regular => (-(it.start - prev_end)).max(-max_ext),
+                // overwrite eats the neighbour but never runs before the sequence start
+                TrimMode::Overwrite => (-it.start).max(-max_ext),
+                TrimMode::Ripple => -max_ext,
+            };
             let hi = it.duration - ctx.min_duration;
             // a frame hold needs no source head, but a Regular trim still stops at the previous clip
             let lo = match (it.frame_hold.is_some(), mode) {
@@ -807,9 +824,16 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     let old_start = it.start;
     let own_link = it.link;
     let mut work = seq.clone();
+    if mode == TrimMode::Overwrite
+        && let Some(range) = covered_stretch(edge, d, old_start, old_end)
+        && let Some(tr) = work.track_mut(tid)
+    {
+        let mut links = HashMap::new();
+        clear_track_range(tr, range, ctx, &mut links);
+    }
     {
         let (_, it) = work.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
-        move_edge(it, edge, d, mode == TrimMode::Regular);
+        move_edge(it, edge, d, mode != TrimMode::Ripple);
     }
     if mode == TrimMode::Ripple {
         let (at, shift) = match edge {
@@ -849,6 +873,56 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
     work.check().map_err(EditError::Other)?;
     *seq = work;
     Ok(d)
+}
+
+/// Trim one edge of a group of items (a clip and its linked partners) with overwrite semantics:
+/// each edge is not stopped by its neighbours but eats the stretch it lands on (see
+/// [`TrimMode::Overwrite`]); returns the delta applied and the ids of the items it removed. The
+/// group's clears share one link map, so linked neighbours that get split stay linked as a pair.
+pub fn trim_overwrite_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<(Tick, Vec<ClipId>)> {
+    if clips.is_empty() {
+        return Ok((Tick::ZERO, Vec::new()));
+    }
+    let mut d = delta;
+    for c in clips {
+        let x = clamp_trim(seq, *c, edge, TrimMode::Overwrite, d, ctx)?;
+        if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    if d == Tick::ZERO {
+        return Ok((d, Vec::new()));
+    }
+    let mut work = seq.clone();
+    let mut links = HashMap::new();
+    let mut removed = Vec::new();
+    for c in clips {
+        let (tid, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let (old_start, old_end) = (it.start, it.end());
+        if let Some(range) = covered_stretch(edge, d, old_start, old_end)
+            && let Some(tr) = work.track_mut(tid)
+        {
+            removed.extend(clear_track_range(tr, range, ctx, &mut links));
+        }
+    }
+    for c in clips {
+        let (tid, it) = work.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        move_edge(it, edge, d, true);
+        if let Some(tr) = work.track_mut(tid) {
+            fades_follow_edges(tr, *c);
+            remove_orphan_transitions(tr);
+        }
+    }
+    removed.sort_unstable_by_key(|c| c.0);
+    removed.dedup();
+    work.check().map_err(EditError::Other)?;
+    *seq = work;
+    Ok((d, removed))
+}
+
+/// Trim one edge of one item with overwrite semantics; see [`trim_overwrite_group`].
+pub fn trim_overwrite(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<(Tick, Vec<ClipId>)> {
+    trim_overwrite_group(seq, &[clip], edge, delta, ctx)
 }
 
 /// Ripple-trim one edge of a group of linked items (e.g. a clip and its audio partners) as a single
