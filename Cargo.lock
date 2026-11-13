@@ -2257,6 +2257,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.20.1"
 dependencies = [
+ "craft-timeline",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
