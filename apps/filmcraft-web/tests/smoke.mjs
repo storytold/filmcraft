@@ -127,6 +127,21 @@ try {
     const checked = (id) => `filmcraft.request('ui.menu.list').then(items => items.some(i => i.id === '${id}' && i.checked === true))`;
     await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.english'})`);
     await until(checked("app.language.english"));
+    // A late failure from an older Korean request must not override a newer one.
+    await js(`window.originalFontFetch = window.fetch; window.fontFetchCount = 0; window.fetch = (url, ...args) => {
+      if (String(url).includes('filmcraft-hangul.ttf') && ++window.fontFetchCount === 1) return new Promise(resolve => { window.finishOldFontFetch = () => resolve(new Response('', {status: 503})); });
+      return window.originalFontFetch(url, ...args);
+    }`);
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.korean'})`);
+    await until(`typeof window.finishOldFontFetch === 'function'`);
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.english'})`);
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.korean'})`);
+    await until(checked("app.language.korean"), 120000);
+    await js(`window.finishOldFontFetch(); window.fetch = window.originalFontFetch; delete window.originalFontFetch`);
+    await sleep(500);
+    if (!(await js(checked("app.language.korean"))) || await js(`filmcraft.inspect().then(i => String(i.ui.status).includes('Could not load the language font'))`)) throw new Error("superseded font request affected the current language");
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.english'})`);
+    await until(checked("app.language.english"));
     // A missing asset must leave the current language in place and allow a later retry.
     await js(`window.originalFontFetch = window.fetch; window.fetch = (url, ...args) => String(url).includes('filmcraft-cjk-sc.otf') ? Promise.resolve(new Response('', {status: 503})) : window.originalFontFetch(url, ...args)`);
     await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.chinese'})`);
