@@ -884,7 +884,9 @@ impl AudioFileSource {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if ext == "mp3" {
             let (audio, decoded) = craft_audio::decode(&bytes, Some("mp3")).map_err(|e| match e {
-                craft_audio::AudioError::Unsupported(message) | craft_audio::AudioError::TooLarge(message) => CodecError::Unsupported(format!("{name}: {message}")),
+                craft_audio::AudioError::Unsupported(message) | craft_audio::AudioError::TooLarge(message) => {
+                    CodecError::Unsupported(format!("{name}: {message}"))
+                }
                 error => CodecError::Decode(format!("{name}: {error}")),
             })?;
             let frames = decoded.frames();
