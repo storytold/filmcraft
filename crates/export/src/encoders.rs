@@ -541,7 +541,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         }
     }
     Some(
-        craft_video::h264::Encoder::new(cfg)
+        craft_video::h264::Encoder::new_with_motion_search_starts(cfg, craft_video::h264::MotionSearchStarts::SeedAndNeighbour)
             .map(|enc| {
                 let (y, u, v, y16, u16, v16) = Default::default();
                 Box::new(H264Encoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() }) as Box<dyn VideoEncoder>
