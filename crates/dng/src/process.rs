@@ -142,6 +142,11 @@ fn normalise_with(raw: &RawImage, p: &Params, (ax, ay, aw, ah): Rect, neutral: &
     if br > 64 || bc > 64 {
         return Err(Error::Unsupported("a BlackLevelRepeatDim larger than 64".into()));
     }
+    // The sample vector must cover the active area, so a small structure cannot size large intermediates.
+    let last = (ay + ah).checked_sub(1).and_then(|y| y.checked_mul(raw.width)).and_then(|n| n.checked_add(ax + aw)).and_then(|n| n.checked_mul(spp));
+    if last.is_none_or(|n| n > raw.data.len()) {
+        return Err(Error::Malformed("RawImage data shorter than its dimensions"));
+    }
     let need = br * bc * spp;
     let black: Vec<f64> = match p.black.len() {
         0 => vec![0.0; need],
@@ -559,6 +564,12 @@ mod tests {
         let p = Params { linearization: Some(t), black: vec![200.0], white: vec![2200.0], ..p };
         let d = develop(&r, &p, &[1.0; 3], &IDENTITY).unwrap();
         assert_eq!(&d.rgba[..3], &[0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn a_sample_vector_shorter_than_the_image_is_refused_before_allocating() {
+        let r = raw(40_000, 40_000, 3, vec![0; 6]);
+        assert!(develop(&r, &Params::default(), &[1.0; 3], &IDENTITY).is_err());
     }
 
     #[test]

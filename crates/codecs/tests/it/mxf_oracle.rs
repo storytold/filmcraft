@@ -226,7 +226,7 @@ fn h264_long_gop_with_b_frames_bit_exact() {
     assert_eq!(v.codec, "H.264");
     assert_eq!(info.start_timecode, Some(90_000), "01:00:00:00 at 25 fps");
     assert_eq!(src.file().timecode.unwrap().format(), "01:00:00:00");
-    let t = &src.file().tracks[src.file().track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+    let t = &src.file().tracks[src.file().track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
     assert!(t.needs_reorder && !t.temporal_offsets, "ffmpeg marks B pictures without temporal offsets");
     assert_eq!(t.samples.iter().filter(|s| s.key).count(), 5, "an IDR every 12 frames over 50");
     check_video(&ff, &f, "yuv420p", (2, 2), 1, 0, 25);
@@ -256,7 +256,7 @@ fn h264_long_gop_order_needs_only_the_slice_headers() {
     let reads = Arc::new(Mutex::new(Vec::new()));
     let reader = Arc::new(Counting(Arc::new(filmcraft_media::reader::MemReader(data.clone())), reads.clone()));
     let src = MxfSource::open_reader("bf2_720p.mxf", reader).unwrap();
-    let t = &src.file().tracks[src.file().track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+    let t = &src.file().tracks[src.file().track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
     assert!(t.needs_reorder && !t.temporal_offsets);
     assert!(t.samples.iter().all(|s| s.size > 16 << 10), "the pictures must be longer than the long head read");
     // one 2 KiB head per picture, and no 16 KiB read (the fallback for a slice header that does
@@ -317,7 +317,7 @@ fn mpeg2_long_gop_decodes() {
     assert!(v.codec.starts_with("MPEG-2 Video (Main@"), "{}", v.codec);
     assert_eq!(v.pixel_format, "YUV 4:2:0 8-bit, progressive");
     // temporal offsets: ffmpeg's MPEG-2 index carries them
-    let t = &src.file().tracks[src.file().track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+    let t = &src.file().tracks[src.file().track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
     assert!(t.temporal_offsets);
     check_video(&ff, &f, "yuv420p", (2, 2), 1, MPEG2_TOL, 12);
     check_audio_exact(&ff, &f, &[]);
@@ -343,7 +343,7 @@ fn op_atom_video_and_audio_files() {
     let src = open(&v);
     assert_eq!(src.info().container, "MXF OP-Atom");
     assert!(!src.info().has_audio());
-    assert_eq!(src.file().tracks[0].wrapping, filmcraft_mxf::Wrapping::Clip);
+    assert_eq!(src.file().tracks[0].wrapping, craft_media::mxf::Wrapping::Clip);
     check_video(&ff, &v, "yuv422p", (2, 1), 1, 2, 10);
     let a = make(&ff, "mxf_atom_pcm.mxf");
     let src = open(&a);

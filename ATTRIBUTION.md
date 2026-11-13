@@ -9,6 +9,9 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 | Asset | Author | Source | Licence |
 |---|---|---|---|
+| `crates/codecs/tests/fixtures/mjpeg-avi1-baseline.jpg` | libjpeg-turbo contributors | `testorig.jpg` from [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages) | IJG License (`README.ijg` in the source distribution) |
+| `crates/codecs/tests/fixtures/mjpeg-cmyk.jpg` | craft-libs contributors | Original CMYK test fixture from [craft-libs prepress tests](https://github.com/storytold/craft-libs/tree/24a472717/crates/prepress/tests/fixtures) | MIT OR Apache-2.0 (craft-libs) |
+| `crates/codecs/tests/fixtures/mjpeg-progressive-huffman.jpg` | libjpeg-turbo contributors; FilmCraft contributors | Derived from `testorig.jpg` in [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages), decoded by FFmpeg and re-encoded with libjpeg-turbo `cjpeg -progressive -quality 88` | IJG License (`README.ijg` in the source distribution) |
 | `crates/ui-egui/src/i18n/sv.tsv` | FilmCraft contributors | Original work: clean-room Swedish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/it.tsv` | FilmCraft contributors | Original work: clean-room Italian interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/tr.tsv` | FilmCraft contributors | Original work: clean-room Turkish interface translations | MIT OR Apache-2.0 |
@@ -91,7 +94,6 @@ procedural demo footage (`crates/media/src/generators.rs`); no external media. R
 | `crates/golden/goldens/vfx_spacer_stroke_shadow.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_spacer_stroke_shadow`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/vfx_vr_rotate.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_vr_rotate`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/vfx_stylize.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_stylize`) from procedurally generated media | MIT OR Apache-2.0 |
-| `crates/ac3/src/golden_frames.bin` | FilmCraft contributors | Original work: 12 AC-3 / E-AC-3 syncframes (6 KB) encoded by ffmpeg from synthetic tones and noise, test vector for crates/ac3 | MIT OR Apache-2.0 |
 
 ## Third-party media shown in screenshots
 
