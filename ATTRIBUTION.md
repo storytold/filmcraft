@@ -9,6 +9,9 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 | Asset | Author | Source | Licence |
 |---|---|---|---|
+| `crates/codecs/tests/fixtures/mjpeg-avi1-baseline.jpg` | libjpeg-turbo contributors | `testorig.jpg` from [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages) | IJG License (`README.ijg` in the source distribution) |
+| `crates/codecs/tests/fixtures/mjpeg-cmyk.jpg` | craft-libs contributors | Original CMYK test fixture from [craft-libs prepress tests](https://github.com/storytold/craft-libs/tree/24a472717/crates/prepress/tests/fixtures) | MIT OR Apache-2.0 (craft-libs) |
+| `crates/codecs/tests/fixtures/mjpeg-progressive-huffman.jpg` | libjpeg-turbo contributors; FilmCraft contributors | Derived from `testorig.jpg` in [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages), decoded by FFmpeg and re-encoded with libjpeg-turbo `cjpeg -progressive -quality 88` | IJG License (`README.ijg` in the source distribution) |
 | `crates/ui-egui/src/i18n/sv.tsv` | FilmCraft contributors | Original work: clean-room Swedish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/it.tsv` | FilmCraft contributors | Original work: clean-room Italian interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/tr.tsv` | FilmCraft contributors | Original work: clean-room Turkish interface translations | MIT OR Apache-2.0 |
