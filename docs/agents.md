@@ -139,12 +139,18 @@ progress and stop it:
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
-  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
-  no response, as the MCP cancellation utility asks.
+  deletes the partial output (the movie, or the frames and caption sidecar written so far, and no
+  other export's files beside them) and sends no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
+  `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
+  name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
+  add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (a cancelled
+  long export's clean-up removes only the stills numbered from `basePath` with the digits of
+  `lastPath`, up to it). `filmcraft-cli export` prints the first and the last.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
@@ -153,6 +159,14 @@ progress and stop it:
   warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
   also prints the warning on stderr and suggests `--range entire`; the warning does not change
   the exit status. Frame counts here use the sequence rate, even when the export rate differs.
+- A finished export's `result` (`file.exportMedia` with `wait: true`, its job in `jobs.list`, each
+  finished item of `export.queue.list` and `export.queue.add`) names the video encoder that ran in `encoder`: `"NVENC"` or `"VideoToolbox"`, or `"software"` for
+  FilmCraft's own (absent for audio, image sequences and GIF). `hardwareEncoding: "auto"` asks for
+  a hardware encoder but does not promise one: when it declines the export (two-pass VBR, HDR, MXF,
+  no driver…) the software encoder runs, and `result.warnings` says so with the reason when there is
+  one, e.g. `hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran`. The
+  app logs the same line as a warning and shows it in Events after the job's "Finished" line, and
+  `filmcraft-cli export` (with or without `--queue`) prints it on stderr.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.

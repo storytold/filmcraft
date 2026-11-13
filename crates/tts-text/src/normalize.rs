@@ -36,6 +36,9 @@ pub enum NormalizeError {
     /// The script exceeds the 1 MiB input limit.
     #[error("the script exceeds the 1 MiB normalization limit")]
     TooLong,
+    /// The script, with its respellings and dictionary pronunciations, expands past the phoneme budget.
+    #[error("the script expands to more than 16 MiB of phonemes")]
+    TooManyPhonemes,
 }
 
 /// Maximum accepted input size (1 MiB).
@@ -579,8 +582,8 @@ fn english_month(month: u64) -> Option<&'static str> {
 
 const MAX_FRACTION_DIGITS: usize = 3;
 
-/// `1/2` → "one half"; other small denominators read "N ordinal(s)", anything
-/// bigger reads "N over M".
+/// `1/2` → "one half"; other small denominators read "N ordinal(s)", 1 and anything
+/// bigger read "N over M".
 fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
     // Operands of up to three digits: a longer run (a year, as in the `7/2026` left after an
     // impossible date's `13/`) is not a fraction.
@@ -593,8 +596,8 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
         return None;
     }
     let mut words = english_cardinal(n);
-    if d > 12 {
-        // "7/32" → "seven over thirty-two".
+    if d > 12 || d == 1 {
+        // "7/32" → "seven over thirty-two"; "5/1" → "five over one".
         words.push("over".into());
         words.extend(english_cardinal(d));
         return Some((words.into_iter().map(Token::Word).collect(), d_end));

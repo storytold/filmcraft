@@ -106,6 +106,34 @@ pub fn resample_source_frames(frames: usize, source_rate: u32, output_rate: u32)
         .ok_or_else(|| MediaError::Decode("resampled audio window overflows".into()))
 }
 
+/// Linearly resamples a decoded source window into `out`.
+///
+/// `window[c][j]` holds source sample `window_start + j` at `source_rate`; `out[c][k]` receives
+/// output sample `start + k` at `output_rate`. Each output position is computed from its absolute
+/// index, `(start + k) * source_rate / output_rate`, so a sample gets the same value however the
+/// caller cuts the timeline into requests (the mixer relies on that). Source samples outside the
+/// window read as silence (each neighbour is looked up on its own, so a left sample before the
+/// window still blends with an in-window right one), and a missing right neighbour repeats the left
+/// one. A zero output rate leaves `out` untouched.
+pub fn resample_window_into(window: &[Vec<f32>], window_start: i64, source_rate: u32, start: i64, output_rate: u32, out: &mut [Vec<f32>]) {
+    if output_rate == 0 {
+        return;
+    }
+    let ratio = f64::from(source_rate) / f64::from(output_rate);
+    for (o, s) in out.iter_mut().zip(window) {
+        for (k, d) in o.iter_mut().enumerate() {
+            let pos = start.saturating_add(i64::try_from(k).unwrap_or(i64::MAX)) as f64 * ratio;
+            let base = pos.floor();
+            let f = (pos - base) as f32;
+            let left = (base as i64).saturating_sub(window_start);
+            let at = |i: i64| usize::try_from(i).ok().and_then(|i| s.get(i)).copied();
+            let a = at(left).unwrap_or(0.0);
+            let b = at(left.saturating_add(1)).unwrap_or(a);
+            *d = a + (b - a) * f;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaKind {
     /// Video, possibly with audio.
@@ -131,6 +159,11 @@ pub struct VideoStreamInfo {
     /// HDR static metadata (mastering display, content light level) when the file carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<filmcraft_color::HdrMetadata>,
+    /// Which values of `color` are FilmCraft's defaults rather than read from the file. `None`
+    /// where the source doesn't say: stills, generated media, MPEG program and transport streams,
+    /// and media info saved before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_assumed: Option<filmcraft_color::ColorAssumed>,
 }
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
@@ -212,6 +245,12 @@ pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
+    /// Like [`video_frame`](Self::video_frame), but a source may leave the container's display
+    /// rotation to the caller: the frame comes with the clockwise quarter turns still to apply
+    /// to it (0: upright, as `video_frame` returns it).
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8)> {
+        self.video_frame(req).map(|f| (f, 0))
+    }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into
@@ -294,7 +333,10 @@ impl MediaSource for OfflineSource {
         Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is not there to check)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
@@ -312,6 +354,25 @@ mod importable_tests {
     }
 
     #[test]
+    fn offline_media_does_not_allocate_from_stored_metadata() {
+        let info = MediaInfo {
+            name: "gone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(0),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 60_000, codec: "pcm".into(), bits_per_sample: None }],
+            container: String::new(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = OfflineSource { info };
+        // a 100-day transcription request at the stored channel count
+        // computed as u64: the product overflows a 32-bit usize (x86 Windows), where it must still be rejected
+        let frames = usize::try_from(48_000u64 * 86_400 * 100).unwrap_or(usize::MAX);
+        assert!(src.audio(0, frames, 48_000).is_err());
+    }
+
+    #[test]
     fn hostile_audio_dimensions_are_bounded_before_adapters_allocate() {
         assert!(bounded_audio_dimensions(0, 0).is_err());
         assert!(bounded_audio_dimensions(u32::MAX, u32::MAX).is_err());
@@ -320,5 +381,35 @@ mod importable_tests {
         assert!(validate_audio_buffer_shape(MAX_AUDIO_CHANNELS as usize, MAX_AUDIO_BUFFER_BYTES / 4 / MAX_AUDIO_CHANNELS as usize).is_ok());
         assert!(validate_audio_buffer_shape(MAX_AUDIO_CHANNELS as usize, MAX_AUDIO_BUFFER_BYTES / 4 / MAX_AUDIO_CHANNELS as usize + 1).is_err());
         assert!(resample_source_frames(usize::MAX, MAX_AUDIO_SAMPLE_RATE, 1).is_err());
+    }
+
+    /// A window decoded from any start gives the samples of the whole source, and cuts don't matter.
+    #[test]
+    fn resampled_window_reads_absolute_positions() {
+        let source = filmcraft_testkit::cuts::noise(40_000, 3);
+        let read = |start: i64, frames: usize| {
+            let ratio = 48_000f64 / 47_000f64;
+            let s0 = (start as f64 * ratio).floor() as i64;
+            let need = resample_source_frames(frames, 48_000, 47_000).unwrap() + 2;
+            let window = vec![source[s0 as usize..(s0 as usize + need).min(source.len())].to_vec()];
+            let mut out = vec![vec![0.0; frames]];
+            resample_window_into(&window, s0, 48_000, start, 47_000, &mut out);
+            out
+        };
+        filmcraft_testkit::cuts::assert_cut_independent("window", 1_000, 20_000, read);
+        let mut whole = vec![vec![0.0; 20_000]];
+        resample_window_into(std::slice::from_ref(&source), 0, 48_000, 1_000, 47_000, &mut whole);
+        assert_eq!(whole, read(1_000, 20_000));
+        // outside the window: silence, never a panic; a zero output rate leaves the buffer alone
+        let mut out = vec![vec![7.0; 4]];
+        resample_window_into(&[vec![1.0; 4]], 100, 48_000, i64::MIN, 44_100, &mut out);
+        assert_eq!(out, vec![vec![0.0; 4]]);
+        let mut out = vec![vec![7.0; 4]];
+        resample_window_into(&[vec![1.0; 4]], 0, 48_000, 0, 0, &mut out);
+        assert_eq!(out, vec![vec![7.0; 4]]);
+        // a left neighbour before the window still blends with the in-window right one
+        let mut edge = vec![vec![0.0; 1]];
+        resample_window_into(&[vec![1.0]], 1, 1, 1, 2, &mut edge);
+        assert_eq!(edge, vec![vec![0.5]]);
     }
 }

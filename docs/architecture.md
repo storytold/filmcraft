@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · apv · dng · aac · ac3 · mpa · opus
+     codecs/containers: isobmff · matroska · cfb · h264enc · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv · prores decoder and encoder) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -37,27 +37,19 @@ and `filmcraft-cli`.
 
 | Crate | Layer | Purpose |
 |---|---|---|
-| `time` | L0 | `Tick`, `FrameRate`, `TimeRange`, timecode parse/format (NDF/DF, frames, feet+frames, samples) |
+| `time` | L0 | `Tick`, `FrameRate`, `TimeRange`, timecode parse/format (NDF/DF, frames, feet+frames, samples): a re-export of `craft_timeline::time` from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/timeline), where its code and tests live |
 | `geom` | L0 | `Vec2`, `Rect`, `Affine`, Motion-transform composition |
 | `color` | L0 | colour spaces, transfer functions, YUV↔RGB matrices, LUTs |
 | `bitstream` | L0 | bit reader/writer, Exp-Golomb, emulation prevention |
 | `isobmff` | L0 | MP4/MOV demux and mux |
 | `matroska` | L0 | MKV/WebM demux |
-| `mxf` | L0 | MXF demux and mux (SMPTE ST 377-1): OP1a / OP-Atom, index tables, AVC / VC-3 / ProRes / MPEG-2 identification, PCM / AES3 sound, timecode; writer for OP1a / OP-Atom with VC-3, ProRes, AVC and PCM ([README](../crates/mxf/README.md)) |
 | `cfb` | L0 | Compound File Binary ([MS-CFB] structured storage) reader and writer, the container of AAF ([README](../crates/cfb/README.md)) |
-| `mpegts` | L0 | MPEG-2 Systems demux (H.222.0): transport streams (188 / 192-byte BDAV / 204), program streams (MPEG-2 / MPEG-1, VOB, MOD), PSI, PES, PTS / PCR, access-unit index built on open ([README](../crates/mpegts/README.md)) |
-| `ogg` | L0 | Ogg demux (RFC 3533), Ogg Opus timing (RFC 7845 granules, pre-skip, end trimming), Vorbis headers |
-| `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
-| `hevc` | L0 | H.265 Main/Main 10 decoder |
-| `prores` | L0 | ProRes decoder and encoder |
+| `h264enc` | L0 | H.264 encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
-| `apv` | L0 | Advanced Professional Video (IETF RFC 9924) decoder and encoder ([README](../crates/apv/README.md)) |
 | `dng` | L0 | DNG / CinemaDNG camera RAW decoder: TIFF container, uncompressed and lossless JPEG raw data, DNG processing to linear Rec. 709 ([README](../crates/dng/README.md)) |
-| `av1` | L0 | AV1 decoder (Main profile; bit-exact with libdav1d; see its README for the stage table) |
-| `mpeg2v` | L0 | MPEG-2 video (Main / 4:2:2 profile; frame and field pictures, dual prime) and MPEG-1 video decoder ([README](../crates/mpeg2v/README.md)) |
-| `aac` | L0 | AAC-LC decoder and encoder |
-| `ac3` | L0 | AC-3 (ATSC A/52) decoder ([README](../crates/ac3/README.md)) |
-| `mpa` | L0 | MPEG-1/2 Audio Layer I and II (MP1 / MP2) decoder ([README](../crates/mpa/README.md)) |
+| `craft-audio` | shared | the audio codecs, from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/audio): AAC-LC decoder and encoder, AC-3 / E-AC-3 decoder, MPEG-1/2 Audio Layer I and II decoder, Opus decoder, FLAC encoder, MPEG-1/2 Layer III (MP3) encoder. They moved there from this repository; fixes go to craft-libs |
+| `craft-media` | shared | containers from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/media): ISO BMFF, Matroska, AVI / OpenDML, MPEG-2 transport and program streams, MXF (OP1a / OP-Atom demux and writer), and the Ogg demuxer with Ogg Opus timing and Vorbis headers |
+| `craft-video` | shared | video codecs from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/video): H.264, H.265 (Main / Main 10), VP9, AV1 and MPEG-2 / MPEG-1 decoders; APV decoder and encoder; ProRes decoder and encoder. They moved there from this repository; fixes, their READMEs and their conformance tests are in craft-libs |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
@@ -288,7 +280,8 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   exports are otherwise byte-identical from run to run. NVENC (`platform::nvenc`, the driver's
   `nvEncodeAPI64.dll` / `libnvidia-encode.so.1` loaded at run time) then takes RGBA frames, converted to 4:2:0 by the software
   encoder's own conversion, and produces the H.264 samples and `avcC` of an MP4 / MOV. It declines
-  (the software encoder runs, counted in `export.hardware.declined`) two-pass VBR, HDR, MXF,
+  (the software encoder runs, counted in `export.hardware.declined`, and the export's `Report` names
+  the encoder in `encoder` and says why in `warnings`) two-pass VBR, HDR, MXF,
   interlaced output, sizes outside NVENC's limits, and systems without an NVIDIA GPU or driver.
   A failure during an export ends it with an error: the software encoder cannot take over a hardware
   stream. The same NVENC session also encodes H.265 (HEVC Main 8-bit 4:2:0 SDR, or Main 10 HDR: PQ / HLG,
@@ -321,7 +314,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. An adjustment layer that covers the whole frame at 100 % opacity in
+  Normal, unmasked and with only effects from that set, is a step of the plan: its effects run the
+  same way on the composite of the tracks below it, and the result replaces it before the tracks
+  above are drawn. The plan is made for the device that composites it (`plan::DeviceCaps`, part
+  of the monitor's frame key and of the export's renderer pool): on one without an effect stage,
+  or for a frame larger than its textures, the adjustment layer sends the frame to the CPU
+  renderer on the thread that plans it, not on the UI thread or inside a renderer. Other standard
+  effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
   blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
@@ -565,7 +565,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
   Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
   `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
-  `color.spaces`, `media.colorInfo`.
+  `color.spaces`, `media.colorInfo`. Where no tag in a file gives the matrix, transfer or
+  primaries, the metadata holds a default (BT.709 transfer and primaries, the matrix by frame
+  size); `media.colorInfo`'s `assumed` and `probe`'s `video.color_assumed` say which.
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
@@ -576,8 +578,8 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
   reference white).
-- **HDR grading (Lumetri).** `FxCtx::working` carries the sequence's working space. In a PQ or HLG
-  sequence Lumetri grades the working space's own signal normalised to **HDR White** (cd/m²,
+- **HDR grading (Color Grading).** `FxCtx::working` carries the sequence's working space. In a PQ or HLG
+  sequence Color Grading grades the working space's own signal normalised to **HDR White** (cd/m²,
   Basic Correction; the curves, wheels, looks and HSL Secondary use the Curves section's **HDR
   Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
@@ -602,7 +604,7 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
   values above SDR white are never sent to the display. The scopes of an HDR sequence show the
   working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
-- **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
+- **LUTs.** Color Grading Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
   parity.
@@ -672,12 +674,13 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 
 | Format | Encoder | Container |
 |---|---|---|
-| `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
-| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
+| `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `craft_audio::aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
+| `prores` | `craft_video::prores` (Proxy / LT / 422 / HQ) | MOV |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
-| `aac` | `filmcraft-aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
-| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
+| `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
+| `mp3` | `craft_audio::mp3` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
+| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`craft_media::mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
 | `png`, `tiff`, `bmp`, `jpg` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
 | `tga`, `dpx`, `exr` | built in (`raster.rs`: uncompressed Targa 24/32-bit; DPX 10-bit RGB, SMPTE ST 268; OpenEXR half-float linear RGB(A), uncompressed scan lines) | numbered stills, as above |
@@ -746,7 +749,7 @@ All of these dispatch the same command ids.
   settings) is in `crates/ui-egui/src/state.rs` as serde structs, so `ui.inspect` and `ui.set` can
   read and write it.
 
-- **Panels with engine data** (M8.9 / M12.6): Lumetri Scopes (`scopes.read` returns the same
+- **Panels with engine data** (M8.9 / M12.6): Video Scopes (`scopes.read` returns the same
   scopes as numbers), Metadata (`metadata.get` / `metadata.set`, one undo step per edit, stored in
   `ProjectItem::metadata`), Events (`events.list` / `events.clear`), Progress (`jobs.list` /
   `jobs.cancel`), Project Notes (`project.notes` / `project.setNotes`, plain text in

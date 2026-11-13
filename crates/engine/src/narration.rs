@@ -127,6 +127,12 @@ fn cache_put(c: &SynthCache, key: String, a: Arc<tts::Audio>) {
     c.drain(..extra);
 }
 
+/// Whether this build can download and run the natural voices (Kokoro-82M). Official packages
+/// enable the `neural-voices` feature of the desktop app; a plain `cargo build` does not (#2318).
+pub fn natural_voices_available() -> bool {
+    cfg!(feature = "neural-voices")
+}
+
 fn package_json() -> Value {
     let dir = crate::transcript::models_dir();
     json!({
@@ -137,7 +143,7 @@ fn package_json() -> Value {
         "missingBytes": dir.as_deref().map_or(tts::catalog::size(), tts::catalog::missing_bytes),
         "license": tts::catalog::LICENSE,
         "source": tts::catalog::SOURCE,
-        "available": cfg!(feature = "neural-voices"),
+        "available": natural_voices_available(),
     })
 }
 
@@ -183,12 +189,19 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
 fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near: Option<ItemId>) -> Result<(ItemId, String)> {
     let beside = near.filter(|_| p.get("dir").is_none()).and_then(|i| match &s.project.items.get(&i)?.kind {
         ItemKind::Media(m) => match &m.media {
-            MediaRef::File { path } => std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned()),
+            // the stored path as media access resolves it: a path it refuses (a network share, a URL) picks no folder
+            MediaRef::File { path } => {
+                let file = s.media.follow(path).ok()?;
+                std::path::Path::new(&file).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned())
+            }
             MediaRef::Generator(_) => None,
         },
         _ => None,
     });
-    let dir = beside.unwrap_or_else(|| crate::voiceover::media_dir(s, p, "Narrations"));
+    let dir = match beside {
+        Some(d) => d,
+        None => crate::voiceover::media_dir(s, p, "Narrations")?,
+    };
     let path = crate::voiceover::unique_wav_path(s, &dir, BASE_NAME)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
@@ -401,7 +414,7 @@ fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Re
     let r = match r {
         Ok(status) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
-            Ok(filmcraft_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(filmcraft_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, ..Default::default() })
         }
         Err(e) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = e.clone();
@@ -496,7 +509,7 @@ fn spec(
     run: fn(&mut Session, &Value) -> Result<Value>,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

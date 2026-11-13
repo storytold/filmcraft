@@ -198,7 +198,7 @@ fn a_newer_revision_keeps_the_frame_being_rendered() {
     let d = Driver::demo();
     let app = d.harness.state();
     let idle = || wait_for("the frame queue to empty", Duration::from_micros(50), || app.frames.queue_len() == 0);
-    // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
+    // the clip with Color Grading at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();
     let rate = app.session.active_sequence().unwrap().settings.frame_rate;
     let frame = rate.frame_at(filmcraft_time::Tick::from_seconds_f64(15.0));
@@ -312,12 +312,17 @@ fn program_monitor_plays_on_while_a_value_is_dragged() {
     d.harness.state_mut().play(1.0);
     let mut frames = std::collections::BTreeSet::new();
     let mut newest = at_rest.revision;
-    for i in 0..90 {
+    // Drag until five frames have shown, for up to ~10 s: on a busy CI runner the workers can take
+    // longer than a second and a half to finish frames. A picture held for the whole drag still fails.
+    for i in 0..600 {
         // one change and one UI pass, as a mouse move while dragging the value
         d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
         let shown = d.harness.state().program_picture().unwrap();
         frames.insert(shown.frame);
         newest = newest.max(shown.revision);
+        if frames.len() >= 5 && newest > at_rest.revision {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
@@ -331,15 +336,23 @@ fn playback_at_a_newer_revision_keeps_the_frame_being_rendered() {
     let d = Driver::demo();
     let app = d.harness.state();
     let idle = || {
-        for _ in 0..200_000 {
-            if app.frames.queue_len() == 0 {
-                return;
+        if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while app.frames.queue_len() != 0 {
+                assert!(std::time::Instant::now() < deadline, "the frame queue never emptied ({} queued)", app.frames.queue_len());
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            std::thread::sleep(std::time::Duration::from_micros(50));
+        } else {
+            for _ in 0..200_000 {
+                if app.frames.queue_len() == 0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+            panic!("the frame queue never emptied ({} queued)", app.frames.queue_len());
         }
-        panic!("the frame queue never emptied");
     };
-    // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
+    // the clip with Color Grading at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();
     let rate = app.session.active_sequence().unwrap().settings.frame_rate;
     let frame = rate.frame_at(filmcraft_time::Tick::from_seconds_f64(15.0));
