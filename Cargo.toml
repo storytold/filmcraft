@@ -19,7 +19,6 @@ filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-cfb = { path = "crates/cfb" }
-filmcraft-vp8 = { path = "crates/vp8" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
@@ -58,20 +57,20 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", default-features = false }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "opus-decode", "flac-encode", "mp3-encode"] }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", default-features = false }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "opus-decode", "flac-encode", "mp3-encode"] }
 # The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "mpeg2", "apv", "threads"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
-craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["serde"] }
-craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132" }
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", features = ["serde"] }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["serde", "native-windows"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", features = ["serde", "native-windows"] }
 # egui 0.37: bundled fonts are opt-in, and the monochrome symbol/emoji faces moved to their own
 # feature. FilmCraft paints ✔ ✓ ✖ ⚡ ⚠ ⚙ ♪ ☑ in panel chrome, so both features are part of the
 # production font policy (system_fonts stays off).
@@ -81,7 +80,7 @@ egui_extras = { version = "0.37", default-features = false }
 eframe = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
-craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["egui"] }
+craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "c3a39369ce4f8c8494fd5e70d4a9f63ad3d0d09a", features = ["egui"] }
 rfd = "0.17"
 
 [workspace.lints.rust]
@@ -127,9 +126,6 @@ opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.
 [profile.dev.package.filmcraft-audio-dsp]
-opt-level = 3
-
-[profile.dev.package.filmcraft-vp8]
 opt-level = 3
 
 [profile.release]
