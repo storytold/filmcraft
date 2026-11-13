@@ -101,8 +101,15 @@ pub fn yuv422_10_to_v210(y: &[u16], cb: &[u16], cr: &[u16], w: usize, h: usize, 
     out.clear();
     out.resize(groups * 16 * h, 0);
     let at = |plane: &[u16], i: usize| u32::from(plane.get(i).copied().unwrap_or(0)) & 0x3FF;
-    // see `rgba_to_uyvy8`: a packing pass on the thread that encodes, with the pool rendering
-    for dst in out.chunks_mut(groups * 16) {
+    // see `rgba_to_uyvy8`: a packing pass on the thread that encodes, with the pool rendering.
+    // Each row reads its own slice of every plane, so a row's padding past its width is zero and
+    // never borrows the next row's samples.
+    let cw = w.div_ceil(2);
+    let packed = groups * 16;
+    for (row, dst) in out.chunks_mut(packed).enumerate() {
+        let y = y.get(row * w..(row + 1) * w).unwrap_or_default();
+        let cb = cb.get(row * cw..(row + 1) * cw).unwrap_or_default();
+        let cr = cr.get(row * cw..(row + 1) * cw).unwrap_or_default();
         for (g, d) in dst.as_chunks_mut::<16>().0.iter_mut().enumerate() {
             let (x, c) = (g * 6, g * 3);
             let word = |a: u32, b: u32, e: u32| a | (b << 10) | (e << 20);
@@ -511,5 +518,61 @@ mod short_source_tests {
         // a full-size source still converts
         rgba_to_yuv420_8(&[128; 16], 2, 2, &mut y, &mut u, &mut v);
         assert_eq!((y.len(), u.len(), v.len()), (4, 1, 1));
+    }
+}
+
+#[cfg(test)]
+mod v210_row_tests {
+    use super::yuv422_10_to_v210;
+
+    /// Each output row must come from its own source row: the packing used to restart the x and c
+    /// offsets at zero for every row, repeating row 0 through the whole picture.
+    #[test]
+    fn every_v210_row_is_packed_from_its_own_source_row() {
+        // 48 wide is exactly one v210 group of 8, so no padding is involved.
+        let (w, h) = (48usize, 2usize);
+        let mut y = vec![0u16; w * h];
+        let mut cb = vec![0u16; (w / 2) * h];
+        let mut cr = vec![0u16; (w / 2) * h];
+        y[..w].fill(100);
+        y[w..].fill(900);
+        cb[..w / 2].fill(200);
+        cb[w / 2..].fill(800);
+        cr.fill(64);
+        let mut out = Vec::new();
+        yuv422_10_to_v210(&y, &cb, &cr, w, h, &mut out);
+        let row = out.len() / h;
+        let word = |r: usize, k: usize| {
+            let b = &out[r * row + k * 4..r * row + k * 4 + 4];
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        };
+        // word 0 is Cb0 | Y0 << 10 | Cr0 << 20
+        assert_eq!(word(0, 0) & 0x3FF, 200, "row 0 Cb0");
+        assert_eq!((word(0, 0) >> 10) & 0x3FF, 100, "row 0 Y0");
+        assert_eq!(word(1, 0) & 0x3FF, 800, "row 1 Cb0 comes from row 1");
+        assert_eq!((word(1, 0) >> 10) & 0x3FF, 900, "row 1 Y0 comes from row 1");
+    }
+
+    /// Padding past the picture reads zero, not the next source row samples.
+    #[test]
+    fn v210_padding_does_not_borrow_from_the_next_row() {
+        // 320 wide pads to 336 pixels (56 groups), so samples past 320 are padding.
+        let (w, h) = (320usize, 2usize);
+        let mut y = vec![0u16; w * h];
+        let mut cb = vec![0u16; (w / 2) * h];
+        let mut cr = vec![0u16; (w / 2) * h];
+        y[..w].fill(100);
+        y[w..].fill(900);
+        cb[..w / 2].fill(200);
+        cb[w / 2..].fill(800);
+        cr.fill(64);
+        let mut out = Vec::new();
+        yuv422_10_to_v210(&y, &cb, &cr, w, h, &mut out);
+        // group 54 covers pixels 324..330, entirely past the 320-wide picture
+        let g = &out[54 * 16..55 * 16];
+        let w0 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
+        assert_eq!(w0 & 0x3FF, 0, "Cb past the row is padding");
+        assert_eq!((w0 >> 10) & 0x3FF, 0, "Y past the row is padding");
+        assert_eq!((w0 >> 20) & 0x3FF, 0, "Cr past the row is padding");
     }
 }

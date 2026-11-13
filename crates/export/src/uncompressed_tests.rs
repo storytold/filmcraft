@@ -19,7 +19,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
     let red = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -29,7 +29,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
@@ -50,9 +50,9 @@ fn tmp(name: &str) -> String {
 /// One case per pixel layout: the fourcc the sample entry must carry and the codec name our
 /// decoder reports for it.
 const LAYOUTS: [(UncompressedPixelFormat, &str, &str, &str); 3] = [
-    (UncompressedPixelFormat::Uyvy8, "2vuy", "Uncompressed 8-bit 4:2:2", "uyvy422"),
-    (UncompressedPixelFormat::V210, "v210", "Uncompressed 10-bit 4:2:2", "yuv422p10le"),
-    (UncompressedPixelFormat::Rgb24, "raw ", "Uncompressed RGB 24-bit", "rgb24"),
+    (UncompressedPixelFormat::Uyvy8, "2vuy", "Uncompressed YUV 4:2:2", "uyvy422"),
+    (UncompressedPixelFormat::V210, "v210", "Uncompressed YUV 4:2:2 10-bit", "yuv422p10le"),
+    (UncompressedPixelFormat::Rgb24, "raw ", "Uncompressed RGB", "rgb24"),
 ];
 
 /// `ExportSettings` for one layout at `(w, h)` — 24 frames of the red matte, no audio.

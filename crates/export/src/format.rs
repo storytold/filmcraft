@@ -100,7 +100,10 @@ impl Format {
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
             "mxfopatom" | "opatom" | "mxfatom" | "avidmxf" => Format::MxfOpAtom,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
-            "uncompressed" | "rawvideo" | "v210" | "2vuy" | "uyvy" => Format::Uncompressed,
+            // `v210` is deliberately not an alias: it names a pixel layout, and `from_name` cannot
+            // set one, so it would silently export 8-bit `2vuy`. Ask for `uncompressed` with
+            // `uncompressedPixelFormat` instead.
+            "uncompressed" | "rawvideo" | "2vuy" | "uyvy" => Format::Uncompressed,
             "png" | "pngsequence" => Format::PngSequence,
             "tif" | "tiff" | "tiffsequence" => Format::TiffSequence,
             "bmp" | "bmpsequence" => Format::BmpSequence,

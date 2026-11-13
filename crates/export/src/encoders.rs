@@ -74,6 +74,17 @@ impl VideoEncoder for UncompressedEncoder {
         raw.extend_from_slice(&[0; 32]);
         raw.extend_from_slice(&24u16.to_be_bytes());
         raw.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        // `colr` is written here too, not by the muxer: the payload-verbatim path above is the only
+        // one this entry takes, so `SampleEntry::write` never reaches its own `write_color_box`.
+        // NCLX BT.709 limited range, which is what the samples are. 8 bytes of box header, the
+        // `nclx` kind, three u16 colour codes and the range flag: 19 bytes.
+        raw.extend_from_slice(&19u32.to_be_bytes());
+        raw.extend_from_slice(b"colr");
+        raw.extend_from_slice(b"nclx");
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        raw.push(0);
         let mut e = SampleEntry::video(
             filmcraft_isobmff::FourCc(self.layout.fourcc()),
             filmcraft_isobmff::CodecConfig::Unknown { fourcc: filmcraft_isobmff::FourCc(self.layout.fourcc()), raw },
