@@ -292,10 +292,10 @@ fn clip_rate_follows_the_common_frame_length() {
 fn repeated_identical_frames_count_once_toward_the_decode_budget() {
     let (a, b, c) = (picture([9, 9, 9], 255), picture([1, 2, 3], 255), picture([4, 5, 6], 255));
     let decode = |frames: &[(Vec<u8>, u32)], budget: usize| {
-        let bytes = gif(frames);
+        let bytes: Arc<[u8]> = Arc::from(gif(frames));
         let mut d = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes[..])).unwrap();
         d.set_limits(image::Limits::default()).unwrap();
-        AnimatedSource::from_frames("a.gif", Format::Gif, d.into_frames(), bytes.len() as u64, budget)
+        AnimatedSource::from_frames("a.gif", Format::Gif, bytes.clone(), d.into_frames(), CACHE.clone(), budget)
     };
     // a frame is 32 bytes: many repeats of one picture cost 32, so a long valid animation is not cut
     let long = decode(&[(a.clone(), 100), (a.clone(), 100), (a.clone(), 100), (a.clone(), 100), (b.clone(), 100), (b.clone(), 100)], 70).expect("animation");
@@ -306,4 +306,61 @@ fn repeated_identical_frames_count_once_toward_the_decode_budget() {
     // distinct pictures past the budget still end the clip there
     let cut = decode(&[(a, 100), (b, 100), (c, 100)], 70).expect("the truncated animation is kept");
     assert_eq!(cut.frame_count(), 2);
+}
+
+/// #2474: animated image sources share a bounded cache; frames past the budget are evicted and
+/// decoded again on demand from the file, and dropping the source frees all its frames from the cache.
+#[test]
+fn animated_sources_share_a_bounded_cache_and_decode_again_after_eviction() {
+    let frame_bytes = (W * H * 4) as usize;
+    // Budget fits 2 frames (64 bytes); 3rd frame will trigger eviction
+    let cache = Arc::new(FrameCache::new(frame_bytes * 2 + frame_bytes / 2));
+
+    let f0 = picture([10, 20, 30], 255);
+    let f1 = picture([40, 50, 60], 255);
+    let f2 = picture([70, 80, 90], 255);
+
+    let bytes = Arc::from(apng(&[(f0.clone(), (1, 10)), (f1.clone(), (1, 10)), (f2.clone(), (1, 10))]));
+    let s = from_bytes_with_cache("bounded.png", bytes, cache.clone()).expect("animated").expect("opens");
+
+    assert_eq!(s.frame_count(), 3);
+    // At open, 3 frames were inserted; eviction target brought cache down to 2 frames
+    // So frame 0 was evicted, frames 1 and 2 remain cached
+    assert!(!s.is_cached(0), "frame 0 evicted under memory budget");
+    assert!(s.is_cached(1) && s.is_cached(2));
+
+    // Requesting evicted frame 0 decodes again on demand
+    assert_eq!(pixels(&s, Tick::ZERO), f0);
+    assert!(s.is_cached(0), "frame 0 recached on demand");
+
+    // Dropping the source removes all its entries from the cache
+    drop(s);
+    assert_eq!(cache.bytes(), 0, "dropped source frees its frames from the cache");
+}
+
+#[test]
+fn animated_frame_cache_decodes_later_merged_frame_and_recaches_intermediate() {
+    let frame_bytes = (W * H * 4) as usize;
+    let cache = Arc::new(FrameCache::new(frame_bytes * 4));
+
+    let (a, b, c) = (picture([10, 20, 30], 255), picture([40, 50, 60], 255), picture([70, 80, 90], 255));
+    // raw frames: A, A, B, C -> 3 merged logical frames (0: A, 1: B, 2: C) with raw_indices [0, 2, 3]
+    let bytes = Arc::from(apng(&[(a.clone(), (1, 10)), (a.clone(), (1, 10)), (b.clone(), (1, 10)), (c.clone(), (1, 10))]));
+    let s = from_bytes_with_cache("merged_bounded.png", bytes, cache.clone()).expect("animated").expect("opens");
+    assert_eq!(s.frame_count(), 3);
+
+    // Explicitly evict frames 1 and 2 so requesting frame 2 exercises raw_indices lookup and intermediate-frame insertion
+    cache.remove(&(s.id(), 1));
+    cache.remove(&(s.id(), 2));
+    assert!(s.is_cached(0));
+    assert!(!s.is_cached(1));
+    assert!(!s.is_cached(2));
+
+    // Requesting frame 2 (target_idx > 0) decodes raw stream, inserts intermediate frame 1, and returns frame 2
+    assert_eq!(pixels(&s, ms(300)), c);
+    assert!(s.is_cached(2), "final frame 2 recached on demand");
+    assert!(s.is_cached(1), "intermediate merged frame 1 recached during decode");
+
+    drop(s);
+    assert_eq!(cache.bytes(), 0);
 }
