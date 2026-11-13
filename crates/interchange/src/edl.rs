@@ -18,7 +18,7 @@ use filmcraft_project::{
     ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, ParamValue, Project, Sequence, Track, TrackItem, TrackKind, Transition, TransitionAlign,
     TransitionId, find_effect,
 };
-use filmcraft_time::{FrameRate, Tick, fields_to_frames, format_timecode_frames};
+use filmcraft_time::{FrameRate, Tick, fields_to_frames};
 
 use crate::common::{
     Builder, MediaSpec, empty_sequence, file_name, file_stem, frames_round, generator_of, item_path, on_frame, overwrite, relative_path, resolve_path,
@@ -28,249 +28,32 @@ use crate::{ExportOptions, Format, ImportOptions, Imported, ReelMode, Report, Re
 
 /// Heuristic: does this text look like an EDL?
 pub(crate) fn looks_like_edl(text: &str) -> bool {
-    text.lines().take(40).any(|l| {
-        let l = l.trim_start();
-        l.starts_with("TITLE:") || l.starts_with("FCM:") || parse_event_line(l).is_some()
-    })
+    shared_edl::looks_like_edl(text)
 }
 
 // ---------------------------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Tc {
-    h: i64,
-    m: i64,
-    s: i64,
-    f: i64,
-    df: bool,
-}
-
-fn parse_tc(s: &str) -> Option<Tc> {
-    let parts: Vec<&str> = s.split([':', ';', '.', ',']).collect();
-    if parts.len() != 4 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
-        return None;
-    }
-    let n: Vec<i64> = parts.iter().map(|p| p.parse().ok()).collect::<Option<_>>()?;
-    Some(Tc { h: n[0], m: n[1], s: n[2], f: n[3], df: s.contains(';') || s.contains(',') })
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Trans {
-    Cut,
-    Dissolve,
-    Wipe(u32),
-    KeyBackground,
-    Key,
-    KeyOut,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Ch {
-    V,
-    A(usize),
-}
-
-fn parse_channels(s: &str) -> Option<Vec<Ch>> {
-    let u = s.to_ascii_uppercase();
-    match u.as_str() {
-        "B" => return Some(vec![Ch::V, Ch::A(1)]),
-        "NONE" => return Some(vec![]),
-        _ => {}
-    }
-    let mut out = Vec::new();
-    for part in u.split('/') {
-        match part {
-            "V" => out.push(Ch::V),
-            "A" | "A1" => out.push(Ch::A(1)),
-            "AA" => out.extend([Ch::A(1), Ch::A(2)]),
-            p if p.starts_with('A') && p[1..].bytes().all(|b| b.is_ascii_digit()) && p[1..].parse::<usize>().is_ok_and(|n| (1..=99).contains(&n)) => {
-                out.push(Ch::A(p[1..].parse().ok()?))
-            }
-            _ => return None,
-        }
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-#[derive(Clone, Debug)]
-struct Line {
-    num: String,
-    reel: String,
-    chans: Vec<Ch>,
-    trans: Trans,
-    dur: i64,
-    tcs: [Tc; 4],
-}
-
-fn parse_event_line(l: &str) -> Option<Line> {
-    let toks: Vec<&str> = l.split_whitespace().collect();
-    if toks.len() < 8 || !toks[0].bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let n = toks.len();
-    let tcs = [parse_tc(toks[n - 4])?, parse_tc(toks[n - 3])?, parse_tc(toks[n - 2])?, parse_tc(toks[n - 1])?];
-    let reel = toks[1].to_string();
-    let chans = parse_channels(toks[2])?;
-    let mid = &toks[3..n - 4];
-    let first = mid.first()?.to_ascii_uppercase();
-    let num_at = |i: usize| mid.get(i).and_then(|t| t.parse::<i64>().ok());
-    let (trans, dur) = match first.as_str() {
-        "C" => (Trans::Cut, 0),
-        "D" => (Trans::Dissolve, num_at(1).unwrap_or(0)),
-        "K" => match mid.get(1).map(|s| s.to_ascii_uppercase()) {
-            Some(ref s) if s == "B" => (Trans::KeyBackground, 0),
-            Some(ref s) if s == "O" => (Trans::KeyOut, num_at(2).unwrap_or(0)),
-            _ => (Trans::Key, num_at(1).unwrap_or(0)),
-        },
-        "KB" => (Trans::KeyBackground, 0),
-        "KO" => (Trans::KeyOut, num_at(1).unwrap_or(0)),
-        w if w.starts_with('W') => (Trans::Wipe(w[1..].parse().unwrap_or(1)), num_at(1).unwrap_or(0)),
-        _ => return None,
-    };
-    Some(Line { num: toks[0].to_string(), reel, chans, trans, dur, tcs })
-}
-
-#[derive(Clone, Debug, Default)]
-struct Event {
-    lines: Vec<Line>,
-    from_clip: Option<String>,
-    to_clip: Option<String>,
-    files: Vec<String>,
-    effect: Option<String>,
-    /// (reel, fps, entry tc)
-    m2: Vec<(String, f64)>,
-    locs: Vec<(Tc, String, String)>,
-    /// FCM in force for this event.
-    df: bool,
-}
-
-struct Parsed {
-    title: Option<String>,
-    events: Vec<Event>,
-    any_df: bool,
-    max_ff: i64,
-}
+use craft_timeline::edl::{self as shared_edl, Channel as Ch, Edl as Parsed, Event, Line, Timecode as Tc, Transition as Trans};
 
 fn parse(text: &str, report: &mut Report) -> Parsed {
-    let mut p = Parsed { title: None, events: Vec::new(), any_df: false, max_ff: 0 };
-    let mut df = false;
-    let mut skip_metadata = false;
-    for raw in text.lines() {
-        let l = raw.trim();
-        if l.is_empty() {
-            continue;
+    let mut shared_report = craft_timeline::Report::default();
+    let parsed = shared_edl::parse(text, &mut shared_report);
+    for entry in shared_report.entries {
+        let level = match entry.level {
+            craft_timeline::Level::Info => crate::Level::Info,
+            craft_timeline::Level::Warning => crate::Level::Warning,
+        };
+        for _ in 0..entry.count {
+            report.push(level, entry.message.clone());
         }
-        let upper = l.to_ascii_uppercase();
-        if let Some(t) = l.strip_prefix("TITLE:") {
-            p.title = Some(t.trim().to_string());
-            continue;
-        }
-        if upper.starts_with("FCM:") {
-            df = upper.contains("DROP") && !upper.contains("NON");
-            p.any_df |= df;
-            continue;
-        }
-        if skip_metadata && (l.starts_with('*') || upper.starts_with("M2") || upper.starts_with("AUD")) {
-            continue;
-        }
-        if let Some(c) = l.strip_prefix('*') {
-            let c = c.trim();
-            let Some(ev) = p.events.last_mut() else { continue };
-            let cu = c.to_ascii_uppercase();
-            let value = |prefix: &str| c[prefix.len()..].trim().to_string();
-            if cu.starts_with("FROM CLIP NAME:") {
-                ev.from_clip = Some(value("FROM CLIP NAME:"));
-            } else if cu.starts_with("TO CLIP NAME:") {
-                ev.to_clip = Some(value("TO CLIP NAME:"));
-            } else if cu.starts_with("SOURCE FILE:") {
-                ev.files.push(value("SOURCE FILE:"));
-            } else if cu.starts_with("EFFECT NAME:") {
-                ev.effect = Some(value("EFFECT NAME:"));
-            } else if cu.starts_with("LOC:") {
-                let rest = value("LOC:");
-                let mut it = rest.splitn(3, char::is_whitespace).filter(|s| !s.is_empty());
-                if let Some(tc) = it.next().and_then(parse_tc) {
-                    let rest2: Vec<&str> = rest.split_whitespace().skip(1).collect();
-                    let (color, name) = match rest2.split_first() {
-                        Some((c, n)) if marker_color(c).is_some() => (c.to_string(), n.join(" ")),
-                        _ => (String::new(), rest2.join(" ")),
-                    };
-                    ev.locs.push((tc, color, name));
-                }
-            }
-            continue;
-        }
-        if upper.starts_with("M2") {
-            let toks: Vec<&str> = l.split_whitespace().collect();
-            if toks.len() >= 3 {
-                // `M2 REEL fps tc`; reels with spaces are joined back.
-                let fps_i = toks.iter().rposition(|t| t.parse::<f64>().is_ok() && parse_tc(t).is_none()).unwrap_or(2);
-                let reel = toks[1..fps_i.max(2)].join(" ");
-                if let Ok(fps) = toks[fps_i].parse::<f64>()
-                    && let Some(ev) = p.events.last_mut()
-                {
-                    ev.m2.push((reel, fps));
-                }
-            }
-            continue;
-        }
-        if upper.starts_with("AUD") {
-            let mut extra: Vec<Ch> = Vec::new();
-            for n in l.split_whitespace().skip(1).filter_map(|t| t.parse::<usize>().ok()) {
-                if (1..=99).contains(&n) {
-                    extra.push(Ch::A(n));
-                } else {
-                    report.warn(format!("EDL AUD channel {n} is outside 1..99; ignored"));
-                }
-            }
-            if let Some(line) = p.events.last_mut().and_then(|e| e.lines.last_mut()) {
-                line.chans.extend(extra);
-            }
-            continue;
-        }
-        if upper.starts_with("SPLIT:") {
-            report.warn("EDL split (L-cut/J-cut) lines are not supported; the split was ignored");
-            continue;
-        }
-        if let Some(line) = parse_event_line(l) {
-            for tc in &line.tcs {
-                p.max_ff = p.max_ff.max(tc.f);
-                p.any_df |= tc.df;
-            }
-            if let Some(e) = p.events.last_mut().filter(|e| !skip_metadata && e.lines.last().is_some_and(|last| last.num == line.num)) {
-                e.lines.push(line);
-            } else {
-                p.events.push(Event { lines: vec![line], df, ..Default::default() });
-            }
-            skip_metadata = false;
-            continue;
-        }
-        if upper.starts_with(">>>") || upper.starts_with("REM") {
-            continue;
-        }
-        if l.split_whitespace().next().is_some_and(|token| token.bytes().all(|b| b.is_ascii_digit())) {
-            // Comments and auxiliary lines after a rejected event do not belong to the previous one.
-            skip_metadata = true;
-        }
-        report.warn(format!("unrecognised EDL line ignored: {}", l.chars().take(60).collect::<String>()));
     }
-    p
+    parsed
 }
 
-fn guess_rate(p: &Parsed) -> FrameRate {
-    if p.any_df {
-        if p.max_ff >= 30 { FrameRate::FPS_59_94 } else { FrameRate::FPS_29_97 }
-    } else if p.max_ff >= 30 {
-        FrameRate::FPS_60
-    } else if p.max_ff >= 25 {
-        FrameRate::FPS_30
-    } else if p.max_ff >= 24 {
-        FrameRate::FPS_25
-    } else {
-        FrameRate::FPS_24
-    }
+fn guess_rate(parsed: &Parsed) -> FrameRate {
+    shared_edl::guess_rate(parsed)
 }
 
 fn marker_color(s: &str) -> Option<Label> {
@@ -664,7 +447,6 @@ struct Exp<'a> {
     p: &'a Project,
     seq: &'a Sequence,
     rate: FrameRate,
-    df: bool,
     opts: &'a ExportOptions,
     reels: HashMap<ItemId, String>,
     used_reels: HashMap<String, ItemId>,
@@ -721,10 +503,6 @@ impl Exp<'_> {
         r
     }
 
-    fn tc(&self, frames: i64) -> String {
-        format_timecode_frames(frames, self.rate, self.df)
-    }
-
     fn src_frames(&self, item: ItemId, t: Tick) -> i64 {
         let base = crate::common::base_item(self.p, item);
         let start = self
@@ -752,19 +530,7 @@ impl Exp<'_> {
 }
 
 fn chan_code(set: &BTreeSet<Ch>) -> Option<&'static str> {
-    let v: Vec<Ch> = set.iter().copied().collect();
-    Some(match v.as_slice() {
-        [Ch::V] => "V",
-        [Ch::V, Ch::A(1)] => "B",
-        [Ch::V, Ch::A(1), Ch::A(2)] => "AA/V",
-        [Ch::V, Ch::A(2)] => "A2/V",
-        [Ch::A(1)] => "A",
-        [Ch::A(2)] => "A2",
-        [Ch::A(1), Ch::A(2)] => "AA",
-        [Ch::A(3)] => "A3",
-        [Ch::A(4)] => "A4",
-        _ => return None,
-    })
+    shared_edl::channel_code(set)
 }
 
 fn signed_scaled(d: Tick, speed: f64) -> Tick {
@@ -985,11 +751,7 @@ fn fade_out_event(x: &Exp<'_>, context: &TrackExport<'_>, item: &TrackItem, reel
 }
 
 fn channel_name(channel: Ch) -> String {
-    match channel {
-        Ch::V => "V".to_string(),
-        Ch::A(1) => "A".to_string(),
-        Ch::A(n) => format!("A{n}"),
-    }
+    shared_edl::channel_name(channel)
 }
 
 fn track_order(context: &TrackExport<'_>) -> u8 {
@@ -1001,7 +763,7 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
     let seq = p.sequence(seq_id).ok_or(crate::Error::NoSequence(seq_id))?;
     let rate = seq.settings.frame_rate;
     let df = seq.settings.drop_frame && rate.supports_drop_frame();
-    let mut x = Exp { p, seq, rate, df, opts, reels: HashMap::new(), used_reels: HashMap::new() };
+    let mut x = Exp { p, seq, rate, opts, reels: HashMap::new(), used_reels: HashMap::new() };
     let title = opts.name.clone().or_else(|| p.item(seq_id).map(|i| i.name.clone())).unwrap_or_default();
 
     let mut events: Vec<OutEvent> = Vec::new();
@@ -1058,49 +820,36 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
     }
     merged.sort_by_key(|e| e.order);
 
-    let mut out = String::new();
-    out.push_str(&format!("TITLE: {title}\n"));
-    out.push_str(if df { "FCM: DROP FRAME\n" } else { "FCM: NON-DROP FRAME\n" });
-    let w = opts.edl.reel_len.max(8);
     let mut markers: Vec<&Marker> = if opts.edl.markers { seq.markers.iter().collect() } else { Vec::new() };
     markers.sort_by_key(|m| m.start);
     let mut mi = 0;
     let n_events = merged.len();
+    let mut shared_events = Vec::with_capacity(n_events);
     for (i, ev) in merged.iter().enumerate() {
-        out.push('\n');
-        let num = i + 1;
-        for l in &ev.lines {
-            let dur = l.dur.map(|d| format!("{d:03}")).unwrap_or_default();
-            out.push_str(&format!(
-                "{num:03}  {:<w$} {:<5} {:<4} {:>3} {} {} {} {}\n",
-                l.reel,
-                l.chan,
-                l.trans,
-                dur,
-                x.tc(src_tc(&x, l, l.src.0)),
-                x.tc(src_tc(&x, l, l.src.1)),
-                x.tc(x.rec_frames(l.rec.0)),
-                x.tc(x.rec_frames(l.rec.1)),
-            ));
-        }
-        if let Some((reel, fps, entry)) = &ev.m2
-            && let Some(l) = ev.lines.last()
-        {
-            let sign = if *fps < 0.0 { "-" } else { "" };
-            out.push_str(&format!("M2   {:<w$}       {sign}{:05.1}                {}\n", reel, fps.abs(), x.tc(src_tc(&x, l, *entry))));
-        }
-        for c in &ev.comments {
-            out.push_str(&format!("* {c}\n"));
-        }
+        let lines: Vec<_> = ev
+            .lines
+            .iter()
+            .map(|l| craft_timeline::edl::OutLine {
+                reel: l.reel.clone(),
+                chan: l.chan.clone(),
+                trans: l.trans.clone(),
+                dur: l.dur,
+                src: (src_tc(&x, l, l.src.0), src_tc(&x, l, l.src.1)),
+                rec: (x.rec_frames(l.rec.0), x.rec_frames(l.rec.1)),
+            })
+            .collect();
+        let m2 = ev.m2.as_ref().and_then(|(reel, fps, entry)| ev.lines.last().map(|l| (reel.clone(), *fps, src_tc(&x, l, *entry))));
+        let mut locators = Vec::new();
         // Markers up to the end of this event (all remaining after the last one).
         let end = ev.lines.last().map(|l| l.rec.1).unwrap_or(Tick::ZERO);
         while mi < markers.len() && (markers[mi].start < end || i + 1 == n_events) {
             let m = markers[mi];
-            out.push_str(&format!("* LOC: {} {:<7} {}\n", x.tc(x.rec_frames(m.start)), color_word(m.color), m.name));
+            locators.push((x.rec_frames(m.start), color_word(m.color).to_string(), m.name.clone()));
             mi += 1;
         }
+        shared_events.push(craft_timeline::edl::OutEvent { lines, m2, comments: ev.comments.clone(), locators });
     }
-    Ok(out)
+    Ok(shared_edl::write(&craft_timeline::edl::OutHeader { title, rate, drop_frame: df, reel_len: opts.edl.reel_len }, &shared_events))
 }
 
 /// Source frame for a line position (BL lines are plain frame counts from 0).
@@ -1153,11 +902,11 @@ mod tests {
 
     #[test]
     fn channels() {
-        assert_eq!(parse_channels("B"), Some(vec![Ch::V, Ch::A(1)]));
-        assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
-        assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
-        assert_eq!(parse_channels("X"), None);
-        assert_eq!(parse_channels("A+4"), None);
+        assert_eq!(shared_edl::parse_channels("B"), Some(vec![Ch::V, Ch::A(1)]));
+        assert_eq!(shared_edl::parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
+        assert_eq!(shared_edl::parse_channels("A4"), Some(vec![Ch::A(4)]));
+        assert_eq!(shared_edl::parse_channels("X"), None);
+        assert_eq!(shared_edl::parse_channels("A+4"), None);
     }
 
     #[test]
@@ -1186,9 +935,9 @@ mod tests {
     #[test]
     fn timecode_rejects_fields_too_large_for_i64() {
         for tc in ["9223372036854775808:00:00:00", "00:9223372036854775808:00:00", "00:00:9223372036854775808:00", "00:00:00:9223372036854775808"] {
-            assert!(parse_tc(tc).is_none(), "accepted {tc}");
+            assert!(shared_edl::parse_tc(tc).is_none(), "accepted {tc}");
         }
-        assert_eq!(parse_tc("01:02:03:04"), Some(Tc { h: 1, m: 2, s: 3, f: 4, df: false }));
+        assert_eq!(shared_edl::parse_tc("01:02:03:04"), Some(Tc { h: 1, m: 2, s: 3, f: 4, df: false }));
     }
 
     #[test]
@@ -1222,14 +971,14 @@ AUD 2\n\
 
     #[test]
     fn event_lines() {
-        let l = parse_event_line("002  REEL_B   V     D    030 02:00:10:00 02:00:15:00 01:00:05:00 01:00:10:00").unwrap();
+        let l = shared_edl::parse_event_line("002  REEL_B   V     D    030 02:00:10:00 02:00:15:00 01:00:05:00 01:00:10:00").unwrap();
         assert_eq!(l.trans, Trans::Dissolve);
         assert_eq!(l.dur, 30);
-        let k = parse_event_line("003  KEY      V     K B      00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00").unwrap();
+        let k = shared_edl::parse_event_line("003  KEY      V     K B      00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00").unwrap();
         assert_eq!(k.trans, Trans::KeyBackground);
-        let w = parse_event_line("004  R        V     W001 015 00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00").unwrap();
+        let w = shared_edl::parse_event_line("004  R        V     W001 015 00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00").unwrap();
         assert_eq!(w.trans, Trans::Wipe(1));
-        assert!(parse_event_line("* comment").is_none());
-        assert!(parse_tc("01;00;00;02").unwrap().df);
+        assert!(shared_edl::parse_event_line("* comment").is_none());
+        assert!(shared_edl::parse_tc("01;00;00;02").unwrap().df);
     }
 }
