@@ -19,7 +19,6 @@ filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-cfb = { path = "crates/cfb" }
-filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-h264enc = { path = "crates/h264enc" }
@@ -62,8 +61,8 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", default-features = false }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
-# The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "vp8-decode", "threads"] }
+# The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), ProRes decoder and encoder, on the same commit as craft-media.
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9", features = ["serde"] }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
@@ -109,9 +108,6 @@ debug = "line-tables-only"
 [profile.dev.package.filmcraft-h264enc]
 opt-level = 3
 
-[profile.dev.package.filmcraft-prores]
-opt-level = 3
-
 [profile.dev.package.filmcraft-dnx]
 opt-level = 3
 
@@ -149,3 +145,4 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc79968157
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
