@@ -770,10 +770,10 @@ pub struct ProResDecoder;
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         use std::sync::Arc;
-        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let f = craft_video::prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         let chroma = match f.chroma {
-            filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
-            filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+            craft_video::prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+            craft_video::prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
         };
         let mut color = filmcraft_color::ColorInfo::REC709;
         if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {

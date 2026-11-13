@@ -20,7 +20,6 @@ filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-vp8 = { path = "crates/vp8" }
-filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-h264enc = { path = "crates/h264enc" }
@@ -64,7 +63,7 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", default-features = false }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "opus-decode", "flac-encode", "mp3-encode"] }
 # The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "mpeg2", "apv", "threads"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "mpeg2", "apv", "prores", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132", features = ["serde"] }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47b6bbadf0e8e378486416de26712c8b4c836132" }
@@ -108,9 +107,6 @@ debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
 [profile.dev.package.filmcraft-h264enc]
-opt-level = 3
-
-[profile.dev.package.filmcraft-prores]
 opt-level = 3
 
 [profile.dev.package.filmcraft-dnx]

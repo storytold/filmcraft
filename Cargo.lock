@@ -2048,7 +2048,6 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
- "filmcraft-prores",
  "filmcraft-testkit",
  "filmcraft-time",
  "filmcraft-vp8",
@@ -2159,7 +2158,6 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
- "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-text",
@@ -2345,16 +2343,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "url",
-]
-
-[[package]]
-name = "filmcraft-prores"
-version = "0.20.1"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
 ]
 
 [[package]]
