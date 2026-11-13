@@ -283,6 +283,13 @@ impl FilmcraftApp {
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
+            // the Timeline and the Program monitor hand the transport back to the Program; the
+            // Source takes it while a clip in it is what Space plays
+            match panel {
+                PanelKind::Program | PanelKind::Timeline => self.ui.monitor = crate::state::Monitor::Program,
+                PanelKind::Source => self.ui.monitor = crate::state::Monitor::Source,
+                _ => {}
+            }
             if panel == PanelKind::Timeline {
                 self.raise_program_for_timeline();
             }

@@ -439,6 +439,31 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
+/// Which monitor the transport keys act on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Monitor {
+    #[default]
+    Program,
+    Source,
+}
+
+impl UiState {
+    /// Whether the transport acts on the Source monitor: the focused panel says so, and a panel
+    /// that is no monitor at all keeps the transport where a clip was last opened (#3669). The
+    /// Timeline and the Program monitor always hand it back to the Program, so double-clicking a
+    /// clip in the Timeline plays the sequence, not the clip.
+    pub fn on_source_monitor(&self) -> bool {
+        use crate::dock::LayoutExt;
+        match self.focused {
+            PanelKind::Source => true,
+            PanelKind::Program | PanelKind::Timeline => false,
+            // A click in another panel leaves the transport where the clip was last opened, as long
+            // as the Source monitor is the one on screen.
+            _ => self.monitor == Monitor::Source && self.dock.is_visible(PanelKind::Source),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -462,6 +487,11 @@ pub struct UiState {
     pub closed_floating: Vec<(PanelKind, [f32; 4])>,
     /// Focused panel (blue outline, receives shortcuts).
     pub focused: PanelKind,
+    /// The monitor the transport keys act on. Kept apart from `focused`: opening a clip raises the
+    /// Source tab, but the click that did it leaves the focus on the panel it came from, and Space
+    /// must still play the clip that was just opened (#3669).
+    #[serde(default)]
+    pub monitor: Monitor,
     pub timeline: TimelineView,
     pub program: MonitorView,
     pub source: MonitorView,
@@ -1018,6 +1048,7 @@ impl Default for UiState {
             closed_floating: vec![],
             dock: crate::dock::workspace("Editing"),
             focused: PanelKind::Timeline,
+            monitor: Monitor::Program,
             timeline: TimelineView::default(),
             program: MonitorView::default(),
             source: MonitorView::default(),

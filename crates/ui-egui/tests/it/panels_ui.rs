@@ -1103,6 +1103,102 @@ fn double_clicking_a_timeline_clip_leaves_space_on_the_source_monitor() {
     assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
 }
 
+/// The Source and Program monitors sharing one tab group, as they are in the workspace this user
+/// edits in: opening a clip must raise the Source tab, and going back to the Timeline the Program.
+fn merged_monitors(d: &mut Driver) {
+    use craft_ui::docking::{Layout, Node};
+    use craft_ui::layout::{SplitAxis, SplitSize};
+    use filmcraft_ui_egui::dock::PanelKind;
+    d.app().ui.dock = Layout {
+        root: Some(Node::Split {
+            axis: SplitAxis::Horizontal,
+            size: SplitSize::Ratio(0.55),
+            first: Box::new(Node::Split {
+                axis: SplitAxis::Vertical,
+                size: SplitSize::Ratio(0.6),
+                first: Box::new(Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+                second: Box::new(Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            }),
+            second: Box::new(Node::Tabs { panels: vec![PanelKind::Program, PanelKind::Source], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    d.frames(3);
+}
+
+/// The tab of the group holding `member` that is on show.
+fn tab_on_show(
+    layout: &craft_ui::docking::Layout<filmcraft_ui_egui::dock::PanelKind>,
+    member: filmcraft_ui_egui::dock::PanelKind,
+) -> Option<filmcraft_ui_egui::dock::PanelKind> {
+    use craft_ui::docking::Node;
+    fn walk(node: &Node<filmcraft_ui_egui::dock::PanelKind>, member: filmcraft_ui_egui::dock::PanelKind) -> Option<filmcraft_ui_egui::dock::PanelKind> {
+        match node {
+            Node::Tabs { panels, active } => panels.contains(&member).then(|| panels.get(*active).copied()).flatten(),
+            Node::Split { first, second, .. } => walk(first, member).or_else(|| walk(second, member)),
+            _ => None,
+        }
+    }
+    layout.root.as_ref().and_then(|root| walk(root, member))
+}
+
+/// With the Source and Program monitors tabbed together, a double-click shows the Source tab and
+/// Space plays the clip; clicking the Timeline shows the Program tab again and Space plays it.
+#[test]
+fn tabbed_monitors_follow_the_clip_that_was_opened() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::fast_demo();
+    merged_monitors(&mut d);
+    let a = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].item;
+    let bin = d
+        .app()
+        .session
+        .project
+        .root
+        .children
+        .iter()
+        .find_map(|e| match e {
+            filmcraft_project::BinEntry::Bin(b) if b.name == "Footage" => Some(b.id.0),
+            _ => None,
+        })
+        .expect("a Footage bin");
+    d.wait_for(&format!("project.bin.{bin}"));
+    let id = format!("project.bin.{bin}");
+    let brect = d.rects(&id).into_iter().find(|(i, _)| *i == id).unwrap().1;
+    double_click(&mut d, brect.center());
+    d.frames(4);
+
+    let row = format!("project.item.{}", a.0);
+    d.wait_for(&row);
+    let rect = d.rects(&row).into_iter().find(|(i, _)| *i == row).unwrap().1;
+    double_click(&mut d, rect.center());
+    d.frames(4);
+    assert_eq!(d.app().ui.focused, PanelKind::Source, "the Source takes the focus");
+    assert_eq!(tab_on_show(&d.app().ui.dock, PanelKind::Source), Some(PanelKind::Source), "the Source tab is on show");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the clip");
+
+    // The click that opened the clip can leave the focus on the panel it came from; Space must
+    // still play the clip as long as the Source monitor is the one on screen.
+    d.app().stop_source();
+    d.app().ui.focused = PanelKind::Project;
+    d.frames(2);
+    assert!(d.app().ui.on_source_monitor(), "the Source keeps the transport");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space still plays the clip");
+
+    d.click("panel.tab.Timeline");
+    d.frames(3);
+    assert_eq!(d.app().ui.focused, PanelKind::Timeline);
+    assert_eq!(tab_on_show(&d.app().ui.dock, PanelKind::Program), Some(PanelKind::Program), "the Program tab is on show again");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().source_playback.clock.playing, "the clip stops");
+    assert!(d.app().playback.playing, "Space plays the Timeline");
+}
+
 /// Two clicks a person makes apart, at a point.
 fn double_click(d: &mut Driver, at: egui::Pos2) {
     let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);

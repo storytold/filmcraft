@@ -195,7 +195,7 @@ impl FilmcraftApp {
             // Mark In/Out in the Source monitor when it has focus.
             let params = if let Some(p) = clear {
                 p
-            } else if self.ui.focused == PanelKind::Source
+            } else if self.ui.on_source_monitor()
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")
                     || id.starts_with("markers.markSplit")
                     || id.starts_with("markers.goToSplit"))
