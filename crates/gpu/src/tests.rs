@@ -165,6 +165,109 @@ fn half_float_conversion() {
     }
 }
 
+/// Every field wipe the GPU draws against `execute_cpu`, in the Push test's shape: defaults, then
+/// feather, border (width and colour), every anti-aliasing level, a moved centre, reversed, and
+/// a half-resolution `scale`, at progress values that put edges mid-frame. Each frame counts as a
+/// GPU transition: none fell back to the CPU.
+#[test]
+fn gpu_field_wipes_match_cpu_with_every_option() {
+    use filmcraft_project::ParamValue;
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (128usize, 72usize);
+    let layer = |side: usize| {
+        let px = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+                if side == 0 { [0.9 * x, 0.2, 0.1 + 0.5 * y, 1.0] } else { [0.1, 0.4 + 0.5 * y, 0.95 * x, 0.8] }
+            })
+            .collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let ids = ["linear_wipe", "soft_wipe", "clock_wipe", "radial_wipe", "iris_round", "iris_box", "iris_diamond", "iris_cross", "barn_doors", "inset", "wipe"];
+    type Variant = (&'static str, f32, fn(&mut filmcraft_project::EffectInstance));
+    let variants: [Variant; 8] = [
+        ("defaults", 1.0, |_| {}),
+        ("feather", 1.0, |e| {
+            if let Some(p) = e.param_mut("feather") {
+                p.value = ParamValue::Float(12.0)
+            }
+        }),
+        ("border", 1.0, |e| {
+            if let Some(p) = e.param_mut("border_width") {
+                p.value = ParamValue::Float(4.0);
+            }
+            if let Some(p) = e.param_mut("border_color") {
+                p.value = ParamValue::Color([1.0, 0.9, 0.0, 1.0]);
+            }
+        }),
+        ("antialias off", 1.0, |e| {
+            if let Some(p) = e.param_mut("antialias") {
+                p.value = ParamValue::Choice(0)
+            }
+        }),
+        ("antialias high", 1.0, |e| {
+            if let Some(p) = e.param_mut("antialias") {
+                p.value = ParamValue::Choice(3)
+            }
+        }),
+        ("centre", 1.0, |e| {
+            if let Some(p) = e.param_mut("center") {
+                p.value = ParamValue::Vec2(Vec2::new(30.0, 50.0))
+            }
+        }),
+        ("half scale", 0.5, |_| {}),
+        ("every choice", 1.0, |e| {
+            for p in e.params.values_mut() {
+                if let ParamValue::Choice(k) = p.value {
+                    p.value = ParamValue::Choice(k + 1);
+                }
+            }
+        }),
+    ];
+    let (mut cases, mut worst) = (0u64, (0u32, 0.0f64));
+    for id in ids {
+        for (name, scale, apply) in variants {
+            for reverse in [false, true] {
+                for progress in [0.0, 0.2, 0.5, 0.73, 1.0] {
+                    let mut effect = filmcraft_project::find_effect(id).unwrap().instance();
+                    filmcraft_project::resolve_auto_points(&mut effect, (w as u32, h as u32), (w as u32, h as u32));
+                    apply(&mut effect);
+                    let progress = if reverse { 1.0 - progress } else { progress };
+                    let plan = FramePlan::Composite {
+                        width: w,
+                        height: h,
+                        steps: vec![PlanStep::Transition { inputs: [vec![layer(0)], vec![layer(1)]], effect, progress, scale }],
+                    };
+                    let cpu = execute_cpu(&plan).over_black_rgba8();
+                    c.composite_prepared(&plan, Some(&prepare(&plan)));
+                    let (_, _, gpu) = c.read_output().expect("readback");
+                    let mut diffs: Vec<u32> = cpu
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(gpu.as_chunks::<4>().0)
+                        .map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap())
+                        .collect();
+                    diffs.sort_unstable();
+                    let p99 = diffs[diffs.len() * 99 / 100];
+                    let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+                    worst = (worst.0.max(p99), worst.1.max(mean));
+                    cases += 1;
+                    // the Push test's band: edges are anti-aliased slightly differently
+                    assert!(p99 <= 6 && mean < 1.5, "{id} {name} reverse={reverse} progress {progress}: p99 {p99}, mean {mean}");
+                }
+            }
+        }
+    }
+    assert_eq!(c.gpu_transitions, cases, "every wipe frame drew on the GPU");
+    assert_eq!(c.cpu_transitions, 0);
+    eprintln!("field wipes {cases} cases: worst p99 {}, mean {:.3}", worst.0, worst.1);
+}
+
 #[test]
 fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     use filmcraft_project::ParamValue;
