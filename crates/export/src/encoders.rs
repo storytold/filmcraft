@@ -355,10 +355,10 @@ pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
     })
 }
 
-/// H.264 (our encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
+/// H.264 (shared encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
 /// (HDR frames from their float pixels), length-prefixed samples with the `avcC` in the sample entry.
 struct H264Encoder {
-    enc: filmcraft_h264enc::Encoder,
+    enc: craft_video::h264::Encoder,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -407,15 +407,15 @@ impl H264Encoder {
     }
 
     /// Encode `f` at 10 bits (High 10), converting it on the encoder's threads.
-    fn encode10(&mut self, f: &EncoderFrame) -> Result<Vec<filmcraft_h264enc::Packet>> {
+    fn encode10(&mut self, f: &EncoderFrame) -> Result<Vec<craft_video::h264::Packet>> {
         let (enc, y, u, v, signal) = (&self.enc, &mut self.y16, &mut self.u16, &mut self.v16, self.signal);
         timed(Stage::Convert, || enc.install(|| h264_input10(f, signal, y, u, v)))?;
         let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
+        let frame = craft_video::h264::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
         self.enc.encode16(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))
     }
 
-    fn packets(&self, ps: Vec<filmcraft_h264enc::Packet>) -> Vec<EncodedPacket> {
+    fn packets(&self, ps: Vec<craft_video::h264::Packet>) -> Vec<EncodedPacket> {
         ps.into_iter()
             .map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: self.rate.den as u32, composition_offset: (p.pts - p.dts) as i32 })
             .collect()
@@ -458,7 +458,7 @@ impl VideoEncoder for H264Encoder {
             }
         }
         let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let frame = craft_video::h264::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
@@ -470,7 +470,7 @@ impl VideoEncoder for H264Encoder {
         // With B-frames the first DTS is one frame before the first PTS.
         (self.enc.delay() > 0).then_some(self.rate.den)
     }
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<craft_video::h264::PassStats> {
         self.enc.pass_stats()
     }
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
@@ -498,30 +498,32 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     if format != Format::H264 {
         return None;
     }
-    let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    let mut cfg = craft_video::h264::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    // Keep the existing FilmCraft identification SEI string instead of the shared crate default.
+    cfg.writer = format!("filmcraft-h264enc {}", env!("CARGO_PKG_VERSION"));
     // MXF carries the Annex B byte stream (ST 381-3) with in-band parameter sets
-    cfg.format = if s.format.is_mxf() { filmcraft_h264enc::PacketFormat::AnnexB } else { filmcraft_h264enc::PacketFormat::LengthPrefixed };
+    cfg.format = if s.format.is_mxf() { craft_video::h264::PacketFormat::AnnexB } else { craft_video::h264::PacketFormat::LengthPrefixed };
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
-        BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
+        BitrateMode::Cbr => craft_video::h264::RateControl::Cbr { kbps },
         // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
-        BitrateMode::Crf => filmcraft_h264enc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
-        _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
+        BitrateMode::Crf => craft_video::h264::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
+        _ => craft_video::h264::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {
-        H264Pass::Single => filmcraft_h264enc::Pass::Single,
-        H264Pass::First => filmcraft_h264enc::Pass::First,
-        H264Pass::Second(st) => filmcraft_h264enc::Pass::Second(st.clone()),
+        H264Pass::Single => craft_video::h264::Pass::Single,
+        H264Pass::First => craft_video::h264::Pass::First,
+        H264Pass::Second(st) => craft_video::h264::Pass::Second(st.clone()),
     };
     cfg.profile = match s.h264_profile {
-        H264Profile::Baseline => filmcraft_h264enc::Profile::Baseline,
-        H264Profile::Main => filmcraft_h264enc::Profile::Main,
-        H264Profile::High => filmcraft_h264enc::Profile::High,
-        H264Profile::High10 => filmcraft_h264enc::Profile::High10,
+        H264Profile::Baseline => craft_video::h264::Profile::Baseline,
+        H264Profile::Main => craft_video::h264::Profile::Main,
+        H264Profile::High => craft_video::h264::Profile::High,
+        H264Profile::High10 => craft_video::h264::Profile::High10,
     };
     cfg.bit_depth = s.h264_profile.bit_depth();
     cfg.intra_only = s.h264_intra_only;
@@ -530,7 +532,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         cfg.sar = (n.clamp(1, 65535) as u16, d.clamp(1, 65535) as u16);
     }
     if s.signal.is_hdr() {
-        cfg.color = filmcraft_h264enc::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+        cfg.color = craft_video::h264::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
         if let Some((md, cll)) = s.signal.static_metadata() {
             let mut b = [0u8; 24];
             b.copy_from_slice(&md.to_bytes());
@@ -539,7 +541,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         }
     }
     Some(
-        filmcraft_h264enc::Encoder::new(cfg)
+        craft_video::h264::Encoder::new(cfg)
             .map(|enc| {
                 let (y, u, v, y16, u16, v16) = Default::default();
                 Box::new(H264Encoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() }) as Box<dyn VideoEncoder>

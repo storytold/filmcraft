@@ -311,7 +311,7 @@ engine behaviour without a window.
 | H.264 decode, 1080p, threads sweep | in craft-libs: `cargo test --release -p craft-video --features h264-decode,threads --test h264_decode perf:: -- --ignored --nocapture` |
 | HEVC decode, 1080p / 2160p | in craft-libs: `cargo test --release -p craft-video --features hevc-decode,threads --test hevc_decode perf:: -- --ignored --nocapture` |
 | ProRes decode/encode | `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture` |
-| Encoder speed / PSNR / bitrate | `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- …` |
+| Encoder speed / PSNR / bitrate | in craft-libs: `cargo run --release -p craft-video --features h264-encode --example h264_h264enc_bench -- …` |
 | Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files) | `cargo run --release -p filmcraft-engine --example bench_export -- --runs 7` |
 | Decode a real file through the media stack | `cargo run --release -p filmcraft-cli -- bench-decode file.mp4 --frames 120` |
 | Coding-tool coverage of the fixtures | in craft-libs: `cargo test --release -p craft-video --features h264-decode --test h264_decode conformance::coverage_report -- --ignored --nocapture` (same for `hevc`) |
