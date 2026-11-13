@@ -353,6 +353,44 @@ fn single_frame_in_out_export_warns_in_json_and_stderr() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// #3952: an H.264 export that asks for hardware encoding and gets the software encoder says so, in
+/// its report and on stderr, whether it runs now or through the queue. No hardware encoder takes a
+/// two-pass export, so this holds on every machine. With hardware encoding Off there is nothing to say.
+#[test]
+fn export_says_when_the_software_encoder_ran_instead_of_hardware() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-hw-fallback-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let auto = r#"{"hardwareEncoding":"auto","bitrateMode":"vbr2Pass"}"#;
+    let off = r#"{"bitrateMode":"vbr2Pass"}"#;
+    for (name, queued, settings, report, warned) in [
+        ("direct.mp4", false, auto, "/result", true),
+        ("queued.mp4", true, auto, "/items/0/result", true),
+        ("direct-off.mp4", false, off, "/result", false),
+        ("queued-off.mp4", true, off, "/items/0/result", false),
+    ] {
+        let path = dir.join(name);
+        let mut args = vec!["--demo", "export", path.to_str().unwrap(), "--format", "h264", "--start", "0", "--end", "0.1", "--scale", "0.25", "--no-audio"];
+        args.extend(["--settings", settings]);
+        if queued {
+            args.push("--queue");
+        }
+        let o = cli(&args);
+        let v = json_out(&o);
+        let r = v.pointer(report).unwrap_or_else(|| panic!("{name}: no report in {v}"));
+        assert_eq!(r["encoder"], "software", "{name}: {v}");
+        let warnings: Vec<&str> = r["warnings"].as_array().map(|w| w.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), usize::from(warned), "{name}: {v}");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        for w in warnings {
+            assert!(w.contains("software") && w.ends_with("encoder ran"), "{name}: {w}");
+            assert!(stderr.contains(&format!("filmcraft-cli: warning: {w}")), "{name}: {stderr}");
+        }
+        assert_eq!(stderr.contains("encoder ran"), warned, "{name}: {stderr}");
+        assert!(path.exists(), "{name}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn export_with_presets() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/export-tests").join(format!("cli-{}", std::process::id()));
