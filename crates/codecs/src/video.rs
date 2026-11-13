@@ -618,9 +618,10 @@ pub fn vp9_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
-/// Our pure-Rust VP8 decoder (RFC 6386; #432): WebM / Matroska `V_VP8` and MP4 `vp08`.
+/// VP8 container adapter (RFC 6386): WebM / Matroska `V_VP8` and MP4 `vp08`.
+/// The bitstream decoder is provided by craft-video; this adapter maps its pictures into FilmCraft frames.
 pub struct Vp8Decoder {
-    dec: filmcraft_vp8::Decoder,
+    dec: craft_video::vp8::Decoder,
 }
 
 impl Default for Vp8Decoder {
@@ -631,10 +632,11 @@ impl Default for Vp8Decoder {
 
 impl Vp8Decoder {
     pub fn new() -> Self {
-        Self { dec: filmcraft_vp8::Decoder::new() }
+        // Preserve the 2^26 padded-luma-sample limit of the app-owned decoder.
+        Self { dec: craft_video::vp8::Decoder::with_max_luma_samples(1 << 26) }
     }
 
-    fn convert(p: filmcraft_vp8::Picture) -> DecodedFrame {
+    fn convert(p: craft_video::vp8::Picture) -> DecodedFrame {
         use filmcraft_frame::{Chroma, PixelData};
         use std::sync::Arc;
         // color_space 0 is BT.601 YUV (RFC 6386 9.2), studio swing; a container's Colour wins
@@ -648,7 +650,7 @@ impl Vp8Decoder {
 impl VideoDecoder for Vp8Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let pic = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pic.into_iter().map(Self::convert).collect())
+        Ok(pic.map(Self::convert).into_iter().collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
         // no reordering: every picture comes out with its frame
@@ -661,7 +663,7 @@ impl VideoDecoder for Vp8Decoder {
         "FilmCraft VP8"
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
-        Some(filmcraft_vp8::is_keyframe(sample))
+        Some(craft_video::vp8::is_keyframe(sample))
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         self.dec.is_disposable(sample)
