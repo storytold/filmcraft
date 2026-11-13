@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (H.264 High 10 and High 10 Intra in the built-in encoder, #1221) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-06 · **Change:** minor (ALAC export with a clean-room encoder) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -46,7 +46,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
 | MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | **none** | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | 10–20 h (MP3 encoder) |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | none | conformance vectors | ahead | — |
-| FLAC, ALAC, Vorbis | partial | decode (symphonia), also FLAC in MP4 / MOV (#603) | none | — | 70% | 3–6 h |
+| FLAC, ALAC, Vorbis | partial | decode (symphonia), also FLAC in MP4 / MOV (#603) | own FLAC and ALAC encoders: `.flac`, ALAC `.m4a`, both also in MP4 / MOV (FLAC 16/24/32-bit, ALAC 16/24-bit) | ffmpeg and symphonia decode them bit-exactly | 75% | 2–4 h |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |
 
 ## Summary
@@ -62,6 +62,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-06 | minor | ALAC (Apple Lossless) export with a clean-room encoder: `.m4a`, and in MP4 / MOV |
 | 2026-11-05 | minor | H.264 High 10 and High 10 Intra in the built-in encoder (#1221) |
 | 2026-11-02 | minor | Apple Intermediate Codec row: named on import and in the no-decoder error, no decoder (#3646) |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |

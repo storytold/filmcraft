@@ -1,7 +1,9 @@
-//! AAC Audio: the sequence mix alone, AAC-LC from the same encoder as the MPEG-4 movies, in an
-//! MPEG-4 audio file (`.m4a`, the encoder delay signalled by an edit list) or, when the path ends
-//! in `.aac`, a raw ADTS stream (ISO/IEC 14496-3 §1.A.2; one header per access unit, no CRC). ADTS
-//! cannot signal the encoder delay, so a player starts it with the priming samples.
+//! AAC Audio and Apple Lossless: the sequence mix alone in an MPEG-4 audio file (`.m4a`). AAC-LC
+//! comes from the same encoder as the MPEG-4 movies (the encoder delay signalled by an edit list),
+//! or, when the path ends in `.aac`, goes out as a raw ADTS stream (ISO/IEC 14496-3 §1.A.2; one
+//! header per access unit, no CRC). ADTS cannot signal the encoder delay, so a player starts it
+//! with the priming samples. ALAC's last frame is shorter, and its magic cookie learns the largest
+//! frame and the bitrate at the end.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
 use crate::audio_out::AudioOut;
-use crate::{AudioEncoder, ExportError, ExportSettings, Format, Out, Progress, Result, audio_factories};
+use crate::{AlacAudio, AudioEncoder, ExportError, ExportSettings, Format, Out, Progress, Result, audio_factories};
 
 /// Whether `path` asks for a raw ADTS stream rather than an MPEG-4 file.
 pub(crate) fn is_adts_path(path: &str) -> bool {
@@ -28,16 +30,25 @@ enum Sink {
 
 impl Sink {
     fn write(&mut self, units: Vec<Vec<u8>>) -> Result<()> {
+        let frame = match self {
+            Sink::Mp4 { frame, .. } => *frame,
+            Sink::Adts { .. } => 0,
+        };
+        self.write_timed(units.into_iter().map(|au| (au, frame)).collect())
+    }
+
+    /// Access units with their durations (the last ALAC frame is shorter).
+    fn write_timed(&mut self, units: Vec<(Vec<u8>, u32)>) -> Result<()> {
         let io = |e: std::io::Error| ExportError::Io(e.to_string());
         match self {
-            Sink::Mp4 { mux, track, frame } => {
-                for au in units {
-                    mux.write_sample(*track, WriteSample { data: &au, duration: *frame, composition_offset: 0, is_sync: true })
+            Sink::Mp4 { mux, track, .. } => {
+                for (au, duration) in units {
+                    mux.write_sample(*track, WriteSample { data: &au, duration, composition_offset: 0, is_sync: true })
                         .map_err(|e| ExportError::Io(e.to_string()))?;
                 }
             }
             Sink::Adts { out, header } => {
-                for au in units {
+                for (au, _) in units {
                     out.write_all(&header.bytes(au.len())?).map_err(io)?;
                     out.write_all(&au).map_err(io)?;
                 }
@@ -110,12 +121,16 @@ pub(crate) fn export(
 ) -> Result<(u64, u64)> {
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let mut a = AudioOut::new(project.clone(), seq, settings, range)?;
-    let mut enc: Box<dyn AudioEncoder> = audio_factories()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find_map(|f| f(Format::Aac, a.sr, a.channels as u32, settings))
-        .ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??;
+    let mut enc: Box<dyn AudioEncoder> = if settings.format == Format::Alac {
+        Box::new(AlacAudio::new(a.sr, a.channels as u32, settings)?)
+    } else {
+        audio_factories()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find_map(|f| f(Format::Aac, a.sr, a.channels as u32, settings))
+            .ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??
+    };
     let entry = enc.sample_entry();
     let frames = a.remaining();
     // one second per chunk: memory stays flat however long the range is
@@ -126,7 +141,7 @@ pub(crate) fn export(
     }
     a.measure(settings, sources, &cancelled)?;
     *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
-    let mut sink = if is_adts_path(&settings.path) {
+    let mut sink = if settings.format == Format::Aac && is_adts_path(&settings.path) {
         let CodecConfig::Aac(cfg) = &entry.codec else {
             return Err(ExportError::Encode("AAC: the encoder's sample entry is not AAC".into()));
         };
@@ -149,7 +164,10 @@ pub(crate) fn export(
             progress.done.fetch_add(1, Ordering::Relaxed);
         }
     }
-    sink.write(enc.flush()?)?;
+    sink.write_timed(enc.flush_timed()?)?;
+    if let (Some(entry), Sink::Mp4 { mux, track, .. }) = (enc.final_sample_entry(), &mut sink) {
+        mux.set_sample_entry(*track, entry).map_err(|e| ExportError::Io(e.to_string()))?;
+    }
     let n = sink.finish(settings)?;
     if settings.part_of_batch {
         progress.done.store(1, Ordering::Relaxed);

@@ -3745,3 +3745,10 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC export writes 16 or 24 bit	L'export ALAC n'écrit qu'en 16 ou 24 bits
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 bits
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) en audio MPEG-4 (.m4a), stéréo 48 kHz 24 bits

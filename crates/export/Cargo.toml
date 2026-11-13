@@ -26,6 +26,7 @@ filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-prores = { workspace = true }
 filmcraft-dnx = { workspace = true }
+filmcraft-alac = { workspace = true }
 filmcraft-h264enc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

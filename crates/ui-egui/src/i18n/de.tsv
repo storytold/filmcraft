@@ -3700,3 +3700,10 @@
 	Toggle Color Grading Section	Farbgrading-Abschnitt umschalten
 	Color Grading Section	Farbgrading-Abschnitt
 	Read Video Scopes	Videoskope auslesen
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC export writes 16 or 24 bit	ALAC-Export schreibt nur 16 oder 24 Bit
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 Bit
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) in MPEG-4-Audio (.m4a), Stereo 48 kHz 24 Bit

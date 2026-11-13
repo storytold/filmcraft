@@ -3685,3 +3685,10 @@
 	Toggle Color Grading Section	Aktifkan/Nonaktifkan Bagian Gradasi Warna
 	Color Grading Section	Bagian Gradasi Warna
 	Read Video Scopes	Baca Skop Video
+
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC export writes 16 or 24 bit	Ekspor ALAC hanya menulis 16 atau 24 bit
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24-bit
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) dalam audio MPEG-4 (.m4a), stereo 48 kHz 24-bit

@@ -247,6 +247,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             },
         ),
         p("FLAC 48 kHz 24-bit", "Audio Only", "FLAC, stereo 48 kHz 24-bit, lossless", audio_only(Format::Flac, 24)),
+        p("Apple Lossless 48 kHz 24-bit", "Audio Only", "Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit", audio_only(Format::Alac, 24)),
     ]
 }
 
