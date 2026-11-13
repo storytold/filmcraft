@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-08 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-13 · **Change:** minor (G10: PNG-in-MOV decodes with alpha, #402) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -202,7 +202,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   tiled, multi-part, deep), HEIF / HEIC,
   AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
   since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
-  video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV multi-audio (#601);
+  video beyond ProRes 4444 / 4444 XQ and PNG-in-MOV (#402: QuickTime Animation `rle ` has no public
+  specification, so such clips are named on the slate instead of decoded); Sony start timecode in
+  `rtmd` (#460); stereo 3D flag (#500); MKV multi-audio (#601);
   EXIF Orientation on uncompressed / PackBits YCbCr TIFF and DNG stills and on the export image
   overlay (`load_overlay` in `crates/export/src/pipeline.rs`); JPEG, PNG, WebP and other TIFF stills
   apply it since #1583, except a WebP or PNG whose EXIF chunk starts with an `Exif\0\0` prefix
@@ -215,6 +217,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   [file-format-parity.md](file-format-parity.md).
 - **Have:** Matroska AAC / MP3 / AC-3 / E-AC-3 sample-aligned with the signal the encoder was
   given (the exact `CodecDelay` is trimmed, not the 1 ms-rounded one; #790).
+- **Have:** PNG-coded video in MOV / MP4 (`png ` sample entries) as straight RGBA8 with its alpha
+  channel, bit-exact against ffmpeg's decode (#402); a file with a decoder we don't have shows its
+  codec name and fourcc on the slate, not "unknown".
 - **Have:** AVI / OpenDML import (#598; Motion JPEG, H.264, HEVC, uncompressed video; PCM, MP3,
   MP2, AC-3 audio) and FLAC audio in MP4 / MOV (#603; the decoder gets its STREAMINFO from `dfLa`).
 

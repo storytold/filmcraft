@@ -366,7 +366,7 @@ fn audio_fx_chain_is_continuous_and_random_access_matches() {
 
 #[test]
 fn offline_slate_is_deterministic_and_marked() {
-    use crate::offline::{FIELD, OfflineReason, slate_rgba8};
+    use crate::offline::{FIELD, OfflineReason, slate_rgba8, slate_rgba8_detailed};
     let a = slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing);
     assert_eq!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing));
     assert_ne!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::MadeOffline), "the headline names the reason");
@@ -376,6 +376,15 @@ fn offline_slate_is_deterministic_and_marked() {
     assert!(px(0, 359)[0] >= FIELD[0] && px(0, 359)[1] <= 0x20, "{:?}", px(0, 359));
     // tiny sizes work (thumbnails)
     assert_eq!(slate_rgba8(8, 4, "x", OfflineReason::Unreadable).len(), 8 * 4 * 4);
+    // a decoder's own words are drawn on the slate, so it names its cause (#402)
+    let plain = slate_rgba8(640, 360, "clip.mov", OfflineReason::Unreadable);
+    let detailed = slate_rgba8_detailed(640, 360, "clip.mov", OfflineReason::Unreadable, "no decoder for Codec video (fourcc \"rle \")");
+    assert_ne!(plain, detailed, "the detail line must change the picture");
+    assert_eq!(
+        detailed,
+        slate_rgba8_detailed(640, 360, "clip.mov", OfflineReason::Unreadable, "no decoder for Codec video (fourcc \"rle \")"),
+        "deterministic"
+    );
     if let Some(p) = std::env::var_os("FILMCRAFT_SLATE_PNG") {
         ::image::save_buffer(p, &a, 640, 360, ::image::ExtendedColorType::Rgba8).unwrap();
     }

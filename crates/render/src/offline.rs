@@ -44,6 +44,12 @@ fn srgb(c: [u8; 3]) -> [f32; 4] {
 
 /// Draw the slate at `w`×`h` (premultiplied linear-light, opaque).
 pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Image {
+    slate_detailed(w, h, file_name, reason, "")
+}
+
+/// [`slate`] with the decoder's own words under the file name (why it could not be read: a codec
+/// with no decoder, a damaged sample…), so a slate names its cause instead of only its kind (#402).
+pub fn slate_detailed(w: usize, h: usize, file_name: &str, reason: OfflineReason, detail: &str) -> Image {
     let (w, h) = (w.max(1), h.max(1));
     let field = srgb(FIELD);
     let stripe = srgb(STRIPE);
@@ -87,15 +93,33 @@ pub fn slate(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Imag
     }
     let hint = match reason {
         OfflineReason::MadeOffline => "Link Media… brings it back",
-        _ => "File > Link Media… reconnects it",
+        OfflineReason::Missing => "File > Link Media… reconnects it",
+        // Relinking can't help a file we have but can't decode: say what would.
+        OfflineReason::Unreadable => "Convert it to a format FilmCraft can read",
     };
-    text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.205) as f64), s * 0.028, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.205) as f64), s * 0.028, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
+    } else {
+        // the decoder's message: the line that actually says what went wrong
+        let mut why: String = detail.chars().take(96).collect();
+        if detail.chars().count() > 96 {
+            why.push('…');
+        }
+        text(&mut img, &why, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.19) as f64), s * 0.026, [1.0, 0.86, 0.72, 1.0], pw * 0.94);
+        text(&mut img, hint, "Regular", Vec2::new(cx as f64, (ty0 + tri_h + s * 0.235) as f64), s * 0.026, [0.85, 0.72, 0.72, 1.0], pw * 0.94);
+    }
     img
 }
 
 /// The slate as straight sRGB RGBA8 (what offline sources hand to the compositor).
 pub fn slate_rgba8(w: usize, h: usize, file_name: &str, reason: OfflineReason) -> Vec<u8> {
     slate(w, h, file_name, reason).to_rgba8()
+}
+
+/// [`slate_detailed`] as straight sRGB RGBA8.
+pub fn slate_rgba8_detailed(w: usize, h: usize, file_name: &str, reason: OfflineReason, detail: &str) -> Vec<u8> {
+    slate_detailed(w, h, file_name, reason, detail).to_rgba8()
 }
 
 fn fill_path(img: &mut Image, p: &filmcraft_text::Path, color: [f32; 4]) {
