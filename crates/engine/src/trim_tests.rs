@@ -486,3 +486,84 @@ fn trim_delta_stops_at_the_end_of_the_media() {
     let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).expect("ok");
     assert_eq!(back, -small, "a trim within the media is not clamped");
 }
+
+/// Two clips on their own video track, 48 frames each with a 48-frame gap between them: the
+/// fixture for trims that act on a whole selection.
+fn spaced_clips() -> (Session, ClipId, ClipId) {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Group trim", "video": 1, "audio": 0})).expect("ok");
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).expect("a video item").id;
+    for n in 0..2 {
+        s.execute("timeline.place", json!({"item": item.0, "frame": 96 * n, "duration": rate.tick_of(48).0})).expect("ok");
+    }
+    let ids: Vec<ClipId> = v1(&s).iter().map(|c| ClipId(c.0)).collect();
+    (s, ids[0], ids[1])
+}
+
+/// The Out-edge handle each clip has left, as `timeline.trim` would apply it on its own.
+fn out_handle(s: &Session, clip: ClipId, far: Tick) -> Tick {
+    commands::trim_delta(s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).expect("ok")
+}
+
+/// A marquee selection trims as one group: dragging one edge moves every selected clip's Out edge
+/// by the same delta, in one edit step, so a single undo puts the whole group back.
+#[test]
+fn a_selection_trims_together_as_one_undo_step() {
+    let (mut s, a, b) = spaced_clips();
+    let far = s.sequence_rate().tick_of(240);
+    let want = out_handle(&s, a, far).min(out_handle(&s, b, far));
+    assert!(want > Tick::ZERO, "the fixture has an Out handle on both clips");
+    let clip = |s: &Session, c: ClipId| s.active_sequence().expect("ok").find_item(c).expect("ok").1.clone();
+    let (before_a, before_b) = (clip(&s, a), clip(&s, b));
+    let undo0 = s.history.undo.len();
+    let shown = commands::trim_delta_group(&s, &[a, b], filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, want, false).expect("ok");
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "regular", "delta": want.0})).expect("ok");
+    assert_eq!(Tick(r["delta"].as_i64().expect("ok")), shown, "the preview and the trim agree");
+    assert_eq!(shown, want, "the group moves by the delta both clips can take");
+    for (id, before) in [(a, &before_a), (b, &before_b)] {
+        let now = clip(&s, id);
+        assert_eq!(now.duration, before.duration + want, "every selected clip grows by the same delta");
+        assert_eq!(now.start, before.start, "an Out trim leaves the start where it was");
+    }
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for the whole group");
+    s.execute("edit.undo", json!({})).expect("ok");
+    assert_eq!(clip(&s, a).duration, before_a.duration);
+    assert_eq!(clip(&s, b).duration, before_b.duration);
+    s.execute("edit.redo", json!({})).expect("ok");
+    assert_eq!(clip(&s, a).duration, before_a.duration + want);
+    assert_eq!(clip(&s, b).duration, before_b.duration + want);
+}
+
+/// The group stops where the first clip has to: a delta past one clip's handle is clamped for the
+/// whole group, so no clip overlaps its neighbour and none runs past its media.
+#[test]
+fn a_group_trim_stops_where_the_first_clip_has_to() {
+    let (mut s, a, b) = spaced_clips();
+    let far = s.sequence_rate().tick_of(240);
+    let want = out_handle(&s, a, far).min(out_handle(&s, b, far));
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "regular", "delta": far.0})).expect("ok");
+    assert_eq!(Tick(r["delta"].as_i64().expect("ok")), want, "clamped for the whole group, not per clip");
+    let q = s.active_sequence().expect("ok");
+    let (_, ca) = q.find_item(a).expect("ok");
+    let (_, cb) = q.find_item(b).expect("ok");
+    assert!(ca.end() <= cb.start, "the trimmed neighbour does not overlap the next clip");
+}
+
+/// A ripple moves the rest of the track, so it still trims one clip (and its links) at a time.
+#[test]
+fn a_ripple_trim_still_takes_one_clip() {
+    let (mut s, a, b) = spaced_clips();
+    let e = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": 2})).expect_err("refused");
+    assert!(e.to_string().contains("ripple trim"), "{e}");
+    s.execute("timeline.trim", json!({"clip": a.0, "edge": "out", "mode": "ripple", "deltaFrames": 2})).expect("one clip still ripples");
+}
+
+/// A malformed group never silently trims something else: an id of no clip in the active sequence
+/// is a bad parameter (#65's rule for explicit targets).
+#[test]
+fn a_group_trim_refuses_clip_ids_it_does_not_know() {
+    let (mut s, a, _) = spaced_clips();
+    let e = s.execute("timeline.trim", json!({"clips": [a.0, 999_999], "edge": "out", "mode": "regular", "deltaFrames": 2})).expect_err("refused");
+    assert!(e.to_string().contains("999999"), "{e}");
+}

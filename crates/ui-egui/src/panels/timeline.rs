@@ -202,6 +202,10 @@ pub enum Drag {
         from: Tick,
         /// Linked partners trim along; false when Alt was held as the drag started (#3300).
         linked: bool,
+        /// The whole Timeline selection when the drag started on one of several selected clips:
+        /// every listed clip's edge then moves by the same delta, in one edit step. Empty when the
+        /// drag trims the grabbed clip (and its linked partners) only.
+        clips: Vec<ClipId>,
     },
     Roll {
         left: ClipId,
@@ -958,7 +962,8 @@ mod trim_preview_tests {
         let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).unwrap().clone();
         for (edge, delta) in [(filmcraft_edit::Edge::In, 5), (filmcraft_edit::Edge::Out, -5), (filmcraft_edit::Edge::In, -1)] {
             let delta = Tick(delta * filmcraft_time::TICKS_PER_SECOND);
-            app.tl.drag = Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, delta, from: Tick::ZERO, linked: true });
+            app.tl.drag =
+                Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, delta, from: Tick::ZERO, linked: true, clips: Vec::new() });
             let (mut out, mut edited) = (HashMap::new(), HashMap::new());
             preview_drag(&app, &seq, &mut out, &mut edited);
             let shown = edited.get(&music.id).expect("the trimmed clip is drawn from its edited item");

@@ -191,3 +191,50 @@ fn a_regular_caption_trim_still_stops_at_the_neighbour() {
     assert_eq!(caption_span(&s, ClipId(c1)), Some((0, rate.tick_of(24).0)), "moved 12 frames, no further");
     assert_eq!(caption_span(&s, ClipId(c2)), Some((rate.tick_of(24).0, rate.tick_of(36).0)), "the neighbour is untouched");
 }
+
+/// A marquee selection spanning tracks trims together in overwrite mode: both selected clips' Out
+/// edges move by the same delta, in one edit step, so one undo puts them both back.
+#[test]
+fn a_group_out_trim_moves_every_selected_edge() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Group", "video": 2, "audio": 0})).expect("ok");
+    let item = longest(&s, true);
+    let rate = s.sequence_rate();
+    for (n, track) in ["V1", "V2"].into_iter().enumerate() {
+        s.execute("timeline.place", json!({"item": item, "frame": 0, "duration": rate.tick_of(48).0, "track": track})).expect("ok");
+        let _ = n;
+    }
+    let q = s.active_sequence().expect("ok");
+    let a = q.video_tracks[0].items[0].id;
+    let b = q.video_tracks[1].items[0].id;
+    let (a0, b0) = (span(&s, a).expect("a"), span(&s, b).expect("b"));
+    let d = rate.tick_of(24);
+    let undo0 = s.history.undo.len();
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "overwrite", "delta": d.0})).expect("ok");
+    assert_eq!(r["delta"], json!(d.0), "both clips have the room, so the whole delta applies");
+    assert_eq!(span(&s, a).expect("a").1, a0.1 + d.0, "the first clip's Out edge moved");
+    assert_eq!(span(&s, b).expect("b").1, b0.1 + d.0, "the other selected clip's moved by the same delta");
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for the group");
+    s.execute("edit.undo", json!({})).expect("ok");
+    assert_eq!(span(&s, a), Some(a0));
+    assert_eq!(span(&s, b), Some(b0));
+}
+
+/// A group trim never overwrites another selected clip: with the two clips back to back on one
+/// track the edge stops at the cut instead of eating the neighbour that is being trimmed too.
+#[test]
+fn a_group_trim_never_eats_another_selected_clip() {
+    let mut s = demo();
+    let (a, b) = two_clips(&mut s);
+    let rate = s.sequence_rate();
+    let d24 = rate.tick_of(24);
+    let (a0, b0) = (span(&s, a).expect("a"), span(&s, b).expect("b"));
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "overwrite", "delta": d24.0})).expect("ok");
+    assert_eq!(r["delta"], json!(0), "there is no room before the next selected clip");
+    assert_eq!(span(&s, a), Some(a0), "the dragged clip stayed put");
+    let q = s.active_sequence().expect("ok");
+    assert!(q.find_item(b).is_some(), "the neighbour was not eaten");
+    let b1 = span(&s, b).expect("b");
+    assert_eq!(b1.1, b0.1, "and its Out edge did not move either");
+    assert_eq!(q.video_tracks[0].items.len(), 2, "and it was not split");
+}

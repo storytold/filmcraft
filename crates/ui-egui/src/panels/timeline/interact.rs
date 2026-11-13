@@ -44,8 +44,15 @@ pub(super) fn preview_drag(
                 edited.insert(*clip, e);
             }
         }
-        Drag::Trim { clip, edge, delta, linked, .. } => {
-            let ids = if *linked { filmcraft_engine::commands::with_links(&app.session, &[*clip]) } else { vec![*clip] };
+        Drag::Trim { clip, edge, delta, linked, clips, .. } => {
+            // a group trim moves the edge of every selected clip by the same delta
+            let ids = if !clips.is_empty() {
+                clips.clone()
+            } else if *linked {
+                filmcraft_engine::commands::with_links(&app.session, &[*clip])
+            } else {
+                vec![*clip]
+            };
             for c in ids {
                 if let Some((_, it)) = seq.find_item(c) {
                     moved(it, *edge, *delta);
@@ -396,6 +403,15 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
     false
 }
 
+/// The clips a trim drag starting on `clip` trims along with it: the whole selection when the drag
+/// began on one of several selected clips (a marquee gets longer or shorter together, in one edit
+/// step, so one undo puts them all back), else empty — the grabbed clip and its linked partners.
+/// Alt isolates the grabbed clip, and a ripple trims one clip at a time because it moves the rest
+/// of the track.
+fn trim_group(selection: &[ClipId], clip: ClipId, kind: EdgeKind, alt: bool) -> Vec<ClipId> {
+    if alt || kind == EdgeKind::Ripple || selection.len() < 2 || !selection.contains(&clip) { Vec::new() } else { selection.to_vec() }
+}
+
 /// What a press does: the drag it starts (or the tool's click action), the playhead jump a
 /// ruler press makes, and the selection a tool change makes first.
 #[allow(clippy::too_many_arguments)]
@@ -499,13 +515,20 @@ fn start_drag(
             }
             None
         }
-        (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
-            EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
-        }),
+        (_, Grab::Edge { clip, edge, kind, .. }) => {
+            let group = trim_group(&app.session.state.selection, clip, kind, mods.alt);
+            Some(match kind {
+                EdgeKind::Trim => {
+                    Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt, clips: group }
+                }
+                EdgeKind::Ripple => {
+                    Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt, clips: Vec::new() }
+                }
+                EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
+                EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
+                EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
+            })
+        }
         (_, Grab::Volume { clip, .. }) if resp.drag_started() => crate::panels::timeline_volume::start(seq, layout, clip, p).map(Drag::Volume),
         (_, Grab::Volume { clip, .. }) => {
             crate::panels::timeline_volume::add_keyframe(app, seq, layout, clip, p.x);
@@ -710,7 +733,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                     Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, new_track, copy: mods.alt })
                 }
             }
-            Drag::Trim { clip, edge, mode, from, linked, .. } => seq.find_item(clip).map(|(_, it)| {
+            Drag::Trim { clip, edge, mode, from, linked, clips, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let side = if edge == filmcraft_edit::Edge::In { SnapSide::Start } else { SnapSide::End };
                 let target = snap_side(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip], side, mods);
@@ -724,9 +747,15 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                     filmcraft_edit::TrimMode::Overwrite
                 };
                 // stop where the trim on release will: the media end, and the neighbour unless
-                // the edge overwrites it
-                let delta = filmcraft_engine::commands::trim_delta_linked(&app.session, clip, edge, mode, target - base, linked).unwrap_or(target - base);
-                Drag::Trim { clip, edge, mode, delta, from, linked }
+                // the edge overwrites it; a group stops at the first clip that cannot go further
+                let want = target - base;
+                let delta = if clips.is_empty() {
+                    filmcraft_engine::commands::trim_delta_linked(&app.session, clip, edge, mode, want, linked)
+                } else {
+                    filmcraft_engine::commands::trim_delta_group(&app.session, &clips, edge, mode, want, linked)
+                }
+                .unwrap_or(want);
+                Drag::Trim { clip, edge, mode, delta, from, linked, clips: clips.clone() }
             }),
             Drag::Remix { clip, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let target = rate.snap_nearest(it.end() + (t_here - from)).max(it.start + rate.frame_duration());
@@ -865,9 +894,10 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                             .execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})),
                     )
                 }
-                Drag::Trim { clip, edge, mode, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
-                    "timeline.trim",
-                    json!({
+                // One command = one undo step: a group trim, its effects and the caption/clip
+                // selection it moved come back together.
+                Drag::Trim { clip, edge, mode, delta, linked, clips: group, .. } if delta != Tick::ZERO => {
+                    let mut params = json!({
                         "clip": clip.0,
                         "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"},
                         "mode": match mode {
@@ -877,8 +907,12 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                         },
                         "delta": delta.0,
                         "linked": linked,
-                    }),
-                )),
+                    });
+                    if !group.is_empty() {
+                        params["clips"] = json!(group.iter().map(|c| c.0).collect::<Vec<_>>());
+                    }
+                    Some(app.session.execute("timeline.trim", params))
+                }
                 Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.rateStretch",
                     json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}),
@@ -1182,7 +1216,11 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 } else if transition_kind.is_some() {
                     app.session.execute("effects.apply", params)
                 } else {
-                    app.session.execute("effects.apply", json!({"effect": effect, "clips": [clip.0]}))
+                    // An effect dropped on a clip of a multi-clip selection goes on all of them,
+                    // in one edit step, so one undo takes it off the whole group again.
+                    let sel = &app.session.state.selection;
+                    let targets: Vec<u64> = if sel.len() > 1 && sel.contains(&clip) { sel.iter().map(|c| c.0).collect() } else { vec![clip.0] };
+                    app.session.execute("effects.apply", json!({"effect": effect, "clips": targets}))
                 };
                 if let Err(e) = r {
                     app.ui.status = e.to_string();

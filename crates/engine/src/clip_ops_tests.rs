@@ -1414,3 +1414,23 @@ fn rename_takes_several_clips() {
     s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// Applying an effect with a marquee selection gives it to every selected clip in one edit step,
+/// so one undo takes it off the whole group — the Effects panel sends the selection this way.
+#[test]
+fn an_effect_applied_to_a_selection_lands_on_every_clip_and_undoes_at_once() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].clone(), v1(&s)[2].clone());
+    select(&mut s, &[a.id.0, b.id.0]);
+    assert!(clip(&s, a.id.0).effect("gaussian_blur").is_none());
+    let undo0 = s.history.undo.len();
+    let r = s.execute("effects.apply", json!({"effect": "gaussian_blur"})).expect("the selection is the target");
+    let ids: Vec<u64> = r["applied"].as_array().expect("applied").iter().filter_map(|e| e["clip"].as_u64()).collect();
+    assert!(ids.contains(&a.id.0) && ids.contains(&b.id.0), "both selected clips got the effect: {r}");
+    assert!(clip(&s, a.id.0).effect("gaussian_blur").is_some());
+    assert!(clip(&s, b.id.0).effect("gaussian_blur").is_some());
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for the whole group");
+    s.execute("edit.undo", json!({})).expect("ok");
+    assert!(clip(&s, a.id.0).effect("gaussian_blur").is_none(), "one undo takes it off both");
+    assert!(clip(&s, b.id.0).effect("gaussian_blur").is_none());
+}

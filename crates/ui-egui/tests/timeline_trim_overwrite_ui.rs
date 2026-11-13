@@ -183,3 +183,39 @@ fn dragging_a_caption_out_edge_overwrites_the_next_caption() {
     assert_eq!(d.undo_steps(), undo0 + 1, "one undo step");
     let _ = frame;
 }
+
+/// A marquee selection trims as one group: dragging one selected clip's edge moves every selected
+/// clip's edge by the same amount in one edit step, so one undo puts the whole group back.
+#[test]
+fn dragging_an_edge_of_a_selection_trims_the_whole_selection() {
+    let mut d = Driver::demo();
+    d.exec("file.newSequence", json!({"name": "Group trim", "video": 2, "audio": 0}));
+    let rate = d.app().session.sequence_rate();
+    let item = d.app().session.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).expect("a video item").id;
+    for track in ["V1", "V2"] {
+        d.exec("timeline.place", json!({"item": item.0, "frame": 0, "duration": rate.tick_of(48).0, "track": track}));
+    }
+    d.frames(2);
+    let (a, b) = {
+        let seq = d.app().session.active_sequence().expect("sequence");
+        (seq.video_tracks[0].items[0].id, seq.video_tracks[1].items[0].id)
+    };
+    let span = |d: &Driver, c: ClipId| -> (i64, i64) {
+        let seq = d.app().session.active_sequence().expect("sequence");
+        let (_, it) = seq.find_item(c).expect("clip");
+        (it.start.0, it.end().0)
+    };
+    d.exec("timeline.select", json!({"clips": [a.0, b.0], "linked": false}));
+    let (a0, b0) = (span(&d, a), span(&d, b));
+    let (_, x1, y) = d.edges(a);
+    let undo0 = d.undo_steps();
+    d.drag(pos2(x1 - 3.0, y), pos2(x1 - 3.0 + 60.0, y), 30, Modifiers::default());
+    let (a1, b1) = (span(&d, a), span(&d, b));
+    let grew = a1.1 - a0.1;
+    assert!(grew > 0, "the dragged clip grew: {a0:?} → {a1:?}");
+    assert_eq!(b1.1 - b0.1, grew, "every selected clip grew by the same amount: {b0:?} → {b1:?}");
+    assert_eq!(d.undo_steps(), undo0 + 1, "one undo step for the whole group");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(span(&d, a), a0, "one undo puts the dragged clip back");
+    assert_eq!(span(&d, b), b0, "and the other selected clip with it");
+}
