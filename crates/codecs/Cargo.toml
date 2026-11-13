@@ -20,17 +20,17 @@ filmcraft-isobmff = { workspace = true }
 filmcraft-matroska = { workspace = true }
 craft-media = { workspace = true, features = ["avi", "mpegts", "mxf", "ogg"] }
 filmcraft-bitstream = { workspace = true }
-filmcraft-prores = { workspace = true }
 filmcraft-dnx = { workspace = true }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2" }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 # Decode timing counters (`gop_stats`); std's Instant panics on wasm32.
 web-time = "1"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "aiff", "ogg", "vorbis", "isomp4"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 serde_json = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
