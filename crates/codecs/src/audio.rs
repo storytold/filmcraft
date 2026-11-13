@@ -883,7 +883,10 @@ impl AudioFileSource {
     fn decode_inner(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if ext == "mp3" {
-            let (audio, decoded) = craft_audio::decode(&bytes, Some("mp3")).map_err(|e| CodecError::Decode(format!("{name}: {e}")))?;
+            let (audio, decoded) = craft_audio::decode(&bytes, Some("mp3")).map_err(|e| match e {
+                craft_audio::AudioError::Unsupported(message) | craft_audio::AudioError::TooLarge(message) => CodecError::Unsupported(format!("{name}: {message}")),
+                error => CodecError::Decode(format!("{name}: {error}")),
+            })?;
             let frames = decoded.frames();
             let rate = decoded.sample_rate;
             let samples = decoded.channels;
