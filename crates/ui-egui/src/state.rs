@@ -417,13 +417,41 @@ pub enum GuideDialog {
     },
 }
 
-/// The colour parameter an armed eyedropper fills (`effects.setParam` arguments).
+/// Where an armed eyedropper writes the colour it samples from the Program monitor. Each kind
+/// stores the colour the way its command does; see `panels::monitor` for the sampling.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Eyedropper {
-    pub clip: u64,
-    pub effect: usize,
-    pub param: String,
-    pub mask: Option<usize>,
+pub enum Eyedropper {
+    /// An effect parameter, stored as linear `[r, g, b, a]` (`effects.setParam`).
+    Param { clip: u64, effect: usize, param: String, mask: Option<usize> },
+    /// An Essential Graphics property, stored as `#rrggbb`, or `#rrggbbaa` for a gradient stop
+    /// (`graphics.set`).
+    Graphic { clip: u64, layer: usize, prop: String, alpha: bool },
+    /// Characters a Type-tool selection styles, stored as `#rrggbb` (`graphics.setCharStyle`).
+    CharStyle { clip: u64, layer: usize, start: usize, end: usize, style: String },
+    /// A caption track colour, stored as sRGB `[r, g, b, a]` bytes (`captions.setStyle`).
+    Caption { track: u64, field: String },
+}
+
+impl Eyedropper {
+    /// The clip the sample is rendered from.
+    pub fn clip(&self) -> u64 {
+        match *self {
+            Eyedropper::Param { clip, .. } | Eyedropper::Graphic { clip, .. } | Eyedropper::CharStyle { clip, .. } => clip,
+            // a caption style belongs to the whole track: sample the sequence as the monitor shows it
+            Eyedropper::Caption { .. } => u64::MAX,
+        }
+    }
+
+    /// The effect to switch off while sampling, so an eyedropper can pick the green an Ultra Key is
+    /// keying out, or the picture behind the graphic whose fill it fills.
+    pub fn effect(&self) -> Option<usize> {
+        match *self {
+            Eyedropper::Param { effect, .. } => Some(effect),
+            // the graphic layer is the clip's effect at that index
+            Eyedropper::Graphic { layer, .. } | Eyedropper::CharStyle { layer, .. } => Some(layer),
+            Eyedropper::Caption { .. } => None,
+        }
+    }
 }
 
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an

@@ -852,12 +852,12 @@ fn param_value_widget(
                 set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
-            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
+            let target = crate::state::Eyedropper::Param { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
             let armed = app.ui.eyedropper.as_ref() == Some(&target);
-            let drop = icons::button(vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
+            let drop = crate::widgets::eyedropper::button(vui, &t, armed, tl!("Eyedropper (pick a color from the Program monitor)"));
             app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
             if drop.clicked() {
-                app.ui.eyedropper = if armed { None } else { Some(target) };
+                crate::widgets::eyedropper::toggle(&mut app.ui.eyedropper, target);
             }
         }
         (ParamKind::Path, _) => {
@@ -1082,6 +1082,14 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
                         if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        }
+                        // the colour wheels' eyedropper: arm it, then click a pixel in the Program monitor
+                        let target = crate::state::Eyedropper::Param { clip: clip.0, effect: idx, param: pd.id.to_string(), mask: None };
+                        let armed = app.ui.eyedropper.as_ref() == Some(&target);
+                        let drop = crate::widgets::eyedropper::button(ui, &t, armed, tl!("Eyedropper (pick a color from the Program monitor)"));
+                        app.auto.add(&format!("lumetri.{}.eyedropper", pd.id), drop.rect, "Eyedropper");
+                        if drop.clicked() {
+                            crate::widgets::eyedropper::toggle(&mut app.ui.eyedropper, target);
                         }
                     }
                 });

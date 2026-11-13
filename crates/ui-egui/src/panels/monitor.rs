@@ -701,14 +701,15 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     {
         let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
         let mut project = (*app.session.project).clone();
-        if let Some(e) =
-            project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
-        {
+        if let Some(e) = armed.effect().and_then(|k| {
+            project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip()))).and_then(|(_, it)| it.effects.get_mut(k))
+        }) {
             e.enabled = false;
         }
         let frame = rate.frame_at(time);
         // a revision of its own, so this render never replaces what the monitor caches
-        let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip.rotate_left(17) ^ armed.effect as u64;
+        let effect = armed.effect().unwrap_or(0) as u64;
+        let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip().rotate_left(17) ^ effect;
         let key = FrameKey { target, frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
         ctx.data_mut(|d| d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), project: std::sync::Arc::new(project) }));
     }
@@ -724,14 +725,38 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
         return;
     };
-    // the parameter stores linear values, like the colour picker beside it
-    let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
-    if let Some(k) = armed.mask {
-        params["mask"] = json!(k);
-    }
-    if let Err(e) = app.session.execute("effects.setParam", params) {
+    if let Err(e) = fill(app, &armed, rgb) {
         app.ui.status = e.to_string();
+    }
+}
+
+/// Writes a sampled colour into the armed target, in the format that target's command stores: an
+/// effect parameter takes linear floats, a graphic a hex string, a caption style sRGB bytes.
+fn fill(app: &mut FilmcraftApp, armed: &crate::state::Eyedropper, rgb: [u8; 3]) -> filmcraft_engine::Result<()> {
+    use crate::state::Eyedropper;
+    match armed {
+        Eyedropper::Param { clip, effect, param, mask } => {
+            // the parameter stores linear values, like the colour picker beside it
+            let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+            let mut params = json!({"clip": clip, "effect": effect, "param": param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
+            if let Some(k) = mask {
+                params["mask"] = json!(k);
+            }
+            app.session.execute("effects.setParam", params).map(|_| ())
+        }
+        Eyedropper::Graphic { clip, layer, prop, alpha } => {
+            let hex = crate::widgets::eyedropper::hex_of([rgb[0], rgb[1], rgb[2], 255], *alpha);
+            app.session.execute("graphics.set", json!({"clip": clip, "layer": layer, "props": {prop.clone(): hex}})).map(|_| ())
+        }
+        Eyedropper::CharStyle { clip, layer, start, end, style } => {
+            let hex = crate::widgets::eyedropper::hex_of([rgb[0], rgb[1], rgb[2], 255], false);
+            app.session
+                .execute("graphics.setCharStyle", json!({"clip": clip, "layer": layer, "start": start, "end": end, "style": {style.clone(): hex}}))
+                .map(|_| ())
+        }
+        Eyedropper::Caption { track, field } => {
+            app.session.execute("captions.setStyle", json!({"track": track, field.clone(): [rgb[0], rgb[1], rgb[2], 255]})).map(|_| ())
+        }
     }
 }
 

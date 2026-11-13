@@ -144,3 +144,49 @@ fn import_captions_button_label_is_legible_in_both_themes() {
         assert!(contrast >= 4.5, "{theme}: label {color:?} on {field_bg:?} has contrast {contrast:.2}:1");
     }
 }
+
+/// The Text panel's Captions tab has an eyedropper beside the text colour: arm it, click the
+/// Program picture, and the track style takes the sampled colour.
+#[test]
+fn the_caption_eyedropper_fills_the_text_colour_from_the_program() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let track = d.ok("engine.execute", json!({"command": "captions.newTrack", "params": {"format": "Subtitle"}}))["track"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "captions.add", "params": {"track": track, "text": "Hello", "seconds": 1.0}}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.frames(3);
+    let colour = |d: &mut Driver| {
+        let r = d.ok("engine.execute", json!({"command": "captions.list", "params": {}}));
+        r["tracks"].as_array().unwrap().iter().find(|t| t["id"] == json!(track)).expect("track")["style"]["color"].clone()
+    };
+    // a colour the picture cannot contain, so a sample that lands on white is still a change
+    d.ok("engine.execute", json!({"command": "captions.setStyle", "params": {"track": track, "color": [1, 2, 3, 255]}}));
+    d.frames(2);
+    let before = colour(&mut d);
+    let button = "text.captions.style.color.eyedropper";
+    assert!(d.ids(button).iter().any(|id| id == button), "the caption colour has an eyedropper");
+    d.ok("ui.click", json!({"id": button}));
+    d.frames(2);
+    assert!(d.harness.state().ui.eyedropper.is_some(), "the eyedropper is armed");
+    // The colour arrives with the render of the picked frame, on a worker thread, so wait for the
+    // eyedropper to disarm. The whole suite runs many harnesses side by side and their render
+    // workers starve each other, so a pick can be lost: clicking again asks for it once more.
+    let mut picked = false;
+    for _ in 0..3 {
+        d.ok("ui.click", json!({"id": "program.picture"}));
+        for _ in 0..300 {
+            d.frames(2);
+            if d.harness.state().ui.eyedropper.is_none() {
+                picked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if picked {
+            break;
+        }
+    }
+    assert!(picked, "the eyedropper picked and disarmed");
+    assert_ne!(colour(&mut d), before, "the eyedropper filled the caption text colour");
+}
