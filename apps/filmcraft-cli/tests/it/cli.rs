@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 fn cli(args: &[&str]) -> Output {
-    Command::new(super::binary()).args(args).output().expect("spawn filmcraft-cli")
+    crate::filmcraft_command().args(args).output().expect("spawn filmcraft-cli")
 }
 
 fn json_out(o: &Output) -> Value {
@@ -125,7 +125,7 @@ fn hold_lock(dir: &std::path::Path, name: &str) -> std::fs::File {
 /// Start a run that has to wait for a lock this process holds; returns once it says it is waiting.
 fn start_waiting_run(args: &[&str]) -> std::process::Child {
     use std::io::BufRead;
-    let mut child = Command::new(super::binary()).args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
     let mut line = String::new();
     std::io::BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
     assert!(line.contains("waiting for another run saving"), "{args:?}: {line}");
@@ -139,7 +139,7 @@ fn parallel_saves_keep_every_edit() {
     let names = |writer: usize| (0..300).map(move |i| format!("edit-{writer}-{i}"));
     let mut writers: Vec<_> = (0..4)
         .map(|_| {
-            Command::new(super::binary())
+            crate::filmcraft_command()
                 .args(["--project", &proj, "--save", "run", "-"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
@@ -214,7 +214,7 @@ fn runs_that_do_not_save_in_place_ignore_the_lock() {
         &["--project", &proj, "--save-as", &other, "exec", "file.newBin", "name=copy-only"],
     ];
     for args in cases {
-        let mut child = Command::new(super::binary()).args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -263,7 +263,7 @@ fn exec_save_as_then_reopen() {
     let tree = json_out(&cli(&["--project", p, "inspect", "project"]));
     assert!(tree.to_string().contains("CLI Selects"), "{tree}");
     // `run` from stdin, editing and saving back in place.
-    let mut child = Command::new(super::binary()).args(["--project", p, "--save", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(["--project", p, "--save", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"# comment\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Second\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
@@ -275,7 +275,7 @@ fn exec_save_as_then_reopen() {
 
 #[test]
 fn run_keep_going_reports_failures() {
-    let mut child = Command::new(super::binary()).args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"{\"id\":\"no.such\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -302,7 +302,7 @@ fn run_waits_for_an_export_on_its_last_line() {
     let out = dir.join("last.wav");
     // `"wait": null` waits too: only an explicit `false` doesn't
     let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
-    let mut child = Command::new(super::binary()).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(format!("{script}\n").as_bytes()).unwrap();
     let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
@@ -502,7 +502,7 @@ fn export_with_presets() {
 fn closed_stdout_ends_quietly() {
     use std::io::Read;
     for args in [&["commands"][..], &["help"], &["--demo", "commands", "--json"]] {
-        let mut child = Command::new(super::binary()).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let mut first = [0u8; 10];
         child.stdout.as_mut().unwrap().read_exact(&mut first).unwrap();
         drop(child.stdout.take());
@@ -516,7 +516,7 @@ fn closed_stdout_ends_quietly() {
 /// first write fails for sure. The rest of the script and the save still happen, and the exit status
 /// still reports a failing command.
 fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
-    let mut child = Command::new(super::binary()).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     drop(child.stdout.take());
     child.stdin.take().unwrap().write_all(script).unwrap();
     child.wait_with_output().unwrap()
