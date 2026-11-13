@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · cfb · h264enc · prores · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
+     codecs/containers: isobmff · matroska · cfb · h264enc · hevcenc · prores · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -45,6 +45,7 @@ and `filmcraft-cli`.
 | `matroska` | L0 | MKV/WebM demux |
 | `cfb` | L0 | Compound File Binary ([MS-CFB] structured storage) reader and writer, the container of AAF ([README](../crates/cfb/README.md)) |
 | `h264enc` | L0 | H.264 encoder |
+| `hevcenc` | L0 | H.265 software encoder (Main, 8-bit 4:2:0, I/P) |
 | `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
 | `dng` | L0 | DNG / CinemaDNG camera RAW decoder: TIFF container, uncompressed and lossless JPEG raw data, DNG processing to linear Rec. 709 ([README](../crates/dng/README.md)) |
