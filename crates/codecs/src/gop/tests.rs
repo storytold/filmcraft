@@ -1496,27 +1496,34 @@ fn the_request_that_decodes_ahead_returns_its_frame_when_another_takes_the_run_o
     let c = GopCache::new(None);
     let ask = |i: usize| filmcraft_media::cancel::with_playing(true, || c.frame_late(&s, i as i64 * 1000, Some(0)).map(|f| index_of(&f)));
     let fed = || s.0.decodes.load(Ordering::Relaxed);
-    let (first, at_return) = std::thread::scope(|scope| {
+    let ((first, at_return), later) = std::thread::scope(|scope| {
         let first = scope.spawn(|| {
             let r = ask(5);
             (r, fed())
         });
         // playback asking on, always a few frames ahead of the decoder, for 60 frames
-        scope.spawn(|| {
+        let later = scope.spawn(|| {
             let until = Instant::now() + Duration::from_secs(20);
             // (once the first request's run has begun: it is the one that decodes ahead)
             while fed() == 0 && Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            let mut got = Vec::new();
             while fed() < 60 && Instant::now() < until {
-                let _ = ask(fed() + 3);
+                let i = fed() + 3;
+                got.push((i, ask(i).ok()));
                 filmcraft_media::pending::take();
                 std::thread::sleep(Duration::from_millis(1));
             }
+            got
         });
-        first.join().unwrap_or((Ok(0), usize::MAX))
+        (first.join().unwrap_or((Ok(0), usize::MAX)), later.join().unwrap_or_default())
     });
     assert_eq!(first.expect("frame"), 5);
     assert!(at_return <= 5 + 12, "frame 5 came back after {at_return} samples were decoded");
+    // the request that took the run over decoded on from there, and got its own frame
+    let taken = later.iter().find(|(i, r)| *i > at_return && r.is_some());
+    assert!(taken.is_some_and(|(i, r)| *r == Some(*i)), "no later request got its frame: {later:?}");
+    assert!(fed() >= 60, "decoding stopped at {} samples", fed());
     assert_eq!(s.0.resets.load(Ordering::Relaxed), 1, "one run of the decoder, taken over without a restart");
 }
