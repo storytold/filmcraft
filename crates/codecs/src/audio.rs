@@ -882,7 +882,37 @@ impl AudioFileSource {
 
     fn decode_inner(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        if matches!(ext.as_str(), "mp2" | "mp3")
+        if ext == "mp3" {
+            let (audio, decoded) = craft_audio::decode(&bytes, Some("mp3")).map_err(|e| match e {
+                craft_audio::AudioError::Unsupported(message) | craft_audio::AudioError::TooLarge(message) => {
+                    CodecError::Unsupported(format!("{name}: {message}"))
+                }
+                error => CodecError::Decode(format!("{name}: {error}")),
+            })?;
+            let frames = decoded.frames();
+            let rate = decoded.sample_rate;
+            let samples = decoded.channels;
+            if samples.is_empty() || frames == 0 {
+                return Err(CodecError::Decode(format!("{name}: no audio decoded")));
+            }
+            let info = MediaInfo {
+                name: name.to_string(),
+                kind: MediaKind::AudioOnly,
+                duration: Tick::from_units(frames as i64, rate as i64),
+                video: None,
+                audio_streams: vec![AudioStreamInfo {
+                    sample_rate: rate,
+                    channels: samples.len() as u32,
+                    codec: audio.codec.name().to_uppercase(),
+                    bits_per_sample: None,
+                }],
+                container: ext.to_uppercase(),
+                start_timecode: None,
+                file_size: Some(bytes.len() as u64),
+            };
+            return Ok(Self { info, rate, samples });
+        }
+        if ext == "mp2"
             && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)
         {
             let frames = samples.first().map_or(0, Vec::len);
@@ -1496,7 +1526,13 @@ mod gapless_tests {
     #[test]
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
+        assert_eq!(src.rate, 44_100);
+        assert_eq!(src.info.audio_streams.len(), 1);
+        assert_eq!(src.info.audio_streams[0].sample_rate, 44_100);
+        assert_eq!(src.info.audio_streams[0].channels, 1);
+        assert_eq!(src.info.audio_streams[0].codec, "MP3");
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+        assert!(src.samples[0].iter().all(|sample| sample.abs() < 1e-6));
     }
 }
 

@@ -100,7 +100,7 @@ impl Mcp {
     /// Start the headless server (an empty project) and initialise the session. `data_dir` keeps
     /// user presets away from the real data directory.
     fn start(data_dir: &str) -> Self {
-        let mut child = Command::new(super::binary())
+        let mut child = crate::filmcraft_command()
             .args(["--data-dir", data_dir, "mcp"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -428,7 +428,7 @@ fn camera_long_gop_two_audio_tracks_trim_dissolve_to_prores() {
 
     // a fresh process opens the saved project and renders it
     let out = dir.path("camera_edit.mov");
-    let o = Command::new(super::binary()).args(["--data-dir", &data, "--project", &project, "export", &out]).output().unwrap();
+    let o = crate::filmcraft_command().args(["--data-dir", &data, "--project", &project, "export", &out]).output().unwrap();
     assert!(o.status.success(), "export: {}", String::from_utf8_lossy(&o.stderr));
     let r: Value = serde_json::from_slice(&o.stdout).unwrap();
     let total = 71 + 50;
@@ -486,7 +486,7 @@ fn camera_long_gop_two_audio_tracks_trim_dissolve_to_prores() {
 /// `endFrame` of the first clip on V1 of the saved project's active sequence, read back through
 /// `filmcraft-cli --project … inspect sequence`.
 fn end_frame_of(project: &str) -> Option<u64> {
-    let o = Command::new(super::binary()).args(["--project", project, "inspect", "sequence"]).output().ok()?;
+    let o = crate::filmcraft_command().args(["--project", project, "inspect", "sequence"]).output().ok()?;
     let v: Value = serde_json::from_slice(&o.stdout).ok()?;
     v["video"][0]["items"][0]["endFrame"].as_u64()
 }
