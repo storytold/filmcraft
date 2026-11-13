@@ -513,6 +513,18 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
         "perf.stats" => ok(crate::perf::stats(app)),
+        "app.window" => {
+            let v = ctx.input(|i| i.viewport().clone());
+            ok(json!({
+                "inner": v.inner_rect.map(|r| [r.left(), r.top(), r.width(), r.height()]),
+                "outer": v.outer_rect.map(|r| [r.left(), r.top(), r.width(), r.height()]),
+                "monitorSize": v.monitor_size.map(|s| [s.x, s.y]),
+                "fullscreen": v.fullscreen,
+                "maximized": v.maximized,
+                "minimized": v.minimized,
+                "focused": v.focused,
+            }))
+        }
         "ui.elements" => {
             if app.timeline_still < 2 {
                 // rects of timeline elements are still moving (e.g. the fit after opening a sequence)

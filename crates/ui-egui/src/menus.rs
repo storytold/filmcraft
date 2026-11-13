@@ -129,6 +129,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
     uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
+    uic!("window.moveToNextDisplay", "Move Window to Next Display", ["Window"], Some("Cmd+Ctrl+Alt+Right")),
+    uic!("window.moveToMainDisplay", "Move Window to the Main Display", ["Window"], Some("Cmd+Ctrl+Alt+Left")),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
     uic!("tool.trackSelectBackward", "Track Select Backward Tool", [], Some("Shift+A")),
@@ -186,6 +188,26 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
         Some(_) => false,
         None => app.ui.focused == PanelKind::Source,
     }
+}
+
+/// Places the window on the other display: the header's drag cannot carry a full-screen window, and
+/// a window that fills its display cannot be dragged across displays at all.
+fn move_window(ctx: &egui::Context, id: &str, params: &Value) -> Result<Value, String> {
+    let viewport = ctx.input(|i| i.viewport().clone());
+    if viewport.fullscreen.unwrap_or(false) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+    }
+    let outer = viewport.outer_rect.ok_or("the window has no position yet")?;
+    let monitor = viewport.monitor_size.unwrap_or(egui::vec2(1920.0, 1080.0));
+    let x = match (id, params.get("x").and_then(Value::as_f64)) {
+        (_, Some(x)) => x as f32,
+        ("window.moveToMainDisplay", _) => 0.0,
+        _ if outer.min.x + 1.0 < monitor.x => outer.min.x + monitor.x,
+        _ => 0.0,
+    };
+    let y = params.get("y").and_then(Value::as_f64).map(|y| y as f32).unwrap_or(outer.min.y);
+    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+    Ok(json!({"x": x, "y": y, "fullscreen": viewport.fullscreen.unwrap_or(false)}))
 }
 
 /// Route menu editing to the focused text field; automation can explicitly invoke the engine.
@@ -382,6 +404,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             app.ui.status = e.clone();
         }
         return r;
+    }
+    if id.starts_with("window.moveTo") {
+        return move_window(ctx, id, &params);
     }
     match id {
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
