@@ -75,6 +75,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
             has_alpha: d.has_alpha,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: Vec::new(),
         container: "Image".into(),
@@ -448,6 +449,10 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
         let want = i64::from(h.data.y0) + (i * lpc) as i64;
         if y.map(i64::from) != Some(want) {
             return Err(bad(format!("chunk {i} is not at line {want}")));
+        }
+        // stored raw: its length follows from the geometry, so check it before the output exists
+        if matches!(h.compression, Compression::None) && size != line.checked_mul(lpc.min(dh - i * lpc)).ok_or_else(|| bad("chunk size".into()))? {
+            return Err(bad(format!("chunk {i} has the wrong size")));
         }
     }
     let mut px = vec![0f32; px_len];

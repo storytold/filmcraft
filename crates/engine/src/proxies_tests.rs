@@ -63,6 +63,47 @@ fn create_attach_toggle_renders_the_same_picture() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// #1831: proxies asked for while another job runs wait their turn, one at a time in the order they
+/// were asked for, instead of all encoding at once.
+#[test]
+fn proxy_jobs_wait_in_line_and_run_in_order() {
+    let root = tmp_dir("proxy-queue");
+    let (a, b) = (root.join("a.mov"), root.join("b.mov"));
+    make_movie(&a, DemoScene::OceanSunset, W, H, 12);
+    make_movie(&b, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a, &b]);
+    // something else is running: it holds the front of the line until it is dropped
+    let busy = crate::media_queue::MEDIA_JOBS.ticket();
+    let mut jobs = Vec::new();
+    for it in &items {
+        let r = s.execute("media.createProxies", json!({"items": [it.0], "preset": "prores_proxy_half"})).unwrap();
+        jobs.push(r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}")));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let listed = s.execute("jobs.list", json!({})).unwrap();
+    for id in &jobs {
+        let j = listed.as_array().unwrap().iter().find(|j| j["id"] == json!(id)).unwrap();
+        assert_eq!(j["finished"], json!(false), "{j}");
+        assert_eq!(j["done"], json!(0), "nothing is encoded while another job holds the line: {j}");
+        assert!(j["status"].as_str().unwrap().starts_with("Waiting for"), "{j}");
+    }
+    drop(busy);
+    let all_done = |s: &Session| jobs.iter().all(|id| s.jobs.iter().any(|j| j.id == *id && j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
+    for _ in 0..1200 {
+        if all_done(&s) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(all_done(&s), "both proxies finish once the line moves");
+    s.poll_persistence();
+    for it in &items {
+        let proxy = &s.project.item(*it).unwrap().as_media().unwrap().proxy;
+        assert!(matches!(proxy, Some(filmcraft_project::MediaRef::File { .. })), "proxy not attached: {proxy:?}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn attach_checks_duration_and_export_ignores_proxies() {
     let root = tmp_dir("proxy-attach");
@@ -374,4 +415,67 @@ fn render_previews_ignore_proxies() {
     let q = psnr(&f.to_rgba8(), &full.2);
     assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A project can overstate a clip's duration; the generated proxy is as long as the opened source and still attaches,
+/// and the progress total counts the frames actually written.
+#[test]
+fn generated_proxy_attaches_when_the_stored_duration_is_too_long() {
+    let root = tmp_dir("proxy-overstated");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let real = s.project.item(items[0]).unwrap().as_media().unwrap().info.duration;
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = real + real;
+    let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half", "wait": true})).unwrap();
+    let id = r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}"));
+    let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+    let (total, done) = (job.progress.total.load(std::sync::atomic::Ordering::Relaxed), job.progress.done.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(total <= done + 1, "total {total} counts frames beyond the {done} written");
+    let proxy = &s.project.item(items[0]).unwrap().as_media().unwrap().proxy;
+    assert!(matches!(proxy, Some(filmcraft_project::MediaRef::File { .. })), "proxy not attached: {proxy:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An output made from a file the item no longer is (relinked or refreshed while the job ran) is not applied.
+#[test]
+fn an_item_changed_since_the_job_started_is_not_the_same_source() {
+    let root = tmp_dir("proxy-changed");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let clip = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
+    let started = vec![(items[0], a.to_string_lossy().into_owned(), clip.info.duration)];
+    assert!(crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().info.duration = clip.info.duration + clip.info.duration;
+    assert!(!crate::proxies::unchanged_since_start(&s.project, items[0], &started));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A job that finishes after another project was installed must not apply its outputs: its item ids
+/// may name unrelated items there.
+#[test]
+fn a_finished_job_of_a_replaced_project_applies_nothing() {
+    let root = tmp_dir("proxy-epoch");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::OceanSunset, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let before = s.project.item(items[0]).unwrap().as_media().unwrap().media.clone();
+    let out = root.join("copy.mov");
+    make_movie(&out, DemoScene::Aurora, W, H, 12);
+    let pending = |epoch| crate::proxies::PendingJob {
+        job: u64::MAX,
+        on_done: crate::proxies::OnDone::ReplaceMedia,
+        outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![(items[0], out.to_string_lossy().into_owned())])),
+        source_durations: Default::default(),
+        started_from: Vec::new(),
+        epoch,
+    };
+    s.media_jobs.push(pending(s.document_epoch.wrapping_sub(1)));
+    crate::proxies::poll(&mut s);
+    assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().media, before, "a stale job changed the project");
+    // the same job of the current project does apply
+    s.media_jobs.push(pending(s.document_epoch));
+    crate::proxies::poll(&mut s);
+    assert_ne!(s.project.item(items[0]).unwrap().as_media().unwrap().media, before);
 }

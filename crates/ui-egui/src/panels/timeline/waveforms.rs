@@ -1,11 +1,18 @@
 use super::{Align2, Arc, Color32, FilmcraftApp, ItemId, Rect, Tick, Tokens, TrackItem, pos2, vec2};
 
+/// The height of a clip's waveform for a clip body `body_height` tall: the lower part of a tall clip,
+/// under the name strip; the whole clip on a compact track (under 50 points), where a share of it
+/// would be too small to read and the name is drawn over the waveform.
+pub(super) fn waveform_zone_height(body_height: f32) -> f32 {
+    if body_height < 50.0 { (body_height - 2.0).max(8.0) } else { (body_height * 0.42).max(8.0) }
+}
+
 pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
     let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
-    let zone_h = (body.height() * 0.42).max(8.0);
+    let zone_h = waveform_zone_height(body.height());
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
     if clip.width() <= 0.0 {
@@ -113,11 +120,11 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         let mixed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let seq = project.sequence(item)?;
             let sr = seq.settings.sample_rate.max(1);
-            let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
             // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
             let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
+            let total = seq.duration().to_units_floor(sr as i64).max(0).min(MAX_PEAKS.saturating_mul(bucket) as i64) as usize;
             let chunk = (bucket * 750).max(1);
-            let mut out = Vec::with_capacity(total / bucket + 1);
+            let mut out = Vec::with_capacity((total / bucket + 1).min(INITIAL_PEAKS));
             let mut s = 0usize;
             while s < total {
                 let n = chunk.min(total - s);
@@ -144,11 +151,18 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
     have
 }
 
+/// Most peaks one waveform keeps (16 Mi pairs, 128 MiB: over 24 hours of audio), and how many it
+/// reserves up front. The length comes from the project or the file's header, so it must not
+/// size an allocation.
+const MAX_PEAKS: usize = 1 << 24;
+const INITIAL_PEAKS: usize = 1 << 16;
+
 /// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
 pub(super) fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
     let sr = 48_000u32;
-    let total = dur.to_units_floor(sr as i64).max(0) as usize;
-    let mut out = Vec::with_capacity(total / 256 + 1);
+    // clamp in i64 before narrowing, and saturate so the limit itself fits a 32-bit usize
+    let total = dur.to_units_floor(sr as i64).max(0).min(MAX_PEAKS.saturating_mul(256) as i64) as usize;
+    let mut out = Vec::with_capacity((total / 256 + 1).min(INITIAL_PEAKS));
     let chunk = 48_000 * 4;
     let mut s = 0usize;
     while s < total {
@@ -199,4 +213,19 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     #[cfg(target_arch = "wasm32")]
     run();
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_media::Generator;
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_time::FrameRate;
+
+    #[test]
+    fn a_source_claiming_an_absurd_duration_does_not_size_the_peak_buffer() {
+        // a color matte has no audio, so the read stops at once; the duration is what must not allocate
+        let src = GeneratorSource::new(Generator::ColorMatte { color: [0.0; 4] }, 16, 16, FrameRate::FPS_24, Tick(i64::MAX / 8));
+        assert!(source_peaks(&src, 0, Tick(i64::MAX / 8)).len() <= MAX_PEAKS);
+    }
 }

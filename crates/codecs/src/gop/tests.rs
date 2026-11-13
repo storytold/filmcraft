@@ -207,19 +207,50 @@ fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
         let _ = tx.send(());
     });
     // A deadlock stops every request of a round for good. On a loaded machine the 3,840
-    // requests can take minutes, so the limit applies to the time between two answered ones.
-    let mut answered = 0;
+    // requests can take minutes, so the limit applies to the time since the last answered one.
+    if let Err(frames) = wait_while_answered(&rx, &done, Duration::from_secs(120)) {
+        panic!("frame requests deadlocked after {frames} frames");
+    }
+}
+
+/// Waits for `rx` while `done` keeps growing. Returns `Err` with the count in `done` once
+/// `limit` has passed since the count last grew (or since the call, before it grows).
+fn wait_while_answered(rx: &std::sync::mpsc::Receiver<()>, done: &AtomicUsize, limit: Duration) -> Result<(), usize> {
+    let mut answered = done.load(Ordering::Relaxed);
+    let mut last_answer = Instant::now();
     loop {
-        match rx.recv_timeout(Duration::from_secs(120)) {
-            Ok(()) => break,
+        match rx.recv_timeout(limit / 120) {
+            Ok(()) => return Ok(()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let now = done.load(Ordering::Relaxed);
-                assert!(now > answered, "frame requests deadlocked after {now} frames");
-                answered = now;
+                if now > answered {
+                    answered = now;
+                    last_answer = Instant::now();
+                } else if last_answer.elapsed() >= limit {
+                    return Err(now);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("a frame request failed"),
         }
     }
+}
+
+#[test]
+fn a_stall_right_after_an_answer_is_reported_once_the_limit_has_passed() {
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let done = Arc::new(AtomicUsize::new(0));
+    let answering = done.clone();
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+    let limit = Duration::from_secs(2);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let answer = Instant::now();
+        answering.fetch_add(1, Ordering::Relaxed);
+        let _ = answer_tx.send(answer);
+    });
+    assert_eq!(wait_while_answered(&rx, &done, limit), Err(1));
+    let waited = answer_rx.recv().expect("answer time").elapsed();
+    assert!(waited >= limit && waited < limit * 3 / 2, "the stall was reported {waited:?} after the answer");
 }
 
 #[test]
@@ -788,6 +819,194 @@ fn long_gop_continue_does_not_restart_for_the_next_frame() {
     assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
 }
 
+/// #3467: a rotated stream's frames are cached raw while the decoder runs (the lock held), and
+/// only the frames requests take are rotated, off the lock; the result replaces the raw frame.
+#[test]
+fn rotation_waits_for_the_frames_requests_take() {
+    let s = samples(60, 30, 0, false);
+    let c = GopCache::new(None).with_rotation(1);
+    let raw = |c: &GopCache| c.shared.state.lock().unwrap().raw.iter().map(|p| p / 1000).collect::<Vec<_>>();
+    let cached = |c: &GopCache, i: i64| c.shared.state.lock().unwrap().frames.get(&(i * 1000)).cloned().expect("cached");
+    let f5 = c.frame(&s, 5_000).expect("frame");
+    assert_eq!(index_of(&f5), 5);
+    // decoding up to frame 5 rotated none of the frames before it
+    assert_eq!(raw(&c), vec![0, 1, 2, 3, 4]);
+    assert!(Arc::ptr_eq(&cached(&c, 5), &f5));
+    // a cache hit finishes the raw frame once; the next hit gets that same frame
+    let f3 = c.frame(&s, 3_000).expect("frame");
+    assert_eq!(index_of(&f3), 3);
+    assert_eq!(raw(&c), vec![0, 1, 2, 4]);
+    assert!(Arc::ptr_eq(&c.frame(&s, 3_000).expect("frame"), &f3));
+    assert_eq!(s.decodes.load(Ordering::Relaxed), 6);
+    // without crop or rotation nothing waits
+    let plain = GopCache::new(None);
+    assert_eq!(index_of(&plain.frame(&s, 5_000).expect("frame")), 5);
+    assert!(raw(&plain).is_empty());
+}
+
+/// Samples whose pictures are `w`×`h`: the index in the first pixel, 255 everywhere else.
+struct Wide(Samples, usize, usize);
+struct WideDec(Box<dyn VideoDecoder>, usize, usize);
+impl VideoDecoder for WideDec {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        let (w, h) = (self.1, self.2);
+        Ok(self.0.decode(sample, pts)?.into_iter().map(|d| widen(d, w, h)).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        let (w, h) = (self.1, self.2);
+        self.0.flush().into_iter().map(|d| widen(d, w, h)).collect()
+    }
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn name(&self) -> &str {
+        "wide"
+    }
+    fn intra_only(&self) -> bool {
+        self.0.intra_only()
+    }
+}
+fn widen(d: DecodedFrame, w: usize, h: usize) -> DecodedFrame {
+    let mut px = vec![255; w * h * 4];
+    px[..4].copy_from_slice(&[index_of(&d.frame) as u8, 0, 0, 255]);
+    DecodedFrame { frame: VideoFrame::rgba8(w as u32, h as u32, px), ..d }
+}
+impl VideoSamples for Wide {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(WideDec(self.0.make_decoder()?, self.1, self.2)))
+    }
+}
+
+/// #3467: a rotated frame really is turned, whether it is decoded for the request or taken raw
+/// from the cache later.
+#[test]
+fn raw_frames_taken_from_the_cache_come_out_rotated() {
+    // long-GOP and intra-only (ProRes, DNx) decoding alike
+    for intra in [false, true] {
+        let s = Wide(samples(30, 30, 0, intra), 2, 1);
+        let c = GopCache::new(None).with_rotation(1);
+        // frame 4 is decoded for the request, frame 2 taken raw from the cache afterwards
+        for i in [4usize, 2] {
+            let f = c.frame(&s, i as i64 * 1000).expect("frame");
+            assert_eq!((f.width, f.height), (1, 2), "intra {intra} frame {i}");
+            // a clockwise quarter turn puts the left pixel on top
+            assert_eq!(f.to_rgba8()[..4], [i as u8, 0, 0, 255], "intra {intra} frame {i}");
+        }
+        // left to the caller, the turn is not done: frame 3 comes as decoded, then turned on request
+        let (f, turns) = c.frame_late_unturned(&s, 3000, None).expect("frame");
+        assert_eq!((f.width, f.height, turns), (2, 1, 1), "intra {intra}");
+        assert_eq!((c.frame(&s, 3000).expect("frame").width, turns), (1, 1), "intra {intra}");
+    }
+}
+
+/// The pixel at (x, y) of a frame, as RGBA.
+fn px(f: &VideoFrame, x: usize, y: usize) -> [u8; 4] {
+    let rgba = f.to_rgba8();
+    let at = (y * f.width as usize + x) * 4;
+    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+}
+
+/// #3467: every display rotation swaps or keeps the size of a non-square clip and puts the marked
+/// pixel (top left as stored) where a clockwise turn puts it, for frames decoded for the request
+/// and for frames taken raw from the cache alike.
+#[test]
+fn every_quarter_turn_of_a_non_square_clip_is_right() {
+    // marked pixel after 1, 2 and 3 clockwise quarter turns of a 3×2 picture: (x, y)
+    let marked = [(1, 0), (2, 1), (0, 2)];
+    for (turns, (x, y)) in (1u8..4).zip(marked) {
+        let s = Wide(samples(30, 30, 0, false), 3, 2);
+        let c = GopCache::new(None).with_rotation(turns);
+        let size = if turns % 2 == 1 { (2, 3) } else { (3, 2) };
+        for i in [4usize, 2] {
+            let f = c.frame(&s, i as i64 * 1000).expect("frame");
+            assert_eq!((f.width, f.height), size, "turns {turns} frame {i}");
+            assert_eq!(px(&f, x, y), [i as u8, 0, 0, 255], "turns {turns} frame {i}");
+            assert_eq!(px(&f, 0, 0) == [i as u8, 0, 0, 255], (x, y) == (0, 0));
+        }
+        // a second hit gets the finished frame, not a second turn
+        let again = c.frame(&s, 2_000).expect("frame");
+        assert_eq!(px(&again, x, y), [2, 0, 0, 255], "turns {turns}");
+    }
+}
+
+/// #3467: the clean aperture is cut before the turn, for decoded and raw-cached frames.
+#[test]
+fn crop_and_rotation_compose_on_raw_frames() {
+    // 4×2 picture, marked pixel (0, 0); keep the 2×2 block at x = 0: marked pixel stays top left,
+    // then a clockwise quarter turn moves it to the top right of the 2×2 result
+    let region = Region { x: 0, y: 0, w: 2, h: 2 };
+    let s = Wide(samples(30, 30, 0, false), 4, 2);
+    let c = GopCache::new(None).with_crop(Some(region)).with_rotation(1);
+    for i in [4usize, 2] {
+        let f = c.frame(&s, i as i64 * 1000).expect("frame");
+        assert_eq!((f.width, f.height), (2, 2), "frame {i}");
+        assert_eq!(px(&f, 1, 0), [i as u8, 0, 0, 255], "frame {i}");
+    }
+    // the block at x = 2 holds no marked pixel at all
+    let c = GopCache::new(None).with_crop(Some(Region { x: 2, y: 0, w: 2, h: 2 })).with_rotation(1);
+    let f = c.frame(&s, 4_000).expect("frame");
+    assert!((0..2).all(|x| (0..2).all(|y| px(&f, x, y) == [255; 4])));
+}
+
+/// #3467: a raw frame decoded as a draft is still a draft once finished, and no exact request is
+/// served it.
+#[test]
+fn raw_draft_frames_are_not_served_to_exact_requests() {
+    let s = samples(300, 250, 3, false);
+    let c = GopCache::new(None).with_rotation(1);
+    for i in 0..8usize {
+        let f = filmcraft_media::cancel::with_draft(true, || c.frame(&s, i as i64 * 1000)).expect("frame");
+        assert_eq!((index_of(&f), is_draft(&f)), (i, i % 2 == 1), "frame {i}");
+    }
+    let resets = s.resets.load(Ordering::Relaxed);
+    // finishing the raw frame kept its draft mark
+    assert!(c.shared.state.lock().unwrap().drafts.contains(&5_000));
+    // an exact request decodes frame 5 again and gets an exact, rotated one
+    let f = c.frame(&s, 5_000).expect("frame");
+    assert!(!is_draft(&f) && index_of(&f) == 5);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
+    assert!(!c.shared.state.lock().unwrap().drafts.contains(&5_000));
+    // an exact even frame is served from the cache
+    assert!(!is_draft(&c.frame(&s, 4_000).expect("frame")));
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
+}
+
+/// #3467: eviction drops a frame from `frames`, `raw`, `drafts` and the byte count together, and
+/// what is left still comes out rotated.
+#[test]
+fn evicting_raw_frames_keeps_the_cache_consistent() {
+    let s = Wide(samples(200, 200, 0, false), 2, 1);
+    let mut c = GopCache::new(None).with_rotation(1);
+    c.budget = 0;
+    let n = MIN_FRAMES as i64 + 30;
+    for i in 0..n {
+        assert_eq!(c.frame(&s, i * 1000).expect("frame").width, 1);
+    }
+    let st = c.shared.state.lock().unwrap();
+    assert!(st.frames.len() < n as usize, "some frames were evicted");
+    assert!(st.raw.iter().chain(st.drafts.iter()).all(|p| st.frames.contains_key(p)), "no mark outlives its frame");
+    assert_eq!(st.bytes, st.frames.values().map(|f| f.byte_size()).sum::<usize>());
+    drop(st);
+    // decoding up to an evicted frame again still turns it
+    let f = c.frame(&s, 1_000).expect("frame");
+    assert_eq!((f.width, f.height), (1, 2));
+}
+
 #[test]
 fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
@@ -821,4 +1040,146 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     pool.release_idle();
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn eviction_reaches_interior_frames_when_both_ends_are_protected() {
+    // 1×1 RGBA pictures (4 bytes): the budget is the 64-frame playback reserve
+    let mut c = GopCache::new(None);
+    c.budget = 0;
+    let budget = c.cache_budget(4);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let pic = || VideoFrame::rgba8(1, 1, vec![0; 4]);
+    c.store_finished(&mut st, 0, pic(), false);
+    // each new decode is the newest frame and the request is the oldest: both ends protected
+    for k in 1..500 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    assert!(st.bytes <= budget, "{} bytes cached over a {budget}-byte budget", st.bytes);
+    assert!(st.frames.contains_key(&0) && st.frames.contains_key(&499_000));
+}
+
+#[test]
+fn two_frames_over_the_ceiling_keep_only_the_requested_one() {
+    // two ~200 MiB RGBA frames (zeroed, never touched) are over the 384 MiB ceiling together
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let big = || VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]);
+    c.store_finished(&mut st, 0, big(), false);
+    let second = c.store_finished(&mut st, 1000, big(), false);
+    assert!(st.bytes <= FRAME_CACHE_CEILING, "{} bytes cached over the ceiling", st.bytes);
+    assert!(st.frames.contains_key(&0), "the requested frame is kept");
+    // the frame a decode produced is handed back even though the cache had to drop it (another request owns the pin)
+    assert!(!st.frames.contains_key(&1000));
+    assert_eq!((second.width, second.height), (8192, 6400));
+}
+
+#[test]
+fn a_decode_whose_only_fallback_was_evicted_still_returns_it() {
+    // two ~200 MiB frames around the pin: the cache keeps the newest one and drops the older, which is the
+    // only frame at or before the wanted pts
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 1000;
+    let big = |pts| crate::video::DecodedFrame { pts, frame: VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]), draft: false };
+    let nearest = c.store_output(&mut st, vec![big(0), big(2000)], 1500).expect("the frame at 0");
+    assert_eq!(nearest.pts, 0);
+    assert!(!st.frames.contains_key(&0), "the cache dropped it");
+    assert_eq!((nearest.frame.width, nearest.frame.height), (8192, 6400));
+}
+
+/// Every sample claims to be a keyframe but none can start a decode: the search for a random-access
+/// sample gives up after a bounded number of probes instead of reading them all.
+#[test]
+fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
+    struct Aliased {
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl VideoSamples for Aliased {
+        fn count(&self) -> usize {
+            1 << 20
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            usize::try_from(t).ok()
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; 16])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Err(crate::CodecError::Unsupported("test".into()))
+        }
+    }
+    let s = Aliased { reads: Default::default() };
+    struct Huge(Aliased);
+    impl VideoSamples for Huge {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn sample_size(&self, _: usize) -> Option<u64> {
+            Some(MAX_RANDOM_ACCESS_PROBE_BYTES as u64 + 1)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    // a candidate declared larger than the byte budget is refused without being read
+    let h = Huge(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&h, 100, |_| Some(true)).is_err());
+    assert_eq!(h.0.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(random_access_at_or_before(&s, 1 << 19, |_| Some(false)).is_err());
+    assert!(s.reads.load(std::sync::atomic::Ordering::Relaxed) <= MAX_RANDOM_ACCESS_PROBES);
+    // a sample that can start a decode ends the search at once
+    assert_eq!(random_access_at_or_before(&s, 100, |_| Some(true)).unwrap(), 100);
+    assert_eq!(random_access_at_or_before(&s, 0, |_| Some(false)).unwrap(), 0);
+    // a container that cannot say a sample's size: the oversized candidate is refused after its one read
+    struct Unsized(Aliased);
+    impl VideoSamples for Unsized {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.0.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; MAX_RANDOM_ACCESS_PROBE_BYTES + 1])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    let u = Unsized(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&u, 100, |_| Some(true)).is_err());
+    assert_eq!(u.0.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+    // a cancelled request is refused even when the search starts at sample zero
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
+    assert!(matches!(r, Err(CodecError::Cancelled)));
 }

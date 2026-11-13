@@ -37,6 +37,8 @@ struct AudioState {
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
+    /// Bytes of the decoded packets held in `packets`.
+    bytes: usize,
 }
 
 /// One playable audio track with its own decoder state and timing tables.
@@ -103,7 +105,7 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
 /// Starts are accumulated from each packet's TOC duration, resynchronising to the timestamp only
 /// across real gaps (more than two ticks off). Pre-skip is the exact `CodecDelay` (or the header's
 /// pre-skip when it is absent).
-fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &filmcraft_opus::OpusHead, rate: i64) -> Vec<i64> {
+fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &craft_audio::opus::OpusHead, rate: i64) -> Vec<i64> {
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
     let skip = if t.codec_delay_ns > 0 { codec_delay_samples(t, rate) } else { head.pre_skip as i64 };
     let at = stamp_to_samples(t, rate, skip);
@@ -156,7 +158,9 @@ fn audio_info(t: &filmcraft_matroska::Track) -> Option<AudioStreamInfo> {
         channels = h.channels as u32;
     }
     let (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels).ok()?;
-    Some(AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) })
+    // an audio codec without a decoder plays silent: say so in the media info, as MPEG / MXF do (#1422)
+    let codec = if audio_decodable(&t.codec) { codec_label(&t.codec) } else { format!("{} (unsupported)", codec_label(&t.codec)) };
+    Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32) })
 }
 
 /// The track timestamp that media time zero stands for (#715): the earliest start among the
@@ -205,9 +209,9 @@ fn own_stamp(s: &filmcraft_matroska::Sample) -> bool {
 }
 
 /// The parsed `OpusHead` of an `A_OPUS` track.
-fn opus_head(c: &Codec) -> Option<filmcraft_opus::OpusHead> {
+fn opus_head(c: &Codec) -> Option<craft_audio::opus::OpusHead> {
     match c {
-        Codec::Opus { head } => filmcraft_opus::OpusHead::parse(head).ok(),
+        Codec::Opus { head } => craft_audio::opus::OpusHead::parse(head).ok(),
         _ => None,
     }
 }
@@ -298,9 +302,9 @@ fn hdr_metadata(c: &filmcraft_matroska::Color) -> Option<filmcraft_color::HdrMet
 
 /// Colour of a video track: the `Colour` element wins; what it leaves unspecified, or all of it
 /// when there is none, comes from the stream's own description (the SPS VUI in an `avcC` /
-/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size. The flag says
-/// whether `Colour` signals anything that overrides the decoder.
-fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, bool) {
+/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size, as the second value
+/// says. The flag says whether `Colour` signals anything that overrides the decoder.
+fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, filmcraft_color::ColorAssumed, bool) {
     // H.273 code points; `Range`: 1 broadcast (limited), 2 full, 0 / 3 not signalled here
     let code = |c: Option<u64>| c.unwrap_or(2);
     let container = v.color.as_ref().map(|col| {
@@ -313,7 +317,7 @@ fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<Co
     });
     let explicit = container.is_some_and(|c| Matrix::from_code(c.matrix).is_some() || Transfer::from_code(c.transfer).is_some() || c.full_range == Some(true));
     let sources: Vec<ColorCodes> = [container, stream].into_iter().flatten().collect();
-    (crate::stream_color::resolve(w, h, &sources), explicit)
+    (crate::stream_color::resolve(w, h, &sources), crate::stream_color::assumed(&sources), explicit)
 }
 
 fn codec_label(c: &Codec) -> String {
@@ -323,7 +327,7 @@ fn codec_label(c: &Codec) -> String {
         Codec::Vp8 => "VP8".into(),
         Codec::Vp9 { .. } => "VP9".into(),
         Codec::Av1 { .. } => "AV1".into(),
-        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| filmcraft_apv::Profile::from_idc(a.profile_idc)) {
+        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| craft_video::apv::Profile::from_idc(a.profile_idc)) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -338,7 +342,21 @@ fn codec_label(c: &Codec) -> String {
         Codec::Mp2 | Codec::Mp1 => "MPEG Audio".into(),
         Codec::Other(id) if id == "V_MPEG2" => "MPEG-2 Video".into(),
         Codec::Other(id) if id == "V_MPEG1" => "MPEG-1 Video".into(),
+        Codec::Other(id) if id.starts_with("A_DTS") => "DTS".into(),
+        Codec::Other(id) if id == "A_TRUEHD" => "Dolby TrueHD".into(),
         other => other.name().to_string(),
+    }
+}
+
+/// Whether the audio of codec `c` decodes: PCM directly, the rest through
+/// [`MkvSource::audio_decoder`] (keep the two in step).
+fn audio_decodable(c: &Codec) -> bool {
+    match c {
+        Codec::Pcm { .. } | Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => {
+            true
+        }
+        Codec::Vorbis { headers } => headers.len() == 3,
+        _ => false,
     }
 }
 
@@ -407,7 +425,7 @@ impl MkvSource {
                 }
             };
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
-            let (color, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
+            let (color, assumed, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
             if explicit {
                 explicit_color = Some(color);
             }
@@ -425,6 +443,7 @@ impl MkvSource {
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
                 hdr: v.color.as_ref().and_then(hdr_metadata),
+                color_assumed: Some(assumed),
             }
         });
         let audio_streams: Vec<AudioStreamInfo> = atracks.iter().filter_map(|&i| file.tracks.get(i)).filter_map(audio_info).collect();
@@ -453,7 +472,7 @@ impl MkvSource {
                     }
                     _ => 0,
                 };
-                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
@@ -495,7 +514,7 @@ impl MkvSource {
         use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
         match c {
             Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
-            Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
+            Codec::Opus { head } => PacketDecoder::opus(craft_audio::opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
             Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
             Codec::Mp1 => PacketDecoder::mpeg_audio(1, rate),
@@ -507,7 +526,7 @@ impl MkvSource {
                 extra.extend_from_slice(&headers[2]);
                 PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
             }
-            other => Err(CodecError::Unsupported(format!("{} audio", codec_label(other)))),
+            other => Err(CodecError::Unsupported(format!("{} audio (FilmCraft has no decoder for it)", codec_label(other)))),
         }
     }
 
@@ -558,12 +577,7 @@ impl MkvSource {
             }
         };
         let p = Arc::new(decoded);
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 4096 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
@@ -603,6 +617,10 @@ impl VideoSamples for MkvVideo<'_> {
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         self.src.read(self.track, i)
     }
+    fn sample_size(&self, i: usize) -> Option<u64> {
+        // the size `read` returns: the stored size plus the header-stripping or ProRes prefix
+        self.src.file.tracks.get(self.track)?.sample_size(i)
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let Some(e) = &self.src.ventry else {
             return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
@@ -629,6 +647,16 @@ impl MediaSource for MkvSource {
         let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
         let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
+    }
+
+    /// The frame as decoded, with the track's display rotation left to the caller (#3467).
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8), MediaError> {
+        let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
+        let t = req.time.max(Tick::ZERO);
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
+        Ok(self.video.frame_late_unturned(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
@@ -669,18 +697,8 @@ impl MediaSource for MkvSource {
             i += 1;
         }
         drop(st);
-        let frac = s0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -728,6 +746,25 @@ mod multi_audio_tests {
         assert!((primary.channels[0][20] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][20] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 50, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673).
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        // 32-bit float samples: a coarser source (16-bit) hides a one-ulp change of a weight
+        let mut t = TrackSpec::new(TrackKind::Audio, "A_PCM/FLOAT/IEEE");
+        t.audio = Some((48_000.0, 1, Some(32)));
+        let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![t], MuxOptions::default()).unwrap();
+        let signs = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 1);
+        for (k, second) in signs.chunks(48_000).enumerate() {
+            let pcm: Vec<u8> = second.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let ns = i64::try_from(k).unwrap() * 1_000_000_000;
+            writer.write_frame(0, ns, true, &pcm, Some(1_000_000_000)).unwrap();
+        }
+        let source = super::MkvSource::open("tone.mkv", writer.finish().unwrap().into_inner().into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("mkv 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 }
 

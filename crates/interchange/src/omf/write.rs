@@ -241,7 +241,12 @@ pub(crate) fn write(doc: &Document, report: &mut Report) -> Result<Vec<u8>> {
             if let Some(pcm) = &s.embedded {
                 let md = w.obj(b"WAVE");
                 w.b.set(md, "OMFI:MDAT:MobID", "omfi:UID", &file);
-                w.b.set(md, "OMFI:WAVE:Data", "omfi:DataValue", &crate::wav::wav_file(pcm, s.file_channels.max(1) as u16, s.sample_rate, s.bits));
+                w.b.set(
+                    md,
+                    "OMFI:WAVE:Data",
+                    "omfi:DataValue",
+                    &crate::wav::wav_file(pcm, u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX), s.sample_rate, s.bits),
+                );
                 media_data.push(md);
             }
             if tc.is_some() {
@@ -380,17 +385,14 @@ fn descriptor(w: &mut W, s: &Source, len: i64) -> u32 {
     let r = rate_of(s);
     w.b.set(d, "OMFI:MDFL:SampleRate", "omfi:Rational", &rational(r.0, r.1));
     w.i32(d, "OMFI:MDFL:Length", "omfi:Length32", len);
-    let frames = len.max(0) as u32;
-    let bytes_per_frame = s.file_channels.max(1) * (s.bits as u32).div_ceil(8);
+    let frames = u32::try_from(len.max(0)).unwrap_or(u32::MAX);
+    // Channel counts come from the project: saturate, as the headers can't hold more anyway.
+    let bytes_per_frame = s.file_channels.max(1).saturating_mul((s.bits as u32).div_ceil(8));
+    let channels = u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX);
     if aiff {
-        w.b.set(d, "OMFI:AIFD:Summary", "omfi:DataValue", &crate::wav::aiff_header(frames, s.file_channels.max(1) as u16, s.sample_rate, s.bits));
+        w.b.set(d, "OMFI:AIFD:Summary", "omfi:DataValue", &crate::wav::aiff_header(frames, channels, s.sample_rate, s.bits));
     } else {
-        w.b.set(
-            d,
-            "OMFI:WAVD:Summary",
-            "omfi:DataValue",
-            &crate::wav::wav_header(frames.saturating_mul(bytes_per_frame), s.file_channels.max(1) as u16, s.sample_rate, s.bits),
-        );
+        w.b.set(d, "OMFI:WAVD:Summary", "omfi:DataValue", &crate::wav::wav_header(frames.saturating_mul(bytes_per_frame), channels, s.sample_rate, s.bits));
     }
     if let Some(p) = &s.path {
         let mut locs = Vec::new();

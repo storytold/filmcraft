@@ -562,3 +562,73 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+#[test]
+fn frame_rate_offers_the_high_rates_a_sequence_can_have() {
+    use filmcraft_time::FrameRate;
+    let mut d = Driver::new("frame-rate");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    // Match Source off shows the list of rates
+    d.click("export.video.matchRate");
+    assert!(d.app().ui.export.settings.frame_rate.is_some());
+    d.click("export.video.fps");
+    for (i, label) in [(11, "119.88"), (12, "120")] {
+        let id = format!("export.video.fps.option.{i}");
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        assert_eq!(e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).map(|e| e["label"].clone()), Some(json!(label)), "{id}");
+    }
+    d.snapshot("export-frame-rate-list");
+    // the last rate is on screen without scrolling: a click on it chooses it
+    d.click("export.video.fps.option.12");
+    assert_eq!(d.app().ui.export.settings.frame_rate, Some(FrameRate::FPS_120));
+    d.click("export.video.fps");
+    d.click("export.video.fps.option.11");
+    assert_eq!(d.app().ui.export.settings.frame_rate, Some(FrameRate::FPS_119_88));
+}
+
+#[test]
+fn export_button_locks_and_cancels_during_active_export() {
+    let mut d = Driver::new("lock_test");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 24-bit", "location": loc, "fileName": "lock_test", "range": "custom", "customStart": 0.0, "customEnd": 20.0}}));
+    d.frames(2);
+    let prog = std::sync::Arc::new(filmcraft_export::Progress::default());
+    let res = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let job = filmcraft_engine::Job { id: 999, label: "Export lock_test.wav".into(), progress: prog.clone(), result: res.clone() };
+    d.app().session.jobs.push(job);
+    d.frames(2);
+
+    // Record jobs count before clicking cancel
+    let jobs_before = d.app().session.jobs.len();
+    // Clicking export.button while an export job is running cancels the active job
+    d.click("export.button");
+    d.frames(2);
+    assert!(prog.cancel.load(std::sync::atomic::Ordering::Relaxed), "the running export was cancelled");
+    assert_eq!(d.app().session.jobs.len(), jobs_before, "cancelling the active export does not dispatch another job");
+}
+
+/// #2749: with In/Out marks on the sequence, Export starts on Source In/Out (as Premiere does);
+/// without, on Entire Source. A Range chosen afterwards stays until the marks change.
+#[test]
+fn the_export_range_follows_the_sequence_marks() {
+    let mut d = Driver::new("range-marks");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire", "no marks: the whole sequence");
+    d.ok("ui.set", json!({"mode": "edit"}));
+    d.exec("markers.markIn", json!({"seconds": 1.0}));
+    d.exec("markers.markOut", json!({"seconds": 2.0}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut", "marks set: their range");
+    // chosen by hand (an agent here), it stays
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.range, "entire", "a chosen Range stays");
+    // the marks move: the Range follows them again
+    d.exec("markers.markOut", json!({"seconds": 3.0}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut");
+}

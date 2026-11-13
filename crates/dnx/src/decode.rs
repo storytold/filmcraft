@@ -6,6 +6,10 @@ use crate::header::{self, FieldCode, FrameHeader, SCAN_INDEX_OFFSET};
 use crate::tables::{AMP_EOB, AMP_FINDEX, AMP_FRUN, CidInfo, VlcSet, ZIGZAG, cid_info, vlc};
 use crate::{ChromaFormat, Error, Frame, Interlace, Result};
 
+/// Maximum aggregate decoded storage for one frame: the coded planes of every coding unit plus
+/// the output picture. 1 GiB covers 8K DNxHR 444 with alpha (about 570 MB of 16-bit samples).
+const MAX_FRAME_BYTES: usize = 1 << 30;
+
 /// Decoder options.
 #[derive(Debug, Clone, Copy)]
 pub struct DecodeOptions {
@@ -36,6 +40,7 @@ pub fn decode_frame(data: &[u8]) -> Result<Frame> {
 pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
     let h1 = header::parse(data)?;
     let field_coded = h1.interlaced && !h1.frame_encoding;
+    check_memory_budget(&h1, field_coded)?;
     if !field_coded {
         let planes = decode_unit(&h1, data, opts)?;
         let mut f = Frame::new_like(&h1, h1.width, h1.lines);
@@ -62,6 +67,44 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
     top.copy_into(&mut f, 0, 2);
     bottom.copy_into(&mut f, 1, 2);
     Ok(f)
+}
+
+/// Coded-plane geometry of one coding unit: plane strides and chroma macroblock height.
+fn coded_layout(h: &FrameHeader) -> ([usize; 4], usize) {
+    let nw = h.mb_width() as usize;
+    let cmb = match h.chroma {
+        ChromaFormat::Yuv422 => (8, 16),
+        ChromaFormat::Yuv420 => (8, 8),
+        ChromaFormat::Yuv444 => (16, 16),
+    };
+    ([nw * 16, nw * cmb.0, nw * cmb.0, nw * 16], cmb.1)
+}
+
+/// Reject a frame whose decoded storage (coded planes of each coding unit plus the output
+/// picture) would exceed [`MAX_FRAME_BYTES`], before anything is allocated.
+fn check_memory_budget(h: &FrameHeader, field_coded: bool) -> Result<()> {
+    const TOO_BIG: Error = Error::Invalid("frame dimensions exceed the decoder memory limit");
+    let ns = h.mb_rows as usize;
+    let (strides, ch) = coded_layout(h);
+    let luma_rows = ns.checked_mul(16).ok_or(TOO_BIG)?;
+    let chroma_rows = ns.checked_mul(ch).ok_or(TOO_BIG)?;
+    let mut unit = strides[0].checked_mul(luma_rows).ok_or(TOO_BIG)?;
+    for s in [strides[1], strides[2]] {
+        unit = s.checked_mul(chroma_rows).and_then(|n| unit.checked_add(n)).ok_or(TOO_BIG)?;
+    }
+    if h.alpha {
+        unit = strides[3].checked_mul(luma_rows).and_then(|n| unit.checked_add(n)).ok_or(TOO_BIG)?;
+    }
+    let units = if field_coded { 2 } else { 1 };
+    let out_h = (h.lines as usize).checked_mul(units).ok_or(TOO_BIG)?;
+    let luma = (h.width as usize).checked_mul(out_h).ok_or(TOO_BIG)?;
+    let chroma = (h.chroma.chroma_width(h.width) as usize).checked_mul(h.chroma.chroma_height(out_h as u32) as usize).ok_or(TOO_BIG)?;
+    let out = chroma.checked_mul(2).and_then(|n| n.checked_add(luma)).and_then(|n| if h.alpha { n.checked_add(luma) } else { Some(n) }).ok_or(TOO_BIG)?;
+    let samples = unit.checked_mul(units).and_then(|n| n.checked_add(out)).ok_or(TOO_BIG)?;
+    if samples.checked_mul(std::mem::size_of::<u16>()).is_none_or(|n| n > MAX_FRAME_BYTES) {
+        return Err(TOO_BIG);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "threads")]
@@ -174,7 +217,7 @@ fn decode_unit(h: &FrameHeader, data: &[u8], opts: &DecodeOptions) -> Result<Cod
         ChromaFormat::Yuv444 => (&LAYOUT_444, (16, 16)),
     };
     let mb_size = [(16, 16), cmb, cmb, (16, 16)];
-    let strides = [nw * 16, nw * cmb.0, nw * cmb.0, nw * 16];
+    let (strides, _) = coded_layout(h);
     let ctx = Ctx {
         h,
         info,
@@ -201,10 +244,15 @@ fn decode_unit(h: &FrameHeader, data: &[u8], opts: &DecodeOptions) -> Result<Cod
         let st = hs.checked_add(idx).filter(|&v| v < data.len()).ok_or(Error::Truncated)?;
         starts.push(st);
     }
+    // Each scan line owns its own, non-empty byte range: repeated or decreasing indices would let
+    // one coded row stand in for many, so a tiny payload could fill a huge raster.
+    if starts.windows(2).any(|w| w[1] <= w[0]) {
+        return Err(Error::Invalid("macroblock scan line indices are not increasing"));
+    }
     let ranges: Vec<(usize, usize)> = (0..ns)
         .map(|s| {
             let st = starts[s];
-            let end = starts.get(s + 1).copied().filter(|&e| e > st).unwrap_or(data.len());
+            let end = starts.get(s + 1).copied().unwrap_or(data.len());
             (st, end)
         })
         .collect();

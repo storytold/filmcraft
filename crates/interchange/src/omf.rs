@@ -40,6 +40,7 @@ pub struct OmfOptions {
 /// Export the audio of `sequence` as an OMF 2.0 file.
 pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<(Vec<u8>, Report)> {
     let mut report = Report::default();
+    crate::warn_marker_metadata_loss(project, sequence, &mut report);
     let name = opts.name.clone().or_else(|| project.item(sequence).map(|i| i.name.clone())).unwrap_or_else(|| "Sequence".into());
     let mut media = opts.media.clone();
     media.audio_only = true;
@@ -47,6 +48,9 @@ pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<
     let doc = comp::from_project(project, sequence, &name, &media, comp::Nests::Rendered, &mut report)?;
     if !doc.compositions[0].markers.is_empty() {
         report.info("sequence markers are not written to OMF");
+    }
+    if project.sequence(sequence).is_some_and(|q| q.video_tracks.iter().any(|t| !t.items.is_empty())) {
+        report.info("video tracks are not written to OMF (audio only)");
     }
     let bytes = write::write(&doc, &mut report)?;
     Ok((bytes, report))
@@ -58,6 +62,8 @@ pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<Extra
     let mut report = Report::default();
     let doc = read::read(bytes, &mut report)?;
     let (imported, extracted) = comp::to_project(doc, opts, &mut report)?;
+    let mut imported = imported;
+    crate::bound_start_timecodes(&mut imported, &mut report);
     Ok((imported, extracted, report))
 }
 

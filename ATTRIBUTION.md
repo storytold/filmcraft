@@ -9,12 +9,20 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 | Asset | Author | Source | Licence |
 |---|---|---|---|
+| `crates/codecs/tests/fixtures/mjpeg-avi1-baseline.jpg` | libjpeg-turbo contributors | `testorig.jpg` from [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages) | IJG License (`README.ijg` in the source distribution) |
+| `crates/codecs/tests/fixtures/mjpeg-cmyk.jpg` | craft-libs contributors | Original CMYK test fixture from [craft-libs prepress tests](https://github.com/storytold/craft-libs/tree/24a472717/crates/prepress/tests/fixtures) | MIT OR Apache-2.0 (craft-libs) |
+| `crates/codecs/tests/fixtures/mjpeg-progressive-huffman.jpg` | libjpeg-turbo contributors; FilmCraft contributors | Derived from `testorig.jpg` in [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages), decoded by FFmpeg and re-encoded with libjpeg-turbo `cjpeg -progressive -quality 88` | IJG License (`README.ijg` in the source distribution) |
+| `crates/ui-egui/src/i18n/sv.tsv` | FilmCraft contributors | Original work: clean-room Swedish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/it.tsv` | FilmCraft contributors | Original work: clean-room Italian interface translations | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/tr.tsv` | FilmCraft contributors | Original work: clean-room Turkish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/id.tsv` | FilmCraft contributors | Original work: clean-room Indonesian interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/ko.tsv` | FilmCraft contributors | Original work: clean-room Korean interface translations | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/cs.tsv` | FilmCraft contributors | Original work: AI-assisted Czech interface translations; not yet proofread by a native speaker | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/fr.tsv` | FilmCraft contributors | Original work: clean-room French interface translations | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/pl.tsv` | FilmCraft contributors | Original work: clean-room Polish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/pt-br.tsv` | FilmCraft contributors | Original work: clean-room Brazilian Portuguese interface translations | MIT OR Apache-2.0 |
-| `crates/ui-egui/src/i18n/ru.tsv` | FilmCraft contributors | Original work: clean-room Russian interface translations | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/bs.tsv` | FilmCraft contributors | Original work: AI-assisted clean-room Bosnian interface translations, not yet native-reviewed | MIT OR Apache-2.0 |
+| `crates/ui-egui/src/i18n/ru.tsv` | FilmCraft contributors | Original work: clean-room Russian interface translation (full catalog) | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/uk.tsv` | FilmCraft contributors | Original work: clean-room Ukrainian interface translations | MIT OR Apache-2.0 |
 | `assets/fonts/Inter-Regular.ttf` | The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) |
 | `assets/fonts/Inter-Medium.ttf` | The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) |
@@ -70,7 +78,7 @@ procedural demo footage (`crates/media/src/generators.rs`); no external media. R
 | `crates/golden/goldens/graphic_title.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `graphic_title`) from procedurally generated media and bundled OFL fonts | MIT OR Apache-2.0 |
 | `crates/golden/goldens/lumetri_basic.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `lumetri_basic`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/lumetri_hdr_pq.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `lumetri_hdr_pq`) from procedurally generated media re-encoded as Rec. 2100 PQ | MIT OR Apache-2.0 |
-| `crates/golden/goldens/lumetri_presets_grid.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, `lumetri_presets_grid`): FilmCraft's own Lumetri presets on its procedural preview picture | MIT OR Apache-2.0 |
+| `crates/golden/goldens/lumetri_presets_grid.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, `lumetri_presets_grid`): FilmCraft's own Color Grading presets on its procedural preview picture | MIT OR Apache-2.0 |
 | `crates/golden/goldens/text_burnin.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `text_burnin`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/transform_opacity.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `transform_opacity`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/transition_cross_dissolve.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `transition_cross_dissolve`) from procedurally generated media | MIT OR Apache-2.0 |
@@ -112,8 +120,8 @@ is traced or derived from Adobe artwork.
 | Align / distribute / paragraph-alignment glyphs in the graphics panel | `crates/ui-egui/src/panels/graphics.rs` (`align_glyph`): bars and lines drawn with the egui painter |
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |
 | Built-in graphics templates (Lower Third – Slab / Rule, Ticker – Crawl, Title – Centered / Boxed, End Credits – Roll, Callout – Pointer / Tag) and their placeholder text | `crates/project/src/gtemplate.rs` (`builtin_templates`): original designs defined in code with the bundled Inter font; thumbnails are rendered at runtime, no template, image or font files |
-| Lumetri "Look" presets (Teal & Orange, Warm Film, …) | `crates/render/src/effects.rs` (`apply_look`): procedural colour transforms, not LUT files |
-| Lumetri Presets (Effects panel: Cinematic, Film Emulation, Monochrome, Technical) and their preview picture | `crates/render/src/lumetri_presets.rs`: Lumetri parameter values chosen by contributors, descriptive names, and a procedural preview picture (dusk sky, ridges, lake, grey ramp, colour chips) |
+| Color Grading "Look" presets (Teal & Orange, Warm Film, …) | `crates/render/src/effects.rs` (`apply_look`): procedural colour transforms, not LUT files |
+| Color Grading Presets (Effects panel: Cinematic, Film Emulation, Monochrome, Technical) and their preview picture | `crates/render/src/lumetri_presets.rs`: Color Grading parameter values chosen by contributors, descriptive names, and a procedural preview picture (dusk sky, ridges, lake, grey ramp, colour chips) |
 | Colour palette and layout metrics | `crates/ui-egui/src/theme.rs`: colour values and sizes only; no artwork |
 
 ## Optional build input: craft-fonts
