@@ -684,6 +684,10 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 /// has already removed the green it is asked to key); Esc disarms.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
+    // a screen sampling session has the pointer: it takes the colour, not this picture
+    if app.screen_sampler.is_some() {
+        return;
+    }
     let ctx = ui.ctx().clone();
     let pending_id = egui::Id::unique("eyedropper-pending");
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -732,7 +736,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
 
 /// Writes a sampled colour into the armed target, in the format that target's command stores: an
 /// effect parameter takes linear floats, a graphic a hex string, a caption style sRGB bytes.
-fn fill(app: &mut FilmcraftApp, armed: &crate::state::Eyedropper, rgb: [u8; 3]) -> filmcraft_engine::Result<()> {
+pub(crate) fn fill(app: &mut FilmcraftApp, armed: &crate::state::Eyedropper, rgb: [u8; 3]) -> filmcraft_engine::Result<()> {
     use crate::state::Eyedropper;
     match armed {
         Eyedropper::Param { clip, effect, param, mask } => {

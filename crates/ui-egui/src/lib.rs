@@ -101,7 +101,7 @@ mod raw_input;
 use audio::shuttle_mix_rate;
 pub use audio::{AUDIO_RETRY_S, AUDIO_STALL_S, playback_mix};
 pub use gpu::{gpu_compositor_unsupported, software_rasterizer};
-pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, RelinkHint, SystemThemeFn};
+pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, RelinkHint, ScreenSample, SystemThemeFn};
 pub(crate) use raw_input::rewrite_native_window_input;
 
 pub use ime_reset::install_ime_reset_callbacks;
@@ -213,6 +213,9 @@ pub struct FilmcraftApp {
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
+    /// A screen colour sampling session in flight: the system magnifier is up, and the armed
+    /// eyedropper takes the colour it returns. `None` while nothing is being sampled.
+    pub(crate) screen_sampler: Option<crate::hooks::ScreenSample>,
     pub dialog: Option<Dialog>,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub file_dialogs: panels::file_dialogs::FileDialogState,

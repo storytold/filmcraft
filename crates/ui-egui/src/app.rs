@@ -44,6 +44,7 @@ impl FilmcraftApp {
             scrub_sequence: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
+            screen_sampler: None,
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             updates_rt: Default::default(),
@@ -203,6 +204,36 @@ impl FilmcraftApp {
 impl FilmcraftApp {
     /// Install the theme once, then keep fonts ready; a saved language without its system face
     /// falls back to English as before.
+    /// Starts the screen sampling session for an armed eyedropper, and fills the armed target with
+    /// the colour the user picks. Cancelling, or clicking away, leaves the colour alone.
+    fn poll_screen_sampler(&mut self, ctx: &egui::Context) {
+        if self.ui.eyedropper.is_none() {
+            self.screen_sampler = None;
+            return;
+        }
+        if self.screen_sampler.is_none() {
+            let Some(start) = self.hooks.screen_sampler.as_ref() else { return };
+            self.screen_sampler = start();
+            if self.screen_sampler.is_none() {
+                return;
+            }
+        }
+        let Some(sampler) = &self.screen_sampler else { return };
+        match sampler.poll() {
+            // the magnifier is up and the user has not clicked yet
+            None => ctx.request_repaint_after(std::time::Duration::from_millis(50)),
+            Some(picked) => {
+                let Some(armed) = self.ui.eyedropper.take() else { return };
+                self.screen_sampler = None;
+                if let Some(rgb) = picked
+                    && let Err(e) = crate::panels::monitor::fill(self, &armed, rgb)
+                {
+                    self.status(e.to_string());
+                }
+            }
+        }
+    }
+
     fn logic_theme(&mut self, ctx: &egui::Context) {
         if !self.styled {
             theme::install(ctx, &self.tokens);
@@ -321,6 +352,7 @@ impl FilmcraftApp {
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        self.poll_screen_sampler(ctx);
         self.logic_theme(ctx);
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);
