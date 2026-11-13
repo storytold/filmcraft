@@ -238,17 +238,17 @@ fn razor_block(
         return;
     }
     let rate = seq.settings.frame_rate;
-    let at = |app: &mut FilmcraftApp, x: f32| super::timeline::snap(app, seq, layout, rate.snap_nearest(layout.tick_at(x)), &[]);
+    let at = |app: &mut FilmcraftApp, x: f32, mods: egui::Modifiers| super::timeline::snap(app, seq, layout, rate.snap_nearest(layout.tick_at(x)), &[], mods);
     if let Some(p) = resp.hover_pos() {
         ctx.set_cursor_icon(CursorIcon::Crosshair);
-        let x = layout.x_of(at(app, p.x));
+        let x = layout.x_of(at(app, p.x, ctx.input(|i| i.modifiers)));
         ui.painter().with_clip_rect(layout.content).line_segment([pos2(x, row.min.y), pos2(x, row.max.y)], Stroke::new(1.0, Color32::WHITE));
     }
     // a press that starts a drag cuts as well, as on clips
     if (resp.clicked() || resp.drag_started())
         && let Some(p) = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
-        let t = at(app, p.x);
+        let t = at(app, p.x, ctx.input(|i| i.modifiers));
         if ctx.input(|i| i.modifiers.shift) {
             actions.push(("captions.split".into(), json!({"time": t.0})));
         } else if c.start < t && t < c.end() {
@@ -330,7 +330,8 @@ fn interact_block(
         let pps = app.ui.timeline.pps;
         let raw = seq.settings.frame_rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
         // snap the edge(s) the gesture moves, as a clip drag does (#2192)
-        let snap = |app: &mut FilmcraftApp, edge: Tick, exclude: &[ClipId]| super::timeline::snap_caption(app, seq, layout, edge + raw, exclude) - edge;
+        let mods = ctx.input(|i| i.modifiers);
+        let snap = |app: &mut FilmcraftApp, edge: Tick, exclude: &[ClipId]| super::timeline::snap_caption(app, seq, layout, edge + raw, exclude, mods) - edge;
         let d = match g {
             0 => {
                 // the captions that move are no targets, or a short drag would stick where it began

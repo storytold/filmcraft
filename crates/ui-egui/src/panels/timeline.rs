@@ -80,7 +80,14 @@ const DUPLICATE_FRAME_COLORS: [Color32; filmcraft_engine::sequence_tools::DUPLIC
     Color32::from_rgb(0x9a, 0xcd, 0x32),
     Color32::from_rgb(0xf5, 0xf5, 0xf5),
 ];
-const SNAP_PX: f32 = 9.0;
+/// How close, in points of pointer x, a drag comes to an edit before it snaps.
+const SNAP_PX: f32 = 8.0;
+/// How far the pointer must move past a snap point before the drag lets go of it: releasing only
+/// beyond [`SNAP_PX`] would flicker in and out of the snap while the pointer sits near the edge.
+const SNAP_RELEASE_PX: f32 = SNAP_PX * 1.6;
+/// A point the drag broke free of is left alone until the pointer is this far past it, so a drag
+/// that leaves a snap does not immediately pick it up again.
+const SNAP_REARM_PX: f32 = SNAP_PX * 2.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
 pub type PeakKey = (ItemId, usize);
@@ -97,6 +104,11 @@ pub struct TlState {
     pub layout: Option<Layout>,
     /// Snap indicator x (screen) this frame.
     snap_x: Option<f32>,
+    /// The snap point each end of the dragged block is stuck to (start, end): the snap is sticky so
+    /// a drag does not flutter between the free and the snapped position at a neighbouring edge.
+    snap_stick: [Option<Tick>; 2],
+    /// Points a drag broke free of, per end of the block, ignored until the pointer is well away.
+    snap_free: [Vec<Tick>; 2],
     pub peaks: Arc<Mutex<HashMap<PeakKey, Arc<Vec<(f32, f32)>>>>>,
     peaks_pending: Arc<Mutex<Vec<PeakKey>>>,
     /// Nested sequences have waveforms too, of their mix. Unlike media a sequence changes: this is
