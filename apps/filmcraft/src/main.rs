@@ -560,9 +560,17 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
         self.0.render_plan_rgba8(plan)
     }
+
+    fn render_plan_to(&mut self, plan: &filmcraft_render::plan::FramePlan, target: &dyn filmcraft_export::GpuTarget) -> bool {
+        self.0.render_plan_to(plan, target)
+    }
 }
 
 fn register_gpu_frame_renderer() {
+    // the hardware encoder's input pictures in GPU memory, which the export's renderers draw into
+    if let Some(importer) = filmcraft_platform::target_importer() {
+        filmcraft_gpu::register_target_importer(importer);
+    }
     filmcraft_export::register_frame_renderer(|| {
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });

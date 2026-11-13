@@ -387,6 +387,46 @@ fn nv_enc_lock_input_buffer_layout_matches_the_header() {
 }
 
 #[test]
+fn nv_enc_register_resource_layout_matches_the_header() {
+    assert_eq!((size_of::<NV_ENC_REGISTER_RESOURCE>(), align_of::<NV_ENC_REGISTER_RESOURCE>()), (1536, 8), "NV_ENC_REGISTER_RESOURCE");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, version), 0, "NV_ENC_REGISTER_RESOURCE.version");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, resourceType), 4, "NV_ENC_REGISTER_RESOURCE.resourceType");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, width), 8, "NV_ENC_REGISTER_RESOURCE.width");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, height), 12, "NV_ENC_REGISTER_RESOURCE.height");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, pitch), 16, "NV_ENC_REGISTER_RESOURCE.pitch");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, subResourceIndex), 20, "NV_ENC_REGISTER_RESOURCE.subResourceIndex");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, resourceToRegister), 24, "NV_ENC_REGISTER_RESOURCE.resourceToRegister");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, registeredResource), 32, "NV_ENC_REGISTER_RESOURCE.registeredResource");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, bufferFormat), 40, "NV_ENC_REGISTER_RESOURCE.bufferFormat");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, bufferUsage), 44, "NV_ENC_REGISTER_RESOURCE.bufferUsage");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, pInputFencePoint), 48, "NV_ENC_REGISTER_RESOURCE.pInputFencePoint");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, chromaOffset), 56, "NV_ENC_REGISTER_RESOURCE.chromaOffset");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, reserved1), 64, "NV_ENC_REGISTER_RESOURCE.reserved1");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, reserved2), 1048, "NV_ENC_REGISTER_RESOURCE.reserved2");
+}
+
+#[test]
+fn nv_enc_map_input_resource_layout_matches_the_header() {
+    assert_eq!((size_of::<NV_ENC_MAP_INPUT_RESOURCE>(), align_of::<NV_ENC_MAP_INPUT_RESOURCE>()), (1544, 8), "NV_ENC_MAP_INPUT_RESOURCE");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, version), 0, "NV_ENC_MAP_INPUT_RESOURCE.version");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, subResourceIndex), 4, "NV_ENC_MAP_INPUT_RESOURCE.subResourceIndex");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, inputResource), 8, "NV_ENC_MAP_INPUT_RESOURCE.inputResource");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, registeredResource), 16, "NV_ENC_MAP_INPUT_RESOURCE.registeredResource");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, mappedResource), 24, "NV_ENC_MAP_INPUT_RESOURCE.mappedResource");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, mappedBufferFmt), 32, "NV_ENC_MAP_INPUT_RESOURCE.mappedBufferFmt");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, reserved1), 36, "NV_ENC_MAP_INPUT_RESOURCE.reserved1");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, reserved2), 1040, "NV_ENC_MAP_INPUT_RESOURCE.reserved2");
+}
+
+#[test]
+fn input_resource_constants_match_the_header() {
+    assert_eq!(NV_ENC_REGISTER_RESOURCE_VER as i64, 1896087564, "NV_ENC_REGISTER_RESOURCE_VER");
+    assert_eq!(NV_ENC_MAP_INPUT_RESOURCE_VER as i64, 1896087564, "NV_ENC_MAP_INPUT_RESOURCE_VER");
+    assert_eq!(NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX as i64, 0, "NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX");
+    assert_eq!(NV_ENC_INPUT_IMAGE as i64, 0, "NV_ENC_INPUT_IMAGE");
+}
+
+#[test]
 fn nv_enc_sequence_param_payload_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_SEQUENCE_PARAM_PAYLOAD>(), align_of::<NV_ENC_SEQUENCE_PARAM_PAYLOAD>()), (1544, 8), "NV_ENC_SEQUENCE_PARAM_PAYLOAD");
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, version), 0, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.version");

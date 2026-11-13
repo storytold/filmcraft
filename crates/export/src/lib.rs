@@ -61,6 +61,8 @@ pub(crate) use encoders::FlacAudio;
 #[cfg(test)]
 use encoders::{aac_factory, h264_factory};
 pub use encoders::{apv_profile, dnx_profile, prores_profile};
+/// An encoder's input picture in GPU memory ([`GpuTargets`]).
+pub use filmcraft_frame::GpuTarget;
 pub use format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use output::Out;
 pub use output::{OutputSink, path_is_file};
@@ -68,19 +70,20 @@ pub(crate) use registry::build_frame_renderer;
 #[cfg(test)]
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
-    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
-    register_hdr_probe,
+    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, GpuTargets, PrepareAhead,
+    VideoEncoder, available, encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe,
+    register_frame_renderer, register_hdr_probe,
 };
 use registry::{audio_factories, video_factories};
 #[cfg(test)]
 use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
 pub use stats::{
-    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_declined_by, note_hw_encode_frame, note_hw_encode_session, note_stage, plan_frame_time, reset_export_lock_wait, stage_times, timed,
+    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, gpu_target_frames, hw_encode_stats, note_gpu_fallback, note_gpu_frame,
+    note_hw_encode_declined, note_hw_encode_declined_by, note_hw_encode_frame, note_hw_encode_session, note_stage, plan_frame_time, reset_export_lock_wait,
+    stage_times, timed,
 };
-pub(crate) use stats::{note_lock_wait, take_hw_encode_decline};
+pub(crate) use stats::{note_lock_wait, note_target_frame, take_hw_encode_decline};
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
 #[derive(Debug, thiserror::Error)]

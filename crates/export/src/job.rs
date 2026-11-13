@@ -88,8 +88,19 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
-type Frame = (Vec<u8>, Vec<f32>);
+/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats, or drawn
+/// into one of the encoder's input pictures in GPU memory ([`crate::GpuTargets`]).
+type Frame = crate::pipeline::Rendered;
+
+/// The encoder's input pictures in GPU memory, when it reads them and the export's GPU renderers
+/// draw frames as they are encoded. `FILMCRAFT_EXPORT_GPU_ENCODE=0` reads every frame back, as
+/// before (benchmarks).
+fn gpu_targets(venc: &mut dyn VideoEncoder, pipe: &Pipeline) -> Option<Arc<dyn crate::GpuTargets>> {
+    if !pipe.draws_encoder_input() || std::env::var("FILMCRAFT_EXPORT_GPU_ENCODE").is_ok_and(|v| v.trim() == "0") {
+        return None;
+    }
+    venc.gpu_targets()
+}
 
 /// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
 pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
@@ -144,7 +155,9 @@ fn plan_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -
 /// must be rendered again.
 /// `prepare` (the encoder's [`VideoEncoder::prepare_ahead`]) then works on each frame, numbered
 /// from `f0` like [`EncoderFrame::index`]. `plans`: the batch's plans when it was planned
-/// ahead ([`plan_batch`]); a frame without one plans as it renders.
+/// ahead ([`plan_batch`]); a frame without one plans as it renders. `targets`: the encoder's input
+/// pictures in GPU memory, which the frames the GPU renderers draw go into while one is free.
+#[allow(clippy::too_many_arguments)]
 fn render_batch(
     pipe: &Pipeline,
     f: i64,
@@ -153,6 +166,7 @@ fn render_batch(
     prepare: Option<&PrepareAhead>,
     f0: i64,
     plans: Option<Vec<Option<FramePlan>>>,
+    targets: Option<&dyn crate::GpuTargets>,
 ) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
     let n = usize::try_from(end - f).unwrap_or(0);
@@ -163,13 +177,14 @@ fn render_batch(
         .enumerate()
         .map(|(k, plan)| {
             let fi = f.saturating_add(i64::try_from(k).unwrap_or(i64::MAX));
-            let frame = pipe.frame_planned(fi, plan, sources);
+            let frame = pipe.frame_planned(fi, plan, sources, targets);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
-            if let Some(prepare) = prepare {
+            // (a frame in GPU memory is the encoder's to read as it is)
+            if let Some(prepare) = prepare.filter(|_| frame.gpu.is_none()) {
                 let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
-                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.hdr_out.then_some(frame.1.as_slice()), index });
+                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.rgba, hdr: pipe.hdr_out.then_some(frame.hdr.as_slice()), index });
             }
             frame
         })
@@ -216,6 +231,8 @@ pub struct Exporter {
     overlapped_steps: u64,
     brand: Brand,
     venc: Box<dyn VideoEncoder>,
+    /// `venc`'s input pictures in GPU memory, when frames are drawn straight into them ([`gpu_targets`]).
+    targets: Option<Arc<dyn crate::GpuTargets>>,
     aenc: Option<Box<dyn AudioEncoder>>,
     audio: Option<AudioOut>,
     /// The loudness pass ran (or is not needed).
@@ -347,7 +364,7 @@ impl Exporter {
             progress.total.store(nframes * if two_pass { 2 } else { 1 }, Ordering::Relaxed);
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
-        let (venc, declined) = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+        let (mut venc, declined) = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
         log::info!("{} export: {} encoder", settings.video_format().label(), venc.hardware().unwrap_or("software"));
         let warnings: Vec<String> = software_fallback(&settings, venc.as_ref(), declined).into_iter().collect();
         for w in &warnings {
@@ -365,7 +382,9 @@ impl Exporter {
             _ => None,
         };
         let measured = !settings.effects.loudness.enabled || audio.is_none();
+        let targets = gpu_targets(venc.as_mut(), &pipe);
         Ok(Self {
+            targets,
             pipe,
             f0,
             f1,
@@ -578,6 +597,7 @@ impl Exporter {
             self.settings.h264_pass = H264Pass::Second(stats);
             // the same request as the analysis pass's: a hardware encoder declines it again, already reported
             self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?.0;
+            self.targets = gpu_targets(self.venc.as_mut(), &self.pipe);
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -642,6 +662,7 @@ impl Exporter {
     /// and, when the GPU renderers take plans, planning the one after that.
     fn step_batch(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
         let prepare = self.venc.prepare_ahead();
+        let targets = self.targets.clone();
         let f0 = self.f0;
         let (f, frames) = match self.ahead.take() {
             Some(a) if a.first == self.next => (a.first, a.frames),
@@ -649,7 +670,7 @@ impl Exporter {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let plans = self.take_planned(f, end);
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0, plans)) {
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0, plans, targets.as_deref())) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -681,7 +702,9 @@ impl Exporter {
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0, plans)))));
+                slot = Some(catch_unwind(AssertUnwindSafe(|| {
+                    timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0, plans, targets.as_deref()))
+                })));
             });
             if let Some((c, d)) = later {
                 let (planned, pipe) = (&mut planned, &pipe);
@@ -765,16 +788,15 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
+    fn encode(&mut self, frames: &[Frame], f: i64) -> Result<Vec<EncodedPacket>> {
         let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
-            };
+        for (k, frame) in frames.iter().enumerate() {
+            let index = (f - self.f0) as u64 + k as u64;
+            if let Some(target) = &frame.gpu {
+                packets.extend(self.venc.encode_gpu(target.clone(), index)?);
+                continue;
+            }
+            let fr = EncoderFrame { width: self.pipe.w, height: self.pipe.h, rgba: &frame.rgba, hdr: self.pipe.hdr_out.then_some(frame.hdr.as_slice()), index };
             packets.extend(self.venc.encode(&fr)?);
         }
         Ok(packets)

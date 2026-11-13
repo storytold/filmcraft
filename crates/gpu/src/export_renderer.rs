@@ -135,7 +135,9 @@ impl ExportRenderer {
                 }
                 let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                // (with what opening a hardware encoder's input pictures needs, where the adapter has it)
+                let required_features = crate::importer_features() & adapter.features();
+                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features, ..Default::default() })).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -183,6 +185,27 @@ impl ExportRenderer {
                 }
                 timing::add_frame();
                 Some((w as usize, h as usize, px))
+            }
+        }
+    }
+
+    /// [`Self::render_plan_rgba8`] into a hardware encoder's input picture in GPU memory instead
+    /// of CPU bytes ([`GpuCompositor::render_export_to`]). `false` when the frame can't go there (a
+    /// plan that already is the CPU image, a device error, a target this device can't open): the
+    /// caller reads it back instead.
+    pub fn render_plan_to(&mut self, plan: &FramePlan, target: &dyn filmcraft_frame::GpuTarget) -> bool {
+        match plan {
+            FramePlan::Image(_) => false,
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() || !self.compositor.render_export_to(plan, target) {
+                    return false;
+                }
+                // an error reported while this frame was drawn leaves its pixels untrusted
+                if device_failed() {
+                    return false;
+                }
+                timing::add_frame();
+                true
             }
         }
     }

@@ -2315,6 +2315,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-gpu",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
@@ -2327,7 +2328,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "pollster 1.0.1",
  "tempfile",
+ "wgpu",
  "windows 0.62.2",
 ]
 

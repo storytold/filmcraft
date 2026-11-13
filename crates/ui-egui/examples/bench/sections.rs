@@ -45,6 +45,10 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
             self.0.render_plan_rgba8(plan)
         }
+
+        fn render_plan_to(&mut self, plan: &filmcraft_render::plan::FramePlan, target: &dyn filmcraft_export::GpuTarget) -> bool {
+            self.0.render_plan_to(plan, target)
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }

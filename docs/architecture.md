@@ -294,6 +294,12 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
   and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
+  On Windows an 8-bit NVENC encoder also hands out input pictures in GPU memory
+  (`VideoEncoder::gpu_targets`, `filmcraft_frame::GpuTarget`): frames the GPU renderers draw as
+  they are encoded are copied by the compositor straight into them (`FrameRenderer::render_plan_to`,
+  opened through `filmcraft_gpu::register_target_importer`, which the app registers with
+  `platform::target_importer()`) and encoded with `VideoEncoder::encode_gpu`, with no read-back
+  and no upload; any frame that cannot go there is read back as before, and the stream does not change.
   On macOS, `platform::hardware_encode` (VideoToolbox H.264, opt-in the same way, and H.265) is
   registered likewise. It too takes the RGBA pictures as they are (`32BGRA` buffers tagged BT.709)
   and VideoToolbox converts them to 4:2:0, so the encode thread only copies: converting on the CPU

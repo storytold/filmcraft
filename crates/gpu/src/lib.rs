@@ -41,10 +41,12 @@ use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 pub mod adapter;
 pub mod export_renderer;
 pub mod fx;
+pub mod import;
 pub mod lut;
 pub mod mask;
 mod transition;
 pub use export_renderer::ExportRenderer;
+pub use import::{TargetImporter, importer_features, register_target_importer};
 pub use lut::GpuLut;
 pub use mask::GpuMask;
 
@@ -1172,6 +1174,42 @@ impl GpuCompositor {
         self.output_readback_buf = Some((buf, capacity));
         export_renderer::timing::add_convert(t.elapsed());
         Some((w, h, out))
+    }
+
+    /// [`render_export_rgba8`](Self::render_export_rgba8) without the read-back: the same pixels
+    /// (the frame over black, straight sRGB RGBA8) copied into `target`, a hardware encoder's input
+    /// picture in GPU memory opened on this device by the registered importer, and finished on the
+    /// GPU before this returns, so the encoder can read the target as soon as it gets it.
+    /// `false` when the importer can't open the target here, its size is not the frame's, or the
+    /// GPU did not finish in time: the caller reads the frame back instead.
+    pub fn render_export_to(&mut self, plan: &FramePlan, target: &dyn filmcraft_frame::GpuTarget) -> bool {
+        let t = std::time::Instant::now();
+        // opened first: a target this device can't take costs no render
+        let Some(texture) = crate::import::import_target(&self.device, target) else {
+            return false;
+        };
+        self.render_plan(plan, None, true, true);
+        let Some((tex, _, (w, h))) = self.output.as_ref() else {
+            return false;
+        };
+        let size = wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 };
+        if *w == 0 || *h == 0 || target.size() != (*w, *h) || texture.size() != size || texture.format() != OUTPUT_FORMAT {
+            return false;
+        }
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-export-to-encoder") });
+        enc.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            size,
+        );
+        let index = self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        // the encoder's device knows nothing of this queue: the copy must be done before the
+        // target goes back to it
+        let t = std::time::Instant::now();
+        let done = self.device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(MAP_TIMEOUT) }).is_ok();
+        export_renderer::timing::add_map_wait(t.elapsed());
+        done
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`

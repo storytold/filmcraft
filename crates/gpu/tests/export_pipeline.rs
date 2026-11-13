@@ -42,6 +42,10 @@ impl FrameRenderer for GpuFrameRenderer {
     fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
         self.0.render_plan_rgba8(plan)
     }
+
+    fn render_plan_to(&mut self, plan: &filmcraft_render::plan::FramePlan, target: &dyn filmcraft_export::GpuTarget) -> bool {
+        self.0.render_plan_to(plan, target)
+    }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and

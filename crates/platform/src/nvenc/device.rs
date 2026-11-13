@@ -27,6 +27,10 @@ mod directx {
         pub fn as_raw(&self) -> *mut c_void {
             self.0.as_raw()
         }
+        /// The device itself (the textures registered as input pictures are made on it).
+        pub fn d3d11(&self) -> &ID3D11Device {
+            &self.0
+        }
     }
     /// A Direct3D 11 device on the first NVIDIA adapter (what an NVENC session is opened on).
     fn nvidia_device() -> Result<ID3D11Device, String> {

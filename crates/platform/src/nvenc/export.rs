@@ -41,6 +41,27 @@ struct NvencEncoder {
     y16: Vec<u16>,
     u16: Vec<u16>,
     v16: Vec<u16>,
+    /// The input pictures in GPU memory, once the export asked for them ([`VideoEncoder::gpu_targets`]).
+    #[cfg(target_os = "windows")]
+    targets: Option<std::sync::Arc<dyn filmcraft_export::GpuTargets>>,
+}
+
+/// Input pictures in GPU memory an export may keep in flight: a batch being drawn, one drawn ahead
+/// and one being encoded (four frames each with four GPU renderers), plus the encoder's ring and
+/// B-frame delay, with room to spare. 24 RGBA8 textures: 200 MB of video memory at 1080p, 800 MB
+/// at 4K.
+#[cfg(target_os = "windows")]
+const GPU_TARGETS: usize = 24;
+
+/// The export side of the pool ([`super::target`]).
+#[cfg(target_os = "windows")]
+struct Targets(std::sync::Arc<super::target::Pool>);
+
+#[cfg(target_os = "windows")]
+impl filmcraft_export::GpuTargets for Targets {
+    fn take(&self) -> Option<std::sync::Arc<dyn filmcraft_frame::GpuTarget>> {
+        super::target::take(&self.0).map(|t| std::sync::Arc::new(t) as std::sync::Arc<dyn filmcraft_frame::GpuTarget>)
+    }
 }
 
 /// SEI payload types of the HDR10 static metadata (H.265 Annex D): mastering display colour volume
@@ -63,7 +84,21 @@ pub fn nvenc_signal(signal: &ColorSignal) -> Signal {
 }
 
 fn new_encoder(enc: Nvenc, w: u32, h: u32, rate: FrameRate, signal: ColorSignal) -> NvencEncoder {
-    NvencEncoder { enc, w, h, rate, signal, y: Vec::new(), u: Vec::new(), v: Vec::new(), y16: Vec::new(), u16: Vec::new(), v16: Vec::new() }
+    NvencEncoder {
+        enc,
+        w,
+        h,
+        rate,
+        signal,
+        y: Vec::new(),
+        u: Vec::new(),
+        v: Vec::new(),
+        y16: Vec::new(),
+        u16: Vec::new(),
+        v16: Vec::new(),
+        #[cfg(target_os = "windows")]
+        targets: None,
+    }
 }
 
 impl NvencEncoder {
@@ -135,6 +170,34 @@ impl VideoEncoder for NvencEncoder {
 
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         let ps = self.enc.flush().map_err(|e| ExportError::Encode(format!("NVENC: {e}")))?;
+        Ok(self.packets(ps))
+    }
+
+    /// An RGBA-input encoder's input pictures in GPU memory, made on first ask (the export asks
+    /// only when its GPU renderers draw frames as they are encoded): the compositor copies each
+    /// finished frame into one and NVENC reads it there, instead of the frame being read back into
+    /// CPU memory and uploaded again. `FILMCRAFT_NVENC_GPU_INPUT=0` keeps the frames in CPU memory,
+    /// as before (benchmarks).
+    #[cfg(target_os = "windows")]
+    fn gpu_targets(&mut self) -> Option<std::sync::Arc<dyn filmcraft_export::GpuTargets>> {
+        if self.targets.is_none() && self.enc.takes_rgba() && std::env::var("FILMCRAFT_NVENC_GPU_INPUT").map_or(true, |v| v.trim() != "0") {
+            match self.enc.make_targets(GPU_TARGETS) {
+                Ok(pool) => self.targets = Some(std::sync::Arc::new(Targets(pool))),
+                Err(why) => log::info!("NVENC takes the export's frames from CPU memory: {why}"),
+            }
+        }
+        self.targets.clone()
+    }
+
+    #[cfg(target_os = "windows")]
+    fn encode_gpu(&mut self, target: std::sync::Arc<dyn filmcraft_frame::GpuTarget>, index: u64) -> Result<Vec<EncodedPacket>> {
+        if target.size() != (self.w, self.h) {
+            let (w, h) = target.size();
+            return Err(ExportError::Encode(format!("NVENC: a {w}x{h} picture for a {}x{} encoder", self.w, self.h)));
+        }
+        let hint = if self.enc.codec() == Codec::H264 { " (turn Export > Hardware encoding off to use the software encoder)" } else { "" };
+        let ps = self.enc.encode_target(target, index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?;
+        filmcraft_export::note_hw_encode_frame();
         Ok(self.packets(ps))
     }
 

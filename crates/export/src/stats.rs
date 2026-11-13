@@ -149,6 +149,21 @@ pub fn note_gpu_fallback() {
     GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
 }
 
+static TARGET_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TARGET_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A GPU-drawn frame of an export whose encoder reads pictures in GPU memory went straight into
+/// one (`drawn`), or was read back instead (none free, or the renderer could not open it).
+pub(crate) fn note_target_frame(drawn: bool) {
+    (if drawn { &TARGET_FRAMES } else { &TARGET_MISSES }).fetch_add(1, Ordering::Relaxed);
+}
+
+/// Frames drawn straight into the encoder's pictures in GPU memory, and frames read back although
+/// the encoder takes such pictures (process-wide totals, for benchmarks).
+pub fn gpu_target_frames() -> (u64, u64) {
+    (TARGET_FRAMES.load(Ordering::Relaxed), TARGET_MISSES.load(Ordering::Relaxed))
+}
+
 static PLAN_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PLAN_FRAME_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

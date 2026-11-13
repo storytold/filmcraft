@@ -551,7 +551,159 @@ fn gpu_hook_scenarios() {
             "the frames after the first two batches come from plans made ahead"
         );
     }
+    gpu_input_scenario(&stepped, &planned_ahead);
     crate::reset_frame_renderers_for_tests();
+}
+
+/// 8 of [`gpu_hook_scenarios`]. An encoder that reads input pictures in GPU memory
+/// (`VideoEncoder::gpu_targets`): frames the renderers draw go into its pictures while one is free
+/// and come as RGBA bytes otherwise (3 pictures, 2 held by the encoder). The file is the one of 7
+/// (`expected`), both kinds of picture were encoded, and every picture went back to the pool.
+fn gpu_input_scenario(stepped: &dyn Fn(&str) -> Vec<u8>, expected: &[u8]) {
+    use std::sync::atomic::Ordering::SeqCst;
+    crate::register_encoder(gpu_input_factory);
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(TargetRenderer) as Box<dyn FrameRenderer>));
+    let (gpu0, cpu0) = (GPU_PICTURES.load(SeqCst), CPU_PICTURES.load(SeqCst));
+    let drawn_into = stepped("gpu-input.mov");
+    assert!(drawn_into == expected, "pictures in GPU memory changed the file");
+    let (gpu, cpu) = (GPU_PICTURES.load(SeqCst) - gpu0, CPU_PICTURES.load(SeqCst) - cpu0);
+    assert_eq!(gpu + cpu, 24, "every frame encoded once");
+    assert!(gpu > 0 && cpu > 0, "{gpu} pictures from GPU memory, {cpu} read back");
+    assert_eq!(*GPU_INPUT_FREE.lock().unwrap(), GPU_INPUT_PICTURES, "pictures still out after the export");
+}
+
+static GPU_PICTURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CPU_PICTURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const GPU_INPUT_PICTURES: usize = 3;
+static GPU_INPUT_FREE: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// An encoder's input picture "in GPU memory": the RGBA8 bytes [`TargetRenderer`] drew.
+#[derive(Debug)]
+struct FakeTarget {
+    size: (u32, u32),
+    px: std::sync::Mutex<Vec<u8>>,
+}
+
+impl Drop for FakeTarget {
+    fn drop(&mut self) {
+        *GPU_INPUT_FREE.lock().unwrap() += 1;
+    }
+}
+
+impl crate::GpuTarget for FakeTarget {
+    fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+struct FakeTargets((u32, u32));
+
+impl crate::GpuTargets for FakeTargets {
+    fn take(&self) -> Option<Arc<dyn crate::GpuTarget>> {
+        let mut free = GPU_INPUT_FREE.lock().unwrap();
+        if *free == 0 {
+            return None;
+        }
+        *free -= 1;
+        Some(Arc::new(FakeTarget { size: self.0, px: std::sync::Mutex::new(Vec::new()) }))
+    }
+}
+
+/// ProRes that also takes its pictures from "GPU memory", holding the last two it encoded as a
+/// hardware encoder holds the pictures still in flight.
+struct GpuInputEncoder {
+    inner: Box<dyn VideoEncoder>,
+    size: (u32, u32),
+    held: std::collections::VecDeque<Arc<dyn crate::GpuTarget>>,
+}
+
+impl VideoEncoder for GpuInputEncoder {
+    fn sample_entry(&self) -> filmcraft_isobmff::SampleEntry {
+        self.inner.sample_entry()
+    }
+
+    fn timescale(&self) -> u32 {
+        self.inner.timescale()
+    }
+
+    fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        CPU_PICTURES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.encode(frame)
+    }
+
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        self.held.clear();
+        self.inner.flush()
+    }
+
+    fn gpu_targets(&mut self) -> Option<Arc<dyn crate::GpuTargets>> {
+        Some(Arc::new(FakeTargets(self.size)))
+    }
+
+    fn encode_gpu(&mut self, target: Arc<dyn crate::GpuTarget>, index: u64) -> Result<Vec<EncodedPacket>> {
+        GPU_PICTURES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let px = target.as_any().downcast_ref::<FakeTarget>().expect("one of this encoder's pictures").px.lock().unwrap().clone();
+        let packets = self.inner.encode(&EncoderFrame { width: self.size.0, height: self.size.1, rgba: &px, hdr: None, index });
+        self.held.push_back(target);
+        while self.held.len() > 2 {
+            self.held.pop_front();
+        }
+        packets
+    }
+}
+
+/// [`GpuInputEncoder`] for the exports of scenario 8 only (its file name), ProRes underneath.
+fn gpu_input_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    if !s.path.ends_with("gpu-input.mov") {
+        return None;
+    }
+    let inner = match crate::encoders::prores_factory(format, w, h, rate, s)? {
+        Ok(e) => e,
+        Err(e) => return Some(Err(e)),
+    };
+    *GPU_INPUT_FREE.lock().unwrap() = GPU_INPUT_PICTURES;
+    Some(Ok(Box::new(GpuInputEncoder { inner, size: (w, h), held: std::collections::VecDeque::new() })))
+}
+
+/// [`PlanningRenderer`] (taking plans) that also draws into [`FakeTarget`]s.
+struct TargetRenderer;
+
+impl FrameRenderer for TargetRenderer {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::plan::execute_cpu(&filmcraft_render::plan::plan_frame(project, seq, t, opts, self.caps(), sources)))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn takes_plans(&self) -> bool {
+        true
+    }
+
+    fn render_plan(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::plan::execute_cpu(plan))
+    }
+
+    fn render_plan_to(&mut self, plan: &filmcraft_render::plan::FramePlan, target: &dyn crate::GpuTarget) -> bool {
+        let Some(t) = target.as_any().downcast_ref::<FakeTarget>() else {
+            return false;
+        };
+        *t.px.lock().unwrap() = filmcraft_render::plan::execute_cpu(plan).over_black_rgba8();
+        true
+    }
 }
 
 static PLANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

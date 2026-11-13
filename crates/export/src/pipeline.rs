@@ -132,6 +132,15 @@ impl RendererPool {
     }
 }
 
+/// One output frame ([`Pipeline::frame_planned`]): straight sRGB RGBA8 at the output size, or for
+/// HDR exports the encoded R'G'B' floats (3 per pixel), or, both empty, drawn into one of the
+/// encoder's input pictures in GPU memory (`gpu`).
+pub(crate) struct Rendered {
+    pub rgba: Vec<u8>,
+    pub hdr: Vec<f32>,
+    pub gpu: Option<Arc<dyn filmcraft_frame::GpuTarget>>,
+}
+
 /// The immutable part of an export: everything needed to produce one output frame.
 pub(crate) struct Pipeline {
     pub project: Arc<Project>,
@@ -306,16 +315,43 @@ impl Pipeline {
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
-        self.frame_planned(f, None, sources)
+        let r = self.frame_planned(f, None, sources, None);
+        (r.rgba, r.hdr)
     }
 
-    /// [`Self::frame`], composited from `plan` (the frame's [`Self::plan`]) when there is one.
-    pub(crate) fn frame_planned(&self, f: i64, plan: Option<FramePlan>, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    /// Whether frames the GPU renderers draw are encoded as they are: they can then go straight
+    /// into an encoder's input pictures in GPU memory ([`crate::GpuTargets`]).
+    pub(crate) fn draws_encoder_input(&self) -> bool {
+        self.rgba8_out && self.renderer.is_some()
+    }
+
+    /// [`Self::frame`], composited from `plan` (the frame's [`Self::plan`]) when there is one, and
+    /// drawn into one of `targets` (the encoder's input pictures in GPU memory) when the GPU
+    /// renderers draw it as it is encoded and one is free.
+    pub(crate) fn frame_planned(&self, f: i64, plan: Option<FramePlan>, sources: &dyn SourceProvider, targets: Option<&dyn crate::GpuTargets>) -> Rendered {
         let t = self.rate.tick_of(f);
         let gpu = match (plan, self.renderer.as_ref()) {
             // the CPU drew the whole frame while planning it: no renderer has anything to do
             (Some(FramePlan::Image(img)), Some(_)) => Some(img),
             (Some(plan), Some(pool)) if self.rgba8_out => {
+                // straight into the encoder's picture in GPU memory: no read-back, no upload
+                if let Some(targets) = targets {
+                    let target = targets.take().filter(|t| t.size() == (self.w, self.h));
+                    let drawn = target.as_ref().is_some_and(|target| {
+                        let asked = web_time::Instant::now();
+                        pool.with(|r| {
+                            crate::note_lock_wait(asked.elapsed());
+                            r.render_plan_to(&plan, target.as_ref())
+                        })
+                        .unwrap_or(false)
+                    });
+                    crate::note_target_frame(drawn);
+                    if drawn {
+                        note_gpu_frame();
+                        return Rendered { rgba: Vec::new(), hdr: Vec::new(), gpu: target };
+                    }
+                    // (a target not drawn goes back to the encoder's pool here)
+                }
                 let asked = web_time::Instant::now();
                 let rgba = pool
                     .with(|r| {
@@ -326,7 +362,7 @@ impl Pipeline {
                     .filter(|(w, h, _)| (*w, *h) == (self.w as usize, self.h as usize));
                 if let Some((_, _, rgba)) = rgba {
                     note_gpu_frame();
-                    return (rgba, Vec::new());
+                    return Rendered { rgba, hdr: Vec::new(), gpu: None };
                 }
                 // the GPU could not draw it: the CPU reference renderer below does
                 None
@@ -387,7 +423,7 @@ impl Pipeline {
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return Rendered { rgba: Vec::new(), hdr: out, gpu: None };
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -395,7 +431,7 @@ impl Pipeline {
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
-        (rgba, Vec::new())
+        Rendered { rgba, hdr: Vec::new(), gpu: None }
     }
 
     /// Fit the rendered picture into the output frame.
