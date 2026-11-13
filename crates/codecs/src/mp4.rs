@@ -346,12 +346,13 @@ impl Mp4Source {
             if matches!(entry.codec, CodecConfig::ProRes { .. }) {
                 // a 4444 fourcc doesn't mean the frames carry alpha (alpha_channel_type does): read the first frame header
                 let s0 = &t.samples[0];
-                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_prores::probe(&d).ok())
+                if let Some(h) =
+                    filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| craft_video::prores::probe(&d).ok())
                 {
-                    info.has_alpha = h.alpha != filmcraft_prores::AlphaType::None;
+                    info.has_alpha = h.alpha != craft_video::prores::AlphaType::None;
                     let sub = match h.chroma {
-                        filmcraft_prores::ChromaFormat::Yuv422 => "4:2:2 10-bit",
-                        filmcraft_prores::ChromaFormat::Yuv444 => "4:4:4 12-bit",
+                        craft_video::prores::ChromaFormat::Yuv422 => "4:2:2 10-bit",
+                        craft_video::prores::ChromaFormat::Yuv444 => "4:4:4 12-bit",
                     };
                     info.pixel_format = format!("{} {sub}", if info.has_alpha { "YUVA" } else { "YUV" });
                 }

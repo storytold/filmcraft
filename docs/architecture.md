@@ -29,7 +29,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech · tts · tts-text
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · cfb · h264enc · prores · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
+     codecs/containers: isobmff · matroska · cfb · h264enc · dnx · dng · craft-media (avi · mpegts · mxf · ogg) · craft-video (h264 · hevc · vp9 · av1 · mpeg2 · apv · prores decoder and encoder) · craft-audio (aac · ac3 · mpa · opus · flac · mp3 encoder)
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -45,12 +45,11 @@ and `filmcraft-cli`.
 | `matroska` | L0 | MKV/WebM demux |
 | `cfb` | L0 | Compound File Binary ([MS-CFB] structured storage) reader and writer, the container of AAF ([README](../crates/cfb/README.md)) |
 | `h264enc` | L0 | H.264 encoder |
-| `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
 | `dng` | L0 | DNG / CinemaDNG camera RAW decoder: TIFF container, uncompressed and lossless JPEG raw data, DNG processing to linear Rec. 709 ([README](../crates/dng/README.md)) |
 | `craft-audio` | shared | the audio codecs, from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/audio): AAC-LC decoder and encoder, AC-3 / E-AC-3 decoder, MPEG-1/2 Audio Layer I and II decoder, Opus decoder, FLAC encoder, MPEG-1/2 Layer III (MP3) encoder. They moved there from this repository; fixes go to craft-libs |
 | `craft-media` | shared | containers from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/media): ISO BMFF, Matroska, AVI / OpenDML, MPEG-2 transport and program streams, MXF (OP1a / OP-Atom demux and writer), and the Ogg demuxer with Ogg Opus timing and Vorbis headers |
-| `craft-video` | shared | video codecs from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/video): the H.264, H.265 (Main / Main 10), VP9, AV1 and MPEG-2 / MPEG-1 decoders and the APV decoder and encoder. They moved there from this repository; fixes, their READMEs and their conformance tests are in craft-libs |
+| `craft-video` | shared | video codecs from [craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/video): H.264, H.265 (Main / Main 10), VP9, AV1 and MPEG-2 / MPEG-1 decoders; APV decoder and encoder; ProRes decoder and encoder. They moved there from this repository; fixes, their READMEs and their conformance tests are in craft-libs |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
@@ -676,7 +675,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | Format | Encoder | Container |
 |---|---|---|
 | `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `craft_audio::aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
-| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
+| `prores` | `craft_video::prores` (Proxy / LT / 422 / HQ) | MOV |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
