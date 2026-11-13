@@ -517,15 +517,26 @@ pub struct SlateSource {
     info: MediaInfo,
     name: String,
     reason: OfflineReason,
+    /// The decoder's own words for the failure, drawn under the file name.
+    detail: Mutex<String>,
     last: Mutex<Option<Arc<VideoFrame>>>,
 }
 
 impl SlateSource {
     pub fn new(info: MediaInfo, name: &str, reason: OfflineReason) -> Self {
-        Self { info, name: name.to_string(), reason, last: Mutex::new(None) }
+        Self { info, name: name.to_string(), reason, detail: Mutex::new(String::new()), last: Mutex::new(None) }
     }
     pub fn reason(&self) -> OfflineReason {
         self.reason
+    }
+    /// Say why the file can't be read (`MediaError::Unsupported`, a decode error): the slate shows
+    /// it, so a file with no decoder names the codec instead of only "unreadable".
+    pub fn set_detail(&self, why: &str) {
+        let mut d = self.detail.lock().unwrap_or_else(PoisonError::into_inner);
+        if *d != why {
+            *d = why.to_string();
+            *self.last.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
     }
 }
 
@@ -537,6 +548,7 @@ impl MediaSource for SlateSource {
         let v = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
         let s = req.scale.clamp(1.0 / 64.0, 1.0);
         let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
+        let detail = self.detail.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(f) = last.as_ref()
             && f.width == w
@@ -544,7 +556,7 @@ impl MediaSource for SlateSource {
         {
             return Ok(Arc::new((**f).clone().with_pts(req.time)));
         }
-        let px = filmcraft_render::offline::slate_rgba8(w as usize, h as usize, &self.name, self.reason);
+        let px = filmcraft_render::offline::slate_rgba8_detailed(w as usize, h as usize, &self.name, self.reason, &detail);
         let f = Arc::new(VideoFrame::rgba8(w, h, px));
         *last = Some(f.clone());
         Ok(Arc::new((*f).clone().with_pts(req.time)))
@@ -578,8 +590,9 @@ impl MediaSource for UnsupportedAsSlate {
             Err(MediaError::Unsupported(why)) => {
                 self.offline.write().unwrap_or_else(PoisonError::into_inner).entry(self.item).or_insert_with(|| {
                     log::warn!("media unreadable: {}: {why}", self.path);
-                    OfflineStatus { reason: OfflineReason::Unreadable, path: self.path.clone(), error: why }
+                    OfflineStatus { reason: OfflineReason::Unreadable, path: self.path.clone(), error: why.clone() }
                 });
+                self.slate.set_detail(&why);
                 self.slate.video_frame(req)
             }
             r => r,
@@ -629,11 +642,15 @@ impl MediaSource for DamagedAsSlate {
                 failures.remove(&self.item);
                 Ok(f)
             }
-            Err(MediaError::Decode(_) | MediaError::Io(_)) if !filmcraft_media::pending::is_set() => {
+            Err(MediaError::Decode(_) | MediaError::Io(_) | MediaError::Unsupported(_)) if !filmcraft_media::pending::is_set() => {
                 let n = failures.entry(self.item).or_insert(0);
                 *n = n.saturating_add(1);
                 if *n >= DAMAGED_AFTER {
                     drop(failures);
+                    // the slate says what the decoder said (a damaged sample, a codec it can't read)
+                    if let Err(e) = &r {
+                        self.slate.set_detail(&e.to_string());
+                    }
                     return self.slate.video_frame(req);
                 }
                 r

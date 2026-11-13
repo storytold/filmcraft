@@ -5,6 +5,21 @@ hardware decoders. It provides container openers, GOP-aware video seeking, packe
 and standalone audio imports. See the crate-level API documentation in `src/lib.rs` and
 [`docs/architecture.md`](../../docs/architecture.md) for the source and decoder interfaces.
 
+## PNG-coded video in MOV / MP4 (#402)
+
+A `png ` sample entry stores one whole PNG image file per sample (ISO/IEC 15948 — the W3C PNG
+specification, Second Edition; the `image` crate decodes the deflate stream). `png_mov.rs` reads
+each sample as straight RGBA8 and hands the alpha channel to the compositor, so graphics renders
+with transparency come in without a transcode. Pictures are intra-only, so any sample decodes on
+its own and the GOP cache can seek to any frame. The sample entry's `has_alpha` comes from the first
+sample's IHDR colour type, since a PNG track can mix pictures with and without an alpha channel.
+
+QuickTime Animation (`rle `) is deliberately not supported: its bitstream has no public
+specification, and [AGENTS.md](../../AGENTS.md) §2 allows implementations from public specs only.
+Such a track fails with `CodecError::Unsupported("no decoder for QuickTime Animation video (fourcc
+\"rle\")")`, which the engine's slate shows with the file name, so the cause is visible instead of
+"unknown".
+
 ## Symphonia audio failure handling (#2798)
 
 Symphonia remains an unmodified MPL-2.0 dependency. Its decoder construction, packet decoding,

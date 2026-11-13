@@ -32,6 +32,7 @@ pub mod mp4;
 pub mod mpeg;
 pub mod mxf;
 pub mod ogg;
+pub mod png_mov;
 mod stream_color;
 pub mod video;
 mod webm_alpha;
@@ -77,7 +78,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
 }
 
 /// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 11] = [
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 12] = [
     video::h264_factory,
     video::hevc_factory,
     video::vp8_factory,
@@ -89,6 +90,7 @@ const BUILTIN_FACTORIES: [VideoDecoderFactory; 11] = [
     video::mjpeg_factory,
     video::mpeg2_factory,
     video::raw_factory,
+    png_mov::factory,
 ];
 
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {

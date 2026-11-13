@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (H.264 High 10 and High 10 Intra in the built-in encoder, #1221) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-13 · **Change:** minor (PNG-in-MOV sample decode with alpha, #402; QuickTime Animation named as unsupported) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -25,6 +25,8 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | APV (RFC 9924) | — (Samsung's pro codec; not in Premiere) | own decode | own encode | spec tests | ahead | — |
 | MPEG-2 / MPEG-1 | decode incl. 4:2:2 (IMX, XDCAM); encode DVD / Blu-ray / MXF | own decoder (4:2:2, interlaced, field pictures, IEEE 1180 IDCT) | **none** | conformance fixtures | 60% | 20–35 h (encoder) |
 | Motion JPEG | decode + encode | yes | yes (MOV) | — | 90% | — |
+| PNG in MOV (`png ` sample entries) | decode + encode | decode: one PNG image per sample, straight RGBA8 alpha to the compositor (ISO/IEC 15948); **no** interlaced-profile samples | none | bit-exact against ffmpeg's RGBA decode of the same file (alpha ramp fixture), 3100 fps on a 120-frame track | 70% | — |
+| QuickTime Animation (`rle `) | decode + encode | **none, by design**: the bitstream has no public specification, and we implement only from public specs ([AGENTS.md](../AGENTS.md) §2); such clips show the unreadable slate naming the codec, instead of a silent placeholder | — | — | 0% | not planned; convert to ProRes 4444 / PNG-in-MOV |
 | JPEG 2000 (MXF, DCP) | decode + encode (Kakadu) | none | none | — | 0% | 40–70 h |
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |

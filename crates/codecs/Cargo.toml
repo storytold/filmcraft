@@ -27,7 +27,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 # Decode timing counters (`gop_stats`); std's Instant panics on wasm32.
 web-time = "1"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Bootstrap audio decoding (MPL-2.0, used unmodified); replaced by own decoders over time.
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "mp1", "mp2", "mp3", "flac", "alac", "pcm", "wav", "aiff", "ogg", "vorbis", "isomp4"] }
 

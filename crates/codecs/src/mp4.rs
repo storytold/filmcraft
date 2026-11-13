@@ -343,6 +343,13 @@ impl Mp4Source {
                     info.has_alpha = h.alpha;
                 }
             }
+            if crate::png_mov::is_png(entry) {
+                // a PNG track's alpha is per sample: the first picture's IHDR says whether it has one
+                let s0 = &t.samples[0];
+                let alpha = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).is_ok_and(|d| crate::png_mov::has_alpha(&d));
+                info.has_alpha = alpha;
+                info.pixel_format = if alpha { "RGBA 8-bit" } else { "RGB 8-bit" }.into();
+            }
             if matches!(entry.codec, CodecConfig::ProRes { .. }) {
                 // a 4444 fourcc doesn't mean the frames carry alpha (alpha_channel_type does): read the first frame header
                 let s0 = &t.samples[0];
@@ -730,6 +737,9 @@ pub(crate) fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"v210" => "Uncompressed YUV 4:2:2 10-bit".into(),
         // the editing codec of iMovie and Final Cut; no decoder here reads it (#3646)
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"icod" => "Apple Intermediate Codec".into(),
+        // PNG-coded samples decode here (#402); QuickTime Animation has no decoder to name it
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"png " => "PNG".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"rle " => "QuickTime Animation".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
         CodecConfig::Apv(a) => match craft_video::apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
@@ -826,6 +836,7 @@ fn pixfmt_label(c: &CodecConfig) -> String {
         CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUV 4:4:4 12-bit".into(),
         CodecConfig::ProRes { .. } => "YUV 4:2:2 10-bit".into(),
         CodecConfig::Jpeg { .. } => "YUV 4:2:x 8-bit".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"png " => "RGBA 8-bit".into(),
         _ => String::new(),
     }
 }
