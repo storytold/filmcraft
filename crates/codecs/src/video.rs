@@ -771,10 +771,10 @@ pub struct ProResDecoder;
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         use std::sync::Arc;
-        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let f = decode_prores_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         let chroma = match f.chroma {
-            filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
-            filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+            craft_video::prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+            craft_video::prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
         };
         let mut color = filmcraft_color::ColorInfo::REC709;
         if let Some(m) = filmcraft_color::Matrix::from_code(f.color.matrix) {
@@ -1432,5 +1432,60 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+/// Decode with FilmCraft's historical 1 GiB ProRes output-plane ceiling.
+fn decode_prores_frame(sample: &[u8]) -> std::result::Result<craft_video::prores::Frame, craft_video::prores::Error> {
+    let limits = craft_video::prores::DecodeLimits { max_pixels: u64::MAX, max_frame_bytes: 1 << 30 };
+    craft_video::prores::decode_frame_with_limits(sample, &craft_video::prores::DecodeOptions::default(), &limits)
+}
+
+#[cfg(test)]
+mod prores_resource_tests {
+    use super::*;
+    use craft_video::prores::{AlphaType, ChromaFormat, ColorInfo, FrameHeader, Interlace};
+
+    fn header(width: u16, height: u16) -> Vec<u8> {
+        let h = FrameHeader {
+            header_size: 20,
+            bitstream_version: 1,
+            encoder_id: *b"test",
+            width,
+            height,
+            chroma: ChromaFormat::Yuv444,
+            interlace: Interlace::Progressive,
+            aspect_ratio: 0,
+            frame_rate_code: 0,
+            color: ColorInfo::default(),
+            alpha: AlphaType::Bits16,
+            qmat_luma: [4; 64],
+            qmat_chroma: [4; 64],
+            luma_matrix_present: false,
+            chroma_matrix_present: false,
+        }
+        .write();
+        let size = 8 + h.len();
+        let mut data = Vec::with_capacity(size);
+        data.extend_from_slice(&(size as u32).to_be_bytes());
+        data.extend_from_slice(b"icpf");
+        data.extend_from_slice(&h);
+        data
+    }
+
+    #[test]
+    fn prores_decoder_preserves_the_one_gibibyte_plane_limit() {
+        // 4:4:4 + 16-bit alpha: four u16 planes. This is 960,000,000 output bytes,
+        // above craft-video's default 300 MiB but below FilmCraft's prior 1 GiB ceiling.
+        let data = header(12_000, 10_000);
+        assert!(matches!(decode_prores_frame(&data), Err(craft_video::prores::Error::Truncated)));
+        assert!(matches!(
+            craft_video::prores::decode_frame(&data),
+            Err(craft_video::prores::Error::Invalid("frame dimensions exceed the decoder memory limit"))
+        ));
+
+        // 1,120,000,000 bytes is beyond the old ceiling and must fail before allocation.
+        let too_large = header(14_000, 10_000);
+        assert!(matches!(decode_prores_frame(&too_large), Err(craft_video::prores::Error::Invalid("frame dimensions exceed the decoder memory limit"))));
     }
 }

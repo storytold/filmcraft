@@ -24,7 +24,6 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
-filmcraft-prores = { workspace = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-h264enc = { workspace = true }
 serde = { workspace = true }
