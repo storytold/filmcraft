@@ -66,6 +66,32 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             } else {
                 ui.label(RichText::new(tl!("The project had not been saved yet.")).size(11.5).color(t.text_dim));
             }
+            // What the last edit was, and the run-up to it: the journal keeps the newest 100.
+            let actions = c["actions"].as_array().cloned().unwrap_or_default();
+            if let Some(last) = c["lastAction"].as_str() {
+                ui.add_space(6.0);
+                let at = c["lastActionAt"].as_str().unwrap_or("");
+                let text = if at.is_empty() { tlf!("Last action: {last}", last = last) } else { tlf!("Last action: {last} at {at}", last = last, at = at) };
+                ui.label(RichText::new(&text).size(12.5).color(t.text));
+                app.auto.add("recovery.lastAction", egui::Rect::NOTHING, &text);
+            }
+            if !actions.is_empty() {
+                ui.add_space(4.0);
+                egui::CollapsingHeader::new(RichText::new(tlf!("{n} recent actions", n = actions.len())).size(12.0).color(t.text_dim))
+                    .id_salt("recovery-actions")
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                            // newest first: the last edit is the one being asked about
+                            for (i, a) in actions.iter().rev().enumerate() {
+                                let label = a["label"].as_str().or_else(|| a["command"].as_str()).unwrap_or("");
+                                let at = a["at"].as_str().unwrap_or("");
+                                let line = format!("{at}  {label}");
+                                ui.label(RichText::new(line).size(11.5).color(t.text_dim));
+                                app.auto.add(&format!("recovery.action.{i}"), egui::Rect::NOTHING, label);
+                            }
+                        });
+                    });
+            }
             if items.len() > 1 {
                 ui.add_space(8.0);
                 ui.label(RichText::new(tlf!("{n} sessions have unsaved changes:", n = items.len())).size(12.0).color(t.text_dim));
