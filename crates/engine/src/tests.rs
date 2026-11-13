@@ -1513,3 +1513,18 @@ fn negative_place_and_marker_times_are_refused() {
     s.execute("markers.add", json!({"frame": 0, "name": "start"})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().any(|m| m.start == Tick::ZERO && m.name == "start"));
 }
+#[test]
+fn project_view_changes_do_not_dirty_project_content() {
+    let mut session = crate::Session::default();
+    let revision = session.revision;
+    let view_epoch = session.view_epoch;
+
+    session.project_view_changed();
+
+    assert_eq!(session.revision, revision, "view settings must not invalidate project content");
+    assert!(!session.is_dirty(), "view settings do not dirty project content");
+    let inspected = commands::inspect_project(&session);
+    assert_eq!(inspected["dirty"], true, "the host must warn about unsaved project view settings");
+    assert_eq!(inspected["contentDirty"], false, "content dirtiness remains separately available");
+    assert_ne!(session.view_epoch, view_epoch, "the changed view must be journaled");
+}

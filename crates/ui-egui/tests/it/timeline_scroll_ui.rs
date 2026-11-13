@@ -13,6 +13,41 @@ use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
 use serde_json::{Value, json};
 
+#[test]
+fn ui_set_controls_track_slider_settings_and_rejects_hostile_speed_values() {
+    let mut d = Driver::demo();
+    let revision = d.app().session.revision;
+    let view_epoch = d.app().session.view_epoch;
+    d.ok(
+        "ui.set",
+        json!({"timeline": {
+            "trackSliderSmoothAnimations": true,
+            "trackSliderDecoupleEdges": false,
+            "trackSliderAlternatePosition": true,
+            "trackSliderShiftDragSpeed": 2.5
+        }}),
+    );
+    let settings = &d.app().session.state.timeline_ui;
+    assert!(settings.track_slider_smooth);
+    assert!(!settings.track_slider_decouple);
+    assert!(settings.track_slider_alternate_position);
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5);
+    assert!(settings.track_slider_shift_drag_custom);
+    assert_eq!(settings.track_slider_shift_drag_last_custom, 2.5);
+    assert_eq!(d.app().session.revision, revision, "view settings do not dirty project content");
+    assert_eq!(d.app().session.view_epoch, view_epoch.wrapping_add(1), "changed view settings are persisted");
+
+    let view_epoch = d.app().session.view_epoch;
+    let rejected = d.call("ui.set", json!({"timeline": {"trackSliderShiftDragSpeed": 10.1}}));
+    assert_eq!(rejected["ok"], json!(false), "out-of-range speed must be rejected");
+    assert!(rejected["error"].as_str().is_some_and(|message| message.contains("trackSliderShiftDragSpeed")));
+    d.ok("ui.set", json!({"timeline": {"trackSliderSmoothAnimations": "yes"}}));
+    let settings = &d.app().session.state.timeline_ui;
+    assert_eq!(settings.track_slider_shift_drag_speed, 2.5, "out-of-range speed is ignored");
+    assert!(settings.track_slider_smooth, "wrongly typed settings are ignored");
+    assert_eq!(d.app().session.view_epoch, view_epoch, "ignored settings do not change the project view");
+}
+
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
@@ -22,11 +57,15 @@ struct Driver {
 
 impl Driver {
     fn demo() -> Self {
+        Self::sized(1600.0, 980.0)
+    }
+
+    fn sized(w: f32, h: f32) -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(w, h)).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx, pointer: egui::Pos2::ZERO };
         d.frames(4);
         d
@@ -75,6 +114,17 @@ impl Driver {
         let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
         let r = e["rect"].as_array().unwrap();
         [0, 1, 2, 3].map(|k| r[k].as_f64().unwrap() as f32)
+    }
+
+    /// Whether an element with this exact id is registered (drawn) this frame.
+    fn has(&mut self, id: &str) -> bool {
+        self.ok("ui.elements", json!({"prefix": id})).as_array().is_some_and(|a| a.iter().any(|e| e["id"] == json!(id)))
+    }
+
+    /// A click at a raw point, with its button (`"left"` / `"right"`).
+    fn click_at(&mut self, x: f32, y: f32, button: &str) {
+        self.ok("ui.click", json!({"x": x, "y": y, "button": button}));
+        self.frames(2);
     }
 
     /// Turn the wheel over the tracks (`fy`: 0.2 is among the video tracks, 0.8 among the audio
@@ -156,36 +206,37 @@ fn none() -> Value {
 }
 
 #[test]
-fn the_wheel_moves_the_tracks_up_and_down() {
+fn ctrl_wheel_moves_the_tracks_up_and_down() {
     let mut d = Driver::tall();
-    // over the video tracks: wheeling up brings the higher tracks in (Video 1 is at the bottom)
-    d.wheel(0.2, 0.0, 40.0, none());
+    // over the video tracks: Ctrl + wheeling up brings the higher tracks in (Video 1 is at the
+    // bottom); the plain wheel belongs to the Timeline now
+    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the video tracks moved, nothing else");
-    d.wheel(0.2, 0.0, -25.0, none());
+    d.wheel(0.2, 0.0, -25.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 0.0));
     // over the audio tracks: wheeling down brings the lower tracks in
-    d.wheel(0.8, 0.0, -30.0, none());
+    d.wheel(0.8, 0.0, -30.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 30.0));
     // neither half goes past its first or last track
-    d.wheel(0.2, 0.0, -1e6, none());
-    d.wheel(0.8, 0.0, 1e6, none());
+    d.wheel(0.2, 0.0, -1e6, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e6, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, -1e6, none());
+    d.wheel(0.8, 0.0, -1e6, json!({"command": true}));
     let (_, _, _, lowest) = d.view();
     assert!(lowest > 100.0 && lowest < 15.0 * 200.0, "{lowest}");
 }
 
 #[test]
-fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
+fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     let mut d = Driver::tall();
-    // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
-    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    // The wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
+    d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "100 points at 50 points a second: 2 s later");
-    d.wheel(0.8, 0.0, 250.0, json!({"command": true}));
+    d.wheel(0.8, 0.0, 250.0, none());
     assert_eq!(d.view(), (1.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, 1e5, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e5, none());
     assert_eq!(d.view().0, 0.0, "not before the start");
-    // Option + wheel: zoom about the pointer; it is not what Cmd + wheel does
+    // Option + wheel: zoom about the pointer; it is not what the wheel does
     d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
     d.frames(3);
     let tracks = d.rect("timeline.tracks");
@@ -197,13 +248,14 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!((v, a), (0.0, 0.0));
     d.wheel(0.2, 0.0, -20.0, json!({"alt": true}));
     assert!((d.view().1 - 48.0).abs() < 1e-6, "and out again");
-    // a sideways gesture (trackpad swipe, tilt wheel) is sideways whatever is held; so is Shift
+    // a sideways gesture (trackpad swipe, tilt wheel) is sideways whatever is held; Shift is the
+    // wheel a lot faster
     d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
     d.frames(3);
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0), "Shift + wheel is ten times faster");
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
@@ -212,11 +264,12 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
 fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     let mut d = Driver::tall();
     assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
+    // the setting swaps the wheel and Ctrl + wheel: the wheel moves the tracks now
     d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
-    d.wheel(0.2, 0.0, -100.0, none());
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
-    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0));
+    d.wheel(0.2, 0.0, 40.0, none());
+    assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "swapped: the wheel moves the tracks");
+    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0), "and Ctrl + wheel the Timeline");
     d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
 }
@@ -232,9 +285,9 @@ fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let limit = max_scroll(seconds, width, 50.0);
     assert!((limit - (seconds + 600.0 - width as f64 / 50.0)).abs() < 1e-9);
     // by the wheel
-    d.wheel(0.2, 0.0, -1e7, json!({"command": true}));
+    d.wheel(0.2, 0.0, -1e7, none());
     assert!((d.view().0 - limit).abs() < 1e-6, "{} vs {limit}", d.view().0);
-    d.wheel(0.2, 0.0, -500.0, json!({"command": true}));
+    d.wheel(0.2, 0.0, -500.0, none());
     assert!((d.view().0 - limit).abs() < 1e-6);
     // by anything else that moves the view (a script here: the state that was reported stuck)
     d.ok("ui.set", json!({"timeline": {"pps": 2.9863201066269047, "scroll": 2325.538505030118}}));
@@ -276,6 +329,29 @@ fn zooming_out_stops_where_the_whole_timeline_is_in_view() {
     assert!(d.view().1 > pps * 1.1);
 }
 
+#[test]
+fn applying_a_new_maximum_zoom_preserves_the_view_center() {
+    let mut d = Driver::demo();
+    let width = d.app().tl.layout.as_ref().expect("Timeline layout").content.width() as f64;
+    let requested_pps = 10_000.0;
+    let requested_scroll = 4.0;
+    let original_center = requested_scroll + width * 0.5 / requested_pps;
+    {
+        let app = d.app();
+        app.session.prefs.appearance.animations = false;
+        app.session.state.timeline_ui.max_zoom_seconds = 0.75;
+        app.ui.timeline.pps = requested_pps;
+        app.ui.timeline.target_pps = requested_pps;
+        app.ui.timeline.scroll = requested_scroll;
+        app.ui.timeline.target_scroll = requested_scroll;
+    }
+    d.frames(2);
+    let (scroll, pps, ..) = d.view();
+    let new_center = scroll + width * 0.5 / pps;
+    assert!(pps < requested_pps, "the configured maximum clamps zoom in: {pps}");
+    assert!((new_center - original_center).abs() < 1e-6, "center moved from {original_center} to {new_center}");
+}
+
 /// A sequence longer than twenty view widths in seconds (the view is about a thousand points here) still zooms out until all of it is in view.
 #[test]
 fn a_twelve_hour_sequence_zooms_out_until_it_is_all_in_view() {
@@ -311,11 +387,13 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let seconds = d.seconds();
     let track = d.rect("timeline.zoomBar.track");
     let limit = max_scroll(seconds, d.rect("timeline.tracks")[2], 50.0);
-    // at the start the thumb is at the left end of the bar, and wide enough to grab
+    // at the start the thumb is at the left end of the bar, and wide enough to grab: the log-mapped
+    // zoom meter is about half the bar for a quarter of a 10-minute Timeline at this zoom, but the
+    // invariant that matters is grabbable and well short of the full extent
     d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
-    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
+    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] * 0.9, "{thumb:?} in {track:?}");
     // dragged by its middle it moves with the pointer, and the view with it
     let y = thumb[1] + thumb[3] / 2.0;
     let grab = thumb[0] + thumb[2] / 2.0;
@@ -351,12 +429,34 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.frames(3);
     let jumped = d.rect("timeline.zoomBar");
     assert!((jumped[0] + jumped[2] / 2.0 - target).abs() < 2.0, "{jumped:?}");
-    // the handles at its ends still zoom: the right one out, the left edge of the view staying
-    let at = d.view().0;
+    // the handles at its ends still zoom: the right one outward makes the thumb grow on both edges
+    // (mirrored about the middle), zooming out with the footage at the view's center staying put
+    let (at, at_pps) = (d.view().0, d.view().1);
+    let width = f64::from(d.rect("timeline.tracks")[2]);
+    let center_old = at + width / (2.0 * at_pps);
     d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    assert!(pps < 50.0, "dragging the right handle outward zooms out: {pps}");
+    let center_new = scroll + width / (2.0 * pps);
+    assert!((center_new - center_old).abs() < 3.0, "the view's center holds: {center_new} was {center_old} (scroll {scroll}, was {at})");
+}
+
+#[test]
+fn timeline_zoom_settings_default_off_and_set_custom_playhead_range() {
+    let mut d = Driver::demo();
+    assert!(!d.app().session.state.timeline_ui.smooth_animations);
+    assert_eq!(d.app().session.state.timeline_ui.shift_drag_speed, 1.0);
+    assert!(!d.app().session.state.timeline_ui.alternate_slider_position);
+    d.ok("ui.set", json!({"timeline": {"smoothAnimations": true, "playheadSideSeconds": 17.5, "shiftDragSpeed": 2.5, "zoomBarHidden": true, "alternateSliderPosition": true}}));
+    assert!(d.app().session.state.timeline_ui.smooth_animations);
+    assert_eq!(d.app().session.state.timeline_ui.playhead_side_seconds, 17.5);
+    assert_eq!(d.app().session.state.timeline_ui.shift_drag_speed, 2.5);
+    assert!(d.app().session.state.timeline_ui.zoom_bar_hidden);
+    assert!(d.app().session.state.timeline_ui.alternate_slider_position);
+    d.ok("ui.set", json!({"timeline": {"zoomBarHidden": false, "alternateSliderPosition": false}}));
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden);
+    assert!(!d.app().session.state.timeline_ui.alternate_slider_position);
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
@@ -368,8 +468,7 @@ fn zoom_bar_at_start(d: &mut Driver) -> ([f32; 4], [f32; 4], f32) {
     (thumb, track, thumb[1] + thumb[3] / 2.0)
 }
 
-/// The zoom bar's circular end handles zoom, so the pointer over one shows the horizontal resize
-/// arrow; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal pointer.
+/// The zoom bar's circular end handles show the horizontal resize arrow; the thumb middle and track beside it use the normal pointer.
 #[test]
 fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
@@ -386,8 +485,7 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     assert_eq!(d.cursor(), CursorIcon::Default, "the bar beside the thumb");
 }
 
-/// A handle drag goes on whatever the pointer is over: it zooms from anywhere, so the arrow stays
-/// while the pointer is off the bar, over the tracks, and goes when the button is released.
+/// A handle drag zooms from anywhere, so the resize arrow stays over the tracks and clears on release.
 #[test]
 fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     let mut d = Driver::tall();
@@ -527,4 +625,286 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.exec("prefs.set", json!({"key": "appearance.animations", "value": true}));
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
+}
+
+/// Hide Slider: pressing it hides the bar at once and takes the settings popup with it (the
+/// window left behind only explains how to bring the bar back), the tracks fill its space, and
+/// the keyboard shortcuts still move the Timeline without the bar.
+#[test]
+fn hiding_the_slider_frees_its_space_and_only_then_offers_unhide() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    let tracks = d.rect("timeline.tracks");
+    assert!(tracks[1] + tracks[3] < bar[1], "the bar sits under the tracks: {tracks:?} {bar:?}");
+    let centre = |r: [f32; 4]| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let mid = centre(tracks);
+    // no Unhide Timeline Slider while the slider is showing
+    d.click_at(mid.0, mid.1, "right");
+    assert!(!d.has("timeline.unhideZoomBar"), "no Unhide Timeline Slider while the bar shows");
+    d.click_at(tracks[0] + 30.0, tracks[1] + 15.0, "left");
+    // Hide Slider from the bar's own settings popup: the bar and the popup go at once, and the
+    // window that is left only explains how to bring the bar back
+    let bar_mid = centre(bar);
+    d.click_at(bar_mid.0, bar_mid.1, "right");
+    assert!(d.has("timeline.zoomBar.settings.hideSlider"), "the bar's settings popup");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.hideSlider"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.zoom_bar_hidden, "hidden the moment Hide Slider is pressed");
+    assert!(!d.has("timeline.zoomBar.track"), "the hidden bar draws nothing at all");
+    assert!(!d.has("timeline.zoomBar.settings.smoothAnimations"), "the settings popup is gone at once");
+    assert!(d.has("timeline.zoomBar.hideDialog.ok"), "the window explaining how to bring it back");
+    assert!(d.has("timeline.zoomBar.hideDialog.restore"), "the dialog has a keyboard-focusable restore button");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.hideDialog.ok"}));
+    d.frames(2);
+    assert!(!d.has("timeline.zoomBar.hideDialog.ok"), "OK only closes that window");
+    let grown = d.rect("timeline.tracks");
+    assert!((grown[1] + grown[3] - tracks[1] - tracks[3] - 17.0).abs() < 1.0, "the tracks fill the bar's space: {tracks:?} -> {grown:?}");
+    // the keyboard shortcuts still move the Timeline with the slider hidden
+    d.ok("ui.set", json!({"timeline": {"pps": 400.0, "scroll": 3.0}}));
+    d.frames(3);
+    d.ok("ui.key", json!({"key": "Home"}));
+    d.frames(3);
+    assert_eq!(d.app().ui.timeline.target_scroll, 0.0, "Home scrolls back to the start without the bar");
+    d.ok("ui.key", json!({"key": "End"}));
+    d.frames(3);
+    let end = d.app().session.playhead().seconds();
+    let v = &d.app().ui.timeline;
+    let width = 1600.0 / v.pps;
+    assert!(v.target_scroll > 0.0 && v.target_scroll <= end && end - v.target_scroll < width, "End shows the playhead without the bar");
+    // Unhide Timeline Slider brings it back (its menu behaviour has its own test)
+    d.ok("ui.set", json!({"timeline": {"zoomBarHidden": false}}));
+    d.frames(3);
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden);
+    assert!(d.has("timeline.zoomBar.track"), "the bar is back");
+    let back = d.rect("timeline.tracks");
+    assert!((back[1] + back[3] - tracks[1] - tracks[3]).abs() < 1.0, "the tracks make room again: {back:?}");
+    // The hide dialog also offers a direct, keyboard-focusable restore button.
+    let bar_mid = centre(bar);
+    d.click_at(bar_mid.0, bar_mid.1, "right");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.hideSlider"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.zoom_bar_hidden);
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.hideDialog.restore"}));
+    d.frames(2);
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden);
+    assert!(d.has("timeline.zoomBar.track"), "the restore button brings the bar back");
+    d.click_at(mid.0, mid.1, "right");
+    assert!(!d.has("timeline.unhideZoomBar"), "gone again while the bar shows");
+}
+
+/// Alternate Slider Position: the bar moves to the top edge, just above the ruler, the same
+/// length horizontally, and the ruler and tracks move down by its height.
+#[test]
+fn alternate_slider_position_moves_the_bar_just_above_the_ruler() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    let tracks = d.rect("timeline.tracks");
+    let ruler = d.rect("timeline.ruler");
+    assert!(bar[1] > tracks[1] + tracks[3], "normally the bar is at the bottom: {bar:?}");
+    // a pill switch in the bar's settings popup, like Smooth Animations
+    let bar_mid = (bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0);
+    d.click_at(bar_mid.0, bar_mid.1, "right");
+    assert!(d.has("timeline.zoomBar.settings.alternateSliderPosition"), "the pill in the settings popup");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.alternateSliderPosition"}));
+    d.frames(3);
+    assert!(d.app().session.state.timeline_ui.alternate_slider_position, "on by pressing the pill");
+    let top_bar = d.rect("timeline.zoomBar.track");
+    let top_ruler = d.rect("timeline.ruler");
+    let top_tracks = d.rect("timeline.tracks");
+    assert!(top_bar[1] < top_ruler[1], "the bar is above the ruler: {top_bar:?} {top_ruler:?}");
+    assert!(top_bar[1] < top_tracks[1], "the bar is above the tracks: {top_bar:?}");
+    assert!((top_bar[0] - bar[0]).abs() < 0.5 && (top_bar[2] - bar[2]).abs() < 0.5, "the same horizontal length: {top_bar:?} was {bar:?}");
+    assert!((top_ruler[1] - ruler[1] - 17.0).abs() < 1.0, "the ruler moved down 17: {top_ruler:?} was {ruler:?}");
+    assert!((top_tracks[1] - tracks[1] - 17.0).abs() < 1.0, "the tracks moved down 17: {top_tracks:?}");
+    assert!((top_ruler[1] + top_ruler[3] - top_tracks[1]).abs() < 1.0, "the ruler still meets the tracks: {top_ruler:?} {top_tracks:?}");
+    // off again: everything is back where it was
+    d.ok("ui.set", json!({"timeline": {"alternateSliderPosition": false}}));
+    d.frames(3);
+    assert!((d.rect("timeline.ruler")[1] - ruler[1]).abs() < 1.0, "the ruler is back");
+    assert!((d.rect("timeline.tracks")[1] - tracks[1]).abs() < 1.0, "the tracks are back");
+}
+
+/// Unhide Timeline Slider is the right-click menu's list last row: on a screen where the menu
+/// scrolls it is out of sight at the top and only comes into view at the bottom, with the list.
+#[test]
+fn unhide_is_the_menus_last_row_and_scrolls_with_it() {
+    let mut d = Driver::sized(1600.0, 600.0);
+    d.ok("ui.set", json!({"timeline": {"zoomBarHidden": true}}));
+    d.frames(3);
+    let els = d.ok("ui.elements", json!({"prefix": "timeline.clip."}));
+    let clip = els
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"].as_str().is_some_and(|s| s.strip_prefix("timeline.clip.").is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))))
+        .expect("a clip on the timeline")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    d.ok("ui.click", json!({"id": clip, "button": "right"}));
+    d.frames(3);
+    assert!(d.has("timeline.unhideZoomBar"), "in the menu");
+    let y0 = d.rect("timeline.unhideZoomBar")[1];
+    assert!(y0 > 600.0, "not visible while the menu is scrolled to the top: {y0}");
+    assert!(y0 > d.rect("timeline.clipMenu.sequence.joinThroughEdits")[1], "the list's last row");
+    // it is a row of the list: scrolling the menu brings it up like every other row
+    d.ok("ui.scroll", json!({"id": "timeline.clipMenu.edit.cut", "dy": -2000.0}));
+    d.frames(5);
+    let r = d.rect("timeline.unhideZoomBar");
+    assert!(r[1] < y0 - 100.0, "it scrolls with the menu: {r:?} was at {y0}");
+    assert!(r[1] >= 0.0 && r[1] + r[3] <= 600.0, "scrolled into view: {r:?}");
+    d.ok("ui.click", json!({"id": "timeline.unhideZoomBar"}));
+    d.frames(3);
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide brings the bar back");
+    assert!(d.has("timeline.zoomBar.track"), "the bar is back");
+}
+
+/// The Minimap Settings flyout must be reachable with the mouse: it opens on the Slider Minimap
+/// row and STAYS open while the pointer walks onto it, and its settings can be pressed there.
+/// (egui's `rect_contains_pointer` is layer-bound and used to kill the flyout the moment the
+/// pointer left the row -- this walks the pointer there in small steps to prove it cannot.)
+#[test]
+fn the_minimap_flyout_stays_open_on_the_way_in_and_its_settings_click() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    assert!(d.has("timeline.zoomBar.settings.sliderMinimap"), "the bar's settings popup");
+    let row = d.rect("timeline.zoomBar.settings.sliderMinimap");
+    let from = (row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    d.ok("ui.move", json!({"x": from.0, "y": from.1}));
+    d.frames(2);
+    assert!(d.has("timeline.zoomBar.settings.minimapFlyout"), "the flyout opens on the row");
+    let fly = d.rect("timeline.zoomBar.settings.minimapFlyout");
+    let to = (fly[0] + fly[2] / 2.0, fly[1] + fly[3] / 2.0);
+    for i in 1..=12 {
+        let f = i as f32 / 12.0;
+        d.ok("ui.move", json!({"x": f64::from(from.0 + (to.0 - from.0) * f), "y": f64::from(from.1 + (to.1 - from.1) * f)}));
+        d.frames(2);
+        assert!(d.has("timeline.zoomBar.settings.minimapFlyout"), "still open on the way in, step {i}");
+    }
+    assert!(d.has("timeline.zoomBar.settings.showWholeTimeline"), "the setting is on screen");
+    let before = d.app().session.state.timeline_ui.show_whole_timeline;
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.showWholeTimeline"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.show_whole_timeline, !before, "the pill presses while over the flyout");
+    let before_fill = d.app().session.state.timeline_ui.fill_clips;
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.fillClips"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.fill_clips, !before_fill, "Fill Clips presses too");
+}
+
+/// "Timeline Slider Settings": the Timeline menu's row above Unhide Timeline Slider, only while
+/// the bar is hidden, opening the exact same settings as right-clicking the bar itself.
+#[test]
+fn timeline_slider_settings_is_the_menus_row_while_the_bar_is_hidden() {
+    let mut d = Driver::demo();
+    let tracks = d.rect("timeline.tracks");
+    let mid = (tracks[0] + tracks[2] / 2.0, tracks[1] + tracks[3] / 2.0);
+    d.click_at(mid.0, mid.1, "right");
+    assert!(!d.has("timeline.zoomBarSettings"), "no Timeline Slider Settings while the bar shows");
+    d.click_at(mid.0 + 200.0, mid.1, "left");
+    d.ok("ui.set", json!({"timeline": {"zoomBarHidden": true}}));
+    d.frames(2);
+    d.click_at(mid.0, mid.1, "right");
+    assert!(d.has("timeline.zoomBarSettings"), "the row is there while the bar is hidden");
+    let settings = d.rect("timeline.zoomBarSettings");
+    let unhide = d.rect("timeline.unhideZoomBar");
+    assert!(settings[1] + settings[3] <= unhide[1] + 1.0, "above Unhide Timeline Slider: {settings:?} {unhide:?}");
+    d.ok("ui.click", json!({"id": "timeline.zoomBarSettings"}));
+    d.frames(2);
+    assert!(d.has("timeline.zoomBar.settings.smoothAnimations"), "the same settings popup as right-clicking the bar");
+    assert!(d.has("timeline.zoomBar.settings.maxZoomLevel"), "the same settings, all of them");
+    // while hidden the top row is the blue Unhide Slider, never Hide Slider
+    assert!(d.has("timeline.zoomBar.settings.unhideSlider"), "Unhide Slider while the bar is hidden");
+    assert!(!d.has("timeline.zoomBar.settings.hideSlider"), "no Hide Slider there");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.unhideSlider"}));
+    d.frames(2);
+    assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide Slider brings the bar back");
+}
+
+/// Both slider menus keep their Controls flyout in its original place, alongside their own options.
+#[test]
+fn both_slider_menus_keep_their_controls_flyouts() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    d.frames(2);
+    assert!(d.has("timeline.zoomBar.settings.controls"), "the Controls row on the Timeline slider's menu");
+    assert!(d.has("timeline.zoomBar.settings.invertedControls"), "Invert Scrolling (the old Inverted Controls)");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.invertedControls"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.inverted_controls, "the switch flips and the menu stays open");
+    assert!(d.has("timeline.zoomBar.settings.controls"), "still open");
+    // the track sliders' menu: Snap to Tracks above Decouple Edges, on by default
+    let slider = d.rect("timeline.trackSlider.video");
+    d.click_at(slider[0] + slider[2] / 2.0, slider[1] + slider[3] / 2.0, "right");
+    d.frames(2);
+    assert!(d.has("timeline.trackSlider.settings.controls"), "Track Slider settings keep their Controls row");
+    assert!(d.has("timeline.trackSlider.settings.snapToTracks"), "Snap to Tracks");
+    assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
+    d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.track_slider_snap, "an unavailable setting cannot be toggled as if it worked");
+}
+
+/// The Controls boxes: clicking one listens ("Enter Shortcut"), the next key becomes the binding
+/// and then that chord does what the gesture did -- fitting the Playhead Centering Range.
+#[test]
+fn clicking_a_controls_box_takes_the_next_key_and_that_key_does_the_action() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    d.frames(2);
+    // the flyout opens on a real hover of the Controls row: the pointer has to move first
+    let row = d.rect("timeline.zoomBar.settings.controls");
+    d.move_to(row[0] + 10.0, row[1] + 8.0);
+    d.frames(2);
+    d.move_to(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    d.frames(3);
+    assert!(d.has("timeline.zoomBar.settings.controlsFlyout"), "the flyout opens beside the row");
+    assert!(d.has("timeline.zoomBar.settings.controlsFlyout.box0"), "the first box");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.box0"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "nothing is bound until a key arrives");
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "K", "the key became the binding");
+    // the binding replaces the double click: pressing K fits the Playhead Centering Range
+    let before = d.app().ui.timeline.target_pps;
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(3);
+    assert!(d.app().ui.timeline.target_pps != before, "K does what Double Click did");
+    // and the row's reset arrow puts the built-in gesture back
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.reset0"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "Reset restores the default gesture");
+}
+#[test]
+fn control_channel_sets_and_reads_back_timeline_slider_preferences() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"invertedControls": true, "maxZoomLevel": 0.3, "trackSliderHidden": true}}));
+    let settings = d.ok("ui.inspect", none())["timelineSettings"].clone();
+    assert_eq!(settings["inverted_controls"], json!(true));
+    assert_eq!(settings["max_zoom_seconds"], json!(0.3));
+    assert_eq!(settings["track_slider_hidden"], json!(true));
+
+    let rejected_color = d.call(
+        "ui.set",
+        json!({"timeline": {
+            "maxZoomLevel": 0.5,
+            "positionIndicatorColor": "#GGGGGG"
+        }}),
+    );
+    assert_eq!(rejected_color["ok"], json!(false), "invalid indicator colors reject the whole request");
+    assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
+
+    let rejected = d.call("ui.set", json!({"timeline": {"maxZoomLevel": 3.1}}));
+    assert_eq!(rejected["ok"], json!(false));
+    assert_eq!(d.ok("ui.inspect", none())["timelineSettings"]["max_zoom_seconds"], json!(0.3));
+}
+
+#[test]
+fn timeline_audio_video_divider_has_an_automation_target() {
+    let mut d = Driver::demo();
+    assert!(d.app().auto.find("timeline.avDivider").is_some(), "the Timeline divider must be available to automation");
 }

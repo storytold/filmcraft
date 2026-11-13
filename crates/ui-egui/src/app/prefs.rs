@@ -184,7 +184,9 @@ impl FilmcraftApp {
     /// - writes a change made in the panel to the session,
     /// - and takes over a view that was changed in the session (by a command or the control
     ///   channel).
-    pub(super) fn sync_timeline_view(&mut self) {
+    pub(super) fn sync_timeline_view(&mut self, ctx: &egui::Context) {
+        let pointer_down = ctx.input(|i| i.pointer.any_down());
+        let track_slider_dragging = self.tl.track_slider_dragging && pointer_down;
         let Some(active) = self.session.state.active_sequence else {
             self.timeline_view_of = None;
             return;
@@ -206,6 +208,8 @@ impl FilmcraftApp {
         };
         if self.timeline_view_of != Some(active) {
             self.timeline_view_of = Some(active);
+            // the zoom ceiling is applied by animate_view with the measured content width --
+            // clamping here (before the first layout) would use the placeholder width
             match stored.and_then(|s| s.checked()) {
                 Some(s) => {
                     show(v, s);
@@ -220,13 +224,28 @@ impl FilmcraftApp {
             }
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
+        } else if self.timeline_view_last.is_none() {
+            // The first layout fit is a display default, not a user edit that needs saving.
+            self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_last = Some(shown);
         } else if self.timeline_view_last != Some(shown) {
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
+            // A track-slider drag changes the stored view every frame. Defer its journal epoch
+            // until release, matching the zoom-bar settings gesture; other changes commit now.
+            if track_slider_dragging || self.timeline_view_pending {
+                self.timeline_view_pending = true;
+            } else {
+                self.session.view_changed();
+            }
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);
             self.timeline_view_last = Some(s);
             self.session.state.timeline_views.insert(active, s);
+        }
+        if self.timeline_view_pending && !pointer_down {
+            self.timeline_view_pending = false;
+            self.session.view_changed();
         }
     }
 }

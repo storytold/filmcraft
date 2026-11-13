@@ -59,35 +59,56 @@ impl Layout {
 }
 
 /// #483: where a drop at `y` adds a track: the empty space above the top video track (a video
-/// track) or below the last audio track (an audio track), never over a track, the caption tracks
-/// or the Mix row. Gives the kind and the band the new track would take (`vh` / `ah` high).
+/// track) or below the last audio track (an audio track). The HIT test is generous -- anywhere
+/// above the video rows or below the audio rows counts, caption strip and Mix row included (the
+/// visible gap is only a third of a track and was finicky to hit) -- while the band it returns is
+/// clamped to the real space for the new row. Never over a track itself.
 pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Option<(TrackKind, Rect)> {
     if layout.row_at(y).is_some() {
         return None;
     }
     let cap_n = seq.caption_tracks.len();
     let tracks_top = layout.content.min.y + if cap_n > 0 { cap_n as f32 * crate::panels::timeline_captions::ROW_H + DIVIDER_H } else { 0.0 };
-    let band = |y0: f32, y1: f32| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1));
+    let band = |y0: f32, y1: f32| {
+        if y0.is_finite() && y1.is_finite() && y1 > y0 {
+            Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1))
+        } else {
+            // A corrupt or overflowed track height must still give the user a visible target, and
+            // must never hand drawing or hit-testing an empty / inverted rectangle.
+            let edge = if y1.is_finite() {
+                y1
+            } else if y0.is_finite() {
+                y0
+            } else {
+                layout.content.min.y
+            };
+            Rect::from_min_max(pos2(layout.content.min.x, edge - 0.5), pos2(layout.content.max.x, edge + 0.5))
+        }
+    };
     if y < layout.split_y {
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
-        (y >= tracks_top && y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
+        // ANYWHERE above the top video row counts -- over the ruler, or outside the Timeline's
+        // own rect entirely (a clip dragged above the window wants a new track too)
+        (y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
     } else {
         let bottom = layout.rows.iter().filter(|r| r.kind == TrackKind::Audio).map(|r| r.rect.max.y).fold(layout.split_y + DIVIDER_H, f32::max);
         let mix = layout.content.max.y - MASTER_H;
-        (y >= bottom && y < mix).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
+        // anywhere below the last audio row counts, Mix row and past the window's edge included
+        (y >= bottom).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
     }
 }
 
 /// The top of each of `n` video rows `vh` high, V1 first: V1 sits at the bottom of `area` and the
-/// tracks stack upward; `v_scroll` (clamped here) shifts them up. Also gives the largest `v_scroll`.
-/// The scroll range includes one empty track's height above the top track: without it, tracks that
-/// fill the area leave no space where a drop adds a new one (#1522).
+/// tracks stack upward; `v_scroll` (clamped here) shifts them down, which reveals empty space above
+/// the topmost row. Also gives the largest `v_scroll`. The scroll range reveals at most a third of
+/// a track's height of empty space above the topmost row: just enough to drop a clip there and to
+/// create a track (#1522's whole empty slot, cut down to what is usable).
 pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
-    let total = (n + 1) as f32 * vh;
-    let v_off = (area.height() - total).max(0.0);
-    let max_vs = (total - area.height()).max(0.0);
+    let rows_h = n as f32 * vh;
+    let max_vs = (rows_h + vh / 3.0 - area.height()).max(0.0);
     *v_scroll = v_scroll.clamp(0.0, max_vs);
-    let tops = (0..n).map(|i| area.min.y + v_off + (n - i) as f32 * vh - (max_vs - *v_scroll)).collect();
+    // V1's bottom sits on the area's bottom at v_scroll = 0 and the rows stack up from it
+    let tops = (0..n).map(|i| area.max.y - vh - i as f32 * vh + *v_scroll).collect();
     (tops, max_vs)
 }
 
@@ -135,12 +156,46 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// The sharpest zoom: `min_view_secs` seconds (the Maximum Zoom Level setting — 0.4 s = 24 frames
+/// at 60 fps by default) fill the whole view width.
+pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
+    let min_view = if min_view_secs.is_finite() && min_view_secs > 0.0 { min_view_secs.clamp(0.05, 3.0) } else { 0.4 };
+    let width = if width.is_finite() { width.clamp(1.0, 1_000_000.0) } else { 1.0 };
+    f64::from(width) / min_view
+}
+
 /// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;
-    let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
+    if !(old.is_finite() && old > 0.0 && factor.is_finite() && factor > 0.0 && anchor_secs.is_finite() && width.is_finite()) {
+        return;
+    }
+    // the sharp end is the Maximum Zoom Level setting; the wide end is enforced by animate_view
+    // (its sequence-dependent `min_pps` floor), so no fixed 0.05 floor here: that stopped a long
+    // sequence from ever zooming out to its full extent
+    let new = (old * factor).clamp(1e-6, max_pps(width, min_view_secs));
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
     v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+}
+
+#[cfg(test)]
+mod finite_zoom_tests {
+    use super::*;
+
+    #[test]
+    fn maximum_zoom_stays_finite_for_invalid_widths() {
+        assert!(max_pps(f32::INFINITY, 0.4).is_finite());
+        assert!(max_pps(f32::NAN, f64::INFINITY).is_finite());
+    }
+
+    #[test]
+    fn invalid_zoom_inputs_leave_the_view_unchanged() {
+        let mut view = TimelineView::default();
+        let before = (view.target_pps, view.target_scroll);
+        zoom_about(&mut view, f64::INFINITY, 1.0, 800.0, 0.4);
+        zoom_about(&mut view, 2.0, f64::NAN, 800.0, 0.4);
+        assert_eq!((view.target_pps, view.target_scroll), before);
+    }
 }

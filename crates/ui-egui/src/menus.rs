@@ -60,6 +60,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
     uic!("view.zoomToSequence", "Zoom to Sequence", ["View"], Some("\\")),
+    uic!("view.unhideTimelineSlider", "Unhide Timeline Slider", ["View"], None),
+    uic!("view.unhideTrackSlider", "Unhide Track Slider", ["View"], None),
     uic!("view.resetInterfaceZoom", "Reset Interface Zoom", ["View"], None),
     uic!("view.playbackRes.full", "Full", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
@@ -480,12 +482,19 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, app.session.state.timeline_ui.max_zoom_secs());
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
             app.ui.timeline.fit_pending = true;
+            return Ok(Value::Null);
+        }
+        "view.unhideTimelineSlider" => {
+            crate::panels::timeline::set_zoombar_hidden(app, ctx, false);
+            return Ok(Value::Null);
+        }
+        "view.unhideTrackSlider" => {
+            crate::panels::timeline::set_track_slider_hidden(app, ctx, false);
             return Ok(Value::Null);
         }
         // the whole interface back to Settings ▸ Appearance ▸ UI Scale, after Ctrl+Plus or a mouse
@@ -610,7 +619,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return r;
         }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
-        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
+        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.has_unsaved_changes() => {
             if app.session.path.is_none() {
                 return Err("the project has not been saved yet".into());
             }
@@ -1039,6 +1048,11 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
     }
     for c in UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS) {
         if c.menu.is_empty() {
+            continue;
+        }
+        if (c.id == "view.unhideTimelineSlider" && !session.state.timeline_ui.zoom_bar_hidden)
+            || (c.id == "view.unhideTrackSlider" && !session.state.timeline_ui.track_slider_hidden)
+        {
             continue;
         }
         out.push(MenuItem {
@@ -1575,6 +1589,18 @@ mod tests {
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
         assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
+    }
+
+    #[test]
+    fn hidden_timeline_sliders_can_be_restored_from_the_view_menu() {
+        let mut session = filmcraft_engine::Session::default();
+        assert!(!menu_items_for(&session).iter().any(|it| it.id.starts_with("view.unhide")));
+
+        session.state.timeline_ui.zoom_bar_hidden = true;
+        session.state.timeline_ui.track_slider_hidden = true;
+        let items = menu_items_for(&session);
+        assert!(items.iter().any(|it| it.id == "view.unhideTimelineSlider" && it.path == ["View"]));
+        assert!(items.iter().any(|it| it.id == "view.unhideTrackSlider" && it.path == ["View"]));
     }
 
     /// #1500: like a native menu bar, while one menu is open hovering another title opens it.

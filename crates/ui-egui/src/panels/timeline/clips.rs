@@ -179,6 +179,13 @@ pub fn zoomed_thumbnail_tiles(
     tiles.into_iter().map(|(x, t)| (x0 + (x - x0) * r, tile_w * r, t)).collect()
 }
 
+fn thumbnail_render_height(width: f32, aspect: f32, max_height: f32) -> f32 {
+    if !width.is_finite() || !aspect.is_finite() || aspect <= 0.0 || !max_height.is_finite() {
+        return 0.0;
+    }
+    (width / aspect).clamp(0.0, max_height.max(0.0))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_clip(
     app: &mut FilmcraftApp,
@@ -224,11 +231,33 @@ pub(super) fn draw_clip(
             _ => None,
         });
         if let Some(aspect) = aspect.filter(|a| a.is_finite() && *a > 0.0) {
-            let tw = th.height() * aspect;
-            let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
-            let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
+            // aspect-correct and never bigger than the clip's picture area: at tall track heights
+            // the tiles used to grow past the clip, cropping the frame at the bottom and to the
+            // right. The frame stops growing once its bottom meets the clip's bottom.
             let mode = app.ui.timeline.thumbnail_mode;
             let (pps, frozen) = (app.ui.timeline.pps, app.tl.thumb_pps);
+            // the width cap lives in the frozen coordinate space too, but only Continuous tiles
+            // run in that space: capped by the live width it changes under the tiles mid-gesture
+            // and reveals new frames, each one a thumbnail request
+            let cap_w = match (mode, frozen) {
+                (crate::state::ThumbnailMode::Continuous, Some(f)) if pps.is_finite() && pps > 0.0 && f.is_finite() && f > 0.0 => {
+                    th.width() * (f as f32 / pps as f32)
+                }
+                _ => th.width(),
+            };
+            // a subpixel frozen cap is no cap at all: the tiler rejects widths under one point,
+            // so a short clip would lose its thumbnails mid-gesture. Fall back to live tiling
+            // entirely -- passing the live width with the frozen scale would scale it up.
+            let subpixel = cap_w < 1.0;
+            let cap_w = if subpixel { th.width() } else { cap_w };
+            let frozen = if subpixel { None } else { frozen };
+            let fh = th.height();
+            let mut tw = fh * aspect;
+            if tw > cap_w {
+                tw = cap_w;
+            }
+            let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
+            let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
             for (x, w, offset) in zoomed_thumbnail_tiles(mode, th.min.x, th.max.x, tw, visible, it.duration, rate.frame_duration(), pps, frozen) {
                 let mt = rate.snap(it.source_time_at(it.start + offset));
                 // a multi-camera clip shows its angle's clip
@@ -243,7 +272,10 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, th.height()));
+                    // Continuous tiles stretch horizontally with live zoom; derive their height
+                    // from that same rendered width to preserve the source aspect ratio.
+                    let tile_h = thumbnail_render_height(w, aspect, th.height());
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, tile_h));
                     cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
             }
@@ -357,5 +389,17 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_height_tests {
+    use super::thumbnail_render_height;
+
+    #[test]
+    fn rendered_thumbnail_height_tracks_live_width_and_stays_in_clip() {
+        assert_eq!(thumbnail_render_height(160.0, 16.0 / 9.0, 120.0), 90.0);
+        assert_eq!(thumbnail_render_height(320.0, 16.0 / 9.0, 100.0), 100.0);
+        assert_eq!(thumbnail_render_height(100.0, 0.0, 100.0), 0.0);
     }
 }

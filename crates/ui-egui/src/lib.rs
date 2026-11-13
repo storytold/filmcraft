@@ -362,6 +362,8 @@ pub struct FilmcraftApp {
     /// dock area reports them after the panels have drawn, so they are imported next frame.
     window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
+    /// A track-slider drag updates the visible Timeline every frame; journal it once when released.
+    timeline_view_pending: bool,
     pub fps: f32,
     last_time: f64,
     bindings: Vec<menus::KeyBinding>,

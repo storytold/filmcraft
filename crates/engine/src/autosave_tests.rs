@@ -9,11 +9,41 @@ fn demo() -> Session {
     s
 }
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+struct TestDir(std::path::PathBuf);
+
+impl TestDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("fc-{tag}-{}-{stamp}-{serial}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(tag: &str) -> TestDir {
+    TestDir::new(tag)
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
@@ -30,12 +60,49 @@ fn start(s: &mut Session, data: &std::path::Path) {
     s.start_autosave(cfg).unwrap();
 }
 
+#[test]
+fn view_only_changes_do_not_write_recovery_snapshots() {
+    let d = temp_dir("view-only-recovery");
+    let mut s = Session::default();
+    start(&mut s, &d);
+
+    s.view_changed();
+    s.sync_persistence();
+
+    let persistence = s.persistence.as_ref().unwrap();
+    assert_eq!(persistence.flush().unwrap(), None);
+    assert!(!persistence.session_dir.join("snapshot.fcproj").exists());
+
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn view_only_autosave_snapshots_are_coalesced_during_drags() {
+    let d = temp_dir("view-snapshot-coalesce");
+    let mut s = Session::default();
+    start(&mut s, &d);
+    s.bump();
+    s.sync_persistence();
+    let first = s.persistence.as_ref().unwrap().last_sent.clone().unwrap();
+
+    s.project_view_changed();
+    assert_ne!(s.view_epoch, first.view_epoch);
+    assert_eq!(s.persistence.as_ref().unwrap().last_sent.as_ref(), Some(&first), "a frame during the drag is coalesced");
+
+    s.last_view_snapshot_sent = Some(web_time::Instant::now() - std::time::Duration::from_secs(1));
+    s.project_view_changed();
+    assert_eq!(s.persistence.as_ref().unwrap().last_sent.as_ref().map(|sent| sent.view_epoch), Some(s.view_epoch));
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision
 }
 
-fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
+fn discard_fixture(tag: &str) -> (Session, TestDir) {
     let d = temp_dir(tag);
     let mut s = Session::default();
     start(&mut s, &d);
@@ -242,7 +309,7 @@ fn recovery_preserves_original(tag: &str, block: Option<&str>, journal_enabled: 
     std::fs::write(&original, &bytes).unwrap();
 
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(&*d);
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     s.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": journal_enabled})).unwrap();
@@ -287,7 +354,7 @@ fn recovery_can_retry_after_a_failed_journal_write() {
     let project = (*demo().project).clone();
     std::fs::write(old_dir.join("snapshot.fcproj"), filmcraft_format::encode(&project, false)).unwrap();
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(&*d);
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
@@ -384,6 +451,7 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     let root = autosave::recovery_root(&d);
     let sess = root.join("123-1");
     std::fs::create_dir_all(&sess).unwrap();
+    std::fs::write(sess.join("lock"), b"").unwrap();
     let snap = filmcraft_format::encode(&filmcraft_project::Project::default(), false);
     std::fs::write(sess.join("snapshot.fcproj"), snap).unwrap();
     std::fs::write(sess.join("session.json"), b"not json {").unwrap();
@@ -395,6 +463,23 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     let found = autosave::scan_candidates(&d, None);
     assert_eq!(found.len(), 1, "missing metadata still lists the snapshot");
     assert!(sess.join("snapshot.fcproj").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn scan_leaves_clean_journal_when_its_lock_is_held() {
+    let d = temp_dir("recover-clean-live-lock");
+    let root = autosave::recovery_root(&d);
+    let sess = root.join("123-2");
+    std::fs::create_dir_all(&sess).unwrap();
+    let lock_path = sess.join("lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    lock.try_lock().unwrap();
+    std::fs::write(sess.join("snapshot.fcproj"), b"clean journal").unwrap();
+    std::fs::write(sess.join("session.json"), br#"{"dirty":false}"#).unwrap();
+    assert!(autosave::scan_candidates(&d, None).is_empty(), "clean journal is not a recovery candidate");
+    assert!(sess.exists(), "a journal must not be removed while another session owns its lock");
+    drop(lock);
     let _ = std::fs::remove_dir_all(&d);
 }
 

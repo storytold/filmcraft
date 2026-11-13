@@ -25,6 +25,8 @@
 	Align to Video Frame as Group	Poravnaj s video sličicom kao grupu
 	All Panels	Svi paneli
 	Alpha	Alfa
+	Alternate Drag Speed	Alternativna brzina povlacenja
+	Alternate Drag Speed:	Alternativna brzina povlacenja:
 	Appearance	Izgled
 	Appearance…	Izgled…
 	Apply Audio Transition	Primijeni audio prijelaz
@@ -62,6 +64,7 @@
 	Captions…	Titlovi…
 	Caribbean	Karipski
 	Center Horizontally	Centriraj vodoravno
+	Center on Playhead:	Centriraj na reprodukcijsku glavu:
 	Center Vertically	Centriraj okomito
 	Cerulean	Cerulean
 	Clear	Očisti
@@ -82,6 +85,7 @@
 	Comparison View	Prikaz poređenja
 	Composite Video	Kompozitni video
 	Consolidate Duplicates	Objedini duplikate
+	Controls	Kontrole
 	Copy	Kopiraj
 	Copy Paste Includes Sequence Markers	Kopiranje i lijepljenje uključuje markere sekvence
 	Create Captions from Transcript…	Kreiraj titlove iz transkripta…
@@ -116,9 +120,11 @@
 	Ellipse	Elipsa
 	Enable	Omogući
 	Enable Remix	Omogući remiks
+	Enter Shortcut	Unesite prečicu
 	Essential Graphics	Osnovna grafika
 	Essential Sound	Osnovni zvuk
 	Events	Događaji
+	Explode Slider:	Razloži klizač:
 	Export	Izvezi
 	Export As Motion Graphics Template…	Izvezi kao predložak animirane grafike…
 	Extract	Izdvoji
@@ -173,6 +179,7 @@
 	Insert Frame Hold Segment	Umetni segment zadržavanja sličice
 	Install Motion Graphics Template…	Instaliraj predložak animirane grafike…
 	Interpret Footage…	Interpretiraj snimak…
+	Invert Scrolling	Obrni skrolanje
 	Join the ArtCraft Discord…	Pridružite se ArtCraft Discordu…
 	Keyboard Shortcuts…	Prečice na tastaturi…
 	Label	Oznaka
@@ -232,6 +239,7 @@
 	Paused Resolution	Rezolucija pri pauzi
 	Playback Resolution	Rezolucija reprodukcije
 	Playback…	Reprodukcija…
+	Playhead Centering Range	Doseg centriranja reprodukcijske glave
 	Plugins…	Dodaci…
 	Polygon	Mnogougao
 	Preferences	Postavke
@@ -318,6 +326,7 @@
 	Simplify Sequence…	Pojednostavi sekvencu…
 	Snap in Program Monitor	Hvatanje u programskom monitoru
 	Snap in Timeline	Hvatanje na vremenskoj liniji
+	Snap to Tracks	Poravnaj na pjesme
 	Source	Izvor
 	Source Settings…	Postavke izvora…
 	Speed/Duration…	Brzina/trajanje…

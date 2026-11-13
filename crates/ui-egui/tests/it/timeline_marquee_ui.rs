@@ -285,6 +285,7 @@ impl Driver {
 #[test]
 fn scrolling_the_audio_tracks_mid_drag_keeps_the_box_on_them() {
     let mut d = Driver::demo();
+    d.harness.state_mut().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     d.exec("sequence.addTracks", json!({"audio": 12}));
     d.ok("ui.set", json!({"focused": "Timeline"}));
     d.frames(4);
@@ -321,6 +322,7 @@ fn scrolling_the_audio_tracks_mid_drag_keeps_the_box_on_them() {
 #[test]
 fn a_wheel_turn_past_the_end_of_the_video_scroll_does_not_move_the_box() {
     let mut d = Driver::demo();
+    d.harness.state_mut().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     let (_, b, _, _, start) = d.setup();
     assert_eq!(d.harness.state().ui.timeline.v_scroll, 0.0);
     let left = d.rect("timeline.tracks").min.x + 20.0;

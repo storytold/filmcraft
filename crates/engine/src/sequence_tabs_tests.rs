@@ -4,7 +4,7 @@
 
 use super::*;
 use filmcraft_project::SequenceView;
-use filmcraft_time::TICKS_PER_SECOND;
+use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
 /// The demo project with two more sequences open: tabs [main, b, c], `c` active.
@@ -50,7 +50,8 @@ fn close_others_keeps_one_tab_and_shows_it() {
 #[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
-    let (revision, steps) = (s.revision, s.history.undo.len());
+    let (view_epoch, steps) = (s.view_epoch, s.history.undo.len());
+    let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
     assert_eq!(s.state.active_sequence, Some(c), "moving a tab does not change which is shown");
@@ -59,11 +60,28 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step, not an edit
-    assert_eq!((s.revision, s.history.undo.len()), (revision, steps));
+    // not an undo step and not an edit: the revision may move (it is a view change, and that is
+    // what carries the new tab order into the autosave journal) but a clean project stays clean
+    assert_ne!(s.view_epoch, view_epoch, "moving a tab is a persisted view change");
+    assert_eq!(s.history.undo.len(), steps);
+    assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
     assert!(s.execute("sequence.moveTab", json!({"item": b.0, "index": 0})).is_err());
     assert!(s.execute("sequence.moveTab", json!({"item": c.0})).is_err());
+}
+
+#[test]
+fn playhead_changes_advance_only_the_view_persistence_epoch() {
+    let (mut s, _) = three_tabs();
+    let (revision, epoch) = (s.revision, s.view_epoch);
+    let time = Tick(TICKS_PER_SECOND);
+    s.set_playhead(time);
+    assert_eq!(s.revision, revision, "moving the playhead does not dirty project content");
+    assert_eq!(s.view_epoch, epoch.wrapping_add(1), "the project view must persist the new playhead");
+
+    let epoch = s.view_epoch;
+    s.set_playhead(time);
+    assert_eq!(s.view_epoch, epoch, "setting the same snapped playhead does not create a redundant view update");
 }
 
 #[test]

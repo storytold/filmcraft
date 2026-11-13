@@ -1604,6 +1604,7 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
@@ -1624,6 +1625,7 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
@@ -2671,6 +2673,8 @@ fn build() -> Vec<CommandSpec> {
             }
             s.state.selection.clear();
             s.events.push(crate::Event::OpenSequence(id));
+            // the open tabs are part of the saved view
+            s.view_changed();
             Ok(Value::Null)
         }),
         cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
@@ -2679,6 +2683,7 @@ fn build() -> Vec<CommandSpec> {
             if s.state.active_sequence == Some(id) {
                 s.state.active_sequence = s.state.open_sequences.last().copied();
             }
+            s.view_changed();
             Ok(Value::Null)
         }),
         cmd!("sequence.closeOthers", "Close Other Timeline Panels", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
@@ -2693,6 +2698,7 @@ fn build() -> Vec<CommandSpec> {
                 s.state.selection.clear();
                 s.events.push(crate::Event::OpenSequence(id));
             }
+            s.view_changed();
             Ok(json!({"closed": closed}))
         }),
         cmd!("sequence.moveTab", "Move Sequence Tab", [], None, r#"{"item":id?,"index":int}"#, has_seq, |s, p| {
@@ -2703,6 +2709,9 @@ fn build() -> Vec<CommandSpec> {
             let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
             let tab = s.state.open_sequences.remove(from);
             s.state.open_sequences.insert(to, tab);
+            // the tab order is part of the saved view: it must reach the autosave journal even
+            // on a clean project (view-only change: no cache invalidation, project stays clean)
+            s.view_changed();
             Ok(json!({"index": to}))
         }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
@@ -5257,7 +5266,8 @@ pub fn inspect_project(s: &Session) -> Value {
     json!({
         "name": p.name,
         "path": s.path,
-        "dirty": s.is_dirty(),
+        "dirty": s.has_unsaved_changes(),
+        "contentDirty": s.is_dirty(),
         "revision": s.revision,
         "root": bin(&p.root, p),
         "activeSequence": s.state.active_sequence.map(|i| i.0),
@@ -5352,6 +5362,8 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.previews_follow_path();
         s.note_recent_project();
         s.saved_revision = s.revision;
+        // the file now holds this view: a later zoom or scroll is new unsaved state again
+        s.saved_view_epoch = s.view_epoch;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
@@ -5387,6 +5399,9 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.revision += 1;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
+    if clean {
+        s.saved_view_epoch = s.view_epoch;
+    }
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);
@@ -5398,8 +5413,11 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
-    if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
-        s.restore_project_view(view);
+    if let Some(view) = loaded.view {
+        s.state.timeline_ui = view.timeline_ui.clone().checked();
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        }
     }
     // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {
@@ -5425,6 +5443,13 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(view) = loaded.view {
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        } else {
+            s.state.timeline_ui = view.timeline_ui.checked();
+        }
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }

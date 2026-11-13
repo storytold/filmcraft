@@ -34,6 +34,7 @@
 	Align to Video Frame as Group	Allinea al fotogramma video come gruppo
 	All Panels	Tutti i pannelli
 	Alpha	Alfa
+	Alternate Drag Speed:	Velocità di trascinamento alternativa:
 	Appearance	Aspetto
 	Appearance…	Aspetto…
 	Apply Audio Transition	Applica transizione audio
@@ -70,6 +71,13 @@
 	Captions…	Sottotitoli…
 	Caribbean	Caraibi
 	Center at Cut	Centrato sul taglio
+	Center on Playhead:	Centra sulla testina:
+	Controls	Comandi
+	Enter Shortcut	Inserisci scorciatoia
+	Explode Slider:	Espandi lo slider:
+	Invert Scrolling	Inverti scorrimento
+	Playhead Centering Range	Intervallo di centraggio della testina
+	Snap to Tracks	Aggancia alle tracce
 	Start at Cut	Inizio sul taglio
 	End at Cut	Fine sul taglio
 	Custom Start	Inizio personalizzato
@@ -3696,7 +3704,43 @@
 	Previous	Precedente
 	Next	Successivo
 	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF
-
+	Hide Slider	Nascondi cursore
+	Unhide Slider	Mostra cursore
+	Maximum Zoom Level	Livello di zoom massimo
+	Alternate Drag Speed (Shift + Left Click)	Velocità di trascinamento alternativa (Maiusc + clic sinistro)
+	Playhead Centering Range (Double Click)	Intervallo di centratura della testina (doppio clic)
+	Alternate Drag Speed	Velocità di trascinamento alternativa
+	Value:	Valore:
+	Closest	Più vicino
+	Very Slow	Molto lenta
+	Far	Lontano
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Colore indicatore di posizione:
+	Video Indicator Color:	Colore indicatore video:
+	Audio Indicator Color:	Colore indicatore audio:
+	Offline Indicator Color:	Colore indicatore contenuto offline:
+	Timeline Slider Settings	Impostazioni cursore linea temporale
+	Track Slider Settings	Impostazioni cursore tracce
+	Unhide Timeline Slider	Mostra cursore linea temporale
+	Unhide Track Slider	Mostra cursore tracce
+	Inverted Controls	Controlli invertiti
+	Slider Minimap	Minimappa del cursore
+	Show Whole Timeline	Mostra tutta la linea temporale
+	Prioritise Audio	Dai priorità all'audio
+	Position Indicator	Indicatore di posizione
+	Fill Clips	Riempi clip
+	Decouple Edges	Scollega estremi
+	Alternate Slider Position	Posizione alternativa del cursore
+	Playhead Centering	Centratura della testina
+	Smooth Animations	Animazioni fluide
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Puoi ripristinarlo in qualsiasi momento facendo clic destro sulla linea temporale e selezionando "{row}" in fondo all'elenco.
+	Maximum zoom level in seconds	Livello di zoom massimo in secondi
+	Alternate drag speed multiplier	Moltiplicatore della velocità di trascinamento alternativa
+	Playhead centering range in seconds	Intervallo di centratura della testina in secondi
+	Alternate drag speed for the track sliders	Velocità di trascinamento alternativa per i cursori delle tracce
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	Colore a 10 bit

@@ -132,7 +132,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
+    if (id == "file.closeProject" && !app.session.has_unsaved_changes()) || id == "app.quit" {
         return None;
     }
     meta(id)?;
@@ -154,7 +154,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// asked first, as for Close Project (#3843), and the project opens once the answer lets it.
 /// None when there is nothing unsaved, so the caller opens it now.
 pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Value, String>> {
-    if !app.session.is_dirty() {
+    if !app.session.has_unsaved_changes() {
         return None;
     }
     app.ui.clip_dialog =
@@ -166,7 +166,7 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
-    if app.quit_confirmed || !app.session.is_dirty() {
+    if app.quit_confirmed || !app.session.has_unsaved_changes() {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
@@ -391,7 +391,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
+    // Tooltip order: a modal dialog sits above every menu and popup (the zoom-bar settings
+    // popup is a Foreground layer and used to cover the Save / Don't Save / Cancel question)
+    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).order(egui::Order::Tooltip).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         let mut valid = true;
         match d.command.as_str() {
@@ -776,7 +778,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 };
                 let r = app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string());
                 match &r {
-                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt),
+                    Ok(_) if !app.session.has_unsaved_changes() => leave(app, &ctx2, &prompt),
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
                     // the save failed: the prompt stays, with the reason in the status bar
                     Err(e) => {
@@ -806,7 +808,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     // snapshot, so the next launch doesn't offer them back. Open replaces the project only once
     // the chosen one has loaded (which leaves the session as clean as closing does), so a file
     // that fails to open keeps the current project and its changes.
-    let close = command == "file.closeProject" || (command == "app.quit" && app.session.is_dirty());
+    let close = command == "file.closeProject" || (command == "app.quit" && app.session.has_unsaved_changes());
     if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
         app.ui.status = e.to_string();
     }

@@ -32,6 +32,8 @@
 	Align to Video Frame as Group	Grup Olarak Video Karesine Hizala
 	All Panels	Tüm Paneller
 	Alpha	Alfa
+	Alternate Drag Speed	Alternatif Sürükleme Hızı
+	Alternate Drag Speed:	Alternatif Sürükleme Hızı:
 	Appearance	Görünüm
 	Appearance…	Görünüm…
 	Apply Audio Transition	Ses Geçişi Uygula
@@ -68,6 +70,7 @@
 	Captions…	Altyazılar…
 	Caribbean	Karayip
 	Center Horizontally	Yatay Olarak Ortala
+	Center on Playhead:	Oynatma Kafasında Ortala:
 	Center Vertically	Dikey Olarak Ortala
 	Cerulean	Gök Mavisi
 	Clear	Temizle
@@ -87,6 +90,7 @@
 	Comparison View	Karşılaştırma Görünümü
 	Composite Video	Kompozit Video
 	Consolidate Duplicates	Yinelenenleri Birleştir
+	Controls	Kontroller
 	Copy	Kopyala
 	Copy Paste Includes Sequence Markers	Kopyala Yapıştır Sekans İşaretçilerini İçerir
 	Create Captions from Transcript…	Transkriptten Altyazı Oluştur…
@@ -120,9 +124,11 @@
 	Ellipse	Elips
 	Enable	Etkinleştir
 	Enable Remix	Remix'i Etkinleştir
+	Enter Shortcut	Kısayol Girin
 	Essential Graphics	Temel Grafikler
 	Essential Sound	Temel Ses
 	Events	Olaylar
+	Explode Slider:	Kaydırıcıyı Genişlet:
 	Export	Dışa Aktar
 	Export As Motion Graphics Template…	Hareketli Grafik Şablonu Olarak Dışa Aktar…
 	Extract	Çıkar
@@ -177,6 +183,7 @@
 	Insert Frame Hold Segment	Kare Dondurma Segmenti Ekle
 	Install Motion Graphics Template…	Hareketli Grafik Şablonu Yükle…
 	Interpret Footage…	Çekimi Yorumla…
+	Invert Scrolling	Kaydırmayı Ters Çevir
 	Join the ArtCraft Discord…	ArtCraft Discord'una Katıl…
 	Keyboard Shortcuts…	Klavye Kısayolları…
 	Label	Etiket
@@ -190,6 +197,7 @@
 	Light	Açık
 	Link	Bağla
 	Link Media…	Medyayı Bağla…
+	Playhead Centering Range	Oynatma Kafası Ortalama Aralığı
 	Refresh Changed Media	Değiştirilen Medyayı Yenile
 	Linked Selection	Bağlı Seçim
 	Lock Guides	Kılavuzları Kilitle
@@ -323,6 +331,7 @@
 	Simplify Sequence…	Sekansı Basitleştir…
 	Snap in Program Monitor	Program Monitöründe Manyetik Hizalama
 	Snap in Timeline	Zaman Çizgisinde Manyetik Hizalama
+	Snap to Tracks	Parçalara Yapıştır
 	Source	Kaynak
 	Source Settings…	Kaynak Ayarları…
 	Speed/Duration…	Hız/Süre…
