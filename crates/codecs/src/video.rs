@@ -181,59 +181,29 @@ pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
 /// A factory returns `None` when it does not handle the entry.
 pub type VideoDecoderFactory = fn(&SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>>;
 
-/// The typical Huffman tables of ITU-T T.81 Annex K.3 as one DHT segment (luminance and
-/// chrominance, DC and AC): what a Motion JPEG frame without its own tables is coded with (AVI's
-/// "MJPG", the AVI1 convention of capture cards and cameras).
-const DEFAULT_DHT: &[u8] = &[
-    0xFF, 0xC4, 0x01, 0xA2, //
-    0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, //
-    0x01, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, //
-    0x10, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D, //
-    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, //
-    0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28, //
-    0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, //
-    0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, //
-    0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, //
-    0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2, //
-    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, //
-    0x11, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77, //
-    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, //
-    0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0, 0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26, //
-    0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, //
-    0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, //
-    0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, //
-    0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, //
-    0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA,
-];
-
-/// A JPEG with the [`DEFAULT_DHT`] inserted before its first scan when it defines no Huffman
-/// table of its own (else unchanged, borrowed).
-pub fn with_default_huffman(jpeg: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    use std::borrow::Cow;
-    if jpeg.get(..2) != Some(&[0xFF, 0xD8]) {
-        return Cow::Borrowed(jpeg);
-    }
-    // walk the marker segments up to the start of scan
+/// Read the Adobe APP14 transform byte needed for RGB/CMYK JPEG interpretation.
+fn jpeg_adobe_transform(jpeg: &[u8]) -> Option<u8> {
     let mut at = 2usize;
-    while let (Some(&0xFF), Some(&m)) = (jpeg.get(at), jpeg.get(at + 1)) {
-        match m {
-            0xFF => at += 1, // fill byte
-            0xC4 => return Cow::Borrowed(jpeg),
-            0xDA => {
-                let mut out = Vec::with_capacity(jpeg.len() + DEFAULT_DHT.len());
-                out.extend_from_slice(jpeg.get(..at).unwrap_or_default());
-                out.extend_from_slice(DEFAULT_DHT);
-                out.extend_from_slice(jpeg.get(at..).unwrap_or_default());
-                return Cow::Owned(out);
-            }
-            0xD0..=0xD9 | 0x01 => at += 2,
-            _ => {
-                let Some(len) = jpeg.get(at + 2..at + 4).map(|b| usize::from(u16::from_be_bytes([b[0], b[1]]))) else { break };
-                at += 2 + len;
-            }
-        }
+    if jpeg.get(..2) != Some(&[0xFF, 0xD8]) {
+        return None;
     }
-    Cow::Borrowed(jpeg)
+    while at + 1 < jpeg.len() && jpeg[at] == 0xFF {
+        let marker = jpeg[at + 1];
+        if marker == 0xDA {
+            return None;
+        }
+        let len = usize::from(u16::from_be_bytes([*jpeg.get(at + 2)?, *jpeg.get(at + 3)?]));
+        if len < 2 {
+            return None;
+        }
+        let end = at.checked_add(2 + len)?;
+        let segment = jpeg.get(at + 4..end)?;
+        if marker == 0xEE && segment.get(..5) == Some(b"Adobe") {
+            return segment.get(11).copied();
+        }
+        at = end;
+    }
+    None
 }
 
 /// Motion-JPEG / Photo-JPEG (each sample is a complete JPEG).
@@ -241,12 +211,41 @@ pub struct MjpegDecoder;
 
 impl VideoDecoder for MjpegDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        let sample = with_default_huffman(sample);
+        let sample = craft_jpeg::with_avi1_default_huffman(sample);
         // mjpa samples may contain two fields; decode the first image (field-merging lands with interlace support).
-        let img = image::load_from_memory_with_format(&sample, image::ImageFormat::Jpeg).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()), draft: false }])
+        let adobe = jpeg_adobe_transform(&sample);
+        // `image::load_from_memory` previously used image::Limits::default(), which caps decoder
+        // allocations at 512 MiB and has no pixel-count limit. Keep that memory ceiling and avoid
+        // adding a separate pixel limit when routing through craft-jpeg.
+        let mut limits = craft_jpeg::Limits::default();
+        limits.max_pixels = u64::MAX;
+        limits.max_alloc = 512 << 20;
+        let decoded = craft_jpeg::decode(&sample, &limits, adobe).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let craft_jpeg::Samples::U8(samples) = decoded.samples else {
+            return Err(CodecError::Decode("12-bit Motion JPEG is not supported by FilmCraft frames".into()));
+        };
+        let mut rgba = Vec::with_capacity(samples.len().saturating_mul(4));
+        match decoded.components {
+            1 => {
+                for &gray in &samples {
+                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                }
+            }
+            3 => {
+                for rgb in samples.as_chunks::<3>().0 {
+                    rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                }
+            }
+            4 => {
+                for cmyk in samples.as_chunks::<4>().0 {
+                    let (c, m, y, k) = (u16::from(cmyk[0]), u16::from(cmyk[1]), u16::from(cmyk[2]), u16::from(cmyk[3]));
+                    let rgb = [((255 - c) * (255 - k) / 255) as u8, ((255 - m) * (255 - k) / 255) as u8, ((255 - y) * (255 - k) / 255) as u8];
+                    rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                }
+            }
+            n => return Err(CodecError::Decode(format!("unsupported JPEG component count {n}"))),
+        }
+        Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(decoded.width, decoded.height, rgba), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
         Vec::new()

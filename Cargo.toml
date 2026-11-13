@@ -59,10 +59,10 @@ roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "915fc544587fb9ce7c3d0110f4be7159bca0ff16", default-features = false }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "915fc544587fb9ce7c3d0110f4be7159bca0ff16", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
-# The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "915fc544587fb9ce7c3d0110f4be7159bca0ff16", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "threads"] }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", default-features = false }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
+# The video decoders (H.264, HEVC, VP9, AV1, MPEG-2, APV with its encoder), ProRes decoder and encoder, on the same commit as craft-media.
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2", features = ["h264-decode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9", features = ["serde"] }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
