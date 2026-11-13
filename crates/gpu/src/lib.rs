@@ -715,6 +715,8 @@ pub struct GpuCompositor {
     wake_ref: Option<u32>,
     /// This preroll's loads have run at the reference length in their time: the clocks are up.
     wake_warm: bool,
+    /// GPU time (ms) of the latest load measured, for [`Self::wake_stats`].
+    wake_ms: f64,
     /// Staging bytes a UI pass submits beyond its composites' needs ([`FLUSH_BUDGET`]).
     upload_budget: u64,
     /// The [`GpuPlanes::upload_seq`] of the frames the composite being recorded draws: its
@@ -770,6 +772,8 @@ const TIMER_SLOTS: usize = 4;
 /// What a timed submit was, for [`GpuTimer::last_ms`]: a composite, or [`GpuCompositor::wake`].
 const TIMER_COMPOSITE: u8 = 0;
 const TIMER_WAKE: u8 = 1;
+/// A submit in flight whose measurement nobody wants any more ([`GpuTimer::forget`]).
+const TIMER_FORGOTTEN: u8 = 2;
 
 /// GPU time one [`GpuCompositor::wake`] aims for, per UI pass: at 60 passes a second half the
 /// GPU's time, enough for a driver to count it busy and raise the clocks, and over within a
@@ -869,6 +873,20 @@ impl GpuTimer {
         buf.slice(..).map_async(wgpu::MapMode::Read, move |mapped| {
             report.store(if mapped.is_ok() { MAP_DONE } else { MAP_FAILED }, Ordering::Release);
         });
+    }
+
+    /// Drop the latest measurement of the submits of kind `tag`, and those still to arrive of
+    /// the submits made so far: [`Self::last`] is 0 again until a later submit is measured.
+    fn forget(&self, tag: u8) {
+        self.collect();
+        for (_, flag, slot_tag, _) in &self.slots {
+            if flag.load(Ordering::Acquire) != TIMER_FREE && slot_tag.load(Ordering::Relaxed) == tag {
+                slot_tag.store(TIMER_FORGOTTEN, Ordering::Relaxed);
+            }
+        }
+        if let Some(slot) = self.last.lock().unwrap_or_else(PoisonError::into_inner).get_mut(usize::from(tag)) {
+            *slot = (0.0, 0);
+        }
     }
 
     /// The latest GPU time measured (ms) of the submits of kind `tag`.
@@ -1300,6 +1318,7 @@ impl GpuCompositor {
             wake_iterations: WAKE_ITERATIONS_START,
             wake_ref: None,
             wake_warm: false,
+            wake_ms: 0.0,
             upload_budget: FLUSH_BUDGET,
             needed: Vec::new(),
             dummy,
@@ -1363,7 +1382,7 @@ impl GpuCompositor {
     /// GPU time (ms) of the latest [`Self::wake`] (0 without timestamp queries), and the loop
     /// length the next one gets.
     pub fn wake_stats(&self) -> (f64, u32) {
-        (self.timer.as_ref().map_or(0.0, |t| t.last_ms(TIMER_WAKE)), self.wake_iterations)
+        (self.wake_ms, self.wake_iterations)
     }
 
     /// Whether the GPU's clocks are up, as far as this preroll's [`Self::wake`] loads can tell:
@@ -1378,13 +1397,24 @@ impl GpuCompositor {
     /// the longest so far (a preroll that ended with the clocks still low leaves it alone).
     pub fn wake_done(&mut self) {
         self.wake_ref = Some(self.wake_ref.map_or(self.wake_iterations, |r| r.max(self.wake_iterations)));
-        self.wake_warm = false;
+        self.wake_over();
     }
 
     /// The preroll was cancelled (Stop before the play began): the next preroll wakes the GPU
     /// itself. Unlike [`Self::wake_done`] the interrupted preroll's loop length is no reference.
     pub fn wake_cancelled(&mut self) {
+        self.wake_over();
+    }
+
+    /// A preroll is over. Its loads say nothing of the clocks at the next one: the GPU may have
+    /// idled in between. Their measurements are dropped, also the ones still to arrive, so that
+    /// the next preroll does not read "the clocks are up" from the end of this one and start its
+    /// play on a GPU that has just been woken.
+    fn wake_over(&mut self) {
         self.wake_warm = false;
+        if let Some(t) = &self.timer {
+            t.forget(TIMER_WAKE);
+        }
     }
 
     /// Give the GPU about [`WAKE_TARGET_MS`] of work, whatever its clocks, so that its driver
@@ -1396,8 +1426,10 @@ impl GpuCompositor {
         match &self.timer {
             Some(t) => {
                 // (the measurement is of a load a pass or two ago: `measured` is its length)
+                // (and of this preroll: see [`Self::wake_over`])
                 let (ms, measured) = t.last(TIMER_WAKE);
                 if ms > 0.0 {
+                    self.wake_ms = ms;
                     // a load near the reference length that ran in its time: the clocks are up
                     if ms <= WAKE_TARGET_MS * 1.3 && self.wake_ref.is_some_and(|r| measured >= r / 4 * 3) {
                         self.wake_warm = true;

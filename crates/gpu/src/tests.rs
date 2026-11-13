@@ -121,6 +121,48 @@ fn a_cancelled_preroll_leaves_the_gpu_to_be_woken_again() {
     assert_eq!(c.wake_ref, reference);
 }
 
+/// A preroll reads the GPU's clocks from its own loads only. The loads of the preroll before ran
+/// with the clocks up, and the GPU may have idled since: read at the next Play, their time
+/// started the play at once, on a GPU whose first composites then took several display frames.
+#[test]
+fn a_preroll_does_not_take_the_one_befores_measurement_for_its_own() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    if c.timer.is_none() {
+        eprintln!("no timestamp queries; skipping");
+        return;
+    }
+    let wake_time = |c: &GpuCompositor| c.timer.as_ref().map(|t| t.last(TIMER_WAKE));
+    let measured = |c: &GpuCompositor, m: (f64, u32)| {
+        if let Some(t) = &c.timer {
+            t.last.lock().unwrap()[usize::from(TIMER_WAKE)] = m;
+        }
+    };
+    // a preroll whose last load ran at the reference length in its time
+    c.wake_ref = Some(4096);
+    c.wake_iterations = 4096;
+    measured(&c, (WAKE_TARGET_MS, 4096));
+    c.wake();
+    assert!(c.wake_warm(), "the clocks are up at the end of the first preroll");
+    c.wake_done();
+    // (the load it submitted last is measured after it ended)
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert_eq!(wake_time(&c), Some((0.0, 0)), "a load of the preroll before is still read");
+    // the next preroll: nothing measured yet, so nothing known of the clocks
+    c.wake();
+    assert!(!c.wake_warm(), "the next preroll took the clocks for up before any of its loads ran");
+    // its own load, once measured, counts
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert!(wake_time(&c).is_some_and(|(ms, n)| ms > 0.0 && n == 4096), "the preroll's own load is not measured");
+    // and a cancelled preroll leaves none behind either
+    c.wake_cancelled();
+    dev.poll(wgpu::PollType::wait_indefinitely()).expect("done");
+    assert_eq!(wake_time(&c), Some((0.0, 0)));
+}
+
 /// A frame worker records its uploads and submits nothing; the compositor submits them before
 /// its own commands, so the frame is complete when drawn. (wgpu fails a surface reconfigure
 /// when another thread submits during it: the GPU compositor went off on a window resize.)
