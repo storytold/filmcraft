@@ -659,36 +659,46 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ParamValue::Text(f) => f,
                 _ => String::new(),
             };
-            let fams = filmcraft_text::picker_families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
-                        cx.set("font", json!(f));
-                    }
-                }
-            });
-            let response = crate::widgets::accessible_name(r.response, "Font");
+            let search_id = vui.scope_id().with(("gfx-font-search", clip.0, l));
+            let combo = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l))
+                .selected_text(crate::font_picker::label(&family))
+                .width(170.0)
+                .height(400.0)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show_ui_with_header(
+                    &mut vui,
+                    |ui| crate::font_picker::search(ui, search_id),
+                    |ui, query| crate::font_picker::menu(app, ui, &query, &family, "graphics.font.option", false),
+                );
+            let acts = combo.inner.unwrap_or_default();
+            if let Some(f) = crate::font_picker::apply(app, acts) {
+                cx.set("font", json!(f));
+            }
+            let response = crate::widgets::accessible_name(combo.response, "Font");
             cx.auto("font", response.rect, "Font");
-            let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
+            let styles = crate::font_picker::styles(&family);
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
-                for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
-                    let mut seen = Vec::new();
-                    move |x: &&str| {
-                        if seen.contains(x) {
-                            false
-                        } else {
-                            seen.push(*x);
-                            true
+            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(crate::font_picker::style_label(&style)).width(170.0).show_ui(
+                &mut vui,
+                |ui| {
+                    for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
+                        let mut seen = Vec::new();
+                        move |x: &&str| {
+                            if seen.contains(x) {
+                                false
+                            } else {
+                                seen.push(*x);
+                                true
+                            }
+                        }
+                    }) {
+                        if ui.selectable_label(st == style, crate::font_picker::style_label(st)).clicked() {
+                            cx.set("font_style", json!(st));
                         }
                     }
-                }) {
-                    if ui.selectable_label(st == style, st).clicked() {
-                        cx.set("font_style", json!(st));
-                    }
-                }
-            });
+                },
+            );
             let response = crate::widgets::accessible_name(r.response, "Font Style");
             cx.auto("font_style", response.rect, "Font Style");
             cx.number(ui, tl!("Font Size"), NumberField { id: "size", speed: 0.5, range: (1.0, 2000.0), decimals: 0, unit: "" });

@@ -694,38 +694,42 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-        let r = craft_ui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
-            if !filmcraft_text::fonts::system_scanned() {
-                filmcraft_text::fonts::scan_system();
-            }
-            // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
-                let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
-                // An edge row may be only partly visible; automation must click its visible portion.
-                let visible = resp.rect.intersect(ui.clip_rect());
-                if visible.is_positive() {
-                    app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
-                }
-                if resp.clicked() {
-                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
-                }
-            }
-        });
+        // a searchable list with favourites and recents; rows keep their automation ids
+        let search_id = ui.scope_id().with(("caption-font-search", tr.id.0));
+        let r = craft_ui::ComboBox::from_id_salt(("caption-font", tr.id.0))
+            .selected_text(crate::font_picker::label(&st.font))
+            .width(96.0)
+            .height(400.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui_with_header(
+                ui,
+                |ui| crate::font_picker::search(ui, search_id),
+                |ui, query| crate::font_picker::menu(app, ui, &query, &st.font, "text.captions.style.font.option", true),
+            );
+        let picked = crate::font_picker::apply(app, r.inner.unwrap_or_default());
+        if let Some(f) = picked {
+            actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
+        }
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
         // the styles of the track's family, next to the font
         let styles = filmcraft_text::families().into_iter().find(|(f, _)| f.eq_ignore_ascii_case(&st.font)).map(|(_, v)| v).unwrap_or_default();
-        let r = craft_ui::ComboBox::from_id_salt(("caption-font-style", tr.id.0)).selected_text(&st.font_style).width(100.0).height(300.0).show_ui(ui, |ui| {
-            for name in &styles {
-                let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), name);
-                let visible = resp.rect.intersect(ui.clip_rect());
-                if visible.is_positive() {
-                    app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+        let r = craft_ui::ComboBox::from_id_salt(("caption-font-style", tr.id.0))
+            .selected_text(crate::font_picker::style_label(&st.font_style))
+            .width(100.0)
+            .height(300.0)
+            .show_ui(ui, |ui| {
+                for name in &styles {
+                    let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), crate::font_picker::style_label(name));
+                    // An edge row may be only partly visible; automation must click its visible portion.
+                    let visible = resp.rect.intersect(ui.clip_rect());
+                    if visible.is_positive() {
+                        app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+                    }
+                    if resp.clicked() {
+                        actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
+                    }
                 }
-                if resp.clicked() {
-                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
-                }
-            }
-        });
+            });
         app.auto.add("text.captions.style.fontStyle", r.response.rect, "Caption font style");
         let mut size = st.size;
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));

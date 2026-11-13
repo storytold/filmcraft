@@ -433,16 +433,26 @@ pub fn template_controls(
                     Some(ParamValue::Text(s)) => s,
                     _ => String::new(),
                 };
-                let r = craft_ui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
-                    &mut vui,
-                    |ui| {
-                        for (f, _) in filmcraft_text::picker_families() {
-                            if ui.selectable_label(f == fam, &f).clicked() {
-                                set(json!(f), actions);
+                let search_id = vui.scope_id().with(("gfx-tpl-font-search", clip.0, c.id.as_str()));
+                let prefix = format!("{id}.option");
+                let r = craft_ui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str()))
+                    .selected_text(crate::font_picker::label(&fam))
+                    .width(170.0)
+                    .height(360.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show_ui_with_header(
+                        &mut vui,
+                        |ui| crate::font_picker::search(ui, search_id),
+                        |ui, query| {
+                            // read-only: this panel draws from `&FilmcraftApp`, so no favourite stars
+                            let acts = crate::font_picker::menu_readonly(&app.session.prefs.fonts, ui, &query, &fam, &prefix);
+                            for a in acts {
+                                if let crate::font_picker::FontAction::Pick(f) = a {
+                                    set(json!(f), actions);
+                                }
                             }
-                        }
-                    },
-                );
+                        },
+                    );
                 autos.push((id, r.response.rect, c.name.clone()));
             }
             ControlKind::Position => {
@@ -763,16 +773,28 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label(tl!("Replace:"));
                 let r = craft_ui::ComboBox::from_id_salt("gfx-rf-from").selected_text(&d.from).width(160.0).show_ui(ui, |ui| {
                     for f in &fams {
-                        ui.selectable_value(&mut d.from, f.clone(), f);
+                        ui.selectable_value(&mut d.from, f.clone(), crate::font_picker::label(f));
                     }
                 });
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label(tl!("with:"));
-                let r = craft_ui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
-                    for (f, _) in filmcraft_text::picker_families() {
-                        ui.selectable_value(&mut d.to, f.clone(), &f);
-                    }
-                });
+                let search_id = ui.scope_id().with("gfx-rf-to-search");
+                let r = craft_ui::ComboBox::from_id_salt("gfx-rf-to")
+                    .selected_text(crate::font_picker::label(&d.to))
+                    .width(160.0)
+                    .height(360.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show_ui_with_header(
+                        ui,
+                        |ui| crate::font_picker::search(ui, search_id),
+                        |ui, query| {
+                            for a in crate::font_picker::menu_readonly(&app.session.prefs.fonts, ui, &query, &d.to, "replaceFonts.to.option") {
+                                if let crate::font_picker::FontAction::Pick(f) = a {
+                                    d.to = f;
+                                }
+                            }
+                        },
+                    );
                 elems.push(("replaceFonts.to".into(), r.response.rect, "With".into()));
             });
             if !d.error.is_empty() {

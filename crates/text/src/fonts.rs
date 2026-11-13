@@ -86,6 +86,8 @@ pub enum FaceData {
 #[derive(Clone, Debug)]
 pub struct FaceInfo {
     pub family: String,
+    /// The family's Chinese name from the font's own name table (`思源黑体`), if it has one.
+    pub family_zh: Option<String>,
     pub style: String,
     pub weight: u16,
     pub italic: bool,
@@ -216,7 +218,7 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
+    FaceInfo { family: n.family, family_zh: n.family_zh, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
 }
 
 /// A loaded (or loadable) face.
@@ -373,6 +375,7 @@ fn db() -> &'static RwLock<Db> {
     DB.get_or_init(|| {
         let info = FaceInfo {
             family: "Inter".into(),
+            family_zh: None,
             style: "Regular".into(),
             weight: 400,
             italic: false,
@@ -398,7 +401,25 @@ fn db() -> &'static RwLock<Db> {
     })
 }
 
+/// Family (lowercase) → its Chinese name, for the pickers. Filled as faces are registered.
+fn zh_names() -> &'static RwLock<std::collections::HashMap<String, String>> {
+    static ZH: OnceLock<RwLock<std::collections::HashMap<String, String>>> = OnceLock::new();
+    ZH.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
+}
+
+fn remember_zh(info: &FaceInfo) {
+    let Some(zh) = &info.family_zh else { return };
+    let mut m = zh_names().write().unwrap_or_else(PoisonError::into_inner);
+    m.entry(info.family.to_lowercase()).or_insert_with(|| zh.clone());
+}
+
+/// A family's Chinese name, when its font files carry one.
+pub fn chinese_name(family: &str) -> Option<String> {
+    zh_names().read().unwrap_or_else(PoisonError::into_inner).get(&family.to_lowercase()).cloned()
+}
+
 fn push(db: &mut Db, info: FaceInfo) -> FaceId {
+    remember_zh(&info);
     let id = db.faces.len();
     db.faces.push(Arc::new(Face { id, info, bytes: OnceLock::new(), shaper: OnceLock::new() }));
     id
@@ -482,6 +503,80 @@ pub fn families() -> Vec<(String, Vec<String>)> {
 pub fn picker_families() -> Vec<(String, Vec<String>)> {
     scan_system();
     families()
+}
+
+/// One family as a font picker shows it: the family a project stores, its Chinese name when the
+/// font has one, and its style names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FamilyEntry {
+    pub family: String,
+    pub zh: Option<String>,
+    pub styles: Vec<String>,
+}
+
+impl FamilyEntry {
+    /// What the picker shows: the Chinese name when there is one (`思源黑体`), else the family.
+    pub fn label(&self) -> &str {
+        self.zh.as_deref().unwrap_or(&self.family)
+    }
+
+    /// Whether a picker search matches this family: by Chinese name or by any part of the English
+    /// name, ignoring case and the spaces/dashes people don't type (`notosanssc` finds
+    /// `Noto Sans SC`).
+    pub fn matches(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        if self.family.to_lowercase().contains(&q) || self.zh.as_ref().is_some_and(|z| z.contains(query.trim())) {
+            return true;
+        }
+        let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace() && *c != '-').collect::<String>().to_lowercase();
+        squeeze(&self.family).contains(&squeeze(&q)) || self.zh.as_ref().is_some_and(|z| z.contains(&q))
+    }
+}
+
+/// Every family a picker offers, with Chinese names, sorted by what it shows. Scans the system fonts
+/// first, like [`picker_families`].
+/// Whether the interface's fonts can draw `s`: Latin, symbols and CJK are registered, Indic
+/// scripts are not (a picker row with them would abort the frame inside egui).
+fn drawable(s: &str) -> bool {
+    s.chars().all(|c| {
+        let u = c as u32;
+        u < 0x0530 // Latin, Cyrillic, Greek, punctuation, symbols, emoji
+            || (0x3400..=0x4dbf).contains(&u)
+            || (0x4e00..=0x9fff).contains(&u)
+            || (0xf900..=0xfaff).contains(&u)
+            || (0xff00..=0xffef).contains(&u) // full-width forms
+    })
+}
+
+/// A family whose name starts with '.' is a macOS-private face (UI/fallback fonts, some without
+/// a space glyph); the caption strip hides them, the effect and graphics pickers list them.
+pub fn is_private(family: &str) -> bool {
+    family.starts_with('.')
+}
+
+pub fn picker_entries() -> Vec<FamilyEntry> {
+    scan_system();
+    let mut entries: Vec<FamilyEntry> = Vec::new();
+    for f in all_faces() {
+        match entries.iter_mut().find(|e| e.family.eq_ignore_ascii_case(&f.info.family)) {
+            Some(e) => {
+                if !e.styles.iter().any(|s| s == &f.info.style) {
+                    e.styles.push(f.info.style.clone());
+                }
+            }
+            None => entries.push(FamilyEntry { family: f.info.family.clone(), zh: chinese_name(&f.info.family), styles: vec![f.info.style.clone()] }),
+        }
+    }
+    // macOS-private faces (UI/fallback fonts, some without a space glyph) stay in the list: the
+    // panels that hide them filter on `is_private` themselves, as they always did.
+    // Indic families name themselves in their own script (गुजराती एचटी); the interface registers
+    // no font for those scripts, and egui panics rather than drawing tofu, so they are not listed.
+    entries.retain(|e| drawable(e.label()) && drawable(&e.family));
+    entries.sort_by(|a, b| a.label().to_lowercase().cmp(&b.label().to_lowercase()).then(a.family.cmp(&b.family)));
+    entries
 }
 
 /// The face chosen for a family/style request, plus synthetic emboldening / slant when the family
@@ -716,6 +811,7 @@ mod tests {
         std::fs::write(&path, INTER_REGULAR).expect("write temp font");
         let info = FaceInfo {
             family: "Inter".into(),
+            family_zh: None,
             style: "Regular".into(),
             weight: 400,
             italic: false,

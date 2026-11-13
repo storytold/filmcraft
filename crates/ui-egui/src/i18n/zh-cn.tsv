@@ -3773,3 +3773,17 @@
 	Toggle Color Grading Section	切换色彩分级分区
 	Color Grading Section	色彩分级分区
 	Read Video Scopes	读取视频示波器
+	Search fonts	搜索字体
+	Recently used	最近使用
+	All fonts	全部字体
+	No font matches the search	没有匹配的字体
+font style	Regular	常规
+font style	Bold	粗体
+font style	Italic	斜体
+font style	Bold Italic	粗斜体
+font style	Light	细体
+font style	Medium	中等
+font style	SemiBold	半粗
+font style	Black	特粗
+font style	Thin	极细
+font style	Heavy	重体
