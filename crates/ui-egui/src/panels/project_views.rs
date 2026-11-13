@@ -699,8 +699,9 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
     bg.context_menu(|ui| background_menu(app, ui, v, bin, actions));
 }
 
-/// Reveal in Project: scroll the revealed item's row or card (`r`, drawn this frame inside the
-/// view's scroll area) into view, once. Only as far as needed: a row already on show stays put.
+/// Reveal in Project: scroll the revealed item's Name cell (List) or card (`r`, drawn this frame
+/// inside the view's scroll area) into view, once. Only as far as needed: a row already on show
+/// stays put.
 fn scroll_to_revealed(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, id: ItemId, r: Rect) {
     if v.inst == Inst::Main && app.ui.project_panel.reveal == Some(id.0) {
         app.ui.project_panel.reveal = None;
@@ -843,7 +844,10 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let Some(it) = app.session.project.item(id).cloned() else { continue };
         let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
         note_hit(ui, v, id, r);
-        scroll_to_revealed(app, ui, v, id, r);
+        let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
+        // The Name cell, not the whole row: a row as wide as the view would leave the list scrolled
+        // sideways past the name.
+        scroll_to_revealed(app, ui, v, id, Rect::from_min_max(r.min, pos2(r.min.x + LEAD + name_w, r.max.y)));
         let selected = app.session.state.project_selection.contains(&id);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
@@ -857,7 +861,6 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         ui.painter().rect_filled(chip, 2.5, label_color(app, it.label, it.custom_label_color));
         app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, &it.label_value());
         let mut x = r.min.x + LEAD;
-        let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
         let nx = x + depth as f32 * 14.0 + 14.0;
         let mut icon_x = nx;
         if lc.thumbs {

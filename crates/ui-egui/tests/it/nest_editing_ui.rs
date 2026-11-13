@@ -178,6 +178,14 @@ fn reveal_in_project_scrolls_to_and_selects_a_clip_in_an_open_folder() {
         assert!(!revealed_on_show(&mut d, item.0, mode), "{mode:?}: the test needs the item out of sight");
         d.exec("project.select", json!({"items": []}));
         d.frames(2);
+        if mode == ViewMode::List {
+            // and the list is scrolled sideways past the Name column, which Reveal brings back
+            let first_bin = d.app().ui.expanded_bins[0];
+            d.ok("ui.scroll", json!({"id": format!("project.bin.{first_bin}"), "dx": -4000.0}));
+            d.frames(3);
+            let names = d.ok("ui.elements", json!({"prefix": "project.list.header.Name"}));
+            assert!(names.as_array().unwrap().is_empty(), "the test needs the Name column scrolled out of sight");
+        }
 
         d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "button": "right"}));
         d.frames(3);
