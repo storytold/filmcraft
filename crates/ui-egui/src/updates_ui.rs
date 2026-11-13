@@ -181,18 +181,24 @@ mod tests {
         let opened = Rc::new(RefCell::new(Vec::<String>::new()));
         let record = opened.clone();
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.hooks.open_url = Some(Box::new(move |url| { record.borrow_mut().push(url.to_owned()); Ok(()) }));
+        app.hooks.open_url = Some(Box::new(move |url| {
+            record.borrow_mut().push(url.to_owned());
+            Ok(())
+        }));
         let url = "https://github.com/storytold/filmcraft/releases/tag/v99.0.0";
         app.updates_rt.updater.offer(craft_update::Release {
-            tag: "v99.0.0".into(), version: craft_update::parse_version("99.0.0"), html_url: url.into(), ..Default::default()
+            tag: "v99.0.0".into(),
+            version: craft_update::parse_version("99.0.0"),
+            html_url: url.into(),
+            ..Default::default()
         });
         let ctx = egui::Context::default();
         ctx.global_style_mut(|style| style.animation_time = 0.0);
         let frame = |app: &mut FilmcraftApp, events| {
-            let mut output = ctx.run_ui(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
-                events, ..Default::default()
-            }, |ui| show(app, ui.ctx()));
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), events, ..Default::default() },
+                |ui| show(app, ui.ctx()),
+            );
             output.textures_delta.clear();
             output
         };
