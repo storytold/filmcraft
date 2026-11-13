@@ -232,12 +232,12 @@ impl VideoDecoder for MjpegDecoder {
                 }
             }
             3 => {
-                for rgb in samples.chunks_exact(3) {
+                for rgb in samples.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
                 }
             }
             4 => {
-                for cmyk in samples.chunks_exact(4) {
+                for cmyk in samples.as_chunks::<4>().0 {
                     let (c, m, y, k) = (u16::from(cmyk[0]), u16::from(cmyk[1]), u16::from(cmyk[2]), u16::from(cmyk[3]));
                     let rgb = [((255 - c) * (255 - k) / 255) as u8, ((255 - m) * (255 - k) / 255) as u8, ((255 - y) * (255 - k) / 255) as u8];
                     rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
