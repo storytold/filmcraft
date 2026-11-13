@@ -395,7 +395,7 @@ pub fn h264_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     }
 }
 
-/// Our pure-Rust HEVC decoder (Main / Main 10, frame-threaded).
+/// Our pure-Rust HEVC decoder (Main / Main 10 and 4:2:2, frame-threaded).
 pub struct HevcDecoder {
     hvcc: Vec<u8>,
     dec: craft_video::hevc::decode::Decoder,
@@ -414,11 +414,15 @@ impl HevcDecoder {
         Self { hvcc: Vec::new(), dec: craft_video::hevc::decode::Decoder::new(), length_size: 0, highest_tid: None }
     }
     fn convert(p: craft_video::hevc::decode::Picture) -> DecodedFrame {
-        use craft_video::hevc::decode::Plane;
+        use craft_video::hevc::decode::{ChromaFormat, Plane};
         use std::sync::Arc;
         let (w, h) = (p.width as usize, p.height as usize);
         let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
         let (ys, uvs) = (p.y_stride, p.uv_stride);
+        let chroma = match p.chroma {
+            ChromaFormat::C420 => filmcraft_frame::Chroma::C420,
+            ChromaFormat::C422 => filmcraft_frame::Chroma::C422,
+        };
         let wide = |pl: Plane| -> Vec<u16> {
             match pl {
                 Plane::U16(v) => v,
@@ -428,12 +432,12 @@ impl HevcDecoder {
         let data = match (p.y, p.u, p.v) {
             (Plane::U8(y), Plane::U8(u), Plane::U8(v)) => filmcraft_frame::PixelData::Yuv8 {
                 planes: [Arc::new(tight_plane(y, ys, w, h)), Arc::new(tight_plane(u, uvs, cw, ch)), Arc::new(tight_plane(v, uvs, cw, ch))],
-                chroma: filmcraft_frame::Chroma::C420,
+                chroma,
                 alpha: None,
             },
             (y, u, v) => filmcraft_frame::PixelData::Yuv16 {
                 planes: [Arc::new(tight_plane(wide(y), ys, w, h)), Arc::new(tight_plane(wide(u), uvs, cw, ch)), Arc::new(tight_plane(wide(v), uvs, cw, ch))],
-                chroma: filmcraft_frame::Chroma::C420,
+                chroma,
                 bits: p.bit_depth,
                 alpha: None,
             },
@@ -1163,6 +1167,56 @@ mod disposable_tests {
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, Some(1)));
         // unknown layering: never
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, None));
+    }
+}
+
+#[cfg(test)]
+mod hevc_convert_tests {
+    use super::HevcDecoder;
+    use craft_video::hevc::decode::{ChromaFormat, ColorInfo, Picture, Plane};
+    use filmcraft_frame::{Chroma, PixelData};
+
+    /// A 4x2 picture whose chroma planes are 2 samples wide and `chroma_height` rows high.
+    fn picture(chroma: ChromaFormat, chroma_height: u32, wide: bool) -> Picture {
+        let plane = |n: usize, v: u16| if wide { Plane::U16(vec![v; n]) } else { Plane::U8(vec![v as u8; n]) };
+        let uv = 2 * chroma_height as usize;
+        Picture {
+            width: 4,
+            height: 2,
+            chroma_width: 2,
+            chroma_height,
+            chroma,
+            bit_depth: if wide { 10 } else { 8 },
+            y: plane(8, 64),
+            u: plane(uv, 128),
+            v: plane(uv, 128),
+            y_stride: 4,
+            uv_stride: 2,
+            pts: 0,
+            poc: 0,
+            key: true,
+            color: ColorInfo { full_range: false, primaries: 1, transfer: 1, matrix: 1 },
+            sar: (1, 1),
+            draft: false,
+        }
+    }
+
+    fn chroma_of(data: &PixelData) -> Option<(Chroma, usize)> {
+        match data {
+            PixelData::Yuv8 { planes, chroma, .. } => Some((*chroma, planes[1].len())),
+            PixelData::Yuv16 { planes, chroma, .. } => Some((*chroma, planes[1].len())),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn frames_keep_the_decoded_chroma_sampling() {
+        for wide in [false, true] {
+            let f = HevcDecoder::convert(picture(ChromaFormat::C420, 1, wide));
+            assert_eq!(chroma_of(&f.frame.data), Some((Chroma::C420, 2)), "4:2:0, 16-bit {wide}");
+            let f = HevcDecoder::convert(picture(ChromaFormat::C422, 2, wide));
+            assert_eq!(chroma_of(&f.frame.data), Some((Chroma::C422, 4)), "4:2:2, 16-bit {wide}");
+        }
     }
 }
 
