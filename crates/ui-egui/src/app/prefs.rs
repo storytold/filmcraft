@@ -113,6 +113,9 @@ impl FilmcraftApp {
             self.set_theme(ctx, k);
         }
         if prev.as_ref().is_none_or(|q| q.general.interface_language != p.general.interface_language) {
+            // A preference change supersedes any earlier asynchronous font request.
+            self.pending_web_language = None;
+            self.pending_web_restore = false;
             let language = match i18n::Language::parse(&p.general.interface_language) {
                 Some(l) => l,
                 None if p.general.interface_language == "system" => {
@@ -120,6 +123,19 @@ impl FilmcraftApp {
                 }
                 None => i18n::Language::default(),
             };
+            let missing_web_font = match language {
+                i18n::Language::Ja if !i18n::install_japanese_font(ctx) => Some("ja"),
+                i18n::Language::ZhCn if !i18n::chinese_font_available() => Some("zh-cn"),
+                i18n::Language::Ko if !i18n::korean_font_available() => Some("ko"),
+                _ => None,
+            };
+            if let Some(language) = missing_web_font
+                && let Some(request) = self.hooks.request_language_font.as_mut()
+            {
+                self.pending_web_language = Some(language.into());
+                self.pending_web_restore = true;
+                request(language);
+            }
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
@@ -131,6 +147,9 @@ impl FilmcraftApp {
                 self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
             } else {
                 self.ui.language = language;
+            }
+            if self.pending_web_restore {
+                self.ui.status = tl!("Loading language font…").into();
             }
             i18n::set_current(self.ui.language);
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));

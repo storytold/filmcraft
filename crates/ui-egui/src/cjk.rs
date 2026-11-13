@@ -28,6 +28,34 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
 const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
 
+static WEB_CHINESE: OnceLock<Arc<FontData>> = OnceLock::new();
+static WEB_KOREAN: OnceLock<Arc<FontData>> = OnceLock::new();
+static WEB_JAPANESE: OnceLock<Arc<FontData>> = OnceLock::new();
+
+/// Register a verified web font and append it to the active UI font families.
+pub(crate) fn register_web_font(ctx: &egui::Context, language: &str, bytes: Vec<u8>) -> Result<(), String> {
+    let (slot, name, sample) = match language {
+        "zh-cn" => (&WEB_CHINESE, "web-chinese", SAMPLE),
+        "ko" => (&WEB_KOREAN, "web-korean", KOREAN_SAMPLE),
+        "ja" => (&WEB_JAPANESE, "web-japanese", "日本語ファイル編集あア"),
+        _ => return Err("unsupported web language font".into()),
+    };
+    if bytes.len() > 20 * 1024 * 1024 || !filmcraft_text::fonts::font_bytes_cover(&bytes, sample) {
+        return Err("language font is invalid or missing required glyphs".into());
+    }
+    let font = slot.get_or_init(|| Arc::new(FontData::from_owned(bytes))).clone();
+    let families = crate::theme::font_families()
+        .into_iter()
+        .map(|family| egui::epaint::text::InsertFontFamily { family, priority: egui::epaint::text::FontPriority::Lowest })
+        .collect();
+    ctx.add_font(egui::epaint::text::FontInsert { name: name.into(), data: (*font).clone(), families });
+    Ok(())
+}
+
+pub(crate) fn web_japanese_available() -> bool {
+    WEB_JAPANESE.get().is_some()
+}
+
 // Thai: neither the UI fonts nor the Chinese/Japanese fallbacks have it, so Thai file and clip names
 // drew as boxes (#3374).
 const THAI_SAMPLE: &str = "ภาพถ่ายภาษาไทย";
@@ -83,13 +111,13 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
 /// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
 /// The Korean interface needs one.
 pub(crate) fn korean_available() -> bool {
-    korean_font().is_some()
+    WEB_KOREAN.get().is_some() || korean_font().is_some()
 }
 
 /// Whether [`install`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
 /// system face (scanned once per process). The Simplified Chinese interface needs one.
 pub(crate) fn available() -> bool {
-    craft_fonts().next().is_some() || system_font().is_some()
+    WEB_CHINESE.get().is_some() || craft_fonts().next().is_some() || system_font().is_some()
 }
 
 /// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
@@ -97,6 +125,14 @@ pub(crate) fn available() -> bool {
 /// traditional hanzi in media and track names that Japanese fonts lack.
 pub(crate) fn install(fonts: &mut FontDefinitions) {
     install_chinese(fonts);
+    for (name, slot) in [("web-japanese", &WEB_JAPANESE), ("web-chinese", &WEB_CHINESE), ("web-korean", &WEB_KOREAN)] {
+        if let Some(font) = slot.get() {
+            fonts.font_data.insert(name.into(), font.clone());
+            for stack in fonts.families.values_mut() {
+                stack.push(name.into());
+            }
+        }
+    }
     if let Some(font) = korean_font() {
         fonts.font_data.insert(KOREAN_FACE.into(), font);
         for stack in fonts.families.values_mut() {
@@ -156,6 +192,31 @@ fn install_chinese(fonts: &mut FontDefinitions) {
 #[cfg(test)]
 mod font_blob_tests {
     use super::*;
+
+    /// With the pinned web-font fixture, verify real glyph coverage and theme reinstall.
+    #[test]
+    fn web_language_faces_cover_samples_and_survive_theme_reinstall() {
+        let Some(root) = std::env::var_os("FILMCRAFT_TEST_WEB_FONTS") else {
+            eprintln!("skipped: FILMCRAFT_TEST_WEB_FONTS is unset");
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let ctx = egui::Context::default();
+        for (language, file) in [
+            ("zh-cn", "fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf"),
+            ("ko", "fonts/nanum-gothic/NanumGothic-Regular.ttf"),
+            ("ja", "fonts/biz-ud-pgothic/BIZUDPGothic-Regular.ttf"),
+        ] {
+            register_web_font(&ctx, language, std::fs::read(root.join(file)).unwrap()).unwrap();
+        }
+        let mut fonts = FontDefinitions::default();
+        install(&mut fonts);
+        for (family, stack) in &fonts.families {
+            for name in ["web-japanese", "web-chinese", "web-korean"] {
+                assert!(stack.iter().any(|s| s == name), "{family:?} is missing {name}");
+            }
+        }
+    }
 
     /// `FontData::from_blob` retains the TTC face index when constructed from a shared blob.
     #[test]

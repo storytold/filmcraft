@@ -43,6 +43,11 @@ pub mod brand;
 pub mod calc;
 pub mod capture;
 mod cjk;
+
+/// Install a web-delivered CJK face for language selection and subsequent theme changes.
+pub fn register_web_language_font(ctx: &egui::Context, language: &str, bytes: Vec<u8>) -> Result<(), String> {
+    cjk::register_web_font(ctx, language, bytes)
+}
 pub mod control;
 pub mod crash;
 pub mod credits;
@@ -198,6 +203,10 @@ pub enum ControlNotice {
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
+    /// The latest web font request; a later language choice supersedes it.
+    pub pending_web_language: Option<String>,
+    /// Whether the pending font is for a saved or system language preference.
+    pub pending_web_restore: bool,
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
     pub playback: Playback,

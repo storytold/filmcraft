@@ -259,6 +259,22 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.swedish"
             | "app.language.turkish"
     ) {
+        app.pending_web_language = None;
+        app.pending_web_restore = false;
+        let web_font = match id {
+            "app.language.japanese" if !crate::i18n::install_japanese_font(ctx) => Some("ja"),
+            "app.language.chinese" if !crate::i18n::chinese_font_available() => Some("zh-cn"),
+            "app.language.korean" if !crate::i18n::korean_font_available() => Some("ko"),
+            _ => None,
+        };
+        if let Some(language) = web_font
+            && let Some(request) = app.hooks.request_language_font.as_mut()
+        {
+            app.pending_web_language = Some(language.into());
+            request(language);
+            app.ui.status = tl!("Loading language font…").into();
+            return Ok(json!({"loadingLanguage": language}));
+        }
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());

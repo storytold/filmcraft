@@ -132,6 +132,43 @@ fn query_flag(name: &str) -> bool {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).is_some_and(|p| p.has(name))
 }
 
+/// Fetch a language face only when requested; the large fonts are separate from the wasm file.
+fn request_language_font(language: &str) {
+    let (language, path) = match language {
+        "ja" => ("ja", "filmcraft-japanese.ttf"),
+        "zh-cn" => ("zh-cn", "filmcraft-cjk-sc.otf"),
+        "ko" => ("ko", "filmcraft-hangul.ttf"),
+        _ => return,
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+            let response: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(path)).await?.dyn_into()?;
+            if !response.ok() {
+                return Err(JsValue::from_str("font download failed"));
+            }
+            let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer()?).await?;
+            let bytes = js_sys::Uint8Array::new(&buffer);
+            if bytes.length() > 20 * 1024 * 1024 {
+                return Err(JsValue::from_str("font is too large"));
+            }
+            Ok::<Vec<u8>, JsValue>(bytes.to_vec())
+        }
+        .await;
+        post(move |web, ctx| {
+            if web.app.pending_web_language.as_deref() != Some(language) {
+                return;
+            }
+            let outcome = result.map_err(|e| format!("{e:?}")).and_then(|bytes| web.app.finish_web_language_font(ctx, language, bytes));
+            web.app.pending_web_language = None;
+            if let Err(error) = outcome {
+                log::warn!("language font: {error}");
+                web.app.ui.status = filmcraft_ui_egui::i18n::t("Could not load the language font. Please try again.").into();
+            }
+        });
+    });
+}
+
 /// Entry point (called by the page's bootstrap script once the wasm module is instantiated).
 #[wasm_bindgen]
 pub async fn start(canvas_id: String) -> Result<(), JsValue> {
@@ -216,6 +253,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     let _ = session.execute("file.openDemoProject", json!({}));
                 }
                 let mut app = FilmcraftApp::new(session);
+                app.hooks.request_language_font = Some(Box::new(request_language_font));
                 import::install_hooks(&mut app);
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =

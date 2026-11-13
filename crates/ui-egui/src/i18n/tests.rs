@@ -225,6 +225,31 @@ fn chinese_switches_and_persists_or_is_refused_without_a_font() {
     set_current(Language::En);
 }
 
+#[test]
+fn later_language_choice_cancels_a_pending_web_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    app.pending_web_language = Some("ko".into());
+    app.pending_web_restore = true;
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    assert!(app.pending_web_language.is_none());
+    assert!(!app.pending_web_restore);
+    // A late completion is ignored before parsing or installing the response.
+    app.finish_web_language_font(&ctx, "ko", b"not a font".to_vec()).unwrap();
+    assert_eq!(app.ui.language, Language::En);
+    set_current(Language::En);
+}
+
+#[test]
+fn invalid_web_font_does_not_change_language() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    app.pending_web_language = Some("ko".into());
+    assert!(app.finish_web_language_font(&ctx, "ko", b"not a font".to_vec()).is_err());
+    assert_eq!(app.ui.language, Language::En);
+    set_current(Language::En);
+}
+
 /// The crate's sources (`src/**/*.rs`), each cut at its test module.
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();

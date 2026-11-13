@@ -33,6 +33,7 @@ mkdirSync(downloads, { recursive: true });
 const profile = mkdtempSync(join(tmpdir(), "fc-chrome-"));
 const proc = spawn(chrome, [
   ...(headless ? ["--headless=new"] : []),
+  ...(process.argv.includes("--language-fonts") || process.argv.includes("--language-fonts-only") ? ["--lang=en-US"] : []),
   `--remote-debugging-port=${port}`,
   `--user-data-dir=${profile}`,
   "--no-first-run",
@@ -121,6 +122,24 @@ try {
   report.info = await js("filmcraft.info()");
   // let the UI settle (fonts, first frames)
   await sleep(1500);
+  if (process.argv.includes("--language-fonts") || process.argv.includes("--language-fonts-only")) {
+    // Check the actual browser fetch and menu state, including a later language choice.
+    const checked = (id) => `filmcraft.request('ui.menu.list').then(items => items.some(i => i.id === '${id}' && i.checked === true))`;
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.english'})`);
+    await until(checked("app.language.english"));
+    // A missing asset must leave the current language in place and allow a later retry.
+    await js(`window.originalFontFetch = window.fetch; window.fetch = (url, ...args) => String(url).includes('filmcraft-cjk-sc.otf') ? Promise.resolve(new Response('', {status: 503})) : window.originalFontFetch(url, ...args)`);
+    await js(`filmcraft.request('ui.menu.invoke', {command: 'app.language.chinese'})`);
+    await until(`filmcraft.inspect().then(i => String(i.ui.status).includes('Could not load the language font'))`);
+    if (!(await js(checked("app.language.english")))) throw new Error("failed font load changed the language");
+    await js(`window.fetch = window.originalFontFetch; delete window.originalFontFetch`);
+    for (const id of ["app.language.chinese", "app.language.korean", "app.language.japanese", "app.language.english"]) {
+      await js(`filmcraft.request('ui.menu.invoke', {command: '${id}'})`);
+      await until(checked(id), 120000);
+    }
+    report.steps.languageFonts = "Chinese, Korean, Japanese and English selected";
+  }
+  if (!process.argv.includes("--language-fonts-only")) {
   report.steps.demo = { screenshot: await shot("01-demo"), inspect: await js("filmcraft.inspect().then(i => ({window: i.window, activeSequence: i.activeSequence, fps: i.fps}))") };
 
   // play 2 seconds
@@ -177,6 +196,7 @@ try {
     },
   });
   if (!report.steps.importCollision.ok) throw new Error("import collision regression: " + JSON.stringify(report.steps.importCollision.gates));
+  }
   // still alive? (a panicked app never answers)
   await Promise.race([js("filmcraft.inspect().then(() => true)"), sleep(5000).then(() => { throw new Error("app stopped answering"); })]);
   const fatal = logs.filter((l) => /panicked at|RuntimeError|EXCEPTION/.test(l));
