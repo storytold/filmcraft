@@ -275,9 +275,14 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
         }
         "clip.fieldOptions" => (json!({"reverseFieldDominance": false, "processing": "none"}), Value::Null),
         "clip.speedDuration" => {
-            // the first selected clip's current speed; its duration at that speed for the readout
+            // the first selected unlocked picture (else clip), the one `clip.speedDuration` takes a
+            // typed duration from and changes: its current speed, and its duration at that speed
             let q = s.active_sequence();
-            let it = q.and_then(|q| s.state.selection.iter().find_map(|c| q.find_item(*c).map(|x| x.1.clone())));
+            let it = q.and_then(|q| {
+                let is_video = |tid| q.video_tracks.iter().any(|t| t.id == tid);
+                let locked = |tid| q.track(tid).is_some_and(|t| t.locked);
+                s.state.selection.iter().filter_map(|c| q.find_item(*c)).min_by_key(|(tid, _)| (locked(*tid), !is_video(*tid))).map(|x| x.1.clone())
+            });
             let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             let speed = it.as_ref().map_or(1.0, |i| i.speed);
             let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
@@ -327,7 +332,8 @@ fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     }
 }
 
-fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) {
+/// A labelled text field for `p[key]`; returns whether it was typed in this frame.
+fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) -> bool {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -336,7 +342,9 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
         if r.changed() {
             p[key] = json!(v);
         }
-    });
+        r.changed()
+    })
+    .inner
 }
 
 struct NumberOptions {
@@ -391,9 +399,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
+    // OK's state, which Enter follows too
+    let mut valid = true;
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
-        let mut valid = true;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
@@ -637,13 +646,18 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     p["duration"] = json!(filmcraft_time::format_timecode_frames(rate.frame_at(ticks).max(1), rate, false));
                 }
                 let before = if refresh_duration { p["duration"].clone() } else { d.info["durationText"].clone() };
-                text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
+                let typed_now = text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
                 let frames = filmcraft_time::parse_timecode(p["duration"].as_str().unwrap_or_default(), rate, false, 0);
-                let speed =
-                    frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0).map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
+                let typed = frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0);
+                let speed = typed.map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
                 valid = speed.is_some_and(|speed| speed.is_finite() && (0.01..=100_000.0).contains(&speed));
-                if valid && before != p["duration"] {
+                // typed, even the value already shown: with several clips selected it still sets them all
+                if valid && (typed_now || before != p["duration"]) {
                     p["speed"] = json!(speed);
+                    // sent on OK, so every selected clip gets this duration instead of the first clip's speed
+                    d.info["typedDuration"] = json!(typed.map(|t| t.0));
+                } else if refresh_duration {
+                    d.info["typedDuration"] = Value::Null;
                 }
                 d.info["durationSpeed"] = p["speed"].clone();
                 d.info["durationText"] = p["duration"].clone();
@@ -710,6 +724,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     if action.is_none()
+        && valid
         && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())
         && !matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open")
     {
@@ -839,7 +854,10 @@ fn finish(d: &ClipDialogDraft) -> Value {
     match d.command.as_str() {
         "clip.speedDuration" => {
             if let Some(m) = p.as_object_mut() {
-                m.remove("duration");
+                match d.info["typedDuration"].as_i64() {
+                    Some(ticks) => m.insert("duration".into(), json!(ticks)),
+                    None => m.remove("duration"),
+                };
                 // Maintain Audio Pitch is sent only when the checkbox changed: left out, every
                 // selected clip keeps its own setting
                 if m.get("maintainPitch") == d.info.get("maintainPitch") {
