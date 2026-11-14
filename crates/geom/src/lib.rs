@@ -77,6 +77,10 @@ impl Rect {
     }
     /// Fit `inner` (w,h) inside this rect preserving aspect, centered.
     pub fn fit(&self, w: f64, h: f64) -> Rect {
+        if !(w > 0.0 && h > 0.0) {
+            // Avoids 0 * inf = NaN: an empty inner rect fits as an empty rect at the centre.
+            return Rect::new(self.x + self.w / 2.0, self.y + self.h / 2.0, 0.0, 0.0);
+        }
         let s = (self.w / w).min(self.h / h);
         let (fw, fh) = (w * s, h * s);
         Rect::new(self.x + (self.w - fw) / 2.0, self.y + (self.h - fh) / 2.0, fw, fh)
@@ -169,6 +173,15 @@ impl Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_zero_sized_inner_is_finite_and_centred() {
+        let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+        for (w, h) in [(0.0, 0.0), (0.0, 10.0), (10.0, 0.0)] {
+            let f = r.fit(w, h);
+            assert_eq!(f, Rect::new(50.0, 25.0, 0.0, 0.0), "fit({w}, {h})");
+        }
+    }
 
     #[test]
     fn inverse_roundtrip() {
