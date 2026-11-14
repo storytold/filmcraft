@@ -239,8 +239,10 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
     }
-    if id == "markers.add" && crate::panels::marker_properties::open_at_playhead(app, &params) {
-        return Ok(json!({"dialog": "editMarker"}));
+    if id == "markers.add"
+        && let Some(marker) = crate::panels::marker_properties::open_at_playhead(app, &params)
+    {
+        return Ok(json!({"dialog": "editMarker", "marker": marker}));
     }
     if matches!(
         id,

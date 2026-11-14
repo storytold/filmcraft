@@ -107,6 +107,14 @@ fn add_marker_on_a_marker_opens_its_dialog() {
         d.harness.state_mut().ui.marker_properties = None;
         d.frames(2);
     }
+    // a null time is no time to Add Marker, so the playhead's marker opens, and the reply names it
+    let at = d.marker(id).start;
+    d.harness.state_mut().session.set_playhead(at);
+    let reply = d.ok("ui.menu.invoke", json!({"command": "markers.add", "params": {"time": null}}));
+    d.frames(2);
+    assert_eq!(reply, json!({"dialog": "editMarker", "marker": id}));
+    assert_eq!(d.harness.state().ui.marker_properties.as_ref().map(|m| m.marker), Some(id));
+    assert_eq!(sequence_markers(&d), before, "no second marker");
 }
 
 /// Two markers already stacked on one frame: Add Marker opens the one drawn on top, the later one.
