@@ -3773,3 +3773,9 @@
 	Toggle Color Grading Section	切换色彩分级分区
 	Color Grading Section	色彩分级分区
 	Read Video Scopes	读取视频示波器
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p 全高清
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K 超高清
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080，VBR 1 次，目标 14 Mbps，AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160，VBR 1 次，目标 35 Mbps，AAC 320 kbps

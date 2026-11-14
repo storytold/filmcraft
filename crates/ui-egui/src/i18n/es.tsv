@@ -3755,3 +3755,9 @@
 	Toggle Color Grading Section	Alternar sección de gradación de color
 	Color Grading Section	Sección de gradación de color
 	Read Video Scopes	Leer medidores de vídeo
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p Full HD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080, VBR 1 paso, objetivo 14 Mbps, AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160, VBR 1 paso, objetivo 35 Mbps, AAC 320 kbps

@@ -3745,3 +3745,9 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p Full HD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080, VBR 1 passe, cible 14 Mbps, AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160, VBR 1 passe, cible 35 Mbps, AAC 320 kbps

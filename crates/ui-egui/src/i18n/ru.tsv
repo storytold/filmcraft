@@ -3740,3 +3740,9 @@
 	Toggle Color Grading Section	Переключить раздел грейдинга
 	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов
+
+# Export: AV1 presets
+	AV1 1080p Full HD	AV1 1080p Full HD
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K Ultra HD
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080, VBR 1 проход, целевой 14 Мбит/с, AAC 320 кбит/с
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160, VBR 1 проход, целевой 35 Мбит/с, AAC 320 кбит/с
