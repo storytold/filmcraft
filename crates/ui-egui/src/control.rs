@@ -104,10 +104,14 @@ fn as_pressed(mut m: egui::Modifiers) -> egui::Modifiers {
     m
 }
 
-/// Resolve a point from `{id}` (element centre) or `{x, y}`.
+/// Resolve a point from `{id}` (element centre) or `{x, y}`. An element clipped away (scrolled
+/// out of its view: an empty rect) is refused, so input by id cannot land on whatever is there.
 fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     if let Some(id) = p.get("id").and_then(Value::as_str) {
         let e = app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
+        if !(e.rect[2] > 0.0 && e.rect[3] > 0.0) {
+            return Err(format!("element `{id}` is outside its view (scroll it into view)"));
+        }
         let fx = p.get("fx").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         let fy = p.get("fy").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         return Ok(egui::pos2(e.rect[0] + e.rect[2] * fx, e.rect[1] + e.rect[3] * fy));
