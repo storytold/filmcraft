@@ -936,17 +936,25 @@ mod win_gpu {
     /// Pool of pre-allocated D3D11 RGBA8 shared textures registered with an NVENC session.
     pub struct GpuPool(Arc<GpuPoolInner>);
 
-    /// An acquired GPU surface ticket; dropping it returns the slot to the pool.
+    /// An acquired GPU surface ticket; dropping it returns the slot to the pool, unless the
+    /// surface was retired.
     pub struct GpuSurface {
         pool: Arc<GpuPoolInner>,
         index: usize,
         id: u64,
         width: u32,
         height: u32,
+        /// Zero-copy rendering was submitted into this surface without the GPU confirming it
+        /// finished: its contents are undefined and the work may still be writing into it, so the
+        /// slot is left out of the pool for good instead of feeding another picture.
+        retired: AtomicBool,
     }
 
     impl Drop for GpuSurface {
         fn drop(&mut self) {
+            if self.retired.load(Ordering::Relaxed) {
+                return;
+            }
             let mut g = self.pool.state.lock().unwrap_or_else(PoisonError::into_inner);
             if g.alive && self.index < g.entries.len() {
                 g.free.push(self.index);
@@ -965,6 +973,11 @@ mod win_gpu {
 
         pub fn height(&self) -> u32 {
             self.height
+        }
+
+        /// Take the slot out of the pool: the GPU may still be writing into this surface.
+        pub(crate) fn retire(&self) {
+            self.retired.store(true, Ordering::Relaxed);
         }
 
         pub(super) fn belongs_to(&self, pool: &GpuPool) -> bool {
@@ -992,7 +1005,7 @@ mod win_gpu {
             }
             let index = g.free.pop()?;
             let id = g.entries.get(index)?.id;
-            Some(Arc::new(GpuSurface { pool: Arc::clone(&self.0), index, id, width, height }))
+            Some(Arc::new(GpuSurface { pool: Arc::clone(&self.0), index, id, width, height, retired: AtomicBool::new(false) }))
         }
     }
 

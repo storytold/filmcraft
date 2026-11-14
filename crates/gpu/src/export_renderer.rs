@@ -12,6 +12,7 @@
 //! CPU) is returned unchanged — it already is the CPU image.
 
 use crate::GpuCompositor;
+use crate::SurfaceRender;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
@@ -200,8 +201,8 @@ impl ExportRenderer {
     }
 
     /// Render a pre-planned and pre-prepared frame directly into an externally owned GPU surface
-    /// (`OUTPUT_FORMAT` / `Rgba8Unorm`) without CPU readback. Returns `false` when zero-copy
-    /// import or rendering is unavailable.
+    /// (`OUTPUT_FORMAT` / `Rgba8Unorm`) without CPU readback ([`SurfaceRender`] says whether it got
+    /// there, and whether the surface may be reused).
     pub fn render_plan_surface(
         &mut self,
         plan: &FramePlan,
@@ -210,15 +211,22 @@ impl ExportRenderer {
         target_id: u64,
         w: u32,
         h: u32,
-    ) -> bool {
+    ) -> SurfaceRender {
         if matches!(plan, FramePlan::Image(_)) || device_failed() {
-            return false;
+            return SurfaceRender::Unavailable;
         }
-        if !self.compositor.render_export_surface_prepared(plan, prep, target, target_id, (w, h)) || device_failed() {
-            return false;
+        let outcome = self.compositor.render_export_surface_prepared(plan, prep, target, target_id, (w, h));
+        match outcome {
+            // a device that died right after a confirmed render: the surface is fine, but the frame
+            // has to be rendered again by the CPU path
+            SurfaceRender::Rendered if device_failed() => SurfaceRender::Unavailable,
+            SurfaceRender::Rendered => {
+                timing::add_frame();
+                SurfaceRender::Rendered
+            }
+            // an unconfirmed submission is never "unavailable": its surface must not be reused
+            other => other,
         }
-        timing::add_frame();
-        true
     }
 
     /// Type-erased wrapper around [`Self::render_plan`] for `FrameRenderer` implementations.
@@ -242,7 +250,7 @@ impl ExportRenderer {
         target_id: u64,
         w: u32,
         h: u32,
-    ) -> bool {
+    ) -> crate::SurfaceRender {
         let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
         self.render_plan_surface(plan, prep, target, target_id, w, h)
     }

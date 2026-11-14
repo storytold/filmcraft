@@ -51,8 +51,14 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
             plan: &filmcraft_render::plan::FramePlan,
             prep: Option<&dyn std::any::Any>,
             target: &dyn filmcraft_export::GpuEncodeInput,
-        ) -> bool {
-            self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height())
+        ) -> filmcraft_export::GpuFrame {
+            use filmcraft_export::GpuFrame;
+            match self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height()) {
+                filmcraft_gpu::SurfaceRender::Rendered => GpuFrame::Rendered,
+                filmcraft_gpu::SurfaceRender::NoImport => GpuFrame::NoImport,
+                filmcraft_gpu::SurfaceRender::Unconfirmed => GpuFrame::Unconfirmed,
+                filmcraft_gpu::SurfaceRender::Unavailable => GpuFrame::Unavailable,
+            }
         }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)

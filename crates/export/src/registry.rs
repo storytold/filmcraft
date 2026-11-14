@@ -34,6 +34,27 @@ pub trait GpuEncodeInput: Send + Sync {
     fn height(&self) -> u32;
     fn as_any(&self) -> &dyn std::any::Any;
     fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+    /// Rendering was submitted into this surface and the GPU did not confirm it finished: the
+    /// surface must not go back to the encoder's pool, where the next picture would write into it
+    /// while the submitted work may still be running. Dropping it after this retires its slot.
+    fn retire(&self) {}
+}
+
+/// What became of one zero-copy frame ([`FrameRenderer::render_planned_gpu`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuFrame {
+    /// Composited into the encoder's surface, and the GPU confirmed the work finished.
+    Rendered,
+    /// The encoder's surface cannot be imported into this renderer's device (another adapter, or
+    /// no external-memory support). It is a property of the device, so the caller stops offering
+    /// surfaces for the rest of the export instead of failing an import on every frame.
+    NoImport,
+    /// Submitted, but the GPU did not confirm it within the timeout: the surface is retired
+    /// ([`GpuEncodeInput::retire`]) and the frame is rendered again by the CPU path.
+    Unconfirmed,
+    /// Not usable for this frame (its size, a lost device, a plan that cannot be drawn): nothing
+    /// was submitted, so the surface is simply released.
+    Unavailable,
 }
 
 /// Pool of [`GpuEncodeInput`] surfaces supplied by a [`VideoEncoder`] for zero-copy export.
@@ -170,9 +191,10 @@ pub trait FrameRenderer: Send {
     }
 
     /// Render a pre-planned and pre-prepared frame directly into an encoder-provided GPU surface
-    /// without CPU readback. Returns `false` when zero-copy rendering is unavailable for this frame.
-    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> bool {
-        false
+    /// without CPU readback ([`GpuFrame`] says whether it got there and whether the surface can be
+    /// recycled).
+    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> GpuFrame {
+        GpuFrame::Unavailable
     }
 }
 

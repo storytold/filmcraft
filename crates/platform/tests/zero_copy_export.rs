@@ -48,8 +48,19 @@ impl FrameRenderer for GpuFrameRenderer {
         self.0.render_planned_rgba8(plan, prep)
     }
 
-    fn render_planned_gpu(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>, target: &dyn GpuEncodeInput) -> bool {
-        self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height())
+    fn render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn GpuEncodeInput,
+    ) -> filmcraft_export::GpuFrame {
+        use filmcraft_export::GpuFrame;
+        match self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height()) {
+            filmcraft_gpu::SurfaceRender::Rendered => GpuFrame::Rendered,
+            filmcraft_gpu::SurfaceRender::NoImport => GpuFrame::NoImport,
+            filmcraft_gpu::SurfaceRender::Unconfirmed => GpuFrame::Unconfirmed,
+            filmcraft_gpu::SurfaceRender::Unavailable => GpuFrame::Unavailable,
+        }
     }
 }
 

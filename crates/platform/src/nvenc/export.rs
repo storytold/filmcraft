@@ -70,6 +70,10 @@ impl GpuEncodeInput for NvencGpuInput {
     fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
         std::sync::Arc::clone(&self.0) as std::sync::Arc<dyn std::any::Any + Send + Sync>
     }
+
+    fn retire(&self) {
+        self.0.retire();
+    }
 }
 
 #[cfg(target_os = "windows")]

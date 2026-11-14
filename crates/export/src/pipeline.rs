@@ -13,7 +13,7 @@ use filmcraft_time::{FrameRate, Tick};
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuFrame, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -305,15 +305,21 @@ impl Pipeline {
                     && let Some(target) = gpu_pool.acquire(self.w, self.h)
                 {
                     let asked = web_time::Instant::now();
-                    let ok = pool
+                    let outcome = pool
                         .with(|r| {
                             crate::note_lock_wait(asked.elapsed());
                             r.render_planned_gpu(&plan, Some(prep.as_ref()), target.as_ref())
                         })
-                        .unwrap_or(false);
-                    if ok {
-                        note_gpu_frame();
-                        return RenderedFrame::Gpu(target);
+                        .unwrap_or(GpuFrame::Unavailable);
+                    match outcome {
+                        GpuFrame::Rendered => {
+                            note_gpu_frame();
+                            return RenderedFrame::Gpu(target);
+                        }
+                        // the submitted work may still be writing into the surface: retire its slot
+                        // instead of putting it back in the pool, then render this frame again
+                        GpuFrame::Unconfirmed => target.retire(),
+                        GpuFrame::NoImport | GpuFrame::Unavailable => {}
                     }
                     drop(target);
                 }

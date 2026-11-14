@@ -336,6 +336,22 @@ pub fn register_export_target_importer(importer: ExportTargetImporter) {
     let _ = EXPORT_TARGET_IMPORTER.set(importer);
 }
 
+/// What became of one zero-copy render into an encoder-owned surface
+/// ([`ExportRenderer::render_plan_surface`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceRender {
+    /// Composited into the surface, and the GPU confirmed the submission finished.
+    Rendered,
+    /// The surface could not be imported into this device (no importer, another adapter, or no
+    /// external-memory support): a property of the device, so the caller can stop asking.
+    NoImport,
+    /// The work was submitted, but the GPU did not confirm it within the timeout: the surface's
+    /// contents are undefined, and the caller must not hand it to another picture.
+    Unconfirmed,
+    /// Nothing was submitted (a size mismatch, a plan that could not be recorded, a lost device).
+    Unavailable,
+}
+
 /// Optional wgpu device features that accelerate FilmCraft's GPU compositor when supported by
 /// `adapter` (safe to bitwise-OR into `DeviceDescriptor::required_features`).
 pub fn requested_features(adapter: &wgpu::Adapter) -> wgpu::Features {
@@ -1459,20 +1475,20 @@ impl GpuCompositor {
         target: &dyn std::any::Any,
         target_id: u64,
         dims: (u32, u32),
-    ) -> bool {
+    ) -> SurfaceRender {
         let (w, h) = dims;
         if w == 0 || h == 0 {
-            return false;
+            return SurfaceRender::Unavailable;
         }
         let plan_size = match plan {
             FramePlan::Layers { width, height, .. } | FramePlan::Composite { width, height, .. } => (*width as u32, *height as u32),
             FramePlan::Image(img) => (img.w as u32, img.h as u32),
         };
         if plan_size != (w, h) {
-            return false;
+            return SurfaceRender::Unavailable;
         }
         let Some(target_view) = self.import_export_target(target, target_id, (w, h)) else {
-            return false;
+            return SurfaceRender::NoImport;
         };
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-surface") });
@@ -1486,7 +1502,7 @@ impl GpuCompositor {
         };
         self.end_frame();
         if !ok {
-            return false;
+            return SurfaceRender::Unavailable;
         }
         let sub = self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
@@ -1496,7 +1512,7 @@ impl GpuCompositor {
             Ok(wgpu::PollStatus::WaitSucceeded | wgpu::PollStatus::QueueEmpty)
         );
         export_renderer::timing::add_map_wait(wait_t.elapsed());
-        finished
+        if finished { SurfaceRender::Rendered } else { SurfaceRender::Unconfirmed }
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`

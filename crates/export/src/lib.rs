@@ -69,7 +69,7 @@ pub(crate) use registry::build_frame_renderer;
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
     AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, GpuEncodeInput, GpuEncodePool,
-    PlanPreparer, PrepareAhead, VideoEncoder, available, encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder,
+    GpuFrame, PlanPreparer, PrepareAhead, VideoEncoder, available, encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder,
     register_encoder, register_format_probe, register_frame_renderer, register_hdr_probe,
 };
 use registry::{audio_factories, video_factories};
