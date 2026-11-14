@@ -180,13 +180,14 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         }
     }
     // markers: 8 × 12 pt pentagons in the marker colour, on the top row
-    draw_markers(app, ui, &clip, layout, seq);
+    draw_markers(app, ui, &clip, layout, seq, t);
     app.auto.add("timeline.ruler", ruler, "time ruler");
 }
 
 /// The ruler's marker row: one pentagon per marker in its colour, its range band behind it and,
-/// on hover, its name.
-fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
+/// on hover, its name. Locked markers (Markers ▸ Lock Markers) draw darker, with a lock at the
+/// start of the row.
+fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence, t: &Tokens) {
     let ruler = layout.ruler;
     let marker_y = ruler.min.y + 2.0;
     // Point flags stay whole; ranges split the same glyph across their endpoints.
@@ -214,9 +215,26 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
         }
         let mr = marker_rect(layout, m.start);
         app.auto.add(&format!("timeline.marker.{}", m.id.0), mr, &m.name);
-        if (ui.rect_contains_pointer(mr) || end.is_some_and(|r| ui.rect_contains_pointer(r))) && !m.name.is_empty() {
+        if (ui.rect_contains_pointer(mr) || end.is_some_and(|r| ui.rect_contains_pointer(r))) && (!m.name.is_empty() || seq.markers_locked) {
             egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
-                ui.label(&m.name);
+                if !m.name.is_empty() {
+                    ui.label(&m.name);
+                }
+                if seq.markers_locked {
+                    ui.label(tl!("Markers are locked"));
+                }
+            });
+        }
+    }
+    if seq.markers_locked {
+        // the lock a locked track shows on its header, drawn over any marker under it
+        let r = Rect::from_min_size(pos2(ruler.min.x + 2.0, marker_y), vec2(12.0, 12.0));
+        clip.rect_filled(r.expand(1.0), 2.0, t.panel_bg);
+        icons::paint(clip, r, Icon::Lock, t.icon_active);
+        app.auto.add("timeline.markersLocked", r, "Markers are locked");
+        if ui.rect_contains_pointer(r) {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("markers-locked-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(tl!("Markers are locked"));
             });
         }
     }

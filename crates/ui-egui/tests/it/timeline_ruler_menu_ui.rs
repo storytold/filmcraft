@@ -116,7 +116,7 @@ fn mark_selection_in_the_ruler_menu_marks_the_selected_clips() {
 }
 
 /// Lock Markers in the ruler menu locks the sequence's markers, shows its checkmark in the
-/// Markers menu while they are locked, and the markers draw darker.
+/// Markers menu while they are locked, and the markers draw darker with a lock on the ruler.
 #[test]
 fn lock_markers_in_the_ruler_menu_locks_them_and_dims_them() {
     fn fills(shape: &egui::Shape, r: egui::Rect, out: &mut Vec<egui::Color32>) {
@@ -146,6 +146,7 @@ fn lock_markers_in_the_ruler_menu_locks_them_and_dims_them() {
         app.session.prefs.labels.rgb(m.color)
     };
     assert!(painted(&d).contains(&egui::Color32::from_rgb(r, g, b)), "unlocked, the marker's own colour");
+    assert!(!has(&mut d, "timeline.markersLocked"), "no lock on the ruler while unlocked");
     let (x, y) = d.centre("timeline.ruler");
     d.ok("ui.click", json!({"x": x + 300.0, "y": y, "button": "right"}));
     assert!(has(&mut d, "timeline.rulerMenu.markers.lock"), "Lock Markers is offered");
@@ -156,4 +157,5 @@ fn lock_markers_in_the_ruler_menu_locks_them_and_dims_them() {
     d.frames(2);
     let dim = egui::Color32::from_rgb(r / 2, g / 2, b / 2);
     assert!(painted(&d).contains(&dim) && !painted(&d).contains(&egui::Color32::from_rgb(r, g, b)), "locked, the darker fill");
+    assert!(has(&mut d, "timeline.markersLocked"), "and a lock at the start of the marker row");
 }

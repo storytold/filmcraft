@@ -1009,3 +1009,53 @@ fn locked_markers_keep_their_times() {
     assert_eq!(s.execute("markers.lock", json!({"on": true})).unwrap()["lockMarkers"], json!(true));
     assert_eq!(undo(&mut s), before, "no undo step for a lock it already has");
 }
+
+/// Locked markers stay through every ripple path, not only Extract: Ripple Delete is a second one,
+/// and a locked marker inside the span Extract removes is kept, where an unlocked one is deleted.
+#[test]
+fn locked_markers_stay_through_ripple_delete_and_a_removed_span() {
+    let (mut s, item) = fresh();
+    let first = place(&mut s, item, "V1", 0, 0, 48);
+    place(&mut s, item, "V1", 48, 48, 300);
+    let add = |s: &mut Session, frame: i64| s.execute("markers.add", json!({"frame": frame})).unwrap()["marker"].as_u64().unwrap();
+    let (before, inside, after) = (add(&mut s, 10), add(&mut s, 30), add(&mut s, 200));
+    let starts = |s: &Session| {
+        let q = s.active_sequence().unwrap();
+        [before, inside, after].map(|id| q.markers.iter().find(|m| m.id.0 == id).map(|m| m.start))
+    };
+    s.execute("markers.rippleSequenceMarkers", json!({"on": true})).unwrap();
+    s.execute("markers.lock", json!({"on": true})).unwrap();
+    s.execute("markers.markIn", json!({"frame": 24})).unwrap();
+    s.execute("markers.markOut", json!({"frame": 47})).unwrap();
+    s.execute("sequence.extract", json!({})).unwrap();
+    assert_eq!(starts(&s), [Some(f(&s, 10)), Some(f(&s, 30)), Some(f(&s, 200))], "Extract: before, inside and after the span all stay");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.rippleDelete", json!({"clips": [first[0]]})).unwrap();
+    assert_eq!(starts(&s), [Some(f(&s, 10)), Some(f(&s, 30)), Some(f(&s, 200))], "Ripple Delete leaves them too");
+    s.execute("edit.undo", json!({})).unwrap();
+    // unlocked, the same Ripple Delete removes the markers on the clip and moves the later one
+    s.execute("markers.lock", json!({"on": false})).unwrap();
+    s.execute("edit.rippleDelete", json!({"clips": [first[0]]})).unwrap();
+    assert_eq!(starts(&s), [None, None, Some(f(&s, 152))]);
+}
+
+/// While markers are locked only a time change is refused, with a message that says how to unlock
+/// them: the marker's own time, a rename, a comment, a colour, a duration, a delete and a new
+/// marker all still work.
+#[test]
+fn locked_markers_refuse_only_a_time_change() {
+    let mut s = demo();
+    s.execute("markers.clearAll", json!({})).unwrap();
+    let id = s.execute("markers.add", json!({"frame": 200})).unwrap()["marker"].as_u64().unwrap();
+    s.execute("markers.lock", json!({"on": true})).unwrap();
+    let e = s.execute("markers.edit", json!({"marker": id, "frame": 210})).unwrap_err().to_string();
+    assert!(e.contains("turn off Markers ▸ Lock Markers"), "{e}");
+    s.execute("markers.edit", json!({"marker": id, "frame": 200})).unwrap();
+    s.execute("markers.edit", json!({"marker": id, "name": "Kept", "comment": "Note", "color": "rose", "durationFrames": 12})).unwrap();
+    let m = s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+    assert_eq!((m.start, m.name.as_str(), m.comment.as_str(), m.color, m.duration), (f(&s, 200), "Kept", "Note", Label::Rose, f(&s, 12)));
+    let other = s.execute("markers.add", json!({"frame": 300})).unwrap()["marker"].as_u64().unwrap();
+    s.execute("markers.delete", json!({"marker": id})).unwrap();
+    let left: Vec<u64> = s.active_sequence().unwrap().markers.iter().map(|m| m.id.0).collect();
+    assert_eq!(left, [other]);
+}

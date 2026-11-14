@@ -216,6 +216,7 @@
 	Link Media…	Medien verknüpfen…
 	Linked Selection	Verknüpfte Auswahl
 	Lock Guides	Hilfslinien sperren
+	Lock Markers	Marker sperren
 	Color Grading	Farbgrading
 	Video Scopes	Videoskope
 	Magenta	Magenta
@@ -231,6 +232,7 @@
 	Mark Selection	Auswahl markieren
 	Mark Split	Split-Punkt setzen
 	Markers	Marker
+	Markers are locked	Marker sind gesperrt
 	Match Frame	Quellbild finden
 	Media Analysis & Transcription…	Medienanalyse und Transkription…
 	Media Browser	Medienbrowser
