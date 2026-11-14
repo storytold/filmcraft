@@ -455,7 +455,10 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
     if app.ui.tool == Tool::Hand {
         let resp = ui.interact(area, egui::Id::unique((prefix(w), "pan")), Sense::drag());
         if resp.hovered() || resp.dragged() {
-            ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+            if let Some(p) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+                super::timeline::paint_tool_pointer(ui.ctx(), Tool::Hand, p);
+            }
         }
         d += resp.drag_delta();
     }
