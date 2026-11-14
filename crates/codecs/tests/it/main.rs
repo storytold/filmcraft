@@ -6,6 +6,7 @@ mod draft_decoders;
 mod eac3_oracle;
 mod frame_color_oracle;
 mod h264_draft;
+mod he_aac_corpus;
 mod matroska_audio_oracle;
 mod media_oracle;
 mod mkv_mp1_oracle;
