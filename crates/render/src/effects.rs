@@ -767,65 +767,97 @@ fn boxes_for_gauss(sigma: f32, n: usize) -> Vec<usize> {
     (0..n as i32).map(|i| (((if i < m { wl } else { wu }) - 1) / 2).max(0) as usize).collect()
 }
 
-fn box_rows(px: &mut [f32], w: usize, r: usize, repeat: bool) {
-    if r == 0 {
+/// One box pass of radius `r` along `line`, `S` floats a pixel (4 for a row of RGBA; a strip of
+/// columns for [`box_columns`], each float its own running sum): the mean over 2r+1 pixels,
+/// clamped to the edge (`repeat`) or skipping pixels outside. `tmp` (as long as `line`) holds a
+/// copy of the input. `S` is a constant so the inner loops are a fixed size, as they were when
+/// this worked on rows only.
+fn box_line<const S: usize>(line: &mut [f32], tmp: &mut [f32], r: usize, repeat: bool) {
+    let n = line.len() / S;
+    if r == 0 || n == 0 || tmp.len() != line.len() {
         return;
     }
-    px.par_chunks_mut(w * 4).for_each_init(
-        || vec![0f32; w * 4],
-        |tmp, row| {
-            tmp.copy_from_slice(row);
-            let inv = 1.0 / (2 * r + 1) as f32;
-            let fetch = |i: isize| -> usize { if repeat { i.clamp(0, w as isize - 1) as usize } else { i as usize } };
-            let mut acc = [0f32; 4];
-            for i in -(r as isize)..=(r as isize) {
-                if repeat || (i >= 0 && (i as usize) < w) {
-                    let j = fetch(i);
-                    for k in 0..4 {
-                        acc[k] += tmp[j * 4 + k];
-                    }
-                }
-            }
-            for x in 0..w {
-                for k in 0..4 {
-                    row[x * 4 + k] = acc[k] * inv;
-                }
-                let out_i = x as isize - r as isize;
-                let in_i = x as isize + r as isize + 1;
-                if repeat || out_i >= 0 {
-                    let j = fetch(out_i);
-                    for k in 0..4 {
-                        acc[k] -= tmp[j * 4 + k];
-                    }
-                }
-                if repeat || (in_i as usize) < w {
-                    let j = fetch(in_i);
-                    for k in 0..4 {
-                        acc[k] += tmp[j * 4 + k];
-                    }
-                }
-            }
-        },
-    );
-}
-
-fn transpose(img: &Image) -> Image {
-    let (w, h) = (img.w, img.h);
-    let mut out = Image::new(h, w);
-    const B: usize = 32;
-    out.px.par_chunks_mut(h * 4 * B).enumerate().for_each(|(bi, chunk)| {
-        let x0 = bi * B;
-        let rows = chunk.len() / (h * 4);
-        for y in 0..h {
-            for dx in 0..rows {
-                let x = x0 + dx;
-                let s = (y * w + x) * 4;
-                let d = (dx * h + y) * 4;
-                chunk[d..d + 4].copy_from_slice(&img.px[s..s + 4]);
+    tmp.copy_from_slice(line);
+    let inv = 1.0 / (2 * r + 1) as f32;
+    let fetch = |i: isize| -> usize { if repeat { i.clamp(0, n as isize - 1) as usize } else { i as usize } };
+    let (pixels, _) = tmp.as_chunks::<S>();
+    let add = |acc: &mut [f32; S], j: usize| {
+        if let Some(p) = pixels.get(j) {
+            for (a, v) in acc.iter_mut().zip(p) {
+                *a += *v;
             }
         }
+    };
+    let sub = |acc: &mut [f32; S], j: usize| {
+        if let Some(p) = pixels.get(j) {
+            for (a, v) in acc.iter_mut().zip(p) {
+                *a -= *v;
+            }
+        }
+    };
+    let mut acc = [0f32; S];
+    for i in -(r as isize)..=(r as isize) {
+        if repeat || (i >= 0 && (i as usize) < n) {
+            add(&mut acc, fetch(i));
+        }
+    }
+    for (x, out) in line.as_chunks_mut::<S>().0.iter_mut().enumerate() {
+        for (o, a) in out.iter_mut().zip(&acc) {
+            *o = *a * inv;
+        }
+        let out_i = x as isize - r as isize;
+        let in_i = x as isize + r as isize + 1;
+        if repeat || out_i >= 0 {
+            sub(&mut acc, fetch(out_i));
+        }
+        if repeat || (in_i as usize) < n {
+            add(&mut acc, fetch(in_i));
+        }
+    }
+}
+
+/// Columns per strip of [`box_columns`]: a strip of a 4320-row picture (2.2 MB) stays in cache
+/// through all of a blur's vertical passes.
+const BOX_STRIP: usize = 32;
+/// Floats per row of a strip.
+const STRIP_ROW: usize = BOX_STRIP * 4;
+
+/// Box passes of radii `ry` down every column. Strips of [`BOX_STRIP`] columns are copied out
+/// (the last one padded to a whole strip), run through every pass while in cache and copied back.
+/// Each column gets the additions and subtractions [`box_line`] makes along a row, in the same
+/// order, so the result is the one of transposing the picture and blurring its rows (which this
+/// replaced), to the bit.
+fn box_columns(img: &mut Image, ry: &[usize], repeat: bool) {
+    let (w, h) = (img.w, img.h);
+    if ry.is_empty() || w == 0 || h == 0 || img.px.len() != w * h * 4 {
+        return;
+    }
+    let src = &img.px;
+    let strips: Vec<Vec<f32>> = (0..w.div_ceil(BOX_STRIP))
+        .into_par_iter()
+        .map_init(Vec::new, |tmp, s| {
+            let x0 = s * BOX_STRIP;
+            let used = BOX_STRIP.min(w - x0) * 4;
+            let mut strip = vec![0f32; STRIP_ROW * h];
+            for (y, row) in strip.chunks_exact_mut(STRIP_ROW).enumerate() {
+                let at = (y * w + x0) * 4;
+                row[..used].copy_from_slice(&src[at..at + used]);
+            }
+            tmp.resize(STRIP_ROW * h, 0.0);
+            for &r in ry {
+                box_line::<STRIP_ROW>(&mut strip, tmp, r, repeat);
+            }
+            strip
+        })
+        .collect();
+    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, out)| {
+        for (s, strip) in strips.iter().enumerate() {
+            let x0 = s * BOX_STRIP;
+            let used = BOX_STRIP.min(w - x0) * 4;
+            let at = y * STRIP_ROW;
+            out[x0 * 4..x0 * 4 + used].copy_from_slice(&strip[at..at + used]);
+        }
     });
-    out
 }
 
 /// Gaussian blur via 3 box passes per axis (O(1) per pixel for any radius).
@@ -845,16 +877,21 @@ pub(crate) fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> 
 
 /// Box passes of radii `rx` along rows, then `ry` along columns.
 pub(crate) fn box_blur(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
-    for r in rx {
-        box_rows(&mut img.px, img.w, *r as usize, repeat_edge);
+    let radii = |r: &[u32]| -> Vec<usize> { r.iter().map(|r| *r as usize).filter(|r| *r > 0).collect() };
+    let (rx, ry) = (radii(rx), radii(ry));
+    let w = img.w;
+    if !rx.is_empty() && w > 0 {
+        // every pass over a row before the next row: one trip through memory for all of them
+        img.px.par_chunks_mut(w * 4).for_each_init(
+            || vec![0f32; w * 4],
+            |tmp, row| {
+                for &r in &rx {
+                    box_line::<4>(row, tmp, r, repeat_edge);
+                }
+            },
+        );
     }
-    if !ry.is_empty() {
-        let mut t = transpose(img);
-        for r in ry {
-            box_rows(&mut t.px, t.w, *r as usize, repeat_edge);
-        }
-        *img = transpose(&t);
-    }
+    box_columns(img, &ry, repeat_edge);
 }
 
 pub(crate) fn unsharp(img: &mut Image, radius: f32, amount: f32, threshold: f32) {
@@ -1205,6 +1242,94 @@ mod tests {
         };
         let (before, after) = (s(&dark_red), s(&img.px));
         assert!((after - before).abs() < 1e-3, "shadow saturation {before} became {after}");
+    }
+
+    /// `box_blur` runs every horizontal pass on a row before the next row, and the vertical passes
+    /// on strips of columns instead of on a transposed copy. That is the same arithmetic in the
+    /// same order, so it must give the bits of the passes it replaced (kept here) for any size,
+    /// radius (larger than the picture too) and edge mode.
+    #[test]
+    fn box_blur_matches_the_transposing_passes() {
+        fn rows(px: &mut [f32], w: usize, r: usize, repeat: bool) {
+            if r == 0 {
+                return;
+            }
+            for row in px.chunks_mut(w * 4) {
+                let tmp = row.to_vec();
+                let inv = 1.0 / (2 * r + 1) as f32;
+                let fetch = |i: isize| -> usize { if repeat { i.clamp(0, w as isize - 1) as usize } else { i as usize } };
+                let mut acc = [0f32; 4];
+                for i in -(r as isize)..=(r as isize) {
+                    if repeat || (i >= 0 && (i as usize) < w) {
+                        let j = fetch(i);
+                        for k in 0..4 {
+                            acc[k] += tmp[j * 4 + k];
+                        }
+                    }
+                }
+                for x in 0..w {
+                    for k in 0..4 {
+                        row[x * 4 + k] = acc[k] * inv;
+                    }
+                    let (out_i, in_i) = (x as isize - r as isize, x as isize + r as isize + 1);
+                    if repeat || out_i >= 0 {
+                        let j = fetch(out_i);
+                        for k in 0..4 {
+                            acc[k] -= tmp[j * 4 + k];
+                        }
+                    }
+                    if repeat || (in_i as usize) < w {
+                        let j = fetch(in_i);
+                        for k in 0..4 {
+                            acc[k] += tmp[j * 4 + k];
+                        }
+                    }
+                }
+            }
+        }
+        fn transpose(img: &Image) -> Image {
+            let mut out = Image::new(img.h, img.w);
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    out.px[(x * img.h + y) * 4..(x * img.h + y) * 4 + 4].copy_from_slice(&img.px[(y * img.w + x) * 4..(y * img.w + x) * 4 + 4]);
+                }
+            }
+            out
+        }
+        fn reference(img: &mut Image, rx: &[u32], ry: &[u32], repeat: bool) {
+            for r in rx {
+                rows(&mut img.px, img.w, *r as usize, repeat);
+            }
+            if !ry.is_empty() {
+                let mut t = transpose(img);
+                for r in ry {
+                    rows(&mut t.px, t.w, *r as usize, repeat);
+                }
+                *img = transpose(&t);
+            }
+        }
+        let picture = |w: usize, h: usize| {
+            let mut img = Image::new(w, h);
+            for (i, p) in img.px.chunks_exact_mut(4).enumerate() {
+                let v = ((i * 7919) % 1000) as f32 / 999.0;
+                p.copy_from_slice(&[v, 1.0 - v, (v * 3.0).fract(), 0.25 + v * 0.75]);
+            }
+            img
+        };
+        let radii: [(&[u32], &[u32]); 6] =
+            [(&[1, 2, 2], &[1, 2, 2]), (&[0, 3, 40], &[40, 0, 5]), (&[], &[6, 6, 7]), (&[9], &[]), (&[0], &[0]), (&[200], &[300, 1])];
+        for (w, h) in [(1, 1), (5, 3), (3, 70), (33, 17), (65, 41), (100, 7)] {
+            for (rx, ry) in radii {
+                for repeat in [false, true] {
+                    let mut got = picture(w, h);
+                    let mut want = got.clone();
+                    box_blur(&mut got, rx, ry, repeat);
+                    reference(&mut want, rx, ry, repeat);
+                    let same = got.px.iter().zip(&want.px).all(|(a, b)| a.to_bits() == b.to_bits());
+                    assert!(same, "{w}x{h} rx {rx:?} ry {ry:?} repeat {repeat}");
+                }
+            }
+        }
     }
 }
 

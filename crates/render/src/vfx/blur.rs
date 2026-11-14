@@ -3,8 +3,9 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::{Affine, FxCtx, Image, Vec2, bv, chv, enc, fv, luma, over, pv, smoothstep};
-use crate::effects::gaussian;
+use super::{Affine, FxCtx, Image, Vec2, bv, chv, enc, fv, luma, over, smoothstep};
+use crate::effects::{box_blur, gaussian, gaussian_boxes};
+use crate::gpufx::{BlurLevel, FocusArea};
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;
 /// `n == 0` is a circle.
@@ -130,35 +131,244 @@ pub fn channel_blur(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     }
 }
 
-/// Mix between a stack of increasingly blurred copies by a per-pixel amount 0..1.
-fn variable_blur(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) -> f32 + Sync) {
-    if max_sigma <= 0.3 {
+/// The blur levels of Focus Blur and Compound Blur, as fractions of the maximum blur: a pixel
+/// mixes the two levels around its blur amount (0..1) linearly.
+pub(crate) const BLUR_LEVELS: [f32; 5] = [0.0, 0.125, 0.25, 0.5, 1.0];
+
+/// How much level `k` of [`BLUR_LEVELS`] contributes to a pixel of blur amount `a` (0..1): the
+/// level below `a` gets 1 − t, the one above t, the others 0. `fx.wgsl` `focus_weight` computes
+/// the same.
+pub(crate) fn level_weight(k: u32, a: f32) -> f32 {
+    // the level above `a`, 1..=4 (a = 1 falls in the last span, 0.5 to 1, at t = 1)
+    let i = 1 + usize::from(a >= BLUR_LEVELS[1]) + usize::from(a >= BLUR_LEVELS[2]) + usize::from(a >= BLUR_LEVELS[3]);
+    let (l0, l1) = (BLUR_LEVELS[i - 1], BLUR_LEVELS[i]);
+    let t = ((a - l0) / (l1 - l0)).clamp(0.0, 1.0);
+    match k as usize {
+        k if k == i => t,
+        k if k + 1 == i => 1.0 - t,
+        _ => 0.0,
+    }
+}
+
+/// A level is blurred on a halved picture (halved again and again) while its blur stays at least
+/// this many pixels wide there: a Gaussian that wide is smooth enough that scaling it back up
+/// bilinearly looks the same as blurring at full size, at a quarter of the work per halving.
+const MIN_HALVED_SIGMA: f32 = 3.0;
+
+/// The levels of [`BLUR_LEVELS`] a pixel whose blur amount lies in `lo..=hi` can take, each with
+/// how often the `w`×`h` picture is halved before it is blurred and the box radii per axis of
+/// its Gaussian at that size (none for level 0, the picture itself). Empty when nothing blurs: a
+/// maximum blur (`max_sigma`) of 0.3 px or less, or every amount 0. A range that is not a number
+/// takes every level.
+pub(crate) fn blur_levels(w: usize, h: usize, max_sigma: f32, lo: f32, hi: f32) -> Vec<BlurLevel> {
+    if max_sigma.is_nan() || max_sigma <= 0.3 {
+        return Vec::new();
+    }
+    let (lo, hi) = if lo.is_nan() || hi.is_nan() { (0.0, 1.0) } else { (lo, hi) };
+    if hi <= 0.0 {
+        return Vec::new();
+    }
+    // past a few picture sizes every blur gives the same flat picture
+    let cap = 2.0 * w.max(h).max(8) as f32;
+    (0..BLUR_LEVELS.len())
+        .filter(|&k| {
+            // a level weighs something strictly between its neighbours
+            let below = k.checked_sub(1).and_then(|j| BLUR_LEVELS.get(j)).copied().unwrap_or(f32::NEG_INFINITY);
+            let above = BLUR_LEVELS.get(k + 1).copied().unwrap_or(f32::INFINITY);
+            lo < above && hi > below
+        })
+        .map(|k| {
+            let s = (max_sigma * BLUR_LEVELS.get(k).copied().unwrap_or(0.0)).min(cap);
+            let (mut lw, mut lh, mut down) = (w, h, 0u32);
+            while down < 20 && s / (1u32 << (down + 1)) as f32 >= MIN_HALVED_SIGMA && lw >= 16 && lh >= 16 {
+                (lw, lh, down) = (lw / 2, lh / 2, down + 1);
+            }
+            // the halvings (a box b px wide) and the scale back up (a tent 2b wide) blur too: the
+            // Gaussian on the halved picture adds the rest
+            let b = (1u32 << down) as f32;
+            let extra = if down == 0 { 0.0 } else { (b * b - 1.0) / 12.0 + b * b / 6.0 };
+            let s = (s * s - extra).max(0.0).sqrt() / b;
+            let (rx, ry) = gaussian_boxes(lw, lh, s, s);
+            BlurLevel { k: k as u32, down, rx, ry }
+        })
+        .collect()
+}
+
+/// One level of [`blend_levels`], ready to read.
+enum Level {
+    /// The picture itself (level 0, or a blur too narrow to do anything).
+    Picture,
+    /// No pixel weighs it.
+    Unused,
+    /// Blurred: at full size, the part from `at` on; halved, all of it, read scaled by `scale`.
+    Blurred { img: Image, at: (usize, usize), scale: Option<(f32, f32)> },
+}
+
+/// Where each level `want`s to know it weighs anything (`level_weight` above 0 at `amount`):
+/// the first and last column and row, or None.
+fn level_bounds(w: usize, h: usize, amount: &(impl Fn(usize, usize) -> f32 + Sync), levels: &[BlurLevel], want: &[bool]) -> Vec<Option<[usize; 4]>> {
+    let merge = |a: Vec<Option<[usize; 4]>>, b: Vec<Option<[usize; 4]>>| -> Vec<Option<[usize; 4]>> {
+        a.into_iter()
+            .zip(b)
+            .map(|(a, b)| match (a, b) {
+                (Some(a), Some(b)) => Some([a[0].min(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].max(b[3])]),
+                (a, b) => a.or(b),
+            })
+            .collect()
+    };
+    (0..h)
+        .into_par_iter()
+        .map(|y| {
+            let mut rows: Vec<Option<[usize; 4]>> = vec![None; levels.len()];
+            for x in 0..w {
+                let a = amount(x, y);
+                for ((lv, want), r) in levels.iter().zip(want).zip(&mut rows) {
+                    if *want && level_weight(lv.k, a) != 0.0 {
+                        r.get_or_insert([x, x, y, y])[1] = x;
+                    }
+                }
+            }
+            rows
+        })
+        .reduce(|| vec![None; levels.len()], merge)
+}
+
+/// Blur `img` by a blur amount per pixel (`amount(x, y)`, 0..1) through `levels`
+/// ([`blur_levels`]): each pixel becomes the sum of the levels, each weighted by
+/// [`level_weight`] (levels of weight 0 left out). Each level is blurred at its size, from the
+/// picture halved as often as it says; a pixel then reads the halved ones bilinearly
+/// (`Image::sample_bilinear_clamped` at its centre scaled to their size), all in one pass. A
+/// level at full size is blurred only around the pixels that weigh it, as far out as its blur
+/// reaches, which gives the same values there (to rounding). The CPU reference of
+/// `FxOp::FocusBlur`: the GPU adds the same levels in the same order.
+pub(crate) fn blend_levels(img: &mut Image, amount: impl Fn(usize, usize) -> f32 + Sync, levels: &[BlurLevel]) {
+    let (w, h) = (img.w, img.h);
+    if levels.is_empty() || w == 0 || h == 0 || img.px.len() != w * h * 4 {
         return;
     }
-    let levels = [0.0f32, 0.125, 0.25, 0.5, 1.0];
-    let stack: Vec<Image> = levels
+    // the picture halved once, twice… as deep as a level goes
+    let deepest = levels.iter().map(|l| l.down).max().unwrap_or(0);
+    let mut halves: Vec<Image> = Vec::new();
+    for _ in 0..deepest {
+        let next = halves.last().unwrap_or(img).downsample2();
+        halves.push(next);
+    }
+    let blurs = |lv: &BlurLevel| !(lv.rx.is_empty() && lv.ry.is_empty());
+    let full: Vec<bool> = levels.iter().map(|lv| lv.down == 0 && blurs(lv)).collect();
+    let bounds = if full.contains(&true) { level_bounds(w, h, &amount, levels, &full) } else { vec![None; levels.len()] };
+    let src = &*img;
+    let ready: Vec<Level> = levels
         .par_iter()
-        .map(|&k| {
-            let mut c = img.clone();
-            if k > 0.0 {
-                gaussian(&mut c, max_sigma * k, max_sigma * k, true);
+        .zip(&bounds)
+        .map(|(lv, bound)| {
+            if lv.down > 0 {
+                let Some(half) = halves.get(lv.down as usize - 1) else { return Level::Unused };
+                let mut b = half.clone();
+                box_blur(&mut b, &lv.rx, &lv.ry, true);
+                let scale = Some((b.w as f32 / w as f32, b.h as f32 / h as f32));
+                return Level::Blurred { img: b, at: (0, 0), scale };
             }
-            c
+            if !blurs(lv) {
+                return Level::Picture;
+            }
+            let Some([x0, x1, y0, y1]) = *bound else { return Level::Unused };
+            // the pixels that weigh it and as far around as its passes read
+            let reach = |r: &[u32]| r.iter().fold(0usize, |s, r| s.saturating_add(*r as usize));
+            let (mx, my) = (reach(&lv.rx), reach(&lv.ry));
+            let (cx0, cy0) = (x0.saturating_sub(mx), y0.saturating_sub(my));
+            let (cx1, cy1) = (x1.saturating_add(mx).min(w - 1), y1.saturating_add(my).min(h - 1));
+            let (cw, ch) = (cx1 + 1 - cx0, cy1 + 1 - cy0);
+            let mut b = Image::new(cw, ch);
+            b.px.par_chunks_mut(cw * 4).enumerate().for_each(|(y, row)| {
+                let at = ((cy0 + y) * w + cx0) * 4;
+                if let Some(from) = src.px.get(at..at + cw * 4) {
+                    row.copy_from_slice(from);
+                }
+            });
+            box_blur(&mut b, &lv.rx, &lv.ry, true);
+            Level::Blurred { img: b, at: (cx0, cy0), scale: None }
         })
         .collect();
-    let w = img.w;
+    let reads: Vec<(u32, &Level)> = levels.iter().map(|lv| lv.k).zip(&ready).collect();
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let a = amount(x, y).clamp(0.0, 1.0);
-            let i = levels.partition_point(|&l| l <= a).clamp(1, levels.len() - 1);
-            let (l0, l1) = (levels[i - 1], levels[i]);
-            let t = ((a - l0) / (l1 - l0)).clamp(0.0, 1.0);
-            let (p0, p1) = (stack[i - 1].get(x, y), stack[i].get(x, y));
-            for k in 0..4 {
-                row[x * 4 + k] = p0[k] + (p1[k] - p0[k]) * t;
+        for (x, p) in row.chunks_exact_mut(4).enumerate() {
+            let a = amount(x, y);
+            let orig = [p[0], p[1], p[2], p[3]];
+            let mut sum: Option<[f32; 4]> = None;
+            for &(k, level) in &reads {
+                let wt = level_weight(k, a);
+                if wt == 0.0 {
+                    continue;
+                }
+                let v = match level {
+                    Level::Picture => orig,
+                    Level::Unused => continue,
+                    Level::Blurred { img: b, scale: Some((sx, sy)), .. } => b.sample_bilinear_clamped((x as f32 + 0.5) * sx, (y as f32 + 0.5) * sy),
+                    Level::Blurred { img: b, at: (ox, oy), scale: None } => match (x.checked_sub(*ox), y.checked_sub(*oy)) {
+                        (Some(bx), Some(by)) if bx < b.w && by < b.h => b.get(bx, by),
+                        _ => continue,
+                    },
+                };
+                sum = Some(match sum {
+                    None => v.map(|c| wt * c),
+                    Some(s) => [s[0] + wt * v[0], s[1] + wt * v[1], s[2] + wt * v[2], s[3] + wt * v[3]],
+                });
+            }
+            if let Some(s) = sum {
+                p.copy_from_slice(&s);
             }
         }
     });
+}
+
+/// The blur amount `amount(x, y)` of every pixel of a `w`×`h` picture, row by row, clamped to
+/// 0..1 (not a number: 0, sharp).
+fn amount_map(w: usize, h: usize, amount: impl Fn(usize, usize) -> f32 + Sync) -> Vec<f32> {
+    let mut map = vec![0f32; w * h];
+    if w == 0 {
+        return map;
+    }
+    map.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, v) in row.iter_mut().enumerate() {
+            let a = amount(x, y);
+            *v = if a.is_nan() { 0.0 } else { a.clamp(0.0, 1.0) };
+        }
+    });
+    map
+}
+
+/// Mix between increasingly blurred copies (the levels of [`blur_levels`] some pixel uses) by a
+/// per-pixel amount 0..1.
+pub(super) fn variable_blur(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) -> f32 + Sync) {
+    if max_sigma.is_nan() || max_sigma <= 0.3 || img.w == 0 || img.h == 0 {
+        return;
+    }
+    let map = amount_map(img.w, img.h, amount);
+    let (lo, hi) = map
+        .par_iter()
+        .fold(|| (f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &a| (lo.min(a), hi.max(a)))
+        .reduce(|| (f32::INFINITY, f32::NEG_INFINITY), |a, b| (a.0.min(b.0), a.1.max(b.1)));
+    let levels = blur_levels(img.w, img.h, max_sigma, lo, hi);
+    let w = img.w;
+    blend_levels(img, |x, y| map.get(y * w + x).copied().unwrap_or(0.0), &levels);
+}
+
+/// Focus Blur (`gpufx::FxOp::FocusBlur`, evaluated there): sharp inside the focus `area`,
+/// blurring smoothly outside it through `levels`; `show` tints the area red.
+pub(crate) fn focus(img: &mut Image, area: &FocusArea, levels: &[BlurLevel], show: bool) {
+    let w = img.w;
+    if w == 0 || img.h == 0 {
+        return;
+    }
+    blend_levels(img, |x, y| area.amount(x, y), levels);
+    if show {
+        img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+            for (x, p) in row.chunks_exact_mut(4).enumerate() {
+                let k = (1.0 - area.amount(x, y)) * 0.35;
+                over(p, [k, 0.0, 0.0, k]);
+            }
+        });
+    }
 }
 
 /// Compound Blur: blur amount per pixel from a blur layer's luminance (another track, or this
@@ -189,33 +399,6 @@ pub fn compound(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         };
         if invert { 1.0 - l } else { l }
     });
-}
-
-/// Focus Blur: sharp inside a radial or linear focus area, blurring smoothly outside it.
-pub fn focus(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let amount = fv(e, "amount", cx) * cx.px_scale * 0.5;
-    let c = pv(e, "center", cx, img);
-    let linear = chv(e, "shape") == 1;
-    let (s, co) = (fv(e, "angle", cx) as f64).to_radians().sin_cos();
-    let size = fv(e, "size", cx) as f64 * cx.px_scale as f64 * 0.5;
-    let feather = (fv(e, "feather", cx) as f64 * cx.px_scale as f64).max(1.0);
-    let show = bv(e, "show");
-    let dist = |x: usize, y: usize| -> f32 {
-        let (dx, dy) = (x as f64 + 0.5 - c.x, y as f64 + 0.5 - c.y);
-        let d = if linear { (-dx * s + dy * co).abs() } else { dx.hypot(dy) };
-        (((d - size) / feather).clamp(0.0, 1.0)) as f32
-    };
-    variable_blur(img, amount, dist);
-    if show {
-        let w = img.w;
-        img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-            for x in 0..w {
-                let k = (1.0 - dist(x, y)) * 0.35;
-                let p = &mut row[x * 4..x * 4 + 4];
-                over(p, [k, 0.0, 0.0, k]);
-            }
-        });
-    }
 }
 
 /// Reduce Interlace Flicker: a vertical-only softening across fields.

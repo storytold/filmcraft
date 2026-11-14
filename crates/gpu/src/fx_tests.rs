@@ -213,6 +213,16 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("bokeh_blur", vec![("amount", fl(30.0)), ("shape", ch(1)), ("rotation", fl(-75.0)), ("highlight", fl(100.0)), ("threshold", fl(40.0))], false),
         ("bokeh_blur", vec![("amount", fl(60.0)), ("shape", ch(5)), ("highlight", fl(300.0)), ("threshold", fl(0.0))], false),
         ("bokeh_blur", vec![("amount", fl(500.0)), ("shape", ch(2))], false),
+        ("focus_blur", vec![("size", fl(20.0)), ("feather", fl(15.0)), ("amount", fl(30.0))], false),
+        (
+            "focus_blur",
+            vec![("shape", ch(1)), ("angle", fl(30.0)), ("size", fl(8.0)), ("feather", fl(40.0)), ("amount", fl(60.0)), ("show", ParamValue::Bool(true))],
+            false,
+        ),
+        ("focus_blur", vec![("center", pt(10.0, 30.0)), ("size", fl(4.0)), ("feather", fl(90.0)), ("amount", fl(500.0))], false),
+        ("focus_blur", vec![("center", pt(-900.0, -900.0)), ("size", fl(0.0)), ("feather", fl(1.0)), ("amount", fl(40.0))], false),
+        ("focus_blur", vec![("size", fl(4000.0)), ("show", ParamValue::Bool(true))], false),
+        ("focus_blur", vec![("amount", fl(0.2))], false),
         ("sharpen", vec![("amount", fl(80.0))], false),
         ("sharpen", vec![("amount", fl(4000.0))], false),
         ("unsharp_mask", vec![("amount", fl(150.0)), ("radius", fl(3.0)), ("threshold", fl(10.0))], true),
@@ -573,6 +583,9 @@ fn hostile_parameters_are_bounded() {
         effect("directional_blur", &[("length", fl(f64::NAN))]),
         effect("bokeh_blur", &[("rotation", fl(f64::NAN))]),
         effect("bokeh_blur", &[("highlight", fl(f64::INFINITY))]),
+        effect("focus_blur", &[("angle", fl(f64::NAN))]),
+        effect("focus_blur", &[("size", fl(f64::INFINITY))]),
+        effect("focus_blur", &[("feather", fl(1e300))]),
         effect("transform", &[("rotation", fl(f64::NAN))]),
         effect("crop", &[("left", fl(f64::NAN))]),
         effect("offset", &[("shift", pt(f64::INFINITY, 0.0))]),
@@ -624,6 +637,7 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("directional_blur", &[("length", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("bokeh_blur", &[("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("bokeh_blur", &[("amount", fl(f64::NAN))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("focus_blur", &[("size", fl(0.0)), ("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, turns: 0, ops }).expect("effect image");

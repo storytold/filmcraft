@@ -60,6 +60,10 @@ fn max_diff(a: &Image, b: &Image) -> f32 {
     a.px.iter().zip(&b.px).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
 }
 
+fn mean_diff(a: &Image, b: &Image) -> f32 {
+    (a.px.iter().zip(&b.px).map(|(x, y)| (x - y).abs() as f64).sum::<f64>() / a.px.len().max(1) as f64) as f32
+}
+
 /// The ids this milestone added or rebuilt.
 const NEW_IDS: &[&str] = &[
     "lighting_effects",
@@ -915,6 +919,175 @@ fn vr_rotate_sphere_pans_exactly() {
     set(&mut e, "frame_layout", ParamValue::Choice(1));
     let o = run("vr", &e, &img, &cx());
     assert_eq!((o.w, o.h), (64, 32));
+}
+
+/// The variable blur Focus Blur and Compound Blur used before `blur_levels` / `blend_levels`: all
+/// five levels blurred, each pixel mixed from the two around its amount.
+fn level_stack(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) -> f32 + Sync) {
+    if max_sigma <= 0.3 {
+        return;
+    }
+    let levels = [0.0f32, 0.125, 0.25, 0.5, 1.0];
+    let stack: Vec<Image> = levels
+        .iter()
+        .map(|&k| {
+            let mut c = img.clone();
+            if k > 0.0 {
+                crate::effects::gaussian(&mut c, max_sigma * k, max_sigma * k, true);
+            }
+            c
+        })
+        .collect();
+    for y in 0..img.h {
+        for x in 0..img.w {
+            let a = amount(x, y).clamp(0.0, 1.0);
+            let i = levels.partition_point(|&l| l <= a).clamp(1, levels.len() - 1);
+            let (l0, l1) = (levels[i - 1], levels[i]);
+            let t = ((a - l0) / (l1 - l0)).clamp(0.0, 1.0);
+            let (p0, p1) = (stack[i - 1].get(x, y), stack[i].get(x, y));
+            for k in 0..4 {
+                img.px[(y * img.w + x) * 4 + k] = p0[k] + (p1[k] - p0[k]) * t;
+            }
+        }
+    }
+}
+
+/// Focus Blur now runs as `FxOp::FocusBlur` (the GPU's CPU reference): it blurs only the levels
+/// some pixel uses, the wide ones on a halved picture, and sums them by weight. Where no level is
+/// halved the picture is the one of the implementation it replaced (kept here), up to rounding;
+/// where levels are halved it stays close to it (on this small, noisy picture the blur is as wide
+/// as the picture, the worst case). Radial and linear areas, off-centre points, a feather wider
+/// than the picture, Show Focus Area, and areas that cover the whole picture.
+#[test]
+fn focus_blur_matches_the_level_stack() {
+    fn old_focus(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+        let amount = fv(e, "amount", cx) * cx.px_scale * 0.5;
+        let c = pv(e, "center", cx, img);
+        let linear = chv(e, "shape") == 1;
+        let (s, co) = (fv(e, "angle", cx) as f64).to_radians().sin_cos();
+        let size = fv(e, "size", cx) as f64 * cx.px_scale as f64 * 0.5;
+        let feather = (fv(e, "feather", cx) as f64 * cx.px_scale as f64).max(1.0);
+        let dist = |x: usize, y: usize| -> f32 {
+            let (dx, dy) = (x as f64 + 0.5 - c.x, y as f64 + 0.5 - c.y);
+            let d = if linear { (-dx * s + dy * co).abs() } else { dx.hypot(dy) };
+            (((d - size) / feather).clamp(0.0, 1.0)) as f32
+        };
+        level_stack(img, amount, dist);
+        if bv(e, "show") {
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let k = (1.0 - dist(x, y)) * 0.35;
+                    let i = (y * img.w + x) * 4;
+                    over(&mut img.px[i..i + 4], [k, 0.0, 0.0, k]);
+                }
+            }
+        }
+    }
+    let pic = picture(96, 64);
+    let point = |x: f64, y: f64| ParamValue::Vec2(Vec2::new(x, y));
+    let cases: Vec<Vec<(&str, ParamValue)>> = vec![
+        vec![],
+        vec![("size", ParamValue::Float(20.0)), ("feather", ParamValue::Float(15.0)), ("amount", ParamValue::Float(30.0))],
+        vec![
+            ("shape", ParamValue::Choice(1)),
+            ("angle", ParamValue::Float(30.0)),
+            ("size", ParamValue::Float(10.0)),
+            ("feather", ParamValue::Float(40.0)),
+            ("amount", ParamValue::Float(60.0)),
+        ],
+        vec![("center", point(10.0, 50.0)), ("size", ParamValue::Float(5.0)), ("feather", ParamValue::Float(300.0)), ("amount", ParamValue::Float(200.0))],
+        vec![("size", ParamValue::Float(0.0)), ("feather", ParamValue::Float(1.0)), ("amount", ParamValue::Float(40.0)), ("show", ParamValue::Bool(true))],
+        vec![("shape", ParamValue::Choice(1)), ("center", point(-500.0, 30.0)), ("angle", ParamValue::Float(90.0)), ("amount", ParamValue::Float(25.0))],
+        vec![("size", ParamValue::Float(4000.0)), ("show", ParamValue::Bool(true))],
+        vec![("amount", ParamValue::Float(0.5))],
+    ];
+    for params in cases {
+        let mut e = inst("focus_blur");
+        for (k, v) in &params {
+            set(&mut e, k, v.clone());
+        }
+        let got = run("focus", &e, &pic, &cx());
+        let mut want = pic.clone();
+        old_focus(&mut want, &e, &cx());
+        let halved = match crate::gpufx::FxOp::eval(&e, &cx(), pic.w, pic.h) {
+            Some(crate::gpufx::FxOp::FocusBlur { levels, .. }) => levels.iter().any(|l| l.down > 0),
+            op => panic!("{op:?}"),
+        };
+        let (d, mean) = (max_diff(&got, &want), mean_diff(&got, &want));
+        let (max_ok, mean_ok) = if halved { (0.08, 0.01) } else { (1e-5, 1e-6) };
+        assert!(d < max_ok && mean < mean_ok, "{params:?} (halved: {halved}): differs by {d} at most, {mean} on average");
+    }
+}
+
+/// Compound Blur's variable blur (any amount map, values outside 0..1 too) stays close to the
+/// five-level stack it replaced (to rounding where no level is halved, sigma 4); an amount that is
+/// not a number leaves the pixel sharp instead of making it NaN.
+#[test]
+fn variable_blur_matches_the_level_stack() {
+    let pic = picture(70, 45);
+    let maps: [fn(usize, usize) -> f32; 5] = [
+        |x, _| x as f32 / 69.0,
+        |x, y| if (x / 9 + y / 7) % 2 == 0 { 0.1 } else { 0.8 },
+        |_, y| y as f32 / 30.0 - 0.2,
+        |_, _| 0.3,
+        |x, y| ((x as f32 - 35.0).hypot(y as f32 - 22.0) / 40.0).min(1.0),
+    ];
+    for (i, map) in maps.iter().enumerate() {
+        for max_sigma in [0.2f32, 4.0, 30.0] {
+            let mut got = pic.clone();
+            blur::variable_blur(&mut got, max_sigma, map);
+            let mut want = pic.clone();
+            level_stack(&mut want, max_sigma, map);
+            let (d, mean) = (max_diff(&got, &want), mean_diff(&got, &want));
+            let (max_ok, mean_ok) = if max_sigma < 6.0 { (1e-5, 1e-6) } else { (0.08, 0.01) };
+            assert!(d < max_ok && mean < mean_ok, "map {i}, sigma {max_sigma}: differs by {d} at most, {mean} on average");
+        }
+    }
+    let mut got = pic.clone();
+    blur::variable_blur(&mut got, 6.0, |x, _| if x < 10 { f32::NAN } else { 1.0 });
+    assert!(got.px.iter().all(|v| v.is_finite()));
+    assert_eq!(got.get(3, 20), pic.get(3, 20));
+}
+
+/// Focus Blur blurs only the levels some pixel of the picture uses: none when the whole picture
+/// is in focus (it comes back untouched), only the full blur when every pixel is past the
+/// feather (it is then a Gaussian Blur, while too narrow to be halved), and every level for an
+/// area with its whole ramp inside. Wider levels are halved, more often the wider they are.
+#[test]
+fn focus_blur_blurs_only_the_levels_it_uses() {
+    let (w, h) = (64usize, 48usize);
+    let pic = picture(w, h);
+    let used = |e: &EffectInstance| match crate::gpufx::FxOp::eval(e, &cx(), w, h) {
+        Some(crate::gpufx::FxOp::FocusBlur { levels, .. }) => levels.iter().map(|l| l.k).collect::<Vec<_>>(),
+        op => panic!("{op:?}"),
+    };
+    let mut e = inst("focus_blur");
+    setf(&mut e, "size", 4000.0);
+    assert!(used(&e).is_empty());
+    assert_eq!(run("focus", &e, &pic, &cx()).px, pic.px);
+    set(&mut e, "center", ParamValue::Vec2(Vec2::new(-1000.0, -1000.0)));
+    setf(&mut e, "size", 0.0);
+    setf(&mut e, "feather", 1.0);
+    setf(&mut e, "amount", 10.0);
+    assert_eq!(used(&e), [4]);
+    let mut g = pic.clone();
+    crate::effects::gaussian(&mut g, 5.0, 5.0, true);
+    assert_eq!(run("focus", &e, &pic, &cx()).px, g.px);
+    set(&mut e, "center", ParamValue::Vec2(Vec2::new(32.0, 24.0)));
+    setf(&mut e, "feather", 30.0);
+    assert_eq!(used(&e), [0, 1, 2, 3, 4]);
+    // amount 40 at 64×48: sigma 2.5, 5, 10, 20 for levels 1 to 4
+    setf(&mut e, "amount", 40.0);
+    let down = match crate::gpufx::FxOp::eval(&e, &cx(), w, h) {
+        Some(crate::gpufx::FxOp::FocusBlur { levels, .. }) => levels.iter().map(|l| l.down).collect::<Vec<_>>(),
+        op => panic!("{op:?}"),
+    };
+    assert_eq!(down, [0, 0, 0, 1, 2]);
+    // a band whose ramp ends before the picture's far edge: the amount reaches 1 there
+    set(&mut e, "shape", ParamValue::Choice(1));
+    setf(&mut e, "size", 30.0);
+    setf(&mut e, "feather", 1.0);
+    assert_eq!(used(&e), [0, 1, 2, 3, 4]);
 }
 
 #[test]

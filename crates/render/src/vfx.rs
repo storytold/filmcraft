@@ -12,8 +12,8 @@
 //! (isolated tests, adjustment layers) they leave the image unchanged.
 
 mod blur;
-pub(crate) use blur::bokeh;
 pub use blur::{KERNEL_REACH, bokeh_kernel};
+pub(crate) use blur::{blur_levels, bokeh, focus};
 mod color;
 pub(crate) use color::cdl;
 mod distort;
@@ -229,9 +229,13 @@ pub(crate) fn tv(e: &EffectInstance, id: &str) -> String {
 /// A point parameter in working pixels. Auto (NaN) components use the effect's auto position
 /// (`filmcraft_project::effect::auto_point`) or the layer centre.
 pub(crate) fn pv(e: &EffectInstance, id: &str, cx: &FxCtx, img: &Image) -> Vec2 {
+    pv_wh(e, id, cx, img.w, img.h)
+}
+/// [`pv`] on a `w`×`h` working image.
+pub(crate) fn pv_wh(e: &EffectInstance, id: &str, cx: &FxCtx, w: usize, h: usize) -> Vec2 {
     let v = e.param(id).map(|p| p.vec2_at(cx.t)).or_else(|| def_value(e, id).and_then(|v| v.as_vec2())).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
     let (fx, fy) = filmcraft_project::effect::auto_point(&e.effect, id).unwrap_or((0.5, 0.5));
-    Vec2::new(if v.x.is_nan() { img.w as f64 * fx } else { v.x * cx.px_scale as f64 }, if v.y.is_nan() { img.h as f64 * fy } else { v.y * cx.px_scale as f64 })
+    Vec2::new(if v.x.is_nan() { w as f64 * fx } else { v.x * cx.px_scale as f64 }, if v.y.is_nan() { h as f64 * fy } else { v.y * cx.px_scale as f64 })
 }
 /// A point offset parameter (no auto position) in working pixels.
 pub(crate) fn offv(e: &EffectInstance, id: &str, cx: &FxCtx) -> Vec2 {
@@ -493,7 +497,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         // Blur & Sharpen
         "channel_blur" => blur::channel_blur(img, e, cx),
         "compound_blur" => blur::compound(img, e, cx),
-        "focus_blur" => blur::focus(img, e, cx),
         "reduce_interlace_flicker" => blur::interlace_flicker(img, e, cx),
         "gaussian_blur_legacy" => alias(img, "gaussian_blur"),
         "directional_blur_legacy" => alias(img, "directional_blur"),

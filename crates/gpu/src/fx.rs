@@ -3,7 +3,8 @@
 //! A layer with effects is first drawn from its source (YUV planes or RGBA, through the
 //! compositor's own `fs` shader, so decoding is the same as for a plain layer) into a working
 //! texture of the size the CPU decodes it at; each [`FxOp`] then runs as compute passes that
-//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original);
+//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original; four
+//! for Focus Blur, which keeps the original and the running sum of its blur levels);
 //! the last one is drawn into the accumulator with the layer's matrix, opacity and blend mode
 //! like any RGBA layer. Working textures are `Rgba32Float` (the CPU reference's precision) and
 //! pooled per size; layers without effects never touch any of this.
@@ -57,6 +58,8 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_FOCUS_ACC: u32 = 37;
+const OP_FOCUS_SHOW: u32 = 38;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -92,6 +95,23 @@ pub(crate) struct FxJob {
     pub(crate) result_texture: wgpu::Texture,
 }
 
+/// A pass's part in Focus Blur (see [`FxStage::job`]).
+#[derive(Clone, Copy, PartialEq)]
+enum Focus {
+    No,
+    /// A blur pass of one level; the level's first reads the picture the op started from.
+    Blur {
+        from_orig: bool,
+    },
+    /// Adds a level (the one just blurred, or the original itself), weighted per pixel, to the
+    /// running sum: `first` starts the sum, `last` ends the op.
+    Acc {
+        from_orig: bool,
+        first: bool,
+        last: bool,
+    },
+}
+
 /// One pass before texture routing: entry point, op code, integer and float parameters.
 struct Step {
     run: bool,
@@ -105,6 +125,10 @@ struct Step {
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
+    focus: Focus,
+    /// The part of the textures the pass works on, from the top left (None: all of it): Focus
+    /// Blur blurs its halved levels there.
+    size: Option<(u32, u32)>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -112,7 +136,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new(), focus: Focus::No, size: None }
 }
 
 /// Texels a row of a kernel texture holds.
@@ -217,6 +241,42 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                         out.push(step(OP_BOKEH_UP, [ww, wh, 0, 0], &[inv.a as f32, inv.d as f32, inv.e as f32, inv.f as f32]));
                     }
                 }
+            }
+        }
+        FxOp::FocusBlur { area, levels, show } => {
+            // `vfx::blend_levels`: each level halved from the original (`Image::downsample2`, into
+            // the top left of the textures) as often as it says and blurred there (repeat-edge
+            // Gaussian), then added to the sum with its weight at each pixel, read bilinearly
+            // where it was halved; the amount is worked out per pixel from the area
+            let (cx, cy, linear) = (area.center[0], area.center[1], area.linear as u32);
+            let last = levels.len().saturating_sub(1);
+            for (j, lv) in levels.iter().enumerate() {
+                let mut passes = Vec::new();
+                let (mut lw, mut lh) = (w, h);
+                for _ in 0..lv.down {
+                    passes.push(step(OP_BOKEH_DOWN, [lw, lh, 0, 0], &[]));
+                    (lw, lh) = ((lw / 2).max(1), (lh / 2).max(1));
+                }
+                let mut blur = Vec::new();
+                boxes(&lv.rx, false, true, &mut blur);
+                boxes(&lv.ry, true, true, &mut blur);
+                for s in &mut blur {
+                    s.size = Some((lw, lh));
+                }
+                passes.extend(blur);
+                for (i, s) in passes.iter_mut().enumerate() {
+                    s.focus = Focus::Blur { from_orig: i == 0 };
+                }
+                let from_orig = passes.is_empty();
+                out.extend(passes);
+                let (sx, sy) = (lw as f32 / w as f32, lh as f32 / h as f32);
+                let p = [cx, cy, area.sin, area.cos, area.size, area.feather, sx, sy, lw as f32, lh as f32];
+                let mut acc = step(OP_FOCUS_ACC, [lv.k, linear, (j == 0) as u32, (lv.down > 0) as u32], &p);
+                acc.focus = Focus::Acc { from_orig, first: j == 0, last: j == last };
+                out.push(acc);
+            }
+            if *show {
+                out.push(step(OP_FOCUS_SHOW, [0, linear, 0, 0], &[cx, cy, area.sin, area.cos, area.size, area.feather]));
             }
         }
         FxOp::Unsharp { rx, ry, amount, threshold } => {
@@ -481,28 +541,46 @@ impl FxStage {
             return None;
         }
         let all: Vec<Step> = fx.ops.iter().flat_map(|op| steps(op, w, h)).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
+        let n = if all.iter().any(|s| s.focus != Focus::No) {
+            4
+        } else if all.iter().any(|s| s.combine) {
+            3
+        } else {
+            2
+        };
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
+        // Focus Blur: the image it started from and the running sum of its levels (both kept
+        // until its last level is added; with the level being blurred, four textures)
+        let (mut focus_orig, mut focus_sum): (Option<usize>, Option<usize>) = (None, None);
         for s in &all {
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
             if (s.unsharp_blur || s.combine) && orig.is_none() {
                 orig = Some(cur);
             }
+            if s.focus != Focus::No && focus_orig.is_none() {
+                focus_orig = Some(cur);
+            }
+            let input = match s.focus {
+                Focus::Blur { from_orig: true } | Focus::Acc { from_orig: true, .. } => focus_orig.unwrap_or(cur),
+                _ => cur,
+            };
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
-            let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
+            let dst = (0..n).find(|k| *k != cur && *k != input && Some(*k) != keep && Some(*k) != focus_orig && Some(*k) != focus_sum)?;
             let kernel = (!s.kernel.is_empty()).then(|| kernel_texture(device, queue, &s.kernel));
-            let aux = match (s.combine, orig, &kernel) {
-                (true, Some(o), _) => views.get(o)?,
-                (_, _, Some(k)) => k,
+            let aux = match (s.combine, orig, &kernel, s.focus) {
+                (true, Some(o), _, _) => views.get(o)?,
+                (_, _, Some(k), _) => k,
+                (_, _, _, Focus::Acc { first: false, .. }) => views.get(focus_sum?)?,
                 _ => dummy,
             };
+            let (sw, sh) = s.size.unwrap_or((w, h));
             let mut bytes = Vec::with_capacity(128);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
+            for v in [s.code, sw, sh, 0].iter().chain(&s.i1) {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
             for v in &s.p {
@@ -520,21 +598,27 @@ impl FxStage {
                 layout: &self.bgl,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(input)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
                 ],
             });
             let groups = if s.run {
-                let lines = if s.i1[2] != 0 { w } else { h };
+                let lines = if s.i1[2] != 0 { sw } else { sh };
                 (lines.div_ceil(64), 1)
             } else {
-                (w.div_ceil(16), h.div_ceil(16))
+                (sw.div_ceil(16), sh.div_ceil(16))
             };
             dispatches.push(Dispatch { run: s.run, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
+            }
+            if let Focus::Acc { last, .. } = s.focus {
+                focus_sum = Some(dst);
+                if last {
+                    (focus_orig, focus_sum) = (None, None);
+                }
             }
         }
         Some(FxJob {
