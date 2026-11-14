@@ -657,6 +657,20 @@ pub(crate) mod tests {
         assert_eq!(adler32(&[]), 1);
     }
 
+    /// A skipped candidate leaves older, longer matches reachable, and equal lengths keep the nearest distance.
+    #[test]
+    fn longest_checks_older_candidates_and_keeps_the_nearest_tie() {
+        let data = b"abcDE!abcXX!abcYY!abcDE?abcQQ?";
+        let mut scratch = Tables::default();
+        let mut m = Matcher::new(data, &mut scratch).unwrap();
+        for p in [0, 6, 12] {
+            m.insert(p);
+        }
+        assert_eq!(m.longest(18), (5, 18)); // skip the middle candidate, then improve on three bytes
+        m.insert(18);
+        assert_eq!(m.longest(24), (3, 6)); // all four candidates tie
+    }
+
     /// The match finder before #4659: tables of its own per input, every chain candidate compared
     /// from its first byte.
     struct OldMatcher<'a> {

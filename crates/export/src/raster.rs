@@ -516,6 +516,23 @@ mod tests {
         }
     }
 
+    /// Pins the compressed bytes for each ZIPS row and for both the full and final partial ZIP chunks.
+    #[test]
+    fn exr_zip_chunk_bytes() {
+        // Black RGB half-floats predict to one zero followed by 0x80 bytes. The
+        // original greedy encoder emits two literals, then distance-one matches:
+        // length 46 for a row, or 258, 258, 250 for sixteen rows.
+        let rgba = [0, 0, 0, 255].repeat(8 * 17);
+        let one: &[u8] = &[0x78, 0x9c, 0x63, 0x68, 0x20, 0x0d, 0x00, 0x00, 0x34, 0x4e, 0x17, 0x81];
+        let sixteen: &[u8] = &[0x78, 0x9c, 0x63, 0x68, 0x18, 0x05, 0xa3, 0x60, 0xe4, 0x02, 0x00, 0x64, 0xb1, 0x7f, 0x90];
+        let zips = exr(&rgba, 8, 17, false, ExrCompression::Zips).unwrap();
+        for (y, data) in chunks(&zips, 17) {
+            assert_eq!(data, one, "row {y}");
+        }
+        let zip = exr(&rgba, 8, 17, false, ExrCompression::Zip).unwrap();
+        assert_eq!(chunks(&zip, 2), [(0, sixteen), (16, one)]);
+    }
+
     /// ffmpeg (external test oracle) decodes our OpenEXR files to the values we meant: linear
     /// light, premultiplied alpha, rows top to bottom; in every compression.
     #[test]
