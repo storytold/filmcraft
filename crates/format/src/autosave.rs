@@ -79,11 +79,19 @@ pub fn auto_save_name(name: &str, unix: i64, offset_secs: i32) -> String {
 }
 
 fn is_stamp(s: &str) -> bool {
+    // `<year>-MM-DD_HH-MM-SS`: the year is `{:04}` formatted, so it may carry a sign and more than
+    // four digits.
     let b = s.as_bytes();
-    b.len() == 19
-        && b.iter().enumerate().all(|(i, c)| match i {
-            4 | 7 | 13 | 16 => *c == b'-',
-            10 => *c == b'_',
+    let Some((year, tail)) = b.len().checked_sub(15).map(|n| b.split_at(n)) else { return false };
+    let (negative, digits) = match year.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, year),
+    };
+    digits.len() >= if negative { 3 } else { 4 }
+        && digits.iter().all(u8::is_ascii_digit)
+        && tail.iter().enumerate().all(|(i, c)| match i {
+            0 | 3 | 9 | 12 => *c == b'-',
+            6 => *c == b'_',
             _ => c.is_ascii_digit(),
         })
 }
@@ -93,8 +101,10 @@ fn parse_stamp(s: &str) -> Option<(&str, Option<i64>, Option<u64>)> {
     if is_stamp(s) {
         return Some((s, None, None));
     }
-    let stamp = s.get(..19).filter(|st| is_stamp(st))?;
-    let rest = s.get(19..)?.strip_prefix('-')?;
+    // The stamp ends 9 bytes (`_HH-MM-SS`) after the only `_` that the year and date cannot contain.
+    let end = s.find('_')? + 9;
+    let stamp = s.get(..end).filter(|st| is_stamp(st))?;
+    let rest = s.get(end..)?.strip_prefix('-')?;
     let (unix_digits, collision) = match rest.split_once("-collision-") {
         Some((unix, collision)) => (unix, Some(collision)),
         None => (rest, None),
@@ -217,6 +227,48 @@ mod tests {
         // the epoch; the separate overflow guard is kept.
         assert_eq!(civil(i64::MAX, 3600), (1970, 1, 1, 0, 0, 0));
         assert_eq!(civil(i64::MIN, -3600), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn rotation_handles_years_outside_0000_to_9999() {
+        for (i, base) in [253_402_300_800_i64, -10_000_000_000_000].into_iter().enumerate() {
+            let d = std::env::temp_dir().join(format!("filmcraft-rotate-far-{}-{i}", std::process::id()));
+            let _ = fs::remove_dir_all(&d);
+            let mut last = PathBuf::new();
+            for k in 0..3 {
+                last = write_auto_save(&d, "Cut", base + k * 10, 0, b"{}", 1).unwrap();
+            }
+            assert_eq!(list_auto_saves(&d, "Cut"), vec![last]);
+            assert_eq!(fs::read_dir(&d).unwrap().count(), 1);
+            fs::remove_dir_all(&d).unwrap();
+        }
+        assert!(parse_stamp("10000-01-01_00-00-10-253402300810").is_some());
+        assert!(parse_stamp("-314918-08-13_06-13-20-5-collision-2").is_some());
+        assert!(parse_stamp("100-01-01_00-00-10-5").is_none());
+        assert!(parse_stamp("10000-01-01_00-00-1x-5").is_none());
+        assert!(parse_stamp("-12-01-01_00-00-10-5").is_none());
+    }
+
+    #[test]
+    fn rotation_orders_across_the_year_boundaries_by_real_time() {
+        let d = std::env::temp_dir().join(format!("filmcraft-rotate-years-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        // Oldest first by real time: negative year, year 9999, year 10000.
+        let times = [-10_000_000_000_000_i64, 253_402_300_799, 253_402_300_800];
+        let mut paths = Vec::new();
+        // Write newest first so the creation order cannot hide a wrong sort.
+        for &t in times.iter().rev() {
+            fs::create_dir_all(&d).unwrap();
+            let p = d.join(auto_save_name("Cut", t, 0));
+            fs::write(&p, b"{}").unwrap();
+            paths.push(p);
+        }
+        paths.reverse();
+        assert_eq!(list_auto_saves(&d, "Cut"), paths);
+        let gone = rotate(&d, "Cut", 2).unwrap();
+        assert_eq!(gone, vec![paths[0].clone()]);
+        assert!(!paths[0].exists() && paths[1].exists() && paths[2].exists());
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
