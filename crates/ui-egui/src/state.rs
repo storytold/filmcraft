@@ -439,6 +439,15 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
+/// A keyframe selected on a track automation lane in the Timeline: the strip (track id), the lane
+/// key and the keyframe's sequence time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackKeyframeRef {
+    pub strip: u64,
+    pub lane: String,
+    pub time: filmcraft_time::Tick,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -513,6 +522,9 @@ pub struct UiState {
     /// Effect Controls: the selected keyframes, highlighted in the keyframe lane (a click selects one).
     #[serde(default)]
     pub keyframe_selection: Vec<KeyframeRef>,
+    /// Timeline: the selected track automation keyframes (a click on a lane's diamond selects one).
+    #[serde(default)]
+    pub track_keyframe_selection: Vec<TrackKeyframeRef>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -1005,6 +1017,7 @@ fn yes() -> bool {
 }
 
 impl Default for UiState {
+    /// The UI state of a fresh session.
     fn default() -> Self {
         Self {
             marker_properties: None,
@@ -1037,6 +1050,7 @@ impl Default for UiState {
             failed_link: None,
             eyedropper: None,
             keyframe_selection: Vec::new(),
+            track_keyframe_selection: Vec::new(),
             essential_sound_tab: "Edit".into(),
             tts: Default::default(),
             export: Default::default(),

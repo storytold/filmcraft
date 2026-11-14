@@ -24,6 +24,7 @@ pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
+pub mod keyframe_clipboard;
 mod keyframe_move;
 mod marker_edit;
 mod marker_export;
@@ -481,6 +482,11 @@ pub struct EditorState {
     /// places whichever was copied last.
     #[serde(skip)]
     pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
+    /// Keyframes copied from the Timeline or Effect Controls (`edit.copyKeyframes`). Copying clips
+    /// or captions empties it and copying keyframes empties the others, so Paste places whichever
+    /// was copied last.
+    #[serde(skip)]
+    pub keyframe_clipboard: Vec<keyframe_clipboard::CopiedKeyframes>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
@@ -1437,6 +1443,8 @@ mod interchange_auto_points_tests;
 mod interchange_bin_tests;
 #[cfg(test)]
 mod keyboard_tests;
+#[cfg(test)]
+mod keyframe_clipboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
 #[cfg(test)]

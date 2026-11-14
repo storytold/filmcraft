@@ -540,27 +540,38 @@ pub fn strip_label(seq: &Sequence, id: TrackId) -> String {
     id.0.to_string()
 }
 
-fn strip_p(s: &Session, p: &Value, cmd: &str) -> Result<TrackId> {
+/// The strip named by `strip` (or `track`) in `p`: an id, "A1", "S1", "Mix" or a name.
+pub(crate) fn strip_p(s: &Session, p: &Value, cmd: &str) -> Result<TrackId> {
     let seq = active_seq(s)?;
     let v = p.get("strip").or_else(|| p.get("track")).ok_or_else(|| bad(cmd, "need `strip` (\"A1\", \"S1\", \"Mix\" or an id)"))?;
     strip_ref(seq, v).ok_or_else(|| bad(cmd, format!("no strip {v}")))
 }
 
+/// The lane named by `lane` in `p` (default volume), refused when strip `strip` cannot automate it.
 fn lane_p(s: &Session, p: &Value, strip: TrackId, cmd: &str) -> Result<String> {
     let lane = str_p(p, "lane").unwrap_or(LANE_VOLUME).to_string();
     let seq = active_seq(s)?;
     let tr = seq.strip(strip).ok_or_else(|| bad(cmd, "no such strip"))?;
-    let ok = match parse_fx_lane(&lane) {
+    match lane_refusal(&tr, &lane) {
+        Some(why) => Err(bad(cmd, why)),
+        None => Ok(lane),
+    }
+}
+
+/// Why `lane` cannot carry automation on strip `tr`, or `None` when it can (the checks of every
+/// mixer lane command, shared with keyframe paste).
+pub(crate) fn lane_refusal(tr: &Track, lane: &str) -> Option<String> {
+    let ok = match parse_fx_lane(lane) {
         Some((slot, param)) => tr.effects.get(slot).and_then(|e| e.param(param)).is_some_and(|p| p.value.as_f64().is_some()),
-        None => lane_info(&lane).is_some() && (parse_send_lane(&lane).is_none_or(|i| i < tr.mixer.sends.len())),
+        None => lane_info(lane).is_some() && (parse_send_lane(lane).is_none_or(|i| i < tr.mixer.sends.len())),
     };
     if !ok {
-        return Err(bad(cmd, format!("no lane `{lane}` on this strip (volume, pan, mute, send.<i>.level, fx.<slot>.<param>)")));
+        return Some(format!("no lane `{lane}` on this strip (volume, pan, mute, send.<i>.level, fx.<slot>.<param>)"));
     }
-    if strip == MASTER_STRIP && (lane == LANE_PAN || lane == LANE_MUTE || PAN51_LANES.contains(&lane.as_str()) || parse_send_lane(&lane).is_some()) {
-        return Err(bad(cmd, "the Mix track has volume and effect lanes only"));
+    if tr.id == MASTER_STRIP && (lane == LANE_PAN || lane == LANE_MUTE || PAN51_LANES.contains(&lane) || parse_send_lane(lane).is_some()) {
+        return Some("the Mix track has volume and effect lanes only".into());
     }
-    Ok(lane)
+    None
 }
 
 fn value_p(p: &Value, lane: &str, cmd: &str) -> Result<f64> {

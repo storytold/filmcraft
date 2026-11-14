@@ -390,6 +390,11 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
             Grab::Volume { .. } if resp.clicked() && !adding => Grab::Other(pressed.grab.hit()),
             g => g,
         };
+        // a press off the keyframes (not on the ruler) drops their selection, so Copy takes clips again
+        if !matches!(grab, Grab::Other(Hit::Ruler | Hit::WorkArea { .. })) && !resp.drag_started_by(egui::PointerButton::Middle) {
+            app.ui.keyframe_selection.clear();
+            app.ui.track_keyframe_selection.clear();
+        }
         start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
     }
 
