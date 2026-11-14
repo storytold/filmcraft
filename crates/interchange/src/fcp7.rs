@@ -468,8 +468,27 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let rate = read_rate(c).unwrap_or(seq_rate);
         let item = self.clip_media(c, kind, seq_rate, frame, &name)?;
 
-        let start = child_i64(c, "start").unwrap_or(-1);
-        let end = child_i64(c, "end").unwrap_or(-1);
+        // A clip edge under a transition is written as -1: the neighbouring `transitionitem`
+        // defines it (Premiere and Resolve both write it so, #1687). The clip's visible edge is
+        // the transition's cut, and `in` / `out` are the source at the transition's start, so the
+        // source moves up by the handle before the cut.
+        let (start, end, in_shift) = {
+            let mut start = child_i64(c, "start").unwrap_or(-1);
+            let mut end = child_i64(c, "end").unwrap_or(-1);
+            let mut shift = 0;
+            if start < 0
+                && let Some((cut, t_start)) = c.prev_sibling_element().filter(|t| t.has_tag_name("transitionitem")).and_then(Self::transition_cut)
+            {
+                start = cut;
+                shift = cut - t_start;
+            }
+            if end < 0
+                && let Some((cut, _)) = c.next_sibling_element().filter(|t| t.has_tag_name("transitionitem")).and_then(Self::transition_cut)
+            {
+                end = cut;
+            }
+            (start, end, shift)
+        };
         let in_f = child_i64(c, "in").unwrap_or(0);
         let out_f = child_i64(c, "out").unwrap_or(in_f);
         let src_in = child_i64(c, "pproTicksIn").map(Tick).unwrap_or_else(|| rate.tick_of(in_f));
@@ -498,6 +517,20 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if !remap.has_remap && !hold && src_len != dur && src_len > Tick::ZERO {
             speed = (src_len.0 as f64 / dur.0 as f64 * 10_000.0).round() / 10_000.0;
         }
+        // the handle before a transition-defined start: sequence frames, at the clip's speed (only
+        // known here when it comes from the source span), and against the source's direction for a
+        // reversed clip, whose source runs down as the timeline runs on
+        let (src_in, src_out) = if in_shift > 0 && !hold {
+            let d = Tick((seq_rate.tick_of(in_shift).0 as f64 * speed).round() as i64);
+            if reverse {
+                let d = d.min(src_in.min(src_out));
+                (src_in - d, src_out - d)
+            } else {
+                (src_in + d, src_out + d)
+            }
+        } else {
+            (src_in, src_out)
+        };
         let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, start_t, dur, src_in.min(src_out));
         ti.speed = speed;
         ti.reverse = reverse;
@@ -720,6 +753,22 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 ti.effects.push(inst);
             }
         }
+    }
+
+    /// Where a `transitionitem` cuts (its start for `start` / `start-black` alignment, its end for
+    /// `end` / `end-black`, else its middle: `center`, the default), with the transition's start.
+    fn transition_cut(t: Node) -> Option<(i64, i64)> {
+        let s = child_i64(t, "start")?;
+        let e = child_i64(t, "end").unwrap_or(s);
+        if s < 0 || e < s {
+            return None;
+        }
+        let cut = match child_text(t, "alignment").unwrap_or("").to_ascii_lowercase().as_str() {
+            "start" | "start-black" => s,
+            "end" | "end-black" => e,
+            _ => s + (e - s) / 2,
+        };
+        Some((cut, s))
     }
 
     fn transition(&mut self, seq: &mut Sequence, kind: TrackKind, ti: usize, c: Node, rate: FrameRate) {
