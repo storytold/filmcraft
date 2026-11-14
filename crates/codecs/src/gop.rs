@@ -313,10 +313,7 @@ impl State {
 
     fn take_abandoned_match(&mut self, i: usize, now: Instant) -> Option<AbandonedCursor> {
         self.abandoned.retain(|a| now.saturating_duration_since(a.at) < ABANDONED_TTL);
-        let pos = self
-            .abandoned
-            .iter()
-            .position(|a| i >= a.next.saturating_sub(8) && i <= a.next + CONTINUE_THROUGH)?;
+        let pos = self.abandoned.iter().position(|a| i >= a.next.saturating_sub(8) && i <= a.next + CONTINUE_THROUGH)?;
         Some(self.abandoned.swap_remove(pos))
     }
 
@@ -326,13 +323,8 @@ impl State {
             return;
         }
         let primary_dist = if self.pin == i64::MIN { u64::MAX } else { want_pts.abs_diff(self.pin) };
-        if let Some((idx, best_dist)) = self
-            .extra
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.pin != i64::MIN)
-            .map(|(idx, c)| (idx, want_pts.abs_diff(c.pin)))
-            .min_by_key(|&(_, d)| d)
+        if let Some((idx, best_dist)) =
+            self.extra.iter().enumerate().filter(|(_, c)| c.pin != i64::MIN).map(|(idx, c)| (idx, want_pts.abs_diff(c.pin))).min_by_key(|&(_, d)| d)
             && best_dist < primary_dist
         {
             self.extra[idx].pin = want_pts;
@@ -1039,11 +1031,8 @@ impl GopCache {
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
         // Drop any extra cursor that has gone idle before choosing one for this miss.
-        let idle_cutoff = if self.shared.pool.decoders.load(Ordering::Relaxed) > self.shared.pool.max_decoders {
-            self.shared.pool.recent
-        } else {
-            self.shared.pool.idle
-        };
+        let idle_cutoff =
+            if self.shared.pool.decoders.load(Ordering::Relaxed) > self.shared.pool.max_decoders { self.shared.pool.recent } else { self.shared.pool.idle };
         let mut idx = 0;
         while idx < st.extra.len() {
             if now.saturating_duration_since(st.extra[idx].last_used) >= idle_cutoff {

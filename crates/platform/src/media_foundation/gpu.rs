@@ -21,13 +21,12 @@ use windows::Win32::Graphics::Direct3D::{
     ID3DInclude,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_QUERY_DESC, D3D11_QUERY_EVENT, D3D11_RASTERIZER_DESC, D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
-    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-    D3D11_USAGE_STAGING, D3D11_VIDEO_DECODER_DESC, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
-    ID3D11Multithread, ID3D11PixelShader, ID3D11Query, ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
-    ID3D11VertexShader, ID3D11VideoDevice,
+    D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_QUERY_DESC, D3D11_QUERY_EVENT,
+    D3D11_RASTERIZER_DESC, D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
+    D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_DECODER_DESC,
+    D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11PixelShader, ID3D11Query,
+    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader, ID3D11VideoDevice,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM,
@@ -440,7 +439,14 @@ impl Gpu {
         }
     }
 
-    fn read_shared_pair(&self, tex_y: &ID3D11Texture2D, tex_uv: &ID3D11Texture2D, format: SurfaceFormat, size: (u32, u32), chroma: (u32, u32)) -> Result<PixelData, String> {
+    fn read_shared_pair(
+        &self,
+        tex_y: &ID3D11Texture2D,
+        tex_uv: &ID3D11Texture2D,
+        format: SurfaceFormat,
+        size: (u32, u32),
+        chroma: (u32, u32),
+    ) -> Result<PixelData, String> {
         let (w, h) = size;
         let (cw, ch) = chroma;
         let (fmt_y, fmt_uv) = format.plane_dxgi();
@@ -558,14 +564,7 @@ pub fn import_wgpu_surface(device: &wgpu::Device, dummy: &wgpu::TextureView, sur
     })
 }
 
-fn import_d3d11_plane(
-    device: &wgpu::Device,
-    handle: HANDLE,
-    w: u32,
-    h: u32,
-    format: wgpu::TextureFormat,
-    label: &'static str,
-) -> Option<wgpu::Texture> {
+fn import_d3d11_plane(device: &wgpu::Device, handle: HANDLE, w: u32, h: u32, format: wgpu::TextureFormat, label: &'static str) -> Option<wgpu::Texture> {
     let hal_desc = wgpu::hal::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -639,7 +638,9 @@ fn create_shared_pair(device: &ID3D11Device, format: SurfaceFormat, w: u32, h: u
         Ok(v) => v,
         Err(e) => {
             // SAFETY: `handle_y` was created above and is not yet owned by `SharedPlanePair`.
-            unsafe { let _ = CloseHandle(handle_y); }
+            unsafe {
+                let _ = CloseHandle(handle_y);
+            }
             return Err(e);
         }
     };
@@ -758,12 +759,7 @@ impl CopyPipeline {
         let mut cb: Option<ID3D11Buffer> = None;
         // SAFETY: valid constant buffer descriptor and out-pointer.
         unsafe { device.CreateBuffer(&cb_desc, None, Some(&mut cb)) }.map_err(|e| format!("CreateBuffer failed: {e}"))?;
-        let rs_desc = D3D11_RASTERIZER_DESC {
-            FillMode: D3D11_FILL_SOLID,
-            CullMode: D3D11_CULL_NONE,
-            DepthClipEnable: true.into(),
-            ..Default::default()
-        };
+        let rs_desc = D3D11_RASTERIZER_DESC { FillMode: D3D11_FILL_SOLID, CullMode: D3D11_CULL_NONE, DepthClipEnable: true.into(), ..Default::default() };
         let mut rs: Option<ID3D11RasterizerState> = None;
         // SAFETY: valid rasterizer descriptor and out-pointer.
         unsafe { device.CreateRasterizerState(&rs_desc, Some(&mut rs)) }.map_err(|e| format!("CreateRasterizerState failed: {e}"))?;

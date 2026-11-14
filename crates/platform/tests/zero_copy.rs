@@ -53,23 +53,14 @@ fn decode_all(d: &mut dyn VideoDecoder, samples: &[(Vec<u8>, i64)]) -> Vec<Decod
 
 fn init_compositor(backends: wgpu::Backends, with_interop: bool) -> Option<(GpuCompositor, wgpu::AdapterInfo)> {
     let inst = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() });
-    let adapter = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
+    let adapter = pollster::block_on(
+        inst.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
+    )
     .ok()?;
     let info = adapter.get_info();
-    let required_features = if with_interop {
-        requested_features(&adapter)
-    } else {
-        adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-    };
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("zero-copy-test"),
-        required_features,
-        ..Default::default()
-    }))
-    .ok()?;
+    let required_features = if with_interop { requested_features(&adapter) } else { adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM };
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("zero-copy-test"), required_features, ..Default::default() })).ok()?;
     Some((GpuCompositor::new(&device, &queue), info))
 }
 

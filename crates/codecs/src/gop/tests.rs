@@ -1236,4 +1236,3 @@ fn multi_cursor_eviction_preserves_both_active_playheads() {
     assert!(st.frames.contains_key(&200_000), "primary playhead kept");
     assert!(st.frames.contains_key(&9_000), "secondary playhead kept across distant decodes");
 }
-

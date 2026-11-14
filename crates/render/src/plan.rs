@@ -511,16 +511,20 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
                     let ctx = filmcraft_media::cancel::Context::current();
                     let (ctx_a, ctx_b) = (ctx.clone(), ctx);
                     rayon::join(
-                        || ctx_a.run(|| {
-                            if let Some(it) = a {
-                                push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a);
-                            }
-                        }),
-                        || ctx_b.run(|| {
-                            if let Some(it) = b {
-                                push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
-                            }
-                        }),
+                        || {
+                            ctx_a.run(|| {
+                                if let Some(it) = a {
+                                    push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a);
+                                }
+                            })
+                        },
+                        || {
+                            ctx_b.run(|| {
+                                if let Some(it) = b {
+                                    push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
+                                }
+                            })
+                        },
                     );
                 } else {
                     if let Some(it) = a {
