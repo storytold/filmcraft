@@ -1043,6 +1043,42 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
 }
 
 #[test]
+fn frame_budget_clamping_logic() {
+    let (pool, per_cache) = clamp_frame_budgets(FRAME_BUDGET);
+    assert_eq!(pool, 1 << 30);
+    assert_eq!(per_cache, 384 << 20); // exactly 3/8 of 1 GiB, matching FRAME_CACHE_CEILING
+
+    let (small_pool, small_cache) = clamp_frame_budgets(100);
+    assert_eq!(small_pool, 256 << 20);
+    assert_eq!(small_cache, (256 << 20) * 3 / 8);
+
+    let (large_pool, large_cache) = clamp_frame_budgets(usize::MAX);
+    assert_eq!(large_pool, (4u64 << 30).min(usize::MAX as u64) as usize);
+    assert_eq!(large_cache, 384 << 20); // capped at FRAME_CACHE_CEILING (384 MiB)
+
+    // active_frame_budget returns a valid non-zero budget without modifying global state
+    assert!(active_frame_budget() >= 256 << 20);
+}
+
+#[test]
+fn pool_with_updated_budget_trims_at_new_budget_not_at_base() {
+    // Start with a large budget: 44 bytes held does NOT exceed it.
+    let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, 1 << 30));
+    let (a, b) = (samples(300, 250, 0, false), samples(300, 250, 0, false));
+    let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
+
+    assert_eq!(index_of(&ca.frame(&a, 10_000).expect("frame")), 10);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 44);
+
+    // Update pool's budget to 40 bytes (smaller than 44).
+    pool.budget_val.store(40, Ordering::Relaxed);
+
+    // Requesting frame on cb must trigger trim_frames and trim idle ca down to 40 bytes.
+    assert_eq!(index_of(&cb.frame(&b, 5_000).expect("frame")), 5);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 40);
+}
+
+#[test]
 fn eviction_reaches_interior_frames_when_both_ends_are_protected() {
     // 1×1 RGBA pictures (4 bytes): the budget is the 64-frame playback reserve
     let mut c = GopCache::new(None);
@@ -1182,4 +1218,40 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
+}
+
+#[test]
+fn low_configured_budget_is_not_enlarged_by_large_frame_reserve() {
+    let mut c = GopCache::new(None);
+    let low_budget = 32 << 20;
+    c.budget = low_budget;
+    let eight_mib = 8 << 20;
+    assert!(c.cache_budget(eight_mib) <= low_budget);
+    assert_eq!(c.cache_budget(eight_mib), low_budget);
+}
+
+#[test]
+fn inherited_budget_tracks_global_updates_while_explicit_limit_is_preserved() {
+    struct RestoreGlobal(usize);
+    impl Drop for RestoreGlobal {
+        fn drop(&mut self) {
+            CACHE_BUDGET.store(self.0, Ordering::Relaxed);
+        }
+    }
+    let _guard = RestoreGlobal(CACHE_BUDGET.load(Ordering::Relaxed));
+
+    CACHE_BUDGET.store(64 << 20, Ordering::Relaxed);
+    let inherited = GopCache::new(None);
+    let mut explicit = GopCache::new(None);
+    explicit.budget = 32 << 20;
+
+    // Increase global budget: inherited cache tracks it (up to FRAME_CACHE_CEILING), explicit stays at 32 MiB.
+    CACHE_BUDGET.store(128 << 20, Ordering::Relaxed);
+    assert_eq!(inherited.cache_budget(4 << 20), 128 << 20);
+    assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
+
+    // Above FRAME_CACHE_CEILING: inherited cache is still capped at FRAME_CACHE_CEILING.
+    CACHE_BUDGET.store(FRAME_CACHE_CEILING * 2, Ordering::Relaxed);
+    assert_eq!(inherited.cache_budget(4 << 20), FRAME_CACHE_CEILING);
+    assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
 }
