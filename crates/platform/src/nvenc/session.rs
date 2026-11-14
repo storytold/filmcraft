@@ -1,4 +1,4 @@
-//! An NVENC (H.264 or HEVC) encode session: the driver library, the device it is opened on, the
+//! An NVENC (H.264, HEVC, or AV1) encode session: the driver library, the device it is opened on, the
 //! encoder configuration, and the input / output buffers (every call into the driver).
 //!
 //! FFI module (docs/adr/0001-platform-ffi.md): every `unsafe` block has a `// SAFETY:` comment, the
@@ -9,20 +9,23 @@ use std::sync::OnceLock;
 
 use super::device::Device;
 use super::ffi::{
-    CreateInstanceFn, Guid, H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS,
-    HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD, HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn,
-    NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX, NV_ENC_CAPS_HEIGHT_MIN,
-    NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_WIDTH_MAX, NV_ENC_CAPS_WIDTH_MIN,
-    NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER, NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER,
-    NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT, NV_ENC_H264_ENTROPY_CODING_MODE_CABAC,
-    NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID, NV_ENC_HEVC_CUSIZE_AUTOSELECT,
-    NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_LEVEL_AUTOSELECT,
-    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS,
-    NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID,
-    NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN,
-    NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709,
-    NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
+    AV1_CHROMA_FORMAT_MASK, AV1_CHROMA_FORMAT_SHIFT, AV1_DISABLE_SEQ_HDR, AV1_ENABLE_INTRA_REFRESH, AV1_ENABLE_TIMING_INFO, AV1_INPUT_PIXEL_BIT_DEPTH_MASK,
+    AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT, AV1_OUTPUT_ANNEX_B, AV1_PIXEL_BIT_DEPTH_MASK, AV1_PIXEL_BIT_DEPTH_SHIFT, AV1_REPEAT_SEQ_HDR, CreateInstanceFn, Guid,
+    H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS, HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD,
+    HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn, NV_ENC_AV1_PART_SIZE_AUTOSELECT,
+    NV_ENC_AV1_PROFILE_MAIN_GUID, NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX,
+    NV_ENC_CAPS_HEIGHT_MIN, NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_WIDTH_MAX,
+    NV_ENC_CAPS_WIDTH_MIN, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER,
+    NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER, NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT,
+    NV_ENC_H264_ENTROPY_CODING_MODE_CABAC, NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID,
+    NV_ENC_HEVC_CUSIZE_AUTOSELECT, NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER,
+    NV_ENC_LEVEL_AUTOSELECT, NV_ENC_LEVEL_AV1_AUTOSELECT, NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER,
+    NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
+    NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG,
+    NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID, NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD,
+    NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_AV1_0, NV_ENC_TIER_HEVC_MAIN, NV_ENC_TUNING_INFO_HIGH_QUALITY,
+    NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709, NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED,
+    NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
 };
 
 /// The driver's entry points (loaded once).
@@ -106,6 +109,7 @@ fn load() -> Result<Api, String> {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 impl Codec {
@@ -113,6 +117,7 @@ impl Codec {
         match self {
             Codec::H264 => NV_ENC_CODEC_H264_GUID,
             Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+            Codec::Av1 => NV_ENC_CODEC_AV1_GUID,
         }
     }
 }
@@ -309,7 +314,12 @@ impl Session {
                 let mut v = 0i32;
                 let s = f(self.enc, codec.guid(), &mut p, &mut v);
                 if s != NV_ENC_SUCCESS {
-                    return Err(status(if codec == Codec::Hevc { "querying the HEVC encoder" } else { "querying the encoder" }, s, self.enc, self.api));
+                    let msg = match codec {
+                        Codec::Hevc => "querying the HEVC encoder",
+                        Codec::Av1 => "querying the AV1 encoder",
+                        Codec::H264 => "querying the encoder",
+                    };
+                    return Err(status(msg, s, self.enc, self.api));
                 }
                 Ok(v.max(0) as u32)
             }
@@ -367,6 +377,7 @@ impl Session {
             cfg.profileGUID = match (p.codec, p.profile) {
                 (Codec::Hevc, _) if p.ten_bit => NV_ENC_HEVC_PROFILE_MAIN10_GUID,
                 (Codec::Hevc, _) => NV_ENC_HEVC_PROFILE_MAIN_GUID,
+                (Codec::Av1, _) => NV_ENC_AV1_PROFILE_MAIN_GUID,
                 (Codec::H264, 0) => NV_ENC_H264_PROFILE_BASELINE_GUID,
                 (Codec::H264, 1) => NV_ENC_H264_PROFILE_MAIN_GUID,
                 (Codec::H264, _) => NV_ENC_H264_PROFILE_HIGH_GUID,
@@ -437,6 +448,36 @@ impl Session {
                     vui.numUnitInTicks = 0;
                     vui.timeScale = 0;
                 }
+                Codec::Av1 => {
+                    let a = &mut cfg.encodeCodecConfig.av1Config;
+                    a.level = NV_ENC_LEVEL_AV1_AUTOSELECT;
+                    a.tier = NV_ENC_TIER_AV1_0;
+                    a.minPartSize = NV_ENC_AV1_PART_SIZE_AUTOSELECT;
+                    a.maxPartSize = NV_ENC_AV1_PART_SIZE_AUTOSELECT;
+                    a.idrPeriod = p.gop.max(1);
+                    // Low-overhead OBU stream (outputAnnexBFormat = 0), sequence header in-band on
+                    // keyframes via av1C + random access, 8-bit 4:2:0 limited range.
+                    a.flags &= !(AV1_OUTPUT_ANNEX_B
+                        | AV1_ENABLE_TIMING_INFO
+                        | AV1_DISABLE_SEQ_HDR
+                        | AV1_REPEAT_SEQ_HDR
+                        | AV1_ENABLE_INTRA_REFRESH
+                        | AV1_CHROMA_FORMAT_MASK
+                        | AV1_INPUT_PIXEL_BIT_DEPTH_MASK
+                        | AV1_PIXEL_BIT_DEPTH_MASK);
+                    a.flags |= 1 << AV1_CHROMA_FORMAT_SHIFT;
+                    if p.ten_bit {
+                        a.flags |= (2 << AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT) | (2 << AV1_PIXEL_BIT_DEPTH_SHIFT);
+                    }
+                    a.maxNumRefFramesInDPB = 0;
+                    a.numTileColumns = 0;
+                    a.numTileRows = 0;
+                    a.colorPrimaries = u32::from(p.signal.primaries);
+                    a.transferCharacteristics = u32::from(p.signal.transfer);
+                    a.matrixCoefficients = u32::from(p.signal.matrix);
+                    a.colorRange = 0;
+                    a.chromaSamplePosition = 0;
+                }
             }
 
             let mut init: Box<NV_ENC_INITIALIZE_PARAMS> = Box::new(std::mem::zeroed());
@@ -445,9 +486,15 @@ impl Session {
             init.presetGUID = NV_ENC_PRESET_P5_GUID;
             init.encodeWidth = p.width;
             init.encodeHeight = p.height;
-            let (sn, sd) = p.sar.unwrap_or((1, 1));
-            init.darWidth = p.width.saturating_mul(sn.max(1));
-            init.darHeight = p.height.saturating_mul(sd.max(1));
+            if p.codec == Codec::Av1 {
+                // For AV1, darWidth/darHeight are render width/height.
+                init.darWidth = p.width;
+                init.darHeight = p.height;
+            } else {
+                let (sn, sd) = p.sar.unwrap_or((1, 1));
+                init.darWidth = p.width.saturating_mul(sn.max(1));
+                init.darHeight = p.height.saturating_mul(sd.max(1));
+            }
             init.frameRateNum = p.fps.0;
             init.frameRateDen = p.fps.1;
             init.enablePTD = 1;

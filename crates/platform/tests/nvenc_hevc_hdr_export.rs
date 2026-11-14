@@ -136,6 +136,8 @@ fn delta(before: filmcraft_export::HwEncodeStats) -> (u64, u64, u64) {
 }
 
 fn yuv16(f: &filmcraft_frame::VideoFrame) -> ([Arc<Vec<u16>>; 3], u32) {
+    let cpu = f.materialize_cpu();
+    let f = cpu.as_ref().unwrap_or(f);
     match &f.data {
         filmcraft_frame::PixelData::Yuv16 { planes, bits, .. } => (planes.clone(), *bits),
         _ => panic!("16-bit planes expected, got {}", f.format_label()),
@@ -290,7 +292,9 @@ fn sdr_stays_main_8_bit_and_the_sdr_setting_tone_maps_hdr_sequences() {
         export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{what}: {e}"));
         assert_eq!(delta(before), (FRAMES as u64, 1, 0), "{what}");
         let pictures = decode(&path);
-        assert!(matches!(&pictures[0].data, filmcraft_frame::PixelData::Yuv8 { .. }), "{what}: 8-bit planes");
+        let cpu = pictures[0].materialize_cpu();
+        let first = cpu.as_ref().unwrap_or(&pictures[0]);
+        assert!(matches!(&first.data, filmcraft_frame::PixelData::Yuv8 { .. }), "{what}: 8-bit planes");
         assert_eq!(pictures[0].color.transfer, filmcraft_color::Transfer::Bt709, "{what}");
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
         let file = filmcraft_isobmff::open(&bytes[..]).unwrap();

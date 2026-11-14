@@ -137,6 +137,9 @@ pub fn assert_same(what: &str, a: &[DecodedFrame], b: &[DecodedFrame]) {
     assert_eq!(pa, pb, "{what}: pts sequence");
     for (x, y) in a.iter().zip(b) {
         let (fx, fy) = (&x.frame, &y.frame);
+        let cx = fx.materialize_cpu();
+        let cy = fy.materialize_cpu();
+        let (fx, fy) = (cx.as_ref().unwrap_or(fx), cy.as_ref().unwrap_or(fy));
         assert_eq!((fx.width, fx.height, fx.par, fx.color), (fy.width, fy.height, fy.par, fy.color), "{what}: pts {} geometry / colour", x.pts);
         match (&fx.data, &fy.data) {
             (PixelData::Yuv8 { planes: p, chroma: c, .. }, PixelData::Yuv8 { planes: q, chroma: d, .. }) => {

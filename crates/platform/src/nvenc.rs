@@ -28,6 +28,7 @@
 //! declines what NVENC cannot do (no NVIDIA GPU or driver, sizes, HDR, two-pass, MXF...) and the
 //! software encoder takes over. A declined HEVC export is an error that says why.
 
+pub mod av1;
 #[allow(unsafe_code)]
 pub(crate) mod device;
 pub mod export;
@@ -42,12 +43,12 @@ mod abi_tests;
 
 use std::collections::VecDeque;
 
-use filmcraft_isobmff::HevcConfig;
+use filmcraft_isobmff::{Av1Config, HevcConfig};
 
 pub use self::session::{Caps, Codec, Params, Sei, Signal};
 use self::session::{Locked, Session, Submitted};
 
-/// H.264 profile (`profile_idc` 66 / 77 / 100), or HEVC Main (8-bit 4:2:0) / Main 10 (10-bit 4:2:0).
+/// H.264 profile (`profile_idc` 66 / 77 / 100), HEVC Main / Main 10, or AV1 Main (8-bit 4:2:0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
     Baseline,
@@ -57,6 +58,8 @@ pub enum Profile {
     HevcMain,
     /// H.265 Main 10: 10-bit 4:2:0 (P010 input), for HDR (PQ / HLG) and 10-bit SDR.
     HevcMain10,
+    /// AV1 Main: 8-bit 4:2:0.
+    Av1Main,
 }
 
 impl Profile {
@@ -64,6 +67,7 @@ impl Profile {
     pub fn codec(self) -> Codec {
         match self {
             Profile::HevcMain | Profile::HevcMain10 => Codec::Hevc,
+            Profile::Av1Main => Codec::Av1,
             _ => Codec::H264,
         }
     }
@@ -92,7 +96,8 @@ pub struct Config {
 
 /// One encoded picture in decoding order.
 pub struct Packet {
-    /// Length-prefixed (4 bytes) NAL units, without parameter sets or access unit delimiters.
+    /// Length-prefixed (4 bytes) NAL units (H.264 / HEVC) or sized OBUs (AV1), without parameter
+    /// sets or temporal delimiters.
     pub data: Vec<u8>,
     pub key: bool,
     /// Presentation / decoding time in frames.
@@ -103,16 +108,18 @@ pub struct Packet {
 /// Pictures in flight: input / output buffer pairs.
 const RING: usize = 8;
 
-/// An NVENC encoder (H.264, or HEVC when the profile is [`Profile::HevcMain`] or [`Profile::HevcMain10`]).
+/// An NVENC encoder (H.264, HEVC, or AV1).
 pub struct Nvenc {
     session: Session,
     codec: Codec,
-    /// Empty for H.264.
+    /// Empty for H.264 / AV1.
     vps: Vec<u8>,
     sps: Vec<u8>,
     pps: Vec<u8>,
     /// The `hvcC` record (HEVC only), built from the parameter sets the encoder wrote.
     hvcc: Option<HevcConfig>,
+    /// The `av1C` record (AV1 only), built from the sequence header the encoder wrote.
+    av1c: Option<Av1Config>,
     /// Frames the output is delayed by reordering (0 or 1).
     delay: u32,
     free: Vec<usize>,
@@ -163,10 +170,43 @@ pub fn hevc_available() -> bool {
 /// The answer of [`hevc_available`], once asked.
 static HEVC_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Ask [`hevc_available`] on a thread of its own (once, however often this is called), so the
-/// first draw of Export's format list does not wait for the probe session. Whoever asks while it
-/// runs waits for the same answer; if the thread cannot start, or the probe panics (caught), the
-/// first caller asks, as before.
+/// Whether this system's NVENC can encode AV1: a session opened and an AV1 encoder created for a
+/// small picture, once (the answer is kept). What makes the AV1 export format available.
+pub fn av1_available() -> bool {
+    *AV1_AVAILABLE.get_or_init(|| {
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::Av1Main,
+            level: None,
+            sar: None,
+            bframes: false,
+        };
+        let result = Nvenc::new(&probe);
+        if let Err(why) = &result {
+            log::info!("no hardware AV1 encoder: {why}");
+        }
+        result.is_ok()
+    })
+}
+
+/// The answer of [`av1_available`], once asked.
+static AV1_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether [`av1_available`] has its answer yet (diagnostics and tests).
+pub fn av1_probed() -> bool {
+    AV1_AVAILABLE.get().is_some()
+}
+
+/// Ask [`hevc_available`], [`hevc_hdr_available`], and [`av1_available`] on a thread of their own
+/// (once, however often this is called), so the first draw of Export's format list does not wait
+/// for the probe session. Whoever asks while it runs waits for the same answer; if the thread
+/// cannot start, or the probe panics (caught), the first caller asks, as before.
 pub fn warm_hevc_probe() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -176,6 +216,9 @@ pub fn warm_hevc_probe() {
             }
             if std::panic::catch_unwind(hevc_hdr_available).is_err() {
                 log::warn!("the hardware HEVC Main 10 probe panicked; the export will ask again");
+            }
+            if std::panic::catch_unwind(av1_available).is_err() {
+                log::warn!("the hardware AV1 probe panicked; the format list will ask again");
             }
         });
         if let Err(e) = spawned {
@@ -292,7 +335,7 @@ impl Nvenc {
             gop: cfg.keyint.max(1),
             profile: match cfg.profile {
                 Profile::Baseline => 0,
-                Profile::Main | Profile::HevcMain | Profile::HevcMain10 => 1,
+                Profile::Main | Profile::HevcMain | Profile::HevcMain10 | Profile::Av1Main => 1,
                 Profile::High => 2,
             },
             ten_bit,
@@ -304,16 +347,21 @@ impl Nvenc {
         };
         session.initialize(&params, RING)?;
         let params = session.sequence_params()?;
-        let (vps, sps, pps, hvcc) = match codec {
+        let (vps, sps, pps, hvcc, av1c) = match codec {
             Codec::H264 => {
                 let (sps, pps) = split_parameter_sets(&params)?;
-                (Vec::new(), sps, pps, None)
+                (Vec::new(), sps, pps, None, None)
             }
             Codec::Hevc => {
                 let (vps, sps, pps) = split_hevc_parameter_sets(&params)?;
                 // validated now: a stream whose parameter sets we cannot describe is a declined export
                 let record = hevc::hevc_config(&vps, &sps, &pps, (w, h), if ten_bit { 10 } else { 8 })?;
-                (vps, sps, pps, Some(record))
+                (vps, sps, pps, Some(record), None)
+            }
+            Codec::Av1 => {
+                // validated now: a stream whose sequence header we cannot describe is a declined export
+                let record = av1::av1_config(&params, (w, h), 8)?;
+                (Vec::new(), Vec::new(), Vec::new(), None, Some(record))
             }
         };
         let slots = session.slots();
@@ -324,6 +372,7 @@ impl Nvenc {
             sps,
             pps,
             hvcc,
+            av1c,
             delay: bframes,
             free: (0..slots).rev().collect(),
             pending: VecDeque::new(),
@@ -345,14 +394,19 @@ impl Nvenc {
         (&self.sps, &self.pps)
     }
 
-    /// The video parameter set (HEVC; empty for H.264).
+    /// The video parameter set (HEVC; empty for H.264 / AV1).
     pub fn vps(&self) -> &[u8] {
         &self.vps
     }
 
-    /// The `hvcC` record of an HEVC stream (`None` for H.264).
+    /// The `hvcC` record of an HEVC stream (`None` for H.264 / AV1).
     pub fn hevc_config(&self) -> Option<&HevcConfig> {
         self.hvcc.as_ref()
+    }
+
+    /// The `av1C` record of an AV1 stream (`None` for H.264 / HEVC).
+    pub fn av1_config(&self) -> Option<&Av1Config> {
+        self.av1c.as_ref()
     }
 
     /// Frames the decoding time runs behind the presentation time (B-frame reordering).
@@ -463,11 +517,16 @@ impl Nvenc {
         let r = self.session.read(slot);
         self.free.push(slot);
         let o = r?;
-        let data = annex_b_to_length_prefixed_for(self.codec, &o.data)?;
+        let data = match self.codec {
+            Codec::Av1 => av1::av1_obu_sample(&o.data)?,
+            _ => annex_b_to_length_prefixed_for(self.codec, &o.data)?,
+        };
         let k = self.emitted;
         self.emitted = self.emitted.saturating_add(1);
         let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
-        Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts, dts: k.saturating_sub(i64::from(self.delay)) })
+        let key = o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR
+            || (self.codec == Codec::Av1 && o.pic_type == ffi::NV_ENC_PIC_TYPE_I && craft_video::av1::decode::is_key_frame_unit(&data));
+        Ok(Packet { data, key, pts, dts: k.saturating_sub(i64::from(self.delay)) })
     }
 }
 
@@ -580,7 +639,7 @@ pub fn annex_b_to_length_prefixed(data: &[u8]) -> Result<Vec<u8>, String> {
     annex_b_to_length_prefixed_for(Codec::H264, data)
 }
 
-/// The NAL unit type of a NAL unit (`None` when it is too short to have a header).
+/// The NAL unit type of a NAL unit (`None` when it is too short to have a header, or for AV1).
 pub fn nal_type(codec: Codec, nal: &[u8]) -> Option<u8> {
     match codec {
         Codec::H264 => nal.first().map(|b| b & 0x1f),
@@ -589,6 +648,7 @@ pub fn nal_type(codec: Codec, nal: &[u8]) -> Option<u8> {
             [b, _, ..] => Some((b >> 1) & 0x3f),
             _ => None,
         },
+        Codec::Av1 => None,
     }
 }
 
@@ -596,6 +656,9 @@ pub fn nal_type(codec: Codec, nal: &[u8]) -> Option<u8> {
 /// VPS / SPS / PPS / AUD (32 to 35) and end-of-sequence / end-of-bitstream markers (36, 37), since
 /// the file is one coded video sequence. A NAL unit too short for its header is dropped.
 pub fn annex_b_to_length_prefixed_for(codec: Codec, data: &[u8]) -> Result<Vec<u8>, String> {
+    if codec == Codec::Av1 {
+        return Err("AV1 uses OBU framing, not Annex B NAL units".into());
+    }
     let nals = annex_b_nals(data);
     if nals.is_empty() {
         return Err("the encoder produced no NAL units".into());
@@ -603,7 +666,7 @@ pub fn annex_b_to_length_prefixed_for(codec: Codec, data: &[u8]) -> Result<Vec<u
     let mut out = Vec::with_capacity(data.len());
     for n in nals {
         let dropped = match (codec, nal_type(codec, n)) {
-            (_, None) => true,
+            (_, None) | (Codec::Av1, _) => true,
             (Codec::H264, Some(t)) => matches!(t, 7..=9),
             (Codec::Hevc, Some(t)) => matches!(t, 32..=37),
         };
@@ -744,7 +807,7 @@ mod tests {
         assert!(check_caps(&caps(true), &cfg(Profile::HevcMain10)).is_ok());
         let e = check_caps(&caps(false), &cfg(Profile::HevcMain10)).unwrap_err();
         assert!(e.contains("10-bit"), "{e}");
-        for p in [Profile::HevcMain, Profile::Main, Profile::High, Profile::Baseline] {
+        for p in [Profile::Av1Main, Profile::HevcMain, Profile::Main, Profile::High, Profile::Baseline] {
             assert!(check_caps(&caps(false), &cfg(p)).is_ok(), "{p:?} does not need 10-bit");
         }
     }
@@ -834,9 +897,10 @@ mod tests {
     }
 
     #[test]
-    fn the_hevc_profile_picks_the_hevc_codec() {
+    fn the_hevc_and_av1_profiles_pick_their_codecs() {
         assert_eq!(Profile::HevcMain.codec(), Codec::Hevc);
         assert_eq!(Profile::HevcMain10.codec(), Codec::Hevc);
+        assert_eq!(Profile::Av1Main.codec(), Codec::Av1);
         for p in [Profile::Baseline, Profile::Main, Profile::High] {
             assert_eq!(p.codec(), Codec::H264);
         }

@@ -96,6 +96,12 @@ impl VideoEncoder for NvencEncoder {
                 self.signal.apply_to(&mut e, false);
                 e
             }
+            Codec::Av1 => {
+                // `Nvenc::new` built and validated the record, so there is always one for AV1
+                let mut e = SampleEntry::av1(self.enc.av1_config().cloned().unwrap_or_default(), w, h);
+                self.signal.apply_to(&mut e, false);
+                e
+            }
         }
     }
 
@@ -152,28 +158,32 @@ impl VideoEncoder for NvencEncoder {
 /// configuration.
 fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> std::result::Result<Config, String> {
     let hevc = format == Format::Hevc;
-    if !(format == Format::H264 || hevc) || s.format.is_mxf() {
-        return Err("only MP4 / MOV H.264 and H.265 exports".into());
+    let av1 = format == Format::Av1;
+    if !(format == Format::H264 || hevc || av1) || s.format.is_mxf() {
+        return Err("only MP4 / MOV H.264, H.265, and MP4 AV1 exports".into());
     }
     let hdr = s.signal.is_hdr();
     if hdr && !hevc {
-        return Err("HDR (8-bit H.264 here carries it with software signalling)".into());
+        return Err("HDR (8-bit H.264 and AV1 here are SDR)".into());
     }
-    // HEVC: BT.709 SDR (Main) or BT.2020 NCL with PQ / HLG (Main 10); any other description is not written
+    // HEVC: BT.709 SDR (Main) or BT.2020 NCL with PQ / HLG (Main 10); AV1: BT.709 SDR (Main)
     if hevc && (hdr && (s.signal.primaries != 9 || s.signal.matrix != 9) || !hdr && s.signal != ColorSignal::default()) {
         return Err(format!("the colour signal {:?} (H.265 here is BT.709, or BT.2020 with PQ / HLG)", s.signal));
     }
-    if !matches!(s.h264_pass, H264Pass::Single) || (hevc && s.bitrate_mode == BitrateMode::Vbr2Pass) {
+    if av1 && s.signal != ColorSignal::default() {
+        return Err(format!("the colour signal {:?} (AV1 here is BT.709)", s.signal));
+    }
+    if !matches!(s.h264_pass, H264Pass::Single) || ((hevc || av1) && s.bitrate_mode == BitrateMode::Vbr2Pass) {
         return Err("two-pass VBR".into());
     }
     if s.bitrate_mode == BitrateMode::Crf {
         return Err("CRF (constant quality)".into());
     }
-    if !hevc && s.h264_intra_only {
+    if format == Format::H264 && s.h264_intra_only {
         return Err("all-intra H.264".into());
     }
     // the hardware path writes the aspect ratio of H.264 only
-    if hevc && s.pixel_aspect.is_some_and(|(n, d)| n != d) {
+    if (hevc || av1) && s.pixel_aspect.is_some_and(|(n, d)| n != d) {
         return Err("non-square pixels".into());
     }
     if s.field_order != FieldOrder::Progressive {
@@ -201,17 +211,18 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
         max_bitrate_kbps: s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| kbps.saturating_add(kbps / 2)),
         cbr: s.bitrate_mode == BitrateMode::Cbr,
         keyint: s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (f64::from(fps.0) / f64::from(fps.1) * 2.0).round().max(1.0) as u32),
-        profile: match (hevc, s.h264_profile) {
-            (true, _) if hdr => Profile::HevcMain10,
-            (true, _) => Profile::HevcMain,
-            (false, H264Profile::Baseline) => Profile::Baseline,
-            (false, H264Profile::Main) => Profile::Main,
-            (false, H264Profile::High) => Profile::High,
+        profile: match (hevc, av1, s.h264_profile) {
+            (true, _, _) if hdr => Profile::HevcMain10,
+            (true, _, _) => Profile::HevcMain,
+            (_, true, _) => Profile::Av1Main,
+            (false, false, H264Profile::Baseline) => Profile::Baseline,
+            (false, false, H264Profile::Main) => Profile::Main,
+            (false, false, H264Profile::High) => Profile::High,
             // 10-bit H.264 and all-intra streams are the built-in encoder's
-            (false, H264Profile::High10) => return Err("High 10".into()),
+            (false, false, H264Profile::High10) => return Err("High 10".into()),
         },
-        // the H.264 level setting means nothing for H.265: the encoder picks the level
-        level: if hevc { None } else { s.h264_level },
+        // the H.264 level setting means nothing for H.265 / AV1: the encoder picks the level
+        level: if hevc || av1 { None } else { s.h264_level },
         sar: s.pixel_aspect,
         bframes: true,
     })
@@ -221,7 +232,11 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
 pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format == Format::Hevc {
         // H.265 through NVENC is Windows-only for now; on Linux this backend takes H.264 only
-        return if cfg!(target_os = "windows") { hevc_factory(w, h, rate, s) } else { None };
+        return if cfg!(target_os = "windows") { builtin_free_factory(Format::Hevc, w, h, rate, s, super::hevc_available) } else { None };
+    }
+    if format == Format::Av1 {
+        // AV1 through NVENC is Windows-only for now; on Linux this backend takes H.264 only
+        return if cfg!(target_os = "windows") { builtin_free_factory(Format::Av1, w, h, rate, s, super::av1_available) } else { None };
     }
     factory_with(format, w, h, rate, s, |cfg| open(cfg, &Signal::default()))
 }
@@ -270,15 +285,16 @@ fn factory_with(
     }
 }
 
-/// The H.265 side of [`factory`]: FilmCraft's only HEVC encoder on Windows, so the Hardware encoding toggle
-/// does not apply and a request NVENC cannot take is an error, not a fall-through.
-fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+/// The H.265 / AV1 side of [`factory`]: FilmCraft's only encoder for those formats on Windows, so the
+/// Hardware encoding toggle does not apply and a request NVENC cannot take is an error, not a fall-through.
+fn builtin_free_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings, available: fn() -> bool) -> Option<Result<Box<dyn VideoEncoder>>> {
+    let label = format.label();
     let declined = |why: &str| {
-        log::info!("hardware H.265 encoding declined: {why}");
+        log::info!("hardware {label} encoding declined: {why}");
         filmcraft_export::note_hw_encode_declined();
-        Some(Err(ExportError::Unsupported(format!("H.265 export with NVENC: {why}"))))
+        Some(Err(ExportError::Unsupported(format!("{label} export with NVENC: {why}"))))
     };
-    let cfg = match config(Format::Hevc, w, h, rate, s) {
+    let cfg = match config(format, w, h, rate, s) {
         Ok(c) => c,
         Err(why) => return declined(&why),
     };
@@ -287,9 +303,9 @@ fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<R
             filmcraft_export::note_hw_encode_session();
             Some(Ok(Box::new(new_encoder(enc, w, h, rate, s.signal))))
         }
-        // no HEVC encoder here at all: not a hardware attempt, the export's own "encoder not available" error
-        Err(why) if !super::hevc_available() => {
-            log::info!("no hardware H.265 encoder: {why}");
+        // no hardware encoder here at all: not a hardware attempt, the export's own "encoder not available" error
+        Err(why) if !available() => {
+            log::info!("no hardware {label} encoder: {why}");
             None
         }
         Err(why) => declined(&why),
@@ -417,6 +433,28 @@ mod tests {
         let hlg = nvenc_signal(&ColorSignal::HLG);
         assert_eq!((hlg.primaries, hlg.transfer, hlg.matrix, hlg.sei.len()), (9, 18, 9, 0));
         assert_eq!(nvenc_signal(&ColorSignal::default()), Signal::default());
+    }
+
+    #[test]
+    fn av1_takes_sdr_bt709_and_declines_the_rest() {
+        let ok = ExportSettings { format: Format::Av1, bitrate_kbps: 4000, keyframe_distance: Some(48), ..Default::default() };
+        let c = config(Format::Av1, 1280, 720, FrameRate::FPS_24, &ok).unwrap();
+        assert_eq!((c.profile, c.level, c.keyint, c.fps), (Profile::Av1Main, None, 48, (24, 1)));
+        let off = ExportSettings { hardware_encoding: HardwareEncoding::Off, ..ok.clone() };
+        assert!(config(Format::Av1, 1280, 720, FrameRate::FPS_24, &off).is_ok());
+        for (what, s) in [
+            ("HDR PQ", ExportSettings { signal: ColorSignal::PQ, ..ok.clone() }),
+            ("HDR HLG", ExportSettings { signal: ColorSignal::HLG, ..ok.clone() }),
+            ("non-BT.709 colour signal", ExportSettings { signal: ColorSignal { primaries: 9, transfer: 1, matrix: 1 }, ..ok.clone() }),
+            ("two-pass", ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..ok.clone() }),
+            ("CRF", ExportSettings { bitrate_mode: BitrateMode::Crf, ..ok.clone() }),
+            ("analysis pass", ExportSettings { h264_pass: H264Pass::First, ..ok.clone() }),
+            ("interlaced", ExportSettings { field_order: FieldOrder::UpperFirst, ..ok.clone() }),
+            ("non-square pixels", ExportSettings { pixel_aspect: Some((4, 3)), ..ok.clone() }),
+            ("MXF", ExportSettings { format: Format::MxfOp1a, ..ok.clone() }),
+        ] {
+            assert!(config(Format::Av1, 1280, 720, FrameRate::FPS_24, &s).is_err(), "{what}");
+        }
     }
 
     #[test]

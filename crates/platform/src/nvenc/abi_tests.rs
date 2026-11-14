@@ -198,11 +198,42 @@ fn nv_enc_config_hevc_layout_matches_the_header() {
 }
 
 #[test]
+fn nv_enc_config_av1_layout_matches_the_header() {
+    assert_eq!((size_of::<NV_ENC_CONFIG_AV1>(), align_of::<NV_ENC_CONFIG_AV1>()), (1552, 8), "NV_ENC_CONFIG_AV1");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, level), 0, "NV_ENC_CONFIG_AV1.level");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, tier), 4, "NV_ENC_CONFIG_AV1.tier");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, minPartSize), 8, "NV_ENC_CONFIG_AV1.minPartSize");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, maxPartSize), 12, "NV_ENC_CONFIG_AV1.maxPartSize");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, flags), 16, "NV_ENC_CONFIG_AV1.flags");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, idrPeriod), 20, "NV_ENC_CONFIG_AV1.idrPeriod");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, intraRefreshPeriod), 24, "NV_ENC_CONFIG_AV1.intraRefreshPeriod");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, intraRefreshCnt), 28, "NV_ENC_CONFIG_AV1.intraRefreshCnt");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, maxNumRefFramesInDPB), 32, "NV_ENC_CONFIG_AV1.maxNumRefFramesInDPB");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, numTileColumns), 36, "NV_ENC_CONFIG_AV1.numTileColumns");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, numTileRows), 40, "NV_ENC_CONFIG_AV1.numTileRows");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, tileWidths), 48, "NV_ENC_CONFIG_AV1.tileWidths");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, tileHeights), 56, "NV_ENC_CONFIG_AV1.tileHeights");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, maxTemporalLayersMinus1), 64, "NV_ENC_CONFIG_AV1.maxTemporalLayersMinus1");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, colorPrimaries), 68, "NV_ENC_CONFIG_AV1.colorPrimaries");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, transferCharacteristics), 72, "NV_ENC_CONFIG_AV1.transferCharacteristics");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, matrixCoefficients), 76, "NV_ENC_CONFIG_AV1.matrixCoefficients");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, colorRange), 80, "NV_ENC_CONFIG_AV1.colorRange");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, chromaSamplePosition), 84, "NV_ENC_CONFIG_AV1.chromaSamplePosition");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, useBFramesAsRef), 88, "NV_ENC_CONFIG_AV1.useBFramesAsRef");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, filmGrainParams), 96, "NV_ENC_CONFIG_AV1.filmGrainParams");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, numFwdRefs), 104, "NV_ENC_CONFIG_AV1.numFwdRefs");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, numBwdRefs), 108, "NV_ENC_CONFIG_AV1.numBwdRefs");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved1), 112, "NV_ENC_CONFIG_AV1.reserved1");
+    assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved2), 1056, "NV_ENC_CONFIG_AV1.reserved2");
+}
+
+#[test]
 fn nv_enc_codec_config_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CODEC_CONFIG>(), align_of::<NV_ENC_CODEC_CONFIG>()), (1792, 8), "NV_ENC_CODEC_CONFIG");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, h264Config), 0, "NV_ENC_CODEC_CONFIG.h264Config");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, reserved), 0, "NV_ENC_CODEC_CONFIG.reserved");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, hevcConfig), 0, "NV_ENC_CODEC_CONFIG.hevcConfig");
+    assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, av1Config), 0, "NV_ENC_CODEC_CONFIG.av1Config");
 }
 
 #[test]
@@ -601,6 +632,15 @@ fn guids_match_the_header() {
     assert_eq!(NV_ENC_CODEC_HEVC_GUID.to_u128(), 0x790cdc8845224d7b9425bda9975f7603u128, "NV_ENC_CODEC_HEVC_GUID");
     assert_eq!(NV_ENC_HEVC_PROFILE_MAIN_GUID.to_u128(), 0xb514c39ab55b40fa878ff1253b4dfdecu128, "NV_ENC_HEVC_PROFILE_MAIN_GUID");
     assert_eq!(NV_ENC_HEVC_PROFILE_MAIN10_GUID.to_u128(), 0xfa4d2b6c3a5b411a80180a3f5e3c9be5u128, "NV_ENC_HEVC_PROFILE_MAIN10_GUID");
+    assert_eq!(NV_ENC_CODEC_AV1_GUID.to_u128(), 0x0a3522890aa74759862d5d15cd16d254u128, "NV_ENC_CODEC_AV1_GUID");
+    assert_eq!(NV_ENC_AV1_PROFILE_MAIN_GUID.to_u128(), 0x5f2a39f5f14e4f959a9eb76d568fcf97u128, "NV_ENC_AV1_PROFILE_MAIN_GUID");
+}
+
+#[test]
+fn av1_constants_match_the_header() {
+    assert_eq!(NV_ENC_LEVEL_AV1_AUTOSELECT as i64, 24, "NV_ENC_LEVEL_AV1_AUTOSELECT");
+    assert_eq!(NV_ENC_TIER_AV1_0 as i64, 0, "NV_ENC_TIER_AV1_0");
+    assert_eq!(NV_ENC_AV1_PART_SIZE_AUTOSELECT as i64, 0, "NV_ENC_AV1_PART_SIZE_AUTOSELECT");
 }
 
 /// The bit-field masks of the `flags` words (the C compiler's layout of each bit-field set alone).
@@ -617,4 +657,15 @@ fn bit_field_masks_match_the_header() {
     assert_eq!(HEVC_OUTPUT_RECOVERY_POINT_SEI, 0x40000, "NV_ENC_CONFIG_HEVC.outputRecoveryPointSEI");
     assert_eq!(HEVC_CHROMA_FORMAT_MASK >> HEVC_CHROMA_FORMAT_SHIFT, 3, "chromaFormatIDC is 2 bits");
     assert_eq!(HEVC_PIXEL_BIT_DEPTH_MASK >> HEVC_PIXEL_BIT_DEPTH_SHIFT, 7, "pixelBitDepthMinus8 is 3 bits");
+    assert_eq!(AV1_OUTPUT_ANNEX_B, 0x1, "NV_ENC_CONFIG_AV1.outputAnnexBFormat");
+    assert_eq!(AV1_ENABLE_TIMING_INFO, 0x2, "NV_ENC_CONFIG_AV1.enableTimingInfo");
+    assert_eq!(AV1_DISABLE_SEQ_HDR, 0x10, "NV_ENC_CONFIG_AV1.disableSeqHdr");
+    assert_eq!(AV1_REPEAT_SEQ_HDR, 0x20, "NV_ENC_CONFIG_AV1.repeatSeqHdr");
+    assert_eq!(AV1_ENABLE_INTRA_REFRESH, 0x40, "NV_ENC_CONFIG_AV1.enableIntraRefresh");
+    assert_eq!(AV1_CHROMA_FORMAT_MASK, 0x180, "NV_ENC_CONFIG_AV1.chromaFormatIDC");
+    assert_eq!(AV1_INPUT_PIXEL_BIT_DEPTH_MASK, 0x7000, "NV_ENC_CONFIG_AV1.inputPixelBitDepthMinus8");
+    assert_eq!(AV1_PIXEL_BIT_DEPTH_MASK, 0x38000, "NV_ENC_CONFIG_AV1.pixelBitDepthMinus8");
+    assert_eq!(AV1_CHROMA_FORMAT_MASK >> AV1_CHROMA_FORMAT_SHIFT, 3, "chromaFormatIDC is 2 bits");
+    assert_eq!(AV1_INPUT_PIXEL_BIT_DEPTH_MASK >> AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT, 7, "inputPixelBitDepthMinus8 is 3 bits");
+    assert_eq!(AV1_PIXEL_BIT_DEPTH_MASK >> AV1_PIXEL_BIT_DEPTH_SHIFT, 7, "pixelBitDepthMinus8 is 3 bits");
 }
