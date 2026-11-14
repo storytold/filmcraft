@@ -168,6 +168,13 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// How long the sound keeps playing past the sequence end so track, submix and Mix effect
+    /// tails (reverb, echo) decay instead of being cut (#2731): the mixer graph's
+    /// [`filmcraft_render::mixer::effect_tail`], taken when playback starts. The playhead rests
+    /// on the last frame meanwhile. Taken again at the end if the project changed since.
+    pub ring_out: Tick,
+    /// The project revision and active sequence `ring_out` was taken for.
+    pub ring_out_key: Option<(u64, Option<filmcraft_project::ItemId>)>,
     /// Where the Timeline draws the playhead while playing, and when (monotonic host s): it moves
     /// with the wall clock every frame and eases toward the playback clock, so it glides instead
     /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
