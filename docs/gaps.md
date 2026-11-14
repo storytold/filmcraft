@@ -4,6 +4,8 @@
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
+Experimental contribution (2026-10-24, #388): saved-project links with an EffectCraft CLI adapter are implemented on this branch. Full-composition background cache refresh, errors, relink and bake/restore are in scope; frame serving, used ranges, web/Flatpak packaging and other app adapters remain. This is a draft prototype, not a readiness or parity-score increase. See [linked-projects](linked-projects.md).
+
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
 [target-app-parity.md](target-app-parity.md); estimates are Opus 5.5 agent-hours, calibrated there.

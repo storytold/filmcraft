@@ -21,7 +21,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-pub use crate::panels::project_views::{item_icon, media_badge};
+pub use crate::panels::project_views::{item_icon, media_badge, project_item_icon};
 
 /// A bin opened in its own tab of the Project panel, or in a floating panel.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -530,7 +530,7 @@ fn preview_area(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, pre: &str) {
     if let Some((tex, sz)) = app.thumbnail(&ctx, id, quantize(poster), 160) {
         ui.painter().image(tex, crate::panels::monitor::fit(th, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     } else {
-        icons::paint(ui.painter(), Rect::from_center_size(th.center(), vec2(24.0, 24.0)), item_icon(&it.kind), t.text_faint);
+        icons::paint(ui.painter(), Rect::from_center_size(th.center(), vec2(24.0, 24.0)), project_item_icon(app, &it), t.text_faint);
     }
     let p = &app.session.project;
     let col = |c: &str| filmcraft_engine::project_panel::cell(p, &it, c).0;

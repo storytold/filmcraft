@@ -126,6 +126,58 @@ impl Drop for Driver {
 }
 
 #[test]
+fn export_explains_disabled_link_and_opens_renderer_setup() {
+    use filmcraft_project::project_link::ProjectLink;
+    use std::sync::Arc;
+
+    let mut d = Driver::new("linked-renderer");
+    let seq = d.app().session.state.active_sequence.unwrap();
+    let used = filmcraft_engine::project_tools::closure(&d.app().session.project, &[seq]);
+    let item = used.into_iter().find(|id| d.app().session.project.item(*id).is_some_and(|i| i.as_media().is_some())).unwrap();
+    let before = d.app().session.project.clone();
+    Arc::make_mut(&mut d.app().session.project).project_links.insert(
+        item,
+        ProjectLink {
+            version: 1,
+            provider: "effectcraft".into(),
+            project_path: "missing.ecproj".into(),
+            object: "1".into(),
+            object_name: "Test lower third".into(),
+            revision: String::new(),
+            cache_generation: 0,
+            baked: false,
+        },
+    );
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    assert!(d.has("export.linkedProject.warning"), "a disabled link must not look ready to export");
+    let elements = d.ok("ui.elements", json!({"prefix":"export.linkedProject.warning"}));
+    assert!(elements[0]["label"].as_str().unwrap().contains("Test lower third"));
+    d.snapshot("export-linked-renderer-disabled");
+    d.click("export.linkedProject.configure");
+    assert!(d.has("linkedProjects.renderer"));
+    assert!(d.has("linkedProjects.enable"));
+    assert!(d.app().session.project_links.adapters.is_empty(), "opening setup cannot authorize an executable");
+    d.click("linkedProjects.close");
+    assert!(d.has("export.linkedProject.warning"), "dismissal must not hide the blocker");
+    Arc::make_mut(&mut d.app().session.project).project_links.get_mut(&item).unwrap().baked = true;
+    d.frames(3);
+    assert!(!d.has("export.linkedProject.warning"), "baked media needs no renderer");
+    Arc::make_mut(&mut d.app().session.project).project_links.get_mut(&item).unwrap().baked = false;
+    // Queued exports keep their own project snapshot and sequence.
+    d.exec("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": d.path("linked.wav")}));
+    let unrelated = Arc::make_mut(&mut d.app().session.project).new_sequence("Unrelated", Default::default(), 1, 0, None);
+    d.app().session.state.active_sequence = Some(unrelated);
+    d.frames(3);
+    assert!(d.has("export.linkedProject.warning"), "a ready queued export of the linked sequence still needs the renderer");
+    d.app().session.export_queue.items.clear();
+    d.frames(3);
+    assert!(!d.has("export.linkedProject.warning"), "unused links must not block another sequence");
+    assert!(d.app().session.jobs.is_empty(), "the warning and setup must not start an export");
+    d.app().session.project = before;
+}
+
+#[test]
 fn single_frame_in_out_warning_updates_with_range_and_marks() {
     let mut d = Driver::new("single-frame-warning");
     d.exec("markers.markIn", json!({"frame":12}));
