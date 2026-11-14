@@ -1,22 +1,95 @@
 use filmcraft_project::{Track, Transition};
 
 use super::layout::Layout;
-use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
+use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, SNAP_REARM_PX, SNAP_RELEASE_PX, Sequence, Tick, Value, grab_at, json};
+
+/// Which end of the dragged block a snap point is for: the sticky release is kept per end, so the
+/// two ends snap independently.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SnapSide {
+    Start,
+    End,
+}
+
+impl SnapSide {
+    fn slot(self) -> usize {
+        match self {
+            SnapSide::Start => 0,
+            SnapSide::End => 1,
+        }
+    }
+}
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
-pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
-    snap_to(app, seq, layout, t, exclude, true)
+pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], mods: egui::Modifiers) -> Tick {
+    snap_to(app, seq, layout, t, exclude, true, None, mods)
+}
+
+/// [`snap`] for one end of the dragged block, with the sticky hysteresis that end keeps.
+pub(in super::super) fn snap_side(
+    app: &mut FilmcraftApp,
+    seq: &Sequence,
+    layout: &Layout,
+    t: Tick,
+    exclude: &[ClipId],
+    side: SnapSide,
+    mods: egui::Modifiers,
+) -> Tick {
+    snap_to(app, seq, layout, t, exclude, true, Some(side), mods)
 }
 
 /// Where a dragged playhead lands: [`snap`], but not onto itself, or it would stick where it is
 /// and only move in jumps of `SNAP_PX` (#164).
-pub(super) fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick) -> Tick {
-    snap_to(app, seq, layout, t, &[], false)
+pub(in super::super) fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, mods: egui::Modifiers) -> Tick {
+    snap_to(app, seq, layout, t, &[], false, None, mods)
 }
 
-fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Tick {
-    match targets(app, seq, layout, t, exclude, to_playhead).first() {
-        Some(&(_, c)) => {
+#[allow(clippy::too_many_arguments)]
+fn snap_to(
+    app: &mut FilmcraftApp,
+    seq: &Sequence,
+    layout: &Layout,
+    t: Tick,
+    exclude: &[ClipId],
+    to_playhead: bool,
+    side: Option<SnapSide>,
+    mods: egui::Modifiers,
+) -> Tick {
+    // Snapping is off, or Option (Alt) is held: Alt is read every frame, so it can be pressed and
+    // let go in the middle of a drag to place the clip freely.
+    if !app.session.state.snapping || mods.alt {
+        return t;
+    }
+    let x = layout.x_of(t);
+    if let Some(slot) = side.map(SnapSide::slot) {
+        // Sticky: stay on the point while the pointer is still near it, however far the block has
+        // moved, so a drag along an edge does not flicker in and out of the snap.
+        if let Some(stuck) = app.tl.snap_stick[slot] {
+            if (layout.x_of(stuck) - x).abs() <= SNAP_RELEASE_PX {
+                app.tl.snap_x = Some(layout.x_of(stuck));
+                return stuck;
+            }
+            app.tl.snap_stick[slot] = None;
+            app.tl.snap_free[slot].push(stuck);
+        }
+        // A point the drag broke free of stays out of reach until the pointer is well past it.
+        app.tl.snap_free[slot].retain(|c| (layout.x_of(*c) - x).abs() < SNAP_REARM_PX);
+    }
+    let mut best: Option<(f32, Tick)> = None;
+    for (d, c) in targets(app, seq, layout, t, exclude, to_playhead) {
+        if side.is_some_and(|s| app.tl.snap_free[s.slot()].contains(&c)) {
+            continue;
+        }
+        if best.is_none_or(|b| d < b.0) {
+            best = Some((d, c));
+        }
+    }
+    match best {
+        Some((_, c)) => {
+            // stick to the point: the next frames keep it, until the pointer is pulled away
+            if let Some(slot) = side.map(SnapSide::slot) {
+                app.tl.snap_stick[slot] = Some(c);
+            }
             app.tl.snap_x = Some(layout.x_of(c));
             c
         }
@@ -52,7 +125,6 @@ fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
     near
 }
-
 /// Where transition `tr` on `track` goes (start, duration) when its `edge` (both ends when
 /// `None`) is dragged by `delta` (#4328): on the nearest of [`snap`]'s targets for the end that
 /// moves (for a move, either end's) that [`filmcraft_edit::transitions::drag_span`] lets it reach;
@@ -91,8 +163,9 @@ pub(super) fn snap_transition(
 
 /// Where a dragged caption edge lands (#2192): [`snap`], or the nearest edge of a caption not in
 /// `exclude` (the captions being dragged) when that is closer.
-pub(in super::super) fn snap_caption(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
-    if !app.session.state.snapping {
+pub(in super::super) fn snap_caption(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], mods: egui::Modifiers) -> Tick {
+    // Option (Alt) bypasses snapping here too, read every frame as for a clip drag
+    if !app.session.state.snapping || mods.alt {
         return t;
     }
     let x = layout.x_of(t);
@@ -107,7 +180,7 @@ pub(in super::super) fn snap_caption(app: &mut FilmcraftApp, seq: &Sequence, lay
         .min_by(|a, b| a.0.total_cmp(&b.0));
     // `snap` sets the indicator only when it snaps: that tells a snap onto `t` itself from none
     let prev = app.tl.snap_x.take();
-    let clip = snap(app, seq, layout, t, &[]);
+    let clip = snap(app, seq, layout, t, &[], mods);
     let clip_d = app.tl.snap_x.map(|sx| (sx - x).abs());
     match (caption, clip_d) {
         (Some((d, c)), cd) if cd.is_none_or(|cd| d < cd) => {
