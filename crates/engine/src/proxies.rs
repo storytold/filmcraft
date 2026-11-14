@@ -84,6 +84,8 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
+    /// Source identity when work began; stale outputs must not attach to replacement footage.
+    pub sources: Vec<(ItemId, MediaRef, Option<filmcraft_project::MediaIdentity>)>,
     /// Length of the source each finished output was transcoded from (the worker's own copy, filled
     /// as it goes): a generated proxy is as long as that source, which a project's stored duration
     /// can overstate.
@@ -274,6 +276,7 @@ fn items_param(s: &Session, p: &Value) -> Vec<ItemId> {
 /// Start a background transcode job over `work` (item, output path, preset). Returns the job id.
 fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
     let mut tasks = Vec::new();
+    let mut sources = Vec::new();
     let mut total = 0;
     let mut started_from = Vec::new();
     for (item, output, pr) in work {
@@ -285,6 +288,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         let source_duration = src.info().duration;
         total += frame_count(&clip, Some(TimeRange { start: Tick::ZERO, duration: source_duration }));
         started_from.push((item, path, clip.info.duration));
+        sources.push((item, clip.media.clone(), clip.identity));
         tasks.push((item, clip, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
@@ -355,7 +359,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations, started_from, epoch: s.document_epoch });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, sources, source_durations, started_from, epoch: s.document_epoch });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -386,8 +390,17 @@ pub fn poll(s: &mut Session) {
             }
             continue;
         }
-        let (outs, changed): (Vec<_>, Vec<_>) = outs.into_iter().partition(|(item, _)| unchanged_since_start(&s.project, *item, &pj.started_from));
-        for (item, _) in &changed {
+        let (outs, changed): (Vec<_>, Vec<_>) = outs.into_iter().partition(|(item, _)| {
+            unchanged_since_start(&s.project, *item, &pj.started_from)
+                && (pj.on_done == OnDone::Nothing
+                    || pj.sources.iter().any(|(id, source, identity)| {
+                        *id == *item && s.project.item(*item).and_then(|i| i.as_media()).is_some_and(|m| m.media == *source && m.identity == *identity)
+                    }))
+        });
+        for (item, path) in &changed {
+            if pj.on_done != OnDone::Nothing {
+                discard_unused_output(s, path);
+            }
             let name = s.project.item(*item).map_or_else(|| format!("item {}", item.0), |i| i.name.clone());
             s.error_toast("job", format!("{name} changed while its copy was made; the copy was not applied"));
         }
@@ -402,6 +415,35 @@ pub fn poll(s: &mut Session) {
         if let Err(e) = r {
             s.error_toast("job", e.to_string());
         }
+    }
+}
+
+/// Delete an obsolete job-owned output only when current and undoable states do not use it.
+fn discard_unused_output(s: &mut Session, path: &str) {
+    let canonical = std::fs::canonicalize(path).ok();
+    let mut seen = std::collections::HashSet::new();
+    let mut references = |media: &MediaRef| {
+        let MediaRef::File { path: used } = media else { return false };
+        if used == path {
+            return true;
+        }
+        if !seen.insert(used.clone()) {
+            return false;
+        }
+        let followed = s.media.follow(used).ok();
+        followed.as_deref() == Some(path)
+            || canonical.as_ref().is_some_and(|output| followed.and_then(|p| std::fs::canonicalize(p).ok()).as_ref() == Some(output))
+    };
+    let mut projects = std::iter::once(s.project.as_ref()).chain(s.history.undo.iter().chain(&s.history.redo).map(|(_, p, _)| p.as_ref()));
+    if projects.any(|project| {
+        project.items.values().any(|item| item.as_media().is_some_and(|m| references(&m.media) || m.proxy.as_ref().is_some_and(&mut references)))
+    }) {
+        return;
+    }
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        s.error_toast("job", format!("could not remove obsolete job output {path}: {error}"));
     }
 }
 

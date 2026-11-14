@@ -61,6 +61,24 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     }
     let enabled = |app: &FilmcraftApp, id: &str| filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session));
     match id {
+        "media.replaceFootage" => {
+            if let Err(e) = enabled(app, id) {
+                return Some(Err(e));
+            }
+            let item = app.session.state.project_selection.first().copied()?;
+            let exts = filmcraft_media::VIDEO_EXTENSIONS
+                .iter()
+                .chain(filmcraft_media::AUDIO_EXTENSIONS)
+                .chain(filmcraft_media::STILL_EXTENSIONS)
+                .map(|s| s.to_string())
+                .collect();
+            let hint = RelinkHint { command: id.to_string(), params: json!({"item": item.0}) };
+            Some(app.pick(FileDialog::Relink { exts, hint }, move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                app.stop();
+                app.session.execute("media.replaceFootage", json!({"item": item.0, "path": path})).map_err(|e| e.to_string())
+            }))
+        }
         "media.linkMedia" => {
             let r = app.session.execute("media.linkMedia", json!({})).map_err(|e| e.to_string());
             if let Ok(v) = &r
