@@ -280,10 +280,13 @@ impl Layout {
     pub fn selection_rects(&self, a: usize, b: usize) -> Vec<[f32; 4]> {
         let (a, b) = (a.min(b), a.max(b));
         let mut out = Vec::new();
-        for l in &self.lines {
+        for (i, l) in self.lines.iter().enumerate() {
             let s = a.max(l.range.start);
             let e = b.min(l.range.end);
-            if s > e || (s == e && !(a < l.range.start && b > l.range.end)) {
+            // A hard break leaves a gap before the next line; a soft wrap does not.
+            let next = self.lines.get(i + 1).map_or(self.text_len, |n| n.range.start);
+            let only_break = next > l.range.end && a <= l.range.end && b > l.range.end;
+            if s > e || (s == e && !only_break && !(a < l.range.start && b > l.range.end)) {
                 continue;
             }
             let xs: Vec<f32> = l.carets.iter().filter(|(p, _)| *p >= s && *p <= e).map(|c| c.1).collect();
@@ -1120,5 +1123,34 @@ mod hostile_layout_tests {
         let mixed = "a \u{5d0} ".repeat(4_000);
         let _ = layout_uncached(&mixed, &TextStyle::default(), &ParagraphStyle { width: Some(300.0), ..Default::default() });
         assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod selection_rect_tests {
+    use super::*;
+
+    #[test]
+    fn selecting_only_a_line_break_gives_a_rect() {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let lay = layout_uncached("ab\ncd", &st, &ParagraphStyle::default());
+        let r = lay.selection_rects(2, 3);
+        assert_eq!(r.len(), 1, "{r:?}");
+        let (x, _, _) = lay.caret(2);
+        assert!(r[0][2] > x, "{r:?}");
+        let lay = layout_uncached("\nx", &st, &ParagraphStyle::default());
+        assert_eq!(lay.selection_rects(0, 1).len(), 1);
+    }
+
+    #[test]
+    fn selection_starting_at_a_soft_wrap_has_no_break_rect() {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let pa = ParagraphStyle { width: Some(150.0), ..Default::default() };
+        let lay = layout_uncached("aaaa bbbb cccc", &st, &pa);
+        assert!(lay.lines.len() > 1);
+        let end = lay.lines[0].range.end;
+        assert_eq!(lay.lines[1].range.start, end);
+        let r = lay.selection_rects(end, end + 2);
+        assert_eq!(r.len(), 1, "{r:?}");
     }
 }
