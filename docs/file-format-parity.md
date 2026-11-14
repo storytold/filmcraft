@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (AVI import #650 and VP8 WebM #1064 ship; GIF export binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (DNG stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -52,7 +52,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write (frame / sequence) | % |
 |---|---|---|---|---|
-| PNG, JPEG, TIFF, BMP, GIF | read + write | yes; EXIF Orientation 1–8 applied to JPEG, PNG (`eXIf`) and TIFF (#1583), not yet to uncompressed / PackBits YCbCr TIFF or DNG | PNG / TIFF / BMP / JPEG sequences; GIF with optional binary transparency (alpha 0–127 transparent, 128–255 opaque, #3396) | 90% |
+| PNG, JPEG, TIFF, BMP, GIF | read + write | yes; EXIF Orientation 1–8 applied to JPEG, PNG (`eXIf`), TIFF (#1583) and DNG; not yet to uncompressed / PackBits YCbCr TIFF | PNG / TIFF / BMP / JPEG sequences; GIF with optional binary transparency (alpha 0–127 transparent, 128–255 opaque, #3396) | 90% |
 | WebP | — | yes, EXIF Orientation applied (#1583) | no | ahead |
 | **PSD** (layers as sequence) | read (layered) | the flattened composite (Merge All Layers): Grayscale / RGB, 8 / 16-bit (kept at 8), raw or PackBits, merged transparency (unblended from white); files saved without Maximize Compatibility refused; no layers, PSB, CMYK, Lab, indexed, 32-bit or ZIP | — | 30% |
 | **OpenEXR** | read + write | stills and sequences: scan-line, none / RLE / ZIPS / ZIP / PXR24, half / float / uint, RGB(A) or Y, kept as linear float (#828); no PIZ, B44, DWA, tiled, multi-part or deep | sequences (half float, linear RGB / premultiplied RGBA; uncompressed, RLE, ZIPS or ZIP; #806, #874) | 70% |
@@ -97,3 +97,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
 | 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
 | 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
+| 2026-11-09 | minor | Stills: DNG applies its Orientation tag; YCbCr TIFF not yet |
