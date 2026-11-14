@@ -49,8 +49,8 @@ render screenshots with wgpu.
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean, Italian, Czech, Polish, Swedish and Turkish (all but Ukrainian cover
-the whole interface; Ukrainian covers the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, German, Russian, French, Indonesian, Korean, Italian, Czech, Polish, Swedish, Turkish and Tamil (all but Ukrainian cover
+the whole interface; Ukrainian covers the core menus; Tamil needs a Tamil font, installed or from craft-fonts). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through

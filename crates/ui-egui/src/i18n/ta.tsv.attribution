@@ -1,0 +1,8 @@
+asset:        ta.tsv
+title:        Tamil interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-11-12 by newsbaba24x7
+notes:        Clean-room English-to-Tamil interface translations: most entries from the Tamil FilmCraft catalog in craft-i18n (reviewed for language and terminology by native speakers), the rest AI-assisted and not yet native-reviewed.

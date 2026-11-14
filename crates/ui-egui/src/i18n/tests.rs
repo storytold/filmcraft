@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::Ta => Some(include_str!("ta.tsv")),
     }
 }
 
@@ -96,6 +97,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
         (Language::Tr, "Türkçe"),
+        (Language::Ta, "தமிழ்"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -223,6 +225,66 @@ fn chinese_switches_and_persists_or_is_refused_without_a_font() {
     assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::ZhCn);
     crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
     set_current(Language::En);
+}
+
+/// Tamil switches and persists like the other languages when a Tamil font is available (a
+/// craft-fonts `Taml` face or an installed one), and is refused (the interface stays as it was)
+/// without one.
+#[test]
+fn tamil_switches_and_persists_or_is_refused_without_a_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let r = crate::menus::invoke(&mut app, &ctx, "app.language.tamil", serde_json::json!({}));
+    if !craft_tamil_font() && system_tamil_font().is_none() {
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.session.prefs.general.interface_language, "system");
+        // a saved Tamil preference falls back to English at startup
+        app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ta"})).unwrap();
+        app.apply_prefs(&ctx);
+        assert_eq!(app.ui.language, Language::En);
+        set_current(Language::En);
+        return;
+    }
+    assert_eq!(r.unwrap(), serde_json::json!("ta"));
+    assert_eq!(app.ui.language, Language::Ta);
+    assert_eq!(app.session.prefs.general.interface_language, "ta");
+    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.tamil" && it.checked == Some(true)));
+    let items = crate::menus::menu_items(&app);
+    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.clone());
+    assert_eq!(label("app.language.tamil").as_deref(), Some("தமிழ்"));
+    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+    let mut restarted = filmcraft_engine::Session::default();
+    restarted.prefs = serde_json::from_str(&prefs).unwrap();
+    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Ta);
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    set_current(Language::En);
+}
+
+/// With a Tamil font (craft-fonts `Taml` face or an installed one), every character the Tamil
+/// catalog uses has a glyph in the interface's proportional and monospace families. Skipped on a
+/// system without one.
+#[test]
+fn tamil_renders_with_a_tamil_font() {
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+    if !install_tamil_font(&ctx) {
+        eprintln!("SKIPPED: no Tamil font (build with a craft-fonts Taml face or install one to run)");
+        return;
+    }
+    // the installed font is queued for the next pass
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    let (entries, _) = catalog::parse_entries(include_str!("ta.tsv"));
+    let tamil: std::collections::BTreeSet<char> =
+        entries.iter().flat_map(|(_, _, ta)| ta.chars()).chain(Language::Ta.name().chars()).filter(|c| ('\u{0B80}'..='\u{0BFF}').contains(c)).collect();
+    assert!(tamil.len() > 30, "{tamil:?}");
+    ctx.fonts_mut(|fonts| {
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let font = egui::FontId::new(13.0, family);
+            let missing: String = tamil.iter().filter(|c| !fonts.has_glyph(&font, **c)).collect();
+            assert!(missing.is_empty(), "{font:?} lacks {missing}");
+        }
+    });
 }
 
 /// The crate's sources (`src/**/*.rs`), each cut at its test module.
@@ -625,6 +687,12 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     }
     for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
         assert_eq!(l(&[tag]), Language::Tr, "{tag}");
+    }
+    for tag in ["ta", "TA", "ta-IN", "ta-LK", "ta-SG", "ta-MY", "ta_IN.UTF-8", "ta_LK"] {
+        assert_eq!(l(&[tag]), Language::Ta, "{tag}");
+    }
+    for none in [&["tam"][..], &["t"], &["-ta"], &["te"], &["te-IN"]] {
+        assert_eq!(l(none), Language::En, "{none:?}");
     }
     for none in [&["ita"][..], &["i"], &["-it"]] {
         assert_eq!(l(none), Language::En, "{none:?}");

@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-08 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-12 · **Change:** minor (G14: Tamil catalog; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -262,8 +262,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498, #804), Portuguese (Brazil) (#859,
   #866), Indonesian (#867, #878), Korean (#508), Italian, German (#630), Russian, Czech, Polish,
-  Swedish, Turkish and Bosnian catalogs cover the whole interface (about 99–100% of the cataloged
-  strings); Ukrainian is menus only (~10%).
+  Swedish, Turkish, Bosnian and Tamil catalogs cover the whole interface (about 99–100% of the cataloged
+  strings; Tamil needs a Tamil font, installed or from craft-fonts); Ukrainian is menus only (~10%).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
@@ -288,6 +288,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Done:** Turkish: `tr.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
   Settings ▸ General and the native macOS menu; System Language picks it for `tr-*` locales.
   Native-speaker review welcome.
+- **Done:** Tamil: `ta.tsv` has every entry of the Swedish catalog (~100%), in Edit ▸ Language,
+  Settings ▸ General and the native macOS menu; System Language picks it for `ta-*` locales. It draws
+  with a craft-fonts `Taml` face or an installed Tamil font and stays in English without one.
+  Native-speaker review welcome for the newest entries.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
 ## G15. Interchange never validated in Avid / Pro Tools
