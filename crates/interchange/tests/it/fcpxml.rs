@@ -227,6 +227,16 @@ fn hostile_lane_numbers_do_not_create_sparse_tracks() {
     assert!(rep.has_warnings());
 }
 
+/// A `lane` that is not an integer that fits (`1.5`, `99999999999`) used to drop the clip without a word.
+#[test]
+fn a_lane_that_is_not_an_i32_is_reported_not_silently_dropped() {
+    for bad in ["1.5", "99999999999", "x"] {
+        let d = doc().replace("lane=\"1\"", &format!("lane=\"{bad}\""));
+        let (_, rep) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+        assert!(rep.warnings().any(|w| w.message.contains(&format!("lane \"{bad}\""))), "{bad}: {rep}");
+    }
+}
+
 /// Final Cut writes slideshow stills directly as video elements, including zero-duration assets.
 #[test]
 fn standalone_video_stills_keep_timing_paths_and_transitions() {

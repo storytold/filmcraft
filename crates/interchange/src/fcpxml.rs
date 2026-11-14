@@ -546,7 +546,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         // Connected clips and secondary storylines.
         for c in elements(el) {
-            let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
+            let Some(lane_attr) = c.attribute("lane") else { continue };
+            let Ok(l) = lane_attr.trim().parse::<i32>() else {
+                self.report.warn(format!("<{}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped", c.tag_name().name()));
+                continue;
+            };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
             let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
