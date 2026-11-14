@@ -330,19 +330,22 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   forces the CPU path in the desktop app.
 - **CPU compositor shortcuts.** The CPU compositor, which is what export runs, works on
   premultiplied linear `f32` images, 33 MB at 1080p, so what it does not allocate, convert or mix
-  is time saved. Three shortcuts, each of which gives the general path's bits (compared bit for
+  is time saved. Four shortcuts, each of which gives the general path's bits (compared bit for
   bit, with every blend mode, in `render/src/region_tests.rs`): the canvas stays unallocated
   until a layer needs it, and an opaque bottom layer (an 8-bit or 16-bit Y'CbCr frame without an
   alpha plane, opacity 100 %, Normal) simply becomes the canvas; a plain media frame with an alpha
   plane (a ProRes 4444 banner) is converted and mixed only inside the rectangle where its alpha is
   not zero (`VideoFrame::alpha_region`, `to_linear_f32_region`, `blend::composite_at`), the rest
-  being transparent anyway; and working images are recycled through `filmcraft_frame::pool`
+  being transparent anyway; a plain media frame that is only scaled and moved, such as a landscape
+  picture filled into a vertical frame, is converted only inside the window the resampler reads
+  (`AxisResample::window`, `to_linear_f32_region`), the rest never reaching the output; and working
+  images are recycled through `filmcraft_frame::pool`
   (`take_f32_overwritten` / `recycle_f32`: the buffer comes back with its old contents, so there is
   no zero-fill) by the export pipeline once a frame is converted to 8 bits; a standalone export's
   pipeline frees the idle float images (`pool::trim_f32`) when it goes away, so a finished export
   leaves none behind (parts of a batch, such as render-preview segments, keep them for the next part). A clip
-  with effects, opacity masks, frame blending, colour management, or a picture that is not placed
-  one to one on the output takes the general path.
+  with effects, opacity masks, frame blending, colour management, or a picture that is rotated,
+  sheared or shrunk by half or more takes the general path.
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never
   decodes. It shows the exact frame when it is ready and holds the nearest cached frame meanwhile.
