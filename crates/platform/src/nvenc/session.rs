@@ -560,6 +560,7 @@ impl Session {
             let rows = (l.pitch as usize).saturating_mul(h as usize);
             let len = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });
+            filmcraft_frame::transfers::record_encode_upload(len as u64);
             let st = unlock(self.enc, input);
             if st != NV_ENC_SUCCESS {
                 return Err(status("unlocking an input buffer", st, self.enc, self.api));

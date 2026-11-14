@@ -482,6 +482,7 @@ impl GpuCompositor {
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         self.uploaded_bytes += bytes.len() as u64;
+        filmcraft_frame::transfers::record_compositor_upload(bytes.len() as u64);
         t.create_view(&Default::default())
     }
 
@@ -1251,6 +1252,7 @@ impl GpuCompositor {
         }
         buf.unmap();
         self.accum_readback_buf = Some((buf, capacity));
+        filmcraft_frame::transfers::record_export_readback(u64::from(w) * u64::from(h) * 8);
         export_renderer::timing::add_convert(t.elapsed());
         Some((w, h, out))
     }
