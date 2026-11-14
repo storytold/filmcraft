@@ -246,6 +246,29 @@ impl Pipeline {
         })
     }
 
+    /// Estimated peak bytes a CPU render of output frame `f` holds while it is drawn
+    /// ([`filmcraft_render::working_set`]).
+    /// [`Pipeline::place`] included: fitting the picture into the output frame holds the rendered
+    /// picture, the resample's intermediate and its result, and the output frame, after the
+    /// render has handed everything else back.
+    pub fn working_set(&self, f: i64) -> u64 {
+        let render = filmcraft_render::working_set::frame_working_set(&self.project, self.seq, self.rate.tick_of(f), self.opts);
+        let rendered = self.project.sequence(self.seq).map_or((0, 0), |s| filmcraft_render::output_size(s, self.opts.scale));
+        render.max(place_bytes(&self.geom, rendered)).max(self.overlay_bytes())
+    }
+
+    /// Peak bytes [`Pipeline::overlays`] holds: a translucent name or timecode overlay is drawn on
+    /// an output-sized layer of its own while the output frame is alive, two output images in all.
+    fn overlay_bytes(&self) -> u64 {
+        let fx = &self.effects;
+        let name = fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty() && needs_text_layer(&fx.name_overlay);
+        let timecode = fx.timecode_overlay.enabled && needs_text_layer(&fx.timecode_overlay);
+        if !(name || timecode) {
+            return 0;
+        }
+        filmcraft_render::working_set::image_bytes(self.w as usize, self.h as usize).saturating_mul(2)
+    }
+
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
@@ -363,16 +386,23 @@ impl Pipeline {
         let (bw, bh) = (l.bounds[2] - l.bounds[0] + 2.0 * pad, px * 1.1 + 2.0 * pad);
         let (x, y) = anchor(o.placement, o.offset, img.w as f32, img.h as f32, bw, bh);
         let centre = Vec2::new((x + bw / 2.0) as f64, (y + bh / 2.0) as f64);
-        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
-        if op >= 0.999 {
+        if !needs_text_layer(o) {
             filmcraft_render::graphics::burn_text(img, text, family, centre, px, 0.6);
             return;
         }
+        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
         // draw on a transparent layer, then composite it at the overlay's opacity
         let mut layer = Image::new(img.w, img.h);
         filmcraft_render::graphics::burn_text(&mut layer, text, family, centre, px, 0.6);
         composite(img, &layer, 0, 0, op);
     }
+}
+
+/// Whether a text overlay is drawn on a layer of its own and composited at its opacity (anything
+/// short of opaque, a NaN opacity included) instead of straight onto the frame.
+fn needs_text_layer(o: &TextOverlay) -> bool {
+    let op = (o.opacity / 100.0).clamp(0.0, 1.0);
+    op.is_nan() || op < 0.999
 }
 
 /// Top-left of a `bw`×`bh` box placed in a `w`×`h` frame (3 % margin) plus `offset`.
@@ -448,13 +478,45 @@ pub(crate) fn resample(src: &Image, nw: usize, nh: usize) -> Image {
     // Width first holds an `nw` x `src.h` intermediate, height first a `src.w` x `nh` one. Opposing
     // thin shapes (1 x 16384 to 16384 x 1) make the first 16384 x 16384: when it is large and the
     // other order is smaller, take that one (the result is the same filter either way).
-    let (wide, tall) = (nw.saturating_mul(src.h), src.w.saturating_mul(nh));
-    if wide > MAX_RESAMPLE_INTERMEDIATE_PIXELS && tall < wide {
+    if !width_first(src.w, src.h, nw, nh) {
         let tmp = resample_axis(src, nh, false);
         return resample_axis(&tmp, nw, true);
     }
     let tmp = resample_axis(src, nw, true);
     resample_axis(&tmp, nh, false)
+}
+
+/// Whether [`resample`] of a `w` x `h` picture to `nw` x `nh` goes width first (its intermediate
+/// is then `nw` x `h`, otherwise `w` x `nh`).
+fn width_first(w: usize, h: usize, nw: usize, nh: usize) -> bool {
+    let (wide, tall) = (nw.saturating_mul(h), w.saturating_mul(nh));
+    !(wide > MAX_RESAMPLE_INTERMEDIATE_PIXELS && tall < wide)
+}
+
+/// Peak bytes [`Pipeline::place`] holds fitting a `rendered` picture into the output frame of
+/// `geom`: the rendered picture, plus the resample's intermediate and result when the picture is
+/// resized, plus the output frame when the picture does not already fill it.
+pub(crate) fn place_bytes(geom: &Geometry, rendered: (usize, usize)) -> u64 {
+    use filmcraft_render::working_set::image_bytes;
+    let (rw, rh) = rendered;
+    let mut peak = image_bytes(rw, rh);
+    let content = match geom.content {
+        Some((cw, ch)) if (cw, ch) != rendered => {
+            let (iw, ih) = if width_first(rw, rh, cw, ch) { (cw, rh) } else { (rw, ch) };
+            let resized = image_bytes(cw, ch);
+            // the intermediate lives until the result is complete
+            peak = peak.saturating_add(resized).saturating_add(image_bytes(iw, ih));
+            (cw, ch)
+        }
+        _ => rendered,
+    };
+    let (w, h) = (geom.w as usize, geom.h as usize);
+    if content != (w, h) || geom.offset != (0, 0) {
+        // the rendered picture (still held by `place`), the resized one and the output frame
+        let held = image_bytes(rw, rh).saturating_add(if content != rendered { image_bytes(content.0, content.1) } else { 0 });
+        peak = peak.max(held.saturating_add(image_bytes(w, h)));
+    }
+    peak
 }
 
 /// Pixels of intermediate image a resample may use before it tries the other axis order first
@@ -566,6 +628,29 @@ mod overlay_budget_tests {
         let a = resample_axis(&resample_axis(&src, 5, true), 7, false);
         let b = resample_axis(&resample_axis(&src, 7, false), 5, true);
         assert!(a.px.iter().zip(&b.px).all(|(x, y)| (x - y).abs() < 1e-5));
+    }
+
+    #[test]
+    fn placing_a_downscaled_render_counts_the_resample_it_holds() {
+        const fn img(w: u64, h: u64) -> u64 {
+            w * h * 16
+        }
+        // Maximum Render Quality: a 3840 x 2160 sequence drawn at full size into 1920 x 1080
+        let geom = Geometry { w: 1920, h: 1080, render_scale: 1.0, content: Some((1920, 1080)), offset: (0, 0) };
+        // the 4K picture, the 1920 x 2160 intermediate and the 1920 x 1080 result
+        assert_eq!(place_bytes(&geom, (3840, 2160)), img(3840, 2160) + img(1920, 2160) + img(1920, 1080));
+        // already the output size: only the picture itself
+        assert_eq!(place_bytes(&geom, (1920, 1080)), img(1920, 1080));
+        // letterboxed without a resize: the picture and the output frame it is copied onto
+        let boxed = Geometry { w: 1920, h: 1080, render_scale: 1.0, content: Some((1440, 1080)), offset: (240, 0) };
+        assert_eq!(place_bytes(&boxed, (1440, 1080)), img(1440, 1080) + img(1920, 1080));
+        // resized and letterboxed: the larger of the resample and the copy onto the frame
+        assert_eq!(place_bytes(&boxed, (2880, 2160)), img(2880, 2160) + img(1440, 2160) + img(1440, 1080));
+        // the thin-shape order is the one `resample` takes (height first: a 1 x 1 intermediate)
+        let thin = Geometry { w: 6000, h: 1, render_scale: 1.0, content: Some((6000, 1)), offset: (0, 0) };
+        assert_eq!(place_bytes(&thin, (1, 6000)), img(1, 6000) + img(1, 1) + img(6000, 1));
+        let huge = Geometry { w: u32::MAX, h: u32::MAX, render_scale: 1.0, content: Some((usize::MAX, usize::MAX)), offset: (0, 0) };
+        assert_eq!(place_bytes(&huge, (usize::MAX, 1)), u64::MAX, "saturates");
     }
 
     #[test]

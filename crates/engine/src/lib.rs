@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+pub mod malloc_arenas;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
