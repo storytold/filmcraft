@@ -22,6 +22,7 @@ impl FilmcraftApp {
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
+                self.frames.set_r16_unorm(compositor.supports_r16_unorm());
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }

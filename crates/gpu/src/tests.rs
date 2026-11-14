@@ -82,6 +82,51 @@ fn yuv_code_range_gpu_matches_cpu() {
     }
 }
 
+#[test]
+fn yuv16_r16unorm_matches_cpu_and_alpha() {
+    let instance = crate::adapter::native_instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    if !adapter.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+        eprintln!("adapter lacks TEXTURE_FORMAT_16BIT_NORM; skipping");
+        return;
+    }
+    let desc = wgpu::DeviceDescriptor { required_features: crate::requested_features(&adapter), ..Default::default() };
+    let Ok((dev, q)) = pollster::block_on(adapter.request_device(&desc)) else {
+        eprintln!("no GPU device; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.supports_r16_unorm());
+    for bits in [10, 12, 16] {
+        let scale = 1u32 << (bits - 8);
+        let max_code = ((1u32 << bits) - 1) as u16;
+        for range in [Range::Full, Range::Limited] {
+            let y: Vec<u16> = (0..=255).map(|code| (code * scale).min(max_code as u32) as u16).collect();
+            let u = vec![(96 * scale) as u16; 256];
+            let v = vec![(180 * scale) as u16; 256];
+            let alpha: Vec<u16> = (0..=255).map(|i| ((i * max_code as u32) / 255) as u16).collect();
+            let frame = Arc::new(VideoFrame {
+                width: 256,
+                height: 1,
+                data: PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C444, bits, alpha: Some(Arc::new(alpha)) },
+                color: filmcraft_color::ColorInfo { range, ..filmcraft_color::ColorInfo::REC709 },
+                par: (1, 1),
+                pts: Default::default(),
+            });
+            assert!(prepare_frame_for(&frame, true).is_none());
+            let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            c.composite_prepared(&plan, Some(&prepare_for(&plan, true)));
+            let (_, _, gpu) = c.read_output().expect("readback");
+            let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
+            assert!(error <= 1, "R16Unorm {bits}-bit {range:?} max error {error}");
+        }
+    }
+}
+
 fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let y: Vec<u8> = (0..w * h).map(|i| (16 + ((i % w) * 219 / w)) as u8).collect();

@@ -169,6 +169,8 @@ struct Shared {
     stats: Mutex<FrameStats>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
+    /// Whether the active GPU compositor uploads 16-bit YUV planes directly as `R16Unorm`.
+    r16_unorm: AtomicBool,
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -508,6 +510,7 @@ impl FrameServer {
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
+            r16_unorm: AtomicBool::new(false),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -522,6 +525,12 @@ impl FrameServer {
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
         Self { shared, pool, services, previews, repaint }
+    }
+
+    /// Tell frame workers whether the GPU compositor supports native `R16Unorm` uploads so
+    /// 10/12/16-bit YUV frames skip CPU half-float conversion.
+    pub fn set_r16_unorm(&self, enabled: bool) {
+        self.shared.r16_unorm.store(enabled, Ordering::Relaxed);
     }
 
     /// The default number of frame workers for this machine.
@@ -997,7 +1006,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
+                            let prepared = filmcraft_gpu::prepare_for(&plan, sh.r16_unorm.load(Ordering::Relaxed));
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv

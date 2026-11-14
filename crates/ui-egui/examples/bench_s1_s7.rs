@@ -194,11 +194,16 @@ impl PreviewDisplay {
         let info = chosen.get_info();
         let adapter_name = info.name.clone();
         let backend_name = format!("{:?}", info.backend);
-        let Ok((device, queue)) = pollster::block_on(chosen.request_device(&eframe::wgpu::DeviceDescriptor::default())) else {
+        let desc = eframe::wgpu::DeviceDescriptor { required_features: filmcraft_gpu::requested_features(&chosen), ..Default::default() };
+        let Ok((device, queue)) = pollster::block_on(chosen.request_device(&desc)) else {
             return Self { gpu: None, last: None, present_ms: Vec::new(), render_path: "cpu" };
         };
         let compositor = GpuCompositor::new(&device, &queue);
         Self { gpu: Some((compositor, device, adapter_name, backend_name)), last: None, present_ms: Vec::new(), render_path: "gpu" }
+    }
+
+    fn r16_unorm(&self) -> bool {
+        self.gpu.as_ref().is_some_and(|(c, _, _, _)| c.supports_r16_unorm())
     }
 
     fn adapter_info(&self) -> (String, String) {
@@ -409,6 +414,7 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     let (adapter_name, backend_name) = display.adapter_info();
     let workers = FrameServer::default_workers();
     let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), workers);
+    server.set_r16_unorm(display.r16_unorm());
     server.set_profiling(true);
     let target = display.target(seq);
     let scale = 1.0f32;
@@ -494,6 +500,7 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     // 12 random seeks on the same session to report per-scenario seek p50/p95
     let bench = Bench { server: FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), workers), refresh_hz: 60.0, seconds, draft: false };
     let mut disp_seek = PreviewDisplay::new(use_gpu);
+    bench.server.set_r16_unorm(disp_seek.r16_unorm());
     let mut seek_lat_ms = Vec::new();
     let total_frames = rate.frame_at(q.duration()).max(1);
     let mut rng = 0x517c_c1b7_2722_0a95u64;
@@ -587,6 +594,7 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
     let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), workers);
     server.set_profiling(true);
     let mut display = PreviewDisplay::new(use_gpu);
+    server.set_r16_unorm(display.r16_unorm());
     let (adapter_name, backend_name) = display.adapter_info();
     let q = s.project.sequence(seq).expect("seq");
     let rate = q.settings.frame_rate;

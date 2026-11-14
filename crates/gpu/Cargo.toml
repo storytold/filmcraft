@@ -21,6 +21,7 @@ log = { workspace = true }
 pollster = "1"
 tempfile = "3"
 rayon = { workspace = true }
+bytemuck = { version = "1", default-features = false }
 
 [dev-dependencies]
 pollster = "1"
