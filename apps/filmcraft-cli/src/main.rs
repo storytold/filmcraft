@@ -193,6 +193,10 @@ impl Backend {
     }
 
     async fn exec(&mut self, id: &str, mut params: Value) -> Result<Value, String> {
+        // a key the command doesn't take does nothing: say so, and still run it (#4599)
+        if let Some(warning) = filmcraft_engine::unknown_params_warning(id, &params) {
+            diag(format_args!("filmcraft-cli: warning: {warning}"));
+        }
         match self {
             // this process exits after the command, so a background export would never be written:
             // long commands wait unless the caller says otherwise (#2342)

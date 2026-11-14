@@ -38,6 +38,7 @@ pub mod multicam;
 pub mod narration;
 mod palette;
 pub mod panels;
+pub mod params_doc;
 pub mod paste_media;
 pub mod perf;
 pub mod presets;
@@ -76,6 +77,7 @@ pub use filmcraft_project as project;
 pub use filmcraft_render as render;
 pub use filmcraft_time as time;
 pub use media_pool::MediaPool;
+pub use params_doc::{unknown_params, unknown_params_warning};
 
 /// The OS temp folder; `/tmp` on wasm32, where `std::env::temp_dir()` panics ("no filesystem on
 /// this platform"). Use this instead of `std::env::temp_dir()` in any code the web build runs.

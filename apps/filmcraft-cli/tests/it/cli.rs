@@ -37,6 +37,18 @@ fn version_after_global_options() {
     }
 }
 
+/// A key the command doesn't take does nothing: the CLI says so on stderr and still runs it (#4599).
+#[test]
+fn an_unknown_parameter_key_is_a_warning() {
+    let o = cli(&["--demo", "exec", "file.newBin", r#"{"nme":"Selects"}"#]);
+    assert!(o.status.success());
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("filmcraft-cli: warning: `file.newBin` ignores unknown parameter `nme` (it takes name, parent)"), "{stderr}");
+    let o = cli(&["--demo", "exec", "file.newBin", "name=Selects"]);
+    assert!(o.status.success());
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("unknown parameter"));
+}
+
 #[test]
 fn long_help_matches_help_command() {
     let reference = cli(&["help"]);
