@@ -187,6 +187,7 @@ fn stabilize(s: &mut Session, p: &Value) -> Result<Value> {
                     bytes: 0,
                     render_fps: frames as f64 / seconds.max(1e-6),
                     extra_files: Vec::new(),
+                    ..Default::default()
                 })
             }
             _ if stopped => {
