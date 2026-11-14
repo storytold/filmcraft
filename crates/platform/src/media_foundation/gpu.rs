@@ -41,7 +41,7 @@ use windows::core::{GUID, Interface, s};
 use super::mft::MfApi;
 use crate::biplanar::{Biplanar, Geometry};
 
-const SHARED_POOL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const SHARED_POOL_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 const EVENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 static NEXT_SURFACE_ID: AtomicUsize = AtomicUsize::new(1);
 

@@ -509,7 +509,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     let hw1 = filmcraft_codecs::hw::hw_stats();
     let gop_play = filmcraft_codecs::gop_stats() - gop0;
 
-    // 12 random seeks on the same session to report per-scenario seek p50/p95
+    // 12 random seeks on a fresh session after releasing playback compositor/caches so VRAM does not double.
+    drop((display, server));
     let bench = Bench { server: FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), workers), refresh_hz: 60.0, seconds, draft: false };
     let mut disp_seek = PreviewDisplay::new(use_gpu);
     bench.server.set_r16_unorm(disp_seek.r16_unorm());

@@ -53,9 +53,9 @@ pub use mask::GpuMask;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-const UPLOAD_CACHE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
-const UPLOAD_CACHE_MAX_ENTRIES: usize = 256;
-const TEXTURE_POOL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const UPLOAD_CACHE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const UPLOAD_CACHE_MAX_ENTRIES: usize = 128;
+const TEXTURE_POOL_BUDGET_BYTES: u64 = 192 * 1024 * 1024;
 
 pub(crate) struct UniformPool {
     bufs: Vec<wgpu::Buffer>,
