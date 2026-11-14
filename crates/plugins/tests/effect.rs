@@ -58,9 +58,9 @@ fn instance(id: &str) -> EffectInstance {
 /// Left half opaque gray 0.1, right half opaque black.
 fn edge(w: usize, h: usize) -> Image {
     let mut img = Image::new(w, h);
-    for (i, px) in img.px.chunks_exact_mut(4).enumerate() {
+    for (i, px) in img.px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v = if i % w < w / 2 { 0.1 } else { 0.0 };
-        px.copy_from_slice(&[v, v, v, 1.0]);
+        *px = [v, v, v, 1.0];
     }
     img
 }
@@ -86,7 +86,7 @@ fn a_plugin_effect_changes_real_pixels_through_the_render_path() {
     assert_eq!(same.px, src.px, "copy hands the layer back unchanged");
     let mut times_four = src.clone();
     apply(&mut times_four, &instance(X4), &ctx());
-    for (i, (got, was)) in times_four.px.chunks_exact(4).zip(src.px.chunks_exact(4)).enumerate() {
+    for (i, (got, was)) in times_four.px.as_chunks::<4>().0.iter().zip(src.px.as_chunks::<4>().0).enumerate() {
         assert!((got[0] - was[0] * 4.0).abs() < 0.01, "pixel {i}: red {} should be four times {}", got[0], was[0]);
         assert_eq!(got[3], 1.0, "pixel {i}: alpha stays opaque");
     }

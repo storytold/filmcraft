@@ -152,10 +152,7 @@ fn to_u8(v: f32) -> u8 {
 
 /// The image as the wire bytes: `f32` or `u8` samples, premultiplied or straight.
 fn to_wire(img: &Image, wire: Wire) -> Vec<u8> {
-    let pixels = img.px.chunks_exact(4).map(|p| {
-        let p = [p[0], p[1], p[2], p[3]];
-        if wire.alpha == Alpha::Straight { straight(p) } else { p }
-    });
+    let pixels = img.px.as_chunks::<4>().0.iter().map(|&p| if wire.alpha == Alpha::Straight { straight(p) } else { p });
     match wire.sample {
         Sample::F32 => pixels.flat_map(|p| p.into_iter().flat_map(f32::to_ne_bytes)).collect(),
         _ => pixels.flat_map(|p| p.map(to_u8)).collect(),
@@ -165,13 +162,13 @@ fn to_wire(img: &Image, wire: Wire) -> Vec<u8> {
 /// Write the wire bytes back into the image, in the same layout [`to_wire`] made.
 fn from_wire(img: &mut Image, bytes: &[u8], wire: Wire) {
     let width = if wire.sample == Sample::F32 { 16 } else { 4 };
-    for (px, src) in img.px.chunks_exact_mut(4).zip(bytes.chunks_exact(width)) {
+    for (px, src) in img.px.as_chunks_mut::<4>().0.iter_mut().zip(bytes.chunks_exact(width)) {
         let q: [f32; 4] = if wire.sample == Sample::F32 {
             std::array::from_fn(|i| f32::from_ne_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]))
         } else {
             std::array::from_fn(|i| f32::from(src[i]) / 255.0)
         };
-        px.copy_from_slice(&if wire.alpha == Alpha::Straight { premultiplied(q) } else { q });
+        *px = if wire.alpha == Alpha::Straight { premultiplied(q) } else { q };
     }
 }
 

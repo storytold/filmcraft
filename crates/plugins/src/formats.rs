@@ -24,7 +24,7 @@ fn open(book: &Weak<FormatBook>, name: &str, bytes: &Arc<[u8]>) -> Option<Result
     let ext = extension_of(name)?;
     let book = book.upgrade().filter(|b| b.handles(&ext))?;
     Some(book.read(name, bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}"))).map(|doc| {
-        let has_alpha = doc.rgba8.chunks_exact(4).any(|p| p[3] != 255);
+        let has_alpha = doc.rgba8.as_chunks::<4>().0.iter().any(|p| p[3] != 255);
         Arc::new(StillSource::from_rgba(name, doc.width, doc.height, doc.rgba8, has_alpha, bytes.len() as u64)) as SharedSource
     }))
 }
