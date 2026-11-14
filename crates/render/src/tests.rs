@@ -221,8 +221,11 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// Push and the transitions the compositor mixes on the CPU from GPU-drawn clips plan as layers and a
+/// transition step that, executed on the CPU, gives the CPU renderer's picture: over a lower track,
+/// reversed (the clips swap and progress inverts), at both scales and with one side missing.
 #[test]
-fn push_plan_preserves_reference_track_order_and_reverse() {
+fn transition_plans_preserve_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();
     place(&mut p, seq, 0, ocean, 0, 48);
     let a = place(&mut p, seq, 1, red, 0, 24);
@@ -243,20 +246,23 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
         align: Default::default(),
         reverse: false,
     });
-    for reverse in [false, true] {
-        for scale in [1.0, 0.5] {
-            for missing in [false, true] {
-                let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[1].transitions[0];
-                tr.reverse = reverse;
-                tr.to = if missing { None } else { Some(b) };
-                for f in [18, 21, 24, 29] {
-                    let opts = RenderOptions { scale, ..Default::default() };
-                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
-                    assert!(matches!(plan, plan::FramePlan::Composite { .. }));
-                    let got = plan::execute_cpu(&plan);
-                    let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
-                    let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
-                    assert!(max < 1e-5, "reverse {reverse}, scale {scale}, missing {missing}, frame {f}: {max}");
+    for name in ["push", "wipe", "page_peel", "film_dissolve", "iris_round"] {
+        p.sequence_mut(seq).unwrap().video_tracks[1].transitions[0].effect = filmcraft_project::find_effect(name).unwrap().instance();
+        for reverse in [false, true] {
+            for scale in [1.0, 0.5] {
+                for missing in [false, true] {
+                    let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[1].transitions[0];
+                    tr.reverse = reverse;
+                    tr.to = if missing { None } else { Some(b) };
+                    for f in [18, 21, 24, 29] {
+                        let opts = RenderOptions { scale, ..Default::default() };
+                        let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
+                        assert!(matches!(plan, plan::FramePlan::Composite { .. }), "{name}: layers and a transition step");
+                        let got = plan::execute_cpu(&plan);
+                        let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
+                        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+                        assert!(max < 1e-5, "{name}, reverse {reverse}, scale {scale}, missing {missing}, frame {f}: {max}");
+                    }
                 }
             }
         }
@@ -287,6 +293,60 @@ fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
     let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, plan::DeviceCaps::ALL, &map);
     assert!(matches!(plan, plan::FramePlan::Image(_)));
     assert_eq!(plan::execute_cpu(&plan).px, render_sequence(&p, seq, rate.tick_of(24), opts, &map).px);
+}
+
+/// Every registered video transition plans as its kind, with no GPU: the dissolves and dips as
+/// layers only, Morph Cut (and any other in `WHOLE_FRAME_CPU_TRANSITIONS`) as one CPU image, and
+/// Push and all the others as layers and a transition step for their own effect. A new transition
+/// that falls in none of the first two is a step, which the GPU compositor mixes on the CPU.
+#[test]
+fn every_video_transition_plans_as_its_kind() {
+    let (mut p, red, ocean, seq, map) = setup();
+    let a = place(&mut p, seq, 0, red, 0, 24);
+    let b = place(&mut p, seq, 0, ocean, 24, 24);
+    let rate = FrameRate::FPS_24;
+    let opts = RenderOptions { scale: 0.5, ..Default::default() };
+    let names: Vec<&str> = filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::VideoTransition).map(|d| d.id).collect();
+    assert!(names.len() > 80, "the registry is listed ({} found)", names.len());
+    let (mut steps, mut layers, mut whole) = (0, 0, 0);
+    for name in names {
+        p.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(1),
+            effect: filmcraft_project::find_effect(name).unwrap().instance(),
+            start: rate.tick_of(18),
+            duration: rate.tick_of(12),
+            from: Some(a),
+            to: Some(b),
+            align: Default::default(),
+            reverse: false,
+        }];
+        let t = rate.tick_of(24);
+        let plan = plan::plan_frame(&p, seq, t, opts, plan::DeviceCaps::ALL, &map);
+        assert_eq!(
+            plan::is_cpu_frame(&p, seq, t, opts, plan::DeviceCaps::ALL),
+            matches!(plan, plan::FramePlan::Image(_)),
+            "{name}: is_cpu_frame agrees with the plan"
+        );
+        match (&plan, name) {
+            (plan::FramePlan::Image(_), n) if plan::WHOLE_FRAME_CPU_TRANSITIONS.contains(&n) => whole += 1,
+            (plan::FramePlan::Layers { .. }, "cross_dissolve" | "dip_to_black" | "dip_to_white") => layers += 1,
+            (plan::FramePlan::Composite { steps: s, .. }, n)
+                if s.iter().any(|st| matches!(st, plan::PlanStep::Transition { effect, .. } if effect.effect == n)) =>
+            {
+                steps += 1
+            }
+            (other, n) => panic!(
+                "{n} planned as an unexpected {}",
+                match other {
+                    plan::FramePlan::Image(_) => "CPU image",
+                    plan::FramePlan::Layers { .. } => "run of layers",
+                    plan::FramePlan::Composite { .. } => "composite without its transition step",
+                }
+            ),
+        }
+    }
+    assert_eq!((layers, whole), (3, plan::WHOLE_FRAME_CPU_TRANSITIONS.len()), "dissolves and dips as layers, Morph Cut whole");
+    assert!(steps > 80, "every other transition is a step ({steps})");
 }
 
 /// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
