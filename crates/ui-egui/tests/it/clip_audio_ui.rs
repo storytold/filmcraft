@@ -249,3 +249,107 @@ fn volume_keyframes_on_the_timeline() {
     d.click(&format!("{id}.kf.0.delete"));
     assert_eq!(d.level(pair.audio).1, keys[1..]);
 }
+
+/// Drag Effect Controls' Volume ▸ Level by `dx` points. Its value sits from the middle of its
+/// row, at least 150 points in.
+fn drag_level(d: &mut Driver, dx: f64) {
+    let (stopwatch, reset) = (d.rect("effectControls.volume.level.stopwatch"), d.rect("effectControls.volume.level.reset"));
+    let (left, right) = (centre(stopwatch).0 - 26.0, centre(reset).0 + 14.0);
+    d.drag((left + ((right - left) / 2.0).max(150.0) + 12.0, centre(stopwatch).1), (dx, 0.0));
+}
+
+/// The items of a track in `sequence.inspect` (`kind` "video" or "audio").
+fn track_items(d: &mut Driver, kind: &str, track: usize) -> Vec<Value> {
+    d.exec("sequence.inspect", json!({}))[kind][track]["items"].as_array().cloned().unwrap_or_default()
+}
+
+fn ids(items: &[Value]) -> Vec<u64> {
+    items.iter().map(|i| i["clip"].as_u64().unwrap()).collect()
+}
+
+fn undo_steps(d: &Driver) -> usize {
+    d.harness.state().session.history.undo.len()
+}
+
+/// #3710: with several audio clips selected, dragging Volume ▸ Level in Effect Controls (which
+/// shows the first of them) sets every selected one, in one undo step; the others keep theirs.
+#[test]
+fn volume_level_changes_every_selected_audio_clip() {
+    let (mut d, _) = Driver::demo(&["EffectControls"]);
+    let audio = ids(&track_items(&mut d, "audio", 0));
+    assert!(audio.len() >= 3, "the demo has several clips on A1");
+    let before: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": &audio[..2]}));
+    let steps = undo_steps(&d);
+    drag_level(&mut d, -40.0);
+    let after: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    assert!(after[0] < before[0], "the drag lowers the level: {before:?} -> {after:?}");
+    assert_eq!(after[1], after[0], "the other selected clip gets the same level");
+    assert_eq!(after[2..], before[2..], "clips not selected keep theirs");
+    assert_eq!(undo_steps(&d), steps + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(audio.iter().map(|c| d.level(*c).0).collect::<Vec<_>>(), before);
+}
+
+/// With one audio clip selected, the Level changes that clip alone, as before #3710.
+#[test]
+fn volume_level_of_one_selected_clip_changes_it_alone() {
+    let (mut d, _) = Driver::demo(&["EffectControls"]);
+    let audio = ids(&track_items(&mut d, "audio", 0));
+    let before: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": [audio[1]]}));
+    drag_level(&mut d, -40.0);
+    let after: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    assert!(after[1] < before[1], "{before:?} -> {after:?}");
+    assert_eq!((after[0], &after[2..]), (before[0], &before[2..]), "the other clips keep theirs");
+}
+
+/// A mixed selection: with linked selection on, two video clips (so their sound) and the music on
+/// A2 are selected, and A2 is locked. Effect Controls shows the first video clip with its sound.
+/// The Level sets both sounds to the same level; the video clips get no Volume, and the music on
+/// the locked track keeps its level.
+#[test]
+fn volume_level_skips_video_clips_and_locked_tracks() {
+    let (mut d, _) = Driver::demo(&["EffectControls"]);
+    let (video, a1, music) = (track_items(&mut d, "video", 0), track_items(&mut d, "audio", 0), ids(&track_items(&mut d, "audio", 1)));
+    assert!(!music.is_empty(), "the demo has music on A2");
+    let sound = |v: &Value| a1.iter().find(|a| a["link"] == v["link"]).and_then(|a| a["clip"].as_u64()).expect("linked sound");
+    let (v0, v1) = (video[0]["clip"].as_u64().unwrap(), video[1]["clip"].as_u64().unwrap());
+    let (s0, s1) = (sound(&video[0]), sound(&video[1]));
+    d.exec("sequence.linkedSelection", json!({"on": true}));
+    d.exec("timeline.select", json!({"clips": [v0, v1, music[0]]}));
+    d.exec("timeline.setTrack", json!({"track": "A2", "locked": true}));
+    let selection = d.harness.state().session.state.selection.clone();
+    assert!(selection.contains(&ClipId(music[0])), "the locked music is still selected: {selection:?}");
+    for fx in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
+    }
+    let (before, music_before) = (d.level(s0).0, d.level(music[0]).0);
+    let steps = undo_steps(&d);
+    drag_level(&mut d, -40.0);
+    let level = d.level(s0).0;
+    assert!(level < before, "the shown sound changes: {before} -> {level}");
+    assert_eq!(d.level(s1).0, level, "the other selected sound gets the same level");
+    assert_eq!(d.level(music[0]).0, music_before, "the music on the locked track keeps its level");
+    assert!(d.item(v0).effect("volume").is_none() && d.item(v1).effect("volume").is_none(), "video clips get no Volume");
+    assert_eq!(undo_steps(&d), steps + 1, "one undo step");
+}
+
+/// When the clip Effect Controls shows is on a locked track, its Level changes the other selected
+/// audio clips and leaves the shown one alone (#3727 review).
+#[test]
+fn volume_level_of_a_locked_shown_clip_changes_the_other_selected_clips() {
+    let (mut d, _) = Driver::demo(&["EffectControls"]);
+    let (audio, music) = (ids(&track_items(&mut d, "audio", 0)), ids(&track_items(&mut d, "audio", 1)));
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": [audio[0], music[0]]}));
+    d.exec("timeline.setTrack", json!({"track": "A1", "locked": true}));
+    let (shown, other) = (d.level(audio[0]).0, d.level(music[0]).0);
+    drag_level(&mut d, -40.0);
+    assert_eq!(d.level(audio[0]).0, shown, "the shown clip on the locked A1 keeps its level");
+    // the music gets the level dragged to (below the shown clip's), not a step from its own -14 dB
+    let level = d.level(music[0]).0;
+    assert!(level != other && level < shown, "the other selected clip gets the dragged level: {other} -> {level} (shown {shown})");
+}
