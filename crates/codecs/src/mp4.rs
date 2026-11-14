@@ -90,6 +90,8 @@ pub struct Mp4Source {
     snap: bool,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<Mp4Audio>,
+    /// The reel named by the `tmcd` track ([`timecode_reel`]).
+    reel: Option<String>,
 }
 
 pub fn sniff(b: &[u8]) -> bool {
@@ -406,7 +408,8 @@ impl Mp4Source {
             let t = &file.tracks[i];
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
         });
-        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios })
+        let reel = timecode_reel(&file);
+        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios, reel })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -502,6 +505,10 @@ impl VideoSamples for Mp4Video<'_> {
 impl MediaSource for Mp4Source {
     fn info(&self) -> &MediaInfo {
         &self.info
+    }
+
+    fn reel(&self) -> Option<String> {
+        self.reel.clone()
     }
 
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
@@ -958,6 +965,18 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
         Ok(t) if t > 0 => Tick(t),
         _ => media,
     }
+}
+
+/// The source (reel) name of the timecode track the start timecode comes from (the first `tmcd`
+/// track with a start frame), cleaned with [`filmcraft_media::clean_reel`]: what the camera, or the
+/// tool that wrote the file, called the tape. A name on another timecode track is not this source's,
+/// so it is not used.
+fn timecode_reel(file: &Mp4File) -> Option<String> {
+    let tc = file.tracks.iter().find_map(|t| match t.codec() {
+        Some(CodecConfig::Timecode(tc)) if tc.start_frame.is_some() => Some(tc),
+        _ => None,
+    })?;
+    filmcraft_media::clean_reel(tc.name.as_deref()?)
 }
 
 /// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
