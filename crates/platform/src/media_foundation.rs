@@ -26,6 +26,7 @@
 //! The modules that call into Windows (`gpu`, `mft`) are the FFI modules of this backend
 //! (docs/adr/0001-platform-ffi.md); this one is safe code.
 
+pub mod encode;
 #[allow(unsafe_code)]
 mod gpu;
 #[allow(unsafe_code)]
@@ -40,6 +41,7 @@ use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
 use self::gpu::{Gpu, Readback, SurfaceFormat};
 use self::mft::{MfApi, Mft, Poll};
+
 use self::stream::Stream;
 use crate::biplanar::{self, Geometry};
 
@@ -61,6 +63,13 @@ pub fn stream_info(entry: &filmcraft_isobmff::SampleEntry) -> Option<StreamInfo>
 /// Whether Media Foundation and a Direct3D 11 video device exist on this system.
 pub fn available() -> bool {
     mft::api().and_then(Gpu::shared).is_ok()
+}
+
+/// Open the machine's hardware encoder MFT for `spec`, on the shared Direct3D device. Errors say
+/// which encoder was tried and why it said no, so a decline is actionable.
+fn open(api: &mft::MfApi, spec: &mft::EncSpec) -> std::result::Result<mft::MfEncoder, String> {
+    let gpu = Gpu::shared(api)?;
+    mft::MfEncoder::new(api, &gpu, spec)
 }
 
 /// What each codec's decoders and the GPU's DXVA profiles offer on this machine (diagnostics:
@@ -92,6 +101,19 @@ pub fn capabilities() -> String {
     ] {
         out += &format!("DXVA {name}: {}\n", profiles.contains(&guid));
     }
+    // Encoders: hardware H.264 / HEVC writing NV12, the configuration FilmCraft asks for, then the
+    // full list, so a machine whose driver registers no hardware encoder can still be read.
+    for (name, subtype) in [("H.264", mf::MFVideoFormat_H264), ("HEVC", mf::MFVideoFormat_HEVC)] {
+        let hw = mft::describe_encoders(api, subtype, mf::MFVideoFormat_NV12, true);
+        let all = mft::describe_encoders(api, subtype, mf::MFVideoFormat_NV12, false);
+        out += &format!("{name} hardware encoder MFTs: {}\n", if hw.is_empty() { "none".into() } else { hw.join("; ") });
+        if all.len() != hw.len() {
+            out += &format!("{name} other encoder MFTs: {}\n", all.join("; "));
+        }
+    }
+    // Unfiltered: vendors' encoder MFTs that do not declare an NV12 input up front only turn up here.
+    let every = api.all_video_encoders(true).unwrap_or_default();
+    out += &format!("all hardware video encoder MFTs: {}\n", if every.is_empty() { "none".into() } else { mft::describe_activates(&every).join("; ") });
     out
 }
 
