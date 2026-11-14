@@ -250,6 +250,7 @@
 	Project Manager…	Proje Yöneticisi…
 	Project Settings	Proje Ayarları
 	Project…	Proje…
+	Project from Template…	Şablondan Proje…
 	Properties	Özellikler
 	Purple	Mor
 	Reconnect Full Resolution Media…	Tam Çözünürlüklü Medyayı Yeniden Bağla…
@@ -2838,6 +2839,11 @@
 	Export formats	Dışa aktarma biçimleri
 	Match {n} of {total}	Eşleşme: {n} / {total}
 	Saved template {path}	Şablon kaydedildi: {path}
+	New Project from Template	Şablondan Yeni Proje
+	No project templates yet. Save one with Save as Template… in the File menu.	Henüz proje şablonu yok. Dosya menüsündeki Şablon Olarak Kaydet… ile bir tane kaydedin.
+	Template:	Şablon:
+	Project Name:	Proje Adı:
+	Choose a project template	Bir proje şablonu seçin
 	Scene Edit Detection: analysing in the background (see Progress)	Sahne Kesim Algılama: arka planda analiz ediliyor (bkz. İlerleme)
 	Delete Search Bin	Arama Klasörünü Sil
 	 (removed from {list})	 ({list} listesinden kaldırıldı)
