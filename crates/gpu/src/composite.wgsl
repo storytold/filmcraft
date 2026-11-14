@@ -181,7 +181,13 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     }
     let cs = u.p2.z;
     let yc = load4(tex0, p).r * cs;
-    let cp = p * u.src.zw / u.src.xy;
+    var cp = p * u.src.zw / u.src.xy;
+    if u.p3.z > 0.0 {
+        // Effect sources (`p3.z`: their decimation) read the chroma sample of the luma texel,
+        // column x >> 1 when subsampled, uninterpolated, as the CPU box decodes it (#3798).
+        let shift = select(vec2(0u), vec2(1u), u.src.zw < u.src.xy);
+        cp = vec2<f32>(vec2<u32>(max(floor(p), vec2(0.0))) >> shift) + 0.5;
+    }
     let cb = load4(tex1, cp).r * cs;
     let cr = load4(tex2, cp).r * cs;
     let y = (yc - u.p1.x) / u.p1.y;
