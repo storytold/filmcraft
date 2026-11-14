@@ -65,7 +65,7 @@ mod view;
 
 pub use item::{AudioChannelMap, Bin, BinEntry, Interpretation, ItemKind, MediaClip, MediaIdentity, MediaRef, ProjectItem};
 pub use label::Label;
-pub(crate) use sequence::bounded_time_range;
+pub use sequence::bounded_time_range;
 pub use sequence::{
     MAX_FRAME_PIXELS, MAX_FRAME_SIDE, MAX_PIXEL_ASPECT, Sequence, SequenceSettings, SplitMarks, checked_par, conformed_size, par_ratio, sane_par,
     validate_frame_size,
