@@ -302,7 +302,9 @@ impl FilmcraftApp {
                     if self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
                         self.ui.keys.maximized = None;
                     }
-                    // the clip just opened there is what Space and J/K/L act on next (#3669)
+                    // the clip just opened there is what Space and J/K/L act on next (#3669), even
+                    // when the click that opened it went to another panel
+                    self.ui.monitor = crate::state::Monitor::Source;
                     self.show_panel(PanelKind::Source);
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),

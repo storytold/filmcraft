@@ -43,6 +43,19 @@ impl Driver {
         Self::with(session)
     }
 
+    /// The demo project a frame every 1/60 s, so a synthetic double-click lands inside egui's
+    /// double-click window (the default step is a quarter second).
+    fn fast_demo() -> Self {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let (tx, rx) = channel();
+        let app = FilmcraftApp::new(session).with_control(rx);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx, snapshots: None };
+        d.frames(4);
+        d
+    }
+
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
@@ -1025,6 +1038,181 @@ fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
     d.ok("ui.key", json!({"key": "Space"}));
     d.frames(2);
     assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+}
+
+/// A real double-click on a Project item (not `source.open` run directly) opens the clip and leaves
+/// Space on the Source monitor; clicking back into the Timeline puts Space on the Program again.
+#[test]
+fn double_clicking_a_project_item_leaves_space_on_the_source_monitor() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::fast_demo();
+    let a = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].item;
+    d.click("panel.tab.Project");
+    // a Project item row is only drawn inside its bin: open Footage first
+    let bin = d
+        .app()
+        .session
+        .project
+        .root
+        .children
+        .iter()
+        .find_map(|e| match e {
+            filmcraft_project::BinEntry::Bin(b) if b.name == "Footage" => Some(b.id.0),
+            _ => None,
+        })
+        .expect("a Footage bin");
+    d.wait_for(&format!("project.bin.{bin}"));
+    let brect = d.rects(&format!("project.bin.{bin}")).into_iter().find(|(id, _)| *id == format!("project.bin.{bin}")).unwrap().1;
+    double_click(&mut d, brect.center());
+    d.frames(4);
+    let row = format!("project.item.{}", a.0);
+    d.wait_for(&row);
+    let rect = d.rects(&row).into_iter().find(|(id, _)| *id == row).unwrap().1;
+    double_click(&mut d, rect.center());
+    d.frames(4);
+    assert_eq!(d.app().session.state.source_item, Some(a), "double-click opens the clip in Source");
+    assert_eq!(d.app().ui.focused, PanelKind::Source, "the double-clicked item does not keep the focus");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+
+    // back on the Timeline: Space plays the sequence again, and stops the Source
+    d.click("panel.tab.Timeline");
+    d.frames(2);
+    assert_eq!(d.app().ui.focused, PanelKind::Timeline);
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().source_playback.clock.playing, "the Source stops");
+    assert!(d.app().playback.playing, "Space plays the Timeline again");
+}
+
+/// A double-click on a Timeline clip (which also opens it in Source) leaves Space on the Source too.
+#[test]
+fn double_clicking_a_timeline_clip_leaves_space_on_the_source_monitor() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::fast_demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id).nth(1).unwrap();
+    let id = format!("timeline.clip.{}", clip.0);
+    d.wait_for(&id);
+    let Some(rect) = d.rects(&id).into_iter().find(|(i, _)| *i == id).map(|(_, r)| r) else { return };
+    double_click(&mut d, rect.center());
+    d.frames(4);
+    assert_eq!(d.app().ui.focused, PanelKind::Source, "the Timeline double-click does not keep the focus");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+}
+
+/// The Source and Program monitors sharing one tab group, as they are in the workspace this user
+/// edits in: opening a clip must raise the Source tab, and going back to the Timeline the Program.
+fn merged_monitors(d: &mut Driver) {
+    use craft_ui::docking::{Layout, Node};
+    use craft_ui::layout::{SplitAxis, SplitSize};
+    use filmcraft_ui_egui::dock::PanelKind;
+    d.app().ui.dock = Layout {
+        root: Some(Node::Split {
+            axis: SplitAxis::Horizontal,
+            size: SplitSize::Ratio(0.55),
+            first: Box::new(Node::Split {
+                axis: SplitAxis::Vertical,
+                size: SplitSize::Ratio(0.6),
+                first: Box::new(Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+                second: Box::new(Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            }),
+            second: Box::new(Node::Tabs { panels: vec![PanelKind::Program, PanelKind::Source], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    d.frames(3);
+}
+
+/// The tab of the group holding `member` that is on show.
+fn tab_on_show(
+    layout: &craft_ui::docking::Layout<filmcraft_ui_egui::dock::PanelKind>,
+    member: filmcraft_ui_egui::dock::PanelKind,
+) -> Option<filmcraft_ui_egui::dock::PanelKind> {
+    use craft_ui::docking::Node;
+    fn walk(node: &Node<filmcraft_ui_egui::dock::PanelKind>, member: filmcraft_ui_egui::dock::PanelKind) -> Option<filmcraft_ui_egui::dock::PanelKind> {
+        match node {
+            Node::Tabs { panels, active } => panels.contains(&member).then(|| panels.get(*active).copied()).flatten(),
+            Node::Split { first, second, .. } => walk(first, member).or_else(|| walk(second, member)),
+            _ => None,
+        }
+    }
+    layout.root.as_ref().and_then(|root| walk(root, member))
+}
+
+/// With the Source and Program monitors tabbed together, a double-click shows the Source tab and
+/// Space plays the clip; clicking the Timeline shows the Program tab again and Space plays it.
+#[test]
+fn tabbed_monitors_follow_the_clip_that_was_opened() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::fast_demo();
+    merged_monitors(&mut d);
+    let a = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].item;
+    let bin = d
+        .app()
+        .session
+        .project
+        .root
+        .children
+        .iter()
+        .find_map(|e| match e {
+            filmcraft_project::BinEntry::Bin(b) if b.name == "Footage" => Some(b.id.0),
+            _ => None,
+        })
+        .expect("a Footage bin");
+    d.wait_for(&format!("project.bin.{bin}"));
+    let id = format!("project.bin.{bin}");
+    let brect = d.rects(&id).into_iter().find(|(i, _)| *i == id).unwrap().1;
+    double_click(&mut d, brect.center());
+    d.frames(4);
+
+    let row = format!("project.item.{}", a.0);
+    d.wait_for(&row);
+    let rect = d.rects(&row).into_iter().find(|(i, _)| *i == row).unwrap().1;
+    double_click(&mut d, rect.center());
+    d.frames(4);
+    assert_eq!(d.app().ui.focused, PanelKind::Source, "the Source takes the focus");
+    assert_eq!(tab_on_show(&d.app().ui.dock, PanelKind::Source), Some(PanelKind::Source), "the Source tab is on show");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the clip");
+
+    // The click that opened the clip can leave the focus on the panel it came from; Space must
+    // still play the clip as long as the Source monitor is the one on screen.
+    d.app().stop_source();
+    d.app().ui.focused = PanelKind::Project;
+    d.frames(2);
+    assert!(d.app().ui.on_source_monitor(), "the Source keeps the transport");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space still plays the clip");
+
+    d.click("panel.tab.Timeline");
+    d.frames(3);
+    assert_eq!(d.app().ui.focused, PanelKind::Timeline);
+    assert_eq!(tab_on_show(&d.app().ui.dock, PanelKind::Program), Some(PanelKind::Program), "the Program tab is on show again");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().source_playback.clock.playing, "the clip stops");
+    assert!(d.app().playback.playing, "Space plays the Timeline");
+}
+
+/// Two clicks a person makes apart, at a point.
+fn double_click(d: &mut Driver, at: egui::Pos2) {
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    // a pause first: clicks closer together continue the last gesture (a triple click)
+    d.frames(60);
+    push(d, egui::Event::PointerMoved(at));
+    d.frames(1);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            d.frames(1);
+        }
+    }
+    d.frames(3);
 }
 
 /// #3669: a closed Source panel is reopened (not left hidden) when a clip opens in it.

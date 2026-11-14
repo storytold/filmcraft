@@ -184,7 +184,7 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => true,
         Some(_) => false,
-        None => app.ui.focused == PanelKind::Source,
+        None => app.ui.on_source_monitor(),
     }
 }
 
@@ -404,9 +404,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             app.stop_source();
             return Ok(Value::Null);
         }
-        "playback.toggle"
-            if params.get("monitor").and_then(Value::as_str) == Some("source") || (params.get("monitor").is_none() && app.ui.focused == PanelKind::Source) =>
-        {
+        "playback.toggle" if targets_source(app, &params) => {
             app.toggle_source_play()?;
             return Ok(json!({"playing": app.source_playback.clock.playing}));
         }

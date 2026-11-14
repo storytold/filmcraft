@@ -23,7 +23,6 @@ use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
-use crate::dock::PanelKind;
 use crate::frames::Rgba;
 use crate::panels::monitor::Which;
 use crate::state::{DisplayMode, Guide, GuideDialog, MonitorView, PlaybackRes, Tool};
@@ -75,7 +74,7 @@ fn which_of(app: &FilmcraftApp, params: &Value) -> Which {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => Which::Source,
         Some("program") => Which::Program,
-        _ if app.ui.focused == PanelKind::Source => Which::Source,
+        _ if app.ui.on_source_monitor() => Which::Source,
         _ => Which::Program,
     }
 }
