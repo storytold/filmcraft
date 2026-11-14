@@ -29,6 +29,9 @@ fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)
     })
 }
 
+/// The Lumetri Color panel for the selected clip's Lumetri instance: one collapsible section per
+/// Lumetri section (Basic Correction, Creative, Curves, Color Wheels, HSL Secondary, Vignette),
+/// each slider registered as `lumetri.param.<id>` where agents drive it.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected(app) else {
@@ -220,10 +223,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 auto_rows.push((format!("lumetri.param.{id}"), r, label));
             }
             sub(ui, &t, tl!("Correction"));
-            slider(ui, &e, mt, "hsl_temp", tl!("Temperature"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_tint", tl!("Tint"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_sat", tl!("Saturation"), None, &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_hue_shift", tl!("Hue Shift"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
+            // Premiere's order: Temperature, Tint, Contrast, Sharpen, Saturation
+            for (id, label, gradient) in [
+                ("hsl_temp", tl!("Temperature"), Some(Gradient::Temp)),
+                ("hsl_tint", tl!("Tint"), Some(Gradient::Tint)),
+                ("hsl_contrast", tl!("Contrast"), None),
+                ("hsl_sharpen", tl!("Sharpen"), None),
+                ("hsl_sat", tl!("Saturation"), None),
+                ("hsl_hue_shift", tl!("Hue Shift"), Some(Gradient::Hue)),
+            ] {
+                let r = slider(ui, &e, mt, id, label, gradient, &t, &mut actions, clip, idx);
+                auto_rows.push((format!("lumetri.param.{id}"), r, label));
+            }
         }
         if open_section(ui, app, &e, "Vignette", "vignette_on", "vignette", &mut sections) {
             for (id, label) in [
