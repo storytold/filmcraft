@@ -525,3 +525,32 @@ fn project_captured_folder_outside_the_project_is_not_used() {
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Font pickers: favourites and the recently used families persist and stay well formed.
+#[test]
+fn font_favorites_and_recent_persist() {
+    let s = &mut Session::default();
+    assert_eq!(s.prefs.fonts.favorites, Vec::<String>::new());
+    s.execute("prefs.set", json!({"key": "fonts.favorites", "value": ["Source Han Sans SC", "Inter"]})).unwrap();
+    s.execute("prefs.set", json!({"key": "fonts.recent", "value": ["LXGW WenKai", "Inter"]})).unwrap();
+    assert_eq!(s.execute("prefs.get", json!({"key": "fonts.favorites"})).unwrap(), json!(["Source Han Sans SC", "Inter"]));
+    assert_eq!(s.execute("prefs.get", json!({"key": "fonts.recent"})).unwrap(), json!(["LXGW WenKai", "Inter"]));
+    // not a list of names
+    assert!(s.execute("prefs.set", json!({"key": "fonts.favorites", "value": "Inter"})).is_err());
+    assert!(s.execute("prefs.set", json!({"key": "fonts.favorites", "value": [""]})).is_err());
+    assert!(s.execute("prefs.set", json!({"key": "fonts.recent", "value": [1]})).is_err());
+
+    // the helpers keep one copy, newest first, capped
+    let mut f = crate::autosave::FontPrefs::default();
+    for i in 0..20 {
+        f.used(&format!("F{i}"));
+    }
+    f.used("F5");
+    assert_eq!(f.recent.len(), crate::autosave::FontPrefs::RECENT);
+    assert_eq!(f.recent[0], "F5");
+    assert_eq!(f.recent.iter().filter(|x| *x == "F5").count(), 1);
+    assert!(f.toggle_favorite("Inter"));
+    assert!(f.is_favorite("inter"));
+    assert!(!f.toggle_favorite("Inter"));
+    assert!(!f.is_favorite("Inter"));
+}

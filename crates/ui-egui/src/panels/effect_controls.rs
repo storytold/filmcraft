@@ -875,15 +875,23 @@ fn param_value_widget(
             let w = 150.0_f32.min(vui.available_width()).max(40.0);
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
-                    for (f, _) in &fams {
-                        let r = ui.selectable_label(f == current, f);
-                        app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
-                        if r.clicked() {
-                            set = Some(json!(f));
-                        }
-                    }
-                })
+                let search_id = vui.scope_id().with(("ec-font-search", clip.0, idx));
+                let r = craft_ui::ComboBox::from_id_salt(salt)
+                    .selected_text(crate::font_picker::label(current))
+                    .width(w)
+                    .height(400.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show_ui_with_header(
+                        vui,
+                        |ui| crate::font_picker::search(ui, search_id),
+                        |ui, query| crate::font_picker::menu(app, ui, &query, current, &prefix, false),
+                    );
+                let acts = r.inner.unwrap_or_default();
+                let response = r.response;
+                if let Some(f) = crate::font_picker::apply(app, acts) {
+                    set = Some(json!(f));
+                }
+                egui::InnerResponse::new(None, response)
             } else {
                 let family = match e.param("font").map(|p| &p.value) {
                     Some(ParamValue::Text(f)) => f.as_str(),
@@ -896,9 +904,9 @@ fn param_value_widget(
                         styles.push(extra);
                     }
                 }
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                craft_ui::ComboBox::from_id_salt(salt).selected_text(crate::font_picker::style_label(current)).width(w).show_ui(vui, |ui| {
                     for st in styles {
-                        let r = ui.selectable_label(st == current, st);
+                        let r = ui.selectable_label(st == current, crate::font_picker::style_label(st));
                         app.auto.add(&format!("{prefix}.{st}"), r.rect, st);
                         if r.clicked() {
                             set = Some(json!(st));
