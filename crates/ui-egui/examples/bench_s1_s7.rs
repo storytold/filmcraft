@@ -510,6 +510,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     let gop_play = filmcraft_codecs::gop_stats() - gop0;
 
     // 12 random seeks on a fresh session after releasing playback compositor/caches so VRAM does not double.
+    let render_path = display.render_path;
+    let present_ms = std::mem::take(&mut display.present_ms);
     drop((display, server));
     let bench = Bench { server: FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), workers), refresh_hz: 60.0, seconds, draft: false };
     let mut disp_seek = PreviewDisplay::new(use_gpu);
@@ -555,7 +557,7 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         "kind": "preview",
         "adapter": adapter_name,
         "backend": backend_name,
-        "render_path": display.render_path,
+        "render_path": render_path,
         "resolution": format!("{}x{}", q.settings.width, q.settings.height),
         "target_fps": target_fps,
         "effective_fps": effective_fps,
@@ -566,8 +568,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         "preroll_ms": preroll_ms,
         "seek_p50_ms": pct(&seek_lat_ms, 0.5),
         "seek_p95_ms": pct(&seek_lat_ms, 0.95),
-        "ui_present_p50_ms": pct(&display.present_ms, 0.5),
-        "ui_present_p95_ms": pct(&display.present_ms, 0.95),
+        "ui_present_p50_ms": pct(&present_ms, 0.5),
+        "ui_present_p95_ms": pct(&present_ms, 0.95),
         "av_drift_ms_p50": pct(&av_drift_ms, 0.5),
         "av_drift_ms_p95": pct(&av_drift_ms, 0.95),
         "av_drift_ms_max": pct(&av_drift_ms, 1.0),
