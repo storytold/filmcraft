@@ -182,9 +182,10 @@ fn clean_aperture(c: CleanAperture, (w, h): (u32, u32)) -> Option<Region> {
     (!r.is_full(w as usize, h as usize)).then_some(r)
 }
 
-/// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins; what it leaves
-/// unspecified, or all of it when there is none (ffmpeg writes MP4 without `colr` by default),
-/// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
+/// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins, except that a bitstream
+/// signalling full range beats a box saying limited (#4476). What the box leaves unspecified, or
+/// all of it when there is none (ffmpeg writes MP4 without `colr` by default), comes from the
+/// stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
 /// and the sequence header in `av1C`. The rest defaults by frame size, and the second value says
 /// which values did.
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> (ColorInfo, filmcraft_color::ColorAssumed) {
@@ -214,6 +215,15 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> (ColorI
         }),
         CodecConfig::Apv(_) => None,
         codec => crate::stream_color::from_codec_config(codec),
+    };
+    // A bitstream that says full range wins over a `colr` box that says limited (#4476): the decoders
+    // output what the bitstream signals, and ffmpeg and Premiere Pro show such files as full range.
+    // Some Android phones write this combination (`nclx` limited, VUI full range); taking the box's range
+    // stretched their pictures a second time and crushed everything below code 16. A VUI can only
+    // say full range when it signals the range at all (`video_signal_type_present_flag`).
+    let colr = match (colr, stream) {
+        (Some(c), Some(s)) if c.full_range == Some(false) && s.full_range == Some(true) => Some(ColorCodes { full_range: None, ..c }),
+        (c, _) => c,
     };
     let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
     (crate::stream_color::resolve(w, h, &sources), crate::stream_color::assumed(&sources))
