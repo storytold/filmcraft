@@ -738,9 +738,10 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
     })
 }
 
-/// Display name of a transition (for documents).
+/// Name of a transition in a document (the name an export has always written, so a UI rename does
+/// not change the file).
 pub(crate) fn transition_name(e: &EffectInstance) -> String {
-    e.def().map(|d| d.name.to_string()).unwrap_or_else(|| e.effect.clone())
+    e.def().map(|d| filmcraft_project::interchange_name(d).to_string()).unwrap_or_else(|| e.effect.clone())
 }
 
 /// Label from a document label name (Premiere label names; FCP7 names like "Good Take" ignored).

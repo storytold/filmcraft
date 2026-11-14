@@ -6,6 +6,16 @@ Real-time audio DSP for FilmCraft. Layer **L1**, **no dependencies**, compiles f
 Householder FDN, phase vocoder, spectral subtraction with the statistical late-reverberation
 model).
 
+## Stability
+
+This crate is internal to the FilmCraft workspace (layer **L1**, see `docs/architecture.md`)
+and is not published. Its public items exist for the other workspace crates (`engine`, `render`,
+`export`, `tts`, `ui-egui`) only and may change or be removed without notice; there is no
+supported use from outside the workspace and no deprecation policy. Items no workspace crate
+uses are `pub(crate)` or removed (the effect implementation modules, `fft`, `oversample`,
+`Smoothed`, `db_to_gain`); `remix::test_music` is behind the `test-util` feature for dependent
+crates' tests.
+
 ## Conventions
 
 - Planar `f32` audio: `&mut [&mut [f32]]`, one slice per channel, equal lengths.

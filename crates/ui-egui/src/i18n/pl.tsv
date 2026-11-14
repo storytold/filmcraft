@@ -4,7 +4,7 @@
 # Polish video-editing vocabulary. No proprietary localisation resource, string table or product UI
 # was consulted or copied; add entries the same way. Drafted with AI assistance; not yet reviewed by
 # a native speaker. Commands use the imperative ("Otwórz projekt…"), menus and panels are nouns.
-# Product, format and feature names (FilmCraft, ArtCraft, Lumetri, ProRes, EDL, AAF…) keep their
+# Product, format and feature names (FilmCraft, ArtCraft, ProRes, EDL, AAF…) keep their
 # spelling. Counts are written count-neutral ("Klipy: {n}") so every Polish number reads right.
 #
 # Terms: track = ścieżka, bin = kosz, marker = znacznik, playhead = głowica, In/Out = punkt
@@ -193,8 +193,8 @@
 	Refresh Changed Media	Odśwież zmienione multimedia
 	Linked Selection	Połączone zaznaczanie
 	Lock Guides	Zablokuj linie pomocnicze
-	Lumetri Color	Kolor Lumetri
-	Lumetri Scopes	Wykresy Lumetri
+	Color Grading	Korekcja kolorów
+	Video Scopes	Wskaźniki wideo
 	Magnification	Powiększenie
 	Make Offline…	Ustaw jako offline…
 	Make Subclip…	Utwórz podklip…
@@ -887,7 +887,7 @@
 	Clip Volume	Głośność klipu
 	(no clip selected)	(nie zaznaczono klipu)
 	Master · {name}	Główny · {name}
-	Add Lumetri Color to clip	Dodaj Kolor Lumetri do klipu
+	Add Color Grading to clip	Dodaj korekcję kolorów do klipu
 	Input LUT	Wejściowy LUT
 	Color	Kolor
 	Temperature	Temperatura
@@ -1665,7 +1665,7 @@
 	Elliptical	Eliptyczne
 	Emboss	Wytłoczenie
 	Enable HSL Secondary	Włącz drugorzędne HSL
-	Enable Mercury Transmit	Włącz Mercury Transmit
+	Enable External Video Output	Włącz zewnętrzne wyjście wideo
 	Enable ProRes hardware accelerated encoding, if available	Włącz sprzętowe kodowanie ProRes, jeśli jest dostępne
 	Enable clip and XMP metadata linking	Włącz łączenie metadanych klipu i XMP
 	Enable developer mode	Włącz tryb deweloperski
@@ -1733,7 +1733,7 @@
 	Focus Size	Rozmiar ostrości
 	Fold Motion	Ruch składania
 	Foldback	Odsłuch
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Parametry zarządzania kolorem znajdziesz na karcie Ustawienia w panelu Kolor Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Parametry zarządzania kolorami znajdują się na karcie Ustawienia w panelu Korekcja kolorów.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Cztery wykresy (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Cztery wykresy (YUV, float, bez ograniczania)
@@ -2002,7 +2002,7 @@
 	Luma Key	Klucz lumy
 	Luma Source	Źródło lumy
 	Luma and Chroma	Luma i chrominancja
-	Lumetri Presets	Ustawienia Lumetri
+	Color Grading Presets	Ustawienia korekcji kolorów
 	Luminance	Luminancja
 	Luminance Threshold	Próg luminancji
 	Luminosity	Jasność
@@ -3123,7 +3123,6 @@
 	Left align text	Wyrównaj tekst do lewej
 	Looping GIF, 640×360 at 15 fps	Zapętlony GIF, 640×360 przy 15 kl./s
 	Lower First	Najpierw dolne
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3587,6 +3586,7 @@
 	The default graphics are used from the next start.	Domyślna grafika będzie używana od następnego uruchomienia.
 	DirectX 12 only	Tylko DirectX 12
 	software rendering	renderowanie programowe
+	integrated GPU	zintegrowany GPU
 	Label Color Presets	Ustawienia kolorów etykiet
 	{name} (Modified)	{name} (zmodyfikowane)
 	Revert to the preset's colors and names	Przywróć kolory i nazwy z ustawienia
@@ -3632,3 +3632,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) w rozmiarze sekwencji, stała jakość CRF 16, AAC 320 kb/s; master 10-bitowy
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, każda klatka kluczowa), CRF 12, AAC 320 kb/s; plik pośredni wygodny w montażu
+	List Color Grading Presets	Wyświetl ustawienia korekcji kolorów
+	Apply Color Grading Preset	Zastosuj ustawienie korekcji kolorów
+	Color Grading Preset Thumbnails	Miniatury ustawień korekcji kolorów
+	Toggle Color Grading Section	Przełącz sekcję korekcji kolorów
+	Color Grading Section	Sekcja korekcji kolorów
+	Read Video Scopes	Odczytaj wskaźniki wideo

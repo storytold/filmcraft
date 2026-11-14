@@ -377,6 +377,26 @@ fn rich_roundtrip() {
     assert_eq!(structure(&imp2.project, imp2.sequences[0], TrackKind::Video), structure(&p, s, TrackKind::Video));
 }
 
+/// #1868: renaming the panel does not change an export. FCP7 XML and FCPXML keep writing the
+/// effect name other applications read back, so a file exported today matches one exported before.
+#[test]
+fn grading_keeps_its_interchange_name() {
+    let (mut p, s) = rich_project();
+    let first = p.sequence(s).unwrap().video_tracks[0].items[0].id;
+    let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(first).unwrap();
+    it.effects.push(filmcraft_project::find_effect("lumetri").unwrap().instance());
+    let (fcp7, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    let fcp7 = String::from_utf8(fcp7).unwrap();
+    assert!(fcp7.contains("<name>Lumetri Color</name>"), "{fcp7}");
+    assert!(!fcp7.contains("Color Grading"), "{fcp7}");
+    let (fcpxml, _) = export(&p, s, Format::Fcpxml, &ExportOptions::default()).unwrap();
+    let fcpxml = String::from_utf8(fcpxml).unwrap();
+    assert!(fcpxml.contains("name=\"Lumetri Color\""), "{fcpxml}");
+    assert!(!fcpxml.contains("Color Grading"), "{fcpxml}");
+    // the label the user sees is the current one
+    assert_eq!(filmcraft_project::find_effect("lumetri").unwrap().name, "Color Grading");
+}
+
 #[test]
 fn version_5_and_generators() {
     let (mut p, s) = rich_project();
@@ -720,6 +740,78 @@ fn absurd_start_timecode_is_bounded() {
         assert_eq!(imported.project.sequence(*seq).map(|s| s.start_timecode), Some(0));
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
+}
+
+#[test]
+fn deeply_nested_sequence_chain_imports_without_unbounded_recursion() {
+    // sequence-0 uses sequence-1, which uses sequence-2, ... : an acyclic chain of 400
+    // definitions, each one level of native recursion in the importer.
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    assert!(imp.project.sequences().count() > filmcraft_interchange::MAX_NESTING_DEPTH);
+}
+
+#[test]
+fn a_sequence_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+    // sequence-0 … sequence-65 form a chain. Importing sequence-0 first reaches sequence-63 at the
+    // depth limit, so sequence-64 is left out of it; sequence-63 is also listed on its own, where
+    // sequence-64 fits, and must not keep the incomplete copy.
+    let n = 66;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        let nested = if i + 1 < n {
+            format!(
+                "<clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>",
+                i + 1
+            )
+        } else {
+            String::new()
+        };
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>{nested}</track></video></media></sequence>"
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    let s63 = imp.project.sequences().find(|i| i.name == "S63").and_then(|i| imp.project.sequence(i.id)).unwrap();
+    assert_eq!(s63.video_tracks[0].items.len(), 1, "sequence-63 keeps its nested sequence-64");
+}
+
+#[test]
+fn a_nested_clip_left_out_by_the_depth_limit_stays_as_an_offline_placeholder_with_its_extent() {
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("left out; imported offline"), "{rep:?}");
+    let p = &imp.project;
+    let placeholder = p
+        .sequences()
+        .filter_map(|i| p.sequence(i.id))
+        .flat_map(|s| s.video_tracks.iter().flat_map(|t| t.items.iter()))
+        .find(|ti| p.item(ti.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline))
+        .expect("an offline placeholder");
+    assert!(placeholder.duration > Tick::ZERO, "the clip keeps its length");
 }
 
 #[test]

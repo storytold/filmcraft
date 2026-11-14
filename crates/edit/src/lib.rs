@@ -529,6 +529,22 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
 
 /// Close the gap containing `t` on a track (Ripple Delete on a gap).
 pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
+    let gap = closable_gap(seq, track, t)?;
+    let mut work = seq.clone();
+    for tr in work.all_tracks_mut() {
+        if tr.locked || (tr.id != track && !tr.sync_lock) {
+            continue;
+        }
+        shift_track_from(tr, gap.end(), -gap.duration);
+    }
+    *seq = work;
+    Ok(())
+}
+
+/// The gap on `track` at `t` that [`close_gap`] would close, or why it can't (a locked track, no
+/// gap there, a sync-locked track with a clip in the way). Changes nothing, so menus can grey out
+/// Ripple Delete on a gap that won't close (#2960), as Premiere Pro does.
+pub fn closable_gap(seq: &Sequence, track: TrackId, t: Tick) -> Result<TimeRange> {
     let tr = seq.track(track).ok_or(EditError::NoTrack(track))?;
     if tr.locked {
         // the other tracks would move while this one stayed put
@@ -540,23 +556,10 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
     let prev_end = tr.items.iter().filter(|i| i.end() <= t).map(|i| i.end()).max().unwrap_or(Tick::ZERO);
     let next_start = tr.items.iter().filter(|i| i.start > t).map(|i| i.start).min().ok_or(EditError::Nothing)?;
     let gap = TimeRange::from_bounds(prev_end, next_start);
-    let mut work = seq.clone();
-    for tr in work.all_tracks_mut() {
-        if tr.locked {
-            continue;
-        }
-        if tr.id != track {
-            if !tr.sync_lock {
-                continue;
-            }
-            if !track_range_empty(tr, gap) {
-                return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
-            }
-        }
-        shift_track_from(tr, gap.end(), -gap.duration);
+    if let Some(tr) = seq.all_tracks().find(|tr| tr.id != track && !tr.locked && tr.sync_lock && !track_range_empty(tr, gap)) {
+        return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
     }
-    *seq = work;
-    Ok(())
+    Ok(gap)
 }
 
 /// Move items by (track, time) offsets with overwrite (default drag) or insert (Cmd-drag) semantics.

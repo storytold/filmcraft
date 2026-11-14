@@ -130,7 +130,7 @@ mod linux {
                     }
                     let profiles = h264_profiles(info.profile_idc).ok_or_else(|| format!("H.264 profile_idc {} is not taken", info.profile_idc))?;
                     let rbsp = parameter_set(&info.parameter_sets, 1, |h| h & 0x1f == 7).ok_or("no SPS")?;
-                    let sps = filmcraft_h264::params::Sps::parse(&rbsp).map_err(|e| e.to_string())?;
+                    let sps = craft_video::h264::decode::params::Sps::parse(&rbsp).map_err(|e| e.to_string())?;
                     sps.check_supported().map_err(|e| e.to_string())?;
                     let mbs = (sps.pic_width_in_mbs, sps.frame_height_in_mbs());
                     // the DPB, the picture being decoded, and one spare
@@ -143,7 +143,7 @@ mod linux {
                     let profiles =
                         hevc_profiles(info.profile_idc, bits).ok_or_else(|| format!("HEVC profile {} at {bits}-bit is not taken", info.profile_idc))?;
                     let rbsp = parameter_set(&info.parameter_sets, 2, |h| (h >> 1) & 0x3f == 33).ok_or("no SPS")?;
-                    let sps = filmcraft_hevc::params::Sps::parse(&rbsp).map_err(|e| e.to_string())?;
+                    let sps = craft_video::hevc::decode::params::Sps::parse(&rbsp).map_err(|e| e.to_string())?;
                     sps.check_supported().map_err(|e| e.to_string())?;
                     if sps.range_extension {
                         return Err("HEVC range extensions are not taken".into());

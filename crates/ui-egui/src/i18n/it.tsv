@@ -10,7 +10,7 @@
 # Italian video-editing vocabulary (traccia, indicatore di riproduzione, sequenza, raccoglitore,
 # attacco/stacco, fotogramma chiave, rendering…). No proprietary localisation resource, string
 # table or product UI was consulted or copied, and no other FilmCraft catalog was translated from;
-# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft, Lumetri,
+# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft,
 # ProRes, LUFS, H.264…) keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Commands are imperatives addressed with "tu"; decimals use a comma (29,97 fps).
 
@@ -199,8 +199,8 @@
 	Refresh Changed Media	Aggiorna media modificati
 	Linked Selection	Selezione collegata
 	Lock Guides	Blocca guide
-	Lumetri Color	Colore Lumetri
-	Lumetri Scopes	Ambiti Lumetri
+	Color Grading	Gradazione colore
+	Video Scopes	Oscilloscopi video
 	Magnification	Ingrandimento
 	Make Offline…	Rendi offline…
 	Make Subclip…	Crea sottoclip…
@@ -894,7 +894,7 @@
 	Clip Volume	Volume clip
 	(no clip selected)	(nessuna clip selezionata)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Aggiungi Colore Lumetri alla clip
+	Add Color Grading to clip	Aggiungi gradazione colore alla clip
 	Input LUT	LUT di ingresso
 	Color	Colore
 	Temperature	Temperatura
@@ -1673,7 +1673,7 @@
 	Elliptical	Ellittico
 	Emboss	Rilievo
 	Enable HSL Secondary	Abilita HSL secondario
-	Enable Mercury Transmit	Abilita trasmissione Mercury
+	Enable External Video Output	Abilita uscita video esterna
 	Enable ProRes hardware accelerated encoding, if available	Abilita la codifica ProRes con accelerazione hardware, se disponibile
 	Enable clip and XMP metadata linking	Abilita il collegamento dei metadati clip e XMP
 	Enable developer mode	Abilita la modalità sviluppatore
@@ -1741,7 +1741,7 @@
 	Focus Size	Dimensione messa a fuoco
 	Fold Motion	Movimento di piegatura
 	Foldback	Ripiegamento
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Per i parametri di gestione del colore, vai alla scheda Impostazioni del pannello Colore Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Per i parametri di gestione del colore, apri la scheda Impostazioni nel pannello Gradazione colore.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quattro ambiti (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Quattro ambiti (YUV, virgola mobile, senza limitazione)
@@ -2010,7 +2010,7 @@
 	Luma Key	Chiave luma
 	Luma Source	Sorgente luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefiniti Lumetri
+	Color Grading Presets	Predefiniti di gradazione colore
 	Luminance	Luminanza
 	Luminance Threshold	Soglia luminanza
 	Luminosity	Luminosità
@@ -3127,7 +3127,6 @@
 	Left align text	Allinea il testo a sinistra
 	Looping GIF, 640×360 at 15 fps	GIF in loop, 640×360 a 15 fps
 	Lower First	Prima il campo inferiore
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3590,6 +3589,7 @@
 	The default graphics are used from the next start.	La grafica predefinita viene usata dal prossimo avvio.
 	DirectX 12 only	Solo DirectX 12
 	software rendering	rendering software
+	integrated GPU	GPU integrata
 	Label Color Presets	Predefiniti colori etichette
 	{name} (Modified)	{name} (modificato)
 	Revert to the preset's colors and names	Ripristina i colori e i nomi del predefinito
@@ -3706,3 +3706,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bit 4:2:0) alla dimensione della sequenza, qualità costante CRF 16, AAC 320 kbps; un master a 10 bit
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, ogni fotogramma è un fotogramma chiave), CRF 12, AAC 320 kbps; un intermedio facile da montare
+	List Color Grading Presets	Elenca predefiniti di gradazione colore
+	Apply Color Grading Preset	Applica predefinito di gradazione colore
+	Color Grading Preset Thumbnails	Miniature dei predefiniti di gradazione colore
+	Toggle Color Grading Section	Attiva/disattiva sezione di gradazione colore
+	Color Grading Section	Sezione di gradazione colore
+	Read Video Scopes	Leggi oscilloscopi video

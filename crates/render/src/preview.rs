@@ -53,7 +53,7 @@ pub const HASH_VERSION: &str = "filmcraft-preview-v1";
 /// Calibration (M4 Pro, shared with other jobs; 1080p 23.976 sequence, Full playback resolution,
 /// 8 s of playback ≈ 192 frames, counted by the Program monitor's dropped-frame stats):
 /// * 1080p H.264 High clip, no effects (no bar, est. 3.5 ms): 11 dropped;
-/// * same clip + Lumetri, Sharpen, Levels, Tint (red, est. 183 ms): 189–191 dropped, ≤ 17 on time;
+/// * same clip + Color Grading, Sharpen, Levels, Tint (red, est. 183 ms): 189–191 dropped, ≤ 17 on time;
 /// * after Render Effects In to Out (green; ProRes preview rendered at ~3 fps): 25–46 dropped on
 ///   the first play right after the render (frame workers still busy with live renders queued
 ///   before it), then 0–1 dropped on every later play.
@@ -385,7 +385,7 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, kind: TrackKind, d
 ///
 /// Three tiers from timing every effect at its defaults on a 1920×1080 frame on an M4 Pro
 /// (`cargo test -p filmcraft-render --release -- --ignored effect_costs --nocapture` prints the
-/// table): heavy ≥ 30 ms (blurs/sharpen at real radii, Lumetri, Levels, keyers…), medium 10–30 ms,
+/// table): heavy ≥ 30 ms (blurs/sharpen at real radii, Color Grading, Levels, keyers…), medium 10–30 ms,
 /// light < 10 ms. Unknown ids count as medium.
 pub fn effect_cost_ms(id: &str) -> f64 {
     match id {

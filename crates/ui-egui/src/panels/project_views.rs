@@ -771,7 +771,8 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
             ui.close();
         }
     }
-    ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
+    let new_bin = (v.bin != app.session.project.root.id).then_some(v.bin.0);
+    ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, new_bin, actions));
 }
 
 #[allow(clippy::too_many_arguments)]

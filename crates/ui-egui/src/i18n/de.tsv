@@ -4,7 +4,7 @@
 # German video-editing vocabulary. No proprietary localisation resource, string table or product UI
 # was consulted or copied; add entries the same way. Like the German catalogs of the other Craft
 # apps, text addresses the user informally ("du") and commands use the infinitive ("Projekt
-# öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Lumetri, Essential Graphics,
+# öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Essential Graphics,
 # EDL, AAF…) keep their spelling. The catalog covers the whole interface: first every menu,
 # including the native macOS app menu, then the rest of the Spanish catalog (panels, dialogs,
 # effects and their parameters, presets, settings, status messages). Strings added later show in
@@ -16,7 +16,7 @@
 # menu) = Voreinstellungen. "Timeline" is not translated. Further: frame = Frame, keyframe =
 # Keyframe, preset = Vorgabe, footage = Material, render = rendern, application = Anwendung;
 # ripple, roll, slip and slide edits keep their names (Ripple-Trimmen, Rollen-Werkzeug…); in
-# Lumetri highlights = Lichter, shadows = Tiefen, midtones = Mitteltöne. Keys: Shift = Umschalt,
+# Color grading highlights = Lichter, shadows = Tiefen, midtones = Mitteltöne. Keys: Shift = Umschalt,
 # Option = Wahl, Ctrl = Strg.
 
 	AAF…	AAF…
@@ -216,8 +216,8 @@
 	Link Media…	Medien verknüpfen…
 	Linked Selection	Verknüpfte Auswahl
 	Lock Guides	Hilfslinien sperren
-	Lumetri Color	Lumetri-Farbe
-	Lumetri Scopes	Lumetri-Scopes
+	Color Grading	Farbgrading
+	Video Scopes	Videoskope
 	Magenta	Magenta
 	Magnification	Vergrößerung
 	Make Offline…	Offline setzen…
@@ -926,7 +926,7 @@
 	Clip Volume	Cliplautstärke
 	(no clip selected)	(kein Clip ausgewählt)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Lumetri-Farbe zum Clip hinzufügen
+	Add Color Grading to clip	Farbgrading zum Clip hinzufügen
 	Input LUT	Eingabe-LUT
 	Temperature	Temperatur
 	Tint	Tönung
@@ -1700,7 +1700,7 @@
 	Elliptical	Elliptisch
 	Emboss	Prägen
 	Enable HSL Secondary	HSL-Sekundär aktivieren
-	Enable Mercury Transmit	Mercury Transmit aktivieren
+	Enable External Video Output	Externe Videoausgabe aktivieren
 	Enable ProRes hardware accelerated encoding, if available	Hardwarebeschleunigte ProRes-Kodierung aktivieren, falls verfügbar
 	Enable clip and XMP metadata linking	Verknüpfung von Clip- und XMP-Metadaten aktivieren
 	Enable developer mode	Entwicklermodus aktivieren
@@ -1768,7 +1768,7 @@
 	Focus Size	Fokusgröße
 	Fold Motion	Faltbewegung
 	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Die Parameter für das Farbmanagement findest du auf dem Reiter „Einstellungen“ des Bedienfelds „Lumetri-Farbe“.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Die Parameter für das Farbmanagement findest du auf dem Reiter „Einstellungen“ des Bedienfelds „Farbgrading“.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Vier Scopes (RGB, 8 Bit)
 	Four Scopes (YUV, float, no clamp)	Vier Scopes (YUV, Gleitkomma, unbegrenzt)
@@ -2036,7 +2036,7 @@
 	Luma Key	Luma-Key
 	Luma Source	Luma-Quelle
 	Luma and Chroma	Luma und Chroma
-	Lumetri Presets	Lumetri-Vorgaben
+	Color Grading Presets	Farbgrading-Vorgaben
 	Luminance	Luminanz
 	Luminance Threshold	Luminanzschwellenwert
 	Luminosity	Luminanz
@@ -3142,7 +3142,6 @@
 	Left align text	Text linksbündig
 	Looping GIF, 640×360 at 15 fps	GIF in Schleife, 640×360 mit 15 fps
 	Lower First	Unteres Halbbild zuerst
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3602,6 +3601,7 @@
 	The default graphics are used from the next start.	Die Standardgrafik wird ab dem nächsten Start verwendet.
 	DirectX 12 only	Nur DirectX 12
 	software rendering	Software-Rendering
+	integrated GPU	integrierte GPU
 	Label Color Presets	Vorgaben für Markierungsfarben
 	{name} (Modified)	{name} (geändert)
 	Revert to the preset's colors and names	Auf die Farben und Namen der Vorgabe zurücksetzen
@@ -3694,3 +3694,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 Bit 4:2:0) in der Größe der Sequenz, konstante Qualität CRF 16, AAC 320 kbps; ein 10-Bit-Master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 Bit 4:2:0, jedes Bild ein Keyframe), CRF 12, AAC 320 kbps; ein schnittfreundliches Zwischenformat
+	List Color Grading Presets	Farbgrading-Vorgaben auflisten
+	Apply Color Grading Preset	Farbgrading-Vorgabe anwenden
+	Color Grading Preset Thumbnails	Vorschaubilder der Farbgrading-Vorgaben
+	Toggle Color Grading Section	Farbgrading-Abschnitt umschalten
+	Color Grading Section	Farbgrading-Abschnitt
+	Read Video Scopes	Videoskope auslesen

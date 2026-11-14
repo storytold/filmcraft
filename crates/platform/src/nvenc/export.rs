@@ -142,6 +142,10 @@ impl VideoEncoder for NvencEncoder {
         // with B-frames the first DTS is `delay` frames before the first PTS
         (self.enc.delay() > 0).then_some(i64::from(self.enc.delay()).saturating_mul(self.rate.den))
     }
+
+    fn hardware(&self) -> Option<&'static str> {
+        Some("NVENC")
+    }
 }
 
 /// Why NVENC does not take this export (the software encoder does, for H.264), or the encoder's
@@ -250,7 +254,7 @@ fn factory_with(
     }
     let declined = |why: &str| {
         log::info!("hardware encoding declined: {why}");
-        filmcraft_export::note_hw_encode_declined();
+        filmcraft_export::note_hw_encode_declined_by("NVENC", why);
         None
     };
     let cfg = match config(format, w, h, rate, s) {
