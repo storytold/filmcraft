@@ -5,7 +5,7 @@ use crate::media_test_util::tmp_dir;
 use filmcraft_project::graphic::LayerContent;
 use filmcraft_project::graphic_design::{DesignEnd, remap_time};
 use filmcraft_project::{ClipId, ParamValue, TrackItem};
-use filmcraft_render::graphic_clip::{item_layer_specs, layer_bounds};
+use filmcraft_render::graphic_clip::{graphic_time, item_layer_specs, layer_bounds};
 use filmcraft_time::Tick;
 
 fn demo(dir: &str) -> Session {
@@ -720,6 +720,41 @@ fn responsive_time_end_accepts_each_value() {
     let (cut_end, design_end, cut_tail) = tail(&mut s, "cut");
     assert_eq!(cut_end, DesignEnd::Cut);
     assert_eq!(cut_tail, design_end - sec(1.0), "cut holds the pose the outro starts from");
+}
+
+/// End-only `end` is a stored preference, not a timing change: with no intro or outro there is no
+/// out-animation to hold, so `cut` and `animate` read the layers at the same media time. The mode
+/// is kept for the outro that is added later.
+#[test]
+fn responsive_time_end_only_cut_does_not_remap_time_without_an_outro() {
+    let mut s = demo("gt-end-only");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Solo", "seconds": 5})).unwrap());
+    let sec = Tick::from_seconds_f64;
+    let it = item(&s, c);
+    let samples = [it.source_in, it.source_in + sec(1.0), it.source_in + sec(2.5), it.source_in + it.duration - sec(0.5), it.source_in + it.duration];
+    let mapped = |it: &TrackItem| samples.map(|mt| graphic_time(it, mt).0);
+    assert_eq!(mapped(&it), samples, "without responsive time the layers read at clip time");
+
+    let r = s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "end": "cut"})).unwrap();
+    assert_eq!(r["end"], "cut");
+    assert_eq!(r["designDuration"], 0, "no outro, so no protected time");
+    let it = item(&s, c);
+    let m = it.graphic.as_deref().expect("the end mode is stored");
+    assert_eq!(m.end, DesignEnd::Cut);
+    assert!(!m.has_responsive_time());
+    assert_eq!(mapped(&it), samples, "an end-only cut renders exactly like no end mode");
+
+    s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "end": "animate"})).unwrap();
+    let it = item(&s, c);
+    assert_eq!(mapped(&it), samples, "with no outro, `animate` has nothing to play either");
+
+    // The stored mode is what a later outro uses, so setting it first is not lost.
+    s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "end": "cut"})).unwrap();
+    s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "introSeconds": 1, "outroSeconds": 1})).unwrap();
+    let it = item(&s, c);
+    let m = it.graphic.as_deref().expect("responsive time stored");
+    assert_eq!(m.end, DesignEnd::Cut, "adding the outro keeps the stored mode");
+    assert_eq!(remap_time(m, it.duration - sec(0.25), it.duration), m.design_in + m.design_duration - sec(1.0), "cut holds the pose the outro starts from");
 }
 
 #[test]

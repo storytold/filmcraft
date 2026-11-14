@@ -692,6 +692,8 @@ fn set_responsive_time(s: &mut Session, p: &Value) -> Result<Value> {
         if m.intro + m.outro > m.design_duration {
             return Err(bad("graphics.setResponsiveTime", "the intro and outro are longer than the graphic"));
         }
+        // No intro or outro: there is no protected time to remap, so the clip reads its keyframes
+        // at plain clip time and `end` changes nothing. It stays stored for a later outro.
         if m.intro == Tick::ZERO && m.outro == Tick::ZERO {
             m.design_in = Tick::ZERO;
             m.design_duration = Tick::ZERO;
