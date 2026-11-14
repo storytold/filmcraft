@@ -64,6 +64,8 @@ impl FilmcraftApp {
         if self.ui.show_header {
             header::show(self, ui, header);
         }
+        // An in-window menu in the header may also have replaced the document this pass.
+        self.sync_ime_target_context(&ctx);
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
         match self.ui.mode {

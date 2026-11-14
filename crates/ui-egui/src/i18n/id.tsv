@@ -21,6 +21,7 @@
 # thumbnail = gambar mini, voice-over = sulih suara, default = bawaan, preferences (also the native
 # macOS Settings menu) = Preferensi, settings = pengaturan.
 
+	Selection order: {position} of {total}	Urutan pilihan: {position} dari {total}
 	About FilmCraft	Tentang FilmCraft
 	Add Audio Submix Track	Tambah Trek Submix Audio
 	Add Caption at Playhead	Tambah Takarir di Kepala Putar

@@ -15,6 +15,7 @@
 # Labels use sentence case; commands are imperatives; Delete = Radera, Remove = Ta bort,
 # Clear = Rensa; decimals use a comma and frame rates are written bild/s (29,97 bild/s).
 
+	Selection order: {position} of {total}	Markeringsordning: {position} av {total}
 	About FilmCraft	Om FilmCraft
 	Add Audio Submix Track	Lägg till ljudsubmixspår
 	Add Caption at Playhead	Lägg till undertext vid spelmarkören

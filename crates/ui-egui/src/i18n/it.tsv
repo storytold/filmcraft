@@ -14,6 +14,7 @@
 # ProRes, LUFS, H.264…) keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Commands are imperatives addressed with "tu"; decimals use a comma (29,97 fps).
 
+	Selection order: {position} of {total}	Ordine di selezione: {position} di {total}
 	About FilmCraft	Informazioni su FilmCraft
 	Add Audio Submix Track	Aggiungi traccia submix audio
 	Add Caption at Playhead	Aggiungi sottotitolo all'indicatore di riproduzione

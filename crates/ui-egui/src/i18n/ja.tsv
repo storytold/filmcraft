@@ -16,6 +16,7 @@
 #     (not 効果), ぼかし, 音量, ビデオ, 再生ヘッド, イン点/アウト点.
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
 
+	Selection order: {position} of {total}	選択順序: {total} 個中 {position} 番目
 	About FilmCraft	FilmCraft について
 	Check for Updates…	アップデートを確認…
 	Checking for updates…	アップデートを確認中…

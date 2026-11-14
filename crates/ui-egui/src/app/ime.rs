@@ -137,13 +137,25 @@ impl FilmcraftApp {
 
     /// Notice a document replacement or an active-sequence change that did not emit
     /// `OpenSequence` (`file.newProject`, a project with no sequence, `sequence.close`). The
-    /// edit target and any in-flight composition belong to the old context.
-    pub(super) fn sync_ime_target_context(&mut self, ctx: &egui::Context) {
+    /// edit target and any in-flight composition belong to the old context. Document-owned drag
+    /// snapshots and deferred drop commands must also end on a true document replacement.
+    pub(crate) fn sync_ime_target_context(&mut self, ctx: &egui::Context) {
         let document = self.session.document_epoch;
+        let retired_press = panels::sync_document_press(ctx, document);
         let sequence = self.session.state.active_sequence;
         let replaced = document != self.ime_document_epoch;
         if !replaced && sequence == self.ime_active_sequence {
             return;
+        }
+        if replaced {
+            panels::cancel_document_drags(ctx, retired_press);
+            // An Escape already latched in the old document must not roll back the new one.
+            self.escape_cancel = false;
+            // A deferred drop still carries the old document's item IDs, even after release.
+            self.clip_mismatch = None;
+            if self.dialog == Some(crate::Dialog::ClipMismatch) {
+                self.dialog = None;
+            }
         }
         self.ime_document_epoch = document;
         self.ime_active_sequence = sequence;

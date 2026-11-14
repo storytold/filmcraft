@@ -4,6 +4,7 @@
 # using Ukrainian video-editing vocabulary. No proprietary localization resources were used.
 # Core menu coverage; other interface strings fall back to English.
 
+	Selection order: {position} of {total}	Порядок вибору: {position} із {total}
 	About FilmCraft	Про FilmCraft
 	Add Audio Submix Track	Додати доріжку підміксу аудіо
 	Add Caption at Playhead	Додати субтитр у позиції курсора відтворення

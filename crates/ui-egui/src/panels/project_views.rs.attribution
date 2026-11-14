@@ -1,0 +1,8 @@
+asset:        project_views.rs
+title:        Project selection-order badges
+author:       @nuclearspike (OpenAI Codex assisted)
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: ../../../../LICENSE-MIT
+added:        2026-10-31 by @nuclearspike
+notes:        Original numbered blue pills drawn with egui primitives and the bundled licensed font. No external artwork. Attribution applies to selection-order badge artwork, not authorship of the rest of the source file.

@@ -19,6 +19,7 @@
 # Color grading highlights = Lichter, shadows = Tiefen, midtones = Mitteltöne. Keys: Shift = Umschalt,
 # Option = Wahl, Ctrl = Strg.
 
+	Selection order: {position} of {total}	Auswahlreihenfolge: {position} von {total}
 	AAF…	AAF…
 	About FilmCraft	Über FilmCraft
 	Add Audio Submix Track	Audio-Submix-Spur hinzufügen

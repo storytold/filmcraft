@@ -344,3 +344,66 @@ fn a_floating_program_monitor_composes_and_rearms_its_ime_fence() {
     let after = text(&mut d);
     assert!(after.as_str().is_some_and(|t| t.contains('が')), "the completed fence admits the commit: {after}");
 }
+
+#[test]
+fn replacing_a_project_cancels_a_floating_freeform_press_before_drag_threshold() {
+    let mut d = Driver::new(5);
+    let (bin, item) = d
+        .app()
+        .session
+        .project
+        .root
+        .children
+        .iter()
+        .find_map(|entry| match entry {
+            filmcraft_project::BinEntry::Bin(bin) if bin.name == "Footage" => bin.children.iter().find_map(|entry| match entry {
+                filmcraft_project::BinEntry::Item(item) => Some((bin.id.0, item.0)),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .unwrap();
+    d.ok("engine.execute", json!({"command": "project.view.set", "params": {"view": "freeform", "iconSize": 80}}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.ok("engine.execute", json!({"command": "project.select", "params": {"items": [item]}}));
+    d.float("Project", [900.0, 120.0, 600.0, 500.0]);
+    WINDOW.with(|w| w.borrow_mut().focused = true);
+    d.frames(2);
+    let element = d.element(&format!("project.item.{item}"));
+    assert!(element["window"].is_u64(), "the card is in a separate native viewport");
+    let at = rect(&element).center();
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("B floating project.fcproj");
+    let mut replacement = Session::default();
+    replacement.project = d.app().session.project.clone();
+    replacement.state = d.app().session.state.clone();
+    replacement.execute("file.saveAs", json!({"path": path})).unwrap();
+    let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    window_frame(&mut d, vec![egui::Event::PointerMoved(at)]);
+    window_frame(&mut d, vec![button(at, true)]);
+    let epoch = d.app().session.document_epoch;
+    d.harness.state_mut().session.execute("file.open", json!({"path": path})).unwrap();
+    assert_ne!(d.app().session.document_epoch, epoch);
+    d.frames(2);
+    let before = d.app().session.project.clone();
+    assert_eq!(before.name, "B floating project");
+    let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+    let to = at + egui::vec2(40.0, 20.0);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(to)]);
+    window_frame(&mut d, vec![button(to, false)]);
+    d.frames(3);
+    assert_eq!(d.app().session.project, before, "floating pre-threshold press changed B");
+    assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+    // A new press in the floating B panel still moves its card and is one undoable edit.
+    let fresh = rect(&d.element(&format!("project.item.{item}"))).center();
+    window_frame(&mut d, vec![egui::Event::PointerMoved(fresh)]);
+    window_frame(&mut d, vec![button(fresh, true)]);
+    let end = fresh + egui::vec2(40.0, 20.0);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(end)]);
+    window_frame(&mut d, vec![button(end, false)]);
+    d.frames(3);
+    assert_ne!(d.app().session.project, before, "a fresh B floating gesture still moves a card");
+    assert_eq!(d.app().session.history.undo.len(), history.0 + 1);
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    assert_eq!(d.app().session.project, before);
+}

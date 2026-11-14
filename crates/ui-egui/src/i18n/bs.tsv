@@ -5,6 +5,7 @@
 # localization resources were used. AI-assisted (Claude Code), not yet reviewed by a native speaker;
 # the wording is shared with storytold/craft-i18n (locales/bs/filmcraft.tsv and common.tsv).
 
+	Selection order: {position} of {total}	Redoslijed odabira: {position} od {total}
 	About FilmCraft	O FilmCraftu
 	Add Audio Submix Track	Dodaj audio podmiks traku
 	Add Caption at Playhead	Dodaj titl na glavu za reprodukciju

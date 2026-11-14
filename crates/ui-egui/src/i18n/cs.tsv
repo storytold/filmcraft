@@ -14,6 +14,7 @@
 #   escapes  \n  \t  \\ inside a column. Keep {name} placeholders in both columns.
 #   lines starting with # and blank lines are ignored.
 
+	Selection order: {position} of {total}	Pořadí výběru: {position} z {total}
 	About FilmCraft	O aplikaci FilmCraft
 	Add Audio Submix Track	Přidat stopu zvukové podskupiny
 	Add Caption at Playhead	Přidat titulek na pozici přehrávací hlavy

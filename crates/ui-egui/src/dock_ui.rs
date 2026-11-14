@@ -490,6 +490,9 @@ struct FilmContent<'a> {
 
 impl DockContent<PanelKind> for FilmContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
+        // Reconcile the viewport's document/press owner before any panel handles drag payloads.
+        // Native windows bypass ui_inner, so they need this shared boundary too.
+        self.app.sync_ime_target_context(ui.ctx());
         let t = self.tokens;
         let frame = ui.max_rect();
         let rect = frame;

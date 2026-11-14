@@ -12,6 +12,7 @@
 # sekwencja, panel = panel, workspace = obszar roboczy, keyframe = klatka kluczowa, caption = napis,
 # preferences = preferencje. Edit types keep their established names (ripple, roll, slip, slide).
 
+	Selection order: {position} of {total}	Kolejność zaznaczenia: {position} z {total}
 	About FilmCraft	O programie FilmCraft
 	Add Audio Submix Track	Dodaj ścieżkę submiksu audio
 	Add Caption at Playhead	Dodaj napis w miejscu głowicy

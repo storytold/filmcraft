@@ -8,6 +8,7 @@
 # spelling. Hangul is drawn with an installed system font (Malgun Gothic, Apple SD Gothic Neo, Noto
 # Sans CJK KR…, see cjk.rs); native-speaker review welcome.
 
+	Selection order: {position} of {total}	선택 순서: {total}개 중 {position}번째
 	   Angle	   각도
 	   Blur	   흐림
 	   Corner Radius	   모서리 반경

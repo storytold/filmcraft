@@ -16,6 +16,7 @@
 # décalage, overwrite = écraser, scopes = oscilloscopes, preferences (also the native macOS
 # Settings menu) = Préférences, settings = paramètres.
 
+	Selection order: {position} of {total}	Ordre de sélection : {position} sur {total}
 	About FilmCraft	À propos de FilmCraft
 	Add Audio Submix Track	Ajouter une piste de sous-mixage audio
 	Add Caption at Playhead	Ajouter un sous-titre à la tête de lecture

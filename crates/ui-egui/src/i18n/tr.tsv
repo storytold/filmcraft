@@ -12,6 +12,7 @@
 # product UI was consulted or copied; add entries the same way. Product and technology names
 # (FilmCraft, ArtCraft, ProRes, LUFS, H.264…) keep their spelling.
 
+	Selection order: {position} of {total}	Seçim sırası: {position} / {total}
 	About FilmCraft	FilmCraft Hakkında
 	Add Audio Submix Track	Ses Alt Miksaj İzi Ekle
 	Add Caption at Playhead	Oynatma Kafasına Altyazı Ekle

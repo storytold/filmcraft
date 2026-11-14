@@ -42,6 +42,37 @@ fn items_land_back_to_back_in_one_undo_step() {
     assert_eq!(ends(&s), spans);
 }
 
+#[test]
+fn mixed_items_wait_for_the_matching_stream_before_creating_a_new_track() {
+    for new_video in [true, false] {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"video": if new_video {1} else {2}, "audio": if new_video {2} else {1}})).unwrap();
+        let mut items = Vec::new();
+        for (name, video) in [("first", !new_video), ("second", new_video)] {
+            s.execute("file.newOfflineFile", json!({"name": name, "video": video, "audio": !video, "seconds": 2})).unwrap();
+            items.push(s.project.items.values().find(|i| i.name == name).unwrap().id.0);
+        }
+        let before = s.project.clone();
+        let history = s.history.undo.len();
+        let p = if new_video {
+            json!({"items": items, "track": "new", "audioTrack": "A2", "time": 0})
+        } else {
+            json!({"items": items, "track": "V2", "audioTrack": "new", "time": 0})
+        };
+        s.execute("timeline.place", p).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (2, 2));
+        let mut clips: Vec<_> = q.video_tracks.iter().chain(&q.audio_tracks).flat_map(|t| &t.items).collect();
+        clips.sort_by_key(|c| c.start);
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].name.as_str(), clips[1].name.as_str()), ("first", "second"));
+        assert_eq!(clips[0].end(), clips[1].start);
+        assert_eq!(s.history.undo.len(), history + 1);
+        s.undo();
+        assert_eq!(s.project, before);
+    }
+}
+
 /// One bad item in the list leaves the sequence and the history as they were.
 #[test]
 fn a_failing_item_places_nothing() {
