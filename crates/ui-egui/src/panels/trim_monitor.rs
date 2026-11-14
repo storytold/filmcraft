@@ -103,7 +103,7 @@ pub fn paint_bracket(p: &egui::Painter, x: f32, row: &Row, out: bool, col: Color
 pub fn paint_hover_bracket(p: &egui::Painter, seq: &Sequence, layout: &Layout, track: TrackId, clip: ClipId, edge: Edge, kind: EdgeKind) {
     let Some(row) = layout.rows.iter().find(|r| r.track == track) else { return };
     let Some(tr) = seq.track(track) else { return };
-    let full = if kind == EdgeKind::Ripple { RIPPLE_RED } else { ROLL_YELLOW };
+    let full = if matches!(kind, EdgeKind::Ripple | EdgeKind::RippleStretch) { RIPPLE_RED } else { ROLL_YELLOW };
     let col = full.gamma_multiply(0.5);
     let marks = match kind {
         EdgeKind::Roll { left, right } => vec![(left, true), (right, false)],
