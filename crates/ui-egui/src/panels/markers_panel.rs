@@ -196,12 +196,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.double_clicked() && ui.input(|i| !i.modifiers.command && !i.modifiers.shift) {
                 super::marker_properties::open_owned(app, m, owner);
             }
-            response.clone().on_hover_text(format!("{}\n{}", m.author, m.comment));
+            if let Some(tip) = row_tooltip(m) {
+                response.clone().on_hover_text(tip);
+            }
             response.context_menu(|ui| super::misc::marker_owned_menu(app, ui, m, "markers.menu", owner));
         }
     });
     app.ui.markers_panel = state;
 }
+/// What a row's tooltip says: the marker's author and comment, whichever it has. With neither
+/// there is no tooltip, since egui would draw an empty box over the row below (#4336).
+fn row_tooltip(m: &filmcraft_project::Marker) -> Option<String> {
+    let lines: Vec<&str> = [m.author.as_str(), m.comment.as_str()].into_iter().filter(|s| !s.trim().is_empty()).collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 fn bulk(app: &mut FilmcraftApp, owner: Owner, ids: &std::collections::BTreeSet<u64>, command: &str, color: Option<&str>) {
     let mut p = owner.params();
     p["markers"] = json!(ids);
