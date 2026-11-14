@@ -29,6 +29,11 @@ const MAX_DICT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DICT_ENTRIES: usize = 500_000;
 /// Most ARPAbet symbols retained for one dictionary pronunciation.
 const MAX_PRONUNCIATION_PHONES: usize = 256;
+/// Most alternative pronunciations kept for one word (CMUdict has at most a handful); equal
+/// repeats are kept once.
+const MAX_PRONUNCIATIONS_PER_WORD: usize = 32;
+/// Most phoneme bytes one script may expand to (a 1 MiB script is some 4 MiB of phonemes).
+const MAX_PHONEME_BYTES: usize = 16 * 1024 * 1024;
 /// Long unknown words are not useful narration and can make suffix fallback recurse repeatedly.
 const MAX_LETTER_TO_SOUND_CHARS: usize = 512;
 /// Maximum number of overrides honoured (excess ignored, not an error).
@@ -133,7 +138,11 @@ impl Lexicon {
                 return Err(LexError::TooManyEntries);
             }
             let key = key.to_ascii_uppercase();
-            entries.entry(key).or_default().push(phones.join(" "));
+            let pron = phones.join(" ");
+            let list = entries.entry(key).or_default();
+            if list.len() < MAX_PRONUNCIATIONS_PER_WORD && !list.contains(&pron) {
+                list.push(pron);
+            }
         }
         Ok(Lexicon { entries, skipped })
     }
@@ -235,26 +244,27 @@ pub fn phonemize(text: &str, lang: Lang, lex: &Lexicon, overrides: &Overrides) -
     let overrides = bounded_overrides(overrides);
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut sentence: Vec<Token> = Vec::new();
+    let mut spent = 0usize;
     for token in tokens {
         match token {
             Token::SentenceEnd => {
                 // The sentence terminator attaches to the last word as a period.
                 sentence.push(Token::Punct('.'));
-                flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
+                flush_sentence(&mut sentence, &mut chunks, &mut spent, lex, &overrides, lang)?;
             }
             Token::SentenceEndWith(c) => {
                 // `?` and `!` shape Kokoro's intonation; keep them.
                 sentence.push(Token::Punct(c));
-                flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
+                flush_sentence(&mut sentence, &mut chunks, &mut spent, lex, &overrides, lang)?;
             }
             Token::Pause { millis } => {
-                flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
+                flush_sentence(&mut sentence, &mut chunks, &mut spent, lex, &overrides, lang)?;
                 chunks.push(Chunk::Pause { millis });
             }
             other => sentence.push(other),
         }
     }
-    flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
+    flush_sentence(&mut sentence, &mut chunks, &mut spent, lex, &overrides, lang)?;
     Ok(chunks)
 }
 
@@ -276,13 +286,25 @@ fn bounded_overrides(overrides: &Overrides) -> BTreeMap<String, String> {
 }
 
 /// Phonemize one buffered sentence into zero or more `Phonemes` chunks.
-fn flush_sentence(sentence: &mut Vec<Token>, chunks: &mut Vec<Chunk>, lex: &Lexicon, overrides: &BTreeMap<String, String>, lang: Lang) {
+fn flush_sentence(
+    sentence: &mut Vec<Token>,
+    chunks: &mut Vec<Chunk>,
+    spent: &mut usize,
+    lex: &Lexicon,
+    overrides: &BTreeMap<String, String>,
+    lang: Lang,
+) -> Result<(), NormalizeError> {
     let tokens = std::mem::take(sentence);
     let mut out = String::new();
     for token in &tokens {
         match token {
             Token::Word(w) => {
                 let Some(p) = word_phonemes(w, lex, Some(overrides), lang) else { continue };
+                // respellings and pronunciations multiply every word: stop before the sentence outgrows the budget
+                *spent = spent.saturating_add(p.len() + 1);
+                if *spent > MAX_PHONEME_BYTES {
+                    return Err(NormalizeError::TooManyPhonemes);
+                }
                 if !out.is_empty() {
                     out.push(' ');
                 }
@@ -301,6 +323,7 @@ fn flush_sentence(sentence: &mut Vec<Token>, chunks: &mut Vec<Chunk>, lex: &Lexi
             chunks.push(Chunk::Phonemes(piece));
         }
     }
+    Ok(())
 }
 
 /// Split a phoneme string longer than [`MAX_CHUNK_CHARS`] at the last `,` `;` `:`

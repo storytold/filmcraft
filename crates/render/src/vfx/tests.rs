@@ -12,6 +12,7 @@ fn cx() -> FxCtx<'static> {
     FxCtx {
         t: Tick::ZERO,
         px_scale: 1.0,
+        mask_scale: 1.0,
         seconds: 0.0,
         timecode: "01:00:00:00",
         clip_name: "clip",
@@ -1466,6 +1467,96 @@ mod stabilizer_corrections_cache {
             let direct = corrections(&p, smooth, false, false);
             assert_eq!(c.corr[60].e, direct[60].e, "smooth {smooth}");
         }
+    }
+}
+
+/// Hostile project values must finish in bounded time (each case is a few seconds of CPU at worst).
+mod hostile_work {
+    use super::super::temporal::{StabilizerPath, corrections};
+    use super::*;
+    use filmcraft_geom::Affine;
+    use std::time::{Duration, Instant};
+
+    fn finishes_quickly(id: &str, e: &EffectInstance, c: &FxCtx) {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        let t = Instant::now();
+        let o = run(id, e, &img, c);
+        assert!(t.elapsed() < Duration::from_secs(20), "{id} took {:?}", t.elapsed());
+        assert!(o.px.iter().all(|v| v.is_finite()), "{id}");
+    }
+
+    #[test]
+    fn lightning_with_huge_width_and_branching() {
+        let mut e = inst("lightning");
+        setf(&mut e, "width", 1e9);
+        setf(&mut e, "branching", 1e9);
+        setf(&mut e, "segments", 100.0);
+        setf(&mut e, "detail", 6.0);
+        finishes_quickly("lightning", &e, &cx());
+    }
+
+    #[test]
+    fn write_on_with_a_stationary_brush_and_a_long_history() {
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 4000.0);
+        let c = FxCtx { t: Tick::from_seconds_f64(600.0), seconds: 600.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_with_an_enormous_size_is_skipped_not_allocated() {
+        let mut e = inst("simple_text");
+        set(&mut e, "text", ParamValue::Text("Wide text".into()));
+        setf(&mut e, "size", 1e7);
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        assert_eq!(run("simple_text", &e, &img, &cx()), img);
+    }
+
+    #[test]
+    fn write_on_with_a_long_off_canvas_path_is_bounded() {
+        use filmcraft_project::{Interpolation, Keyframe};
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 2.0);
+        let key = |t: f64, x: f64| Keyframe {
+            time: Tick::from_seconds_f64(t),
+            value: ParamValue::Vec2(Vec2::new(x, -1e7)),
+            interp: Interpolation::Linear,
+            out_influence: 1.0 / 3.0,
+            in_influence: 1.0 / 3.0,
+        };
+        e.params.get_mut("brush").unwrap().keyframes = vec![key(0.0, -1e7), key(20.0, 1e7)];
+        let c = FxCtx { t: Tick::from_seconds_f64(20.0), seconds: 20.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_at_a_huge_position_is_skipped_not_overflowed() {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        for pos in [1e10, -1e10, 3e9] {
+            let mut e = inst("simple_text");
+            set(&mut e, "text", ParamValue::Text("Hi".into()));
+            set(&mut e, "position", ParamValue::Vec2(Vec2::new(pos, pos)));
+            assert_eq!(run("simple_text", &e, &img, &cx()), img, "position {pos}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_with_a_nan_smoothness_stays_finite() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::translate(1.0, 0.5); 5], fps: 24.0 };
+        for a in corrections(&path, f64::NAN, false, false) {
+            assert!([a.a, a.b, a.c, a.d, a.e, a.f].iter().all(|v| v.is_finite()), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_smoothing_radius_is_bounded() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::IDENTITY; 3], fps: 24.0 };
+        let t = Instant::now();
+        let c = corrections(&path, 1e12, false, false);
+        assert_eq!(c.len(), 4);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     }
 }
 

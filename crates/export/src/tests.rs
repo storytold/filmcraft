@@ -607,3 +607,130 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
     assert!(!plain.is_empty());
     assert!(plain == encode_all(true), "converting ahead changed the packets");
 }
+
+/// The report names the video encoder that ran. An export that asked for hardware encoding and got
+/// the software encoder says so: a two-pass H.264 export with Hardware encoding Auto came out of the
+/// software encoder with nothing saying that NVENC had not run. No hardware encoder is registered
+/// here, so the software one runs both passes, and the warning comes once.
+#[test]
+fn the_report_names_the_encoder_and_says_when_hardware_was_not_used() {
+    let (p, seq, m) = project();
+    let two_pass = ExportSettings {
+        format: Format::H264,
+        path: tmp("hw-auto.mp4"),
+        hardware_encoding: HardwareEncoding::Auto,
+        bitrate_mode: BitrateMode::Vbr2Pass,
+        ..Default::default()
+    };
+    let r = export(&p, seq, &two_pass, &m, &Progress::default()).unwrap();
+    assert_eq!(r.encoder.as_deref(), Some("software"));
+    assert_eq!(r.warnings, ["hardware encoding is Auto, but no hardware H.264 encoder is available here; the software encoder ran"]);
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["encoder"], "software");
+    assert_eq!(json["warnings"][0], r.warnings[0].as_str());
+    // hardware encoding Off (the default): the encoder is named, and there is nothing to warn about
+    let r = export(&p, seq, &ExportSettings { format: Format::ProRes, path: tmp("hw-off.mov"), ..Default::default() }, &m, &Progress::default()).unwrap();
+    assert_eq!(r.encoder.as_deref(), Some("software"));
+    assert!(serde_json::to_value(&r).unwrap().get("warnings").is_none(), "no empty list");
+    // an export without a video encoder names none
+    let r = export(&p, seq, &ExportSettings { format: Format::Wav, path: tmp("hw.wav"), ..Default::default() }, &m, &Progress::default()).unwrap();
+    assert_eq!(r.encoder, None);
+    assert!(serde_json::to_value(&r).unwrap().get("encoder").is_none());
+}
+
+/// #4656: the APV encoder for 4:4:4 profiles, driven directly.
+mod apv_chroma {
+    use super::*;
+    use crate::encoders::apv_factory;
+
+    /// Encodes one frame with an APV encoder for `profile` and decodes it back.
+    fn encode_apv(profile: &str, w: u32, h: u32, signal: ColorSignal, rgba: &[u8], hdr: Option<&[f32]>) -> Result<craft_video::apv::Frame> {
+        let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), signal, ..Default::default() };
+        let mut enc = apv_factory(Format::Apv, w, h, FrameRate::FPS_24, &s).unwrap()?;
+        let packets = enc.encode(&EncoderFrame { width: w, height: h, rgba, hdr, index: 0 })?;
+        Ok(craft_video::apv::decode_frame(&packets[0].data).unwrap())
+    }
+
+    /// One-pixel red and blue columns: the chroma of each column must survive on its own.
+    fn stripes_rgba(w: usize, h: usize) -> Vec<u8> {
+        (0..w * h).flat_map(|i| if (i % w).is_multiple_of(2) { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect()
+    }
+
+    /// The decoded samples scaled back to 10 bits.
+    fn at10(fr: &craft_video::apv::Frame, plane: &[u16], i: usize) -> i32 {
+        i32::from(plane[i]) >> (fr.bit_depth - 10)
+    }
+
+    /// Asserts adjacent red and blue columns of every row keep their own chroma.
+    fn assert_stripes(fr: &craft_video::apv::Frame, w: usize, h: usize, what: &str) {
+        for row in 0..h {
+            let i = row * w;
+            let (cb0, cb1) = (at10(fr, &fr.cb, i), at10(fr, &fr.cb, i + 1));
+            let (cr0, cr1) = (at10(fr, &fr.cr, i), at10(fr, &fr.cr, i + 1));
+            assert!(cb0 < 512 && cb1 > 512, "{what} row {row}: cb {cb0} (red) {cb1} (blue)");
+            assert!(cr0 > 512 && cr1 < 512, "{what} row {row}: cr {cr0} (red) {cr1} (blue)");
+            assert!((cb0 - cb1).abs() > 200 && (cr0 - cr1).abs() > 200, "{what} row {row}: {cb0} {cb1} {cr0} {cr1}");
+        }
+    }
+
+    /// Every 4:4:4 profile keeps one-pixel colour stripes apart, and alpha stays opaque.
+    #[test]
+    fn apv_444_profiles_keep_full_resolution_chroma() {
+        let (w, h) = (16usize, 8usize);
+        let rgba = stripes_rgba(w, h);
+        for profile in ["444-10", "444-12", "4444-10", "4444-12"] {
+            let fr = encode_apv(profile, w as u32, h as u32, ColorSignal::default(), &rgba, None).unwrap();
+            assert_eq!((fr.cb.len(), fr.cr.len()), (w * h, w * h), "{profile}");
+            assert_stripes(&fr, w, h, profile);
+            if let Some(a) = &fr.alpha {
+                let max = ((1u32 << fr.bit_depth) - 1) as u16;
+                assert!(a.iter().all(|&v| v == max), "{profile}: opaque alpha");
+            }
+        }
+    }
+
+    /// HDR float input keeps full chroma resolution; it carries no alpha, so alpha is opaque.
+    #[test]
+    fn apv_hdr_4444_keeps_full_resolution_chroma_and_opaque_alpha() {
+        let (w, h) = (16usize, 8usize);
+        let rgb: Vec<f32> = (0..w * h).flat_map(|i| if (i % w).is_multiple_of(2) { [0.8, 0.0, 0.0] } else { [0.0, 0.0, 0.8] }).collect();
+        let fr = encode_apv("4444-10", w as u32, h as u32, ColorSignal::PQ, &[], Some(&rgb)).unwrap();
+        assert_stripes(&fr, w, h, "hdr 4444");
+        let a = fr.alpha.as_ref().unwrap();
+        let max = ((1u32 << fr.bit_depth) - 1) as u16;
+        assert!(a.len() == w * h && a.iter().all(|&v| v == max));
+    }
+
+    /// 4:2:2 and 4:0:0 still code the expected luma, and 4:0:0 HDR uses the signal's matrix.
+    #[test]
+    fn apv_422_and_monochrome_still_encode() {
+        let (w, h) = (16usize, 8usize);
+        let grey = [128u8, 128, 128, 255].repeat(w * h);
+        let want = (64.0 + 876.0 * (128.0 / 255.0f32)).round() as i32;
+        for profile in ["422-10", "422-12", "400-10"] {
+            let fr = encode_apv(profile, w as u32, h as u32, ColorSignal::default(), &grey, None).unwrap();
+            assert_eq!(fr.y.len(), w * h);
+            assert!(fr.y.iter().all(|&v| (i32::from(v) >> (fr.bit_depth - 10)).abs_diff(want) <= 2), "{profile}: {:?}", &fr.y[..4]);
+            assert_eq!(fr.cb.len(), if profile == "400-10" { 0 } else { w.div_ceil(2) * h }, "{profile}");
+        }
+        // 4:0:0 HDR takes the signal's matrix: pure red is Kr
+        let rgb = [1.0f32, 0.0, 0.0].repeat(w * h);
+        let fr = encode_apv("400-10", w as u32, h as u32, ColorSignal::PQ, &[], Some(&rgb)).unwrap();
+        let (kr, _) = ColorSignal::PQ.kr_kb();
+        let want = (64.0 + 876.0 * kr).round() as i32;
+        assert!(fr.y.iter().all(|&v| (i32::from(v) >> (fr.bit_depth - 10)).abs_diff(want) <= 2), "want {want}, got {:?}", &fr.y[..4]);
+    }
+
+    /// A picture buffer shorter than the frame size is an encode error, not a panic.
+    #[test]
+    fn apv_short_input_is_an_error_not_a_panic() {
+        for profile in ["422-10", "444-10", "4444-10", "400-10"] {
+            let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), ..Default::default() };
+            let mut enc = apv_factory(Format::Apv, 16, 8, FrameRate::FPS_24, &s).unwrap().unwrap();
+            let short = vec![0u8; 16 * 8 * 4 - 1];
+            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &short, hdr: None, index: 0 }).is_err(), "{profile}");
+            let short = vec![0f32; 16 * 8 * 3 - 1];
+            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &[], hdr: Some(&short), index: 0 }).is_err(), "{profile}");
+        }
+    }
+}

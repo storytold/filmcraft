@@ -17,7 +17,7 @@ use crate::{EngineError, Result, Session};
 
 /// Write a pasted image (PNG bytes) to a new `Pasted Image <n>.png`; returns its path.
 pub fn save_pasted_image(s: &mut Session, png: &[u8]) -> Result<String> {
-    let dir = crate::voiceover::media_dir(s, &Value::Null, "Pasted Images");
+    let dir = crate::voiceover::media_dir(s, &Value::Null, "Pasted Images")?;
     let names: std::collections::HashSet<String> = s.project.items.values().map(|i| i.name.clone()).collect();
     // bounded like voiceover::unique_wav_path: `file_size` is a filesystem call per try
     let path = (1..=99_999u32)

@@ -28,8 +28,14 @@ pub struct Entry {
     pub size: u64,
     /// Child entries of a storage, in the in-order position of its sibling tree. For a well-formed
     /// file that is sorted by [`compare_names`]; the reader does not validate the tree's order, so
-    /// a hostile file may give any order (lookups by name do not depend on it).
+    /// a hostile file may give any order (lookups by name do not depend on it). Read-only after
+    /// open: [`CompoundFile::child`] answers from an index built from this list and the entry names
+    /// when the file is parsed, so changing either afterwards leaves the lookup stale.
     pub children: Vec<usize>,
+    /// `children` sorted by [`compare_names`] (stable, so equal names keep their in-order
+    /// position): [`CompoundFile::child`] binary-searches it instead of scanning every sibling,
+    /// which made resolving every member of a wide storage quadratic.
+    by_name: Vec<usize>,
     left: u32,
     right: u32,
     child: u32,
@@ -48,6 +54,8 @@ pub struct CompoundFile<'a> {
     fat: Vec<u32>,
     minifat: Vec<u32>,
     mini_stream: Vec<u8>,
+    /// The directory entries. Read-only after open (see [`Entry::children`]): the by-name index
+    /// behind [`CompoundFile::child`] is built once when the file is parsed.
     pub entries: Vec<Entry>,
 }
 
@@ -262,7 +270,10 @@ impl<'a> CompoundFile<'a> {
                     cur = self.entries[top as usize].right;
                 }
             }
+            let mut by_name = kids.clone();
+            by_name.sort_by(|&a, &b| compare_names(&self.entries[a].name, &self.entries[b].name));
             self.entries[parent].children = kids;
+            self.entries[parent].by_name = by_name;
         }
         Ok(())
     }
@@ -275,9 +286,12 @@ impl<'a> CompoundFile<'a> {
         self.entries.get(id)
     }
 
-    /// Child of storage `parent` named `name` (case-insensitive as in §2.6.4).
+    /// Child of storage `parent` named `name` (case-insensitive as in §2.6.4). When a damaged
+    /// file holds several children of the same name, the first in sibling-tree order wins.
     pub fn child(&self, parent: usize, name: &str) -> Option<usize> {
-        self.entries.get(parent)?.children.iter().copied().find(|&c| compare_names(&self.entries[c].name, name).is_eq())
+        let by_name = &self.entries.get(parent)?.by_name;
+        let i = by_name.partition_point(|&c| compare_names(&self.entries[c].name, name).is_lt());
+        by_name.get(i).copied().filter(|&c| compare_names(&self.entries[c].name, name).is_eq())
     }
 
     /// Entry at a `/`-separated path below the root (`""` is the root).
@@ -339,6 +353,7 @@ fn parse_entry(b: &[u8], version: u16) -> Entry {
         // version 3 files may leave garbage in the high 32 bits (§2.6.3)
         size: if version == 3 { size & 0xFFFF_FFFF } else { size },
         children: Vec::new(),
+        by_name: Vec::new(),
         left: u32_at(b, 68),
         right: u32_at(b, 72),
         child: u32_at(b, 76),

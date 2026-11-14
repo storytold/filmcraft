@@ -380,3 +380,45 @@ fn compare_names_matches_the_allocating_version() {
         }
     }
 }
+
+/// Name lookups go through a sorted per-storage index: every child of a wide storage resolves
+/// (in any case), and a hostile file whose sibling tree is out of order still resolves by name,
+/// with the first child in tree order winning a duplicated name.
+#[test]
+fn child_lookup_uses_a_sorted_index() {
+    let mut w = Writer::default();
+    for i in 0..2000 {
+        w.stream(Writer::ROOT, &format!("m{i}"), vec![i as u8]).unwrap();
+    }
+    let b = w.finish();
+    let cf = CompoundFile::open(&b).unwrap();
+    for i in (0..2000).step_by(37) {
+        let id = cf.child(0, &format!("M{i}")).unwrap();
+        assert_eq!(cf.read(id).unwrap(), vec![i as u8]);
+    }
+    assert_eq!(cf.child(0, "m2000"), None);
+    assert_eq!(cf.child(12345, "m1"), None);
+
+    let mut w = Writer::default();
+    for name in ["aa", "bb", "cc"] {
+        w.stream(Writer::ROOT, name, name.as_bytes().to_vec()).unwrap();
+    }
+    let mut b = w.finish();
+    let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    let at = |b: &[u8], s: &str| b.windows(4).position(|w| w == utf16(s)).unwrap();
+    // swap the names "aa" and "cc": the tree's in-order walk is now cc, bb, aa
+    let (a, c) = (at(&b, "aa"), at(&b, "cc"));
+    b[a..a + 4].copy_from_slice(&utf16("cc"));
+    b[c..c + 4].copy_from_slice(&utf16("aa"));
+    let cf = CompoundFile::open(&b).unwrap();
+    let names: Vec<&str> = cf.root().children.iter().map(|&c| cf.entries[c].name.as_str()).collect();
+    assert_eq!(names, ["cc", "bb", "aa"]);
+    assert_eq!(cf.read_path("AA").unwrap(), b"cc");
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+    assert_eq!(cf.read_path("bb").unwrap(), b"bb");
+    // a duplicated name resolves to the first child in tree order
+    let bb = at(&b, "bb");
+    b[bb..bb + 4].copy_from_slice(&utf16("cc"));
+    let cf = CompoundFile::open(&b).unwrap();
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+}

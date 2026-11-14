@@ -567,7 +567,21 @@ fn install_template(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn remove_template(s: &mut Session, p: &Value) -> Result<Value> {
     let key = str_p(p, "template").ok_or_else(|| bad("graphics.template.remove", "need `template`"))?;
-    let e = find_template(s, key)?;
+    // Only an entry of the library is removed, and only when the key names exactly one: a template's
+    // id is its document's own claim, so a duplicate or path-shaped id must not pick another file.
+    let lib = library(s);
+    let mut hits: Vec<&LibraryEntry> = lib.iter().filter(|e| e.path.as_deref() == Some(key)).collect();
+    if hits.is_empty() {
+        hits = lib.iter().filter(|e| e.template.id == key).collect();
+    }
+    if hits.is_empty() {
+        hits = lib.iter().filter(|e| e.template.name.eq_ignore_ascii_case(key)).collect();
+    }
+    let e = match hits.as_slice() {
+        [e] => (*e).clone(),
+        [] => return Err(bad("graphics.template.remove", format!("no graphics template `{key}` in the library"))),
+        _ => return Err(bad("graphics.template.remove", format!("more than one library template is named `{key}`: remove it by its file path"))),
+    };
     let path = e.path.ok_or_else(|| bad("graphics.template.remove", "built-in templates cannot be removed"))?;
     std::fs::remove_file(&path).map_err(|x| EngineError::Other(format!("{path}: {x}")))?;
     Ok(json!({"removed": e.template.id}))

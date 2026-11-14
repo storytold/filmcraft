@@ -109,6 +109,9 @@ fn write_rate(w: &mut XmlWriter, rate: FrameRate) {
 // Import
 // ---------------------------------------------------------------------------------------------
 
+/// Most times a truncated nested sequence is imported again at a shallower depth.
+const MAX_REIMPORTS: usize = 4096;
+
 struct PendingLink {
     seq: ItemId,
     kind: TrackKind,
@@ -126,6 +129,14 @@ struct Imp<'a, 'i, 'r> {
     file_items: HashMap<String, ItemId>,
     seq_items: HashMap<String, ItemId>,
     in_progress: HashSet<String>,
+    /// Nested sequences left out because the chain was too deep, counted so a sequence whose
+    /// subtree lost one is known to be incomplete.
+    depth_hits: usize,
+    /// Sequences imported incomplete (a nested sequence below them was left out), by key: the
+    /// nesting depth they were imported at. Reached again at a shallower depth they are imported again.
+    truncated_at: HashMap<String, usize>,
+    /// Re-imports of truncated sequences still allowed.
+    reimports_left: usize,
     links: Vec<PendingLink>,
     xml_clip_ids: HashMap<(ItemId, String), ClipId>,
     /// `(sequence key, file key)` pairs where some audio clip item of that file uses `sourcetrack/trackindex` > 1,
@@ -173,6 +184,9 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
         file_items: HashMap::new(),
         seq_items: HashMap::new(),
         in_progress: HashSet::new(),
+        depth_hits: 0,
+        truncated_at: HashMap::new(),
+        reimports_left: MAX_REIMPORTS,
         links: Vec::new(),
         xml_clip_ids: HashMap::new(),
         split_files: HashSet::new(),
@@ -326,10 +340,29 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Sequence item for a `<sequence>` element (definition or reference).
     fn sequence(&mut self, n: Node<'a, 'i>, bin: Option<BinId>) -> Option<ItemId> {
         let key = node_key(n);
+        let depth = self.in_progress.len();
+        // A sequence imported with a nested sequence cut off is imported again (into the same
+        // item) when it is reached higher up the chain, where its nested sequence now fits.
+        let mut again = None;
         if let Some(id) = self.seq_items.get(&key) {
-            return Some(*id);
+            let shallower = self.truncated_at.get(&key).is_some_and(|d| depth < *d) && !self.in_progress.contains(&key);
+            if !shallower {
+                return Some(*id);
+            }
+            if self.reimports_left == 0 {
+                self.report.warn("truncated nested sequence kept incomplete after the re-import limit was reached");
+                return Some(*id);
+            }
+            self.reimports_left -= 1;
+            again = Some(*id);
         }
         let def = if child(n, "media").is_some() { n } else { *self.seq_defs.get(&key)? };
+        if depth >= crate::MAX_NESTING_DEPTH {
+            self.depth_hits += 1;
+            self.report.warn("nested sequence is nested too deeply; imported as a gap");
+            return None;
+        }
+        let hits_before = self.depth_hits;
         if !self.in_progress.insert(key.clone()) {
             self.report.warn("recursive nested sequence ignored");
             return None;
@@ -349,12 +382,18 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         {
             settings.sample_rate = sr as u32;
         }
-        let id = self.b.reserve_sequence(&name, settings.clone(), bin);
-        if let Some(l) = path_text(def, &["labels", "label2"]).and_then(label_from)
-            && let Some(it) = self.b.p.item_mut(id)
-        {
-            it.label = l;
-        }
+        let id = match again {
+            Some(id) => id,
+            None => {
+                let id = self.b.reserve_sequence(&name, settings.clone(), bin);
+                if let Some(l) = path_text(def, &["labels", "label2"]).and_then(label_from)
+                    && let Some(it) = self.b.p.item_mut(id)
+                {
+                    it.label = l;
+                }
+                id
+            }
+        };
         self.seq_items.insert(key.clone(), id);
         let mut seq = empty_sequence(settings);
         seq.start_timecode = tc.and_then(|t| child_i64(t, "frame")).unwrap_or(0);
@@ -378,6 +417,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         self.b.put_sequence(id, seq);
         self.in_progress.remove(&key);
+        if self.depth_hits > hits_before {
+            self.truncated_at.insert(key, depth);
+        } else {
+            self.truncated_at.remove(&key);
+        }
         Some(id)
     }
 
@@ -505,9 +549,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         } else if let Some(s) = child(c, "sequence") {
-            self.sequence(s, None)
+            // A nested sequence left out (nested too deeply, or recursive) stays in the timeline as an offline
+            // clip, so the clip keeps its place and length instead of shortening the sequence.
+            match self.sequence(s, None) {
+                Some(id) => Some(id),
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a nested sequence that was left out; imported offline"));
+                    Some(self.offline_media(kind, seq_rate, frame, name))
+                }
+            }
         } else {
             self.report.warn(format!("clip \"{name}\" has no media reference; imported offline"));
+            Some(self.offline_media(kind, seq_rate, frame, name))
+        }
+    }
+
+    fn offline_media(&mut self, kind: TrackKind, seq_rate: FrameRate, frame: (u32, u32), name: &str) -> ItemId {
+        {
             let spec = MediaSpec {
                 video: (kind == TrackKind::Video).then_some((frame.0, frame.1, seq_rate)),
                 audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
@@ -519,7 +577,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
                 m.offline = true;
             }
-            Some(id)
+            id
         }
     }
 

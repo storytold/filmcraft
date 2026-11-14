@@ -63,6 +63,10 @@ impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
 /// has one: the editor refuses the edit).
 pub const MAX_NEST_DEPTH: u32 = 8;
 
+/// Largest factor effect sizes (blur radii, median windows…) are scaled up by for a layer decoded
+/// larger than its stored media size. Real layers are decoded at or below the source size.
+pub(crate) const MAX_EFFECT_PX_SCALE: f32 = 16.0;
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOptions {
     /// Output scale relative to the sequence frame size (1.0 = full, 0.5 = ½ resolution…).
@@ -346,6 +350,7 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
     let cx = effects::FxCtx {
         t: mt,
         px_scale: opts.scale,
+        mask_scale: opts.scale,
         seconds: (t - item.start).seconds(),
         timecode: tc,
         clip_name: &item.name,
@@ -596,11 +601,16 @@ pub(crate) fn item_layer_ex(
     let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
     // layer px → source px → sequence px → output px
     let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+    // Effect sizes scale with the picture actually decoded over the width the project stored for the
+    // media; a stored width far off the file's (a damaged or crafted project) must not blow them up.
+    let mask_scale = px_scale;
+    let px_scale = px_scale.min(MAX_EFFECT_PX_SCALE);
     if opts.effects {
         let env = vfx::ItemEnv { project, seq, item, t, opts, sources, want, layer_size: (layer.w, layer.h), layer_to_output: m, tc };
         let cx = effects::FxCtx {
             t: mt,
             px_scale,
+            mask_scale,
             seconds: (t - item.start).seconds(),
             timecode: tc,
             clip_name: &item.name,
@@ -616,7 +626,7 @@ pub(crate) fn item_layer_ex(
             mask::apply_effect(&mut layer, e, &cx);
         }
     }
-    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
+    mask::apply_opacity_masks(&mut layer, item, mt, mask_scale);
     let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
     let (op, bl) = opacity_blend(item, mt);
     Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false })

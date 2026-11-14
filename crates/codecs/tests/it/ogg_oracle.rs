@@ -1,7 +1,7 @@
 //! Ogg Opus / Vorbis against ffmpeg: ffmpeg (libopus, its Vorbis encoder) writes the files and
 //! decodes them as the oracle. Length must match exactly (pre-skip and end trimming), the signal
 //! must match (libopus: SNR ≥ 50 dB on CELT music, ≥ 10 dB on SILK/hybrid speech, as in
-//! `filmcraft-opus`'s own oracle; Vorbis: SNR ≥ 60 dB), and any random window must equal the
+//! craft-audio's own Opus oracle; Vorbis: SNR ≥ 60 dB), and any random window must equal the
 //! continuous decode (granule-position seeking with pre-roll).
 
 use crate::common;
@@ -147,7 +147,10 @@ fn opus_end_trimming_and_10ms_frames() {
     let f = make(&ff, "ogg_opus_trim.ogg");
     let (src, ours, want, ch, rate) = decode_both(&ff, &f, &["-c:a", "libopus"]);
     // 1.2345 s is not a whole number of 10 ms packets: the last page's granule trims the end
-    let t = filmcraft_ogg::OpusTiming::of(&src.file().streams[0], filmcraft_opus::OpusHead::parse(&src.file().streams[0].headers[0]).unwrap().pre_skip as u32);
+    let t = craft_media::ogg::OpusTiming::of(
+        &src.file().streams[0],
+        craft_audio::opus::OpusHead::parse(&src.file().streams[0].headers[0]).unwrap().pre_skip as u32,
+    );
     let decoded: i64 = t.durations.iter().map(|&d| d as i64).sum::<i64>() - t.pre_skip as i64;
     assert!(t.total < decoded, "end trimmed: {} < {}", t.total, decoded);
     assert_eq!(t.total, 59_256, "1.2345 s at 48 kHz");

@@ -414,7 +414,7 @@ fn composite(dst: &mut Image, src: &Image, x: i64, y: i64, opacity: f32) {
 
 /// Load a PNG / JPEG overlay as premultiplied linear light, `width` pixels wide.
 fn load_overlay(path: &str, width: f32) -> Result<Image> {
-    let bytes = std::fs::read(path).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
+    let bytes = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes));
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);

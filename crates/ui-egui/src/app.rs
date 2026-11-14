@@ -39,6 +39,9 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub_out: None,
+            scrub_rate: None,
+            scrub_sequence: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.

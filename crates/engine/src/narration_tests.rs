@@ -158,6 +158,30 @@ fn editing_to_longer_speech_keeps_the_clip_length_and_the_whole_speech() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The folder of the previous file comes from the stored path as media access resolves it: one it
+/// refuses (a URL here) picks no folder, and the edit goes to the generated-media folder.
+#[test]
+fn editing_next_to_a_refused_stored_path_uses_the_generated_media_folder() {
+    let mut s = demo();
+    let dir = tmp("refused");
+    let r = s.execute("tts.create", json!({"text": "Hi.", "time": 0, "dir": dir})).unwrap();
+    let c0 = clip(&s, r["clip"].as_u64().unwrap());
+    let url = "jar:narration.wav".to_string();
+    s.edit("relink", |pr, _| {
+        if let Some(filmcraft_project::ItemKind::Media(m)) = pr.item_mut(c0.item).map(|it| &mut it.kind) {
+            m.media = filmcraft_project::MediaRef::File { path: url.clone() };
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.media.add_stored_paths([url.clone()], Some(&format!("{dir}/p.fcproj")));
+    let e = s.execute("tts.edit", json!({"clip": c0.id.0, "text": "Hi. And more."})).unwrap();
+    let path = e["path"].as_str().unwrap();
+    assert!(!path.starts_with("jar:") && std::path::Path::new(path).is_file(), "{path}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn editing_to_shorter_speech_pads_the_file_with_exact_silence() {
     let mut s = demo();
