@@ -1,11 +1,11 @@
 use super::clips::paint_hatch;
 use super::layout::{Layout, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
-use super::snap::{snap, snap_playhead, snap_transition};
+use super::snap::{snap, snap_marker, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_flag_at,
+    marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -396,6 +396,14 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
     false
 }
 
+/// A press on a marker's flag drags the marker; elsewhere on the ruler it scrubs (#4491).
+fn ruler_drag(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, p: Pos2, t: Tick) -> Drag {
+    match marker_flag_at(seq, layout, p) {
+        Some(m) => Drag::Marker { id: m.id, from: t, start: m.start, to: m.start },
+        None => Drag::Scrub { initial: app.session.playhead() },
+    }
+}
+
 /// What a press does: the drag it starts (or the tool's click action), the playhead jump a
 /// ruler press makes, and the selection a tool change makes first.
 #[allow(clippy::too_many_arguments)]
@@ -423,7 +431,7 @@ fn start_drag(
             let tv = &app.ui.timeline;
             Some(Drag::Pan { last, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: last.y >= layout.split_y, start_a: tv.a_scroll })
         }
-        (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
+        (_, Grab::Other(Hit::Ruler)) => Some(ruler_drag(app, seq, layout, p, t)),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
             seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
         }
@@ -582,7 +590,8 @@ fn start_drag(
         !blocked
     });
     if let Some(d) = started {
-        if matches!(d, Drag::Scrub { .. }) {
+        // a press on a marker still selects it: the playhead goes onto it (#695)
+        if matches!(d, Drag::Scrub { .. } | Drag::Marker { .. }) {
             scrub_playhead(app, seq, layout, p, mods.shift);
         }
         if resp.drag_started() {
@@ -765,6 +774,13 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 };
                 Some(Drag::WorkArea { edge, from, start, end })
             }
+            Drag::Marker { id, from, start, .. } => {
+                let raw = rate.snap_nearest(start + (t_here - from)).max(Tick::ZERO);
+                // a target between frames lands on its frame
+                let to = rate.snap_nearest(snap_marker(app, seq, layout, raw, id));
+                app.tl.snap_x = (to != raw).then(|| layout.x_of(to));
+                Some(Drag::Marker { id, from, start, to })
+            }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, before_captions, add, individual } => {
                 let r = start.rect_to(layout, p);
@@ -865,6 +881,7 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     let moved = seq.work_area.is_some_and(|w| (w.start, w.end()) != (start, end));
                     moved.then(|| app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0})))
                 }
+                Drag::Marker { id, start, to, .. } if to != start => Some(app.session.execute("markers.edit", json!({"marker": id.0, "time": to.0}))),
                 Drag::Marquee { start, before, before_captions, add, individual } => {
                     app.session.state.selection = before;
                     app.session.state.caption_selection = before_captions;

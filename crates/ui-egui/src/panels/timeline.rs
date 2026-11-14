@@ -23,7 +23,9 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
+use super::timeline_hit::{
+    EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_flag_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect,
+};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 mod clips;
@@ -80,7 +82,8 @@ const DUPLICATE_FRAME_COLORS: [Color32; filmcraft_engine::sequence_tools::DUPLIC
     Color32::from_rgb(0x9a, 0xcd, 0x32),
     Color32::from_rgb(0xf5, 0xf5, 0xf5),
 ];
-const SNAP_PX: f32 = 9.0;
+/// How near, in points, a Timeline drag must come to an edit, marker or the playhead to snap to it.
+pub const SNAP_PX: f32 = 9.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
 pub type PeakKey = (ItemId, usize);
@@ -242,6 +245,15 @@ pub enum Drag {
         from: Tick,
         start: Tick,
         end: Tick,
+    },
+    /// A sequence marker dragged by its flag on the ruler (#4491): `start` is where it was at the
+    /// press, `to` where it is shown now, committed on release as one `markers.edit`.
+    Marker {
+        id: MarkerId,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        start: Tick,
+        to: Tick,
     },
     /// The Timeline dragged by the middle button or the Hand tool: sideways in time, and up and down
     /// the half it began in (`audio`: the audio tracks below the divider, else the video tracks).

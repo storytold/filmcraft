@@ -104,6 +104,15 @@ pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -
     })
 }
 
+/// The topmost marker whose start or end flag is under the pointer: the part a drag moves, the
+/// whole marker with its duration (#4491).
+pub fn marker_flag_at<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -> Option<&'a filmcraft_project::Marker> {
+    if !layout.ruler.contains(pos) {
+        return None;
+    }
+    seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos) || marker_end_rect(layout, m).is_some_and(|r| r.contains(pos)))
+}
+
 /// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
 pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
     marker_under_pointer(seq, layout, pos).map(|m| m.start)
@@ -139,9 +148,14 @@ pub fn transition_top(row: Rect) -> f32 {
     if row.height() < 50.0 { row.min.y + 1.0 } else { row.min.y + 17.0 }
 }
 
+/// What a press at `pos` grabs on the Timeline: the ruler (a marker's start or end flag included,
+/// even over the work area bar), the work area bar, a transition, a clip or its edge, or an empty track.
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
-        if let Some(edge) = work_area_at(seq, layout, pos) {
+        // a marker flag over the bar is the marker's: a drag there moves the marker (#4491)
+        if marker_flag_at(seq, layout, pos).is_none()
+            && let Some(edge) = work_area_at(seq, layout, pos)
+        {
             return Hit::WorkArea { edge };
         }
         return Hit::Ruler;
@@ -552,6 +566,29 @@ pub(crate) mod tests {
         assert_eq!(hit(&seq, &l, pos2(510.0, y)), Hit::Ruler, "past its end zone");
         // the markers row and the time labels stay ruler
         assert_eq!(hit(&seq, &l, pos2(350.0, 8.0)), Hit::Ruler);
+        // a range marker's start and end flags reaching into the bar's row are the marker's, not
+        // the bar's (#4491)
+        let mut flagged = seq.clone();
+        flagged.markers.push(filmcraft_project::Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
+            id: filmcraft_project::MarkerId(9),
+            start: Tick::from_seconds_f64(2.5),
+            duration: Tick::from_seconds_f64(1.0),
+            name: String::new(),
+            comment: String::new(),
+            kind: filmcraft_project::MarkerKind::Comment,
+            color: Label::Green,
+        });
+        let start_flag = marker_rect(&l, Tick::from_seconds_f64(2.5));
+        let Some(end_flag) = flagged.markers.last().and_then(|m| marker_end_rect(&l, m)) else { panic!("a range has an end flag") };
+        for (flag, which) in [(start_flag, "start"), (end_flag, "end")] {
+            let overlap = pos2(flag.center().x, flag.max.y - 0.5);
+            assert_eq!(hit(&seq, &l, overlap), Hit::WorkArea { edge: None }, "without the marker, the bar ({which} flag)");
+            assert_eq!(hit(&flagged, &l, overlap), Hit::Ruler, "the {which} flag wins");
+            assert_eq!(marker_flag_at(&flagged, &l, overlap).map(|m| m.id.0), Some(9), "the {which} flag grabs the marker");
+        }
         assert_eq!(hit(&seq, &l, pos2(350.0, 30.0)), Hit::Ruler);
         assert_eq!(grab_at(&seq, &l, pos2(350.0, y), Tool::Selection, Modifiers::NONE, false), Grab::Other(Hit::WorkArea { edge: None }));
         // a bar a few px wide keeps its middle third; hostile points grab nothing
