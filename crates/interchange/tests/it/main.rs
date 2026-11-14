@@ -3,6 +3,7 @@ mod api;
 mod cyclic_subclips;
 mod edl;
 mod fcp7;
+mod fcp7_audio_streams;
 mod fcpxml;
 mod file_urls;
 mod media_marker_export;
