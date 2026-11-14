@@ -127,15 +127,13 @@ struct Asset {
     has_audio: bool,
 }
 
-<<<<<<< Updated upstream
 /// Most times truncated media is imported again at a shallower depth.
 const MAX_REIMPORTS: usize = 4096;
-=======
+
 /// Deepest storyline/element nesting a hostile file may walk. The FCPXML structure can nest
 /// connected clips and secondary storylines without limit, and layout recurses once per level
 /// (audit: FilmCraft F3).
 const MAX_XML_DEPTH: usize = 128;
->>>>>>> Stashed changes
 
 struct Imp<'a, 'i, 'r> {
     b: Builder,
