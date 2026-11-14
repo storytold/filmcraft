@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::media_test_util::tmp_dir;
 use filmcraft_project::graphic::LayerContent;
+use filmcraft_project::graphic_design::{DesignEnd, remap_time};
 use filmcraft_project::{ClipId, ParamValue, TrackItem};
 use filmcraft_render::graphic_clip::{item_layer_specs, layer_bounds};
 use filmcraft_time::Tick;
@@ -435,4 +436,79 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
         s.execute("graphics.setCharStyle", json!({"clip":b.0,"layer":layer,"start":0,"end":5,"style":{"size":150},"merge":true})).unwrap();
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
+}
+
+#[test]
+fn responsive_time_end_accepts_each_value() {
+    let mut s = demo("gt-end-values");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "End", "seconds": 5})).unwrap());
+    let stored_end = |s: &Session| item(s, c).graphic.as_deref().map(|m| m.end);
+    for (given, want, name) in
+        [("animate", DesignEnd::Animate, "animate"), ("Animate", DesignEnd::Animate, "animate"), ("cut", DesignEnd::Cut, "cut"), ("CUT", DesignEnd::Cut, "cut")]
+    {
+        let r = s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "introSeconds": 1, "outroSeconds": 1, "end": given})).unwrap();
+        assert_eq!(r["end"], name, "the command reports the effective mode for `{given}`");
+        assert_eq!(stored_end(&s), Some(want), "the stored mode for `{given}`");
+    }
+    // the two modes read the keyframes differently in the outro
+    let sec = |x: f64| Tick::from_seconds_f64(x);
+    let tail = |s: &mut Session, end: &str| {
+        s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "introSeconds": 1, "outroSeconds": 1, "end": end})).unwrap();
+        let it = item(s, c);
+        let m = it.graphic.as_deref().expect("responsive time stored");
+        (m.end, m.design_duration, remap_time(m, it.duration - sec(0.25), it.duration))
+    };
+    let (animate_end, design_end, animate_tail) = tail(&mut s, "animate");
+    assert_eq!(animate_end, DesignEnd::Animate);
+    assert_eq!(animate_tail, design_end - sec(0.25), "animate plays the outro against the design end");
+    let (cut_end, design_end, cut_tail) = tail(&mut s, "cut");
+    assert_eq!(cut_end, DesignEnd::Cut);
+    assert_eq!(cut_tail, design_end - sec(1.0), "cut holds the pose the outro starts from");
+}
+
+#[test]
+fn responsive_time_end_rejects_unknown_and_non_string_values() {
+    let mut s = demo("gt-end-invalid");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Bad", "seconds": 5})).unwrap());
+    s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "end": "cut"})).unwrap();
+    let stored_end = |s: &Session| item(s, c).graphic.as_deref().map(|m| m.end);
+    assert_eq!(stored_end(&s), Some(DesignEnd::Cut));
+    for given in [json!("hold"), json!(""), json!(true), json!(1)] {
+        let e = s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "end": given})).unwrap_err().to_string();
+        assert!(e.contains("`end` is `animate` or `cut`"), "`{given}`: {e}");
+        assert_eq!(stored_end(&s), Some(DesignEnd::Cut), "`{given}` left the stored mode alone");
+    }
+}
+
+#[test]
+fn responsive_time_end_round_trips_through_the_project_file() {
+    let mut s = demo("gt-end-roundtrip");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Hold", "seconds": 5})).unwrap());
+    s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "introSeconds": 1, "outroSeconds": 1, "end": "cut"})).unwrap();
+    let dir = tmp_dir("gt-end-roundtrip");
+    let proj = dir.join("end.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": proj})).unwrap();
+    s.execute("file.open", json!({"path": proj})).unwrap();
+    let it = item(&s, c);
+    let m = it.graphic.as_deref().expect("responsive time survives save/open");
+    assert_eq!(m.end, DesignEnd::Cut);
+    let sec = Tick::from_seconds_f64;
+    assert_eq!(remap_time(m, it.duration - sec(0.25), it.duration), m.design_duration - sec(1.0));
+}
+
+#[test]
+fn responsive_time_with_only_intro_and_outro_keeps_the_previous_behaviour() {
+    let mut s = demo("gt-end-default");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Default", "seconds": 5})).unwrap());
+    let r = s.execute("graphics.setResponsiveTime", json!({"clip": c.0, "introSeconds": 1, "outroSeconds": 1})).unwrap();
+    assert_eq!(r["end"], "animate", "no `end` keeps the default mode");
+    let it = item(&s, c);
+    let m = it.graphic.as_deref().expect("responsive time stored");
+    assert_eq!(m.end, DesignEnd::Animate);
+    // the outro still plays against the design end, as it did before the end mode existed
+    let d = it.duration;
+    assert_eq!(remap_time(m, d - Tick::from_seconds_f64(0.25), d), m.design_duration - Tick::from_seconds_f64(0.25));
+    // and an untouched project stores no `end` field, so older files read the same
+    let json = serde_json::to_value(m).unwrap();
+    assert!(json.get("end").is_none(), "{json}");
 }
