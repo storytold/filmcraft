@@ -109,6 +109,31 @@ fn transitions_are_their_own_segments() {
     assert_eq!(s[1].need, Need::Realtime);
 }
 
+/// #4477: Cross Dissolve renders on the CPU (it eases the encoded mix), so its segment costs more
+/// than the same one with Cross Dissolve (Legacy), which the layered plan draws.
+#[test]
+fn cross_dissolve_costs_more_than_the_layered_legacy_dissolve() {
+    let cost = |effect: &str| {
+        let (mut p, matte, ocean, seq) = setup();
+        let a = place(&mut p, seq, 0, ocean, 0, 48);
+        let b = place(&mut p, seq, 0, matte, 48, 48);
+        let r = FrameRate::FPS_24;
+        let tr = filmcraft_project::Transition {
+            id: Default::default(),
+            effect: find_effect(effect).unwrap().instance(),
+            start: r.tick_of(36),
+            duration: r.tick_of(24),
+            from: Some(a),
+            to: Some(b),
+            align: Default::default(),
+            reverse: false,
+        };
+        p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
+        video_segments(&p, seq)[1].cost_ms
+    };
+    assert!(cost("cross_dissolve") > cost("cross_dissolve_legacy"), "{} vs {}", cost("cross_dissolve"), cost("cross_dissolve_legacy"));
+}
+
 #[test]
 fn editing_one_clip_invalidates_only_its_segments() {
     let (mut p, matte, ocean, seq) = setup();

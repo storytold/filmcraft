@@ -244,8 +244,11 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px))
 }
 
+/// Transitions the layered plan draws itself as weighted layers (a straight mix in linear light).
+/// Cross Dissolve isn't one since it eases the mix of the encoded pictures as Premiere 26 does
+/// (#4477): it renders on the CPU, like the other transitions; Cross Dissolve (Legacy) still is.
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
+    matches!(id, "cross_dissolve_legacy" | "dip_to_black" | "dip_to_white")
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
@@ -446,7 +449,7 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
                     }
                 }
                 _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                    // Cross Dissolve (Legacy): A at full, B over it at p (premultiplied over == linear mix when A is opaque)
                     if let Some(it) = a {
                         push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
                     }

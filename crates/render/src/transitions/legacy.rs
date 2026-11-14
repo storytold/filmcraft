@@ -1,6 +1,6 @@
 //! The original (pre-26) transition implementations, kept bit-for-bit for the Legacy and Obsolete
-//! folders and for the dissolves whose output the golden images pin (Cross Dissolve, Dip to
-//! Black/White, Film/Additive Dissolve, Wipe).
+//! folders and for the dissolves whose output the golden images pin (Cross Dissolve (Legacy), Dip
+//! to Black/White, Film/Additive Dissolve, Wipe).
 
 use filmcraft_geom::Affine;
 use filmcraft_project::{EffectInstance, ParamValue};
@@ -54,8 +54,8 @@ pub(super) fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Option<
     let base = id.strip_suffix("_legacy").unwrap_or(id);
     let known = matches!(
         id,
-        "cross_dissolve"
-            | "cross_dissolve_legacy"
+        // "cross_dissolve" is Premiere 26's eased dissolve (dissolve.rs); its Legacy id keeps this one
+        "cross_dissolve_legacy"
             | "film_dissolve"
             | "film_dissolve_legacy"
             | "additive_dissolve"
