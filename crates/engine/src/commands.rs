@@ -1811,6 +1811,20 @@ fn build() -> Vec<CommandSpec> {
                 return Err(bad("file.import", "need `paths`"));
             }
             if bool_p(p, "replace").unwrap_or(false) {
+                // The project is replaced only when at least one path can be imported: a path that
+                // an export is writing, or that is not there, must not clear the project and then
+                // leave nothing in its place.
+                let problems: Vec<String> = paths
+                    .iter()
+                    .filter_map(|x| match crate::export_tools::running_export_writing(s, x) {
+                        Some(label) => Some(crate::export_tools::running_export_error(&label, x)),
+                        None if s.services.file_size(x).is_err() && !s.services.reader(x).is_some_and(|r| r.is_ok()) => Some(format!("{x}: no such file")),
+                        None => None,
+                    })
+                    .collect();
+                if problems.len() == paths.len() {
+                    return Err(EngineError::Other(problems.join("; ")));
+                }
                 let name = s.project.name.clone();
                 s.execute("file.newProject", json!({ "name": name }))?;
             }
@@ -1825,6 +1839,10 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if let Some(label) = crate::export_tools::running_export_writing(s, &path) {
+                    errors.push(crate::export_tools::running_export_error(&label, &path));
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
