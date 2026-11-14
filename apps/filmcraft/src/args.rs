@@ -10,9 +10,11 @@ Usage: filmcraft [options] [project.fcproj | media files...]
 Options:
   --control <port>   start the localhost JSON-lines control server
                      (also: FILMCRAFT_CONTROL_PORT; requires FILMCRAFT_CONTROL_TOKEN,
-                     64 random hex characters; see docs/control-protocol.md)
+                     64 random hex characters; overrides Settings ▸ Control Server;
+                     see docs/control-protocol.md)
   --control-input-only  accept widget input only from the control server
-                     (requires --control or FILMCRAFT_CONTROL_PORT)
+                     (requires --control or FILMCRAFT_CONTROL_PORT; a server
+                     started by Settings ▸ Control Server does not count)
   --demo             open the demo project
   --empty            start with an empty project
   --recover          recover the newest unsaved changes without asking

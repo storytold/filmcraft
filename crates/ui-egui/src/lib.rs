@@ -193,6 +193,8 @@ pub enum ControlNotice {
     /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
     /// #3318 reworks port-collision reporting.)
     Token,
+    /// Settings ▸ Control Server started the server, but its token file could not be written.
+    TokenFile,
 }
 
 pub struct FilmcraftApp {

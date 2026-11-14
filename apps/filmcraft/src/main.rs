@@ -7,8 +7,10 @@
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
-//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
+//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`, or Settings ▸ Control Server ▸ Start the control
+//! server when FilmCraft starts) starts a localhost JSON-lines control server; it needs
+//! `FILMCRAFT_CONTROL_TOKEN`, except that a Settings start without it writes a fresh token to the
+//! `control-token` file in the data folder (see `docs/control-protocol.md`).
 //! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
@@ -163,6 +165,8 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
+    // Settings ▸ Control Server: start the control server without `--control` (which wins).
+    let settings_port = if launch.control_port.is_none() { data_root.as_deref().and_then(control_server::port_from_settings) } else { None };
     // A panic in a FilmCraft started again for it saved the next mode for the next launch.
     let mut next_saved = false;
     let started = loop {
@@ -170,7 +174,7 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let creator = app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created));
+        let creator = app_creator(launch.clone(), settings_port, graphics.clone(), Arc::clone(&app_created));
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eframe::run_native("FilmCraft", options, creator)));
         let app_created = app_created.load(Ordering::Relaxed);
         let result = match run {
@@ -304,7 +308,9 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+/// `settings_port` is the port Settings ▸ Control Server starts the control server on when the
+/// command line asked for none.
+fn app_creator(launch: Launch, settings_port: Option<u16>, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
@@ -312,7 +318,15 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone()));
+        let control = match (control_port, settings_port) {
+            (Some(port), _) => Some(control_server::start(port, cc.egui_ctx.clone(), None)),
+            (None, Some(port)) => {
+                log::info!("control server: started by Settings ▸ Control Server on port {port}");
+                let token_dir = data_dir.clone().or_else(default_data_dir);
+                Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref()))
+            }
+            (None, None) => None,
+        };
         if control_input_only && let Some((_, _, Some(why))) = &control {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }
@@ -478,8 +492,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             // The token cause is shown in the app as a fully translated sentence (the English
             // `reason()` stays for the log and the input-only error); a bind failure stays in the
             // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token),
+                Some(control_server::DisabledWhy::TokenFile { .. }) => app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::TokenFile),
+                _ => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);

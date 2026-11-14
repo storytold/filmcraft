@@ -34,8 +34,8 @@ pub use labels::{
 };
 pub use media_cache::{CUSTOM_CACHE_FOLDER, cache_usage, clean, enforce_policy, media_cache_dir, previews_root};
 pub use prefs::{
-    AppearancePrefs, AudioHardwarePrefs, ColorPrefs, DEFAULT_HIGHLIGHT, GeneralPrefs, GraphicsPrefs, MediaAnalysisPrefs, MediaCachePrefs, MemoryPrefs,
-    PluginPrefs, TimelinePrefs, timebase_rate,
+    AppearancePrefs, AudioHardwarePrefs, ColorPrefs, ControlServerPrefs, DEFAULT_HIGHLIGHT, GeneralPrefs, GraphicsPrefs, MediaAnalysisPrefs, MediaCachePrefs,
+    MemoryPrefs, PluginPrefs, TimelinePrefs, timebase_rate,
 };
 pub use schema::{
     APPEARANCE_MODES, Category, DARK_THEMES, DURATION_UNITS, DeviceList, Field, Kind, LIGHT_THEMES, Row, UI_SCALES, categories, category, field, fields,

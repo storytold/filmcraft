@@ -205,8 +205,19 @@ impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
     }
+    /// Drive the running app at `addr`; the credential is looked up as by [`BridgeClient::new`].
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
+        Self::bridge_with_data_dir(addr, None)
+    }
+
+    /// [`Self::bridge`] for an app started with `--data-dir`: its `control-token` file is read
+    /// from `data_dir` (see [`BridgeClient::with_data_dir`]).
+    pub fn bridge_with_data_dir(addr: &str, data_dir: Option<&std::path::Path>) -> Result<Self, AutomationError> {
+        Ok(Self {
+            backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::with_data_dir(addr, data_dir)?))),
+            render_lock: Arc::default(),
+            tool_router: Self::tool_router(),
+        })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {

@@ -421,6 +421,32 @@ impl TimelinePrefs {
     }
 }
 
+/// Settings ▸ Control Server: start the localhost control server (agents, MCP) with every launch,
+/// without `--control <port>` on the command line. `--control` / `FILMCRAFT_CONTROL_PORT` win.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ControlServerPrefs {
+    pub start_at_launch: bool,
+    /// Loopback port (1024–65535).
+    pub port: u32,
+}
+
+impl Default for ControlServerPrefs {
+    fn default() -> Self {
+        Self { start_at_launch: false, port: 9876 }
+    }
+}
+
+impl ControlServerPrefs {
+    /// The port to listen on at launch, when the setting is on.
+    pub fn launch_port(&self) -> Option<u16> {
+        if !self.start_at_launch {
+            return None;
+        }
+        u16::try_from(self.port).ok().filter(|p| *p >= 1024)
+    }
+}
+
 /// Settings ▸ Plugins.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
