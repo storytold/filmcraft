@@ -44,6 +44,8 @@ mod settings;
 use presets::preset_manager;
 #[cfg(test)]
 pub(crate) use preview::RANGES;
+#[cfg(test)]
+use preview::action_button_rects;
 use preview::preview_column;
 use queue::queue_column;
 pub use quick::quick_export;
@@ -244,5 +246,42 @@ mod location_tests {
         assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
         assert!(tail.ends_with('終'));
         assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn send_to_queue_button_widens_for_translated_labels() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &Tokens::for_kind(crate::theme::ThemeKind::Dark));
+        let col = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 500.0));
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (en_q, en_go) = action_button_rects(ui.painter(), col, "Send to Queue", "Export");
+            assert_eq!(en_go.width(), 104.0);
+            assert_eq!(en_q.width(), 122.0);
+            let ru_label = "Отправить в очередь";
+            let text_w = ui.painter().layout_no_wrap(ru_label.to_string(), Tokens::semibold(12.5), Color32::WHITE).size().x;
+            let (ru_q, ru_go) = action_button_rects(ui.painter(), col, ru_label, "Экспорт");
+            assert!(ru_q.width() >= text_w + 28.0, "Russian label ({text_w} pt) fits inside button ({} pt)", ru_q.width());
+            assert_eq!(ru_go.min.x - ru_q.max.x, 10.0, "keeps the 10 pt gap between buttons");
+        })
+        .textures_delta
+        .clear();
+
+        let prev_locale = crate::i18n::locale();
+        crate::i18n::set_locale(crate::i18n::Locale::Ru);
+        let mut app = FilmcraftApp::default();
+        app.session.execute("file.openDemoProject", json!({})).expect("demo project opens");
+        let seq_id = app.session.state.active_sequence.expect("active sequence");
+        let mut ru_text_w = 0.0;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ru_label = crate::i18n::t("Send to Queue");
+            ru_text_w = ui.painter().layout_no_wrap(ru_label.to_string(), Tokens::semibold(12.5), Color32::WHITE).size().x;
+            preview::preview_column(&mut app, ui, col, seq_id);
+        })
+        .textures_delta
+        .clear();
+        crate::i18n::set_locale(prev_locale);
+        let send_el = app.auto.elements.iter().find(|e| e.id == "export.sendToQueue").expect("export.sendToQueue registered");
+        let send_w = send_el.rect[2];
+        assert!(send_w >= ru_text_w + 28.0, "registered export.sendToQueue width ({send_w} pt) fits Russian label ({ru_text_w} pt)");
     }
 }
