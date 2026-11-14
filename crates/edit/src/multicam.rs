@@ -164,11 +164,18 @@ pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx,
         let mut it = ni.clone();
         if it.start < s0 {
             let cut = s0 - it.start;
-            it.source_in += Tick((cut.0 as f64 * it.speed.abs()).round() as i64);
+            if !it.reverse {
+                it.source_in += Tick((cut.0 as f64 * it.speed.abs()).round() as i64);
+            }
             it.duration -= cut;
             it.start = s0;
         }
         if it.end() > s1 {
+            let cut = it.end() - s1;
+            if it.reverse {
+                // a reversed clip plays its source from the Out down, so the end cut drops the In side
+                it.source_in += Tick((cut.0 as f64 * it.speed.abs()).round() as i64);
+            }
             it.duration = s1 - it.start;
         }
         if it.duration <= Tick::ZERO {
