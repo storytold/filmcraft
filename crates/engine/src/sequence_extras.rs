@@ -469,7 +469,7 @@ pub(crate) fn close_sequence_gap(q: &mut Sequence, g: TimeRange, markers: bool) 
         }
     }
     if markers {
-        crate::sequence_tools::ripple_markers(&mut q.markers, g.end(), Tick::ZERO - g.duration);
+        crate::sequence_tools::ripple_markers(q, g.end(), Tick::ZERO - g.duration);
     }
 }
 
