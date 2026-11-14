@@ -21,12 +21,13 @@ use windows::Win32::Graphics::Direct3D::{
     ID3DInclude,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_READ,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_QUERY_DESC, D3D11_QUERY_EVENT,
-    D3D11_RASTERIZER_DESC, D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
-    D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_DECODER_DESC,
-    D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11PixelShader, ID3D11Query,
-    ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader, ID3D11VideoDevice,
+    D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_QUERY_DESC, D3D11_QUERY_EVENT, D3D11_RASTERIZER_DESC, D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION,
+    D3D11_SHADER_RESOURCE_VIEW_DESC, D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_TEX2D_SRV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11_USAGE_STAGING, D3D11_VIDEO_DECODER_DESC, D3D11_VIEWPORT, D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Multithread, ID3D11PixelShader, ID3D11Query, ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11VertexShader, ID3D11VideoDevice,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM,
@@ -116,7 +117,6 @@ struct CopyPipeline {
     ps_uv: ID3D11PixelShader,
     cb: ID3D11Buffer,
     rs: ID3D11RasterizerState,
-    query: ID3D11Query,
     scratch: Option<ScratchSurface>,
 }
 
@@ -175,6 +175,7 @@ pub struct Gpu {
     /// which covers the decoder MFTs' own use of it).
     gate: Mutex<()>,
     copy: Mutex<Option<CopyPipeline>>,
+    query_pool: Mutex<Vec<ID3D11Query>>,
     shared_pool: Mutex<SharedPool>,
     fallback_staging: Mutex<CpuFallbackStaging>,
 }
@@ -238,6 +239,7 @@ impl Gpu {
             lost: AtomicBool::new(false),
             gate: Mutex::new(()),
             copy: Mutex::new(None),
+            query_pool: Mutex::new(Vec::new()),
             shared_pool: Mutex::new(SharedPool::default()),
             fallback_staging: Mutex::new(CpuFallbackStaging::default()),
         })
@@ -343,14 +345,19 @@ impl Gpu {
             return Err(format!("decoded surface {}x{} is smaller than crop ({ox},{oy})+{w}x{h}", desc.Width, desc.Height));
         }
         let pair = self.take_shared_pair(format, w, h)?;
-        let _gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut copy_slot = self.copy.lock().unwrap_or_else(PoisonError::into_inner);
-        let copy = match copy_slot.as_mut() {
-            Some(c) => c,
-            None => copy_slot.insert(CopyPipeline::new(&self.device)?),
-        };
-        copy.ensure_scratch(&self.device, desc.Width, desc.Height, format)?;
-        copy.dispatch(&self.context, &tex, index, &pair, (ox, oy))?;
+        let query = self.take_event_query()?;
+        {
+            let _gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut copy_slot = self.copy.lock().unwrap_or_else(PoisonError::into_inner);
+            let copy = match copy_slot.as_mut() {
+                Some(c) => c,
+                None => copy_slot.insert(CopyPipeline::new(&self.device)?),
+            };
+            copy.ensure_scratch(&self.device, desc.Width, desc.Height, format)?;
+            copy.dispatch(&self.context, &tex, index, &pair, (ox, oy), &query);
+        }
+        self.wait_event_query(&query)?;
+        self.recycle_event_query(query);
         let surf = MfGpuSurface {
             id: (1usize << (usize::BITS - 1)) | NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             gpu: Arc::clone(self),
@@ -369,6 +376,55 @@ impl Gpu {
             par: geometry.par,
             pts: filmcraft_time::Tick::ZERO,
         })
+    }
+
+    fn take_event_query(&self) -> Result<ID3D11Query, String> {
+        if let Some(q) = self.query_pool.lock().unwrap_or_else(PoisonError::into_inner).pop() {
+            return Ok(q);
+        }
+        let q_desc = D3D11_QUERY_DESC { Query: D3D11_QUERY_EVENT, MiscFlags: 0 };
+        let mut query: Option<ID3D11Query> = None;
+        // SAFETY: valid event query descriptor and out-pointer on live D3D11 device.
+        unsafe { self.device.CreateQuery(&q_desc, Some(&mut query)) }.map_err(|e| format!("CreateQuery failed: {e}"))?;
+        query.ok_or_else(|| "no event query".to_string())
+    }
+
+    fn recycle_event_query(&self, query: ID3D11Query) {
+        if self.lost.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut pool = self.query_pool.lock().unwrap_or_else(PoisonError::into_inner);
+        if pool.len() < 16 {
+            pool.push(query);
+        }
+    }
+
+    fn wait_event_query(&self, query: &ID3D11Query) -> Result<(), String> {
+        let start = Instant::now();
+        loop {
+            let mut done: u32 = 0;
+            let res = {
+                let _gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
+                // SAFETY: `query` is a live `D3D11_QUERY_EVENT` owned by this caller until returned to
+                // the pool; `done` is a 4-byte `BOOL` and immediate-context access is behind `gate`.
+                unsafe {
+                    self.context.GetData(
+                        query,
+                        Some(&mut done as *mut u32 as *mut c_void),
+                        std::mem::size_of::<u32>() as u32,
+                        D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                    )
+                }
+            };
+            res.map_err(|e| format!("D3D11 event query failed: {e}"))?;
+            if done != 0 {
+                return Ok(());
+            }
+            if start.elapsed() > EVENT_QUERY_TIMEOUT {
+                return Err("D3D11 event query timed out".to_string());
+            }
+            std::thread::yield_now();
+        }
     }
 
     fn read_shared_pair(&self, tex_y: &ID3D11Texture2D, tex_uv: &ID3D11Texture2D, format: SurfaceFormat, size: (u32, u32), chroma: (u32, u32)) -> Result<PixelData, String> {
@@ -698,17 +754,12 @@ impl CopyPipeline {
         let mut rs: Option<ID3D11RasterizerState> = None;
         // SAFETY: valid rasterizer descriptor and out-pointer.
         unsafe { device.CreateRasterizerState(&rs_desc, Some(&mut rs)) }.map_err(|e| format!("CreateRasterizerState failed: {e}"))?;
-        let q_desc = D3D11_QUERY_DESC { Query: D3D11_QUERY_EVENT, MiscFlags: 0 };
-        let mut query: Option<ID3D11Query> = None;
-        // SAFETY: valid event query descriptor and out-pointer.
-        unsafe { device.CreateQuery(&q_desc, Some(&mut query)) }.map_err(|e| format!("CreateQuery failed: {e}"))?;
         Ok(Self {
             vs: vs.ok_or("no vertex shader")?,
             ps_y: ps_y.ok_or("no Y pixel shader")?,
             ps_uv: ps_uv.ok_or("no UV pixel shader")?,
             cb: cb.ok_or("no constant buffer")?,
             rs: rs.ok_or("no rasterizer state")?,
-            query: query.ok_or("no event query")?,
             scratch: None,
         })
     }
@@ -740,8 +791,8 @@ impl CopyPipeline {
         Ok(())
     }
 
-    fn dispatch(&self, context: &ID3D11DeviceContext, src: &ID3D11Texture2D, index: u32, pair: &SharedPlanePair, (ox, oy): (u32, u32)) -> Result<(), String> {
-        let scratch = self.scratch.as_ref().ok_or_else(|| "no scratch surface".to_string())?;
+    fn dispatch(&self, context: &ID3D11DeviceContext, src: &ID3D11Texture2D, index: u32, pair: &SharedPlanePair, (ox, oy): (u32, u32), query: &ID3D11Query) {
+        let Some(scratch) = self.scratch.as_ref() else { return };
         let cb_y: [i32; 4] = [ox as i32, oy as i32, 0, 0];
         let cb_uv: [i32; 4] = [(ox / 2) as i32, (oy / 2) as i32, 0, 0];
         let vp_y = [D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: pair.w as f32, Height: pair.h as f32, MinDepth: 0.0, MaxDepth: 1.0 }];
@@ -776,10 +827,9 @@ impl CopyPipeline {
 
             context.PSSetShaderResources(0, Some(&[None]));
             context.OMSetRenderTargets(None, None);
-            context.End(&self.query);
+            context.End(query);
             context.Flush();
         }
-        wait_event_query(context, &self.query)
     }
 }
 
@@ -793,23 +843,6 @@ fn create_tex2d_srv(device: &ID3D11Device, tex: &ID3D11Texture2D, format: DXGI_F
     // SAFETY: `tex` was created with `D3D11_BIND_SHADER_RESOURCE` and `format` is a valid plane view format.
     unsafe { device.CreateShaderResourceView(tex, Some(&desc), Some(&mut srv)) }.map_err(|e| format!("CreateShaderResourceView failed: {e}"))?;
     srv.ok_or_else(|| "no SRV".to_string())
-}
-
-fn wait_event_query(context: &ID3D11DeviceContext, query: &ID3D11Query) -> Result<(), String> {
-    let start = Instant::now();
-    loop {
-        let mut done: u32 = 0;
-        // SAFETY: `query` is a live `D3D11_QUERY_EVENT` owned by this context; `done` is 4-byte BOOL.
-        unsafe { context.GetData(query, Some(&mut done as *mut u32 as *mut c_void), std::mem::size_of::<u32>() as u32, 0) }
-            .map_err(|e| format!("D3D11 event query failed: {e}"))?;
-        if done != 0 {
-            return Ok(());
-        }
-        if start.elapsed() > EVENT_QUERY_TIMEOUT {
-            return Err("D3D11 event query timed out".to_string());
-        }
-        std::thread::yield_now();
-    }
 }
 
 fn ensure_staging_plane<'a>(
