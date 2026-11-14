@@ -69,3 +69,36 @@ fn saved_ui_state_without_the_flags_shows_the_chrome() {
     assert!(ui.show_header);
     assert!(ui.show_status_bar);
 }
+
+/// The window title names the open document and its unsaved state, and is sent only when it changes (#2579).
+#[test]
+fn the_window_title_follows_the_document() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(s);
+    let mut h = Harness::builder().with_size(egui::vec2(W, H)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut titles = Vec::new();
+    fn step(h: &mut Harness<'static, FilmcraftApp>, titles: &mut Vec<String>, n: usize) {
+        for _ in 0..n {
+            h.step();
+            let sent = h.output().viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
+            titles.extend(sent.into_iter().filter_map(|c| if let egui::ViewportCommand::Title(t) = c { Some(t) } else { None }));
+        }
+    }
+    step(&mut h, &mut titles, 4);
+    titles.clear(); // the first title went out while the harness was built
+    h.state_mut().session.execute("file.newProject", json!({"name": "Alpha"})).unwrap();
+    step(&mut h, &mut titles, 3);
+    assert_eq!(titles, ["Alpha — FilmCraft"], "sent once when the document changes, not resent while unchanged");
+    h.state_mut().session.execute("file.newSequence", json!({"name": "S", "width": 1280, "height": 720, "fps": 24})).unwrap();
+    step(&mut h, &mut titles, 3);
+    assert_eq!(titles, ["Alpha — FilmCraft", "Alpha • — FilmCraft"]);
+    // a saved document is named after its file, not the name stored in it
+    let d = std::env::temp_dir().join(format!("fc-title-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let saved = d.join("Beta Cut.fcproj").to_string_lossy().into_owned();
+    h.state_mut().session.execute("file.saveAs", json!({"path": saved})).unwrap();
+    std::sync::Arc::make_mut(&mut h.state_mut().session.project).name = "Stored Name".into();
+    step(&mut h, &mut titles, 3);
+    assert_eq!(titles.last().map(String::as_str), Some("Beta Cut — FilmCraft"));
+}
