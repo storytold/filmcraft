@@ -12,9 +12,11 @@
 
 pub mod bridge;
 pub mod long_job;
+pub mod sample;
 pub mod server;
 
 pub use bridge::BridgeClient;
+pub use sample::{SampleLayout, SampledFrame, stitch};
 pub use server::FilmcraftMcp;
 
 #[derive(Debug, thiserror::Error)]

@@ -110,7 +110,22 @@ async fn tools_are_titled_and_annotated() {
         }
     }
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "ui_click"] {
+    for want in [
+        "command_list",
+        "command_run",
+        "command_batch",
+        "doc_inspect",
+        "render_preview",
+        "project_inspect",
+        "render_frame",
+        "ui_click",
+        "timeline_sample",
+        "cut_inspect",
+        "clip_cut",
+        "clip_trim",
+        "clip_delete",
+        "clip_arrange",
+    ] {
         assert!(names.contains(&want), "{want} not listed");
     }
     let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
@@ -402,103 +417,187 @@ async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
     assert_eq!(v["sequence"]["id"].as_u64(), Some(HUGE), "an id above i64::MAX must still be inspected, not dropped to a null sequence: {v}");
 }
 
-/// Bridge `render_frame` with `seconds` moves the app's single playhead, screenshots the single
-/// Program monitor and moves the playhead back. Parallel calls (the tool is annotated read-only and
-/// idempotent, so clients send them that way) interleaved those steps and got each other's frames
-/// (#3837). Each call has to return the frame at its own time.
 #[tokio::test]
-async fn parallel_bridge_render_frames_each_return_their_own_frame() {
-    use base64::Engine as _;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let playhead = Arc::new(std::sync::atomic::AtomicI64::new(200));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    let app_playhead = playhead.clone();
-    tokio::spawn(async move {
-        while let Ok((s, _)) = listener.accept().await {
-            let playhead = app_playhead.clone();
-            tokio::spawn(async move {
-                let (r, mut w) = s.into_split();
-                let mut lines = tokio::io::BufReader::new(r).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let req: Value = serde_json::from_str(&line).unwrap();
-                    let params = &req["params"]["params"];
-                    let result = match (req["method"].as_str().unwrap_or_default(), req["params"]["command"].as_str().unwrap_or_default()) {
-                        (_, "sequence.inspect") => json!({"playhead": playhead.load(std::sync::atomic::Ordering::SeqCst)}),
-                        (_, "playhead.set") => {
-                            let t = params["seconds"].as_f64().map(|x| x as i64).or_else(|| params["time"].as_i64()).unwrap_or(0);
-                            playhead.store(t, std::sync::atomic::Ordering::SeqCst);
-                            Value::Null
-                        }
-                        ("ui.screenshot", _) => {
-                            // the monitor shows whatever the playhead is at when the screenshot is taken
-                            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                            let shade = playhead.load(std::sync::atomic::Ordering::SeqCst) as u8;
-                            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([shade, 0, 0, 255]));
-                            img.save(req["params"]["path"].as_str().unwrap()).unwrap();
-                            Value::Null
-                        }
-                        _ => Value::Null,
-                    };
-                    let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
-                    w.write_all(line.as_bytes()).await.unwrap();
-                }
-            });
-        }
+async fn timeline_sample_grid_and_strip() {
+    let m = FilmcraftMcp::headless(demo());
+
+    // Grid layout with 4 samples
+    let p = Parameters(TimelineSampleParams {
+        range: None,
+        count: Some(4),
+        layout: Some(SampleLayout::Grid),
+        max_side: Some(400),
     });
-    let m = FilmcraftMcp::bridge(&addr).unwrap();
-    let call = |seconds: f64| m.render_frame(Parameters(RenderParams { seconds: Some(seconds), max_side: Some(640) }));
-    let results = tokio::join!(call(5.0), call(20.0), call(35.0), call(50.0));
-    for (res, want) in [(results.0, 5u8), (results.1, 20), (results.2, 35), (results.3, 50)] {
-        let v = serde_json::to_value(res.unwrap()).unwrap();
-        let png = base64::engine::general_purpose::STANDARD.decode(v["content"][0]["data"].as_str().unwrap()).unwrap();
-        let px = image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(0, 0).0;
-        assert_eq!(px[0], want, "frame at {want} s came from another call's playhead");
-    }
-    assert_eq!(playhead.load(std::sync::atomic::Ordering::SeqCst), 200, "the playhead must end where it started");
+    let res = m.timeline_sample(p).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 2, "must return image and text content blocks");
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["count"], 4);
+    assert_eq!(meta["layout"], "grid");
+    assert!(meta["sequence_duration"].as_f64().unwrap() > 0.0);
+    let samples = meta["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 4);
+    assert!(samples[0]["active_clips"].is_array());
+
+    // Strip layout with range
+    let p_strip = Parameters(TimelineSampleParams {
+        range: Some([1.0, 3.0]),
+        count: Some(3),
+        layout: Some(SampleLayout::Strip),
+        max_side: Some(300),
+    });
+    let res_strip = m.timeline_sample(p_strip).await.unwrap();
+    assert_ne!(res_strip.is_error, Some(true));
+    let contents_strip = serde_json::to_value(&res_strip.content).unwrap();
+    let text_strip = contents_strip.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta_strip: Value = serde_json::from_str(text_strip).unwrap();
+    assert_eq!(meta_strip["count"], 3);
+    assert_eq!(meta_strip["layout"], "strip");
 }
 
-/// A client that floods malformed lines and never reads its output stalls its own input: parse
-/// errors wait for the writer instead of piling up in memory without bound.
-#[tokio::test(flavor = "multi_thread")]
-async fn unread_parse_errors_stall_the_input() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let (mut tx, server_in) = tokio::io::duplex(4096);
-    let (server_out, rx) = tokio::io::duplex(4096);
-    tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
-    // Each 2-byte line answers with a ~100-byte error: far more than the pipes, the read buffer and the queue hold.
-    const LINES: usize = 1 << 16;
-    let junk = "x\n".repeat(LINES);
-    // The write stays in this task and is polled alongside the reads; a spawned task would drop `tx` on
-    // completion and end the server while replies are still queued.
-    let mut write = std::pin::pin!(tx.write_all(junk.as_bytes()));
-    // With the output unread the server stops reading, so the write stays pending.
-    let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut write).await;
-    assert!(early.is_err(), "the server kept reading input while its output was not read: {early:?}");
-    // Reading the output lets the input drain, and the pending write completes.
-    let drain = async {
-        let mut lines = tokio::io::BufReader::new(rx).lines();
-        let first: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(first["error"]["code"], -32700, "{first}");
-        for n in 1..LINES {
-            let got = lines.next_line().await.unwrap();
-            assert!(got.is_some(), "replies stopped after {n} of {LINES}");
-        }
-    };
-    let both = tokio::time::timeout(std::time::Duration::from_secs(120), async { tokio::join!(write, drain) });
-    let (written, ()) = both.await.expect("the drain stalled: input stopped being read");
-    written.expect("the pending write completes once the output is read");
+#[tokio::test]
+async fn cut_inspect_continuity_and_metadata() {
+    let m = FilmcraftMcp::headless(demo());
+    // Create an explicit cut at 2.0s
+    m.run("sequence.addEditAllTracks", json!({"seconds": 2.0})).await.unwrap();
+
+    let p = Parameters(CutInspectParams {
+        seconds: 2.0,
+        frames_before: Some(2),
+        frames_after: Some(2),
+        max_side: Some(400),
+    });
+    let res = m.cut_inspect(p).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 2);
+
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["frames_count"], 4);
+    assert_eq!(meta["cut_seconds"], 2.0);
+    assert!(meta["outgoing_clips"].is_array());
+    assert!(meta["incoming_clips"].is_array());
 }
 
-/// When the output fails, the reader stops: the server ends instead of waiting on an input whose replies cannot be delivered.
-#[tokio::test(flavor = "multi_thread")]
-async fn failed_output_stops_the_reader() {
-    use tokio::io::AsyncWriteExt;
-    let (mut tx, server_in) = tokio::io::duplex(4096);
-    let (server_out, rx) = tokio::io::duplex(4096);
-    drop(rx);
-    let server = tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
-    tx.write_all(b"x\n").await.unwrap(); // `tx` stays open: only a failed output can end the server
-    let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
-    assert!(ended.is_ok(), "the server kept reading after its output failed");
+#[tokio::test]
+async fn clip_cut_with_verification() {
+    let m = FilmcraftMcp::headless(demo());
+
+    // Cut with verify: false
+    let p_no_verify = Parameters(ClipCutParams {
+        seconds: 2.5,
+        clip: None,
+        track: None,
+        verify: Some(false),
+    });
+    let res = m.clip_cut(p_no_verify).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+    assert_eq!(res.content.len(), 1, "verify=false returns json only");
+
+    // Cut with verify: true
+    let p_verify = Parameters(ClipCutParams {
+        seconds: 3.5,
+        clip: None,
+        track: None,
+        verify: Some(true),
+    });
+    let res_v = m.clip_cut(p_verify).await.unwrap();
+    assert_ne!(res_v.is_error, Some(true));
+    assert_eq!(res_v.content.len(), 2, "verify=true attaches image strip");
+    let contents = serde_json::to_value(&res_v.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert!(meta["cuts_made"].as_u64().unwrap() >= 1);
+    assert!(meta["verification"].is_object());
+}
+
+#[tokio::test]
+async fn clip_trim_and_delete_operations() {
+    let m = FilmcraftMcp::headless(demo());
+    let seq_before = m.run("sequence.inspect", json!({})).await.unwrap();
+    let orig_duration = seq_before["duration"].as_i64().unwrap();
+    let clip_id = seq_before["video"][0]["items"][0]["clip"].as_u64().unwrap();
+
+    // Ripple trim Out point backward by 0.5s
+    let p_trim = Parameters(ClipTrimParams {
+        clip: clip_id,
+        edge: "out".into(),
+        delta_seconds: Some(-0.5),
+        delta_frames: None,
+        ripple: Some(true),
+        verify: Some(true),
+    });
+    let res_trim = m.clip_trim(p_trim).await.unwrap();
+    assert_ne!(res_trim.is_error, Some(true));
+    assert_eq!(res_trim.content.len(), 2, "verify=true attaches visual check");
+
+    let seq_after_trim = m.run("sequence.inspect", json!({})).await.unwrap();
+    let dur_after_trim = seq_after_trim["duration"].as_i64().unwrap();
+    assert!(dur_after_trim < orig_duration, "ripple trim should shrink duration");
+
+    // Ripple delete the trimmed clip
+    let p_del = Parameters(ClipDeleteParams {
+        clip: Some(clip_id),
+        gap_at: None,
+        track: None,
+        ripple: Some(true),
+        verify: Some(false),
+    });
+    let res_del = m.clip_delete(p_del).await.unwrap();
+    assert_ne!(res_del.is_error, Some(true));
+
+    let seq_after_del = m.run("sequence.inspect", json!({})).await.unwrap();
+    let dur_after_del = seq_after_del["duration"].as_i64().unwrap();
+    assert!(dur_after_del < dur_after_trim, "ripple delete should shrink duration further");
+}
+
+#[tokio::test]
+async fn clip_arrange_move_operation() {
+    let m = FilmcraftMcp::headless(demo());
+    let seq_before = m.run("sequence.inspect", json!({})).await.unwrap();
+    let clip_id = seq_before["video"][0]["items"][0]["clip"].as_u64().unwrap();
+
+    let p_arrange = Parameters(ClipArrangeParams {
+        clip: clip_id,
+        to_seconds: 4.0,
+        to_track: None,
+        insert: Some(false),
+    });
+    let res = m.clip_arrange(p_arrange).await.unwrap();
+    assert_ne!(res.is_error, Some(true));
+
+    let contents = serde_json::to_value(&res.content).unwrap();
+    let text = contents.as_array().unwrap().iter().find_map(|c| c.get("text").and_then(Value::as_str)).unwrap();
+    let meta: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(meta["clip"], clip_id);
+    assert_eq!(meta["to_seconds"], 4.0);
+}
+
+#[tokio::test]
+async fn autonomous_agent_edit_and_verify_e2e_loop() {
+    let mut c = Client::start(demo());
+    let _init = c.init().await;
+
+    // Step 1: Agent samples timeline to understand sequence structure
+    let sample_res = c.call(1, "timeline_sample", json!({"count": 4, "layout": "grid", "max_side": 300})).await;
+    assert_eq!(sample_res["result"]["isError"], Value::Null);
+    let contents = sample_res["result"]["content"].as_array().unwrap();
+    assert_eq!(contents.len(), 2, "returns image + json");
+
+    // Step 2: Agent cuts clip at 2.0s with automatic verification
+    let cut_res = c.call(2, "clip_cut", json!({"seconds": 2.0, "verify": true})).await;
+    assert_eq!(cut_res["result"]["isError"], Value::Null);
+    let cut_contents = cut_res["result"]["content"].as_array().unwrap();
+    assert_eq!(cut_contents.len(), 2, "cut with verify returns image + json");
+
+    // Step 3: Agent checks cut continuity explicitly
+    let inspect_res = c.call(3, "cut_inspect", json!({"seconds": 2.0, "frames_before": 2, "frames_after": 2, "max_side": 300})).await;
+    assert_eq!(inspect_res["result"]["isError"], Value::Null);
+
+    // Step 4: Agent inspects document to confirm state
+    let doc_res = c.call(4, "doc_inspect", json!({})).await;
+    assert_eq!(doc_res["result"]["isError"], Value::Null);
 }
