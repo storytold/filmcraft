@@ -423,6 +423,20 @@ fn the_cut_is_grabbed_over_the_clips_and_stops_at_the_rolls_limit() {
     assert_eq!(cut_of(&mut d), cut1 + limit.0, "stopped at the limit");
 }
 
+/// Each transition is painted (and registered) once a frame, not once per visible track: its
+/// translucent bar stacked over itself turned near-opaque.
+#[test]
+fn each_transition_is_painted_once_a_frame() {
+    let mut d = Driver::demo();
+    d.frames(2);
+    let v = d.ok("ui.elements", json!({"prefix": "timeline.transition."}));
+    let ids: Vec<&str> = v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str()).filter(|id| id.matches('.').count() == 2).collect();
+    assert!(ids.len() >= 2, "the demo shows video and audio transitions: {ids:?}");
+    for id in &ids {
+        assert_eq!(ids.iter().filter(|i| *i == id).count(), 1, "{id} registered more than once: {ids:?}");
+    }
+}
+
 /// #3573: right-clicking a video transition in the Effects panel offers Set as Default Transition,
 /// and Cmd+D then applies that transition.
 #[test]
