@@ -45,6 +45,11 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
+                // the app is modal while a file dialog is open: menu commands do nothing (#2018),
+                // but Quit still quits, as on macOS
+                if self.native_dialog_open() && id != "app.quit" {
+                    continue;
+                }
                 if let Err(e) = menus::activate_native(self, ctx, &id) {
                     self.ui.status = e;
                 }

@@ -160,13 +160,14 @@ fn cancelled_or_lost_dialogs_do_nothing_and_one_dialog_is_open_at_a_time() {
     d.frames(2);
     assert!(!d.app().native_dialog_open());
     assert_eq!(d.items(), before);
-    // the host's dialog went away without an answer (its thread failed): as if cancelled
+    // the host's dialog went away without an answer (its thread failed): as if cancelled, and said
     d.ok("ui.menu.invoke", json!({"id": "file.import"}));
     let (_, answer) = d.asked();
     drop(answer);
     d.frames(2);
     assert!(!d.app().native_dialog_open());
     assert_eq!(d.items(), before);
+    assert_eq!(d.app().ui.status, "The file dialog could not be shown");
     // and the next dialog opens normally
     assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.open"})), json!({"dialog": "open"}));
     assert!(matches!(d.asked().0, FileDialog::OpenProject));
@@ -420,4 +421,122 @@ fn quit_save_keeps_the_prompt_when_no_dialog_can_open() {
     assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the prompt stays");
     assert!(!d.app().ui.status.is_empty(), "with the reason");
     assert!(d.asked.lock().unwrap().is_empty(), "no second dialog");
+}
+
+/// A file the OS dropped on the window, as the native integration hands it to egui.
+#[derive(Debug)]
+struct OsFile(std::path::PathBuf);
+
+impl egui::DroppedFile for OsFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+impl Driver {
+    /// The window is asked to close (Quit, Cmd+Q, its close button) for one frame.
+    fn request_close(&mut self) {
+        self.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        self.frames(1);
+    }
+
+    /// Drops `path` on the window, as the OS does (egui only reports it once).
+    fn drop_file(&mut self, path: &std::path::Path) {
+        self.harness.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(path.to_path_buf())));
+        self.frames(2);
+        self.harness.input_mut().dropped_files.clear();
+        self.frames(1);
+    }
+}
+
+/// While a dialog is open the app is modal: a file dropped on the window is swallowed (#2018).
+/// The same drop imports once the dialog has been answered.
+#[test]
+fn a_drop_while_a_dialog_is_open_is_swallowed_until_the_dialog_closes() {
+    let mut d = Driver::new(true);
+    let before = d.items();
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    assert!(d.app().native_dialog_open());
+    d.drop_file(&wav());
+    d.frames(3);
+    assert_eq!(d.items(), before, "the drop is swallowed while the dialog is open");
+    // answered: the dialog's file is imported, and a fresh drop imports again
+    let (_, answer) = d.asked();
+    answer.send(vec![wav().to_string_lossy().into_owned()]).unwrap();
+    d.frames(2);
+    assert!(!d.app().native_dialog_open());
+    assert_eq!(d.items(), before + 1);
+    d.drop_file(&wav());
+    d.frames(3);
+    assert_eq!(d.items(), before + 2, "the drop imports once the dialog is closed");
+}
+
+/// A close request (Cmd+Q, the red button, the OS) while a dialog is open is not refused: as on
+/// macOS the app quits, here through the unsaved-changes prompt of the normal flow (#2018).
+#[test]
+fn a_close_request_while_a_dialog_is_open_asks_about_unsaved_changes() {
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    assert!(d.app().native_dialog_open());
+    d.request_close();
+    d.frames(2);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the quit prompt appears");
+    assert!(d.app().native_dialog_open(), "the file dialog stays open behind the prompt");
+    // the prompt takes real clicks although the dialog is open: Cancel keeps the app and the dialog
+    let center = |d: &mut Driver, id: &str| {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|n| n.as_f64().unwrap() as f32).collect();
+        egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+    };
+    let cancel = center(&mut d, "quit.cancel");
+    let click = |d: &mut Driver, at: egui::Pos2| {
+        let input = d.harness.input_mut();
+        input.events.push(egui::Event::PointerMoved(at));
+        input.events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        d.frames(1);
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        d.frames(2);
+    };
+    click(&mut d, cancel);
+    assert!(d.app().ui.clip_dialog.is_none() && !d.app().quit_confirmed, "Cancel closes the prompt, nothing quits");
+    assert!(d.app().native_dialog_open());
+    // asked again, Don't Save quits
+    d.request_close();
+    d.frames(2);
+    let dont_save = center(&mut d, "quit.dontSave");
+    click(&mut d, dont_save);
+    assert!(d.app().quit_confirmed, "Don't Save quits while the dialog is open");
+}
+
+/// While a dialog is open the native menu's commands do nothing, but Quit still goes through the
+/// normal flow (#2018).
+#[test]
+fn menu_commands_wait_for_the_dialog_but_quit_does_not() {
+    let mut d = Driver::new(true);
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    tx.send("playback.reverse".to_string()).unwrap();
+    d.frames(2);
+    assert!(!d.app().playback.playing, "a menu command is ignored while the dialog is open");
+    assert!(d.app().native_dialog_open() && d.app().ui.clip_dialog.is_none());
+    tx.send("app.quit".to_string()).unwrap();
+    d.frames(1);
+    d.request_close();
+    d.frames(2);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "Quit reaches the prompt");
 }

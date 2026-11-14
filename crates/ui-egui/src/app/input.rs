@@ -1,6 +1,16 @@
 use super::{FilmcraftApp, PanelKind, dock_ui, json};
 
 impl FilmcraftApp {
+    /// The modal side of an open native file dialog that the raw-input hook cannot reach: drops
+    /// that dock panels in their own OS windows accumulated meanwhile are discarded. The main
+    /// window's input is dropped in `raw_input_hook` and native-menu commands but Quit are refused by
+    /// `logic_command_inbox` (#2018). A close request is not refused: Quit works as on macOS.
+    pub(super) fn modal_gate(&mut self) {
+        if self.native_dialog_open() {
+            self.window_files.clear();
+        }
+    }
+
     /// Import dropped files, on the main window and on dock panels in their own OS windows.
     /// With Timeline ▸ drop imports to the timeline, the new items are also queued to be placed
     /// at the pointer (see `timeline::interact`).
