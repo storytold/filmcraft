@@ -741,3 +741,52 @@ fn effect_controls_font_and_style_are_drop_downs_that_apply() {
     pick(&mut d, "Bold Italic");
     assert_eq!(text_param(&mut d, clip, "font_style"), Some(filmcraft_project::ParamValue::Text("Bold Italic".into())), "picking a style applies it");
 }
+
+/// #4625: with several text clips selected, a text property changed in the Properties panel
+/// (Font Size, Font) is set on every selected text clip, not only the first one shown there. A
+/// clip on a locked track keeps its value, and one undo restores each clip's own size.
+#[test]
+fn a_text_property_change_applies_to_every_selected_text_clip() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clips: Vec<u64> = (0..3).map(|i| d.exec("graphics.newText", json!({"text": format!("Title {i}")}))["clip"].as_u64().unwrap()).collect();
+    for (clip, size) in clips.iter().zip([60, 80, 90]) {
+        d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"size": size}}));
+    }
+    let locked_track = {
+        let q = d.harness.state().session.active_sequence().unwrap();
+        q.video_tracks.iter().position(|t| t.items.iter().any(|it| it.id.0 == clips[2])).unwrap()
+    };
+    d.exec("timeline.setTrack", json!({"track": format!("V{}", locked_track + 1), "locked": true}));
+    d.exec("timeline.select", json!({"clips": clips, "linked": false}));
+    d.frames(4);
+    let size = |d: &mut Driver, clip: u64| text_param(d, clip, "size").and_then(|v| v.as_f64()).unwrap();
+    let before = d.harness.state().session.project.clone();
+    let n = d.harness.state().session.history.undo.len();
+    let r = d.rect("graphics.prop.size");
+    d.ok(
+        "ui.drag",
+        json!({"from": {"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] / 2.0}, "to": {"x": r[0] + r[2] / 2.0 + 80.0, "y": r[1] + r[3] / 2.0}, "steps": 8}),
+    );
+    d.frames(3);
+    let first = size(&mut d, clips[0]);
+    assert_ne!(first, 60.0, "the drag changed the size shown in the panel");
+    assert_eq!(size(&mut d, clips[1]), first, "the other selected text clip gets the same size");
+    assert_eq!(size(&mut d, clips[2]), 90.0, "a clip on a locked track keeps its size");
+    assert_eq!(d.harness.state().session.history.undo.len(), n + 1, "the drag is one undo step for every clip");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.harness.state().session.project, *before, "one undo restores every clip's own size");
+    // Font: picking a family in the drop-down sets it on every selected text clip
+    let fam = filmcraft_text::picker_families()
+        .into_iter()
+        .map(|(f, _)| f)
+        .find(|f| Some(filmcraft_project::ParamValue::Text(f.clone())) != text_param(&mut d, clips[0], "font"))
+        .expect("another family");
+    d.ok("ui.click", json!({"id": "graphics.prop.font"}));
+    d.frames(3);
+    pick(&mut d, &fam);
+    for clip in &clips[..2] {
+        assert_eq!(text_param(&mut d, *clip, "font"), Some(filmcraft_project::ParamValue::Text(fam.clone())), "clip {clip} has the picked family");
+    }
+    assert_ne!(text_param(&mut d, clips[2], "font"), Some(filmcraft_project::ParamValue::Text(fam.clone())), "the locked clip keeps its family");
+}
