@@ -228,7 +228,7 @@ pub fn from_linear(v: f32, t: Transfer) -> f32 {
 pub fn pq_eotf(e: f32) -> f32 {
     let (m1, m2) = (0.159_301_76_f32, 78.84375_f32);
     let (c1, c2, c3) = (0.835_937_5_f32, 18.851_563_f32, 18.6875_f32);
-    let p = e.max(0.0).powf(1.0 / m2);
+    let p = e.clamp(0.0, 1.0).powf(1.0 / m2);
     ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
 }
 pub fn pq_inverse_eotf(y: f32) -> f32 {
@@ -351,6 +351,16 @@ pub fn to_hex(c: [f32; 4]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pq_eotf_overshoot_is_finite() {
+        for e in [1.5_f32, 2.5, 10.0] {
+            let y = pq_eotf(e);
+            assert!(y.is_finite(), "pq_eotf({e}) = {y}");
+            assert!((y - 1.0).abs() < 1e-3, "pq_eotf({e}) = {y}");
+        }
+        assert!(to_linear(2.5, Transfer::Pq).is_finite());
+    }
 
     #[test]
     fn parse_hex_rejects_signs() {
