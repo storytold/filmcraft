@@ -960,6 +960,68 @@ fn linked_rate_stretch_uses_the_tighter_neighbour() {
 }
 
 #[test]
+fn linked_rate_stretch_keeps_one_speed_on_a_split_edit() {
+    // a split edit: the picture is 90 frames, its sound 120. Stretching the pair 15 frames
+    // shorter gives both members the picture's 120%, so the sound lasts 120 / 1.2 = 100 frames,
+    // not 105 at a speed of its own (#4705).
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let pic = fx.put(v1, 0, 90, 0);
+    let snd = fx.put(a1, 0, 120, 0);
+    for c in [pic, snd] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(1);
+    }
+    let mut n = fx.next;
+    let speed = rate_stretch_items(&mut fx.seq, &[pic, snd], Edge::Out, f(-15), &mut Fx::ctx(&mut n)).unwrap();
+    assert!((speed - 1.2).abs() < 1e-9);
+    let (p, s) = (fx.seq.find_item(pic).unwrap().1, fx.seq.find_item(snd).unwrap().1);
+    assert_eq!((R.frame_at(p.duration), R.frame_at(s.duration)), (75, 100));
+    assert!((p.speed - s.speed).abs() < 1e-12);
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn linked_rate_stretch_from_the_in_edge_keeps_one_speed() {
+    // the same split edit stretched from the In edge: each member's end stays and its start
+    // moves by its own change (the picture 15 frames, the sound 20).
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let pic = fx.put(v1, 20, 90, 0);
+    let snd = fx.put(a1, 20, 120, 0);
+    for c in [pic, snd] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(1);
+    }
+    let mut n = fx.next;
+    let speed = rate_stretch_items(&mut fx.seq, &[pic, snd], Edge::In, f(15), &mut Fx::ctx(&mut n)).unwrap();
+    assert!((speed - 1.2).abs() < 1e-9);
+    assert_eq!((fx.spans(v1), fx.spans(a1)), (vec![(35, 75)], vec![(40, 100)]));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn linked_rate_stretch_clamps_a_split_edit_by_the_sound_s_room() {
+    // the sound is twice the picture and a later clip on A1 leaves it 10 frames of room, so the
+    // pair cannot stretch as far as the picture asked: at the group speed the sound may reach
+    // 130 frames, which puts the picture at 65 of the 120 asked for.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let pic = fx.put(v1, 0, 60, 0);
+    let snd = fx.put(a1, 0, 120, 0);
+    fx.put(a1, 130, 10, 0);
+    for c in [pic, snd] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(1);
+    }
+    let mut n = fx.next;
+    let speed = rate_stretch_items(&mut fx.seq, &[pic, snd], Edge::Out, f(60), &mut Fx::ctx(&mut n)).unwrap();
+    assert!((speed - 60.0 / 65.0).abs() < 1e-9);
+    let (p, s) = (fx.seq.find_item(pic).unwrap().1, fx.seq.find_item(snd).unwrap().1);
+    assert_eq!((R.frame_at(p.duration), R.frame_at(s.duration)), (65, 130));
+    assert!((p.speed - s.speed).abs() < 1e-12);
+    assert_eq!(fx.spans(a1), vec![(0, 130), (130, 10)]);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn speed_on_a_linked_group_ripples_once() {
     // V1: a [0,10), b [10,20). A1: a's sound [0,10), b's sound [10,20).
     let build = |sound_len: i64| {
