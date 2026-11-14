@@ -176,6 +176,15 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         fn render_planned_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
             self.0.render_planned_rgba8(plan, prep)
         }
+
+        fn render_planned_gpu(
+            &mut self,
+            plan: &filmcraft_render::plan::FramePlan,
+            prep: Option<&dyn std::any::Any>,
+            target: &dyn filmcraft_export::GpuEncodeInput,
+        ) -> bool {
+            self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height())
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }
