@@ -4,6 +4,12 @@ Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), F
 OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
 references are strings and audio essence is supplied by the caller (the engine).
 
+FCP7 XML export reports active multicam camera selections and populated caption tracks that
+it cannot carry, including those inside nested sequences. Flatten multicam clips before
+exporting to retain the selected picture; export captions separately as SRT for text and
+timing (SRT does not preserve exact fonts or placement). Inactive multicam selections and empty caption tracks
+do not produce these warnings. These diagnostics do not change the generated XML.
+
 ## Specifications
 
 Clean-room: written from public specifications only. The AAF SDK, pyaaf2, the OMF Toolkit and
