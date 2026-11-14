@@ -357,6 +357,8 @@ pub struct TimelinePrefs {
     pub multichannel_mono_media_tracks: String,
     pub focus_timeline_on_edit: bool,
     pub snap_playhead: bool,
+    /// Seek to the first resulting cut after deleting clips or closing a selected gap.
+    pub move_playhead_after_ripple_delete: bool,
     pub return_to_beginning: bool,
     pub out_of_sync_unlinked: bool,
     pub play_after_rendering: bool,
@@ -388,6 +390,7 @@ impl Default for TimelinePrefs {
             multichannel_mono_media_tracks: "useFile".into(),
             focus_timeline_on_edit: false,
             snap_playhead: true,
+            move_playhead_after_ripple_delete: false,
             return_to_beginning: true,
             out_of_sync_unlinked: false,
             play_after_rendering: true,

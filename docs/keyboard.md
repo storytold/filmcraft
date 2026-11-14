@@ -15,6 +15,11 @@ commands (frames, panels, monitor zoom, Project and Text panel navigation) run t
 `menus::invoke`. Both are reachable by id from the CLI (`filmcraft-cli exec <id>`), the control
 channel (`engine.execute` / `ui.menu.invoke`) and MCP (`command_run`).
 
+Settings ▸ Timeline ▸ **Move playhead to cut after ripple delete** (off by default) makes Ripple
+Delete move the playhead to the earliest resulting cut so playback can review the join immediately.
+Closing a selected gap with Ripple Delete or Clear moves it to the gap's former start too.
+With the setting off, or when a delete is refused, the playhead stays where it was.
+
 Tests: `crates/engine/src/keyboard_tests.rs` (no key used twice in one scope; behaviour of the
 keyboard commands, with undo) and `crates/ui-egui/tests/it/keyboard_ui.rs` (no dangling ids in the
 tables, no conflicts in FilmCraft Default or the Premiere preset, keys pressed in the headless app).

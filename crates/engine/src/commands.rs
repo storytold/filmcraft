@@ -2206,7 +2206,7 @@ fn build() -> Vec<CommandSpec> {
                     None => s.state.selection.clone(),
                 };
                 let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
-                s.edit_sequence("Ripple Delete", |q, _, st| {
+                let cut_point = s.edit_sequence("Ripple Delete", |q, _, st| {
                     let spans = edit::ripple_delete_items(q, &sel)?;
                     if st.ripple_sequence_markers {
                         for r in spans.iter().rev() {
@@ -2219,8 +2219,14 @@ fn build() -> Vec<CommandSpec> {
                         edit::captions::delete_captions(q, &live, true)?;
                     }
                     st.caption_selection.retain(|c| q.find_caption(*c).is_some());
-                    Ok(())
+                    Ok(spans.iter().map(|span| span.start).min())
                 })?;
+                // Seek only after the edit commits: a refused delete must not move playback.
+                if s.prefs.timeline.move_playhead_after_ripple_delete
+                    && let Some(cut_point) = cut_point
+                {
+                    s.set_playhead(cut_point);
+                }
                 Ok(Value::Null)
             }
         ),
@@ -4987,6 +4993,9 @@ fn ripple_delete_gap(s: &mut Session, g: crate::GapSelection) -> Result<Value> {
     }
     close_gap(s, g.track, g.range.start)?;
     s.state.gap_selection = None;
+    if s.prefs.timeline.move_playhead_after_ripple_delete {
+        s.set_playhead(g.range.start);
+    }
     Ok(json!({"closed": g.range.duration.0}))
 }
 
