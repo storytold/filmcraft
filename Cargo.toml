@@ -54,6 +54,9 @@ log = "0.4"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+# DaVinci Resolve archives: DEFLATE (RFC 1951) and Zstandard (RFC 8878), pure Rust
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
