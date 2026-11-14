@@ -202,6 +202,8 @@ mod audio_timing_tests;
 #[cfg(test)]
 mod avi_tests;
 #[cfg(test)]
+mod mjpeg_tests;
+#[cfg(test)]
 mod rounded_pts_tests;
 #[cfg(test)]
 mod stream_color_tests;

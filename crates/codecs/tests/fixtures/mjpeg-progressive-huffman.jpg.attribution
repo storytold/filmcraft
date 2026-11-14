@@ -1,0 +1,6 @@
+asset: crates/codecs/tests/fixtures/mjpeg-progressive-huffman.jpg
+title: Progressive Huffman JPEG decoder fixture derived from libjpeg-turbo testorig
+author: libjpeg-turbo contributors; FilmCraft contributors
+source: https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages (testorig.jpg), decoded with FFmpeg to PPM and re-encoded using libjpeg-turbo cjpeg -progressive -quality 88
+license: IJG License (README.ijg in the libjpeg-turbo 3.0.0 source distribution)
+added: 2026-11-13

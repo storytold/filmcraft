@@ -4,7 +4,7 @@
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo nextest run --workspace                   # the same in parallel processes (doctests: cargo test --doc)
 cargo test -p filmcraft-codecs                   # one crate
-cargo test --release -p filmcraft-prores        # codec tests are much faster in release
+cargo test --release -p craft-video --features prores,threads --test prores  # run from the craft-libs workspace
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
@@ -179,6 +179,10 @@ Each codec README has the full fixture matrix and the measured results.
 - `crates/gpu/src/tests.rs` composites the same frame plan (a YUV layer plus a transformed,
   semi-transparent RGBA layer) on the GPU and on the CPU. It requires a 99th-percentile channel
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
+  A software adapter counts: wgpu offers one when there is no GPU, so on a machine without a GPU
+  installing Mesa's lavapipe (`mesa-vulkan-drivers` on Debian / Ubuntu) runs these tests. CI does
+  that and sets `FILMCRAFT_REQUIRE_GPU=1`, so missing adapters/devices fail the normal
+  suite instead of silently skipping; the tests print the selected adapter.
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
@@ -310,7 +314,7 @@ engine behaviour without a window.
 |---|---|
 | H.264 decode, 1080p, threads sweep | in craft-libs: `cargo test --release -p craft-video --features h264-decode,threads --test h264_decode perf:: -- --ignored --nocapture` |
 | HEVC decode, 1080p / 2160p | in craft-libs: `cargo test --release -p craft-video --features hevc-decode,threads --test hevc_decode perf:: -- --ignored --nocapture` |
-| ProRes decode/encode | `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture` |
+| ProRes decode/encode | in craft-libs: `cargo test --release -p craft-video --features prores,threads --test prores perf:: -- --ignored --nocapture` |
 | Encoder speed / PSNR / bitrate | `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- …` |
 | Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files) | `cargo run --release -p filmcraft-engine --example bench_export -- --runs 7` |
 | Decode a real file through the media stack | `cargo run --release -p filmcraft-cli -- bench-decode file.mp4 --frames 120` |
@@ -407,3 +411,12 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+### Required software-GPU CI, 2026-10-30
+
+The application workflow only calls the shared gate and supplies packages and
+`FILMCRAFT_REQUIRE_GPU=1`. GPU unit and golden tests fail if adapter lookup, device
+creation, or a required float render target is unavailable. No extra application-local
+workflow job or duplicate release-build test pass is added. Local runs without this
+variable retain explicit skip behavior. An adapter log line alone is not proof that
+device creation succeeded.
