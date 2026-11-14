@@ -480,11 +480,11 @@ fn controls_row(
     } else {
         row1.min.x + 116.0
     };
-    let zr = Rect::from_min_size(pos2(zoom_x, settings_y), vec2(70.0, 24.0));
     let zoom_label = match mv.zoom {
         None => tl!("Fit").to_string(),
         Some(z) => format!("{}%", (z * 100.0).round() as i32),
     };
+    let zr = Rect::from_min_size(pos2(zoom_x, settings_y), vec2(crate::widgets::dropdown_text_width(ui, &zoom_label, 70.0), 24.0));
     let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::unique((prefix, "zoom")));
     app.auto.add(&format!("{prefix}.zoom"), zr, "Select Zoom Level");
     monitor_view::zoom_menu(app, &zresp, which);
@@ -1423,5 +1423,27 @@ mod tests {
     fn eyedropper_rejects_empty_and_truncated_frames() {
         assert_eq!(sample_rgb(&Rgba { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
         assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
+    }
+
+    #[test]
+    fn zoom_dropdown_fits_a_long_translation() {
+        crate::i18n::set_current(crate::i18n::Language::Cs);
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let mut zoom = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.auto.begin_frame();
+            let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(700.0, 500.0));
+            show(&mut app, ui, rect, Which::Program);
+            zoom = app.auto.find_current("program.zoom").map(|e| e.rect);
+        });
+        out.textures_delta.clear();
+        let label = crate::i18n::t("Fit");
+        crate::i18n::set_current(crate::i18n::Language::En);
+        let zoom = zoom.expect("zoom dropdown is registered");
+        let w = ctx.fonts_mut(|f| f.layout_no_wrap(label.to_string(), Tokens::ui(12.0), Color32::WHITE).size().x);
+        assert!(9.0 + w <= zoom[2] - 15.5, "label {label:?} ({w} pt) runs into the chevron of a {} pt dropdown", zoom[2]);
     }
 }
