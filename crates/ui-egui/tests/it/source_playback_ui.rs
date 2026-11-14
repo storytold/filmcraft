@@ -135,17 +135,39 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
 }
 
 #[test]
-fn stalled_source_audio_falls_back_to_wall_clock() {
+fn stalled_source_audio_falls_back_then_reopens_without_moving_program() {
     let mut app = app(11);
     app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: Arc::new(Mutex::new(None)), stalled: true }));
     let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
     h.step();
+    let project = h.state().session.project.to_json();
+    let program = h.state().session.playhead();
     h.state_mut().play_source().unwrap();
-    for _ in 0..16 {
+    for _ in 0..8 {
         h.step();
     }
     assert!(!h.state().source_playback.clock.audio_clock);
-    assert!(h.state().session.state.source_playhead.seconds() > 1.5);
+    assert!(h.state().session.state.source_playhead.seconds() > 0.5);
+
+    // The device can consume samples again. The pending timer must open it without pause/play.
+    let fill = Arc::new(Mutex::new(None));
+    h.state_mut().audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: fill.clone(), stalled: false }));
+    let mut previous = h.state().session.state.source_playhead;
+    for _ in 0..12 {
+        h.step();
+        let current = h.state().session.state.source_playhead;
+        assert!(current >= previous, "reopening must not rewind the Source playhead");
+        previous = current;
+        if h.state().source_playback.clock.audio_clock {
+            break;
+        }
+    }
+    assert!(h.state().source_playback.clock.audio_clock);
+    assert!(fill.lock().unwrap().is_some(), "the fresh output has a mixer callback");
+    h.step();
+    assert!(h.state().session.state.source_playhead > previous, "the new device clock advances Source playback");
+    assert_eq!(h.state().session.playhead(), program);
+    assert_eq!(h.state().session.project.to_json(), project);
     h.state_mut().stop_source();
 }
 

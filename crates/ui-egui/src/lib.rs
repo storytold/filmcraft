@@ -152,6 +152,8 @@ pub struct Playback {
     /// (monotonic host s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
     /// device keeps dropping is reopened on a timer (see [`AUDIO_RETRY_S`]).
     audio_retry_at: f64,
+    /// Consecutive automatic opens since the device last consumed samples.
+    audio_retry_attempts: u8,
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
