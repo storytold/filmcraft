@@ -172,7 +172,10 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
 }
 
 /// Menu / shortcut entry points. Returns None for ids this module doesn't handle.
-pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
+/// `dialogs`: whether a command sent without parameters may open its dialog (a menu, a shortcut,
+/// `ui.menu.invoke`); from `engine.execute` it may not (#1540), and the command goes on to the
+/// engine instead. The UI commands above the dialogs answer either way.
+pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value, dialogs: bool) -> Option<Result<Value, String>> {
     // New Item sends the bin it was clicked in (null = root); the Color Matte dialog takes it
     let carried = if id == "file.newColorMatte" { crate::panels::project::bin_only(params) } else { None };
     let empty = params.as_object().is_none_or(|m| m.is_empty()) || carried.is_some();
@@ -215,7 +218,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             }
             return Some(r);
         }
-        "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() => {
+        // the native pickers are dialogs too: not from `engine.execute` (#1540)
+        "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() && dialogs => {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
@@ -236,7 +240,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             }));
         }
         // Color Grading panel menu ▸ Export .cube…: ask where to save the grade, then export it
-        "lumetri.exportCube" if params.get("path").is_none() => {
+        "lumetri.exportCube" if params.get("path").is_none() && dialogs => {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
@@ -269,7 +273,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 r
             }));
         }
-        "file.mediaPropertiesFile" if params.get("path").is_none() => {
+        "file.mediaPropertiesFile" if params.get("path").is_none() && dialogs => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
             let id = id.to_string();
@@ -285,7 +289,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         _ => {}
     }
-    if !empty {
+    if !empty || !dialogs {
         return None;
     }
     let cmd = dialog_command(id)?;
