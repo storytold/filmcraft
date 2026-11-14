@@ -451,6 +451,28 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     assert!(!d.sent(&egui::ViewportCommand::CancelClose), "the confirmed quit goes through");
 }
 
+/// The Save changes? prompt is a modal like the Revert confirmation: it dims and blocks the app,
+/// so it cannot be mistaken for one of the other centred windows.
+#[test]
+fn the_save_prompt_is_a_modal_like_the_revert_confirmation() {
+    let mut d = Driver::new();
+    d.edit();
+    let modal_open = |d: &Driver| d.harness.ctx.memory(|m| m.top_modal_layer().is_some());
+    assert!(!modal_open(&d));
+    for (open, id) in [(0, "quit"), (1, "closeProject")] {
+        if open == 0 {
+            d.request_close();
+        } else {
+            d.menu("file.closeProject");
+        }
+        d.frames(2);
+        assert!(d.has(&format!("{id}.cancel")));
+        assert!(modal_open(&d), "the {id} prompt must be a modal");
+        d.click(&format!("{id}.cancel"));
+        assert!(!modal_open(&d), "Cancel closes the modal");
+    }
+}
+
 /// #1943: the macOS menu bar's Quit (Cmd+Q) sends `app.quit` to the command inbox; with unsaved
 /// changes that closes the window through the prompt instead of quitting outright.
 #[test]
