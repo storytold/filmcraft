@@ -406,22 +406,46 @@ impl PlanCache {
     fn insert(&mut self, k: FrameKey, p: GpuPlan) {
         self.clock += 1;
         let b = p.bytes();
-        self.bytes += b;
+        self.bytes = self.bytes.saturating_add(b);
         if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
-            self.bytes -= old;
+            self.bytes = self.bytes.saturating_sub(old);
         }
         if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
-            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
-            v.sort_unstable_by_key(|x| x.0);
-            for (_, k, b) in v {
-                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
-                    break;
+            let entries: Vec<(FrameKey, u64, usize)> = self.map.iter().map(|(key, v)| (*key, v.1, v.2)).collect();
+            for evicted in plan_evictions(&entries, Self::MAX, Self::BUDGET, k) {
+                if let Some((_, _, b)) = self.map.remove(&evicted) {
+                    self.bytes = self.bytes.saturating_sub(b);
                 }
-                self.map.remove(&k);
-                self.bytes -= b;
             }
         }
     }
+}
+
+/// Which plans `entries` (`key`, last use, bytes) a cache of `max_entries` entries and `budget`
+/// bytes has to drop: the least recently used first, never `keep` — the plan just inserted. Without
+/// that exception a plan larger than the whole budget (a 8K monitor, or many layers) evicted itself
+/// on every insert, so the next request re-planned the same frame again and again.
+fn plan_evictions(entries: &[(FrameKey, u64, usize)], max_entries: usize, budget: usize, keep: FrameKey) -> Vec<FrameKey> {
+    let mut live = entries.len();
+    let mut bytes = entries.iter().fold(0usize, |sum, e| sum.saturating_add(e.2));
+    if live <= max_entries && bytes <= budget {
+        return Vec::new();
+    }
+    let mut order: Vec<(u64, FrameKey, usize)> = entries.iter().map(|(key, used, b)| (*used, *key, *b)).collect();
+    order.sort_unstable_by_key(|x| x.0);
+    let mut dropped = Vec::new();
+    for (_, key, b) in order {
+        if live <= max_entries && bytes <= budget {
+            break;
+        }
+        if key == keep {
+            continue;
+        }
+        bytes = bytes.saturating_sub(b);
+        live = live.saturating_sub(1);
+        dropped.push(key);
+    }
+    dropped
 }
 
 struct Cache {
@@ -1235,7 +1259,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameKey, PlanCache, PlaybackMeter, Target, background_work, fitting_prefetch_depth, playback_plan, recent_keys};
+    use super::{FrameKey, PlanCache, PlaybackMeter, Target, background_work, fitting_prefetch_depth, plan_evictions, playback_plan, recent_keys};
     use filmcraft_project::ItemId;
 
     #[test]
@@ -1261,6 +1285,27 @@ mod tests {
         // Fast playback asks for more frames and is bounded the same way.
         assert_eq!(fitting_prefetch_depth(24, 4 << 20), 24);
         assert!(fitting_prefetch_depth(24, 62_208_000) < 24);
+    }
+
+    #[test]
+    fn the_plan_just_inserted_is_never_evicted() {
+        let key = |frame: i64| FrameKey { target: Target::Sequence(ItemId(1)), frame, size: 1000, revision: 0, draft: false };
+        let budget = PlanCache::BUDGET;
+        // A plan larger than the whole budget used to evict itself, so the same frame was planned
+        // again on every request: it keeps its entry and the others make room for it.
+        let huge = budget + 1;
+        assert_eq!(plan_evictions(&[(key(1), 1, 1 << 20), (key(2), 2, huge)], PlanCache::MAX, budget, key(2)), [key(1)]);
+        // Alone, nothing else is dropped and the cache simply stays over budget.
+        assert!(plan_evictions(&[(key(2), 2, huge)], PlanCache::MAX, budget, key(2)).is_empty());
+        // The next insert is not the kept plan, so the oversized one goes then (least recently used
+        // first, then the older plan), and the cache fits again.
+        let over = [(key(2), 2, huge), (key(3), 3, 1 << 20)];
+        assert_eq!(plan_evictions(&over, PlanCache::MAX, budget, key(3)), [key(2)]);
+        // The entry bound evicts the least recently used, oldest first, and never the new plan.
+        let many: Vec<(FrameKey, u64, usize)> = (0..PlanCache::MAX as i64 + 2).map(|f| (key(f), f as u64 + 1, 0)).collect();
+        assert_eq!(plan_evictions(&many, PlanCache::MAX, budget, key(PlanCache::MAX as i64 + 1)), [key(0), key(1)]);
+        // Nothing over either bound: nothing is dropped.
+        assert!(plan_evictions(&many[..3], PlanCache::MAX, budget, key(2)).is_empty());
     }
 
     #[test]
