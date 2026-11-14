@@ -44,6 +44,7 @@ pub mod fx;
 pub mod lut;
 pub mod mask;
 mod transition;
+mod wipe;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
@@ -89,6 +90,7 @@ pub struct GpuCompositor {
     /// with effects are then rendered on the CPU here).
     fx: Option<fx::FxStage>,
     transition: transition::PushStage,
+    wipe: wipe::WipeStage,
     transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
     pub gpu_transitions: u64,
     pub cpu_transitions: u64,
@@ -429,6 +431,7 @@ impl GpuCompositor {
             dummy,
             fx,
             transition: transition::PushStage::new(device),
+            wipe: wipe::WipeStage::new(device),
             transition_inputs: [None, None],
             gpu_transitions: 0,
             cpu_transitions: 0,
@@ -966,7 +969,7 @@ impl GpuCompositor {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             c.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None)
         };
-        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
+        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if !filmcraft_render::plan::gpu_transition_supported(&effect.effect))) {
             self.cpu_transitions += 1;
             return cpu(self);
         }
@@ -993,7 +996,7 @@ impl GpuCompositor {
                     let p = children.as_mut().and_then(Iterator::next);
                     self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false);
                 }
-                PlanStep::Transition { inputs, effect, progress, .. } => {
+                PlanStep::Transition { inputs, effect, progress, scale } => {
                     let mut views = [self.dummy.clone(), self.dummy.clone()];
                     for (index, layers) in inputs.iter().enumerate() {
                         let p = children.as_mut().and_then(Iterator::next);
@@ -1003,7 +1006,15 @@ impl GpuCompositor {
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
                         views[index] = view;
                     }
-                    self.transition.draw((&self.device, &self.queue), &canvas, [&views[0], &views[1]], dims, effect, *progress);
+                    if effect.effect == "push" {
+                        self.transition.draw((&self.device, &self.queue), &canvas, [&views[0], &views[1]], dims, effect, *progress);
+                    } else if !self.wipe.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress, *scale) {
+                        if let Some(f) = self.fx.as_mut() {
+                            f.end_frame();
+                        }
+                        self.cpu_transitions += 1;
+                        return cpu(self);
+                    }
                     transitions += 1;
                 }
                 PlanStep::Adjust { ops } => {

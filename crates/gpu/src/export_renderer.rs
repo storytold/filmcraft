@@ -542,8 +542,8 @@ mod tests {
         }
     }
 
-    /// Frames inside a Push transition (forward and reversed), which plans as a GPU composite,
-    /// export on the GPU and match the CPU; a transition it cannot draw stays a CPU frame.
+    /// Frames inside Push and field-wipe transitions (forward and reversed), which plan as GPU
+    /// composites, export on the GPU and match the CPU; a transition it cannot draw stays a CPU frame.
     #[test]
     fn transition_frames_export_on_the_gpu() {
         let Some(mut r) = ExportRenderer::new() else {
@@ -580,7 +580,8 @@ mod tests {
             p.sequence_mut(seq).unwrap().video_tracks[0].items.push(it);
         }
         let opts = RenderOptions::default();
-        for (id, reverse) in [("push", false), ("push", true)] {
+        let cases = ["push", "linear_wipe", "iris_round", "clock_wipe", "barn_doors", "wipe"].into_iter().flat_map(|id| [(id, false), (id, true)]);
+        for (id, reverse) in cases {
             p.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
                 id: filmcraft_project::TransitionId(1),
                 effect: filmcraft_project::find_effect(id).unwrap().instance(),
