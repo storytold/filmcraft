@@ -314,6 +314,20 @@ fn preset_manager_search_favourite_save_apply() {
     {
         assert!(d.has(id), "{id}");
     }
+    let elements = d.ok("ui.elements", json!({"prefix": "presetManager."}));
+    let rect = |id: &str| {
+        let r = &elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"];
+        egui::Rect::from_min_size(
+            egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+            egui::vec2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+        )
+    };
+    let ids = ["presetManager.import", "presetManager.export", "presetManager.delete", "presetManager.ok", "presetManager.cancel"];
+    for pair in ids.windows(2) {
+        assert!(rect(pair[0]).right() <= rect(pair[1]).left(), "Preset Manager action order: {pair:?}");
+    }
+    let window = d.harness.ctx.memory(|m| m.area_rect(egui::Id::unique("preset-manager"))).unwrap();
+    assert!((window.right() - rect("presetManager.cancel").right()).abs() < 20.0, "Cancel must stay at the right edge");
     // search
     d.ok("ui.set", json!({"export": {"manager": {"query": "prores"}}}));
     d.frames(3);

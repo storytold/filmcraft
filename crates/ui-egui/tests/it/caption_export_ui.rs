@@ -279,6 +279,19 @@ fn caption_export_writes_the_caption_track_chosen_in_the_dialog() {
     *d.typed.lock().unwrap() = Some("second".into());
     d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt"}}));
     d.frames(3);
+    let elements = d.ok("ui.elements", json!({"prefix": "captionExport."}));
+    let rect = |id: &str| {
+        let e = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap();
+        let r = &e["rect"];
+        egui::Rect::from_min_size(
+            egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+            egui::vec2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+        )
+    };
+    let (track, ok, cancel) = (rect("captionExport.track"), rect("captionExport.ok"), rect("captionExport.cancel"));
+    assert!(track.bottom() < ok.top() && track.bottom() < cancel.top(), "track picker remains above the actions");
+    assert!(ok.right() <= cancel.left(), "Cancel remains rightmost");
+    d.shot("two-tracks-themed");
     d.ok("ui.click", json!({"id": "captionExport.track"}));
     d.frames(3);
     d.ok("ui.click", json!({"id": "captionExport.track.option.2"}));
