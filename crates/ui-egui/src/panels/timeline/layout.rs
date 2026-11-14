@@ -93,9 +93,17 @@ pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) 
 
 /// How far the Timeline reaches, in seconds: ten minutes past the end of the sequence. Premiere
 /// Pro's Timeline does the same (on a 6 s sequence its view stops with 00:10:06 at the right
-/// edge). The view cannot be scrolled past it and the scroll bar spans it.
+/// edge). The view cannot be scrolled past it.
 pub fn timeline_extent(sequence_seconds: f64) -> f64 {
     sequence_seconds.max(0.0) + 600.0
+}
+
+/// What the zoom scroll bar spans, in seconds, for a view `visible` seconds wide whose left edge
+/// is at `scroll`: the sequence with a little room after its end (the page-scroll margin), and the
+/// view wherever it reaches past that. A sequence zoomed to fit fills the bar instead of a quarter
+/// of it beside an empty ten minutes (#3518).
+pub fn scroll_bar_span(sequence_seconds: f64, scroll: f64, visible: f64) -> f64 {
+    (sequence_seconds.max(0.0) + visible * 0.05).max(scroll.max(0.0) + visible)
 }
 
 /// The least `pps` (points a second) the Timeline zooms out to: its whole extent fits a view

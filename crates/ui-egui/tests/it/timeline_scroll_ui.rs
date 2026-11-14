@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{max_scroll, scroll_bar_span, timeline_extent};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -310,9 +310,11 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let mut d = Driver::tall();
     let seconds = d.seconds();
     let track = d.rect("timeline.zoomBar.track");
-    let limit = max_scroll(seconds, d.rect("timeline.tracks")[2], 50.0);
+    let vis = track[2] as f64 / 400.0;
+    // the thumb's travel ends where the sequence's end is in view
+    let limit = scroll_bar_span(seconds, 0.0, vis) - vis;
     // at the start the thumb is at the left end of the bar, and wide enough to grab
-    d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
+    d.ok("ui.set", json!({"timeline": {"pps": 400.0, "scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
     assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
@@ -325,7 +327,7 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     assert!((moved[0] - thumb[0] - 300.0).abs() < 2.0, "the thumb went {} points for a 300 point drag", moved[0] - thumb[0]);
     let travel = (track[2] - thumb[2]) as f64;
     assert!((d.view().0 - 300.0 / travel * limit).abs() < limit * 0.01, "{}", d.view().0);
-    assert_eq!(d.view().1, 50.0, "a drag by the middle does not zoom");
+    assert_eq!(d.view().1, 400.0, "a drag by the middle does not zoom");
     // dragged past the right end it stops there: the view is at its limit
     let grab = moved[0] + moved[2] / 2.0;
     d.ok("ui.drag", json!({"from": {"x": grab, "y": y}, "to": {"x": track[0] + track[2] + 400.0, "y": y}, "steps": 10}));
@@ -356,13 +358,64 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    assert!(pps < 400.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+}
+
+/// The zoom scroll bar spans the sequence, not the ten minutes the view can go past its end: a
+/// three minute sequence zoomed to fit fills the bar instead of a quarter of it (#3518). Scrolled
+/// on past the end, the thumb stays at the right end and narrows, and drags back from there.
+#[test]
+fn the_scroll_bar_spans_the_sequence_not_the_room_after_it() {
+    let mut d = Driver::tall();
+    let (item, duration) = {
+        let it = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.first().expect("a clip");
+        (it.item.0, it.duration.0)
+    };
+    let three_minutes = 180 * 254_016_000_000_i64;
+    d.exec("timeline.place", json!({"item": item, "track": "V2", "time": three_minutes - duration, "sourceIn": 0, "duration": duration, "audio": false}));
+    d.frames(4);
+    let seconds = d.seconds();
+    assert!((seconds - 180.0).abs() < 0.1, "{seconds}");
+    d.ok("ui.menu.invoke", json!({"id": "view.zoomToSequence"}));
+    d.frames(4);
+    d.view();
+    let track = d.rect("timeline.zoomBar.track");
+    let y = track[1] + track[3] / 2.0;
+    let thumb = d.rect("timeline.zoomBar");
+    assert!((thumb[0] - track[0]).abs() < 0.5 && (thumb[2] - track[2]).abs() < 0.5, "zoomed to fit: {thumb:?} in {track:?}");
+    // zoomed in, the thumb's share of the bar is the share of the sequence in view
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 0.0}}));
+    d.frames(4);
+    let vis = track[2] as f64 / 50.0;
+    let thumb = d.rect("timeline.zoomBar");
+    let share = (thumb[2] / track[2]) as f64;
+    assert!((share - vis / scroll_bar_span(seconds, 0.0, vis)).abs() < 0.01, "{share} of the bar for {vis} s of {seconds} s");
+    // the wheel still goes on to ten minutes past the end, the thumb staying at the right end
+    let limit = max_scroll(seconds, d.rect("timeline.tracks")[2], 50.0);
+    d.wheel(0.2, 0.0, -1e7, json!({"command": true}));
+    assert!((d.view().0 - limit).abs() < 1e-6, "{} vs {limit}", d.view().0);
+    let past = d.rect("timeline.zoomBar");
+    assert!((past[0] + past[2] - (track[0] + track[2])).abs() < 0.5 && past[2] < thumb[2], "{past:?} was {thumb:?}");
+    // and the thumb dragged from there moves with the pointer, back to the start
+    let grab = past[0] + past[2] / 2.0;
+    d.press(grab, y);
+    d.move_to(grab - 100.0, y);
+    let moving = d.rect("timeline.zoomBar");
+    assert!((past[0] - moving[0] - 100.0).abs() < 2.0, "{moving:?} from {past:?}");
+    d.move_to(track[0] - 50.0, y);
+    d.release(track[0] - 50.0, y);
+    d.frames(3);
+    assert_eq!(d.view().0, 0.0);
+    assert!((d.rect("timeline.zoomBar")[0] - track[0]).abs() < 0.5);
+    // an empty sequence: the whole bar
+    assert_eq!(scroll_bar_span(0.0, 0.0, 20.0), 20.0);
+    assert!(scroll_bar_span(f64::NAN, f64::NAN, 20.0).is_finite());
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
 /// thumb (x, y, width, height), the track, and the y of the bar's middle.
 fn zoom_bar_at_start(d: &mut Driver) -> ([f32; 4], [f32; 4], f32) {
-    d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
+    d.ok("ui.set", json!({"timeline": {"pps": 400.0, "scroll": 0.0}}));
     d.frames(3);
     let (thumb, track) = (d.rect("timeline.zoomBar"), d.rect("timeline.zoomBar.track"));
     (thumb, track, thumb[1] + thumb[3] / 2.0)

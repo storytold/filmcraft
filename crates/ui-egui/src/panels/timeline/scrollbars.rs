@@ -1,4 +1,4 @@
-use super::layout::{min_pps, timeline_extent};
+use super::layout::{min_pps, scroll_bar_span};
 use super::{Drag, FilmcraftApp, Rect, Sense, Stroke, Tokens, pos2, vec2};
 use crate::widgets::ZoomThumbPart;
 
@@ -7,12 +7,11 @@ use crate::widgets::ZoomThumbPart;
 const MIN_THUMB_W: f32 = 34.0;
 
 /// Where the zoom scroll bar's thumb is: (left edge, width, seconds of scroll per point of thumb
-/// travel). The thumb is as wide as the share of the Timeline in view (never narrower than
-/// [`MIN_THUMB_W`]) and its travel covers the whole scroll range, so it reaches both ends of the
-/// bar and moves with the pointer when dragged.
-fn zoom_thumb(bar: Rect, seq_seconds: f64, scroll: f64, pps: f64) -> (f32, f32, f64) {
-    let vis = bar.width() as f64 / pps.max(1e-9);
-    let total = timeline_extent(seq_seconds).max(vis);
+/// travel), for a view `vis` seconds wide on a bar that spans `total` seconds. The thumb is as
+/// wide as the share of the span in view (never narrower than [`MIN_THUMB_W`]) and its travel
+/// covers the span, so it reaches both ends of the bar and moves with the pointer when dragged.
+fn zoom_thumb(bar: Rect, total: f64, vis: f64, scroll: f64) -> (f32, f32, f64) {
+    let total = total.max(vis);
     let w = ((vis / total) as f32 * bar.width()).clamp(MIN_THUMB_W.min(bar.width()), bar.width());
     let travel = (bar.width() - w).max(0.0);
     let range = (total - vis).max(0.0);
@@ -26,9 +25,15 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     let p = ui.painter();
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
     let v = &mut app.ui.timeline;
-    let vis = bar.width() as f64 / v.pps;
-    let total = timeline_extent(seq_seconds).max(vis);
-    let (left, w, per_point) = zoom_thumb(bar, seq_seconds, v.scroll, v.pps);
+    let vis = bar.width() as f64 / v.pps.max(1e-9);
+    // a thumb dragged out of the room past the end keeps the span it was grabbed with, so it
+    // stays under the pointer
+    let from = match app.tl.drag {
+        Some(Drag::ZoomBar { start, mode: 0, .. }) => start,
+        _ => v.scroll,
+    };
+    let total = scroll_bar_span(seq_seconds, from, vis);
+    let (left, w, per_point) = zoom_thumb(bar, total, vis, v.scroll);
     let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
