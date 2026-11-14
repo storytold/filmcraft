@@ -109,6 +109,7 @@
 	Darkest	Tergelap
 	Delete Render Files	Hapus Berkas Render
 	Delete Render Files In to Out	Hapus Berkas Render dari Masuk ke Keluar
+	Delete Work Area Render Files	Hapus Berkas Render Area Kerja
 	Delete Tracks…	Hapus Trek…
 	Delete Transcript	Hapus Transkrip
 	Demo Footage	Rekaman Demo
@@ -280,6 +281,8 @@
 	Rename…	Ganti Nama…
 	Render Audio	Render Audio
 	Render Effects In to Out	Render Efek dari Masuk ke Keluar
+	Render Effects in Work Area	Render Efek di Area Kerja
+	Render Entire Work Area	Render Seluruh Area Kerja
 	Render In to Out	Render dari Masuk ke Keluar
 	Render Selection	Render Pilihan
 	Replace Fonts in Projects…	Ganti Font di Proyek…
@@ -3611,6 +3614,9 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Hapus file pratinjau yang tumpang tindih dengan area kerja?
 	Temporal Interpolation	Interpolasi Temporal
 	Select items to clear	Pilih item yang akan dihapus
 	A range marker needs a positive duration	Penanda rentang memerlukan durasi positif
