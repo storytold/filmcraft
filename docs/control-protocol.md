@@ -165,6 +165,27 @@ Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Trim limits**: a trim or roll stops where a clip's media ends, at a neighbouring clip, before a
+clip gets shorter than a frame, and where a linked clip has to stop. The result says how far it
+went. `timeline.trim` and `timeline.roll` return the `delta` they applied. `trim.nudge` and
+`trim.extendToPlayhead` return the `applied` delta of each edit point. `trim.extendPreviousEdit` and
+`trim.extendNextEdit` return `edits`, the number of edit points they found (one per targeted track
+that has one), and `applied`, how far each of them moved (0 when it could not). Each one also
+returns `short`: one `{clip, edge, shortByFrames}` per clip edge whose media is what stopped the
+move, with the sequence frames of media missing before its In point (`edge: "in"`) or after its Out
+point (`"out"`) for the move asked. It is empty when the move went all the way, or when something
+other than the media stopped it.
+
+**Transitions without media**: a transition plays the clips it joins past the cut, into their
+handles: the outgoing clip after its Out point, the incoming one before its In point. Where a
+clip has no media there, the picture repeats its last or first frame and the sound is silent. The
+transition is applied as asked (Premiere does the same, with a warning about insufficient media).
+`sequence.applyVideoTransition`, `sequence.applyAudioTransition`,
+`sequence.applyDefaultTransitionsToSelection`, `trim.applyDefaultTransition` and
+`sequence.setTransition` return `short`: one `{clip, edge, shortByFrames}` per clip edge with no
+media under part of the transition, with the sequence frames it lacks. It is empty when both clips
+have the media.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now

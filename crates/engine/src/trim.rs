@@ -215,11 +215,11 @@ pub fn toggle_type(s: &mut Session) -> Result<Value> {
 /// Trim every selected edit point by `delta` (edit point movement; positive = later).
 fn trim_all(s: &mut Session, delta: Tick) -> Result<Value> {
     let n0 = s.history.undo.len();
-    let applied = trim_all_raw(s, &|_, _| Some(delta))?;
+    let (applied, short) = trim_all_raw(s, &|_, _| Some(delta))?;
     crate::clip_ops::collapse_history(s, n0, "Trim by Frames");
     let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
     add_shift(s, first);
-    Ok(json!({"applied": applied}))
+    Ok(json!({"applied": applied, "short": short}))
 }
 
 /// Add an applied movement of the primary edit point to the Trim Monitor's shift counters.
@@ -241,12 +241,14 @@ fn reset_shift(s: &mut Session) {
 }
 
 /// Trim every selected edit point; `delta_for` gives each point's own movement, read from the sequence as it is when that point is reached.
-fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Option<Tick>) -> Result<Vec<Value>> {
+/// Returns the movement applied at each point, and the clip edges whose media stopped it short (`short` of each trim or roll).
+fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Option<Tick>) -> Result<(Vec<Value>, Vec<Value>)> {
     if s.state.edit_points.is_empty() {
         return Err(EngineError::Other("no edit points selected".into()));
     }
     let pts = s.state.edit_points.clone();
     let mut applied = Vec::new();
+    let mut short = Vec::new();
     let mut edited = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -274,8 +276,9 @@ fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Op
         let r = r?;
         edited.extend(group);
         applied.push(r.get("delta").cloned().unwrap_or(Value::Null));
+        short.extend(r.get("short").and_then(Value::as_array).into_iter().flatten().cloned());
     }
-    Ok(applied)
+    Ok((applied, short))
 }
 
 /// `trim.nudge {frames}`: Trim Forward/Backward (±1), Many (±5 by default).
@@ -289,11 +292,11 @@ pub fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn extend_to_playhead(s: &mut Session) -> Result<Value> {
     let ph = s.playhead();
     let n0 = s.history.undo.len();
-    let applied = trim_all_raw(s, &|seq, e| edit_time(seq, e).map(|t| ph - t))?;
+    let (applied, short) = trim_all_raw(s, &|seq, e| edit_time(seq, e).map(|t| ph - t))?;
     crate::clip_ops::collapse_history(s, n0, "Extend Edit to Playhead");
     let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
     add_shift(s, first);
-    Ok(json!({"applied": applied}))
+    Ok(json!({"applied": applied, "short": short}))
 }
 
 /// `trim.toPlayhead {side: "previous"|"next", ripple}` (Q/W, ⌥Q/⌥W): remove the material between
@@ -405,6 +408,7 @@ pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
     let pts = s.state.edit_points.clone();
     let n0 = s.history.undo.len();
     let mut ids = Vec::new();
+    let mut short = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
         let Some((tid, _)) = seq.find_item(ep.clip) else { continue };
@@ -412,13 +416,14 @@ pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
         let cmd = if video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
         if let Ok(r) = s.execute(cmd, json!({"clip": ep.clip.0, "edge": if ep.out { "out" } else { "in" }})) {
             ids.push(r["transition"].clone());
+            short.extend(r.get("short").and_then(Value::as_array).into_iter().flatten().cloned());
         }
     }
     if ids.is_empty() {
         return Err(EngineError::Other("no transition could be applied at the selected edit points".into()));
     }
     crate::clip_ops::collapse_history(s, n0, "Apply Default Transitions");
-    Ok(json!({"transitions": ids}))
+    Ok(json!({"transitions": ids, "short": short}))
 }
 
 // ------------------------------------------------------------------ dynamic trimming
@@ -569,9 +574,9 @@ fn apply_dynamic(s: &mut Session, offset: Tick) -> Result<Tick> {
     let redo = std::mem::take(&mut s.history.redo);
     s.history.limit = usize::MAX;
     s.project = d.before.clone();
-    let r = if offset == Tick::ZERO { Ok(vec![json!(0)]) } else { trim_all_raw(s, &|_, _| Some(offset)) };
+    let r = if offset == Tick::ZERO { Ok((vec![json!(0)], Vec::new())) } else { trim_all_raw(s, &|_, _| Some(offset)) };
     let applied = match r {
-        Ok(a) => a.first().and_then(Value::as_i64).map(Tick).unwrap_or_default(),
+        Ok((a, _)) => a.first().and_then(Value::as_i64).map(Tick).unwrap_or_default(),
         Err(_) => {
             // refused outright (e.g. it would break sync): stay where we were
             s.project = d.before.clone();

@@ -188,6 +188,7 @@ fn clip_edges(q: &Sequence, clips: &[ClipId]) -> Vec<(TrackKind, ClipId, &'stati
 fn apply_at_edges(s: &mut Session, edges: Vec<(TrackKind, ClipId, &'static str)>, settings: &Value, label: &str) -> Result<Value> {
     let n0 = s.history.undo.len();
     let mut ids = Vec::new();
+    let mut short = Vec::new();
     let mut errors = Vec::new();
     for (kind, clip, edge) in edges {
         let cmd = if kind == TrackKind::Video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
@@ -195,7 +196,10 @@ fn apply_at_edges(s: &mut Session, edges: Vec<(TrackKind, ClipId, &'static str)>
         args.insert("clip".into(), json!(clip.0));
         args.insert("edge".into(), json!(edge));
         match s.execute(cmd, Value::Object(args)) {
-            Ok(r) => ids.push(r["transition"].clone()),
+            Ok(r) => {
+                ids.push(r["transition"].clone());
+                short.extend(r.get("short").and_then(Value::as_array).into_iter().flatten().cloned());
+            }
             Err(e) => errors.push(e.to_string()),
         }
     }
@@ -203,7 +207,7 @@ fn apply_at_edges(s: &mut Session, edges: Vec<(TrackKind, ClipId, &'static str)>
     if ids.is_empty() {
         return Err(EngineError::Other(errors.into_iter().next().unwrap_or_else(|| "no transition could be applied to the selection".into())));
     }
-    Ok(json!({"transitions": ids}))
+    Ok(json!({"transitions": ids, "short": short}))
 }
 
 // ---------------------------------------------------------------------------------------------
