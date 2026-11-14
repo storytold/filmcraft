@@ -19,6 +19,9 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Cs => Some(include_str!("cs.tsv")),
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
+        Language::Nl => Some(include_str!("nl.tsv")),
+        Language::Da => Some(include_str!("da.tsv")),
+        Language::Fi => Some(include_str!("fi.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
     }
 }
@@ -95,6 +98,9 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Cs, "Čeština"),
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
+        (Language::Nl, "Nederlands"),
+        (Language::Da, "Dansk"),
+        (Language::Fi, "Suomi"),
         (Language::Tr, "Türkçe"),
     ] {
         assert_eq!(l.name(), name);
@@ -619,8 +625,8 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for tag in ["sv", "SV", "sv-SE", "sv-FI", "sv-AX", "sv_SE.UTF-8", "sv_FI.UTF-8@euro", "sv_SE"] {
         assert_eq!(l(&[tag]), Language::Sv, "{tag}");
     }
-    assert_eq!(l(&["fi-FI", "sv-FI", "en"]), Language::Sv, "Finnish has no catalog");
-    for none in [&["swe"][..], &["s"], &["-sv"], &["da"], &["nb-NO"], &["nn"], &["no"]] {
+    assert_eq!(l(&["fi-FI", "sv-FI", "en"]), Language::Fi, "the first known language wins");
+    for none in [&["swe"][..], &["s"], &["-sv"], &["nb-NO"], &["nn"], &["no"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
@@ -629,12 +635,12 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for none in [&["ita"][..], &["i"], &["-it"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
-    assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
+    assert_eq!(l(&["ro-RO", "hr", "es-MX", "ja"]), Language::Es, "the first one the interface has");
     assert_eq!(l(&["rm-CH", "de-CH", "fr-CH", "en"]), Language::De);
     assert_eq!(l(&["rm-CH", "fr-CH", "de-CH", "en"]), Language::Fr);
     assert_eq!(l(&["en-GB", "es"]), Language::En);
     assert_eq!(l(&["en-US", "de"]), Language::En);
-    for none in [&[][..], &["nl"], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"], &["fra"], &["f"], &["-fr"]] {
+    for none in [&[][..], &["C"], &["POSIX"], &[""], &["e"], &["esp"], &["-es"], &["deu"], &["d"], &["-de"], &["fra"], &["f"], &["-fr"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     assert_eq!(l(&[&"x".repeat(1 << 20), "es"]), Language::Es);
@@ -657,7 +663,7 @@ fn system_language_preference_uses_the_host_languages() {
     let count = asked.clone();
     app.hooks.system_languages = Some(Box::new(move || {
         count.set(count.get() + 1);
-        vec!["nl-NL".into(), "es-ES".into()]
+        vec!["ro-RO".into(), "es-ES".into()]
     }));
     app.apply_prefs(&ctx);
     assert_eq!(app.ui.language, Language::Es);

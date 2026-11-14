@@ -32,12 +32,15 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
     uic!("app.language.bosnian", "Bosanski", ["Edit", "Language"], None),
     uic!("app.language.czech", "Čeština", ["Edit", "Language"], None),
+    uic!("app.language.danish", "Dansk", ["Edit", "Language"], None),
     uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
     uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("app.language.french", "Français", ["Edit", "Language"], None),
     uic!("app.language.italian", "Italiano", ["Edit", "Language"], None),
+    uic!("app.language.dutch", "Nederlands", ["Edit", "Language"], None),
     uic!("app.language.polish", "Polski", ["Edit", "Language"], None),
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("app.language.finnish", "Suomi", ["Edit", "Language"], None),
     uic!("app.language.swedish", "Svenska", ["Edit", "Language"], None),
     uic!("app.language.turkish", "Türkçe", ["Edit", "Language"], None),
     uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
@@ -258,6 +261,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.polish"
             | "app.language.swedish"
             | "app.language.turkish"
+            | "app.language.dutch"
+            | "app.language.danish"
+            | "app.language.finnish"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -288,6 +294,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.polish" => crate::i18n::Language::Pl,
             "app.language.swedish" => crate::i18n::Language::Sv,
             "app.language.turkish" => crate::i18n::Language::Tr,
+            "app.language.dutch" => crate::i18n::Language::Nl,
+            "app.language.danish" => crate::i18n::Language::Da,
+            "app.language.finnish" => crate::i18n::Language::Fi,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -954,6 +963,9 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.dutch" => it.checked = Some(app.ui.language == crate::i18n::Language::Nl),
+            "app.language.danish" => it.checked = Some(app.ui.language == crate::i18n::Language::Da),
+            "app.language.finnish" => it.checked = Some(app.ui.language == crate::i18n::Language::Fi),
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {
