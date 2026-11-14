@@ -266,6 +266,20 @@ fn status(what: &str, s: NvStatus, enc: Handle, api: &Api) -> String {
     }
 }
 
+/// The `NV_ENC_BUFFER_FORMAT_*` a picture mapped from a registered GPU surface has to be encoded
+/// with: the session's own, unless the driver reports another one. The encoder's buffers, and the
+/// conversion it makes of them, were configured for `session`; a picture in another format would be
+/// read with the wrong layout, so such an input is refused (the caller then falls back to the RGBA
+/// readback). A driver that reports 0 (`NV_ENC_BUFFER_FORMAT_UNDEFINED`) has no opinion, and the
+/// session's format is the answer.
+#[cfg(any(target_os = "windows", test))]
+fn mapped_input_format(driver: u32, session: u32) -> Result<u32, String> {
+    if driver == 0 || driver == session {
+        return Ok(session);
+    }
+    Err(format!("the driver mapped the GPU input surface as buffer format {driver}, but this encoder was initialised for {session}"))
+}
+
 impl Session {
     /// Open a session on the system's NVIDIA GPU, or say why not.
     pub fn open() -> Result<Session, String> {
@@ -672,7 +686,7 @@ impl Session {
         let map_fn = self.api.list.nvEncMapInputResource.ok_or("no nvEncMapInputResource")?;
         // SAFETY: zeroed parameter block with its version; `registered` is a valid resource registered
         // with `self.enc` and protected by `surf` + `pool` lifetimes until `nvEncUnmapInputResource`.
-        let (mapped, fmt) = unsafe {
+        let (mapped, driver_fmt) = unsafe {
             let mut m: NV_ENC_MAP_INPUT_RESOURCE = std::mem::zeroed();
             m.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
             m.registeredResource = registered;
@@ -683,8 +697,21 @@ impl Session {
             if m.mappedResource.is_null() {
                 return Err("mapping a GPU input surface: the driver returned a null resource".into());
             }
-            let fmt = if m.mappedBufferFmt == 0 { self.fmt } else { m.mappedBufferFmt };
-            (m.mappedResource, fmt)
+            (m.mappedResource, m.mappedBufferFmt)
+        };
+        let fmt = match mapped_input_format(driver_fmt, self.fmt) {
+            Ok(fmt) => fmt,
+            Err(why) => {
+                // the driver's format is one this encoder cannot be handed the picture in: release
+                // the mapping (the caller falls back to the RGBA readback path)
+                if let Some(unmap) = self.api.list.nvEncUnmapInputResource {
+                    // SAFETY: `mapped` was just returned by `nvEncMapInputResource` on `self.enc`.
+                    unsafe {
+                        let _ = unmap(self.enc, mapped);
+                    }
+                }
+                return Err(why);
+            }
         };
         if let Some(slot_mut) = self.slots.get_mut(slot) {
             slot_mut.mapped_input = mapped;
@@ -1093,5 +1120,22 @@ mod win_gpu {
         };
         // SAFETY: `hal_tex` was just imported on `device` with matching `wgpu_desc`.
         Some(unsafe { device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(hal_tex, &wgpu_desc, wgpu::TextureUses::UNINITIALIZED) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mapped_gpu_input_takes_the_sessions_format() {
+        // the driver's answer agrees with the encoder (ABGR is what the zero-copy pool is registered in)
+        assert_eq!(mapped_input_format(NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_ABGR), Ok(NV_ENC_BUFFER_FORMAT_ABGR));
+        // 0 (undefined) is "no opinion": the session's format is used, as before
+        assert_eq!(mapped_input_format(0, NV_ENC_BUFFER_FORMAT_ABGR), Ok(NV_ENC_BUFFER_FORMAT_ABGR));
+        // a different format is refused instead of being handed to an ABGR encoder
+        let why = mapped_input_format(NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_ABGR).expect_err("NV12 input into an ABGR encoder must be refused");
+        assert!(why.contains(&NV_ENC_BUFFER_FORMAT_NV12.to_string()), "{why}");
+        assert!(why.contains(&NV_ENC_BUFFER_FORMAT_ABGR.to_string()), "{why}");
     }
 }
