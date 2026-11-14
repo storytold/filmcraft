@@ -43,6 +43,23 @@ pub struct AudioDevices {
     pub output_channels: u16,
 }
 
+/// One screen colour sampling session put on screen by the host (the system magnifier).
+pub struct ScreenSample {
+    poll: Box<dyn Fn() -> Option<Option<[u8; 3]>>>,
+}
+
+impl ScreenSample {
+    pub fn new(poll: impl Fn() -> Option<Option<[u8; 3]>> + 'static) -> Self {
+        Self { poll: Box::new(poll) }
+    }
+
+    /// `None` while the user is still choosing, `Some(None)` when they cancelled, `Some(Some(rgb))`
+    /// once a colour has been picked.
+    pub fn poll(&self) -> Option<Option<[u8; 3]>> {
+        (self.poll)()
+    }
+}
+
 /// Host hooks for native file dialogs etc.
 #[derive(Default)]
 pub struct HostHooks {
@@ -66,6 +83,10 @@ pub struct HostHooks {
     pub pick_open_file: Option<Box<dyn FnMut(&str, &[&str]) -> Option<String>>>,
     /// Folder picker (Link Media search, proxy and Project Manager destinations).
     pub pick_folder: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Brings up the operating system's colour magnifier for an armed eyedropper, so a colour can
+    /// be sampled from anywhere on screen. `None` where the host cannot sample the screen, and the
+    /// eyedropper then samples the Program picture.
+    pub screen_sampler: Option<Box<dyn Fn() -> Option<ScreenSample>>>,
     /// Folder picker starting at the current destination (Export Frame).
     pub pick_folder_at: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     /// Pick one file for a command that relinks to it (Link Media ▸ Locate…, Attach Proxies,

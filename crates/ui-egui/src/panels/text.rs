@@ -738,6 +738,13 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         let mut col = Color32::from_rgba_unmultiplied(st.color[0], st.color[1], st.color[2], st.color[3]);
         let resp = egui::color_picker::color_edit_button_srgba(ui, &mut col, egui::color_picker::Alpha::Opaque);
         app.auto.add("text.captions.style.color", resp.rect, "Text colour");
+        let target = crate::state::Eyedropper::Caption { track: tr.id.0, field: "color".into() };
+        let armed = app.ui.eyedropper.as_ref() == Some(&target);
+        let drop = crate::widgets::eyedropper::button(ui, &app.tokens, armed, tl!("Eyedropper (pick a color from the Program monitor)"));
+        app.auto.add("text.captions.style.color.eyedropper", drop.rect, "Eyedropper");
+        if drop.clicked() {
+            crate::widgets::eyedropper::toggle(&mut app.ui.eyedropper, target);
+        }
         if resp.changed() {
             let c = col.to_srgba_unmultiplied();
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "color": c})));
