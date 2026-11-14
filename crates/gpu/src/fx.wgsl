@@ -55,6 +55,7 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_THRESHOLD: u32 = 37u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -511,6 +512,10 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
             if ch == 0u || ch == 2u { o.y = 1.0 - e.y; }
             if ch == 0u || ch == 3u { o.z = 1.0 - e.z; }
             return dec(o + (e - o) * blend);
+        }
+        case OP_THRESHOLD: {
+            let e = enc(c);
+            return vec3(select(0.0, 1.0, 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z >= u.p0.x));
         }
         case OP_POSTERIZE: {
             let n = u.p0.x;

@@ -258,6 +258,7 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+/// Every built-in effect definition (video, audio and transitions), in catalogue order.
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
@@ -569,6 +570,7 @@ fn build_effects() -> Vec<EffectDef> {
             ],
         ),
         video("posterize", "Posterize", STYLIZE, vec![fs("levels", "Level", 7.0, (2.0, 255.0), (2.0, 32.0), "", 0)]),
+        video("threshold", "Threshold", STYLIZE, vec![fs("level", "Level", 128.0, (0.0, 255.0), (0.0, 255.0), "", 0)]),
         video(
             "mosaic",
             "Mosaic",
