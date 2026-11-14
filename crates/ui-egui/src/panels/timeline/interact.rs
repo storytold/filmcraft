@@ -499,13 +499,18 @@ fn start_drag(
             }
             None
         }
-        (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
-            EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
-        }),
+        (_, Grab::Edge { clip, edge, kind, .. }) => {
+            // Partners follow with Linked Selection on and Alt up. The commands take `linked` as
+            // an override of the toggle, so a drag says what it means either way.
+            let linked = !mods.alt && app.session.state.linked_selection;
+            Some(match kind {
+                EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked },
+                EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked },
+                EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
+                EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked },
+                EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
+            })
+        }
         (_, Grab::Volume { clip, .. }) if resp.drag_started() => crate::panels::timeline_volume::start(seq, layout, clip, p).map(Drag::Volume),
         (_, Grab::Volume { clip, .. }) => {
             crate::panels::timeline_volume::add_keyframe(app, seq, layout, clip, p.x);
