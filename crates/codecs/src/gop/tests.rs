@@ -1229,3 +1229,29 @@ fn low_configured_budget_is_not_enlarged_by_large_frame_reserve() {
     assert!(c.cache_budget(eight_mib) <= low_budget);
     assert_eq!(c.cache_budget(eight_mib), low_budget);
 }
+
+#[test]
+fn inherited_budget_tracks_global_updates_while_explicit_limit_is_preserved() {
+    struct RestoreGlobal(usize);
+    impl Drop for RestoreGlobal {
+        fn drop(&mut self) {
+            CACHE_BUDGET.store(self.0, Ordering::Relaxed);
+        }
+    }
+    let _guard = RestoreGlobal(CACHE_BUDGET.load(Ordering::Relaxed));
+
+    CACHE_BUDGET.store(64 << 20, Ordering::Relaxed);
+    let inherited = GopCache::new(None);
+    let mut explicit = GopCache::new(None);
+    explicit.budget = 32 << 20;
+
+    // Increase global budget: inherited cache tracks it (up to FRAME_CACHE_CEILING), explicit stays at 32 MiB.
+    CACHE_BUDGET.store(128 << 20, Ordering::Relaxed);
+    assert_eq!(inherited.cache_budget(4 << 20), 128 << 20);
+    assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
+
+    // Above FRAME_CACHE_CEILING: inherited cache is still capped at FRAME_CACHE_CEILING.
+    CACHE_BUDGET.store(FRAME_CACHE_CEILING * 2, Ordering::Relaxed);
+    assert_eq!(inherited.cache_budget(4 << 20), FRAME_CACHE_CEILING);
+    assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
+}

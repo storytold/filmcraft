@@ -556,6 +556,7 @@ pub struct GopCache {
     /// The container's clean aperture, cut from every frame before the rotation.
     crop: Option<Region>,
     budget: usize,
+    inherited_budget: usize,
 }
 
 /// The cache reserves room for this many small frames: a frame-threaded decoder runs up to ~2x
@@ -692,7 +693,8 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: CACHE_BUDGET.load(Ordering::Relaxed) }
+        let global = CACHE_BUDGET.load(Ordering::Relaxed);
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: global, inherited_budget: global }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -769,8 +771,7 @@ impl GopCache {
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
     fn cache_budget(&self, frame_bytes: usize) -> usize {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        let current = CACHE_BUDGET.load(Ordering::Relaxed);
-        let limit = if self.budget < current && self.budget != FRAME_CACHE_CEILING { self.budget } else { current };
+        let limit = if self.budget == self.inherited_budget { CACHE_BUDGET.load(Ordering::Relaxed) } else { self.budget };
         if limit == 0 { reserve } else { limit.min(FRAME_CACHE_CEILING) }
     }
 
