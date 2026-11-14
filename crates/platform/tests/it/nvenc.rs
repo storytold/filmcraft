@@ -67,6 +67,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
 
 #[test]
 fn the_stream_decodes_to_the_source() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (w, h) = (1280u32, 720u32);
     let Some((enc, packets, sources)) = encode_all(&config(w, h), 72) else { return };
     assert_eq!(packets.len(), 72, "one packet per picture");
