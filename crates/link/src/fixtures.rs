@@ -231,16 +231,21 @@ pub fn project_json(session: &Session) -> String {
 /// Write a `frames`-frame `w` x `h` 24 fps ProRes `.mov` of a demo scene to `path`: a real file the
 /// media pool can open, like the result movie EffectCraft writes.
 pub fn write_movie(path: &str, w: u32, h: u32, frames: i64) {
+    write_scene_movie(path, w, h, frames, filmcraft_media::DemoScene::Aurora);
+}
+
+/// [`write_movie`] of `scene`.
+pub fn write_scene_movie(path: &str, w: u32, h: u32, frames: i64, scene: filmcraft_media::DemoScene) {
     use std::sync::Arc;
 
     use filmcraft_engine::project::{ItemKind, MediaClip, MediaRef, SequenceSettings, TrackKind};
     use filmcraft_engine::time::TimeRange;
     use filmcraft_media::generators::GeneratorSource;
-    use filmcraft_media::{DemoScene, Generator, MediaSource};
+    use filmcraft_media::{Generator, MediaSource};
 
     let rate = FrameRate::FPS_24;
     let dur = rate.tick_of(frames);
-    let scene = Generator::Demo(DemoScene::Aurora);
+    let scene = Generator::Demo(scene);
     let src = GeneratorSource::new(scene.clone(), w, h, rate, dur);
     let clip = MediaClip {
         media: MediaRef::Generator(scene),

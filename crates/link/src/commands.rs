@@ -6,6 +6,9 @@
 //! | `plugin.craft.link.focus` | dynamic, owner `craft.link` | the wire method `link.focus` maps to it in `control.rs` |
 //! | `plugin.craft.link.unlink` | dynamic, owner `craft.link`, Clip menu | |
 //! | `plugin.craft.link.refresh` | dynamic, owner `craft.link` | the wire method `link.refresh` maps to it |
+//!
+//! `install` also sets the export hook ([`crate::stale::check_export`]): `file.exportMedia` refuses a
+//! linked clip whose EffectCraft result is older than its comp.
 
 use std::sync::Arc;
 
@@ -35,6 +38,7 @@ pub const REFRESH_ID: &str = "plugin.craft.link.refresh";
 pub fn install(session: &mut Session) {
     // The first call wins. A second install in one process keeps the first hook, which is the same function.
     let _ = filmcraft_engine::commands::set_link_edit_in(run_installed);
+    let _ = filmcraft_engine::export_tools::set_link_export_check(crate::stale::check_export);
     if let Err(err) = register(session) {
         session.log.push(Level::Error, "link", format!("Craft Link commands are not available: {err}"));
     }

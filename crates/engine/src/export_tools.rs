@@ -600,6 +600,28 @@ fn output_json(out: &mut Value, path: &str, files: Option<(String, String)>) {
     }
 }
 
+/// Checks the linked clips of an export range. `Err` names a clip whose EffectCraft result movie,
+/// which the export reads, is older than its comp.
+pub type LinkExportCheck = fn(&Session, ItemId, TimeRange) -> std::result::Result<(), String>;
+
+static LINK_EXPORT_CHECK: std::sync::OnceLock<LinkExportCheck> = std::sync::OnceLock::new();
+
+/// FilmCraft Link installs this. The first call wins. Without it nothing is checked.
+pub fn set_link_export_check(check: LinkExportCheck) -> bool {
+    LINK_EXPORT_CHECK.set(check).is_ok()
+}
+
+/// An export must not write an old EffectCraft result in silence, while the monitor shows the new
+/// comp. `allowStaleLink: true` exports the older result on purpose.
+fn check_linked_results(s: &Session, p: &Value, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<()> {
+    let Some(check) = LINK_EXPORT_CHECK.get() else { return Ok(()) };
+    if bool_p(p, "allowStaleLink").unwrap_or(false) {
+        return Ok(());
+    }
+    let range = filmcraft_export::export_range(project, seq, settings).map_err(|e| EngineError::Other(e.to_string()))?;
+    check(s, seq, range).map_err(EngineError::Other)
+}
+
 /// `file.exportMedia`: export the active (or `sequence`) sequence now.
 pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.exportMedia";
@@ -611,6 +633,7 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
     settings.range = range;
+    check_linked_results(s, p, &project, seq, &settings)?;
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
@@ -987,6 +1010,7 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, q.get("range"), &q, cmd)?;
     settings.range = range;
+    check_linked_results(s, &q, &project, seq, &settings)?;
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
@@ -1250,7 +1274,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.remove", "Remove Queued Export", r#"{"id":id}"#, always, queue_remove, true),
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
-        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?,"allowStaleLink":bool=false, …settings params}"#, has_seq, quick, true),
     ]
 }
 

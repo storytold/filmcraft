@@ -159,6 +159,9 @@ progress and stop it:
   warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
   also prints the warning on stderr and suggests `--range entire`; the warning does not change
   the exit status. Frame counts here use the sequence rate, even when the export rate differs.
+- A clip linked to EffectCraft exports its result movie. When EffectCraft has not rendered the result of
+  its latest edit yet, or that render failed, `file.exportMedia` and `export.quick` return an error that
+  names the clip ([craft-link.md](craft-link.md)). `allowStaleLink: true` exports the older result.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.

@@ -34,6 +34,10 @@ Choosing the command on a linked clip opens the existing link again instead of n
   the result movie.
 - **Refresh.** EffectCraft renders the result movie again after its comp changes, and FilmCraft picks up the
   new file.
+- **Export.** An export reads the result movie, not the live frames. While EffectCraft is still rendering
+  the result of an edit, or after that render failed, `file.exportMedia` and `export.quick` stop with an
+  error that names the clip. Export again when the new result is in, or pass `allowStaleLink: true` to
+  export the older result.
 
 ### Effects EffectCraft cannot import
 

@@ -151,6 +151,10 @@ pub struct ManagerConfig {
 struct Slot {
     state: LinkState,
     epoch: Arc<AtomicU64>,
+    /// Epoch of the newest result movie: the `link.attach` reply (the epoch EffectCraft stored with
+    /// its last result), then each `link.result`. Behind `epoch` while a result renders, and after a
+    /// render that failed (EffectCraft tries again only after the next edit).
+    result_epoch: u64,
     supply: Option<Arc<PeerFrames>>,
     generation: u64,
     retry_at: Option<Instant>,
@@ -158,7 +162,7 @@ struct Slot {
 
 impl Slot {
     fn new() -> Self {
-        Self { state: LinkState::Pending, epoch: Arc::new(AtomicU64::new(0)), supply: None, generation: 0, retry_at: None }
+        Self { state: LinkState::Pending, epoch: Arc::new(AtomicU64::new(0)), result_epoch: 0, supply: None, generation: 0, retry_at: None }
     }
 }
 
@@ -218,6 +222,17 @@ impl LinkManager {
 
     pub fn state(&self, link_id: &str) -> Option<LinkState> {
         lock(&self.shared.slots).get(link_id).map(|slot| slot.state.clone())
+    }
+
+    /// `Some((comp epoch, result epoch))` when the result movie of a Live link is older than its
+    /// comp: EffectCraft is still rendering it, or the render failed. `None` when the result is
+    /// current, and for a link that is not Live: without a peer there is no newer comp to know of,
+    /// and EffectCraft renders an owed result before it quits.
+    pub fn pending_result(&self, link_id: &str) -> Option<(u64, u64)> {
+        let slots = lock(&self.shared.slots);
+        let slot = slots.get(link_id).filter(|slot| slot.state.is_live())?;
+        let epoch = slot.epoch.load(Ordering::SeqCst);
+        (epoch > slot.result_epoch).then_some((epoch, slot.result_epoch))
     }
 
     /// Counts up each time any state or supply changes.
@@ -435,6 +450,7 @@ impl Runner {
                 let mut slots = lock(&self.shared.slots);
                 let slot = slots.entry(want.link_id.clone()).or_insert_with(Slot::new);
                 slot.epoch.fetch_max(epoch, Ordering::SeqCst);
+                slot.result_epoch = slot.result_epoch.max(epoch);
                 slot.supply = Some(Arc::new(supply));
                 slot.generation += 1;
                 slot.state = LinkState::Live;
@@ -471,6 +487,7 @@ impl Runner {
     fn read_events(&mut self) {
         let Some(conn) = self.connection.as_mut() else { return };
         let mut changed: BTreeMap<String, u64> = BTreeMap::new();
+        let mut results: BTreeMap<String, u64> = BTreeMap::new();
         let mut wait = SLICE;
         loop {
             match conn.client.next_event(Some(wait)) {
@@ -483,6 +500,10 @@ impl Runner {
                             {
                                 let newest = changed.entry(link_id.to_string()).or_insert(0);
                                 *newest = (*newest).max(epoch);
+                                if event.event == "link.result" {
+                                    let newest = results.entry(link_id.to_string()).or_insert(0);
+                                    *newest = (*newest).max(epoch);
+                                }
                             }
                         }
                         "app.closing" => {
@@ -496,6 +517,14 @@ impl Runner {
                 Err(_) => {
                     self.connection = None;
                     break;
+                }
+            }
+        }
+        if !results.is_empty() {
+            let mut slots = lock(&self.shared.slots);
+            for (link_id, epoch) in results {
+                if let Some(slot) = slots.get_mut(&link_id) {
+                    slot.result_epoch = slot.result_epoch.max(epoch);
                 }
             }
         }
@@ -823,7 +852,7 @@ mod tests {
     use filmcraft_media::FrameRequest as MediaFrameRequest;
 
     use super::*;
-    use crate::fixtures::{TempProject, linked_offline};
+    use crate::fixtures::{TempProject, linked_offline, write_scene_movie};
 
     /// 2x2 frames: premultiplied red 90, opaque, with the epoch the fake EffectCraft is at.
     struct Pixels {
@@ -1219,5 +1248,95 @@ mod tests {
         uninstall();
         assert!(self::manager().is_none(), "uninstall leaves no process manager for the next test to pump");
         let _ = std::fs::remove_file(&result);
+    }
+
+    /// The export reads the result movie, not the live frames. After an edit in EffectCraft and
+    /// before its new result lands, `file.exportMedia` refuses, names the clip, and exports the older
+    /// result only when asked to. Once `link.result` arrives it exports the new one.
+    #[test]
+    fn an_export_before_the_new_result_lands_is_refused_unless_the_old_result_is_asked_for() {
+        use filmcraft_engine::project::{SequenceSettings, TrackKind};
+        use filmcraft_engine::time::{Tick, TimeRange};
+        use filmcraft_media::DemoScene;
+
+        const LINK: &str = "44444444-4444-4444-8444-444444444444";
+        let _exclusive = exclusive();
+        let ec = FakeEc::start("stale", None);
+        let project = TempProject::new("stale");
+        let dir = std::path::Path::new(&project.path).parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = dir.join("result.mov").to_string_lossy().into_owned();
+        let (a, b) = (DemoScene::OceanSunset, DemoScene::Forest);
+        write_scene_movie(&result, 64, 36, 6, a);
+
+        let mut session = filmcraft_engine::Session::default();
+        let item = linked_offline(&mut session, LINK, &result);
+        assert!(crate::link_ops::bring_online(&mut session, item).unwrap().is_online(), "result A plays");
+        let rate = FrameRate::FPS_24;
+        let seq = session.project_mut().new_sequence("Edit", SequenceSettings { width: 64, height: 36, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let mut clip = session.project_mut().make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(6)), rate).unwrap();
+        clip.name = "Shot 1".to_string();
+        session.project_mut().sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+        session.state.active_sequence = Some(seq);
+        session.state.open_sequences = vec![seq];
+        crate::commands::install(&mut session);
+        let manager = install(config(&ec, FakeUi::new(true)));
+
+        let first_frame = |session: &filmcraft_engine::Session, path: &str| -> Vec<u8> {
+            let source = session.media.open_file(path, &*session.services).unwrap();
+            source.video_frame(MediaFrameRequest::full(Tick::ZERO)).unwrap().to_rgba8()
+        };
+        let distance = |x: &[u8], y: &[u8]| x.iter().zip(y).map(|(p, q)| u64::from(p.abs_diff(*q))).sum::<u64>();
+        let reference = |scene: DemoScene, name: &str| {
+            let path = dir.join(name).to_string_lossy().into_owned();
+            write_scene_movie(&path, 64, 36, 6, scene);
+            path
+        };
+        let (frame_a, frame_b) = (first_frame(&session, &reference(a, "a.mov")), first_frame(&session, &reference(b, "b.mov")));
+        assert!(distance(&frame_a, &frame_b) > 0, "the two results must differ");
+        let export = |session: &mut filmcraft_engine::Session, name: &str, allow: bool| {
+            let out = dir.join(name).to_string_lossy().into_owned();
+            let mut params = json!({"path": out, "format": "prores", "range": "entire", "wait": true});
+            if allow {
+                params["allowStaleLink"] = json!(true);
+            }
+            session.execute("file.exportMedia", params).map(|_| out)
+        };
+        let wait_for = |session: &mut filmcraft_engine::Session, what: &str, done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !done() {
+                pump(session);
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_for(&mut session, "the link to be Live", &|| manager.state(LINK).is_some_and(|state| state.is_live()));
+        assert_eq!(manager.pending_result(LINK), None, "the attach reply names the epoch of the stored result");
+
+        // EffectCraft edits the comp (B). Its result render has not landed yet.
+        ec.emit("link.changed", json!({"link_id": LINK, "epoch": 3}));
+        wait_for(&mut session, "the edit", &|| manager.pending_result(LINK) == Some((3, 2)));
+        let err = export(&mut session, "stale.mov", false).expect_err("an export of the old result must not pass in silence");
+        let text = err.to_string();
+        assert!(text.contains("\"Shot 1\"") && text.contains("allowStaleLink"), "{text}");
+        assert!(!dir.join("stale.mov").exists(), "nothing was written");
+
+        // Asked for, the older result (A) is exported.
+        let older = export(&mut session, "older.mov", true).expect("export the older result on purpose");
+        let got = first_frame(&session, &older);
+        assert!(distance(&got, &frame_a) < distance(&got, &frame_b), "the export with the flag holds result A");
+
+        // Result B lands: written over the path, then announced.
+        let part = dir.join("result.part.mov").to_string_lossy().into_owned();
+        write_scene_movie(&part, 64, 36, 6, b);
+        std::fs::rename(&part, &result).unwrap();
+        ec.emit("link.result", json!({"link_id": LINK, "epoch": 3, "path": result}));
+        wait_for(&mut session, "the new result", &|| manager.pending_result(LINK).is_none());
+        let fresh = export(&mut session, "fresh.mov", false).expect("the result is current");
+        let got = first_frame(&session, &fresh);
+        assert!(distance(&got, &frame_b) < distance(&got, &frame_a), "the export after link.result holds result B");
+
+        manager.stop();
+        uninstall();
     }
 }

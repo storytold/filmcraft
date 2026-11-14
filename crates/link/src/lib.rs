@@ -23,4 +23,5 @@ pub mod record;
 pub mod reopen;
 pub mod source;
 pub mod spawn;
+pub mod stale;
 pub mod ui;
