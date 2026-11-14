@@ -189,6 +189,157 @@ fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
     assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
 }
 
+/// Two queued exports to one file would overwrite each other: a later one is numbered while the
+/// earlier one is ready, encoding or done (in any letter case), and a generated name skips a file
+/// that exists. A cancelled item no longer holds its name.
+#[test]
+fn queue_add_numbers_an_output_another_queued_item_writes() {
+    let mut s = demo();
+    let dir = Scratch::new("queue-same-path");
+    let add = |s: &mut Session, start: f64| {
+        s.execute(
+            "export.queue.add",
+            json!({"path": dir.path("clip.wav"), "format": "wav", "range": "custom", "startSeconds": start, "endSeconds": start + 0.25}),
+        )
+        .unwrap()
+    };
+    let paths = |s: &mut Session| -> Vec<String> { queue(s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect() };
+    let first = add(&mut s, 0.0);
+    assert_eq!(first["warnings"], json!([]));
+    let second = add(&mut s, 1.0);
+    assert_eq!(second["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    add(&mut s, 2.0);
+    assert_eq!(paths(&mut s), [dir.path("clip.wav"), dir.path("clip_2.wav"), dir.path("clip_3.wav")]);
+    // a cancelled item frees its name
+    s.execute("export.queue.cancel", json!({"id": first["added"][0]})).unwrap();
+    let again = add(&mut s, 3.0);
+    assert_eq!(again["warnings"], json!([]));
+    assert_eq!(paths(&mut s)[3], dir.path("clip.wav"));
+    // retried, the cancelled item finds its name taken and is numbered
+    let retried = s.execute("export.queue.retry", json!({"id": first["added"][0]})).unwrap();
+    assert_eq!(retried["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    assert_eq!(paths(&mut s)[0], dir.path("clip_4.wav"));
+    s.execute("export.queue.cancel", json!({"id": first["added"][0]})).unwrap();
+    // the queue writes four separate files
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    for f in ["clip.wav", "clip_2.wav", "clip_3.wav"] {
+        assert!(Path::new(&dir.path(f)).exists(), "{f}");
+    }
+    assert_eq!(queue(&mut s).iter().filter(|i| i["status"] == "done").count(), 3);
+    // a finished item still holds its file, in any letter case
+    let after = add(&mut s, 4.0);
+    assert_eq!(after["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let upper = s
+        .execute("export.queue.add", json!({"path": dir.path("CLIP.WAV"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25}))
+        .unwrap();
+    assert_eq!(upper["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let n = queue(&mut s).len();
+    assert_eq!(paths(&mut s)[n - 2..], [dir.path("clip_4.wav"), dir.path("CLIP_5.WAV")]);
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    // a generated name skips a file that is there
+    std::fs::write(dir.path("take_2.wav"), b"keep").unwrap();
+    for start in [0.0, 1.0] {
+        s.execute(
+            "export.queue.add",
+            json!({"path": dir.path("take.wav"), "format": "wav", "range": "custom", "startSeconds": start, "endSeconds": start + 0.25}),
+        )
+        .unwrap();
+    }
+    assert_eq!(paths(&mut s), [dir.path("take.wav"), dir.path("take_3.wav")]);
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    assert_eq!(std::fs::read(dir.path("take_2.wav")).unwrap(), b"keep");
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    // several ranges in one add keep their own numbering
+    let many = s
+        .execute(
+            "export.queue.add",
+            json!({"path": dir.path("set.wav"), "format": "wav", "ranges": [{"startSeconds": 0, "endSeconds": 0.25}, {"startSeconds": 1, "endSeconds": 1.25}]}),
+        )
+        .unwrap();
+    assert_eq!(many["warnings"], json!([]));
+    assert_eq!(paths(&mut s), [dir.path("set.wav"), dir.path("set_2.wav")]);
+}
+
+/// A generated queue name also skips what the host holds (web files are not on disk) and, for an
+/// image sequence, the numbered stills its name would write.
+#[test]
+fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct HostFiles(Mutex<BTreeSet<String>>);
+    impl crate::Services for HostFiles {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            if self.0.lock().unwrap().contains(path) { Ok(b"keep".to_vec()) } else { Err(std::io::ErrorKind::NotFound.into()) }
+        }
+        fn write_file(&self, path: &str, _: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().insert(path.to_owned());
+            Ok(())
+        }
+        fn export_in_memory(&self) -> bool {
+            true
+        }
+        fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
+            Some(Ok(self.0.lock().unwrap().iter().cloned().collect()))
+        }
+    }
+    // names no file in the working directory has: the native file system is asked too
+    let name = |n: &str| format!("queue-host-{}{n}.wav", std::process::id());
+    let files = Arc::new(HostFiles::default());
+    files.0.lock().unwrap().insert(name("_2"));
+    let mut s = Session::new(files.clone());
+    s.execute("file.newSequence", json!({"name": "Host", "fps": 25, "width": 16, "height": 16, "video": 0, "audio": 1})).unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": name(""), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.2})).unwrap();
+    }
+    let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
+    assert_eq!(paths, [json!(name("")), json!(name("_3"))], "the host's _2 file is kept");
+    // a later still the host holds takes a generated image-sequence name too
+    let still = |n: &str| format!("queue-host-{}{n}.png", std::process::id());
+    files.0.lock().unwrap().insert(still("_2017"));
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": still(""), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1})).unwrap();
+    }
+    let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
+    assert_eq!(paths[2..], [json!(still("")), json!(still("_3"))], "the host's _2017 still is kept");
+
+    let mut s = demo();
+    let dir = Scratch::new("queue-still-names");
+    // `still_2.png` would start with still_2000.png, which is there
+    std::fs::write(dir.path("still_2000.png"), b"keep").unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": dir.path("still.png"), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1}))
+            .unwrap();
+    }
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("still.png"), dir.path("still_3.png")]);
+    // only a later still of a name is there (the first one was deleted): the name is still taken
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    std::fs::write(dir.path("shot_2017.png"), b"keep").unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": dir.path("shot.png"), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1})).unwrap();
+    }
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("shot.png"), dir.path("shot_3.png")]);
+    // still.png over 1001+ frames writes still0000.png, which a 1-frame still0.png writes too
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    let long =
+        s.execute("export.queue.add", json!({"path": dir.path("long.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1100})).unwrap();
+    assert_eq!(long["warnings"], json!([]));
+    let one =
+        s.execute("export.queue.add", json!({"path": dir.path("long0.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1})).unwrap();
+    assert_eq!(one["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let three =
+        s.execute("export.queue.add", json!({"path": dir.path("other0.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1})).unwrap();
+    assert_eq!(three["warnings"], json!([]), "a still no queued sequence writes");
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("long.png"), dir.path("long0_2.png"), dir.path("other0.png")]);
+    let frames =
+        s.execute("export.resolve", json!({"path": dir.path("long.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1100})).unwrap();
+    assert!(frames["frames"].as_u64().unwrap() > 1000, "the long one has 4-digit frame numbers: {}", frames["frames"]);
+}
+
 #[test]
 fn single_frame_in_out_exports_warn_without_changing_the_output() {
     let mut s = demo();
