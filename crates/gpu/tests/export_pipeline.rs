@@ -30,6 +30,18 @@ impl FrameRenderer for GpuFrameRenderer {
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
     }
+
+    fn plan_preparer(&self) -> Option<filmcraft_export::PlanPreparer> {
+        Some(self.0.plan_preparer())
+    }
+
+    fn render_planned(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Option<filmcraft_render::Image> {
+        self.0.render_planned(plan, prep)
+    }
+
+    fn render_planned_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_planned_rgba8(plan, prep)
+    }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and
@@ -172,4 +184,28 @@ fn gpu_export_matches_cpu_and_counts() {
     let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
     assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
     assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
+
+    // Verify SDR RGBA8 fast path with post-readback VideoLimiter matches CPU export parity
+    // and records 4 B/px readback instead of 8 B/px Rgba16Float + convert_ns.
+    let (p, seq, m) = project_with(256, 144, false);
+    let mut s_lim = ExportSettings { format: Format::PngSequence, path: base.join("lim-cpu").to_string_lossy().into_owned(), ..Default::default() };
+    s_lim.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    s_lim.effects.video_limiter.enabled = true;
+    s_lim.effects.video_limiter.min_percent = 10.0;
+    s_lim.effects.video_limiter.max_percent = 80.0;
+    s_lim.gpu_rendering = GpuRendering::Off;
+    export(&p, seq, &s_lim, &m, &Progress::default()).unwrap();
+
+    s_lim.path = base.join("lim-gpu").to_string_lossy().into_owned();
+    s_lim.gpu_rendering = GpuRendering::Auto;
+    let prev_convert = filmcraft_gpu::export_renderer::timing::get().convert;
+    let prev_readback = filmcraft_frame::transfers::snapshot().export_readback_bytes;
+    export(&p, seq, &s_lim, &m, &Progress::default()).unwrap();
+    let convert_delta = filmcraft_gpu::export_renderer::timing::get().convert - prev_convert;
+    let readback_delta = filmcraft_frame::transfers::snapshot().export_readback_bytes - prev_readback;
+    assert!(convert_delta.is_zero(), "RGBA8 fast path must skip f16->f32 CPU conversion: {convert_delta:?}");
+    assert_eq!(readback_delta, 2 * 256 * 144 * 4, "RGBA8 fast path must read 4 B/px");
+    for f in ["000", "001"] {
+        assert_parity(&png(base, "lim-cpu", &format!("img{f}.png")), &png(base, "lim-gpu", &format!("img{f}.png")), &format!("limiter RGBA8 frame {f}"));
+    }
 }

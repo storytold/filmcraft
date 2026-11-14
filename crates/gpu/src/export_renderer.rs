@@ -150,25 +150,79 @@ impl ExportRenderer {
         self.compositor.caps()
     }
 
-    /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
-    /// render size), or `None` when this frame must go to the CPU renderer.
-    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
-        match &plan {
+    /// Whether this renderer's device natively samples 16-bit normalized YUV planes (`R16Unorm`).
+    pub fn supports_r16_unorm(&self) -> bool {
+        self.compositor.supports_r16_unorm()
+    }
+
+    /// Thread-safe planner preparation callback matching this renderer's `R16Unorm` capability.
+    pub fn plan_preparer(&self) -> std::sync::Arc<dyn Fn(&FramePlan) -> Box<dyn std::any::Any + Send + Sync> + Send + Sync> {
+        let r16_unorm = self.compositor.supports_r16_unorm();
+        std::sync::Arc::new(move |plan: &FramePlan| Box::new(crate::prepare_for(plan, r16_unorm)))
+    }
+
+    /// Render a pre-planned and pre-prepared frame as linear premultiplied RGBA f32.
+    pub fn render_plan(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<Image> {
+        match plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
                     return None;
                 }
-                let prep = crate::prepare_for(&plan, self.compositor.supports_r16_unorm());
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let (w, h, px) = self.compositor.render_export_prepared(plan, prep)?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
+            }
+        }
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
+    pub fn render_plan_rgba8(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        match plan {
+            FramePlan::Image(img) => Some((img.w as u32, img.h as u32, img.over_black_rgba8())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let out = self.compositor.render_export_rgba8_prepared(plan, prep)?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some(out)
+            }
+        }
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan`] for `FrameRenderer` implementations.
+    pub fn render_planned(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<Image> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan_rgba8`] for `FrameRenderer` implementations.
+    pub fn render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan_rgba8(plan, prep)
+    }
+
+    /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
+    /// render size), or `None` when this frame must go to the CPU renderer.
+    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            FramePlan::Image(img) => Some(img.clone()),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = crate::prepare_for(&plan, self.compositor.supports_r16_unorm());
+                self.render_plan(&plan, Some(&prep))
             }
         }
     }

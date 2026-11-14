@@ -108,6 +108,9 @@ pub fn encoder_registered(f: EncoderFactory) -> bool {
     video_factories().read().unwrap_or_else(PoisonError::into_inner).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 
+/// Thread-safe planner preparation callback produced by [`FrameRenderer::plan_preparer`].
+pub type PlanPreparer = std::sync::Arc<dyn Fn(&filmcraft_render::plan::FramePlan) -> Box<dyn std::any::Any + Send + Sync> + Send + Sync>;
+
 /// Renders one export frame on something other than the CPU reference renderer — today the GPU
 /// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
 /// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
@@ -127,6 +130,25 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// Optional thread-safe texture preparer executed outside the renderer pool lock.
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        None
+    }
+
+    /// Render a pre-planned and pre-prepared frame as linear premultiplied RGBA f32.
+    fn render_planned(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<filmcraft_render::Image> {
+        None
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
+    fn render_planned_rgba8(
+        &mut self,
+        _plan: &filmcraft_render::plan::FramePlan,
+        _prep: Option<&dyn std::any::Any>,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

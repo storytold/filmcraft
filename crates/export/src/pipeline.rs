@@ -9,7 +9,7 @@ use std::sync::Arc;
 use filmcraft_geom::Vec2;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
-use filmcraft_time::FrameRate;
+use filmcraft_time::{FrameRate, Tick};
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
@@ -68,6 +68,8 @@ struct RendererPool {
     capacity: usize,
     /// What every renderer of the pool runs: a frame is planned for whichever one it gets.
     caps: filmcraft_render::plan::DeviceCaps,
+    /// Optional planner preparation run outside the renderer pool lock.
+    preparer: Option<crate::PlanPreparer>,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
@@ -78,13 +80,23 @@ impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
         let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+        let preparer = if renderers.iter().all(|r| r.plan_preparer().is_some()) {
+            renderers.first().and_then(|r| r.plan_preparer())
+        } else {
+            None
+        };
         Some(Self {
             capacity: renderers.len(),
             caps: filmcraft_render::plan::DeviceCaps { adjust_side },
+            preparer,
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    fn is_failed(&self) -> bool {
+        self.failed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Run `f` with a free renderer. Frame batches must respect `Pipeline::render_batch_limit`:
@@ -139,6 +151,7 @@ pub(crate) struct Pipeline {
     seq_rate: FrameRate,
     pub w: u32,
     pub h: u32,
+    render_size: (u32, u32),
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
@@ -196,10 +209,10 @@ impl Pipeline {
             let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("scaled picture height is too large".into()))?;
             filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
         }
-        let (w, h) = filmcraft_render::output_size(q, geom.render_scale);
-        let w = u32::try_from(w).map_err(|_| ExportError::Unsupported("rendered picture width is too large".into()))?;
-        let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("rendered picture height is too large".into()))?;
-        filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
+        let (rw, rh) = filmcraft_render::output_size(q, geom.render_scale);
+        let rw = u32::try_from(rw).map_err(|_| ExportError::Unsupported("rendered picture width is too large".into()))?;
+        let rh = u32::try_from(rh).map_err(|_| ExportError::Unsupported("rendered picture height is too large".into()))?;
+        filmcraft_project::validate_frame_size(rw, rh).map_err(ExportError::Unsupported)?;
         let pipe = q.settings.color;
         let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
         let opts = RenderOptions { scale: geom.render_scale, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
@@ -236,6 +249,7 @@ impl Pipeline {
             rate: r.rate,
             w: r.width,
             h: r.height,
+            render_size: (rw, rh),
             geom,
             opts,
             hdr_out,
@@ -244,6 +258,21 @@ impl Pipeline {
             effects,
             overlay,
         })
+    }
+
+    fn has_overlays(&self) -> bool {
+        self.overlay.is_some()
+            || (self.effects.name_overlay.enabled && !self.effects.name_overlay.text.trim().is_empty())
+            || self.effects.timecode_overlay.enabled
+    }
+
+    fn can_gpu_rgba8(&self) -> bool {
+        !self.hdr_out
+            && !self.alpha
+            && self.geom.offset == (0, 0)
+            && self.render_size == (self.w, self.h)
+            && self.geom.content.is_none_or(|(cw, ch)| cw == self.w as usize && ch == self.h as usize)
+            && !self.has_overlays()
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
@@ -256,7 +285,59 @@ impl Pipeline {
         // complex transition, HDR) does not take a pooled renderer: it would render on the CPU
         // inside the pool, as many frames at a time as there are renderers instead of one per
         // export thread.
-        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+        let pool = self
+            .renderer
+            .as_ref()
+            .filter(|pool| !pool.is_failed() && !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+        if let Some(pool) = pool
+            && let Some(preparer) = &pool.preparer
+        {
+            let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
+            if let filmcraft_render::plan::FramePlan::Image(img) = plan {
+                note_gpu_frame();
+                return self.finish_image(img, t);
+            }
+            let prep = (preparer)(&plan);
+            if self.can_gpu_rgba8() {
+                let asked = web_time::Instant::now();
+                let gpu = pool
+                    .with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.render_planned_rgba8(&plan, Some(prep.as_ref()))
+                    })
+                    .flatten();
+                if let Some((gw, gh, mut rgba)) = gpu
+                    && (gw, gh) == (self.w, self.h)
+                {
+                    note_gpu_frame();
+                    if self.effects.video_limiter.enabled {
+                        limit_rgba8(&mut rgba, self.effects.video_limiter.min_percent, self.effects.video_limiter.max_percent);
+                    }
+                    return (rgba, Vec::new());
+                }
+                note_gpu_fallback();
+                let img = filmcraft_render::plan::execute_cpu(&plan);
+                return self.finish_image(img, t);
+            }
+            let asked = web_time::Instant::now();
+            let gpu = pool
+                .with(|r| {
+                    crate::note_lock_wait(asked.elapsed());
+                    r.render_planned(&plan, Some(prep.as_ref()))
+                })
+                .flatten();
+            let img = match gpu {
+                Some(img) => {
+                    note_gpu_frame();
+                    img
+                }
+                None => {
+                    note_gpu_fallback();
+                    filmcraft_render::plan::execute_cpu(&plan)
+                }
+            };
+            return self.finish_image(img, t);
+        }
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
@@ -280,6 +361,10 @@ impl Pipeline {
                 filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
+        self.finish_image(img, t)
+    }
+
+    fn finish_image(&self, img: Image, t: Tick) -> (Vec<u8>, Vec<f32>) {
         let mut img = self.place(img);
         self.overlays(&mut img, t);
         let lim = &self.effects.video_limiter;

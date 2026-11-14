@@ -132,6 +132,7 @@ pub struct GpuCompositor {
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
+    output_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     upload_cache_bytes: u64,
     texture_pool: HashMap<(u32, u32, wgpu::TextureFormat), Vec<PooledTexture>>,
@@ -518,6 +519,7 @@ impl GpuCompositor {
             backdrop: None,
             output: None,
             accum_readback_buf: None,
+            output_readback_buf: None,
             uploads: HashMap::new(),
             upload_cache_bytes: 0,
             texture_pool: HashMap::new(),
@@ -1398,6 +1400,21 @@ impl GpuCompositor {
         self.map_accumulator(size)
     }
 
+    /// Export rendering fast path for SDR opaque outputs: resolve `plan` over black on the GPU
+    /// into `OUTPUT_FORMAT` (`Rgba8Unorm`) and read back sRGB-encoded RGBA8 bytes directly,
+    /// avoiding `Rgba16Float` readback and CPU half-float/sRGB conversion.
+    pub fn render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        let t = std::time::Instant::now();
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-rgba8") });
+        self.begin_frame();
+        self.record_plan(&mut enc, plan, prep, true, true);
+        self.end_frame();
+        let size = self.copy_output(&mut enc)?;
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        self.map_output(size)
+    }
+
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
@@ -1558,6 +1575,67 @@ impl GpuCompositor {
         self.accum_readback_buf = Some((buf, capacity));
         filmcraft_frame::transfers::record_export_readback(u64::from(w) * u64::from(h) * 8);
         export_renderer::timing::add_convert(t.elapsed());
+        Some((w, h, out))
+    }
+
+    /// Record a copy of `self.output` into a reusable RGBA8 staging buffer; returns `(w, h, row_bytes)`.
+    fn copy_output(&mut self, enc: &mut wgpu::CommandEncoder) -> Option<(u32, u32, u32)> {
+        let (_, _, (w, h)) = self.output.as_ref()?;
+        let (w, h) = (*w, *h);
+        let row = w.checked_mul(4)?.div_ceil(256).checked_mul(256)?;
+        let needed = u64::from(row).checked_mul(u64::from(h))?;
+        if self.output_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("output-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.output_readback_buf = Some((b, needed));
+        }
+        let (tex, _, _) = self.output.as_ref()?;
+        let (buf, _) = self.output_readback_buf.as_ref()?;
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        Some((w, h, row))
+    }
+
+    /// Map the RGBA8 staging buffer filled by [`copy_output`](Self::copy_output) into an sRGB RGBA8 buffer.
+    fn map_output(&mut self, (w, h, row): (u32, u32, u32)) -> Option<(u32, u32, Vec<u8>)> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        let (buf, capacity) = self.output_readback_buf.take()?;
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        wait_mapped(&self.device, &rx)?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+        let width_bytes = usize::try_from(w).ok()?.checked_mul(4)?;
+        let height = usize::try_from(h).ok()?;
+        let row_bytes = usize::try_from(row).ok()?;
+        let total = width_bytes.checked_mul(height)?;
+        let mut out = Vec::with_capacity(total);
+        let data = slice.get_mapped_range().ok()?;
+        if row_bytes == width_bytes {
+            out.extend_from_slice(data.get(..total)?);
+        } else {
+            for y in 0..height {
+                let start = y.checked_mul(row_bytes)?;
+                let end = start.checked_add(width_bytes)?;
+                out.extend_from_slice(data.get(start..end)?);
+            }
+        }
+        drop(data);
+        buf.unmap();
+        self.output_readback_buf = Some((buf, capacity));
+        filmcraft_frame::transfers::record_export_readback(u64::from(w) * u64::from(h) * 4);
         Some((w, h, out))
     }
 
