@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 
 use egui::{Modifiers, Pos2, Rect, pos2, vec2};
 use filmcraft_edit::Edge;
+use filmcraft_engine::EditorState;
 use filmcraft_project::{ClipId, Sequence, Track, TrackId, TransitionId};
 use filmcraft_time::Tick;
 
@@ -91,22 +92,24 @@ pub fn marker_range_rect(layout: &Layout, marker: &filmcraft_project::Marker) ->
     })
 }
 
-/// The topmost marker under the pointer, including its range band. Preserve its id when opening
-/// a context menu: several markers can share a start, and the playhead can move while it is open.
-pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -> Option<&'a filmcraft_project::Marker> {
+/// The topmost marker under the pointer, including its range band; one the colour filter hides
+/// isn't there. Preserve its id when opening a context menu: several markers can share a start,
+/// and the playhead can move while it is open.
+pub fn marker_under_pointer<'a>(seq: &'a Sequence, state: &EditorState, layout: &Layout, pos: Pos2) -> Option<&'a filmcraft_project::Marker> {
     if !layout.ruler.contains(pos) {
         return None;
     }
     seq.markers.iter().rev().find(|m| {
-        marker_rect(layout, m.start).contains(pos)
-            || marker_end_rect(layout, m).is_some_and(|r| r.contains(pos))
-            || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos))
+        state.marker_shown(m)
+            && (marker_rect(layout, m.start).contains(pos)
+                || marker_end_rect(layout, m).is_some_and(|r| r.contains(pos))
+                || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos)))
     })
 }
 
 /// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
-pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
-    marker_under_pointer(seq, layout, pos).map(|m| m.start)
+pub fn marker_at(seq: &Sequence, state: &EditorState, layout: &Layout, pos: Pos2) -> Option<Tick> {
+    marker_under_pointer(seq, state, layout, pos).map(|m| m.start)
 }
 
 /// Where the Timeline ruler draws (and hit-tests) the work area bar, between the markers row and
@@ -485,6 +488,7 @@ pub(crate) mod tests {
     #[test]
     fn a_press_on_a_marker_lands_on_its_start() {
         let (mut seq, l, _) = fixture(clips());
+        let mut state = EditorState::default();
         let off = Tick::from_seconds_f64(3.017);
         seq.markers.push(filmcraft_project::Marker {
             url: String::new(),
@@ -499,14 +503,18 @@ pub(crate) mod tests {
             color: Label::Green,
         });
         // 3 px beside the pentagon's tip, where the nearest frame is not the marker's time
-        assert_eq!(marker_at(&seq, &l, pos2(304.7, 10.0)), Some(off));
-        assert_eq!(marker_at(&seq, &l, pos2(310.0, 10.0)), None);
-        assert_eq!(marker_at(&seq, &l, pos2(301.7, 30.0)), None);
-        assert_eq!(marker_at(&seq, &l, pos2(f32::NAN, 10.0)), None);
+        assert_eq!(marker_at(&seq, &state, &l, pos2(304.7, 10.0)), Some(off));
+        assert_eq!(marker_at(&seq, &state, &l, pos2(310.0, 10.0)), None);
+        assert_eq!(marker_at(&seq, &state, &l, pos2(301.7, 30.0)), None);
+        assert_eq!(marker_at(&seq, &state, &l, pos2(f32::NAN, 10.0)), None);
+        // a colour hidden in the Markers panel can't be pressed either (#4325)
+        state.hidden_marker_colors.push(Label::Green);
+        assert_eq!(marker_at(&seq, &state, &l, pos2(304.7, 10.0)), None);
     }
 
     #[test]
     fn range_bands_hit_the_last_drawn_marker_and_stay_on_the_ruler() {
+        let state = EditorState::default();
         let (mut seq, layout, _) = fixture(clips());
         for id in [9, 10] {
             seq.markers.push(filmcraft_project::Marker {
@@ -524,18 +532,18 @@ pub(crate) mod tests {
         }
         let band = marker_range_rect(&layout, &seq.markers[1]).unwrap();
         let at = band.center();
-        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 10);
-        assert_eq!(marker_at(&seq, &layout, at), Some(seq.markers[1].start));
+        assert_eq!(marker_under_pointer(&seq, &state, &layout, at).unwrap().id.0, 10);
+        assert_eq!(marker_at(&seq, &state, &layout, at), Some(seq.markers[1].start));
         let end = marker_end_rect(&layout, &seq.markers[1]).unwrap();
         let cap = pos2(end.center().x + 3.0, end.bottom() - 2.0);
         assert!(!band.contains(cap));
-        assert_eq!(marker_under_pointer(&seq, &layout, cap).unwrap().id.0, 10, "the end flag outside the range band belongs to the same marker");
-        assert!(marker_under_pointer(&seq, &layout, at + vec2(0.0, 20.0)).is_none());
-        assert!(marker_under_pointer(&seq, &layout, pos2(f32::NAN, at.y)).is_none());
+        assert_eq!(marker_under_pointer(&seq, &state, &layout, cap).unwrap().id.0, 10, "the end flag outside the range band belongs to the same marker");
+        assert!(marker_under_pointer(&seq, &state, &layout, at + vec2(0.0, 20.0)).is_none());
+        assert!(marker_under_pointer(&seq, &state, &layout, pos2(f32::NAN, at.y)).is_none());
         seq.markers[1].duration = Tick(-1);
         assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
         assert!(marker_end_rect(&layout, &seq.markers[1]).is_none());
-        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
+        assert_eq!(marker_under_pointer(&seq, &state, &layout, at).unwrap().id.0, 9);
     }
 
     #[test]

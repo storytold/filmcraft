@@ -1467,6 +1467,54 @@ fn markers_panel_colour_filter() {
     assert_eq!(d.ids("markers.row.").len(), 2);
 }
 
+/// #4325: the Markers panel's colour filter reaches the Timeline and the monitors, as in Premiere:
+/// a hidden marker is neither drawn nor clickable there and snapping ignores it, until a marker is
+/// added in its colour.
+#[test]
+fn hidden_marker_colours_leave_the_timeline_and_the_monitors() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let green = d.exec("markers.add", json!({"frame": 100, "name": "green"}))["marker"].as_u64().unwrap();
+    let red = d.exec("markers.add", json!({"frame": 200, "name": "red", "color": "Rose"}))["marker"].as_u64().unwrap();
+    d.exec("source.open", json!({"item": 5}));
+    let cue = d.exec("markers.add", json!({"target": "source", "name": "cue", "color": "Rose"}))["marker"].as_u64().unwrap();
+    d.ok("ui.panel.show", json!({"panel": "Markers"}));
+    d.frames(4);
+    let (timeline, program, source) = (format!("timeline.marker.{red}"), format!("program.marker.{red}"), format!("source.marker.{cue}"));
+    assert!(d.ids("timeline.marker.").contains(&timeline));
+    assert!(d.ids("program.marker.").contains(&program));
+    assert!(d.ids("source.marker.").contains(&source));
+
+    let flag = d.ok("ui.elements", json!({"prefix": timeline.clone()}))[0]["rect"].clone();
+    let (x, y) = (flag[0].as_f64().unwrap() + flag[2].as_f64().unwrap() / 2.0, flag[1].as_f64().unwrap() + flag[3].as_f64().unwrap() / 2.0);
+    let time = d.app().session.sequence_rate().tick_of(200);
+    // Shift-dragging the playhead along the ruler, to just beside the flag
+    let drag = |d: &mut Driver| {
+        d.ok("ui.drag", json!({"from": {"x": x + 60.0, "y": y}, "to": {"x": x + 2.0, "y": y}, "modifiers": {"shift": true}}));
+        d.frames(4);
+        d.app().session.playhead()
+    };
+    assert_eq!(drag(&mut d), time, "a shown marker snaps");
+    d.snapshot("marker-filter-shown", "");
+
+    d.click("markers.filter.Rose");
+    d.frames(3);
+    d.snapshot("marker-filter-hidden", "");
+    assert!(!d.ids("timeline.marker.").contains(&timeline), "not on the Timeline");
+    assert!(!d.ids("program.marker.").contains(&program), "not in the Program monitor");
+    assert!(!d.ids("source.marker.").contains(&source), "not in the Source monitor");
+    assert!(d.ids("timeline.marker.").contains(&format!("timeline.marker.{green}")), "other colours stay");
+    assert!(d.ids("program.marker.").contains(&format!("program.marker.{green}")), "other colours stay");
+    assert_ne!(drag(&mut d), time, "a hidden marker neither snaps nor catches the press");
+
+    // adding a marker in the hidden colour shows the colour again everywhere
+    d.exec("markers.add", json!({"frame": 300, "color": "Rose"}));
+    d.frames(3);
+    assert!(d.app().session.state.hidden_marker_colors.is_empty());
+    assert!(d.ids("timeline.marker.").contains(&timeline));
+    assert!(d.ids("source.marker.").contains(&source));
+}
+
 /// #695: a marker on the Timeline could not be cleared: with snapping off a click on it left the
 /// playhead on the frame under the pointer, not on the marker Clear Selected Marker looks for, and
 /// right-clicking it opened the clip menu.

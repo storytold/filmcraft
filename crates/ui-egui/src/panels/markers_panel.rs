@@ -90,8 +90,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let shown: Vec<_> = markers
         .iter()
         .filter(|m| {
-            m.custom_color.map_or(!hidden.contains(&m.color), |c| !hidden_custom.contains(&c))
-                && (query.is_empty() || [&m.name, &m.comment, &m.author].iter().any(|s| s.to_lowercase().contains(&query)))
+            app.session.state.marker_shown(m) && (query.is_empty() || [&m.name, &m.comment, &m.author].iter().any(|s| s.to_lowercase().contains(&query)))
         })
         .collect();
     // Hidden rows are never accidental bulk-operation targets.

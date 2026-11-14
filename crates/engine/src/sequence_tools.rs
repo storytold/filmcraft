@@ -1128,7 +1128,8 @@ fn add_marker(s: &mut Session, input: MarkerInput<'_>) -> Result<MarkerId> {
     let comment = str_p(params, "comment").unwrap_or("").to_string();
     let (color, custom_color) = marker_color_p(params, cmd)?.unwrap_or((Label::Green, None));
     let author = crate::commands::marker_author_p(params, cmd)?.unwrap_or_default();
-    s.edit_sequence(label, |q, ctx, _| {
+    s.edit_sequence(label, |q, ctx, st| {
+        st.show_marker_color(color, custom_color);
         let id = MarkerId(ctx.alloc());
         q.markers.push(Marker { url: String::new(), author, custom_color, id, start, duration, name, comment, kind, color });
         q.markers.sort_by_key(|m| m.start);
