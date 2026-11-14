@@ -519,8 +519,12 @@ fn lerp_col(a: Color32, b: Color32, f: f32) -> Color32 {
 #[allow(clippy::too_many_arguments)]
 fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) -> Rect {
     let pts: Vec<[f32; 2]> = e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default();
-    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), not taller than 420 px
-    let w = ui.available_width().max(1.0);
+    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), not taller than 420 px.
+    // A floating vertical scroll bar takes no width from the panel and senses drags at its right
+    // edge, over the curve's right end points, so the curve leaves that strip free (#4568).
+    let s = &ui.spacing().scroll;
+    let bar = if s.floating { s.bar_width + s.bar_inner_margin + s.bar_outer_margin } else { 0.0 };
+    let w = (ui.available_width() - bar).max(1.0);
     let h = if hue { w * 0.45 } else { w }.min(420.0);
     let (area, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
     let p = ui.painter();
