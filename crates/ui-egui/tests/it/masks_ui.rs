@@ -221,6 +221,27 @@ fn create_and_edit_masks_on_the_monitor() {
     d.shot("mask-tracked");
 }
 
+/// A clip on a locked track keeps its masks as they are: no handles or outline on the monitor (#4162).
+#[test]
+fn a_locked_tracks_masks_have_no_handles() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    d.exec("masks.add", json!({"clip": id, "effect": "opacity", "shape": "ellipse"}));
+    d.frames(3);
+    assert!(d.has("program.mask.vertex.0"));
+    d.exec("timeline.setTrack", json!({"track": "V1", "locked": true}));
+    d.frames(3);
+    assert!(!d.has("program.mask.vertex.0"), "no handles on a locked track");
+    assert!(!d.has("program.mask.body"), "no outline to drag on a locked track");
+    d.exec("timeline.setTrack", json!({"track": "V1", "locked": false}));
+    d.frames(3);
+    assert!(d.has("program.mask.vertex.0"), "unlocking brings them back");
+}
+
 /// The selected mask's outline and handles are drawn on the Program monitor only while its clip
 /// is selected, as Motion's box is: selecting another clip, or none, hides them (#1341).
 #[test]
