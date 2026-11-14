@@ -282,6 +282,36 @@ fn a_source_drag_drops_on_a_timeline_in_its_own_window() {
     assert_eq!(clips(&d), 1, "status: {}", d.app().ui.status);
 }
 
+/// A Source Monitor video-only drag started in its own OS window reaches the docked Timeline in
+/// the main window and drops only the video clip there (#4391).
+#[test]
+fn a_floating_source_drag_video_only_drops_on_the_main_window_timeline() {
+    let mut d = Driver::new(5);
+    let place = egui::pos2(900.0, 120.0);
+    d.float("Source", [place.x, place.y, 680.0, 420.0]);
+    let video_clips = |d: &Driver| d.app().session.active_sequence().map_or(0, |q| q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>());
+    let audio_clips = |d: &Driver| d.app().session.active_sequence().map_or(0, |q| q.audio_tracks.iter().map(|t| t.items.len()).sum::<usize>());
+    assert_eq!((video_clips(&d), audio_clips(&d)), (0, 0));
+    let btn = d.element("source.drag.video");
+    assert!(btn["window"].is_u64(), "{btn}");
+    let row = d.element("timeline.track.V1.target");
+    assert!(row["window"].is_null(), "{row}");
+    let panel = rect(&d.element("panel.Timeline"));
+    let to_main = egui::pos2(panel.min.x + d.app().ui.timeline.header_w + 60.0, rect(&row).center().y);
+    let to_local = to_main - place.to_vec2();
+    let from = rect(&btn).center();
+    let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    WINDOW.with(|w| w.borrow_mut().focused = true);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(from)]);
+    window_frame(&mut d, vec![press(from, true)]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(from + egui::vec2(0.0, 9.0))]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(to_local)]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(to_local)]);
+    window_frame(&mut d, vec![press(to_local, false)]);
+    d.frames(4);
+    assert_eq!((video_clips(&d), audio_clips(&d)), (1, 0), "status: {}", d.app().ui.status);
+}
+
 /// The window's events for its next frame, and that frame.
 fn window_frame(d: &mut Driver, events: Vec<egui::Event>) {
     WINDOW.with(|w| w.borrow_mut().events.extend(events));
