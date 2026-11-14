@@ -118,11 +118,15 @@ pub fn log_jobs(s: &mut Session) {
             && let Some(r) = finished
         {
             let cancelled = j.progress.cancel.load(std::sync::atomic::Ordering::Relaxed);
-            out.push(match r {
-                Ok(_) => (Level::Info, format!("Finished: {}", j.label)),
-                Err(_) if cancelled => (Level::Warning, format!("Cancelled: {}", j.label)),
-                Err(e) => (Level::Error, format!("Failed: {}: {e}", j.label)),
-            });
+            match r {
+                Ok(report) => {
+                    out.push((Level::Info, format!("Finished: {}", j.label)));
+                    // what the export said about how it ran: hardware encoding asked for, software ran
+                    out.extend(report.warnings.iter().map(|w| (Level::Warning, format!("{}: {w}", j.label))));
+                }
+                Err(_) if cancelled => out.push((Level::Warning, format!("Cancelled: {}", j.label))),
+                Err(e) => out.push((Level::Error, format!("Failed: {}: {e}", j.label))),
+            }
             s.log.jobs.insert(j.id, true);
         } else {
             s.log.jobs.entry(j.id).or_insert(false);

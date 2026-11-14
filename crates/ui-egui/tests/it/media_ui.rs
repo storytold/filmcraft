@@ -442,16 +442,22 @@ fn offline_badges_proxy_toggle_and_dialogs() {
     assert!(d.app().ui.create_proxies.is_some());
     d.snapshot("media-create-proxies");
     d.click("proxies.preset.prores_proxy_quarter");
+    let prior_jobs = d.app().session.jobs.len();
     d.click("proxies.ok");
-    for _ in 0..400 {
+    let proxy_jobs = d.app().session.jobs[prior_jobs..].to_vec();
+    assert!(!proxy_jobs.is_empty(), "creating proxies starts a media job");
+    // Media jobs share a queue with other UI tests; allow a queued transcode up to 60 seconds.
+    for _ in 0..1200 {
         d.frames(1);
         let attached = d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count();
-        if attached == 2 {
+        let finished = proxy_jobs.iter().all(|job| job.result.lock().unwrap_or_else(|e| e.into_inner()).is_some());
+        if attached == 2 || finished {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert_eq!(d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count(), 2, "proxies attached");
+    let jobs = d.exec("jobs.list", json!({}));
+    assert_eq!(d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count(), 2, "proxies attached; jobs: {jobs}");
     d.click("program.transport.media.toggleProxies");
     assert!(d.app().session.prefs.media.enable_proxies);
     assert_eq!(d.ids("project.item.").into_iter().filter(|i| i.ends_with(".proxy")).count(), 2, "proxy badges");

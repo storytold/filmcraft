@@ -724,6 +724,9 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "job": it.job,
         "error": it.error,
         "offlineMedia": it.job.map_or_else(|| json!([]), |j| offline_media_json(s, j)),
+        // the finished export's report, as `file.exportMedia` and `jobs.list` give it: the encoder
+        // that ran and its warnings (`null` until it is done, and when it failed)
+        "result": job.and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone()).and_then(std::result::Result::ok),
     })
 }
 

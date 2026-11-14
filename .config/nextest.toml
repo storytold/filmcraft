@@ -16,3 +16,10 @@ test-group = "nvenc"
 [[profile.default.overrides]]
 filter = "package(filmcraft-render) and binary(mixer_perf)"
 threads-required = "num-test-threads"
+
+# Real-time audio: a wall-clock device takes a period every 10.7 ms, and the mixer thread must
+# stay ahead of it. With other tests' processes busy on every core, the thread isn't scheduled in
+# time and the device plays silence (Windows runners, #4649), so nothing runs beside them.
+[[profile.default.overrides]]
+filter = "package(filmcraft-ui-egui) and binary(play_ahead)"
+threads-required = "num-test-threads"

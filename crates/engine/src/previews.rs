@@ -732,7 +732,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: done_frames as f64 / secs.max(1e-6),
-            extra_files: Vec::new(),
+            ..Default::default()
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -847,7 +847,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: 0.0,
-            extra_files: Vec::new(),
+            ..Default::default()
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
