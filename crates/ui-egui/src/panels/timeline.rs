@@ -252,8 +252,9 @@ pub enum Drag {
         audio: bool,
         start_a: f32,
     },
-    /// Box selection, shown live: `before` is the selection when the drag began, which Shift or
-    /// Ctrl (`add`) keep; the release commits one `timeline.select`.
+    /// Box selection, shown live: `before` (`before_captions`) is the clip (caption) selection
+    /// when the drag began, which Shift or Ctrl (`add`) keep; the release commits one
+    /// `timeline.select` and adds the captions in the box with `captions.select`.
     Marquee {
         start: MarqueeAnchor,
         before: Vec<ClipId>,
