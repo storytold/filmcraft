@@ -55,6 +55,10 @@ mod craft_wasm_tests {
             assert!(CRAFT_FONTS.iter().any(|f| f.family == *family && f.style == *style), "{family} {style}");
         }
         assert!(CRAFT_FONTS.iter().any(|f| f.family == "Noto Sans Thai" && f.scripts.contains(&"Thai")));
+        // a craft-fonts with Noto Sans Georgian puts it in the web build too (the Georgian interface)
+        if CRAFT_FONTS.iter().any(|f| f.family == "Noto Sans Georgian" && f.scripts.contains(&"Geor")) {
+            assert!(CRAFT_WASM_FACES.contains(&("Noto Sans Georgian", "Regular")), "{CRAFT_WASM_FACES:?}");
+        }
     }
 }
 
