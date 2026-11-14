@@ -14,9 +14,10 @@
 # glibc 2.35) so the binaries run on newer ones. Optional: desktop-file-validate, appstreamcli,
 # zsyncmake (the zsync package) for the AppImage's .zsync.
 #
-# Cross-compiling (CI's riscv64 job, tar only): set CROSS_ARCH (riscv64), CROSS_TARGET (the Rust
+# Cross-compiling (CI's riscv64 job): set CROSS_ARCH (riscv64), CROSS_TARGET (the Rust
 # target), CROSS_COMPILE (binutils prefix, for strip) and optionally EMULATOR (qemu-riscv64) to
-# smoke-test the CLI.
+# smoke-test the CLI. GLIBC_FLOOR is the glibc the deb and rpm declare, the build host's: 2.35
+# unless set (CI's riscv64 job builds on Ubuntu 24.04 and sets 2.39).
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
@@ -41,6 +42,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
+export GLIBC_FLOOR="${GLIBC_FLOOR:-2.35}"
 export FILMCRAFT_MAINTAINER="${FILMCRAFT_MAINTAINER:-FilmCraft maintainers <filmcraft@storyteller.ai>}"
 BASENAME="filmcraft-$VERSION-linux-$ARCH"
 
