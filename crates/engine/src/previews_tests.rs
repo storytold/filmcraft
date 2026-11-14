@@ -251,6 +251,24 @@ fn saving_without_previews_creates_no_previews_folder() {
 }
 
 #[test]
+fn work_area_delete_skips_other_sequences_when_no_file_is_in_the_work_area() {
+    let (mut s, _) = session("work-area-delete-nothing");
+    let rate = FrameRate::FPS_24;
+    let mut project = (*s.project).clone();
+    let other = project.new_sequence("Other", SequenceSettings { width: 64, height: 36, frame_rate: rate, ..Default::default() }, 2, 1, None);
+    s.project = Arc::new(project);
+    s.edit_sequence("work area", |q, _, _| {
+        q.work_area = Some(TimeRange::from_bounds(Tick::ZERO, rate.tick_of(12)));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.previews.count(), 0);
+    assert_eq!(s.execute("sequence.deleteWorkAreaRenderFiles", json!({})).unwrap()["deleted"], 0);
+    assert!(!s.previews.segments_memoized(&s.project, other), "no file to keep, so other sequences are not scanned");
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+#[test]
 fn work_area_delete_counts_a_file_two_segments_share_once() {
     let (mut s, tint) = session("work-area-delete-repeat");
     let rate = FrameRate::FPS_24;

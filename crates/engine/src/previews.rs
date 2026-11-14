@@ -492,6 +492,13 @@ impl PreviewStore {
         segs
     }
 
+    /// Whether the segments of `seq` in this project snapshot are memoized.
+    #[cfg(test)]
+    pub(crate) fn segments_memoized(&self, project: &Arc<Project>, seq: ItemId) -> bool {
+        let memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        memo.iter().any(|(p, q, _)| Arc::ptr_eq(p, project) && *q == seq)
+    }
+
     /// Green when previews cover the whole segment, else its colour without a preview.
     pub fn state_of(&self, seg: &Segment) -> BarState {
         if self.is_rendered(seg) { BarState::Green } else { need_state(seg) }
@@ -976,7 +983,7 @@ pub fn delete(s: &mut Session, scope: DeleteScope) -> Result<Value> {
                 s.previews.parts_in(g, a, b)
             })
             .collect();
-        let names = if scope == DeleteScope::WorkArea {
+        let names = if scope == DeleteScope::WorkArea && !names.is_empty() {
             // Keep a content-addressed file when another sequence uses it.
             let shared: HashSet<String> = s
                 .project
