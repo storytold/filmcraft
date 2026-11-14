@@ -301,7 +301,11 @@ have no identity, so relinking them skips the fingerprint check.
   and the app opens the **Link Media** dialog. `file.open` returns `missingMedia`.
 - **Make Offline** (`media.makeOffline {items?, deleteFiles?}`) sets `MediaClip::offline`. The clip
   then shows "MEDIA SET OFFLINE" even though the file exists, until it is linked again. Files are
-  deleted only with `deleteFiles: true`.
+  deleted only with `deleteFiles: true`. If a deletable file is still referenced by an unselected
+  item (including offline media or a proxy), the command refuses before changing the project.
+  Select every reference to delete it, or take items offline without deleting their files.
+  AAF/OMF reimport reuses identical extracted audio only when the active project already references
+  that file; another project gets a separate extraction.
 - The media pool caches sources per item **and** per reference (path, offline flag). So relinking,
   Make Offline and undoing either take effect on the next frame.
 - **Stored paths.** Media and proxy paths read from a document (the project file, a project
