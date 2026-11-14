@@ -156,36 +156,39 @@ fn none() -> Value {
 }
 
 #[test]
-fn the_wheel_moves_the_tracks_up_and_down() {
+fn ctrl_wheel_moves_the_tracks_up_and_down() {
     let mut d = Driver::tall();
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     // over the video tracks: wheeling up brings the higher tracks in (Video 1 is at the bottom)
-    d.wheel(0.2, 0.0, 40.0, none());
+    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the video tracks moved, nothing else");
-    d.wheel(0.2, 0.0, -25.0, none());
+    d.wheel(0.2, 0.0, -25.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 0.0));
     // over the audio tracks: wheeling down brings the lower tracks in
-    d.wheel(0.8, 0.0, -30.0, none());
+    d.wheel(0.8, 0.0, -30.0, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 15.0, 30.0));
     // neither half goes past its first or last track
-    d.wheel(0.2, 0.0, -1e6, none());
-    d.wheel(0.8, 0.0, 1e6, none());
+    d.wheel(0.2, 0.0, -1e6, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e6, json!({"command": true}));
     assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, -1e6, none());
+    d.wheel(0.8, 0.0, -1e6, json!({"command": true}));
     let (_, _, _, lowest) = d.view();
     assert!(lowest > 100.0 && lowest < 15.0 * 200.0, "{lowest}");
 }
 
 #[test]
-fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
+fn the_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     let mut d = Driver::tall();
-    // Cmd + wheel: sideways, a point of wheel for a point of Timeline; the tracks stay
-    d.wheel(0.2, 0.0, -100.0, json!({"command": true}));
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    // Horizontal scrolling assigns the plain wheel to time; a point of wheel is a point of
+    // Timeline, and the tracks stay put.
+    d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "100 points at 50 points a second: 2 s later");
-    d.wheel(0.8, 0.0, 250.0, json!({"command": true}));
+    d.wheel(0.8, 0.0, 250.0, none());
     assert_eq!(d.view(), (1.0, 50.0, 0.0, 0.0));
-    d.wheel(0.8, 0.0, 1e5, json!({"command": true}));
+    d.wheel(0.8, 0.0, 1e5, none());
     assert_eq!(d.view().0, 0.0, "not before the start");
-    // Option + wheel: zoom about the pointer; it is not what Cmd + wheel does
+    // Option + wheel: zoom about the pointer; it is not what Ctrl + wheel does
     d.ok("ui.set", json!({"timeline": {"scroll": 4.0}}));
     d.frames(3);
     let tracks = d.rect("timeline.tracks");
@@ -203,26 +206,10 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     d.wheel(0.2, -50.0, 5.0, none());
     assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, -50.0, json!({"shift": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+    assert_eq!(d.view(), (15.0, 50.0, 0.0, 0.0));
 }
 
-/// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
-/// sideways and Cmd + wheel moves the tracks.
-#[test]
-fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
-    let mut d = Driver::tall();
-    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
-    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
-    d.wheel(0.2, 0.0, -100.0, none());
-    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
-    d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
-    assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0));
-    d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
-    assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
-}
-
-/// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
-/// in view and the scroll bar's thumb sat at the right end whatever was done to it.
+/// The view stops after ten minutes past the sequence end, including when scrolled by Ctrl + wheel.
 #[test]
 fn the_view_stops_ten_minutes_past_the_end_of_the_sequence() {
     let mut d = Driver::tall();
@@ -311,11 +298,11 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     let seconds = d.seconds();
     let track = d.rect("timeline.zoomBar.track");
     let limit = max_scroll(seconds, d.rect("timeline.tracks")[2], 50.0);
-    // at the start the thumb is at the left end of the bar, and wide enough to grab
+    // At this zoom the logarithmic zoom meter remains easy to grab and well short of the full bar.
     d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
-    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
+    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] * 0.9, "{thumb:?} in {track:?}");
     // dragged by its middle it moves with the pointer, and the view with it
     let y = thumb[1] + thumb[3] / 2.0;
     let grab = thumb[0] + thumb[2] / 2.0;
@@ -351,12 +338,16 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.frames(3);
     let jumped = d.rect("timeline.zoomBar");
     assert!((jumped[0] + jumped[2] / 2.0 - target).abs() < 2.0, "{jumped:?}");
-    // the handles at its ends still zoom: the right one out, the left edge of the view staying
-    let at = d.view().0;
+    // The right handle zooms out around the center of the current view.
+    let (at, at_pps) = (d.view().0, d.view().1);
+    let width = f64::from(d.rect("timeline.tracks")[2]);
+    let center_old = at + width / (2.0 * at_pps);
     d.ok("ui.drag", json!({"from": {"x": jumped[0] + jumped[2] - 3.0, "y": y}, "to": {"x": jumped[0] + jumped[2] + 60.0, "y": y}, "steps": 8}));
     d.frames(3);
     let (scroll, pps, ..) = d.view();
-    assert!(pps < 50.0 && (scroll - at).abs() < 1e-6, "{pps} {scroll}");
+    assert!(pps < 50.0, "dragging the right handle outward zooms out: {pps}");
+    let center_new = scroll + width / (2.0 * pps);
+    assert!((center_new - center_old).abs() < 3.0, "the view's center holds: {center_new} was {center_old} (scroll {scroll}, was {at})");
 }
 
 /// The zoom bar with the view at the start: the thumb at the left end of the track. Returns the
@@ -375,9 +366,9 @@ fn zoom_bar_handles_show_the_resize_cursor_on_hover() {
     let mut d = Driver::tall();
     let (thumb, track, y) = zoom_bar_at_start(&mut d);
     d.move_to(thumb[0] + 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "left handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "left zoom handle");
     d.move_to(thumb[0] + thumb[2] - 3.0, y);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "right handle");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "right zoom handle");
     d.move_to(thumb[0] + thumb[2] / 2.0, y);
     assert_eq!(d.cursor(), CursorIcon::Default, "middle of the thumb");
     let beside = track[0] + track[2] - 20.0;
@@ -398,11 +389,11 @@ fn zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
     d.move_to(handle + 40.0, y);
     let after = d.app().ui.timeline.target_pps;
     assert!(after < before, "the right handle dragged right zooms out: {before} -> {after}");
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging along the bar");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging along the bar");
     d.move_to(handle + 40.0, y - 300.0);
-    assert_eq!(d.cursor(), CursorIcon::ResizeHorizontal, "dragging over the tracks");
+    assert_eq!(d.cursor(), CursorIcon::PointingHand, "dragging over the tracks");
     d.release(handle + 40.0, y - 300.0);
-    assert_ne!(d.cursor(), CursorIcon::ResizeHorizontal, "button released, pointer over the tracks");
+    assert_ne!(d.cursor(), CursorIcon::PointingHand, "button released, pointer over the tracks");
 }
 
 /// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
