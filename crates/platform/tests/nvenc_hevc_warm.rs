@@ -24,7 +24,8 @@ fn register_answers_the_hevc_question_in_the_background() {
     eprintln!("answered in the background after {:?}", t0.elapsed());
     let hdr = hevc_hdr_available();
     assert!(!hdr || hevc_available(), "Main 10 implies HEVC");
-    assert_eq!(filmcraft_export::hdr_available(filmcraft_export::Format::Hevc), hdr);
+    // The global registry includes AMF, while this test's warm-up assertions are specific to NVENC.
+    assert_eq!(filmcraft_export::hdr_available(filmcraft_export::Format::Hevc), hdr || filmcraft_platform::amf::hevc_hdr_available());
     // the answer is kept: asking and registering again change nothing
     let answer = hevc_available();
     filmcraft_platform::register();
