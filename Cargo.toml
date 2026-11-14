@@ -21,6 +21,7 @@ filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
+filmcraft-av1enc = { path = "crates/av1enc" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }

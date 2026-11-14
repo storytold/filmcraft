@@ -2002,6 +2002,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-av1enc"
+version = "0.20.1"
+dependencies = [
+ "craft-video",
+ "filmcraft-bitstream",
+ "filmcraft-isobmff",
+ "filmcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-bitstream"
 version = "0.20.1"
 dependencies = [
@@ -2159,6 +2171,7 @@ dependencies = [
  "craft-media",
  "craft-video",
  "filmcraft-audio-dsp",
+ "filmcraft-av1enc",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-dnx",
