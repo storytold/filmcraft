@@ -3700,3 +3700,35 @@
 	Toggle Color Grading Section	Farbgrading-Abschnitt umschalten
 	Color Grading Section	Farbgrading-Abschnitt
 	Read Video Scopes	Videoskope auslesen
+	Zoom Anchor Point	Ankerpunkt für den Zoom
+	Cursor Position	Mauszeigerposition
+	Playhead Position	Abspielposition
+	Step Playhead (Frames)	Abspielposition schrittweise bewegen (Frames)
+	Disabled	Deaktiviert
+	Alt + Scroll	Alt + Mausrad
+	Shift + Scroll	Umschalt + Mausrad
+	Ctrl + Scroll	Strg + Mausrad
+	Move Playhead on Timeline Click	Abspielposition per Klick in die Timeline versetzen
+	Ruler Only	Nur im Zeitlineal
+	Empty Space Only	Nur im leeren Bereich
+	Anywhere on Timeline	Überall in der Timeline
+	Drag Playhead Line Across Tracks	Linie der Abspielposition über die Spuren ziehen
+	Anywhere, Including Over Clips	Überall, auch über Clips
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Geteiltes Zeitlineal: Ziehen in der oberen Hälfte setzt In und Out
+	Program Monitor Mouse Wheel	Mausrad im Programmmonitor
+	Source Monitor Mouse Wheel	Mausrad im Quellmonitor
+	Effect Controls Mouse Wheel	Mausrad in den Effekteinstellungen
+	Scroll	Mausrad
+	Over the Preview	Über der Vorschau
+	Over the Time Ruler	Über dem Zeitlineal
+	Timeline Mouse Wheel Behavior	Verhalten des Mausrads in der Timeline
+	Step Frames	Frameweise bewegen
+	Step Keyframes	Zu Keyframes springen
+	Off (Ruler Head Only)	Aus (nur am Kopf im Lineal)
+	Pan Timeline by Dragging With Middle Mouse Button	Timeline durch Ziehen mit der mittleren Maustaste verschieben
+	Navigation…	Navigation…
+	Navigation Style	Navigationsstil
+	Alternative	Alternativ
+	Timeline Mouse Wheel	Mausrad in der Timeline
+	Timeline Clicks and Drags	Klicken und Ziehen in der Timeline
+	More Settings…	Weitere Einstellungen…
