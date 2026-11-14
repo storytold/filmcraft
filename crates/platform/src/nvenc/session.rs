@@ -17,12 +17,13 @@ use super::ffi::{
     NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT, NV_ENC_H264_ENTROPY_CODING_MODE_CABAC,
     NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID, NV_ENC_HEVC_CUSIZE_AUTOSELECT,
     NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_LEVEL_AUTOSELECT,
-    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS,
-    NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID,
-    NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN,
-    NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709,
-    NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
+    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MAP_INPUT_RESOURCE,
+    NV_ENC_MAP_INPUT_RESOURCE_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
+    NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG,
+    NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID, NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD,
+    NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN, NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709,
+    NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709, NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST,
+    NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
 };
 
 /// The driver's entry points (loaded once).
@@ -206,6 +207,13 @@ struct Slot {
     output: *mut c_void,
 }
 
+/// A texture registered as an input picture ([`Session::register_texture`]), and its mapping while
+/// a submitted picture reads it (null otherwise).
+struct Input {
+    registered: *mut c_void,
+    mapped: *mut c_void,
+}
+
 /// An initialised encoder with its buffers.
 pub struct Session {
     api: &'static Api,
@@ -213,6 +221,8 @@ pub struct Session {
     // Keeps the Direct3D device / retained CUDA context alive through session destruction.
     _device: Device,
     slots: Vec<Slot>,
+    /// Textures registered as input pictures, by key (Windows: the target pool's pictures).
+    inputs: Vec<Input>,
     size: (u32, u32),
     out_size: u32,
     /// `NV_ENC_BUFFER_FORMAT_*` of the input buffers and pictures, and its bytes per sample.
@@ -286,6 +296,7 @@ impl Session {
             enc,
             _device: device,
             slots: Vec::new(),
+            inputs: Vec::new(),
             size: (0, 0),
             out_size: 0,
             fmt: NV_ENC_BUFFER_FORMAT_NV12,
@@ -566,13 +577,29 @@ impl Session {
             }
             l.pitch
         };
+        self.encode_picture(input, output, pitch, self.fmt, pts, encode)
+    }
+
+    /// Submit one picture: `input` (a host input buffer of this session, or a mapped input
+    /// picture) of `fmt`, its bitstream into `output`.
+    fn encode_picture(
+        &mut self,
+        input: *mut c_void,
+        output: *mut c_void,
+        pitch: u32,
+        fmt: u32,
+        pts: u64,
+        encode: unsafe extern "system" fn(Handle, *mut NV_ENC_PIC_PARAMS) -> NvStatus,
+    ) -> Result<Submitted, String> {
+        let (w, h) = self.size;
         // IDR pictures (every `gop` pictures from the first, in submission = display order) carry the SEI messages
         let idr = !self.sei_array.is_empty() && self.submitted.is_multiple_of(self.gop);
         self.submitted = self.submitted.saturating_add(1);
-        // SAFETY: a zeroed parameter block with its version; the buffers are this session's. The SEI
-        // descriptor array and the payload bytes it points to are heap blocks owned by `self`, which
-        // stay allocated (and unmoved) until the session is dropped, so they outlive this call and
-        // whatever time the driver keeps the picture queued.
+        // SAFETY: a zeroed parameter block with its version; the input and output are this session's
+        // (a buffer it created or a picture it mapped). The SEI descriptor array and the payload
+        // bytes it points to are heap blocks owned by `self`, which stay allocated (and unmoved)
+        // until the session is dropped, so they outlive this call and whatever time the driver
+        // keeps the picture queued.
         let st = unsafe {
             let mut e: NV_ENC_PIC_PARAMS = std::mem::zeroed();
             if idr {
@@ -586,7 +613,7 @@ impl Session {
             e.inputPitch = pitch;
             e.inputBuffer = input;
             e.outputBitstream = output;
-            e.bufferFmt = self.fmt;
+            e.bufferFmt = fmt;
             e.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
             e.inputTimeStamp = pts;
             e.inputDuration = 1;
@@ -596,6 +623,124 @@ impl Session {
             NV_ENC_SUCCESS => Ok(Submitted::Ready),
             NV_ENC_ERR_NEED_MORE_INPUT => Ok(Submitted::NeedMoreInput),
             s => Err(status("encoding a picture", s, self.enc, self.api)),
+        }
+    }
+
+    /// The Direct3D 11 device the session runs on (the input pictures' textures are made on it).
+    #[cfg(target_os = "windows")]
+    pub fn d3d11(&self) -> &windows::Win32::Graphics::Direct3D11::ID3D11Device {
+        self._device.d3d11()
+    }
+
+    /// Register `texture` (an `R8G8B8A8_UNORM` texture of [`Self::d3d11`] at the encoder's size)
+    /// as an input picture of an RGBA-input session; its key, counted from 0 in registration
+    /// order. The texture must stay alive until the session is dropped (which unregisters it) or
+    /// [`Self::unregister_inputs`].
+    #[cfg(target_os = "windows")]
+    pub fn register_texture(&mut self, texture: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> Result<usize, String> {
+        use super::ffi::{NV_ENC_INPUT_IMAGE, NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX, NV_ENC_REGISTER_RESOURCE, NV_ENC_REGISTER_RESOURCE_VER};
+        use windows::core::Interface;
+        if self.fmt != NV_ENC_BUFFER_FORMAT_ABGR {
+            return Err("input textures are RGBA (ABGR) pictures".into());
+        }
+        let f = self.api.list.nvEncRegisterResource.ok_or("no nvEncRegisterResource")?;
+        // SAFETY: a zeroed parameter block with its version and a live texture of the session's
+        // device, which the caller keeps alive while it is registered; the driver fills in the
+        // registration, which `unregister_inputs` / `Drop` undo once.
+        let registered = unsafe {
+            let mut r: NV_ENC_REGISTER_RESOURCE = std::mem::zeroed();
+            r.version = NV_ENC_REGISTER_RESOURCE_VER;
+            r.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+            r.width = self.size.0;
+            r.height = self.size.1;
+            r.pitch = 0;
+            r.subResourceIndex = 0;
+            r.resourceToRegister = texture.as_raw();
+            r.bufferFormat = NV_ENC_BUFFER_FORMAT_ABGR;
+            r.bufferUsage = NV_ENC_INPUT_IMAGE;
+            let s = f(self.enc, &mut r);
+            if s != NV_ENC_SUCCESS || r.registeredResource.is_null() {
+                return Err(status("registering an input texture", s, self.enc, self.api));
+            }
+            r.registeredResource
+        };
+        self.inputs.push(Input { registered, mapped: std::ptr::null_mut() });
+        Ok(self.inputs.len() - 1)
+    }
+
+    /// Map input picture `key` and submit it with timestamp `pts`, its bitstream into slot `slot`'s
+    /// output buffer (the slot's input buffer is not used). The picture stays mapped, and its
+    /// texture must not be written, until [`Self::unmap`] once the bitstream that consumed it was
+    /// read.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn submit_mapped(&mut self, slot: usize, pts: u64, key: usize) -> Result<Submitted, String> {
+        let output = self.slots.get(slot).ok_or("no such buffer slot")?.output;
+        let input = self.inputs.get(key).ok_or("no such input picture")?;
+        if !input.mapped.is_null() {
+            return Err("an input picture submitted while it is still in the encoder".into());
+        }
+        let registered = input.registered;
+        let (map, encode) =
+            (self.api.list.nvEncMapInputResource.ok_or("no nvEncMapInputResource")?, self.api.list.nvEncEncodePicture.ok_or("no nvEncEncodePicture")?);
+        // SAFETY: a zeroed parameter block with its version and a resource this session registered;
+        // the driver returns the mapping, which `unmap` (or `Drop`) undoes once.
+        let (mapped, fmt) = unsafe {
+            let mut m: NV_ENC_MAP_INPUT_RESOURCE = std::mem::zeroed();
+            m.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+            m.registeredResource = registered;
+            let s = map(self.enc, &mut m);
+            if s != NV_ENC_SUCCESS || m.mappedResource.is_null() {
+                return Err(status("mapping an input texture", s, self.enc, self.api));
+            }
+            (m.mappedResource, m.mappedBufferFmt)
+        };
+        if let Some(i) = self.inputs.get_mut(key) {
+            i.mapped = mapped;
+        }
+        // the driver knows the texture's layout: the pitch is the width, as the API asks when unknown
+        let st = self.encode_picture(mapped, output, self.size.0, fmt, pts, encode);
+        if st.is_err() {
+            // the picture never went in
+            let _ = self.unmap(key);
+        }
+        st
+    }
+
+    /// Unmap input picture `key` (nothing when it is not mapped).
+    // (input textures are registered on Windows only)
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn unmap(&mut self, key: usize) -> Result<(), String> {
+        let Some(input) = self.inputs.get_mut(key) else {
+            return Err("no such input picture".into());
+        };
+        if input.mapped.is_null() {
+            return Ok(());
+        }
+        let mapped = std::mem::replace(&mut input.mapped, std::ptr::null_mut());
+        let f = self.api.list.nvEncUnmapInputResource.ok_or("no nvEncUnmapInputResource")?;
+        // SAFETY: a mapping this session's `nvEncMapInputResource` returned, unmapped once.
+        let s = unsafe { f(self.enc, mapped) };
+        if s != NV_ENC_SUCCESS {
+            return Err(status("unmapping an input texture", s, self.enc, self.api));
+        }
+        Ok(())
+    }
+
+    /// Unmap and unregister every input picture (their textures may then be destroyed).
+    pub fn unregister_inputs(&mut self) {
+        let (unmap, unregister) = (self.api.list.nvEncUnmapInputResource, self.api.list.nvEncUnregisterResource);
+        for input in self.inputs.drain(..) {
+            // SAFETY: mappings and registrations this session made, each undone once, the mapping first.
+            unsafe {
+                if !input.mapped.is_null()
+                    && let Some(f) = unmap
+                {
+                    f(self.enc, input.mapped);
+                }
+                if let Some(f) = unregister {
+                    f(self.enc, input.registered);
+                }
+            }
         }
     }
 
@@ -646,6 +791,8 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // input textures first: they belong to the caller, who may destroy them after this
+        self.unregister_inputs();
         // SAFETY: every handle was created by this session and is destroyed once, buffers first.
         unsafe {
             for s in self.slots.drain(..) {

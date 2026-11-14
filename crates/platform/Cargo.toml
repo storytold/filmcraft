@@ -49,10 +49,15 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
+    "Win32_Security",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# NVENC's input pictures in GPU memory: shared Direct3D 11 textures the export compositor's Vulkan
+# device opens (wgpu-hal's `texture_from_d3d11_shared_handle`; both already in the build)
+filmcraft-gpu = { workspace = true }
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
@@ -61,6 +66,8 @@ libloading = "0.8"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+pollster = "1"
+wgpu = { version = "30", features = ["wgsl", "vulkan"] }
 tempfile = "3"
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }

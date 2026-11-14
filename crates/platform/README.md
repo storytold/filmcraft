@@ -75,7 +75,17 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   distance; the parameter sets go into `avcC`. Export ▸ Hardware encoding (off by default) selects it.
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
-  ends it with an error, since a hardware stream cannot be finished in software. The same session,
+  ends it with an error, since a hardware stream cannot be finished in software. On Windows, when
+  the export's GPU renderers draw frames as they are encoded (SDR, no fitting, overlays, limiter or
+  alpha), the frames do not come as RGBA bytes at all: the encoder makes 24 shared
+  `R8G8B8A8_UNORM` textures on its Direct3D 11 device and registers them as input pictures
+  (`nvenc/target.rs`, `nvEncRegisterResource`), the compositor's Vulkan device opens them by NT
+  handle (wgpu-hal's `texture_from_d3d11_shared_handle`) and copies each finished frame into one,
+  and the session maps it as that picture's input (`nvEncMapInputResource`). A picture is unmapped
+  and handed out again only once every bitstream that can still read it is out (B-frame delay).
+  No free picture, or a compositor that cannot open them, sends the frame through the RGBA path:
+  the stream is the same either way (`nvenc::gpu_input_tests`, ignored, needs an NVIDIA GPU).
+  `FILMCRAFT_NVENC_GPU_INPUT=0` turns it off. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264

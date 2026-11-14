@@ -30,6 +30,17 @@ pub struct EncoderFrame<'a> {
 /// [`VideoEncoder::prepare_ahead`].
 pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
 
+/// The input pictures in GPU memory a hardware encoder hands out ([`VideoEncoder::gpu_targets`]):
+/// the export's GPU renderers draw finished frames straight into them
+/// ([`FrameRenderer::render_plan_to`]) and the encoder reads them where they are
+/// ([`VideoEncoder::encode_gpu`]), so the frames never go through CPU memory.
+pub trait GpuTargets: Send + Sync {
+    /// A free picture at the encoder's size, or `None` when every one is in use (by frames drawn
+    /// and not encoded yet, or by the encoder): the frame is then read back as RGBA8 as before.
+    /// It goes back to the encoder's pool when the last clone is dropped, however it ends.
+    fn take(&self) -> Option<std::sync::Arc<dyn filmcraft_frame::GpuTarget>>;
+}
+
 pub trait VideoEncoder: Send {
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
@@ -50,6 +61,19 @@ pub trait VideoEncoder: Send {
     /// itself for a picture that has none; the encoded bytes are the same either way.
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
         None
+    }
+    /// Input pictures in GPU memory this encoder reads directly, for SDR frames the export's GPU
+    /// renderers draw as they are encoded (see [`GpuTargets`]); `None` when it takes CPU pictures
+    /// only. A frame drawn into one is encoded with [`Self::encode_gpu`]; frames read back as
+    /// RGBA8 (none free, a frame the CPU renders) still come to [`Self::encode`], in between.
+    fn gpu_targets(&mut self) -> Option<std::sync::Arc<dyn GpuTargets>> {
+        None
+    }
+    /// Encode picture `index` (numbered as [`EncoderFrame::index`]) from `target`, one of
+    /// [`Self::gpu_targets`] holding the finished frame. The encoder keeps the target until it
+    /// has read it; the packets that came out, as for [`Self::encode`].
+    fn encode_gpu(&mut self, _target: std::sync::Arc<dyn filmcraft_frame::GpuTarget>, _index: u64) -> Result<Vec<EncodedPacket>> {
+        Err(crate::ExportError::Encode("internal: a GPU picture for an encoder that takes none".into()))
     }
     /// The hardware encoder doing the work ("NVENC", "VideoToolbox"), `None` for FilmCraft's own
     /// software encoders: what the export's [`crate::Report::encoder`] names.
@@ -127,6 +151,38 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// Whether this renderer composites frames the export planned beforehand
+    /// ([`Self::render_plan`]): the export then plans each frame (decodes its sources) on its own
+    /// threads, a batch ahead of the frames being composited, instead of inside [`Self::render`].
+    fn takes_plans(&self) -> bool {
+        false
+    }
+
+    /// Composite `plan` (made by [`filmcraft_render::plan::plan_frame`] with [`Self::caps`]) as
+    /// [`Self::render`] returns a frame, `None` for the CPU to render it. Called only when
+    /// [`Self::takes_plans`].
+    fn render_plan(&mut self, _plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        None
+    }
+
+    /// [`Self::render_plan`] for an SDR export that encodes the picture as it is (no fitting,
+    /// overlays, video limiter or alpha): the frame over black as straight sRGB RGBA8 rows (width,
+    /// height, pixels), what [`filmcraft_render::Image::over_black_rgba8`] makes of
+    /// [`Self::render_plan`]'s image. A GPU renderer converts on the GPU instead and reads back
+    /// half the bytes.
+    fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
+        let img = self.render_plan(plan)?;
+        Some((img.w, img.h, img.over_black_rgba8()))
+    }
+
+    /// [`Self::render_plan_rgba8`] into `target`, a hardware encoder's input picture in GPU
+    /// memory ([`GpuTargets`]), finished on the GPU when this returns `true`. `false` (the
+    /// default, or when this renderer can't open the target) makes the export read the frame back
+    /// with [`Self::render_plan_rgba8`] instead.
+    fn render_plan_to(&mut self, _plan: &filmcraft_render::plan::FramePlan, _target: &dyn filmcraft_frame::GpuTarget) -> bool {
+        false
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

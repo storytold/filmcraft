@@ -14,6 +14,10 @@
 //! RGBA (the export pipeline) ──► ABGR input buffer ──NVENC (BT.709 limited 4:2:0 on the GPU)──►
 //!    Annex B ──► length-prefixed samples + avcC / hvcC
 //!
+//! Windows, frames the export's GPU compositor draws as they are encoded (`target`):
+//! compositor (Vulkan) ──copy──► shared RGBA8 texture (NVENC's D3D11 device) ──mapped──► NVENC ──► …
+//!    (no read-back into CPU memory and no upload; the same stream)
+//!
 //! where the driver refuses RGB input (`Nvenc::with_rgba_input` fails), as before:
 //! RGBA ──► BT.709 limited 4:2:0 (the software encoder's conversion) ──► NV12 input buffer ──NVENC──► …
 //!
@@ -36,11 +40,18 @@ mod ffi;
 pub mod hevc;
 #[allow(unsafe_code)]
 mod session;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub(crate) mod target;
 
 #[cfg(test)]
 mod abi_tests;
+#[cfg(all(test, target_os = "windows"))]
+mod gpu_input_tests;
 
 use std::collections::VecDeque;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
 
 use filmcraft_isobmff::HevcConfig;
 
@@ -125,6 +136,16 @@ pub struct Nvenc {
     ten_bit: bool,
     /// Pictures go in as packed RGBA ([`Nvenc::encode_rgba`]) and the GPU converts them to 4:2:0.
     rgba_input: bool,
+    /// Pictures submitted, whatever their input.
+    submissions: u64,
+    /// The input pictures in GPU memory ([`Nvenc::make_targets`]); its picture `i` is the
+    /// session's input key `i`.
+    #[cfg(target_os = "windows")]
+    targets: Option<Arc<target::Pool>>,
+    /// Pictures in GPU memory submitted and still held: (submission number, key, the picture,
+    /// which goes back to its pool when released), in submission order.
+    #[cfg(target_os = "windows")]
+    gpu_inputs: VecDeque<(u64, usize, Arc<dyn filmcraft_frame::GpuTarget>)>,
 }
 
 /// The H.264 encoder (the name it had before HEVC joined it).
@@ -332,6 +353,11 @@ impl Nvenc {
             size: (w, h),
             ten_bit,
             rgba_input,
+            submissions: 0,
+            #[cfg(target_os = "windows")]
+            targets: None,
+            #[cfg(target_os = "windows")]
+            gpu_inputs: VecDeque::new(),
         })
     }
 
@@ -418,30 +444,122 @@ impl Nvenc {
 
     fn submit_picture(&mut self, index: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Vec<Packet>, String> {
         let mut out = Vec::new();
-        let slot = match self.free.pop() {
-            Some(s) => s,
-            None => {
-                // the ring is full: the oldest picture must come out first
-                if self.ready == 0 {
-                    return Err("the encoder holds more pictures than it can".into());
-                }
-                out.push(self.read_oldest()?);
-                self.free.pop().ok_or("no free encoder buffer")?
+        let slot = self.next_slot(&mut out)?;
+        match self.session.submit(slot, index, fill) {
+            Ok(st) => {
+                self.submitted_to(slot, st);
+                Ok(out)
             }
-        };
-        let st = self.session.submit(slot, index, fill);
-        let st = match st {
-            Ok(s) => s,
             Err(e) => {
                 self.free.push(slot);
-                return Err(e);
+                Err(e)
             }
-        };
+        }
+    }
+
+    /// A free buffer slot, reading the oldest picture out (into `out`) when the ring is full.
+    fn next_slot(&mut self, out: &mut Vec<Packet>) -> Result<usize, String> {
+        if let Some(s) = self.free.pop() {
+            return Ok(s);
+        }
+        // the ring is full: the oldest picture must come out first
+        if self.ready == 0 {
+            return Err("the encoder holds more pictures than it can".into());
+        }
+        out.push(self.read_oldest()?);
+        self.free.pop().ok_or_else(|| "no free encoder buffer".to_string())
+    }
+
+    /// A picture went in through slot `slot`.
+    fn submitted_to(&mut self, slot: usize, st: Submitted) {
         self.pending.push_back(slot);
+        self.submissions = self.submissions.saturating_add(1);
         if st == Submitted::Ready {
             self.ready = self.pending.len();
         }
-        Ok(out)
+    }
+
+    /// Make the encoder's input pictures in GPU memory: up to `count` textures at its size on its
+    /// device (fewer when video memory runs out), each registered as an input picture, for the
+    /// export's compositor to draw finished frames into ([`target::take`], then
+    /// [`Nvenc::encode_target`]). The same pool when asked again. An error for an encoder without
+    /// RGBA input, or when the driver takes no such picture (the frames then come as RGBA bytes).
+    #[cfg(target_os = "windows")]
+    pub(crate) fn make_targets(&mut self, count: usize) -> Result<Arc<target::Pool>, String> {
+        if !self.rgba_input {
+            return Err("input pictures in GPU memory are RGBA (ABGR) pictures".into());
+        }
+        if let Some(pool) = &self.targets {
+            return Ok(pool.clone());
+        }
+        let pool = target::Pool::new(self.session.d3d11(), self.size, count)?;
+        for i in 0..pool.len() {
+            let registered = pool.texture(i).ok_or_else(|| "no such input picture".to_string()).and_then(|t| self.session.register_texture(t));
+            match registered {
+                Ok(key) if key == i => {}
+                Ok(_) => {
+                    self.session.unregister_inputs();
+                    return Err("input pictures registered out of order".into());
+                }
+                Err(e) => {
+                    // none of them is used: the textures go with `pool`, after their registrations
+                    self.session.unregister_inputs();
+                    return Err(e);
+                }
+            }
+        }
+        let pool = Arc::new(pool);
+        self.targets = Some(pool.clone());
+        Ok(pool)
+    }
+
+    /// Encode picture `index` from `picture`, one of this encoder's input pictures in GPU memory
+    /// ([`Nvenc::make_targets`]) holding the finished frame. The encoder keeps it (nothing may
+    /// draw into it) until the picture is coded: it goes back to its pool once the bitstreams that
+    /// could still read it are out. The pictures that came out, as for [`Nvenc::encode`].
+    #[cfg(target_os = "windows")]
+    pub fn encode_target(&mut self, picture: Arc<dyn filmcraft_frame::GpuTarget>, index: u64) -> Result<Vec<Packet>, String> {
+        let pool = self.targets.as_ref().ok_or("this encoder has no input pictures in GPU memory")?;
+        let key = picture
+            .as_any()
+            .downcast_ref::<target::Target>()
+            .filter(|t| t.pool_id() == pool.id())
+            .map(target::Target::index)
+            .ok_or("an input picture of another encoder")?;
+        let mut out = Vec::new();
+        let slot = self.next_slot(&mut out)?;
+        match self.session.submit_mapped(slot, index, key) {
+            Ok(st) => {
+                self.submitted_to(slot, st);
+                self.gpu_inputs.push_back((self.submissions - 1, key, picture));
+                Ok(out)
+            }
+            Err(e) => {
+                self.free.push(slot);
+                Err(e)
+            }
+        }
+    }
+
+    /// Unmap the input pictures in GPU memory the encoder is done with and give them back to their
+    /// pool: all of them (`all`, at the end of the stream), or those every picture coded so far
+    /// has consumed. Bitstreams come out in coding order; with `delay` B-frames a picture is coded
+    /// at most `delay` places after its submission, so once `n` bitstreams are out every picture
+    /// submitted before `n - delay` has been read by the encoder.
+    #[cfg(target_os = "windows")]
+    fn release_inputs(&mut self, all: bool) -> Result<(), String> {
+        let out = u64::try_from(self.emitted).unwrap_or(0);
+        while let Some(&(n, _, _)) = self.gpu_inputs.front() {
+            if !all && n.saturating_add(u64::from(self.delay)) >= out {
+                break;
+            }
+            let Some((_, key, picture)) = self.gpu_inputs.pop_front() else { break };
+            // unmapped before it can be drawn into again
+            let unmapped = self.session.unmap(key);
+            drop(picture);
+            unmapped?;
+        }
+        Ok(())
     }
 
     /// Finish the stream: every picture still inside comes out.
@@ -454,6 +572,8 @@ impl Nvenc {
         while self.ready > 0 {
             out.push(self.read_oldest()?);
         }
+        #[cfg(target_os = "windows")]
+        self.release_inputs(true)?;
         Ok(out)
     }
 
@@ -466,6 +586,8 @@ impl Nvenc {
         let data = annex_b_to_length_prefixed_for(self.codec, &o.data)?;
         let k = self.emitted;
         self.emitted = self.emitted.saturating_add(1);
+        #[cfg(target_os = "windows")]
+        self.release_inputs(false)?;
         let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
         Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts, dts: k.saturating_sub(i64::from(self.delay)) })
     }

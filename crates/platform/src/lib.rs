@@ -55,6 +55,20 @@ pub mod videotoolbox_encode;
 
 pub use hybrid::HybridDecoder;
 
+/// What lets an export's GPU compositor draw finished frames straight into this platform's hardware
+/// encoder's input pictures in GPU memory (Windows: NVENC's Direct3D 11 textures shared with a
+/// Vulkan device), for `filmcraft_gpu::register_target_importer`. `None` where there is none.
+pub fn target_importer() -> Option<Box<dyn filmcraft_gpu::TargetImporter>> {
+    #[cfg(target_os = "windows")]
+    {
+        Some(Box::new(nvenc::target::Importer))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// What [`register`] made available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Availability {

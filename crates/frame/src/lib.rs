@@ -46,6 +46,19 @@ impl Chroma {
     }
 }
 
+/// An encoder's input picture in GPU memory: a texture the export's GPU compositor draws the
+/// finished output frame into and the hardware encoder reads where it is, so the frame never goes
+/// through CPU memory (Windows: a Direct3D 11 texture of NVENC's device, shared with the
+/// compositor's Vulkan device). Straight sRGB RGBA8 at the encoder's size, like the bytes it
+/// replaces. The encoder hands them out and takes them back; the compositor's side opens them
+/// through the importer registered with the GPU crate.
+pub trait GpuTarget: Send + Sync + std::fmt::Debug {
+    /// Width and height in pixels.
+    fn size(&self) -> (u32, u32);
+    /// The concrete target, for the importer and the encoder that made it.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 #[derive(Clone, Debug)]
 pub enum PixelData {
     /// Straight-alpha, sRGB/709-encoded RGBA, 8 bits per channel.
